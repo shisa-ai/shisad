@@ -1,0 +1,80 @@
+"""M0.T4-T5: PEP rejects unknown tools and invalid schemas."""
+
+from __future__ import annotations
+
+from shisad.core.tools.registry import ToolRegistry
+from shisad.core.tools.schema import ToolDefinition, ToolParameter
+from shisad.core.types import Capability, PEPDecisionKind, ToolName
+from shisad.security.pep import PEP, PolicyContext
+from shisad.security.policy import PolicyBundle
+
+
+def _make_pep() -> tuple[PEP, ToolRegistry]:
+    """Create a PEP with a simple tool registered."""
+    registry = ToolRegistry()
+    registry.register(
+        ToolDefinition(
+            name=ToolName("test_tool"),
+            description="A test tool",
+            parameters=[
+                ToolParameter(name="query", type="string", required=True),
+                ToolParameter(name="limit", type="integer", required=False),
+            ],
+            capabilities_required=[Capability.HTTP_REQUEST],
+        )
+    )
+    policy = PolicyBundle(default_require_confirmation=False)
+    return PEP(policy, registry), registry
+
+
+class TestPepRejectsUnknownTools:
+    """M0.T4: PEP rejects unknown tools."""
+
+    def test_unknown_tool_rejected(self) -> None:
+        pep, _ = _make_pep()
+        ctx = PolicyContext(capabilities={Capability.HTTP_REQUEST})
+        decision = pep.evaluate(ToolName("nonexistent"), {}, ctx)
+        assert decision.kind == PEPDecisionKind.REJECT
+        assert "Unknown tool" in decision.reason
+
+    def test_known_tool_allowed(self) -> None:
+        pep, _ = _make_pep()
+        ctx = PolicyContext(capabilities={Capability.HTTP_REQUEST})
+        decision = pep.evaluate(ToolName("test_tool"), {"query": "hello"}, ctx)
+        assert decision.kind == PEPDecisionKind.ALLOW
+
+
+class TestPepSchemaValidation:
+    """M0.T5: PEP rejects invalid tool argument schemas."""
+
+    def test_missing_required_arg_rejected(self) -> None:
+        pep, _ = _make_pep()
+        ctx = PolicyContext(capabilities={Capability.HTTP_REQUEST})
+        decision = pep.evaluate(ToolName("test_tool"), {}, ctx)
+        assert decision.kind == PEPDecisionKind.REJECT
+        assert "Missing required" in decision.reason
+
+    def test_extra_arg_rejected(self) -> None:
+        pep, _ = _make_pep()
+        ctx = PolicyContext(capabilities={Capability.HTTP_REQUEST})
+        decision = pep.evaluate(
+            ToolName("test_tool"), {"query": "hello", "unknown": "bad"}, ctx
+        )
+        assert decision.kind == PEPDecisionKind.REJECT
+        assert "Unexpected argument" in decision.reason
+
+    def test_wrong_type_rejected(self) -> None:
+        pep, _ = _make_pep()
+        ctx = PolicyContext(capabilities={Capability.HTTP_REQUEST})
+        decision = pep.evaluate(
+            ToolName("test_tool"), {"query": "hello", "limit": "not_an_int"}, ctx
+        )
+        assert decision.kind == PEPDecisionKind.REJECT
+        assert "expected type" in decision.reason
+
+    def test_missing_capability_rejected(self) -> None:
+        pep, _ = _make_pep()
+        ctx = PolicyContext(capabilities=set())  # No capabilities
+        decision = pep.evaluate(ToolName("test_tool"), {"query": "hello"}, ctx)
+        assert decision.kind == PEPDecisionKind.REJECT
+        assert "Missing capabilities" in decision.reason
