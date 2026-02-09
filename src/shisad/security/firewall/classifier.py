@@ -70,6 +70,22 @@ class PatternInjectionClassifier:
             0.2,
         ),
     ]
+    _BASE64_DIRECT_RE: ClassVar[re.Pattern[str]] = re.compile(r"\b[A-Za-z0-9+/]{40,}={0,2}\b")
+    _BASE64_SPLIT_RE: ClassVar[re.Pattern[str]] = re.compile(
+        r"(?:[A-Za-z0-9+/]{8,}={0,2}(?:[\s\"'`:,;|\\/-]+|$)){3,}"
+    )
+    _ENCODED_SIGNAL_TOKENS: ClassVar[tuple[str, ...]] = (
+        "ignore previous",
+        "disregard instructions",
+        "system prompt",
+        "curl ",
+        "wget ",
+        "http://",
+        "https://",
+        "exfiltrate",
+        "token",
+        "secret",
+    )
 
     def __init__(
         self,
@@ -123,17 +139,37 @@ class PatternInjectionClassifier:
             matched_patterns=sorted(set(matches)),
         )
 
-    @staticmethod
-    def _looks_like_encoded_payload(text: str) -> bool:
-        chunks = re.findall(r"\b[A-Za-z0-9+/]{40,}={0,2}\b", text)
-        for chunk in chunks:
-            try:
-                decoded = base64.b64decode(chunk, validate=True)
-            except Exception:
-                continue
-            lowered = decoded.decode("utf-8", errors="ignore").lower()
-            if any(token in lowered for token in ("ignore previous", "curl", "wget", "http")):
+    @classmethod
+    def _looks_like_encoded_payload(cls, text: str) -> bool:
+        candidates = set(cls._BASE64_DIRECT_RE.findall(text))
+        for blob in cls._BASE64_SPLIT_RE.findall(text):
+            collapsed = re.sub(r"[\s\"'`:,;|\\/-]+", "", blob)
+            if len(collapsed) >= 40:
+                candidates.add(collapsed)
+
+        for chunk in sorted(candidates, key=len, reverse=True):
+            if cls._contains_encoded_signal(chunk):
                 return True
+        return False
+
+    @classmethod
+    def _contains_encoded_signal(cls, chunk: str) -> bool:
+        current = chunk.strip()
+        for _ in range(2):
+            padding = "=" * ((4 - (len(current) % 4)) % 4)
+            try:
+                decoded = base64.b64decode(current + padding, validate=True)
+            except Exception:
+                return False
+            decoded_text = decoded.decode("utf-8", errors="ignore")
+            lowered = decoded_text.lower()
+            if any(token in lowered for token in cls._ENCODED_SIGNAL_TOKENS):
+                return True
+
+            next_candidate = re.sub(r"\s+", "", decoded_text)
+            if not re.fullmatch(r"[A-Za-z0-9+/=]{24,}", next_candidate or ""):
+                return False
+            current = next_candidate
         return False
 
     @staticmethod

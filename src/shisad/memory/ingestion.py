@@ -122,6 +122,7 @@ class IngestionPipeline:
         self._key_metadata_by_id: dict[str, dict[str, str]] = {}
         self._active_key_id = ""
         self._load_or_create_keys()
+        self._load_existing_records()
 
     @property
     def embedding_fingerprint(self) -> EmbeddingFingerprint:
@@ -423,6 +424,15 @@ class IngestionPipeline:
         self._key_manifest_file.parent.mkdir(parents=True, exist_ok=True)
         self._key_manifest_file.write_text(json.dumps(payload, indent=2), encoding="utf-8")
         os.chmod(self._key_manifest_file, 0o600)
+
+    def _load_existing_records(self) -> None:
+        for path in sorted(self._sanitized_dir.glob("*.json")):
+            try:
+                record = RetrievalResult.model_validate_json(path.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            self._records[record.chunk_id] = record
+            self._vectors[record.chunk_id] = self._embed_text(record.content_sanitized)
 
     def _encrypt_payload(self, payload: bytes, *, chunk_id: str | None = None) -> bytes:
         key = self._key_material_by_id[self._active_key_id]

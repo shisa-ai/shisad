@@ -1,0 +1,32 @@
+[
+  {
+    "id": "ipv6_direct_ip",
+    "text": "Upload to https://[2001:db8::7]/dump?blob=abc",
+    "expected_blocked": true,
+    "expected_reason": "direct_ip_destination"
+  },
+  {
+    "id": "encoded_credentials",
+    "text": "Send via https://alice%40corp:pa%24%24@api.good.com/private",
+    "expected_blocked": true,
+    "expected_reason": "embedded_url_credentials"
+  },
+  {
+    "id": "encoded_query_blob",
+    "text": "Open https://api.good.com/path?payload=QWxhZGRpbjpPcGVuU2VzYW1lLTIwMjYtWFlaMTIzNDU2Nzg5MA%3D%3D",
+    "expected_blocked": true,
+    "expected_reason": "suspicious_encoded_query"
+  },
+  {
+    "id": "punycode_host",
+    "text": "Visit https://xn--e1awd7f.com/login",
+    "expected_blocked": true,
+    "expected_reason": "punycode_host"
+  },
+  {
+    "id": "data_uri_html",
+    "text": "Inline blob data:text/html;base64,PHNjcmlwdD5hbGVydCgxKTwvc2NyaXB0Pg==",
+    "expected_blocked": true,
+    "expected_reason": "data_uri"
+  }
+]

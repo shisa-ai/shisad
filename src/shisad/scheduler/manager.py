@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import json
 from collections import defaultdict
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
 from shisad.core.types import Capability, UserId
@@ -16,11 +18,17 @@ class SchedulerManager:
     def __init__(
         self,
         *,
+        storage_dir: Path | None = None,
         audit_hook: Callable[[str, dict[str, Any]], None] | None = None,
     ) -> None:
         self._tasks: dict[str, ScheduledTask] = {}
         self._pending_confirmations: dict[str, list[dict[str, Any]]] = defaultdict(list)
         self._audit_hook = audit_hook
+        self._storage_dir = storage_dir
+        self._tasks_file = self._storage_dir / "tasks.json" if self._storage_dir else None
+        if self._storage_dir is not None:
+            self._storage_dir.mkdir(parents=True, exist_ok=True)
+        self._load_tasks()
 
     def create_task(
         self,
@@ -46,6 +54,7 @@ class SchedulerManager:
             created_by=created_by,
         )
         self._tasks[task.id] = task
+        self._persist_tasks()
         self._audit("task.create", {"task_id": task.id, "name": name})
         return task
 
@@ -60,6 +69,7 @@ class SchedulerManager:
         if task is None:
             return False
         task.enabled = False
+        self._persist_tasks()
         self._audit("task.disable", {"task_id": task_id})
         return True
 
@@ -132,3 +142,25 @@ class SchedulerManager:
     def _audit(self, action: str, payload: dict[str, Any]) -> None:
         if self._audit_hook is not None:
             self._audit_hook(action, payload)
+
+    def _persist_tasks(self) -> None:
+        if self._tasks_file is None:
+            return
+        payload = [task.model_dump(mode="json") for task in self._tasks.values()]
+        self._tasks_file.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+    def _load_tasks(self) -> None:
+        if self._tasks_file is None or not self._tasks_file.exists():
+            return
+        try:
+            raw = json.loads(self._tasks_file.read_text(encoding="utf-8"))
+        except Exception:
+            return
+        if not isinstance(raw, list):
+            return
+        for item in raw:
+            try:
+                task = ScheduledTask.model_validate(item)
+            except Exception:
+                continue
+            self._tasks[task.id] = task

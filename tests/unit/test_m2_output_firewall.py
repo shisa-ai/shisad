@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 from shisad.security.firewall.output import OutputFirewall
 
 
@@ -68,3 +71,17 @@ def test_m2_output_firewall_toxicity_handles_basic_obfuscation() -> None:
     result = firewall.inspect("You should k1ll y0urself right now")
     assert result.require_confirmation is True
     assert "outbound_policy_toxicity" in result.reason_codes
+
+
+def test_m2_output_firewall_url_adversarial_matrix() -> None:
+    firewall = OutputFirewall(safe_domains=["api.good.com"])
+    matrix_path = (
+        Path(__file__).resolve().parents[1] / "fixtures" / "m2_url_adversarial_matrix.json"
+    )
+    matrix = json.loads(matrix_path.read_text(encoding="utf-8"))
+    for case in matrix:
+        result = firewall.inspect(str(case["text"]))
+        assert result.blocked is bool(case["expected_blocked"]), case["id"]
+        assert any(
+            item.reason == case["expected_reason"] for item in result.url_findings
+        ), case["id"]

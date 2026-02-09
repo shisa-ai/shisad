@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import uuid
+from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -42,7 +45,7 @@ from shisad.scheduler.schema import Schedule
 from shisad.security.firewall import ContentFirewall, FirewallResult
 from shisad.security.firewall.output import OutputFirewall
 from shisad.security.lockdown import LockdownManager
-from shisad.security.monitor import ActionMonitor, combine_monitor_with_policy
+from shisad.security.monitor import ActionMonitor, MonitorDecisionType, combine_monitor_with_policy
 from shisad.security.pep import PolicyContext
 from shisad.security.policy import PolicyLoader
 from shisad.security.ratelimit import RateLimiter
@@ -59,6 +62,7 @@ _SIDE_EFFECT_CAPABILITIES: set[Capability] = {
     Capability.MESSAGE_SEND,
 }
 _SIDE_EFFECT_TOOL_NAMES: set[str] = {"report_anomaly"}
+_MONITOR_REJECT_THRESHOLD = 3
 
 
 def _is_side_effect_tool(tool: ToolDefinition) -> bool:
@@ -80,6 +84,21 @@ def _should_checkpoint(trigger: str, tool: ToolDefinition | None) -> bool:
 
 def _short_hash(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()[:16]
+
+
+@dataclass(slots=True)
+class PendingAction:
+    confirmation_id: str
+    session_id: SessionId
+    user_id: UserId
+    workspace_id: WorkspaceId
+    tool_name: ToolName
+    arguments: dict[str, Any]
+    reason: str
+    capabilities: set[Capability]
+    created_at: datetime
+    status: str = "pending"
+    status_reason: str = ""
 
 
 class DaemonControlHandlers:
@@ -145,6 +164,9 @@ class DaemonControlHandlers:
         self._model_routes = model_routes
         self._classifier_mode = classifier_mode
         self._internal_ingress_marker = internal_ingress_marker
+        self._pending_actions: dict[str, PendingAction] = {}
+        self._pending_by_session: dict[SessionId, list[str]] = {}
+        self._monitor_reject_counts: dict[SessionId, int] = {}
 
     async def _handle_lockdown_transition(
         self,
@@ -169,21 +191,169 @@ class DaemonControlHandlers:
             )
         )
 
+    @staticmethod
+    def _pending_to_dict(pending: PendingAction) -> dict[str, Any]:
+        return {
+            "confirmation_id": pending.confirmation_id,
+            "session_id": str(pending.session_id),
+            "user_id": str(pending.user_id),
+            "workspace_id": str(pending.workspace_id),
+            "tool_name": str(pending.tool_name),
+            "arguments": dict(pending.arguments),
+            "reason": pending.reason,
+            "capabilities": sorted(cap.value for cap in pending.capabilities),
+            "created_at": pending.created_at.isoformat(),
+            "status": pending.status,
+            "status_reason": pending.status_reason,
+        }
+
+    def _queue_pending_action(
+        self,
+        *,
+        session_id: SessionId,
+        user_id: UserId,
+        workspace_id: WorkspaceId,
+        tool_name: ToolName,
+        arguments: dict[str, Any],
+        reason: str,
+        capabilities: set[Capability],
+    ) -> PendingAction:
+        confirmation_id = uuid.uuid4().hex
+        pending = PendingAction(
+            confirmation_id=confirmation_id,
+            session_id=session_id,
+            user_id=user_id,
+            workspace_id=workspace_id,
+            tool_name=tool_name,
+            arguments=dict(arguments),
+            reason=reason,
+            capabilities=set(capabilities),
+            created_at=datetime.now(UTC),
+        )
+        self._pending_actions[confirmation_id] = pending
+        self._pending_by_session.setdefault(session_id, []).append(confirmation_id)
+        return pending
+
+    async def _record_monitor_reject(self, sid: SessionId, reason: str) -> None:
+        count = self._monitor_reject_counts.get(sid, 0) + 1
+        self._monitor_reject_counts[sid] = count
+        if count < _MONITOR_REJECT_THRESHOLD:
+            return
+        await self._handle_lockdown_transition(
+            sid,
+            trigger="monitor_reject",
+            reason=f"{count} monitor rejects: {reason}",
+        )
+        self._monitor_reject_counts[sid] = 0
+
+    async def _execute_approved_action(
+        self,
+        *,
+        sid: SessionId,
+        user_id: UserId,
+        tool_name: ToolName,
+        arguments: dict[str, Any],
+        capabilities: set[Capability],
+        approval_actor: str,
+    ) -> tuple[bool, str | None]:
+        session = self._session_manager.get(sid)
+        if session is None:
+            return False, None
+
+        self._rate_limiter.consume(
+            session_id=str(sid),
+            user_id=str(user_id),
+            tool_name=str(tool_name),
+        )
+
+        checkpoint_id: str | None = None
+        tool = self._registry.get_tool(tool_name)
+        if _should_checkpoint(self._config.checkpoint_trigger, tool):
+            checkpoint = self._checkpoint_store.create(session)
+            checkpoint_id = checkpoint.checkpoint_id
+
+        await self._event_bus.publish(
+            ToolApproved(
+                session_id=sid,
+                actor=approval_actor,
+                tool_name=tool_name,
+            )
+        )
+
+        if tool_name == "report_anomaly":
+            payload = AnomalyReportInput.model_validate(arguments)
+            await self._alarm_tool.execute(
+                session_id=sid,
+                actor="planner",
+                payload=payload,
+            )
+            await self._handle_lockdown_transition(
+                sid,
+                trigger="alarm_bell",
+                reason=payload.description,
+                recommended_action=payload.recommended_action,
+            )
+            await self._event_bus.publish(
+                ToolExecuted(
+                    session_id=sid,
+                    actor="tool_runtime",
+                    tool_name=tool_name,
+                    success=True,
+                )
+            )
+            return True, checkpoint_id
+
+        if tool_name == "retrieve_rag":
+            _ = self._ingestion.retrieve(
+                query=str(arguments.get("query", "")),
+                limit=int(arguments.get("limit", 5)),
+                capabilities=capabilities,
+            )
+            await self._event_bus.publish(
+                ToolExecuted(
+                    session_id=sid,
+                    actor="tool_runtime",
+                    tool_name=tool_name,
+                    success=True,
+                )
+            )
+            return True, checkpoint_id
+
+        await self._event_bus.publish(
+            ToolExecuted(
+                session_id=sid,
+                actor="tool_runtime",
+                tool_name=tool_name,
+                success=False,
+            )
+        )
+        return False, checkpoint_id
+
     async def handle_session_create(self, params: dict[str, Any]) -> dict[str, Any]:
+        channel = str(params.get("channel", "cli"))
         default_allowlist = self._policy_loader.policy.session_tool_allowlist or list(
             self._policy_loader.policy.tools.keys()
         )
         metadata: dict[str, Any] = {}
         if default_allowlist:
             metadata["tool_allowlist"] = [str(tool) for tool in default_allowlist]
-        trust_level = str(params.get("trust_level", "")).strip()
-        if trust_level:
-            metadata["trust_level"] = trust_level
+
+        trust_level = self._identity_map.trust_for_channel(channel)
+        is_internal_ingress = (
+            params.get("_internal_ingress_marker") is self._internal_ingress_marker
+        )
+        if is_internal_ingress:
+            override = str(params.get("trust_level", "")).strip()
+            if override:
+                trust_level = override
+        metadata["trust_level"] = trust_level
+        default_capabilities = set(self._policy_loader.policy.default_capabilities)
 
         session = self._session_manager.create(
-            channel=params.get("channel", "cli"),
+            channel=channel,
             user_id=UserId(params.get("user_id", "")),
             workspace_id=WorkspaceId(params.get("workspace_id", "")),
+            capabilities=default_capabilities,
             metadata=metadata,
         )
         await self._event_bus.publish(
@@ -276,6 +446,7 @@ class DaemonControlHandlers:
         pending_confirmation = 0
         executed = 0
         checkpoint_ids: list[str] = []
+        pending_confirmation_ids: list[str] = []
 
         for evaluated in planner_result.evaluated:
             proposal = evaluated.proposal
@@ -289,6 +460,8 @@ class DaemonControlHandlers:
             )
 
             monitor_decision = self._monitor.evaluate(user_goal=content, actions=[proposal])
+            if monitor_decision.kind != MonitorDecisionType.REJECT:
+                self._monitor_reject_counts[sid] = 0
             await self._event_bus.publish(
                 MonitorEvaluated(
                     session_id=sid,
@@ -351,75 +524,49 @@ class DaemonControlHandlers:
                         reason=final_reason or evaluated.decision.reason,
                     )
                 )
+                if monitor_decision.kind == MonitorDecisionType.REJECT:
+                    await self._record_monitor_reject(
+                        sid,
+                        final_reason or monitor_decision.reason or "monitor_reject",
+                    )
                 continue
 
             if final_kind == "require_confirmation":
                 pending_confirmation += 1
+                pending = self._queue_pending_action(
+                    session_id=sid,
+                    user_id=user_id,
+                    workspace_id=workspace_id,
+                    tool_name=proposal.tool_name,
+                    arguments=proposal.arguments,
+                    reason=final_reason or "requires_confirmation",
+                    capabilities=effective_caps,
+                )
+                pending_confirmation_ids.append(pending.confirmation_id)
                 await self._event_bus.publish(
                     ToolRejected(
                         session_id=sid,
                         actor="policy_loop",
                         tool_name=proposal.tool_name,
-                        reason=final_reason or "requires_confirmation",
+                        reason=(
+                            f"{final_reason or 'requires_confirmation'} "
+                            f"({pending.confirmation_id})"
+                        ),
                     )
                 )
                 continue
 
-            self._rate_limiter.consume(
-                session_id=str(sid),
-                user_id=str(user_id),
-                tool_name=str(proposal.tool_name),
+            success, checkpoint_id = await self._execute_approved_action(
+                sid=sid,
+                user_id=user_id,
+                tool_name=proposal.tool_name,
+                arguments=proposal.arguments,
+                capabilities=effective_caps,
+                approval_actor="policy_loop",
             )
-
-            tool = self._registry.get_tool(proposal.tool_name)
-            if _should_checkpoint(self._config.checkpoint_trigger, tool):
-                checkpoint = self._checkpoint_store.create(session)
-                checkpoint_ids.append(checkpoint.checkpoint_id)
-
-            await self._event_bus.publish(
-                ToolApproved(
-                    session_id=sid,
-                    actor="policy_loop",
-                    tool_name=proposal.tool_name,
-                )
-            )
-
-            if proposal.tool_name == "report_anomaly":
-                payload = AnomalyReportInput.model_validate(proposal.arguments)
-                await self._alarm_tool.execute(
-                    session_id=sid,
-                    actor="planner",
-                    payload=payload,
-                )
-                await self._handle_lockdown_transition(
-                    sid,
-                    trigger="alarm_bell",
-                    reason=payload.description,
-                    recommended_action=payload.recommended_action,
-                )
-                await self._event_bus.publish(
-                    ToolExecuted(
-                        session_id=sid,
-                        actor="tool_runtime",
-                        tool_name=proposal.tool_name,
-                        success=True,
-                    )
-                )
-                executed += 1
-            elif proposal.tool_name == "retrieve_rag":
-                _ = self._ingestion.retrieve(
-                    query=str(proposal.arguments.get("query", "")),
-                    limit=int(proposal.arguments.get("limit", 5)),
-                    capabilities=effective_caps,
-                )
-                await self._event_bus.publish(
-                    ToolExecuted(
-                        session_id=sid,
-                        actor="tool_runtime",
-                        tool_name=proposal.tool_name,
-                        success=True,
-                    )
-                )
+            if checkpoint_id:
+                checkpoint_ids.append(checkpoint_id)
+            if success:
                 executed += 1
 
         response_text = planner_result.output.assistant_response
@@ -466,6 +613,7 @@ class DaemonControlHandlers:
             "transcript_root": str(self._transcript_root),
             "lockdown_level": self._lockdown_manager.state_for(sid).level.value,
             "trust_level": trust_level,
+            "pending_confirmation_ids": pending_confirmation_ids,
             "output_policy": output_result.model_dump(mode="json"),
         }
 
@@ -670,7 +818,39 @@ class DaemonControlHandlers:
         event_type = str(params.get("event_type", ""))
         payload = str(params.get("payload", ""))
         runs = self._scheduler.trigger_event(event_type=event_type, payload=payload)
+        accepted: list[dict[str, Any]] = []
+        blocked = 0
+        queued = 0
         for run in runs:
+            task = self._scheduler.get_task(run.task_id)
+            if task is None:
+                blocked += 1
+                continue
+            if run.plan_commitment != task.commitment_hash():
+                blocked += 1
+                continue
+            available_caps = set(self._policy_loader.policy.default_capabilities)
+            if not available_caps:
+                available_caps = set(task.capability_snapshot)
+            if not self._scheduler.can_execute_with_capabilities(
+                run.task_id,
+                task.capability_snapshot,
+                available_capabilities=available_caps,
+            ):
+                blocked += 1
+                continue
+
+            confirmation = {
+                "task_id": run.task_id,
+                "event_type": event_type,
+                "trigger_payload": run.trigger_payload,
+                "plan_commitment": run.plan_commitment,
+                "payload_taint": run.payload_taint,
+                "status": "pending",
+            }
+            self._scheduler.queue_confirmation(run.task_id, confirmation)
+            queued += 1
+            accepted.append(run.model_dump(mode="json"))
             await self._event_bus.publish(
                 TaskTriggered(
                     session_id=None,
@@ -679,7 +859,100 @@ class DaemonControlHandlers:
                     event_type=event_type,
                 )
             )
-        return {"runs": [run.model_dump(mode="json") for run in runs], "count": len(runs)}
+        return {
+            "runs": accepted,
+            "count": len(accepted),
+            "queued_confirmations": queued,
+            "blocked_runs": blocked,
+        }
+
+    async def handle_task_pending_confirmations(self, params: dict[str, Any]) -> dict[str, Any]:
+        task_id = str(params.get("task_id", ""))
+        pending = self._scheduler.pending_confirmations(task_id)
+        return {"task_id": task_id, "pending": pending, "count": len(pending)}
+
+    async def handle_action_pending(self, params: dict[str, Any]) -> dict[str, Any]:
+        session_filter = str(params.get("session_id") or "").strip()
+        status_filter = str(params.get("status") or "").strip().lower()
+        limit = int(params.get("limit", 100))
+
+        pending_items = list(self._pending_actions.values())
+        pending_items.sort(key=lambda item: item.created_at, reverse=True)
+        rows: list[dict[str, Any]] = []
+        for item in pending_items:
+            if session_filter and str(item.session_id) != session_filter:
+                continue
+            if status_filter and item.status.lower() != status_filter:
+                continue
+            rows.append(self._pending_to_dict(item))
+            if len(rows) >= limit:
+                break
+        return {"actions": rows, "count": len(rows)}
+
+    async def handle_action_confirm(self, params: dict[str, Any]) -> dict[str, Any]:
+        confirmation_id = str(params.get("confirmation_id", "")).strip()
+        if not confirmation_id:
+            raise ValueError("confirmation_id is required")
+        pending = self._pending_actions.get(confirmation_id)
+        if pending is None:
+            return {"confirmed": False, "confirmation_id": confirmation_id, "reason": "not_found"}
+        if pending.status != "pending":
+            return {
+                "confirmed": False,
+                "confirmation_id": confirmation_id,
+                "reason": f"already_{pending.status}",
+            }
+        if self._lockdown_manager.should_block_all_actions(pending.session_id):
+            pending.status = "rejected"
+            pending.status_reason = "session_in_lockdown"
+            return {
+                "confirmed": False,
+                "confirmation_id": confirmation_id,
+                "reason": "session_in_lockdown",
+            }
+
+        success, checkpoint_id = await self._execute_approved_action(
+            sid=pending.session_id,
+            user_id=pending.user_id,
+            tool_name=pending.tool_name,
+            arguments=pending.arguments,
+            capabilities=set(pending.capabilities),
+            approval_actor="human_confirmation",
+        )
+        pending.status = "approved" if success else "failed"
+        pending.status_reason = str(params.get("reason", "")).strip() or pending.status
+        return {
+            "confirmed": success,
+            "confirmation_id": confirmation_id,
+            "status": pending.status,
+            "status_reason": pending.status_reason,
+            "checkpoint_id": checkpoint_id,
+        }
+
+    async def handle_action_reject(self, params: dict[str, Any]) -> dict[str, Any]:
+        confirmation_id = str(params.get("confirmation_id", "")).strip()
+        if not confirmation_id:
+            raise ValueError("confirmation_id is required")
+        reason = str(params.get("reason", "manual_reject")).strip() or "manual_reject"
+        pending = self._pending_actions.get(confirmation_id)
+        if pending is None:
+            return {"rejected": False, "confirmation_id": confirmation_id, "reason": "not_found"}
+        pending.status = "rejected"
+        pending.status_reason = reason
+        await self._event_bus.publish(
+            ToolRejected(
+                session_id=pending.session_id,
+                actor="human_confirmation",
+                tool_name=pending.tool_name,
+                reason=reason,
+            )
+        )
+        return {
+            "rejected": True,
+            "confirmation_id": confirmation_id,
+            "status": pending.status,
+            "status_reason": reason,
+        }
 
     async def handle_lockdown_set(self, params: dict[str, Any]) -> dict[str, Any]:
         sid = SessionId(str(params.get("session_id", "")))
@@ -773,6 +1046,7 @@ class DaemonControlHandlers:
                     "user_id": identity.user_id,
                     "workspace_id": identity.workspace_id,
                     "trust_level": identity.trust_level,
+                    "_internal_ingress_marker": self._internal_ingress_marker,
                 }
             )
             sid = SessionId(created["session_id"])

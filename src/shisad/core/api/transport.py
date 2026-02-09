@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, cast
 
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 
 from shisad.core.api.schema import (
     INTERNAL_ERROR,
@@ -86,7 +86,7 @@ class ControlServer:
     def __init__(self, socket_path: Path, *, event_queue_size: int = 256) -> None:
         self._socket_path = socket_path
         self._server: asyncio.Server | None = None
-        self._methods: dict[str, tuple[MethodHandler, bool]] = {}
+        self._methods: dict[str, tuple[MethodHandler, bool, type[BaseModel] | None]] = {}
         self._event_subscribers: dict[asyncio.StreamWriter, _EventSubscription] = {}
         self._event_queue_size = event_queue_size
 
@@ -100,9 +100,10 @@ class ControlServer:
         handler: MethodHandler,
         *,
         admin_only: bool = False,
+        params_model: type[BaseModel] | None = None,
     ) -> None:
         """Register a JSON-RPC method handler."""
-        self._methods[name] = (handler, admin_only)
+        self._methods[name] = (handler, admin_only, params_model)
 
     async def start(self) -> None:
         """Start listening on the Unix socket."""
@@ -234,7 +235,7 @@ class ControlServer:
             return self._error_response(
                 request.id, METHOD_NOT_FOUND, f"Method not found: {request.method}"
             )
-        handler, admin_only = method_entry
+        handler, admin_only, params_model = method_entry
         if admin_only and not self._is_admin_peer(peer):
             return self._error_response(
                 request.id,
@@ -243,7 +244,11 @@ class ControlServer:
             )
 
         try:
-            params = dict(request.params)
+            if params_model is not None:
+                validated = params_model.model_validate(request.params)
+                params = validated.model_dump(mode="json")
+            else:
+                params = dict(request.params)
             params["_rpc_peer"] = peer.as_dict()
             result = await handler(params)
             return self._success_response(request.id, result)

@@ -154,6 +154,11 @@ class PEP:
         tool = self._tool_registry.get_tool(tool_name)
         if tool is None:
             return self._reject(tool_name, f"Unknown tool: {tool_name}")
+        tool_policy = self._policy.tools.get(tool_name)
+
+        allowed_arg_error = self._check_allowed_args(tool_name, arguments, tool_policy)
+        if allowed_arg_error is not None:
+            return self._reject(tool_name, allowed_arg_error)
 
         # 3. Capability check
         missing = set(tool.capabilities_required) - context.capabilities
@@ -256,7 +261,6 @@ class PEP:
                 risk_score=risk_score,
             )
 
-        tool_policy = self._policy.tools.get(tool_name)
         needs_confirmation = (
             taint_decision.require_confirmation
             or tool.require_confirmation
@@ -293,6 +297,44 @@ class PEP:
         if self._policy.tools:
             return set(self._policy.tools.keys())
         return None
+
+    def _check_allowed_args(
+        self,
+        tool_name: ToolName,
+        arguments: dict[str, Any],
+        tool_policy: Any | None,
+    ) -> str | None:
+        if tool_policy is None or tool_policy.allowed_args is None:
+            return None
+        if not isinstance(tool_policy.allowed_args, dict):
+            return f"Policy for '{tool_name}' has invalid allowed_args format"
+        if self._matches_allowed_args(arguments, tool_policy.allowed_args):
+            return None
+        return f"Arguments for '{tool_name}' do not match policy allowed_args constraints"
+
+    def _matches_allowed_args(self, actual: Any, expected: Any) -> bool:
+        if expected == "*":
+            return True
+        if isinstance(expected, dict):
+            if not isinstance(actual, dict):
+                return False
+            if set(actual.keys()) != set(expected.keys()):
+                return False
+            return all(
+                self._matches_allowed_args(actual.get(key), value)
+                for key, value in expected.items()
+            )
+        if isinstance(expected, list):
+            if not isinstance(actual, list):
+                return False
+            if len(expected) == 1 and expected[0] == "*":
+                return True
+            if len(actual) != len(expected):
+                return False
+            return all(
+                self._matches_allowed_args(a, e) for a, e in zip(actual, expected, strict=True)
+            )
+        return bool(actual == expected)
 
     def _check_argument_dlp(self, arguments: dict[str, Any]) -> list[str]:
         issues: list[str] = []

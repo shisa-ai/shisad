@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import json
 import logging
@@ -13,6 +14,29 @@ from typing import Any
 from shisad.channels.identity import ChannelIdentityMap
 from shisad.channels.ingress import ChannelIngressProcessor
 from shisad.channels.matrix import MatrixChannel, MatrixConfig
+from shisad.core.api.schema import (
+    ActionDecisionParams,
+    ActionPendingParams,
+    AuditQueryParams,
+    ChannelIngestParams,
+    LockdownSetParams,
+    MemoryEntryParams,
+    MemoryExportParams,
+    MemoryIngestParams,
+    MemoryListParams,
+    MemoryRetrieveParams,
+    MemoryRotateKeyParams,
+    MemoryWriteParams,
+    NoParams,
+    SessionCreateParams,
+    SessionGrantCapabilitiesParams,
+    SessionMessageParams,
+    SessionRestoreParams,
+    TaskCreateParams,
+    TaskDisableParams,
+    TaskPendingConfirmationsParams,
+    TaskTriggerEventParams,
+)
 from shisad.core.api.transport import ControlServer
 from shisad.core.audit import AuditLog
 from shisad.core.config import DaemonConfig, ModelConfig
@@ -81,6 +105,21 @@ class _LocalPlannerProvider:
             "possible compromise",
             "suspicious behavior",
         )
+        if "retrieve:" in normalized_lower or "retrieve evidence" in normalized_lower:
+            query = normalized_content.split(":", 1)[-1].strip() or normalized_content[:180]
+            actions.append(
+                {
+                    "action_id": "local-retrieve-1",
+                    "tool_name": "retrieve_rag",
+                    "arguments": {
+                        "query": query,
+                        "limit": 5,
+                    },
+                    "reasoning": "Retrieve supporting evidence for user request",
+                    "data_sources": ["memory_index"],
+                }
+            )
+
         if any(token in normalized_lower for token in anomaly_triggers):
             actions.append(
                 {
@@ -388,7 +427,7 @@ async def run_daemon(config: DaemonConfig) -> None:
         config.data_dir / "memory_entries",
         audit_hook=_audit_memory_event,
     )
-    scheduler = SchedulerManager()
+    scheduler = SchedulerManager(storage_dir=config.data_dir / "tasks")
     lockdown_manager = LockdownManager(notification_hook=_lockdown_notify)
     rate_limiter = RateLimiter(
         RateLimitConfig(
@@ -456,45 +495,180 @@ async def run_daemon(config: DaemonConfig) -> None:
         internal_ingress_marker=_internal_ingress_marker,
     )
 
-    server.register_method("session.create", handlers.handle_session_create)
-    server.register_method("session.message", handlers.handle_session_message)
-    server.register_method("session.list", handlers.handle_session_list)
-    server.register_method("session.restore", handlers.handle_session_restore)
+    server.register_method(
+        "session.create",
+        handlers.handle_session_create,
+        params_model=SessionCreateParams,
+    )
+    server.register_method(
+        "session.message",
+        handlers.handle_session_message,
+        params_model=SessionMessageParams,
+    )
+    server.register_method("session.list", handlers.handle_session_list, params_model=NoParams)
+    server.register_method(
+        "session.restore",
+        handlers.handle_session_restore,
+        params_model=SessionRestoreParams,
+    )
     server.register_method(
         "session.grant_capabilities",
         handlers.handle_session_grant_capabilities,
         admin_only=True,
+        params_model=SessionGrantCapabilitiesParams,
     )
-    server.register_method("daemon.status", handlers.handle_daemon_status)
-    server.register_method("daemon.shutdown", handlers.handle_daemon_shutdown)
-    server.register_method("audit.query", handlers.handle_audit_query)
-    server.register_method("memory.ingest", handlers.handle_memory_ingest, admin_only=True)
-    server.register_method("memory.retrieve", handlers.handle_memory_retrieve)
-    server.register_method("memory.write", handlers.handle_memory_write, admin_only=True)
-    server.register_method("memory.list", handlers.handle_memory_list)
-    server.register_method("memory.get", handlers.handle_memory_get)
-    server.register_method("memory.delete", handlers.handle_memory_delete, admin_only=True)
-    server.register_method("memory.export", handlers.handle_memory_export)
-    server.register_method("memory.verify", handlers.handle_memory_verify, admin_only=True)
-    server.register_method("memory.rotate_key", handlers.handle_memory_rotate_key, admin_only=True)
-    server.register_method("task.create", handlers.handle_task_create, admin_only=True)
-    server.register_method("task.list", handlers.handle_task_list)
-    server.register_method("task.disable", handlers.handle_task_disable, admin_only=True)
+    server.register_method("daemon.status", handlers.handle_daemon_status, params_model=NoParams)
+    server.register_method(
+        "daemon.shutdown",
+        handlers.handle_daemon_shutdown,
+        params_model=NoParams,
+    )
+    server.register_method(
+        "audit.query",
+        handlers.handle_audit_query,
+        params_model=AuditQueryParams,
+    )
+    server.register_method(
+        "memory.ingest",
+        handlers.handle_memory_ingest,
+        admin_only=True,
+        params_model=MemoryIngestParams,
+    )
+    server.register_method(
+        "memory.retrieve",
+        handlers.handle_memory_retrieve,
+        params_model=MemoryRetrieveParams,
+    )
+    server.register_method(
+        "memory.write",
+        handlers.handle_memory_write,
+        admin_only=True,
+        params_model=MemoryWriteParams,
+    )
+    server.register_method(
+        "memory.list",
+        handlers.handle_memory_list,
+        params_model=MemoryListParams,
+    )
+    server.register_method("memory.get", handlers.handle_memory_get, params_model=MemoryEntryParams)
+    server.register_method(
+        "memory.delete",
+        handlers.handle_memory_delete,
+        admin_only=True,
+        params_model=MemoryEntryParams,
+    )
+    server.register_method(
+        "memory.export",
+        handlers.handle_memory_export,
+        params_model=MemoryExportParams,
+    )
+    server.register_method(
+        "memory.verify",
+        handlers.handle_memory_verify,
+        admin_only=True,
+        params_model=MemoryEntryParams,
+    )
+    server.register_method(
+        "memory.rotate_key",
+        handlers.handle_memory_rotate_key,
+        admin_only=True,
+        params_model=MemoryRotateKeyParams,
+    )
+    server.register_method(
+        "task.create",
+        handlers.handle_task_create,
+        admin_only=True,
+        params_model=TaskCreateParams,
+    )
+    server.register_method("task.list", handlers.handle_task_list, params_model=NoParams)
+    server.register_method(
+        "task.disable",
+        handlers.handle_task_disable,
+        admin_only=True,
+        params_model=TaskDisableParams,
+    )
     server.register_method(
         "task.trigger_event",
         handlers.handle_task_trigger_event,
         admin_only=True,
+        params_model=TaskTriggerEventParams,
     )
-    server.register_method("lockdown.set", handlers.handle_lockdown_set, admin_only=True)
-    server.register_method("risk.calibrate", handlers.handle_risk_calibrate, admin_only=True)
-    server.register_method("channel.ingest", handlers.handle_channel_ingest, admin_only=True)
+    server.register_method(
+        "task.pending_confirmations",
+        handlers.handle_task_pending_confirmations,
+        admin_only=True,
+        params_model=TaskPendingConfirmationsParams,
+    )
+    server.register_method(
+        "action.pending",
+        handlers.handle_action_pending,
+        admin_only=True,
+        params_model=ActionPendingParams,
+    )
+    server.register_method(
+        "action.confirm",
+        handlers.handle_action_confirm,
+        admin_only=True,
+        params_model=ActionDecisionParams,
+    )
+    server.register_method(
+        "action.reject",
+        handlers.handle_action_reject,
+        admin_only=True,
+        params_model=ActionDecisionParams,
+    )
+    server.register_method(
+        "lockdown.set",
+        handlers.handle_lockdown_set,
+        admin_only=True,
+        params_model=LockdownSetParams,
+    )
+    server.register_method(
+        "risk.calibrate",
+        handlers.handle_risk_calibrate,
+        admin_only=True,
+        params_model=NoParams,
+    )
+    server.register_method(
+        "channel.ingest",
+        handlers.handle_channel_ingest,
+        admin_only=True,
+        params_model=ChannelIngestParams,
+    )
+
+    async def _matrix_receive_pump() -> None:
+        if matrix_channel is None:
+            return
+        while not shutdown_event.is_set():
+            try:
+                message = await asyncio.wait_for(matrix_channel.receive(), timeout=0.5)
+            except TimeoutError:
+                continue
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("Matrix receive loop error")
+                await asyncio.sleep(0.2)
+                continue
+
+            try:
+                await handlers.handle_channel_ingest({"message": message.model_dump(mode="json")})
+            except Exception:
+                logger.exception("Matrix ingress processing failed")
 
     await server.start()
     logger.info("shisad daemon started")
+    matrix_pump_task: asyncio.Task[None] | None = None
+    if matrix_channel is not None:
+        matrix_pump_task = asyncio.create_task(_matrix_receive_pump())
 
     try:
         await shutdown_event.wait()
     finally:
+        if matrix_pump_task is not None:
+            matrix_pump_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await matrix_pump_task
         embeddings_adapter.close()
         if matrix_channel is not None:
             await matrix_channel.disconnect()

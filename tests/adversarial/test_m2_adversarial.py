@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from shisad.core.tools.registry import ToolRegistry
@@ -12,9 +13,22 @@ from shisad.memory.manager import MemoryManager
 from shisad.memory.schema import MemorySource
 from shisad.scheduler.manager import SchedulerManager
 from shisad.scheduler.schema import Schedule
+from shisad.security.firewall import ContentFirewall
 from shisad.security.firewall.output import OutputFirewall
 from shisad.security.pep import PEP, PolicyContext
 from shisad.security.policy import EgressRule, PolicyBundle
+
+
+def test_m2_adversarial_obfuscation_corpus_cases_flagged() -> None:
+    firewall = ContentFirewall()
+    corpus_path = Path(__file__).resolve().parents[1] / "fixtures" / "m2_obfuscation_corpus.json"
+    corpus = json.loads(corpus_path.read_text(encoding="utf-8"))
+
+    for case in corpus:
+        result = firewall.inspect(str(case["payload"]))
+        assert result.risk_score > 0.0, case["id"]
+        for expected in case["expected_factors"]:
+            assert expected in result.risk_factors, case["id"]
 
 
 def test_m2_a1_memory_poisoning_always_cc_attacker_blocked(tmp_path: Path) -> None:

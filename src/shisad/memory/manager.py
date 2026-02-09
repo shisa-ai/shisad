@@ -46,6 +46,7 @@ class MemoryManager:
         self._entries: dict[str, MemoryEntry] = {}
         self._default_ttl_days = default_ttl_days
         self._audit_hook = audit_hook
+        self._load_existing_entries()
 
     def write(
         self,
@@ -207,6 +208,14 @@ class MemoryManager:
     def _persist_entry(self, entry: MemoryEntry) -> None:
         path = self._storage_dir / f"{entry.id}.json"
         path.write_text(entry.model_dump_json(indent=2))
+
+    def _load_existing_entries(self) -> None:
+        for path in sorted(self._storage_dir.glob("*.json")):
+            try:
+                entry = MemoryEntry.model_validate_json(path.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            self._entries[entry.id] = entry
 
     def _refresh_ttl(self, entry: MemoryEntry) -> MemoryEntry:
         if entry.source.origin == "user":

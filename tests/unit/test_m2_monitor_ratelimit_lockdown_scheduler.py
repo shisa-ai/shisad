@@ -168,6 +168,23 @@ def test_m2_t12_task_commitment_hash_binds_task_identity() -> None:
     assert task_one.commitment_hash() != task_two.commitment_hash()
 
 
+def test_m2_scheduler_hydrates_tasks_after_restart(tmp_path: Path) -> None:
+    storage = tmp_path / "tasks"
+    first = SchedulerManager(storage_dir=storage)
+    created = first.create_task(
+        name="digest",
+        goal="summarize updates",
+        schedule=Schedule.from_event("message.received"),
+        capability_snapshot={Capability.MEMORY_READ},
+        policy_snapshot_ref="p1",
+        created_by=UserId("alice"),
+    )
+    restarted = SchedulerManager(storage_dir=storage)
+    loaded = restarted.get_task(created.id)
+    assert loaded is not None
+    assert loaded.name == "digest"
+
+
 def test_m2_t21_risk_policy_versioning_is_deterministic(tmp_path: Path) -> None:
     calibrator = RiskCalibrator(
         policy_path=tmp_path / "risk-policy.json",

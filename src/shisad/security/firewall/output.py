@@ -8,13 +8,14 @@ import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, ClassVar
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 
 from pydantic import BaseModel, Field
 
 from shisad.security.firewall.normalize import normalize_text
 
-_URL_RE = re.compile(r"https?://[^\s)>\]]+")
+_URL_RE = re.compile(r"https?://[^\s)>]+")
+_DATA_URI_RE = re.compile(r"\bdata:[^\s)>]+", re.IGNORECASE)
 _RAW_HTML_RE = re.compile(r"<[^>]+>")
 _IMAGE_MD_RE = re.compile(r"!\[[^\]]*\]\(([^)]+)\)")
 
@@ -102,7 +103,8 @@ class OutputFirewall:
             findings.extend(entropy_findings)
             reason_codes.append("entropy_secret_redaction")
 
-        url_findings = self._inspect_urls(sanitized)
+        # Inspect URLs on pre-redaction text so encoded-query risk scoring remains intact.
+        url_findings = self._inspect_urls(normalized)
         blocked = any(finding.suspicious for finding in url_findings)
         require_confirmation = any(
             (not finding.allowed) and (not finding.suspicious) for finding in url_findings
@@ -164,6 +166,16 @@ class OutputFirewall:
                     allowed=allowed,
                     suspicious=suspicious,
                     reason=reason,
+                )
+            )
+        for matched in _DATA_URI_RE.findall(text):
+            findings.append(
+                UrlFinding(
+                    url=matched,
+                    host="data",
+                    allowed=False,
+                    suspicious=True,
+                    reason="data_uri",
                 )
             )
         return findings
@@ -239,10 +251,11 @@ class OutputFirewall:
     def _looks_encoded_query(cls, query: str) -> bool:
         if not query:
             return False
-        for token in cls._QUERY_BLOB_RE.findall(query):
-            entropy = cls._shannon_entropy(token)
-            if entropy >= 4.0:
-                return True
+        for candidate in {query, unquote(query)}:
+            for token in cls._QUERY_BLOB_RE.findall(candidate):
+                entropy = cls._shannon_entropy(token)
+                if entropy >= 4.0:
+                    return True
         return False
 
     @classmethod

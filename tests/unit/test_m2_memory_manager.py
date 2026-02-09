@@ -118,6 +118,36 @@ def test_m2_t19_password_kdf_uses_salt_file_and_not_plain_sha(tmp_path: Path) ->
     assert pipeline._master_secret != hashlib.sha256(b"password-123").digest()
 
 
+def test_m2_memory_manager_hydrates_entries_after_restart(tmp_path: Path) -> None:
+    storage = tmp_path / "memory"
+    first = MemoryManager(storage)
+    decision = first.write(
+        entry_type="fact",
+        key="owner",
+        value="alice",
+        source=MemorySource(origin="user", source_id="msg-1", extraction_method="manual"),
+        user_confirmed=True,
+    )
+    assert decision.entry is not None
+
+    restarted = MemoryManager(storage)
+    loaded = restarted.list_entries(limit=10)
+    assert any(entry.id == decision.entry.id for entry in loaded)
+
+
+def test_m2_ingestion_pipeline_hydrates_records_after_restart(tmp_path: Path) -> None:
+    storage = tmp_path / "ingestion"
+    first = IngestionPipeline(storage)
+    first.ingest(
+        source_id="doc-1",
+        source_type="external",
+        content="Roadmap includes defense layers and mitigation controls",
+    )
+    restarted = IngestionPipeline(storage)
+    results = restarted.retrieve("defense layers", limit=5)
+    assert results
+
+
 @pytest.mark.asyncio
 async def test_m2_memory_manager_interleaved_writes_remain_consistent(tmp_path: Path) -> None:
     manager = MemoryManager(tmp_path / "memory")

@@ -93,6 +93,40 @@ class TestPepToolAllowlist:
         assert decision.kind == PEPDecisionKind.REJECT
         assert "allowlist" in decision.reason.lower()
 
+
+class TestPepAllowedArgsPolicy:
+    """Policy-level allowed_args constraints."""
+
+    def test_allowed_args_policy_blocks_unapproved_argument_values(self) -> None:
+        registry = ToolRegistry()
+        registry.register(
+            ToolDefinition(
+                name=ToolName("test_tool"),
+                description="A test tool",
+                parameters=[ToolParameter(name="query", type="string", required=True)],
+                capabilities_required=[Capability.HTTP_REQUEST],
+            )
+        )
+        policy = PolicyBundle(
+            default_require_confirmation=False,
+            tools={
+                ToolName("test_tool"): ToolPolicy(
+                    capabilities_required=[Capability.HTTP_REQUEST],
+                    require_confirmation=False,
+                    allowed_args={"query": "approved"},
+                )
+            },
+        )
+        pep = PEP(policy, registry)
+        ctx = PolicyContext(capabilities={Capability.HTTP_REQUEST})
+
+        allowed = pep.evaluate(ToolName("test_tool"), {"query": "approved"}, ctx)
+        assert allowed.kind == PEPDecisionKind.ALLOW
+
+        blocked = pep.evaluate(ToolName("test_tool"), {"query": "something_else"}, ctx)
+        assert blocked.kind == PEPDecisionKind.REJECT
+        assert "allowed_args" in blocked.reason
+
     def test_policy_tool_allowlist_rejects_unlisted_tool(self) -> None:
         registry = ToolRegistry()
         registry.register(
