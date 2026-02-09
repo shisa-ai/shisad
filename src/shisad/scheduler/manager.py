@@ -66,12 +66,26 @@ class SchedulerManager:
     def can_execute_with_capabilities(
         self,
         task_id: str,
-        current_capabilities: set[Capability],
+        requested_capabilities: set[Capability],
+        *,
+        available_capabilities: set[Capability] | None = None,
     ) -> bool:
+        """Check whether a requested execution capability set is safe for this task.
+
+        Safety rules:
+        - Requested capabilities must be a subset of the task's immutable snapshot.
+        - If runtime availability is provided, requested capabilities must also be
+          available at execution time.
+        """
         task = self._tasks.get(task_id)
         if task is None:
             return False
-        return set(current_capabilities).issubset(task.capability_snapshot)
+        requested = set(requested_capabilities)
+        if not requested.issubset(task.capability_snapshot):
+            return False
+        if available_capabilities is not None:
+            return requested.issubset(set(available_capabilities))
+        return True
 
     def trigger_event(
         self,
@@ -118,4 +132,3 @@ class SchedulerManager:
     def _audit(self, action: str, payload: dict[str, Any]) -> None:
         if self._audit_hook is not None:
             self._audit_hook(action, payload)
-

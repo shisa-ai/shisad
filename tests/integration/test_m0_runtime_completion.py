@@ -96,7 +96,7 @@ async def test_m0_roundtrip_audit_logging_and_checkpoint_restore(
                 "channel": "cli",
                 "user_id": "alice",
                 "workspace_id": "ws1",
-                "content": "__trigger_report_anomaly__",
+                "content": "Please report anomaly: possible compromise detected.",
             },
         )
         checkpoint_ids = checkpoint_reply.get("checkpoint_ids", [])

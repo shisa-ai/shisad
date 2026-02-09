@@ -50,6 +50,7 @@ class ScheduledTask(BaseModel):
 
     def commitment_hash(self) -> str:
         payload = {
+            "id": self.id,
             "name": self.name,
             "goal": self.goal,
             "schedule": self.schedule.model_dump(mode="json"),
@@ -57,6 +58,8 @@ class ScheduledTask(BaseModel):
             "policy_snapshot_ref": self.policy_snapshot_ref,
             "allowed_recipients": sorted(self.allowed_recipients),
             "allowed_domains": sorted(self.allowed_domains),
+            "created_by": str(self.created_by),
+            "created_at": self.created_at.isoformat(),
         }
         encoded = json.dumps(payload, sort_keys=True)
         return hashlib.sha256(encoded.encode("utf-8")).hexdigest()

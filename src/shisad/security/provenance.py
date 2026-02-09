@@ -36,6 +36,7 @@ def hash_file(path: Path) -> str:
 
 def verify_assets(root: Path, manifest: SecurityAssetManifest) -> list[str]:
     drifts: list[str] = []
+    expected_paths = {asset.path for asset in manifest.assets}
     for asset in manifest.assets:
         asset_path = root / asset.path
         if not asset_path.exists():
@@ -44,5 +45,13 @@ def verify_assets(root: Path, manifest: SecurityAssetManifest) -> list[str]:
         actual = hash_file(asset_path)
         if actual != asset.sha256:
             drifts.append(f"hash_mismatch:{asset.path}")
-    return drifts
 
+    allow_untracked = {"provenance.json"}
+    for discovered in root.rglob("*"):
+        if not discovered.is_file():
+            continue
+        relative = discovered.relative_to(root).as_posix()
+        if relative in expected_paths or relative in allow_untracked:
+            continue
+        drifts.append(f"unexpected:{relative}")
+    return sorted(drifts)

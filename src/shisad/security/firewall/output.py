@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ipaddress
 import math
 import re
 from collections.abc import Callable
@@ -48,8 +49,40 @@ class OutputFirewall:
         ("aws_access_key", re.compile(r"\bAKIA[0-9A-Z]{16}\b")),
         ("oauth_token", re.compile(r"\bya29\.[A-Za-z0-9._-]{20,}\b")),
     ]
-    _MALICIOUS_HOST_HINTS: ClassVar[set[str]] = {"evil.com", "attacker.com", "malware.test"}
+    _MALICIOUS_HOST_HINTS: ClassVar[set[str]] = {
+        "evil.com",
+        "attacker.com",
+        "malware.test",
+        "phish.test",
+        "stealer.invalid",
+        "c2.invalid",
+    }
+    _SUSPICIOUS_TLDS: ClassVar[tuple[str, ...]] = (".onion", ".zip", ".mov", ".click", ".top")
+    _SUSPICIOUS_HOST_TOKENS: ClassVar[tuple[str, ...]] = (
+        "pastebin",
+        "anon",
+        "filedrop",
+        "exfil",
+        "steal",
+        "credential",
+        "malware",
+    )
     _HIGH_ENTROPY_TOKEN_RE: ClassVar[re.Pattern[str]] = re.compile(r"\b[A-Za-z0-9+/=_-]{24,}\b")
+    _QUERY_BLOB_RE: ClassVar[re.Pattern[str]] = re.compile(r"[A-Za-z0-9+/=_%-]{20,}")
+    _TOXIC_PHRASES: ClassVar[dict[str, float]] = {
+        "kill yourself": 0.95,
+        "end your life": 0.95,
+        "go die": 0.9,
+        "i will kill you": 1.0,
+        "you should die": 0.95,
+    }
+    _TOXIC_TERMS: ClassVar[dict[str, float]] = {
+        "worthless": 0.3,
+        "idiot": 0.25,
+        "moron": 0.25,
+        "stupid": 0.2,
+        "hate you": 0.25,
+    }
 
     def inspect(self, text: str, *, context: dict[str, Any] | None = None) -> OutputFirewallResult:
         normalized = normalize_text(text)
@@ -121,12 +154,9 @@ class OutputFirewall:
             parsed = urlparse(matched)
             host = (parsed.hostname or "").lower()
             allowed = any(self._host_matches(host, domain) for domain in self.safe_domains)
-            suspicious = host in self._MALICIOUS_HOST_HINTS
-            reason = ""
-            if suspicious:
-                reason = "known_malicious_host"
-            elif not allowed:
-                reason = "not_allowlisted"
+            suspicious_reason = self._suspicious_reason(parsed, host=host, allowed=allowed)
+            suspicious = bool(suspicious_reason)
+            reason = suspicious_reason or ("not_allowlisted" if not allowed else "")
             findings.append(
                 UrlFinding(
                     url=matched,
@@ -149,13 +179,71 @@ class OutputFirewall:
 
     @staticmethod
     def _toxicity_score(text: str) -> float:
-        lowered = text.lower()
-        toxic_tokens = ("kill yourself", "hate you", "worthless")
+        lowered = OutputFirewall._normalize_for_toxicity(text)
         score = 0.0
-        for token in toxic_tokens:
+        for phrase, weight in OutputFirewall._TOXIC_PHRASES.items():
+            if phrase in lowered:
+                score += weight
+        for token, weight in OutputFirewall._TOXIC_TERMS.items():
             if token in lowered:
-                score += 0.45
+                score += weight
         return min(score, 1.0)
+
+    @staticmethod
+    def _normalize_for_toxicity(text: str) -> str:
+        translit = str.maketrans(
+            {
+                "0": "o",
+                "1": "i",
+                "3": "e",
+                "4": "a",
+                "5": "s",
+                "7": "t",
+                "@": "a",
+                "$": "s",
+                "!": "i",
+            }
+        )
+        lowered = text.lower().translate(translit)
+        return re.sub(r"[^a-z\s]+", " ", lowered)
+
+    @classmethod
+    def _suspicious_reason(cls, parsed: Any, *, host: str, allowed: bool) -> str:
+        if not host:
+            return "malformed_url"
+        if host in cls._MALICIOUS_HOST_HINTS:
+            return "known_malicious_host"
+        if parsed.username or parsed.password:
+            return "embedded_url_credentials"
+        if host.startswith("xn--"):
+            return "punycode_host"
+        if any(host.endswith(tld) for tld in cls._SUSPICIOUS_TLDS):
+            return "suspicious_tld"
+        if any(token in host for token in cls._SUSPICIOUS_HOST_TOKENS):
+            return "suspicious_host_pattern"
+        if cls._is_ip_literal(host) and not allowed:
+            return "direct_ip_destination"
+        if cls._looks_encoded_query(parsed.query):
+            return "suspicious_encoded_query"
+        return ""
+
+    @staticmethod
+    def _is_ip_literal(host: str) -> bool:
+        try:
+            ipaddress.ip_address(host)
+        except ValueError:
+            return False
+        return True
+
+    @classmethod
+    def _looks_encoded_query(cls, query: str) -> bool:
+        if not query:
+            return False
+        for token in cls._QUERY_BLOB_RE.findall(query):
+            entropy = cls._shannon_entropy(token)
+            if entropy >= 4.0:
+                return True
+        return False
 
     @classmethod
     def _redact_high_entropy_tokens(cls, text: str) -> tuple[str, list[str]]:

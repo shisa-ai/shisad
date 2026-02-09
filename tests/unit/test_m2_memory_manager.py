@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 from pathlib import Path
+
+import pytest
 
 from shisad.memory.ingestion import IngestionPipeline
 from shisad.memory.manager import MemoryManager
@@ -113,3 +116,29 @@ def test_m2_t19_password_kdf_uses_salt_file_and_not_plain_sha(tmp_path: Path) ->
     pipeline = IngestionPipeline(memory_dir, encryption_key="password-123")
     assert (memory_dir / "master_salt.bin").exists()
     assert pipeline._master_secret != hashlib.sha256(b"password-123").digest()
+
+
+@pytest.mark.asyncio
+async def test_m2_memory_manager_interleaved_writes_remain_consistent(tmp_path: Path) -> None:
+    manager = MemoryManager(tmp_path / "memory")
+
+    async def _write(idx: int) -> str:
+        await asyncio.sleep(0)
+        decision = manager.write(
+            entry_type="fact",
+            key=f"k{idx}",
+            value=f"value-{idx}",
+            source=MemorySource(
+                origin="user",
+                source_id=f"msg-{idx}",
+                extraction_method="manual",
+            ),
+            user_confirmed=True,
+        )
+        assert decision.kind == "allow"
+        assert decision.entry is not None
+        return decision.entry.id
+
+    ids = await asyncio.gather(*[_write(i) for i in range(20)])
+    assert len(ids) == len(set(ids))
+    assert len(manager.list_entries(limit=100)) == 20

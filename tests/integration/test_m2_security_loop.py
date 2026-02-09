@@ -175,7 +175,7 @@ async def test_m2_t17_t18_report_anomaly_triggers_lockdown_and_notification(
                 "channel": "cli",
                 "user_id": "alice",
                 "workspace_id": "ws1",
-                "content": "__trigger_report_anomaly__",
+                "content": "Please report anomaly: suspicious behavior detected in tool output.",
             },
         )
         assert reply["lockdown_level"] in {"caution", "quarantine", "full_lockdown"}
@@ -517,22 +517,81 @@ async def test_m2_t25_cli_events_subscribe_supports_filters(
                 )
             )
             await _wait_for_future_started(future)
-            delivered = False
-            for _ in range(20):
+            deadline = asyncio.get_running_loop().time() + 5
+            while not future.done() and asyncio.get_running_loop().time() < deadline:
                 await client.call(
                     "session.create",
                     {"channel": "cli", "user_id": "alice", "workspace_id": "ws1"},
                 )
-                if future.done():
-                    delivered = True
-                    break
-                await asyncio.sleep(0.05)
+                await asyncio.sleep(0.02)
             result = future.result(timeout=5)
-        assert delivered
+        assert future.done()
         assert result.exit_code == 0
         assert "SessionCreated" in result.output
     finally:
         with suppress(Exception):
             await client.call("daemon.shutdown")
         await client.close()
+        await asyncio.wait_for(daemon_task, timeout=3)
+
+
+@pytest.mark.asyncio
+async def test_m2_concurrent_session_messages_are_processed_safely(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SHISAD_MODEL_BASE_URL", "https://api.example.com/v1")
+    monkeypatch.setenv("SHISAD_MODEL_PLANNER_BASE_URL", "https://planner.example.com/v1")
+    monkeypatch.setenv("SHISAD_MODEL_EMBEDDINGS_BASE_URL", "https://embed.example.com/v1")
+    monkeypatch.setenv("SHISAD_MODEL_MONITOR_BASE_URL", "https://monitor.example.com/v1")
+    config = DaemonConfig(
+        data_dir=tmp_path / "data",
+        socket_path=tmp_path / "control.sock",
+        policy_path=tmp_path / "policy.yaml",
+        log_level="INFO",
+    )
+
+    daemon_task = asyncio.create_task(run_daemon(config))
+    admin_client = ControlClient(config.socket_path)
+    try:
+        await _wait_for_socket(config.socket_path)
+        await admin_client.connect()
+        created = await admin_client.call(
+            "session.create",
+            {"channel": "cli", "user_id": "alice", "workspace_id": "ws1"},
+        )
+        sid = created["session_id"]
+
+        async def _send(idx: int) -> dict[str, object]:
+            client = ControlClient(config.socket_path)
+            await client.connect()
+            try:
+                reply = await client.call(
+                    "session.message",
+                    {
+                        "session_id": sid,
+                        "channel": "cli",
+                        "user_id": "alice",
+                        "workspace_id": "ws1",
+                        "content": f"parallel message {idx}",
+                    },
+                )
+                return reply
+            finally:
+                await client.close()
+
+        replies = await asyncio.gather(*[_send(i) for i in range(8)])
+        assert len(replies) == 8
+        assert all(reply["session_id"] == sid for reply in replies)
+        assert all("response" in reply for reply in replies)
+
+        events = await admin_client.call(
+            "audit.query",
+            {"event_type": "SessionMessageResponded", "session_id": sid, "limit": 100},
+        )
+        assert events["total"] >= 8
+    finally:
+        with suppress(Exception):
+            await admin_client.call("daemon.shutdown")
+        await admin_client.close()
         await asyncio.wait_for(daemon_task, timeout=3)

@@ -47,3 +47,24 @@ def test_m2_t8_entropy_detector_redacts_unknown_secrets_and_alerts() -> None:
     assert "high_entropy_secret" in result.secret_findings
     assert alerts
     assert alerts[0]["context"] == {"session_id": "s1"}
+
+
+def test_m2_output_firewall_blocks_url_with_embedded_credentials() -> None:
+    firewall = OutputFirewall(safe_domains=["api.good.com"])
+    result = firewall.inspect("fetch https://alice:secret@api.good.com/private")
+    assert result.blocked is True
+    assert any(item.reason == "embedded_url_credentials" for item in result.url_findings)
+
+
+def test_m2_output_firewall_blocks_unallowlisted_ip_destinations() -> None:
+    firewall = OutputFirewall(safe_domains=["api.good.com"])
+    result = firewall.inspect("send to https://203.0.113.10/upload")
+    assert result.blocked is True
+    assert any(item.reason == "direct_ip_destination" for item in result.url_findings)
+
+
+def test_m2_output_firewall_toxicity_handles_basic_obfuscation() -> None:
+    firewall = OutputFirewall(safe_domains=["api.good.com"])
+    result = firewall.inspect("You should k1ll y0urself right now")
+    assert result.require_confirmation is True
+    assert "outbound_policy_toxicity" in result.reason_codes

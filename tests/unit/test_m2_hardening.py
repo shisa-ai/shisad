@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from shisad.security.firewall.classifier import PatternInjectionClassifier
-from shisad.security.provenance import SecurityAssetManifest, verify_assets
+from shisad.security.provenance import SecurityAssetManifest, hash_file, verify_assets
 
 
 def test_m2_t23_ci_generates_coverage_and_validates_baseline() -> None:
@@ -34,6 +34,30 @@ def test_m2_t24_provenance_drift_check_detects_modified_assets(tmp_path: Path) -
     )
     drifts = verify_assets(rules_root, manifest)
     assert drifts == ["hash_mismatch:yara/test_rule.yara"]
+
+
+def test_m2_t24_provenance_drift_check_detects_unexpected_assets(tmp_path: Path) -> None:
+    rules_root = tmp_path / "rules"
+    yara_dir = rules_root / "yara"
+    yara_dir.mkdir(parents=True)
+    tracked = yara_dir / "tracked_rule.yara"
+    tracked.write_text("rule tracked { condition: true }")
+    unexpected = yara_dir / "unexpected_rule.yara"
+    unexpected.write_text("rule unexpected { condition: true }")
+
+    manifest = SecurityAssetManifest(
+        version="v1",
+        source_repo="example",
+        source_commit="abc123",
+        assets=[
+            {
+                "path": "yara/tracked_rule.yara",
+                "sha256": hash_file(tracked),
+            }
+        ],
+    )
+    drifts = verify_assets(rules_root, manifest)
+    assert "unexpected:yara/unexpected_rule.yara" in drifts
 
 
 def test_m2_9_2_yara_and_fallback_modes_have_parity(monkeypatch: pytest.MonkeyPatch) -> None:

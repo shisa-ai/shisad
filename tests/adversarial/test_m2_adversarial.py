@@ -51,6 +51,18 @@ def test_m2_a4_output_exfil_image_url_removed() -> None:
     assert "[IMAGE_REMOVED]" in result.sanitized_text
 
 
+def test_m2_a4_output_exfil_url_with_credentials_blocked() -> None:
+    firewall = OutputFirewall(safe_domains=["internal.example.com"])
+    result = firewall.inspect("sync https://user:pass@internal.example.com/private")
+    assert result.blocked is True
+
+
+def test_m2_a4_output_exfil_ip_destination_blocked() -> None:
+    firewall = OutputFirewall(safe_domains=["internal.example.com"])
+    result = firewall.inspect("post to https://198.51.100.42/upload?d=abc")
+    assert result.blocked is True
+
+
 def test_m2_a5_multistep_exfil_chain_blocked_by_taint() -> None:
     registry = ToolRegistry()
     registry.register(

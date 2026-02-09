@@ -125,6 +125,49 @@ def test_m2_t12_task_capability_snapshot_prevents_upgrade() -> None:
     )
 
 
+def test_m2_t12_task_capability_snapshot_requires_runtime_availability() -> None:
+    scheduler = SchedulerManager()
+    task = scheduler.create_task(
+        name="digest",
+        goal="summarize updates",
+        schedule=Schedule.from_event("message.received"),
+        capability_snapshot={Capability.MEMORY_READ},
+        policy_snapshot_ref="p1",
+        created_by=UserId("alice"),
+    )
+    assert scheduler.can_execute_with_capabilities(
+        task.id,
+        {Capability.MEMORY_READ},
+        available_capabilities={Capability.MEMORY_READ, Capability.HTTP_REQUEST},
+    )
+    assert not scheduler.can_execute_with_capabilities(
+        task.id,
+        {Capability.MEMORY_READ},
+        available_capabilities={Capability.HTTP_REQUEST},
+    )
+
+
+def test_m2_t12_task_commitment_hash_binds_task_identity() -> None:
+    scheduler = SchedulerManager()
+    task_one = scheduler.create_task(
+        name="digest",
+        goal="summarize updates",
+        schedule=Schedule.from_event("message.received"),
+        capability_snapshot={Capability.MEMORY_READ},
+        policy_snapshot_ref="p1",
+        created_by=UserId("alice"),
+    )
+    task_two = scheduler.create_task(
+        name="digest",
+        goal="summarize updates",
+        schedule=Schedule.from_event("message.received"),
+        capability_snapshot={Capability.MEMORY_READ},
+        policy_snapshot_ref="p1",
+        created_by=UserId("alice"),
+    )
+    assert task_one.commitment_hash() != task_two.commitment_hash()
+
+
 def test_m2_t21_risk_policy_versioning_is_deterministic(tmp_path: Path) -> None:
     calibrator = RiskCalibrator(
         policy_path=tmp_path / "risk-policy.json",
