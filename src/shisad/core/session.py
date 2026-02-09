@@ -90,6 +90,25 @@ class SessionManager:
         """List all active sessions."""
         return [s for s in self._sessions.values() if s.state == SessionState.ACTIVE]
 
+    def find_by_binding(
+        self,
+        *,
+        channel: str,
+        user_id: UserId,
+        workspace_id: WorkspaceId,
+    ) -> Session | None:
+        """Find an active session by immutable identity binding tuple."""
+        for session in self._sessions.values():
+            if session.state != SessionState.ACTIVE:
+                continue
+            if (
+                session.channel == channel
+                and session.user_id == user_id
+                and session.workspace_id == workspace_id
+            ):
+                return session
+        return None
+
     def terminate(self, session_id: SessionId, reason: str = "") -> bool:
         """Terminate a session."""
         session = self._sessions.get(session_id)

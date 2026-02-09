@@ -705,6 +705,169 @@ async def test_m2_confirmation_queue_and_action_confirm_flow(
 
 
 @pytest.mark.asyncio
+async def test_m2_confirmation_queue_persists_pending_actions_after_restart(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SHISAD_MODEL_BASE_URL", "https://api.example.com/v1")
+    monkeypatch.setenv("SHISAD_MODEL_PLANNER_BASE_URL", "https://planner.example.com/v1")
+    monkeypatch.setenv("SHISAD_MODEL_EMBEDDINGS_BASE_URL", "https://embed.example.com/v1")
+    monkeypatch.setenv("SHISAD_MODEL_MONITOR_BASE_URL", "https://monitor.example.com/v1")
+    policy_path = tmp_path / "policy.yaml"
+    policy_path.write_text(
+        textwrap.dedent(
+            """
+            version: "1"
+            default_require_confirmation: true
+            default_capabilities:
+              - memory.read
+            """
+        ).strip()
+        + "\n"
+    )
+    socket_path = tmp_path / "control.sock"
+    config = DaemonConfig(
+        data_dir=tmp_path / "data",
+        socket_path=socket_path,
+        policy_path=policy_path,
+        log_level="INFO",
+    )
+
+    daemon_task = asyncio.create_task(run_daemon(config))
+    client = ControlClient(socket_path)
+    pending_id = ""
+    sid = ""
+    try:
+        await _wait_for_socket(socket_path)
+        await client.connect()
+        created = await client.call(
+            "session.create",
+            {"channel": "cli", "user_id": "alice", "workspace_id": "ws1"},
+        )
+        sid = created["session_id"]
+        reply = await client.call(
+            "session.message",
+            {
+                "session_id": sid,
+                "channel": "cli",
+                "user_id": "alice",
+                "workspace_id": "ws1",
+                "content": "retrieve: project roadmap",
+            },
+        )
+        pending_ids = reply["pending_confirmation_ids"]
+        assert pending_ids
+        pending_id = pending_ids[0]
+    finally:
+        with suppress(Exception):
+            await client.call("daemon.shutdown")
+        await client.close()
+        await asyncio.wait_for(daemon_task, timeout=3)
+
+    daemon_task_2 = asyncio.create_task(run_daemon(config))
+    client_2 = ControlClient(socket_path)
+    try:
+        await _wait_for_socket(socket_path)
+        await client_2.connect()
+        pending = await client_2.call(
+            "action.pending",
+            {"session_id": sid, "status": "pending", "limit": 10},
+        )
+        assert pending["count"] >= 1
+        assert any(item["confirmation_id"] == pending_id for item in pending["actions"])
+    finally:
+        with suppress(Exception):
+            await client_2.call("daemon.shutdown")
+        await client_2.close()
+        await asyncio.wait_for(daemon_task_2, timeout=3)
+
+
+@pytest.mark.asyncio
+async def test_m2_action_confirm_in_lockdown_emits_human_rejection_event(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SHISAD_MODEL_BASE_URL", "https://api.example.com/v1")
+    monkeypatch.setenv("SHISAD_MODEL_PLANNER_BASE_URL", "https://planner.example.com/v1")
+    monkeypatch.setenv("SHISAD_MODEL_EMBEDDINGS_BASE_URL", "https://embed.example.com/v1")
+    monkeypatch.setenv("SHISAD_MODEL_MONITOR_BASE_URL", "https://monitor.example.com/v1")
+    policy_path = tmp_path / "policy.yaml"
+    policy_path.write_text(
+        textwrap.dedent(
+            """
+            version: "1"
+            default_require_confirmation: true
+            default_capabilities:
+              - memory.read
+            """
+        ).strip()
+        + "\n"
+    )
+    config = DaemonConfig(
+        data_dir=tmp_path / "data",
+        socket_path=tmp_path / "control.sock",
+        policy_path=policy_path,
+        log_level="INFO",
+    )
+    daemon_task = asyncio.create_task(run_daemon(config))
+    client = ControlClient(config.socket_path)
+    try:
+        await _wait_for_socket(config.socket_path)
+        await client.connect()
+        created = await client.call(
+            "session.create",
+            {"channel": "cli", "user_id": "alice", "workspace_id": "ws1"},
+        )
+        sid = created["session_id"]
+        reply = await client.call(
+            "session.message",
+            {
+                "session_id": sid,
+                "channel": "cli",
+                "user_id": "alice",
+                "workspace_id": "ws1",
+                "content": "retrieve: project roadmap",
+            },
+        )
+        pending_ids = reply["pending_confirmation_ids"]
+        assert pending_ids
+        pending_id = pending_ids[0]
+
+        await client.call(
+            "lockdown.set",
+            {"session_id": sid, "action": "quarantine", "reason": "incident"},
+        )
+        confirmed = await client.call(
+            "action.confirm",
+            {"confirmation_id": pending_id, "reason": "approved by operator"},
+        )
+        assert confirmed["confirmed"] is False
+        assert confirmed["reason"] == "session_in_lockdown"
+
+        audit = await client.call(
+            "audit.query",
+            {
+                "event_type": "ToolRejected",
+                "session_id": sid,
+                "actor": "human_confirmation",
+                "limit": 20,
+            },
+        )
+        assert audit["total"] >= 1
+        assert any(
+            event.get("reasoning") == "session_in_lockdown"
+            or event.get("reason") == "session_in_lockdown"
+            or event.get("data", {}).get("reason") == "session_in_lockdown"
+            for event in audit["events"]
+        )
+    finally:
+        with suppress(Exception):
+            await client.call("daemon.shutdown")
+        await client.close()
+        await asyncio.wait_for(daemon_task, timeout=3)
+
+
+@pytest.mark.asyncio
 async def test_m2_monitor_rejects_escalate_lockdown_after_threshold(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -902,6 +1065,11 @@ async def test_m2_matrix_receive_pump_ingests_inbound_messages(
             "hello from matrix ingestion pump",
             "!room:example.org",
         )
+        await self.inject(
+            "@alice:example.org",
+            "second message from same user",
+            "!room:example.org",
+        )
 
     monkeypatch.setattr(MatrixChannel, "connect", _fake_connect)
 
@@ -921,14 +1089,29 @@ async def test_m2_matrix_receive_pump_ingests_inbound_messages(
     try:
         await _wait_for_socket(config.socket_path)
         await client.connect()
-        found = False
-        for _ in range(40):
+        matrix_sessions: list[dict[str, object]] = []
+        received_count = 0
+        for _ in range(60):
             sessions = await client.call("session.list")
-            if any(item["channel"] == "matrix" for item in sessions["sessions"]):
-                found = True
+            matrix_sessions = [
+                item
+                for item in sessions["sessions"]
+                if item["channel"] == "matrix" and item["user_id"] == "@alice:example.org"
+            ]
+            received = await client.call(
+                "audit.query",
+                {
+                    "event_type": "SessionMessageReceived",
+                    "actor": "@alice:example.org",
+                    "limit": 20,
+                },
+            )
+            received_count = int(received["total"])
+            if matrix_sessions and received_count >= 2:
                 break
             await asyncio.sleep(0.05)
-        assert found
+        assert received_count >= 2
+        assert len(matrix_sessions) == 1
     finally:
         with suppress(Exception):
             await client.call("daemon.shutdown")

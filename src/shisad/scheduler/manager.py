@@ -26,9 +26,13 @@ class SchedulerManager:
         self._audit_hook = audit_hook
         self._storage_dir = storage_dir
         self._tasks_file = self._storage_dir / "tasks.json" if self._storage_dir else None
+        self._pending_file = (
+            self._storage_dir / "pending_confirmations.json" if self._storage_dir else None
+        )
         if self._storage_dir is not None:
             self._storage_dir.mkdir(parents=True, exist_ok=True)
         self._load_tasks()
+        self._load_pending_confirmations()
 
     def create_task(
         self,
@@ -126,6 +130,7 @@ class SchedulerManager:
 
     def queue_confirmation(self, task_id: str, action: dict[str, Any]) -> None:
         self._pending_confirmations[task_id].append(action)
+        self._persist_pending_confirmations()
         self._audit("task.confirmation_queued", {"task_id": task_id})
 
     def pending_confirmations(self, task_id: str) -> list[dict[str, Any]]:
@@ -164,3 +169,29 @@ class SchedulerManager:
             except Exception:
                 continue
             self._tasks[task.id] = task
+
+    def _persist_pending_confirmations(self) -> None:
+        if self._pending_file is None:
+            return
+        payload = {task_id: rows for task_id, rows in self._pending_confirmations.items()}
+        self._pending_file.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+    def _load_pending_confirmations(self) -> None:
+        if self._pending_file is None or not self._pending_file.exists():
+            return
+        try:
+            raw = json.loads(self._pending_file.read_text(encoding="utf-8"))
+        except Exception:
+            return
+        if not isinstance(raw, dict):
+            return
+        restored: defaultdict[str, list[dict[str, Any]]] = defaultdict(list)
+        for task_id, rows in raw.items():
+            if not isinstance(task_id, str):
+                continue
+            if not isinstance(rows, list):
+                continue
+            cleaned_rows = [item for item in rows if isinstance(item, dict)]
+            if cleaned_rows:
+                restored[task_id] = cleaned_rows
+        self._pending_confirmations = restored

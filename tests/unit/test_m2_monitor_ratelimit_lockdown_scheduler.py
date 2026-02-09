@@ -185,6 +185,35 @@ def test_m2_scheduler_hydrates_tasks_after_restart(tmp_path: Path) -> None:
     assert loaded.name == "digest"
 
 
+def test_m2_scheduler_hydrates_pending_confirmations_after_restart(tmp_path: Path) -> None:
+    storage = tmp_path / "tasks"
+    first = SchedulerManager(storage_dir=storage)
+    created = first.create_task(
+        name="digest",
+        goal="summarize updates",
+        schedule=Schedule.from_event("message.received"),
+        capability_snapshot={Capability.MEMORY_READ},
+        policy_snapshot_ref="p1",
+        created_by=UserId("alice"),
+    )
+    first.queue_confirmation(
+        created.id,
+        {
+            "task_id": created.id,
+            "event_type": "message.received",
+            "trigger_payload": "hello",
+            "plan_commitment": created.commitment_hash(),
+            "payload_taint": "UNTRUSTED",
+            "status": "pending",
+        },
+    )
+
+    restarted = SchedulerManager(storage_dir=storage)
+    pending = restarted.pending_confirmations(created.id)
+    assert len(pending) == 1
+    assert pending[0]["task_id"] == created.id
+
+
 def test_m2_t21_risk_policy_versioning_is_deterministic(tmp_path: Path) -> None:
     calibrator = RiskCalibrator(
         policy_path=tmp_path / "risk-policy.json",

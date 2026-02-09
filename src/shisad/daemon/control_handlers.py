@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -164,9 +165,11 @@ class DaemonControlHandlers:
         self._model_routes = model_routes
         self._classifier_mode = classifier_mode
         self._internal_ingress_marker = internal_ingress_marker
+        self._pending_actions_file = self._config.data_dir / "pending_actions.json"
         self._pending_actions: dict[str, PendingAction] = {}
         self._pending_by_session: dict[SessionId, list[str]] = {}
         self._monitor_reject_counts: dict[SessionId, int] = {}
+        self._load_pending_actions()
 
     async def _handle_lockdown_transition(
         self,
@@ -232,7 +235,56 @@ class DaemonControlHandlers:
         )
         self._pending_actions[confirmation_id] = pending
         self._pending_by_session.setdefault(session_id, []).append(confirmation_id)
+        self._persist_pending_actions()
         return pending
+
+    def _persist_pending_actions(self) -> None:
+        payload = [self._pending_to_dict(item) for item in self._pending_actions.values()]
+        self._pending_actions_file.parent.mkdir(parents=True, exist_ok=True)
+        self._pending_actions_file.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+    def _load_pending_actions(self) -> None:
+        if not self._pending_actions_file.exists():
+            return
+        try:
+            raw = json.loads(self._pending_actions_file.read_text(encoding="utf-8"))
+        except Exception:
+            return
+        if not isinstance(raw, list):
+            return
+        for item in raw:
+            if not isinstance(item, dict):
+                continue
+            try:
+                confirmation_id = str(item.get("confirmation_id", "")).strip()
+                if not confirmation_id:
+                    continue
+                created_at = datetime.fromisoformat(str(item.get("created_at", "")).strip())
+                session_id = SessionId(str(item.get("session_id", "")))
+                pending = PendingAction(
+                    confirmation_id=confirmation_id,
+                    session_id=session_id,
+                    user_id=UserId(str(item.get("user_id", ""))),
+                    workspace_id=WorkspaceId(str(item.get("workspace_id", ""))),
+                    tool_name=ToolName(str(item.get("tool_name", ""))),
+                    arguments=dict(item.get("arguments", {})),
+                    reason=str(item.get("reason", "")),
+                    capabilities={
+                        Capability(str(cap))
+                        for cap in item.get("capabilities", [])
+                        if str(cap)
+                    },
+                    created_at=created_at,
+                    status=str(item.get("status", "pending")),
+                    status_reason=str(item.get("status_reason", "")),
+                )
+            except Exception:
+                continue
+            self._pending_actions[pending.confirmation_id] = pending
+            self._pending_by_session.setdefault(
+                pending.session_id,
+                [],
+            ).append(pending.confirmation_id)
 
     async def _record_monitor_reject(self, sid: SessionId, reason: str) -> None:
         count = self._monitor_reject_counts.get(sid, 0) + 1
@@ -905,6 +957,15 @@ class DaemonControlHandlers:
         if self._lockdown_manager.should_block_all_actions(pending.session_id):
             pending.status = "rejected"
             pending.status_reason = "session_in_lockdown"
+            await self._event_bus.publish(
+                ToolRejected(
+                    session_id=pending.session_id,
+                    actor="human_confirmation",
+                    tool_name=pending.tool_name,
+                    reason="session_in_lockdown",
+                )
+            )
+            self._persist_pending_actions()
             return {
                 "confirmed": False,
                 "confirmation_id": confirmation_id,
@@ -921,6 +982,7 @@ class DaemonControlHandlers:
         )
         pending.status = "approved" if success else "failed"
         pending.status_reason = str(params.get("reason", "")).strip() or pending.status
+        self._persist_pending_actions()
         return {
             "confirmed": success,
             "confirmation_id": confirmation_id,
@@ -947,6 +1009,7 @@ class DaemonControlHandlers:
                 reason=reason,
             )
         )
+        self._persist_pending_actions()
         return {
             "rejected": True,
             "confirmation_id": confirmation_id,
@@ -1039,6 +1102,14 @@ class DaemonControlHandlers:
 
         _sanitized, result = self._channel_ingress.process(message)
         sid = SessionId(str(params.get("session_id", "")))
+        if not sid or self._session_manager.get(sid) is None:
+            existing = self._session_manager.find_by_binding(
+                channel=message.channel,
+                user_id=identity.user_id,
+                workspace_id=identity.workspace_id,
+            )
+            if existing is not None:
+                sid = existing.id
         if not sid or self._session_manager.get(sid) is None:
             created = await self.handle_session_create(
                 {
