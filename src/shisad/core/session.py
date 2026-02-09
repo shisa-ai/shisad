@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import logging
 import uuid
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -24,8 +25,10 @@ class Session(BaseModel):
     """A session represents an isolated execution context."""
 
     id: SessionId = Field(default_factory=lambda: SessionId(uuid.uuid4().hex))
+    channel: str = "cli"
     user_id: UserId = Field(default_factory=lambda: UserId(""))
     workspace_id: WorkspaceId = Field(default_factory=lambda: WorkspaceId(""))
+    session_key: str = ""
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     state: SessionState = SessionState.ACTIVE
     capabilities: set[Capability] = Field(default_factory=set)
@@ -40,23 +43,41 @@ class SessionManager:
     Sessions are isolated — no cross-session state leakage.
     """
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        audit_hook: Callable[[str, dict[str, Any]], None] | None = None,
+    ) -> None:
         self._sessions: dict[SessionId, Session] = {}
+        self._audit_hook = audit_hook
 
     def create(
         self,
+        channel: str = "cli",
         user_id: UserId | None = None,
         workspace_id: WorkspaceId | None = None,
         capabilities: set[Capability] | None = None,
     ) -> Session:
         """Create a new session."""
+        user = user_id or UserId("")
+        workspace = workspace_id or WorkspaceId("")
+        nonce = uuid.uuid4().hex[:12]
+        session_key = f"{workspace}:{user}:{nonce}"
         session = Session(
-            user_id=user_id or UserId(""),
-            workspace_id=workspace_id or WorkspaceId(""),
+            channel=channel,
+            user_id=user,
+            workspace_id=workspace,
+            session_key=session_key,
             capabilities=capabilities or set(),
         )
         self._sessions[session.id] = session
-        logger.info("Session created: %s (user: %s)", session.id, session.user_id)
+        logger.info(
+            "Session created: %s (channel=%s, user=%s, workspace=%s)",
+            session.id,
+            session.channel,
+            session.user_id,
+            session.workspace_id,
+        )
         return session
 
     def get(self, session_id: SessionId) -> Session | None:
@@ -90,6 +111,58 @@ class SessionManager:
         if session is None or session.state != SessionState.SUSPENDED:
             return False
         session.state = SessionState.ACTIVE
+        return True
+
+    def validate_identity_binding(
+        self,
+        session_id: SessionId,
+        *,
+        channel: str,
+        user_id: UserId,
+        workspace_id: WorkspaceId,
+    ) -> bool:
+        """Validate that a request identity matches the bound session tuple."""
+        session = self._sessions.get(session_id)
+        if session is None:
+            return False
+        return (
+            session.channel == channel
+            and session.user_id == user_id
+            and session.workspace_id == workspace_id
+        )
+
+    def grant_capabilities(
+        self,
+        session_id: SessionId,
+        capabilities: set[Capability],
+        *,
+        actor: str,
+        reason: str = "",
+    ) -> bool:
+        """Grant capabilities to a session.
+
+        Capability grants are never self-issued by the agent.
+        """
+        session = self._sessions.get(session_id)
+        if session is None:
+            return False
+        if actor == "agent":
+            logger.warning("Rejected self-grant capability request for session %s", session_id)
+            return False
+
+        before = set(session.capabilities)
+        session.capabilities.update(capabilities)
+        granted = sorted(c.value for c in (set(session.capabilities) - before))
+        if granted and self._audit_hook is not None:
+            self._audit_hook(
+                "session.capability_granted",
+                {
+                    "session_id": session_id,
+                    "actor": actor,
+                    "granted": granted,
+                    "reason": reason,
+                },
+            )
         return True
 
 

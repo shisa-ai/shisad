@@ -38,6 +38,14 @@ class ProviderResponse(BaseModel):
     usage: dict[str, int] = Field(default_factory=dict)
 
 
+class EmbeddingResponse(BaseModel):
+    """Response for embeddings endpoints."""
+
+    vectors: list[list[float]] = Field(default_factory=list)
+    model: str = ""
+    usage: dict[str, int] = Field(default_factory=dict)
+
+
 class ModelProvider(Protocol):
     """Protocol for model providers.
 
@@ -50,6 +58,13 @@ class ModelProvider(Protocol):
         messages: list[Message],
         tools: list[dict[str, Any]] | None = None,
     ) -> ProviderResponse: ...
+
+    async def embeddings(
+        self,
+        input_texts: list[str],
+        *,
+        model_id: str | None = None,
+    ) -> EmbeddingResponse: ...
 
 
 # --- Endpoint validation ---

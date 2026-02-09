@@ -51,6 +51,14 @@ class SessionTerminated(BaseEvent):
     reason: str = ""
 
 
+class CapabilityGranted(BaseEvent):
+    """Capabilities were granted to a session by a non-agent actor."""
+
+    capabilities: list[str] = Field(default_factory=list)
+    granted_by: str = ""
+    reason: str = ""
+
+
 class ToolProposed(BaseEvent):
     """The planner proposed a tool call."""
 
@@ -100,6 +108,7 @@ class CredentialAccessed(BaseEvent):
 type AnyEvent = (
     SessionCreated
     | SessionTerminated
+    | CapabilityGranted
     | ToolProposed
     | ToolApproved
     | ToolRejected
@@ -111,6 +120,7 @@ type AnyEvent = (
 EVENT_TYPES: dict[str, type[BaseEvent]] = {
     "SessionCreated": SessionCreated,
     "SessionTerminated": SessionTerminated,
+    "CapabilityGranted": CapabilityGranted,
     "ToolProposed": ToolProposed,
     "ToolApproved": ToolApproved,
     "ToolRejected": ToolRejected,

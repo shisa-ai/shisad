@@ -50,6 +50,7 @@ INTERNAL_ERROR = -32603
 class SessionCreateParams(BaseModel):
     """Parameters for session.create."""
 
+    channel: str = "cli"
     user_id: str = ""
     workspace_id: str = ""
 
@@ -65,6 +66,9 @@ class SessionMessageParams(BaseModel):
 
     session_id: str
     content: str
+    channel: str = "cli"
+    user_id: str | None = None
+    workspace_id: str | None = None
 
 
 class SessionMessageResult(BaseModel):

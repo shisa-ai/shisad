@@ -73,6 +73,25 @@ class TaintLabel(StrEnum):
     SYSTEM_PROMPT = "system"
 
 
+class ThreatCategory(StrEnum):
+    """Standardized threat classification codes.
+
+    Adapted from Cisco AITech taxonomy categories used in analysis docs.
+    """
+
+    PROMPT_INJECTION_DIRECT = "AITech-1.1"
+    PROMPT_INJECTION_INDIRECT = "AITech-1.2"
+    JAILBREAK = "AITech-2.1"
+    MASQUERADING = "AITech-3.1"
+    PERSISTENCE = "AITech-5.1"
+    DATA_EXFILTRATION = "AITech-8.1"
+    SUPPLY_CHAIN = "AITech-9.1"
+    TOOL_POISONING = "AITech-12.1"
+    TOOL_SHADOWING = "AITech-12.2"
+    RESOURCE_ABUSE = "AITech-13.1"
+    PRIVILEGE_ESCALATION = "AITech-14.1"
+
+
 class PEPDecisionKind(StrEnum):
     """Outcome of a PEP evaluation."""
 

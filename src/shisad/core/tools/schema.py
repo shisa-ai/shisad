@@ -25,6 +25,8 @@ class ToolParameter(BaseModel):
     required: bool = True
     enum: list[str] | None = None
 
+    model_config = {"frozen": True}
+
 
 class ToolDefinition(BaseModel):
     """Definition of a tool available to the agent.
@@ -38,6 +40,8 @@ class ToolDefinition(BaseModel):
     parameters: list[ToolParameter] = Field(default_factory=list)
     capabilities_required: list[Capability] = Field(default_factory=list)
     require_confirmation: bool = False
+
+    model_config = {"frozen": True}
 
     def schema_hash(self) -> str:
         """Compute a deterministic hash of the tool schema for integrity verification."""

@@ -51,16 +51,19 @@ class ToolRegistry:
                 )
             self._expected_hashes[tool.name] = expected_hash
 
-        self._tools[tool.name] = tool
+        self._tools[tool.name] = tool.model_copy(deep=True)
         logger.debug("Registered tool: %s", tool.name)
 
     def get_tool(self, name: ToolName) -> ToolDefinition | None:
         """Get a tool definition by name."""
-        return self._tools.get(name)
+        tool = self._tools.get(name)
+        if tool is None:
+            return None
+        return tool.model_copy(deep=True)
 
     def list_tools(self) -> list[ToolDefinition]:
         """List all registered tools."""
-        return list(self._tools.values())
+        return [tool.model_copy(deep=True) for tool in self._tools.values()]
 
     def has_tool(self, name: ToolName) -> bool:
         """Check if a tool is registered."""

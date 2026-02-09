@@ -89,6 +89,31 @@ class ModelConfig(BaseSettings):
         default="gpt-4o",
         description="Model identifier (provider/model format)",
     )
+    planner_model_id: str = Field(
+        default="gpt-4o",
+        description="Model ID for planner component",
+    )
+    embeddings_model_id: str = Field(
+        default="text-embedding-3-small",
+        description="Model ID for embeddings component",
+    )
+    monitor_model_id: str = Field(
+        default="gpt-4o-mini",
+        description="Model ID for monitor component",
+    )
+
+    planner_base_url: str | None = Field(
+        default=None,
+        description="Optional base URL override for planner model provider",
+    )
+    embeddings_base_url: str | None = Field(
+        default=None,
+        description="Optional base URL override for embeddings provider",
+    )
+    monitor_base_url: str | None = Field(
+        default=None,
+        description="Optional base URL override for monitor provider",
+    )
 
     # Endpoint security
     allow_http_localhost: bool = Field(
