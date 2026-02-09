@@ -65,6 +65,7 @@ class RateLimitPolicy(BaseModel):
     per_user: int = 40
     per_session: int = 30
     burst_multiplier: float = 2.0
+    burst_window_seconds: int | None = None
 
 
 class PolicyBundle(BaseModel):

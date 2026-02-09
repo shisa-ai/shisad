@@ -48,6 +48,41 @@ def test_m2_t10_rate_limiter_blocks_burst() -> None:
     assert decision_3.block is True
 
 
+def test_m2_t10_rate_limiter_check_is_idempotent_until_consume() -> None:
+    limiter = RateLimiter(
+        RateLimitConfig(window_seconds=60, per_tool=2, per_user=10, per_session=10)
+    )
+    check_1 = limiter.check(session_id="s1", user_id="u1", tool_name="http_request")
+    check_2 = limiter.check(session_id="s1", user_id="u1", tool_name="http_request")
+    assert check_1.block is False
+    assert check_2.block is False
+
+    limiter.consume(session_id="s1", user_id="u1", tool_name="http_request")
+    limiter.consume(session_id="s1", user_id="u1", tool_name="http_request")
+    check_3 = limiter.check(session_id="s1", user_id="u1", tool_name="http_request")
+    assert check_3.block is True
+
+
+def test_m2_t10_burst_detection_reachable_before_per_tool_limit() -> None:
+    limiter = RateLimiter(
+        RateLimitConfig(
+            window_seconds=60,
+            per_tool=15,
+            per_user=100,
+            per_session=100,
+            burst_multiplier=2.0,
+            burst_window_seconds=10,
+        )
+    )
+    decisions = [
+        limiter.evaluate(session_id="s1", user_id="u1", tool_name="http_request")
+        for _ in range(6)
+    ]
+    assert all(not decision.block for decision in decisions[:5])
+    assert decisions[5].block is True
+    assert decisions[5].reason == "burst_detected"
+
+
 def test_m2_t11_lockdown_restricts_capabilities() -> None:
     manager = LockdownManager()
     sid = SessionId("s-lock")
@@ -58,6 +93,19 @@ def test_m2_t11_lockdown_restricts_capabilities() -> None:
     )
     assert restricted == set()
     assert manager.state_for(sid).level == LockdownLevel.QUARANTINE
+
+
+def test_m2_t11_lockdown_supports_manual_deescalation_and_resume() -> None:
+    manager = LockdownManager()
+    sid = SessionId("s-recover")
+    manager.trigger(sid, trigger="alarm_bell", reason="critical", recommended_action="quarantine")
+    assert manager.state_for(sid).level == LockdownLevel.QUARANTINE
+
+    manager.set_level(sid, level=LockdownLevel.CAUTION, reason="manual review", trigger="manual")
+    assert manager.state_for(sid).level == LockdownLevel.CAUTION
+
+    manager.resume(sid, reason="incident resolved")
+    assert manager.state_for(sid).level == LockdownLevel.NORMAL
 
 
 def test_m2_t12_task_capability_snapshot_prevents_upgrade() -> None:

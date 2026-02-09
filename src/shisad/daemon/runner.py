@@ -56,7 +56,7 @@ from shisad.memory.manager import MemoryManager
 from shisad.memory.schema import MemorySource
 from shisad.scheduler.manager import SchedulerManager
 from shisad.scheduler.schema import Schedule
-from shisad.security.firewall import ContentFirewall
+from shisad.security.firewall import ContentFirewall, FirewallResult
 from shisad.security.firewall.output import OutputFirewall
 from shisad.security.lockdown import LockdownManager
 from shisad.security.monitor import ActionMonitor, combine_monitor_with_policy
@@ -266,10 +266,19 @@ async def run_daemon(config: DaemonConfig) -> None:
         await server.broadcast_event(payload)
 
     event_bus.subscribe_all(_forward_event_to_subscribers)
+    _internal_ingress_marker = object()
 
     def _publish_async(event: Any) -> None:
         task = asyncio.create_task(event_bus.publish(event))
-        task.add_done_callback(lambda _task: None)
+        event_type = type(event).__name__
+
+        def _done_callback(done_task: asyncio.Task[None]) -> None:
+            try:
+                done_task.result()
+            except Exception:
+                logger.exception("Async event publish failed for %s", event_type)
+
+        task.add_done_callback(_done_callback)
 
     def _audit_capability_event(action: str, data: dict[str, Any]) -> None:
         if action != "session.capability_granted":
@@ -429,6 +438,7 @@ async def run_daemon(config: DaemonConfig) -> None:
             per_user=policy_loader.policy.rate_limits.per_user,
             per_session=policy_loader.policy.rate_limits.per_session,
             burst_multiplier=policy_loader.policy.rate_limits.burst_multiplier,
+            burst_window_seconds=policy_loader.policy.rate_limits.burst_window_seconds,
         ),
         anomaly_hook=_on_ratelimit,
     )
@@ -531,7 +541,12 @@ async def run_daemon(config: DaemonConfig) -> None:
             )
         )
 
-        firewall_result = firewall.inspect(content)
+        firewall_result_payload = params.get("_firewall_result")
+        is_internal_ingress = params.get("_internal_ingress_marker") is _internal_ingress_marker
+        if is_internal_ingress and isinstance(firewall_result_payload, dict):
+            firewall_result = FirewallResult.model_validate(firewall_result_payload)
+        else:
+            firewall_result = firewall.inspect(content)
         transcript_store.append(
             sid,
             role="user",
@@ -543,9 +558,11 @@ async def run_daemon(config: DaemonConfig) -> None:
         tool_allowlist: set[ToolName] | None = None
         if isinstance(raw_allowlist, list) and raw_allowlist:
             tool_allowlist = {ToolName(str(item)) for item in raw_allowlist}
-        trust_level = str(
-            params.get("trust_level", session.metadata.get("trust_level", "untrusted"))
-        ).strip() or "untrusted"
+        trust_level = str(session.metadata.get("trust_level", "untrusted")).strip() or "untrusted"
+        if is_internal_ingress:
+            override = str(params.get("trust_level", trust_level)).strip()
+            if override:
+                trust_level = override
 
         effective_caps = lockdown_manager.apply_capability_restrictions(sid, session.capabilities)
         context = PolicyContext(
@@ -612,6 +629,7 @@ async def run_daemon(config: DaemonConfig) -> None:
                 session_id=str(sid),
                 user_id=str(user_id),
                 tool_name=str(proposal.tool_name),
+                consume=False,
             )
             if rate_decision.block:
                 final_kind, final_reason = ("reject", f"rate_limit:{rate_decision.reason}")
@@ -660,6 +678,12 @@ async def run_daemon(config: DaemonConfig) -> None:
                     )
                 )
                 continue
+
+            rate_limiter.consume(
+                session_id=str(sid),
+                user_id=str(user_id),
+                tool_name=str(proposal.tool_name),
+            )
 
             tool = registry.get_tool(proposal.tool_name)
             if _should_checkpoint(config.checkpoint_trigger, tool):
@@ -974,11 +998,24 @@ async def run_daemon(config: DaemonConfig) -> None:
         sid = SessionId(str(params.get("session_id", "")))
         action = str(params.get("action", "caution"))
         reason = str(params.get("reason", "manual"))
-        await _handle_lockdown_transition(
-            sid,
-            trigger="manual",
-            reason=reason,
-            recommended_action=action,
+        normalized = action.strip().lower()
+        if normalized in {"resume", "normal", "clear"}:
+            state = lockdown_manager.resume(sid, reason=reason)
+        else:
+            state = lockdown_manager.set_level(
+                sid,
+                level=lockdown_manager.level_for_action(normalized, trigger="manual"),
+                reason=reason,
+                trigger="manual",
+            )
+        await event_bus.publish(
+            LockdownChanged(
+                session_id=sid,
+                actor="lockdown",
+                level=state.level.value,
+                reason=state.reason,
+                trigger=state.trigger,
+            )
         )
         state = lockdown_manager.state_for(sid)
         return {"session_id": sid, "level": state.level.value, "reason": state.reason}
@@ -1000,9 +1037,7 @@ async def run_daemon(config: DaemonConfig) -> None:
             message = message.model_copy(
                 update={"workspace_hint": matrix_channel.workspace_for_room(room_hint)}
             )
-        declared_trust = str(params.get("trust_level", "")).strip()
-        if bool(params.get("matrix_verified", False)) and message.channel == "matrix":
-            declared_trust = "trusted"
+        declared_trust = identity_map.trust_for_channel(message.channel)
         if (
             matrix_channel is not None
             and message.channel == "matrix"
@@ -1042,7 +1077,7 @@ async def run_daemon(config: DaemonConfig) -> None:
         if identity is None:
             raise ValueError("failed to resolve channel identity")
 
-        sanitized, result = channel_ingress.process(message)
+        _sanitized, result = channel_ingress.process(message)
         sid = SessionId(str(params.get("session_id", "")))
         if not sid or session_manager.get(sid) is None:
             created = await handle_session_create(
@@ -1060,8 +1095,10 @@ async def run_daemon(config: DaemonConfig) -> None:
                 "channel": message.channel,
                 "user_id": identity.user_id,
                 "workspace_id": identity.workspace_id,
-                "content": sanitized.content,
+                "content": message.content,
                 "trust_level": identity.trust_level,
+                "_internal_ingress_marker": _internal_ingress_marker,
+                "_firewall_result": result.model_dump(mode="json"),
             }
         )
         response["ingress_risk"] = result.risk_score
@@ -1079,22 +1116,22 @@ async def run_daemon(config: DaemonConfig) -> None:
     server.register_method("daemon.status", handle_daemon_status)
     server.register_method("daemon.shutdown", handle_daemon_shutdown)
     server.register_method("audit.query", handle_audit_query)
-    server.register_method("memory.ingest", handle_memory_ingest)
+    server.register_method("memory.ingest", handle_memory_ingest, admin_only=True)
     server.register_method("memory.retrieve", handle_memory_retrieve)
-    server.register_method("memory.write", handle_memory_write)
+    server.register_method("memory.write", handle_memory_write, admin_only=True)
     server.register_method("memory.list", handle_memory_list)
     server.register_method("memory.get", handle_memory_get)
-    server.register_method("memory.delete", handle_memory_delete)
+    server.register_method("memory.delete", handle_memory_delete, admin_only=True)
     server.register_method("memory.export", handle_memory_export)
-    server.register_method("memory.verify", handle_memory_verify)
+    server.register_method("memory.verify", handle_memory_verify, admin_only=True)
     server.register_method("memory.rotate_key", handle_memory_rotate_key, admin_only=True)
-    server.register_method("task.create", handle_task_create)
+    server.register_method("task.create", handle_task_create, admin_only=True)
     server.register_method("task.list", handle_task_list)
-    server.register_method("task.disable", handle_task_disable)
-    server.register_method("task.trigger_event", handle_task_trigger_event)
+    server.register_method("task.disable", handle_task_disable, admin_only=True)
+    server.register_method("task.trigger_event", handle_task_trigger_event, admin_only=True)
     server.register_method("lockdown.set", handle_lockdown_set, admin_only=True)
     server.register_method("risk.calibrate", handle_risk_calibrate, admin_only=True)
-    server.register_method("channel.ingest", handle_channel_ingest)
+    server.register_method("channel.ingest", handle_channel_ingest, admin_only=True)
 
     await server.start()
     logger.info("shisad daemon started")

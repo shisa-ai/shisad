@@ -114,6 +114,7 @@ class IngestionPipeline:
         self._original_dir = self._storage_dir / "original_encrypted"
         self._legacy_key_file = self._storage_dir / "key.bin"
         self._key_manifest_file = self._storage_dir / "keys.json"
+        self._master_salt_file = self._storage_dir / "master_salt.bin"
         self._sanitized_dir.mkdir(parents=True, exist_ok=True)
         self._original_dir.mkdir(parents=True, exist_ok=True)
         self._master_secret = self._resolve_master_secret(encryption_key)
@@ -168,7 +169,7 @@ class IngestionPipeline:
 
         (self._sanitized_dir / f"{chunk_id}.json").write_text(result.model_dump_json(indent=2))
         (self._original_dir / f"{chunk_id}.bin").write_bytes(
-            self._encrypt_payload(content.encode("utf-8"))
+            self._encrypt_payload(content.encode("utf-8"), chunk_id=chunk_id)
         )
         return result
 
@@ -237,7 +238,7 @@ class IngestionPipeline:
         if not path.exists():
             return None
         try:
-            decrypted = self._decrypt_payload(path.read_bytes())
+            decrypted = self._decrypt_payload(path.read_bytes(), chunk_id=chunk_id)
         except Exception:
             self._audit(
                 "memory.original_read_failed",
@@ -253,8 +254,9 @@ class IngestionPipeline:
         self._persist_key_manifest()
         if reencrypt_existing:
             for path in sorted(self._original_dir.glob("*.bin")):
-                plaintext = self._decrypt_payload(path.read_bytes())
-                path.write_bytes(self._encrypt_payload(plaintext))
+                chunk_id = path.stem
+                plaintext = self._decrypt_payload(path.read_bytes(), chunk_id=chunk_id)
+                path.write_bytes(self._encrypt_payload(plaintext, chunk_id=chunk_id))
         self._audit(
             "memory.key_rotated",
             {"active_key_id": self._active_key_id, "reencrypt_existing": reencrypt_existing},
@@ -288,17 +290,39 @@ class IngestionPipeline:
 
     def _resolve_master_secret(self, encryption_key: str | None) -> bytes:
         if encryption_key:
-            return hashlib.sha256(encryption_key.encode("utf-8")).digest()
+            return self._derive_password_secret(encryption_key.encode("utf-8"))
         env_secret = os.getenv("SHISAD_MEMORY_MASTER_KEY", "").strip()
         if env_secret:
-            return hashlib.sha256(env_secret.encode("utf-8")).digest()
+            return self._derive_password_secret(env_secret.encode("utf-8"))
         machine_id = ""
         for candidate in (Path("/etc/machine-id"), Path("/var/lib/dbus/machine-id")):
             if candidate.exists():
                 machine_id = candidate.read_text(encoding="utf-8").strip()
                 break
         basis = f"{os.getuid()}|{machine_id}|{self._storage_dir.resolve()}"
-        return hashlib.sha256(basis.encode("utf-8")).digest()
+        return self._derive_password_secret(basis.encode("utf-8"))
+
+    def _derive_password_secret(self, secret: bytes) -> bytes:
+        salt = self._load_master_salt()
+        kdf = PBKDF2HMAC(
+            algorithm=hashes.SHA256(),
+            length=32,
+            salt=salt,
+            iterations=300_000,
+        )
+        return kdf.derive(secret)
+
+    def _load_master_salt(self) -> bytes:
+        if self._master_salt_file.exists():
+            salt = self._master_salt_file.read_bytes()
+            if len(salt) != 16:
+                raise ValueError("Invalid master salt length")
+            return salt
+        salt = os.urandom(16)
+        self._master_salt_file.parent.mkdir(parents=True, exist_ok=True)
+        self._master_salt_file.write_bytes(salt)
+        os.chmod(self._master_salt_file, 0o600)
+        return salt
 
     def _derive_kek(self, salt: bytes) -> bytes:
         kdf = PBKDF2HMAC(
@@ -400,29 +424,39 @@ class IngestionPipeline:
         self._key_manifest_file.write_text(json.dumps(payload, indent=2), encoding="utf-8")
         os.chmod(self._key_manifest_file, 0o600)
 
-    def _encrypt_payload(self, payload: bytes) -> bytes:
+    def _encrypt_payload(self, payload: bytes, *, chunk_id: str | None = None) -> bytes:
         key = self._key_material_by_id[self._active_key_id]
         nonce = os.urandom(12)
-        ciphertext = AESGCM(key).encrypt(nonce, payload, associated_data=None)
+        aad = self._aad(self._active_key_id, chunk_id)
+        ciphertext = AESGCM(key).encrypt(nonce, payload, associated_data=aad)
         envelope = {
-            "v": 2,
+            "v": 3,
             "kid": self._active_key_id,
+            "chunk_id": chunk_id or "",
             "nonce_b64": self._b64(nonce),
             "ciphertext_b64": self._b64(ciphertext),
         }
         return json.dumps(envelope, separators=(",", ":")).encode("utf-8")
 
-    def _decrypt_payload(self, payload: bytes) -> bytes:
+    def _decrypt_payload(self, payload: bytes, *, chunk_id: str | None = None) -> bytes:
+        envelope: Any | None = None
         try:
             envelope = json.loads(payload.decode("utf-8"))
-            if isinstance(envelope, dict) and envelope.get("v") == 2:
-                key_id = str(envelope["kid"])
-                key = self._key_material_by_id[key_id]
-                nonce = self._unb64(str(envelope["nonce_b64"]))
-                ciphertext = self._unb64(str(envelope["ciphertext_b64"]))
-                return AESGCM(key).decrypt(nonce, ciphertext, associated_data=None)
         except Exception:
-            pass
+            envelope = None
+
+        if isinstance(envelope, dict) and envelope.get("v") in {2, 3}:
+            key_id = str(envelope["kid"])
+            key = self._key_material_by_id[key_id]
+            bound_chunk = str(envelope.get("chunk_id", "")).strip() or None
+            if chunk_id and bound_chunk and chunk_id != bound_chunk:
+                raise ValueError("chunk_id binding mismatch")
+            nonce = self._unb64(str(envelope["nonce_b64"]))
+            ciphertext = self._unb64(str(envelope["ciphertext_b64"]))
+            if envelope.get("v") == 2 and "chunk_id" not in envelope:
+                return AESGCM(key).decrypt(nonce, ciphertext, associated_data=None)
+            aad = self._aad(key_id, bound_chunk)
+            return AESGCM(key).decrypt(nonce, ciphertext, associated_data=aad)
 
         # Legacy payload format fallback: nonce + ciphertext.
         if len(payload) < 13:
@@ -431,6 +465,10 @@ class IngestionPipeline:
         nonce = payload[:12]
         ciphertext = payload[12:]
         return AESGCM(key).decrypt(nonce, ciphertext, associated_data=None)
+
+    @staticmethod
+    def _aad(key_id: str, chunk_id: str | None) -> bytes:
+        return f"shisad:v2|kid={key_id}|chunk={chunk_id or ''}".encode()
 
     def _audit(self, action: str, payload: dict[str, Any]) -> None:
         if self._audit_hook is not None:

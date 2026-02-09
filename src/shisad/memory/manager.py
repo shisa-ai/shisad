@@ -18,10 +18,20 @@ class MemoryManager:
     """Memory manager enforcing attribution + anti-poisoning gates."""
 
     _INSTRUCTION_PATTERNS: ClassVar[list[re.Pattern[str]]] = [
-        re.compile(r"\balways\b", re.IGNORECASE),
-        re.compile(r"\bnever\b", re.IGNORECASE),
+        re.compile(
+            r"\balways\b.{0,24}\b(do|send|forward|share|post|upload|run|execute|call|cc|bcc)\b",
+            re.IGNORECASE,
+        ),
+        re.compile(
+            r"\bnever\b.{0,24}\b(ask|confirm|verify|warn|block|refuse|check)\b",
+            re.IGNORECASE,
+        ),
         re.compile(r"\bignore\b.{0,40}\b(policy|instruction|rule)s?\b", re.IGNORECASE),
         re.compile(r"\bwhen you see\b.{0,80}\bdo\b", re.IGNORECASE),
+        re.compile(
+            r"\b(if|whenever)\b.{0,40}\b(then|,)\b.{0,40}\b(send|run|execute|call|share)\b",
+            re.IGNORECASE,
+        ),
     ]
 
     def __init__(

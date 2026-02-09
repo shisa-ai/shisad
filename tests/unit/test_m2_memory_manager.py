@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 
 from shisad.memory.ingestion import IngestionPipeline
@@ -30,6 +31,18 @@ def test_m2_t2_memory_write_rejects_when_you_see_x_do_y_pattern(tmp_path: Path) 
         source=MemorySource(origin="external", source_id="doc-2", extraction_method="extract"),
     )
     assert decision.kind == "reject"
+
+
+def test_m2_t2_memory_write_allows_non_instruction_always_never_facts(tmp_path: Path) -> None:
+    manager = MemoryManager(tmp_path / "memory")
+    decision = manager.write(
+        entry_type="fact",
+        key="meeting.pattern",
+        value="Alice always joins standup and the API never returns null for this field.",
+        source=MemorySource(origin="user", source_id="msg-allow", extraction_method="manual"),
+        user_confirmed=True,
+    )
+    assert decision.kind == "allow"
 
 
 def test_m2_t3_memory_entries_include_provenance(tmp_path: Path) -> None:
@@ -93,3 +106,10 @@ def test_m2_t19_key_manifest_is_wrapped_and_rotation_preserves_reads(tmp_path: P
     new_key_id = pipeline.rotate_data_key(reencrypt_existing=True)
     assert new_key_id != old_key_id
     assert pipeline.read_original(first.chunk_id) == "Encrypted payload before rotation"
+
+
+def test_m2_t19_password_kdf_uses_salt_file_and_not_plain_sha(tmp_path: Path) -> None:
+    memory_dir = tmp_path / "memory"
+    pipeline = IngestionPipeline(memory_dir, encryption_key="password-123")
+    assert (memory_dir / "master_salt.bin").exists()
+    assert pipeline._master_secret != hashlib.sha256(b"password-123").digest()

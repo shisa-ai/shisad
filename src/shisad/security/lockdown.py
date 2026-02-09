@@ -65,16 +65,38 @@ class LockdownManager:
         state = self.state_for(session_id)
         target = self._target_level(trigger=trigger, recommended_action=recommended_action)
         if self._rank(target) > self._rank(state.level):
-            state = LockdownState(
+            state = self._set_state(
                 session_id=session_id,
                 level=target,
                 reason=reason,
                 trigger=trigger,
-                updated_at=datetime.now(UTC),
             )
-            self._states[session_id] = state
-            self._notify(session_id, state)
         return state
+
+    def set_level(
+        self,
+        session_id: SessionId,
+        *,
+        level: LockdownLevel,
+        reason: str,
+        trigger: str = "manual",
+    ) -> LockdownState:
+        """Manually set lockdown level, supporting both escalation and recovery."""
+        return self._set_state(
+            session_id=session_id,
+            level=level,
+            reason=reason,
+            trigger=trigger,
+        )
+
+    def resume(self, session_id: SessionId, *, reason: str = "manual_resume") -> LockdownState:
+        """Reset a session to NORMAL from any lockdown state."""
+        return self.set_level(
+            session_id,
+            level=LockdownLevel.NORMAL,
+            reason=reason,
+            trigger="manual_resume",
+        )
 
     def apply_capability_restrictions(
         self,
@@ -105,6 +127,10 @@ class LockdownManager:
 
     def _target_level(self, *, trigger: str, recommended_action: str) -> LockdownLevel:
         action = recommended_action.lower().strip()
+        if action in {"normal", "resume", "clear"}:
+            return LockdownLevel.NORMAL
+        if action in {"caution"}:
+            return LockdownLevel.CAUTION
         if action in {"lockdown", "full_lockdown"}:
             return LockdownLevel.FULL_LOCKDOWN
         if action in {"quarantine"}:
@@ -112,6 +138,9 @@ class LockdownManager:
         if trigger in {"rate_limit", "monitor_reject"}:
             return LockdownLevel.CAUTION
         return LockdownLevel.CAUTION
+
+    def level_for_action(self, action: str, *, trigger: str = "manual") -> LockdownLevel:
+        return self._target_level(trigger=trigger, recommended_action=action)
 
     @staticmethod
     def _rank(level: LockdownLevel) -> int:
@@ -134,3 +163,21 @@ class LockdownManager:
             ),
         )
 
+    def _set_state(
+        self,
+        *,
+        session_id: SessionId,
+        level: LockdownLevel,
+        reason: str,
+        trigger: str,
+    ) -> LockdownState:
+        state = LockdownState(
+            session_id=session_id,
+            level=level,
+            reason=reason,
+            trigger=trigger,
+            updated_at=datetime.now(UTC),
+        )
+        self._states[session_id] = state
+        self._notify(session_id, state)
+        return state
