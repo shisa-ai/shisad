@@ -189,6 +189,35 @@ def session_list() -> None:
     asyncio.run(_list())
 
 
+@session.command("restore")
+@click.argument("checkpoint_id")
+def session_restore(checkpoint_id: str) -> None:
+    """Restore a session from a checkpoint ID."""
+    config = _get_config()
+
+    async def _restore() -> None:
+        from shisad.core.api.transport import ControlClient
+
+        client = ControlClient(config.socket_path)
+        try:
+            await client.connect()
+            result = await client.call("session.restore", {"checkpoint_id": checkpoint_id})
+            if result.get("restored"):
+                click.echo(
+                    f"Restored session {result.get('session_id')} from checkpoint {checkpoint_id}"
+                )
+            else:
+                click.echo(f"Checkpoint not found: {checkpoint_id}", err=True)
+                sys.exit(1)
+        except Exception as e:
+            click.echo(f"Error: {e}", err=True)
+            sys.exit(1)
+        finally:
+            await client.close()
+
+    asyncio.run(_restore())
+
+
 # --- Audit commands ---
 
 
@@ -201,11 +230,13 @@ def audit() -> None:
 @click.option("--since", help="Show events since (e.g., '1h', '2025-01-01')")
 @click.option("--type", "event_type", help="Filter by event type")
 @click.option("--session", "session_id", help="Filter by session ID")
+@click.option("--actor", "actor", help="Filter by actor")
 @click.option("--limit", default=100, help="Maximum results")
 def audit_query(
     since: str | None,
     event_type: str | None,
     session_id: str | None,
+    actor: str | None,
     limit: int,
 ) -> None:
     """Query audit log entries."""
@@ -219,8 +250,18 @@ def audit_query(
     from shisad.core.audit import AuditLog
 
     log = AuditLog(audit_path)
-    # For now, pass through simple filters (time parsing is a future enhancement)
-    results = log.query(event_type=event_type, session_id=session_id, limit=limit)
+    try:
+        since_dt = AuditLog.parse_since(since)
+    except ValueError as e:
+        click.echo(f"Invalid --since value: {e}", err=True)
+        sys.exit(1)
+    results = log.query(
+        since=since_dt,
+        event_type=event_type,
+        session_id=session_id,
+        actor=actor,
+        limit=limit,
+    )
 
     if not results:
         click.echo("No matching events")
@@ -230,7 +271,8 @@ def audit_query(
         ts = entry.get("timestamp", "")
         et = entry.get("event_type", "")
         sid = entry.get("session_id", "—")
-        click.echo(f"  {ts}  {et:20s}  session={sid}")
+        act = entry.get("actor", "—")
+        click.echo(f"  {ts}  {et:20s}  session={sid}  actor={act}")
 
 
 @audit.command("verify")

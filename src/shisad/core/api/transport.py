@@ -7,10 +7,12 @@ Newline-delimited JSON for message framing.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import os
 import struct
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -58,6 +60,22 @@ class PeerCredentials:
         return f"pid={self.pid} uid={self.uid} gid={self.gid}"
 
 
+@dataclass(slots=True)
+class _EventSubscription:
+    writer: asyncio.StreamWriter
+    event_types: set[str] = field(default_factory=set)
+    session_id: str | None = None
+    queue: asyncio.Queue[str] = field(default_factory=asyncio.Queue)
+    task: asyncio.Task[None] | None = None
+
+    def matches(self, event_data: dict[str, Any]) -> bool:
+        if self.event_types:
+            event_type = str(event_data.get("event_type", ""))
+            if event_type not in self.event_types:
+                return False
+        return self.session_id is None or str(event_data.get("session_id")) == self.session_id
+
+
 class ControlServer:
     """Unix domain socket server implementing JSON-RPC 2.0.
 
@@ -65,11 +83,16 @@ class ControlServer:
     Each connection is handled in a separate asyncio task.
     """
 
-    def __init__(self, socket_path: Path) -> None:
+    def __init__(self, socket_path: Path, *, event_queue_size: int = 256) -> None:
         self._socket_path = socket_path
         self._server: asyncio.Server | None = None
         self._methods: dict[str, tuple[MethodHandler, bool]] = {}
-        self._event_subscribers: list[asyncio.StreamWriter] = []
+        self._event_subscribers: dict[asyncio.StreamWriter, _EventSubscription] = {}
+        self._event_queue_size = event_queue_size
+
+    @property
+    def subscriber_count(self) -> int:
+        return len(self._event_subscribers)
 
     def register_method(
         self,
@@ -106,12 +129,8 @@ class ControlServer:
             self._server = None
 
         # Close event subscribers
-        import contextlib
-
-        for writer in self._event_subscribers:
-            with contextlib.suppress(Exception):
-                writer.close()
-        self._event_subscribers.clear()
+        for writer in list(self._event_subscribers):
+            await self._remove_subscription(writer, close_writer=True)
 
         # Clean up socket file
         if self._socket_path.exists():
@@ -122,15 +141,17 @@ class ControlServer:
     async def broadcast_event(self, event_data: dict[str, Any]) -> None:
         """Broadcast an event to all subscribed connections (SSE-style)."""
         line = json.dumps(event_data) + "\n"
-        dead: list[asyncio.StreamWriter] = []
-        for writer in self._event_subscribers:
+        for writer, subscription in list(self._event_subscribers.items()):
+            if not subscription.matches(event_data):
+                continue
             try:
-                writer.write(line.encode())
-                await writer.drain()
-            except Exception:
-                dead.append(writer)
-        for w in dead:
-            self._event_subscribers.remove(w)
+                subscription.queue.put_nowait(line)
+            except asyncio.QueueFull:
+                logger.warning(
+                    "Dropping event subscriber due to backpressure (queue full): %s",
+                    writer,
+                )
+                await self._remove_subscription(writer, close_writer=True)
 
     async def _handle_connection(
         self,
@@ -147,7 +168,7 @@ class ControlServer:
                 if not line:
                     break
 
-                response = await self._process_message(line, peer)
+                response = await self._process_message(line, peer, writer=writer)
                 writer.write(response.encode() + b"\n")
                 await writer.drain()
         except asyncio.CancelledError:
@@ -155,13 +176,20 @@ class ControlServer:
         except Exception:
             logger.exception("Error handling connection")
         finally:
+            await self._remove_subscription(writer, close_writer=False)
             try:
                 writer.close()
                 await writer.wait_closed()
             except Exception:
                 pass
 
-    async def _process_message(self, raw: bytes, peer: PeerCredentials) -> str:
+    async def _process_message(
+        self,
+        raw: bytes,
+        peer: PeerCredentials,
+        *,
+        writer: asyncio.StreamWriter | None = None,
+    ) -> str:
         """Parse and dispatch a JSON-RPC message."""
         # Parse JSON
         try:
@@ -179,8 +207,26 @@ class ControlServer:
 
         # Handle event subscription
         if request.method == "events.subscribe":
-            # This is handled specially — not a normal RPC call
-            return self._success_response(request.id, {"subscribed": True})
+            if writer is None:
+                return self._error_response(
+                    request.id,
+                    INVALID_PARAMS,
+                    "events.subscribe requires an active connection",
+                )
+            try:
+                event_types, session_id = self._parse_subscription_filters(request.params)
+            except ValueError as exc:
+                return self._error_response(request.id, INVALID_PARAMS, str(exc))
+            await self._register_event_subscription(writer, event_types, session_id)
+            return self._success_response(
+                request.id,
+                {
+                    "subscribed": True,
+                    "event_types": sorted(event_types),
+                    "session_id": session_id,
+                    "backpressure": "disconnect_on_queue_full",
+                },
+            )
 
         # Dispatch to method handler
         method_entry = self._methods.get(request.method)
@@ -206,6 +252,85 @@ class ControlServer:
         except Exception as e:
             logger.exception("Method %s failed", request.method)
             return self._error_response(request.id, INTERNAL_ERROR, str(e))
+
+    @staticmethod
+    def _parse_subscription_filters(
+        params: dict[str, Any],
+    ) -> tuple[set[str], str | None]:
+        event_types: set[str] = set()
+        raw_event_types = params.get("event_types")
+        if isinstance(raw_event_types, list):
+            for item in raw_event_types:
+                if not isinstance(item, str) or not item:
+                    raise ValueError("event_types must be a list of non-empty strings")
+                event_types.add(item)
+        elif raw_event_types is not None:
+            raise ValueError("event_types must be a list of strings")
+
+        raw_event_type = params.get("event_type")
+        if isinstance(raw_event_type, str) and raw_event_type:
+            event_types.add(raw_event_type)
+        elif raw_event_type is not None and not isinstance(raw_event_type, str):
+            raise ValueError("event_type must be a string")
+
+        raw_session_id = params.get("session_id")
+        if raw_session_id is None:
+            session_id: str | None = None
+        elif isinstance(raw_session_id, str) and raw_session_id:
+            session_id = raw_session_id
+        else:
+            raise ValueError("session_id must be a non-empty string")
+
+        return event_types, session_id
+
+    async def _register_event_subscription(
+        self,
+        writer: asyncio.StreamWriter,
+        event_types: set[str],
+        session_id: str | None,
+    ) -> None:
+        await self._remove_subscription(writer, close_writer=False)
+        subscription = _EventSubscription(
+            writer=writer,
+            event_types=set(event_types),
+            session_id=session_id,
+            queue=asyncio.Queue(maxsize=self._event_queue_size),
+        )
+        subscription.task = asyncio.create_task(self._stream_events(subscription))
+        self._event_subscribers[writer] = subscription
+
+    async def _remove_subscription(
+        self,
+        writer: asyncio.StreamWriter,
+        *,
+        close_writer: bool,
+    ) -> None:
+        subscription = self._event_subscribers.pop(writer, None)
+        if subscription is None:
+            return
+        current_task = asyncio.current_task()
+        if subscription.task is not None and subscription.task is not current_task:
+            subscription.task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await subscription.task
+        elif subscription.task is not None:
+            subscription.task.cancel()
+        if close_writer:
+            with contextlib.suppress(Exception):
+                writer.close()
+
+    async def _stream_events(self, subscription: _EventSubscription) -> None:
+        writer = subscription.writer
+        try:
+            while True:
+                line = await subscription.queue.get()
+                writer.write(line.encode("utf-8"))
+                await writer.drain()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.debug("Event subscriber disconnected: %s", writer)
+            await self._remove_subscription(writer, close_writer=False)
 
     @staticmethod
     def _success_response(req_id: str | int | None, result: Any) -> str:

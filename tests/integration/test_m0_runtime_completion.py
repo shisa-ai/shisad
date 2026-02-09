@@ -1,0 +1,120 @@
+"""M0 runtime completion checks for checkpoints and audit round-trip logging."""
+
+from __future__ import annotations
+
+import asyncio
+import textwrap
+from contextlib import suppress
+from pathlib import Path
+
+import pytest
+
+from shisad.core.api.transport import ControlClient
+from shisad.core.audit import AuditLog
+from shisad.core.config import DaemonConfig
+from shisad.daemon.runner import run_daemon
+
+
+async def _wait_for_socket(path: Path, timeout: float = 2.0) -> None:
+    end = asyncio.get_running_loop().time() + timeout
+    while asyncio.get_running_loop().time() < end:
+        if path.exists():
+            return
+        await asyncio.sleep(0.01)
+    raise TimeoutError(f"Timed out waiting for socket {path}")
+
+
+@pytest.mark.asyncio
+async def test_m0_roundtrip_audit_logging_and_checkpoint_restore(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SHISAD_MODEL_BASE_URL", "https://api.example.com/v1")
+    monkeypatch.setenv("SHISAD_MODEL_PLANNER_BASE_URL", "https://planner.example.com/v1")
+    monkeypatch.setenv("SHISAD_MODEL_EMBEDDINGS_BASE_URL", "https://embed.example.com/v1")
+    monkeypatch.setenv("SHISAD_MODEL_MONITOR_BASE_URL", "https://monitor.example.com/v1")
+
+    policy_path = tmp_path / "policy.yaml"
+    policy_path.write_text(
+        textwrap.dedent(
+            """
+            version: "1"
+            default_require_confirmation: false
+            """
+        ).strip()
+        + "\n"
+    )
+
+    config = DaemonConfig(
+        data_dir=tmp_path / "data",
+        socket_path=tmp_path / "control.sock",
+        policy_path=policy_path,
+        log_level="INFO",
+    )
+
+    daemon_task = asyncio.create_task(run_daemon(config))
+    client = ControlClient(config.socket_path)
+
+    try:
+        await _wait_for_socket(config.socket_path)
+        await client.connect()
+
+        created = await client.call(
+            "session.create",
+            {"channel": "cli", "user_id": "alice", "workspace_id": "ws1"},
+        )
+        sid = created["session_id"]
+
+        reply = await client.call(
+            "session.message",
+            {
+                "session_id": sid,
+                "channel": "cli",
+                "user_id": "alice",
+                "workspace_id": "ws1",
+                "content": "hello",
+            },
+        )
+        assert reply["session_id"] == sid
+        assert reply["response"]
+
+        received_events = await client.call(
+            "audit.query",
+            {"event_type": "SessionMessageReceived", "session_id": sid, "limit": 10},
+        )
+        responded_events = await client.call(
+            "audit.query",
+            {"event_type": "SessionMessageResponded", "session_id": sid, "limit": 10},
+        )
+        assert received_events["total"] >= 1
+        assert responded_events["total"] >= 1
+
+        checkpoint_reply = await client.call(
+            "session.message",
+            {
+                "session_id": sid,
+                "channel": "cli",
+                "user_id": "alice",
+                "workspace_id": "ws1",
+                "content": "__trigger_report_anomaly__",
+            },
+        )
+        checkpoint_ids = checkpoint_reply.get("checkpoint_ids", [])
+        assert checkpoint_ids
+
+        restored = await client.call(
+            "session.restore",
+            {"checkpoint_id": checkpoint_ids[0]},
+        )
+        assert restored["restored"] is True
+        assert restored["session_id"] == sid
+
+        audit = AuditLog(config.data_dir / "audit.jsonl")
+        is_valid, count, error = audit.verify_chain()
+        assert is_valid, error
+        assert count > 0
+    finally:
+        with suppress(Exception):
+            await client.call("daemon.shutdown")
+        await client.close()
+        await asyncio.wait_for(daemon_task, timeout=3)

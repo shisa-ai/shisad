@@ -45,6 +45,20 @@ class SessionCreated(BaseEvent):
     workspace_id: str = ""
 
 
+class SessionMessageReceived(BaseEvent):
+    """A session received a user message."""
+
+    content_hash: str = ""
+
+
+class SessionMessageResponded(BaseEvent):
+    """A session produced an assistant response."""
+
+    response_hash: str = ""
+    blocked_actions: int = 0
+    executed_actions: int = 0
+
+
 class SessionTerminated(BaseEvent):
     """A session was terminated."""
 
@@ -102,11 +116,15 @@ class CredentialAccessed(BaseEvent):
 
     credential_ref: str
     destination_host: str = ""
+    allowed: bool = True
+    reason: str = ""
 
 
 # Union of all event types for type-safe handling
 type AnyEvent = (
     SessionCreated
+    | SessionMessageReceived
+    | SessionMessageResponded
     | SessionTerminated
     | CapabilityGranted
     | ToolProposed
@@ -119,6 +137,8 @@ type AnyEvent = (
 
 EVENT_TYPES: dict[str, type[BaseEvent]] = {
     "SessionCreated": SessionCreated,
+    "SessionMessageReceived": SessionMessageReceived,
+    "SessionMessageResponded": SessionMessageResponded,
     "SessionTerminated": SessionTerminated,
     "CapabilityGranted": CapabilityGranted,
     "ToolProposed": ToolProposed,

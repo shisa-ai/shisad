@@ -69,6 +69,10 @@ class PolicyBundle(BaseModel):
 
     # Session capabilities (default grants)
     default_capabilities: list[Capability] = Field(default_factory=list)
+    session_tool_allowlist: list[ToolName] = Field(
+        default_factory=list,
+        description="Optional per-session default tool allowlist.",
+    )
 
 
 # --- Policy loader ---

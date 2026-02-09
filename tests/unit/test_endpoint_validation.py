@@ -36,6 +36,27 @@ class TestEndpointValidation:
         )
         assert errors == []
 
+    def test_allowlist_blocks_unlisted_endpoint(self) -> None:
+        errors = validate_endpoint(
+            "https://api.evil.com/v1",
+            endpoint_allowlist=["https://api.openai.com/v1"],
+        )
+        assert any("allowlist" in e.lower() for e in errors)
+
+    def test_allowlist_accepts_host_glob(self) -> None:
+        errors = validate_endpoint(
+            "https://planner.example.com/v1",
+            endpoint_allowlist=["*.example.com"],
+        )
+        assert errors == []
+
+    def test_allowlist_enforces_path_prefix(self) -> None:
+        errors = validate_endpoint(
+            "https://api.openai.com/v2/chat/completions",
+            endpoint_allowlist=["https://api.openai.com/v1"],
+        )
+        assert any("allowlist" in e.lower() for e in errors)
+
 
 class TestEndpointHttpsRequired:
     """M0.T3: endpoint allowlist blocks non-HTTPS for remote hosts."""

@@ -6,10 +6,11 @@ and treated as read-only at runtime (immutability principle).
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
-from typing import Self
+from typing import Literal, Self
 
-from pydantic import Field, model_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -34,6 +35,14 @@ class DaemonConfig(BaseSettings):
 
     # Runtime
     log_level: str = Field(default="INFO", description="Logging level")
+    checkpoint_trigger: Literal[
+        "before_side_effects",
+        "before_any_tool",
+        "never",
+    ] = Field(
+        default="before_side_effects",
+        description="When to create checkpoints during tool execution.",
+    )
 
     @model_validator(mode="after")
     def _ensure_data_dir(self) -> Self:
@@ -124,12 +133,34 @@ class ModelConfig(BaseSettings):
         default=True,
         description="Block SSRF to private network ranges (10.x, 172.16.x, 192.168.x)",
     )
+    endpoint_allowlist: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Optional endpoint allowlist (host globs or URL prefixes). "
+            "When non-empty, all model endpoints must match one rule."
+        ),
+    )
 
     # Logging
     log_prompts: bool = Field(
         default=False,
         description="Log full prompts (debug only; never log credentials)",
     )
+
+    @field_validator("endpoint_allowlist", mode="before")
+    @classmethod
+    def _parse_endpoint_allowlist(cls, value: object) -> object:
+        if isinstance(value, str):
+            stripped = value.strip()
+            if not stripped:
+                return []
+            if stripped.startswith("["):
+                parsed = json.loads(stripped)
+                if isinstance(parsed, list):
+                    return [str(item) for item in parsed]
+                raise ValueError("SHISAD_MODEL_ENDPOINT_ALLOWLIST JSON must be a list")
+            return [entry.strip() for entry in stripped.split(",") if entry.strip()]
+        return value
 
 
 class ShisadConfig(BaseSettings):

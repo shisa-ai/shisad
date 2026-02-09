@@ -6,7 +6,7 @@ from shisad.core.tools.registry import ToolRegistry
 from shisad.core.tools.schema import ToolDefinition, ToolParameter
 from shisad.core.types import Capability, PEPDecisionKind, ToolName
 from shisad.security.pep import PEP, PolicyContext
-from shisad.security.policy import PolicyBundle
+from shisad.security.policy import PolicyBundle, ToolPolicy
 
 
 def _make_pep() -> tuple[PEP, ToolRegistry]:
@@ -78,3 +78,42 @@ class TestPepSchemaValidation:
         decision = pep.evaluate(ToolName("test_tool"), {"query": "hello"}, ctx)
         assert decision.kind == PEPDecisionKind.REJECT
         assert "Missing capabilities" in decision.reason
+
+
+class TestPepToolAllowlist:
+    """M0.7.3: tool allowlist checks."""
+
+    def test_context_tool_allowlist_rejects_not_allowed_tool(self) -> None:
+        pep, _ = _make_pep()
+        ctx = PolicyContext(
+            capabilities={Capability.HTTP_REQUEST},
+            tool_allowlist={ToolName("different_tool")},
+        )
+        decision = pep.evaluate(ToolName("test_tool"), {"query": "hello"}, ctx)
+        assert decision.kind == PEPDecisionKind.REJECT
+        assert "allowlist" in decision.reason.lower()
+
+    def test_policy_tool_allowlist_rejects_unlisted_tool(self) -> None:
+        registry = ToolRegistry()
+        registry.register(
+            ToolDefinition(
+                name=ToolName("test_tool"),
+                description="A test tool",
+                parameters=[ToolParameter(name="query", type="string", required=True)],
+                capabilities_required=[Capability.HTTP_REQUEST],
+            )
+        )
+        policy = PolicyBundle(
+            default_require_confirmation=False,
+            tools={
+                ToolName("other_tool"): ToolPolicy(
+                    capabilities_required=[],
+                    require_confirmation=False,
+                )
+            },
+        )
+        pep = PEP(policy, registry)
+        ctx = PolicyContext(capabilities={Capability.HTTP_REQUEST})
+        decision = pep.evaluate(ToolName("test_tool"), {"query": "hello"}, ctx)
+        assert decision.kind == PEPDecisionKind.REJECT
+        assert "allowlist" in decision.reason.lower()

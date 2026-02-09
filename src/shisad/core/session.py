@@ -57,6 +57,7 @@ class SessionManager:
         user_id: UserId | None = None,
         workspace_id: WorkspaceId | None = None,
         capabilities: set[Capability] | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> Session:
         """Create a new session."""
         user = user_id or UserId("")
@@ -69,6 +70,7 @@ class SessionManager:
             workspace_id=workspace,
             session_key=session_key,
             capabilities=capabilities or set(),
+            metadata=metadata or {},
         )
         self._sessions[session.id] = session
         logger.info(
@@ -175,6 +177,23 @@ class SessionManager:
                 },
             )
         return True
+
+    def restore_from_checkpoint(self, checkpoint: Checkpoint) -> Session:
+        """Restore session state from a checkpoint payload."""
+        state = checkpoint.state
+        if isinstance(state, dict) and "id" in state:
+            restored = Session.model_validate(state)
+        else:
+            restored = Session(id=checkpoint.session_id)
+            restored.metadata["checkpoint_state"] = state
+        restored.state = SessionState.ACTIVE
+        self._sessions[restored.id] = restored
+        logger.info(
+            "Session restored from checkpoint: %s (session=%s)",
+            checkpoint.checkpoint_id,
+            restored.id,
+        )
+        return restored
 
 
 # --- Checkpoint system ---

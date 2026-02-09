@@ -22,3 +22,14 @@ def test_model_endpoint_validation_accepts_https_routes() -> None:
     router = ModelRouter(config)
 
     _validate_model_endpoints(config, router)
+
+
+def test_model_endpoint_validation_enforces_configured_allowlist() -> None:
+    config = ModelConfig(
+        base_url="https://api.example.com/v1",
+        endpoint_allowlist=["https://planner.example.com/v1"],
+    )
+    router = ModelRouter(config)
+
+    with pytest.raises(ValueError):
+        _validate_model_endpoints(config, router)

@@ -10,11 +10,13 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-from datetime import UTC, datetime
+import os
+import re
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
 
 from shisad.core.events import BaseEvent
 
@@ -31,10 +33,26 @@ class AuditEntry(BaseModel):
     timestamp: str
     event_type: str
     actor: str
+    action: str
+    target: str
+    decision: str
+    reasoning: str
     session_id: str | None
     data: dict[str, Any]
     data_hash: str
+    previous_event_hash: str
     previous_hash: str
+
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_previous_hashes(cls, value: Any) -> Any:
+        if not isinstance(value, dict):
+            return value
+        if "previous_event_hash" not in value and "previous_hash" in value:
+            value["previous_event_hash"] = value["previous_hash"]
+        if "previous_hash" not in value and "previous_event_hash" in value:
+            value["previous_hash"] = value["previous_event_hash"]
+        return value
 
 
 class AuditLog:
@@ -67,15 +85,21 @@ class AuditLog:
         data = event.model_dump(mode="json")
         data_json = json.dumps(data, sort_keys=True)
         data_hash = hashlib.sha256(data_json.encode()).hexdigest()
+        action, target, decision, reasoning = self._derive_entry_metadata(event, data)
 
         entry = AuditEntry(
             event_id=event.event_id,
             timestamp=event.timestamp.isoformat(),
             event_type=type(event).__name__,
             actor=event.actor,
+            action=action,
+            target=target,
+            decision=decision,
+            reasoning=reasoning,
             session_id=event.session_id,
             data=data,
             data_hash=data_hash,
+            previous_event_hash=self._previous_hash,
             previous_hash=self._previous_hash,
         )
 
@@ -86,8 +110,10 @@ class AuditLog:
 
         # Append to log
         self._log_path.parent.mkdir(parents=True, exist_ok=True)
-        with self._log_path.open("a") as f:
+        self._ensure_secure_permissions()
+        with self._log_path.open("a", encoding="utf-8") as f:
             f.write(entry_json + "\n")
+        self._ensure_secure_permissions()
 
         self._previous_hash = entry_hash
         self._entry_count += 1
@@ -116,12 +142,12 @@ class AuditLog:
                     return (False, count, f"Line {line_num}: invalid entry: {e}")
 
                 # Check chain link
-                if entry.previous_hash != previous_hash:
+                if entry.previous_event_hash != previous_hash:
                     return (
                         False,
                         count,
                         f"Line {line_num}: chain break — expected previous_hash "
-                        f"{previous_hash[:12]}…, got {entry.previous_hash[:12]}…",
+                        f"{previous_hash[:12]}…, got {entry.previous_event_hash[:12]}…",
                     )
 
                 # Check data integrity
@@ -146,6 +172,7 @@ class AuditLog:
         since: datetime | None = None,
         event_type: str | None = None,
         session_id: str | None = None,
+        actor: str | None = None,
         limit: int = 100,
     ) -> list[dict[str, Any]]:
         """Query audit log entries with filters."""
@@ -166,6 +193,8 @@ class AuditLog:
                 if event_type is not None and entry.event_type != event_type:
                     continue
                 if session_id is not None and entry.session_id != session_id:
+                    continue
+                if actor is not None and entry.actor != actor:
                     continue
                 if since is not None:
                     entry_time = datetime.fromisoformat(entry.timestamp)
@@ -197,3 +226,80 @@ class AuditLog:
         self._previous_hash = previous_hash
         self._entry_count = count
         logger.info("Resumed audit chain: %d entries, last hash %s…", count, previous_hash[:12])
+
+    def _ensure_secure_permissions(self) -> None:
+        """Best-effort restrictive file mode for audit logs."""
+        if not self._log_path.exists():
+            return
+        os.chmod(self._log_path, 0o600)
+
+    @staticmethod
+    def _derive_entry_metadata(
+        event: BaseEvent,
+        data: dict[str, Any],
+    ) -> tuple[str, str, str, str]:
+        event_type = type(event).__name__
+        action = event_type
+        target = str(data.get("tool_name") or data.get("session_id") or "")
+        decision = ""
+        reasoning = ""
+
+        decision_value = data.get("decision")
+        if isinstance(decision_value, str):
+            decision = decision_value
+        if event_type == "ToolApproved":
+            decision = "allow"
+        elif event_type == "ToolRejected":
+            decision = "reject"
+
+        reason_value = data.get("reason")
+        if isinstance(reason_value, str):
+            reasoning = reason_value
+        elif isinstance(data.get("description"), str):
+            reasoning = str(data["description"])
+
+        return (action, target, decision, reasoning)
+
+    @staticmethod
+    def parse_since(
+        value: str | None,
+        *,
+        now: datetime | None = None,
+    ) -> datetime | None:
+        """Parse relative or absolute `since` filter values.
+
+        Supported formats:
+        - Relative: `30s`, `15m`, `2h`, `7d`
+        - Absolute: ISO timestamp (`2026-02-09T12:00:00Z`) or date (`2026-02-09`)
+        """
+        if value is None:
+            return None
+
+        text = value.strip()
+        if not text:
+            return None
+
+        current = now or datetime.now(UTC)
+        rel_match = re.fullmatch(r"(?P<num>\d+)(?P<unit>[smhd])", text)
+        if rel_match:
+            amount = int(rel_match.group("num"))
+            unit = rel_match.group("unit")
+            delta_map = {
+                "s": timedelta(seconds=amount),
+                "m": timedelta(minutes=amount),
+                "h": timedelta(hours=amount),
+                "d": timedelta(days=amount),
+            }
+            return current - delta_map[unit]
+
+        normalized = text.replace("Z", "+00:00")
+        try:
+            parsed = datetime.fromisoformat(normalized)
+        except ValueError as exc:
+            raise ValueError(
+                f"Invalid --since value '{value}'. Use 1h/30m/7d or ISO datetime."
+            ) from exc
+
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=UTC)
+        return parsed

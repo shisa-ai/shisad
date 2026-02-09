@@ -84,12 +84,27 @@ class SessionListResult(BaseModel):
     sessions: list[dict[str, Any]]
 
 
+class SessionRestoreParams(BaseModel):
+    """Parameters for session.restore."""
+
+    checkpoint_id: str
+
+
+class SessionRestoreResult(BaseModel):
+    """Result for session.restore."""
+
+    restored: bool
+    session_id: str | None = None
+    checkpoint_id: str
+
+
 class AuditQueryParams(BaseModel):
     """Parameters for audit.query."""
 
     since: str | None = None
     event_type: str | None = None
     session_id: str | None = None
+    actor: str | None = None
     limit: int = 100
 
 
