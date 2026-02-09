@@ -146,8 +146,19 @@ class SessionManager:
         session = self._sessions.get(session_id)
         if session is None:
             return False
-        if actor == "agent":
-            logger.warning("Rejected self-grant capability request for session %s", session_id)
+        if actor == "agent" or actor.startswith("agent:"):
+            logger.warning(
+                "Rejected agent self-grant capability request for session %s",
+                session_id,
+            )
+            return False
+
+        if not (actor.startswith("uid:") or actor.startswith("system:")):
+            logger.warning(
+                "Rejected untrusted capability grant actor '%s' for session %s",
+                actor,
+                session_id,
+            )
             return False
 
         before = set(session.capabilities)

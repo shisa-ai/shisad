@@ -55,10 +55,22 @@ def test_m1_session_capabilities_cannot_be_self_granted() -> None:
     assert manager.grant_capabilities(
         session.id,
         {Capability.HTTP_REQUEST},
-        actor="admin",
+        actor="uid:1000",
     )
     assert events
     assert events[0][0] == "session.capability_granted"
+
+
+def test_m1_session_capabilities_reject_untrusted_actor_strings() -> None:
+    manager = SessionManager()
+    session = manager.create(user_id=UserId("alice"), workspace_id=WorkspaceId("ws1"))
+
+    granted = manager.grant_capabilities(
+        session.id,
+        {Capability.HTTP_REQUEST},
+        actor="planner",
+    )
+    assert not granted
 
 
 def test_m1_transcript_store_uses_blob_reference_for_large_content(tmp_path: Path) -> None:

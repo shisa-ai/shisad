@@ -2,7 +2,7 @@ rule prompt_injection_indirect {
   meta:
     description = "M1 baseline rule"
   strings:
-    // pattern: disregard\s+all\s+rules
+    $a = /disregard\s+all\s+rules/i
   condition:
-    true
+    $a
 }

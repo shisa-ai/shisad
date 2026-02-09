@@ -2,7 +2,7 @@ rule system_manipulation {
   meta:
     description = "M1 baseline rule"
   strings:
-    // pattern: reveal\s+system\s+prompt
+    $a = /reveal\s+system\s+prompt/i
   condition:
-    true
+    $a
 }

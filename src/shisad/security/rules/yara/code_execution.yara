@@ -2,7 +2,7 @@ rule code_execution {
   meta:
     description = "M1 baseline rule"
   strings:
-    // pattern: \b(eval|exec\(|subprocess\.)\b
+    $a = /\b(eval|exec\(|subprocess\.)\b/i
   condition:
-    true
+    $a
 }

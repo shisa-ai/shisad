@@ -10,6 +10,7 @@ import asyncio
 import json
 import logging
 import os
+import struct
 from pathlib import Path
 from typing import Any
 
@@ -30,6 +31,31 @@ logger = logging.getLogger(__name__)
 
 # Method handler type
 type MethodHandler = Any  # Callable[[dict[str, Any]], Awaitable[Any]]
+PERMISSION_DENIED = -32001
+
+
+class PeerCredentials:
+    """Peer credentials extracted from Unix socket connection."""
+
+    def __init__(
+        self,
+        *,
+        pid: int | None = None,
+        uid: int | None = None,
+        gid: int | None = None,
+    ) -> None:
+        self.pid = pid
+        self.uid = uid
+        self.gid = gid
+
+    def as_dict(self) -> dict[str, int | None]:
+        return {"pid": self.pid, "uid": self.uid, "gid": self.gid}
+
+    @property
+    def summary(self) -> str:
+        if self.uid is None:
+            return "unknown"
+        return f"pid={self.pid} uid={self.uid} gid={self.gid}"
 
 
 class ControlServer:
@@ -42,12 +68,18 @@ class ControlServer:
     def __init__(self, socket_path: Path) -> None:
         self._socket_path = socket_path
         self._server: asyncio.Server | None = None
-        self._methods: dict[str, MethodHandler] = {}
+        self._methods: dict[str, tuple[MethodHandler, bool]] = {}
         self._event_subscribers: list[asyncio.StreamWriter] = []
 
-    def register_method(self, name: str, handler: MethodHandler) -> None:
+    def register_method(
+        self,
+        name: str,
+        handler: MethodHandler,
+        *,
+        admin_only: bool = False,
+    ) -> None:
         """Register a JSON-RPC method handler."""
-        self._methods[name] = handler
+        self._methods[name] = (handler, admin_only)
 
     async def start(self) -> None:
         """Start listening on the Unix socket."""
@@ -106,8 +138,8 @@ class ControlServer:
         writer: asyncio.StreamWriter,
     ) -> None:
         """Handle a single client connection."""
-        peer_info = self._get_peer_info(writer)
-        logger.debug("Connection from %s", peer_info)
+        peer = self._get_peer_credentials(writer)
+        logger.debug("Connection from %s", peer.summary)
 
         try:
             while True:
@@ -115,7 +147,7 @@ class ControlServer:
                 if not line:
                     break
 
-                response = await self._process_message(line)
+                response = await self._process_message(line, peer)
                 writer.write(response.encode() + b"\n")
                 await writer.drain()
         except asyncio.CancelledError:
@@ -129,7 +161,7 @@ class ControlServer:
             except Exception:
                 pass
 
-    async def _process_message(self, raw: bytes) -> str:
+    async def _process_message(self, raw: bytes, peer: PeerCredentials) -> str:
         """Parse and dispatch a JSON-RPC message."""
         # Parse JSON
         try:
@@ -151,14 +183,23 @@ class ControlServer:
             return self._success_response(request.id, {"subscribed": True})
 
         # Dispatch to method handler
-        handler = self._methods.get(request.method)
-        if handler is None:
+        method_entry = self._methods.get(request.method)
+        if method_entry is None:
             return self._error_response(
                 request.id, METHOD_NOT_FOUND, f"Method not found: {request.method}"
             )
+        handler, admin_only = method_entry
+        if admin_only and not self._is_admin_peer(peer):
+            return self._error_response(
+                request.id,
+                PERMISSION_DENIED,
+                "Permission denied: admin peer credentials required",
+            )
 
         try:
-            result = await handler(request.params)
+            params = dict(request.params)
+            params["_rpc_peer"] = peer.as_dict()
+            result = await handler(params)
             return self._success_response(request.id, result)
         except (TypeError, ValueError) as e:
             return self._error_response(request.id, INVALID_PARAMS, str(e))
@@ -177,20 +218,25 @@ class ControlServer:
         return resp.model_dump_json()
 
     @staticmethod
-    def _get_peer_info(writer: asyncio.StreamWriter) -> str:
+    def _get_peer_credentials(writer: asyncio.StreamWriter) -> PeerCredentials:
         """Extract peer credentials from the socket (Linux SO_PEERCRED)."""
         try:
             sock = writer.get_extra_info("socket")
             if sock is not None:
-                import struct
-
                 SO_PEERCRED = 17  # Linux-specific
                 cred = sock.getsockopt(1, SO_PEERCRED, struct.calcsize("3i"))  # SOL_SOCKET=1
                 pid, uid, gid = struct.unpack("3i", cred)
-                return f"pid={pid} uid={uid} gid={gid}"
+                return PeerCredentials(pid=pid, uid=uid, gid=gid)
         except Exception:
             pass
-        return "unknown"
+        return PeerCredentials()
+
+    @staticmethod
+    def _is_admin_peer(peer: PeerCredentials) -> bool:
+        """Authorize admin-only methods based on peer uid."""
+        if peer.uid is None:
+            return False
+        return peer.uid in {0, os.getuid()}
 
 
 class ControlClient:

@@ -72,6 +72,54 @@ def test_m1_t13_egress_allowlist_blocks_non_allowlisted_domains() -> None:
     assert "allowlisted" in decision.reason.lower()
 
 
+def test_m1_egress_allowlist_enforces_protocol() -> None:
+    registry = ToolRegistry()
+    registry.register(
+        ToolDefinition(
+            name=ToolName("http_request"),
+            description="HTTP call",
+            parameters=[ToolParameter(name="url", type="string", required=True)],
+            capabilities_required=[Capability.HTTP_REQUEST],
+        )
+    )
+    policy = PolicyBundle(
+        default_require_confirmation=False,
+        egress=[EgressRule(host="api.good.com", protocols=["https"], ports=[443])],
+    )
+    pep = PEP(policy, registry)
+
+    decision = pep.evaluate(
+        ToolName("http_request"),
+        {"url": "http://api.good.com/path"},
+        PolicyContext(capabilities={Capability.HTTP_REQUEST}),
+    )
+    assert decision.kind == PEPDecisionKind.REJECT
+
+
+def test_m1_egress_allowlist_enforces_port() -> None:
+    registry = ToolRegistry()
+    registry.register(
+        ToolDefinition(
+            name=ToolName("http_request"),
+            description="HTTP call",
+            parameters=[ToolParameter(name="url", type="string", required=True)],
+            capabilities_required=[Capability.HTTP_REQUEST],
+        )
+    )
+    policy = PolicyBundle(
+        default_require_confirmation=False,
+        egress=[EgressRule(host="api.good.com", protocols=["https"], ports=[443])],
+    )
+    pep = PEP(policy, registry)
+
+    decision = pep.evaluate(
+        ToolName("http_request"),
+        {"url": "https://api.good.com:8443/path"},
+        PolicyContext(capabilities={Capability.HTTP_REQUEST}),
+    )
+    assert decision.kind == PEPDecisionKind.REJECT
+
+
 def test_m1_t14_tool_metadata_poisoning_cannot_alter_tool_schema() -> None:
     registry = ToolRegistry()
     registry.register(

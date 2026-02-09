@@ -2,7 +2,7 @@ rule autonomy_abuse {
   meta:
     description = "M1 baseline rule"
   strings:
-    // pattern: autonomously\s+execute
+    $a = /autonomously\s+execute/i
   condition:
-    true
+    $a
 }

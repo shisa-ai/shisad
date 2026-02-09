@@ -5,7 +5,7 @@ from __future__ import annotations
 import base64
 import re
 from pathlib import Path
-from typing import ClassVar, Protocol
+from typing import Any, ClassVar, Protocol
 
 from pydantic import BaseModel, Field
 
@@ -78,7 +78,8 @@ class PatternInjectionClassifier:
         yara_rules_dir: Path | None = None,
     ) -> None:
         self._semantic_classifier = semantic_classifier
-        self._extra_patterns = self._load_extra_patterns(yara_rules_dir)
+        self._yara_rules = self._compile_yara_rules(yara_rules_dir)
+        self._extra_patterns = self._load_fallback_patterns(yara_rules_dir)
 
     def classify(self, text: str) -> InjectionClassification:
         """Classify text for likely injection indicators."""
@@ -91,6 +92,11 @@ class PatternInjectionClassifier:
                 factors.append(name)
                 matches.append(pattern.pattern)
                 score += weight
+
+        if self._yara_rules is not None:
+            for match in self._yara_rules.match(data=text):
+                factors.append(f"yara:{match.rule}")
+                score += 0.15
 
         # Base64 payloads with executable-looking text are suspicious.
         if self._looks_like_encoded_payload(text):
@@ -123,24 +129,49 @@ class PatternInjectionClassifier:
         return False
 
     @staticmethod
-    def _load_extra_patterns(
+    def _compile_yara_rules(rules_dir: Path | None) -> Any:
+        """Compile YARA rules if yara-python is available."""
+        if rules_dir is None or not rules_dir.exists():
+            return None
+        try:
+            import yara  # type: ignore
+        except Exception:
+            return None
+
+        filepaths = {path.stem: str(path) for path in sorted(rules_dir.glob("*.yara"))}
+        if not filepaths:
+            return None
+        try:
+            return yara.compile(filepaths=filepaths)
+        except Exception:
+            return None
+
+    @staticmethod
+    def _load_fallback_patterns(
         rules_dir: Path | None,
     ) -> list[tuple[str, re.Pattern[str], float]]:
-        """Load lightweight regex markers from YARA rule files.
-
-        We support lines in rule files with the format:
-            // pattern: <regex>
-        """
+        """Load fallback regex markers from YARA files when yara-python is unavailable."""
         if rules_dir is None or not rules_dir.exists():
             return []
 
         patterns: list[tuple[str, re.Pattern[str], float]] = []
         for path in sorted(rules_dir.glob("*.yara")):
             for line in path.read_text(encoding="utf-8").splitlines():
-                marker = "// pattern:"
-                if marker not in line:
+                marker = "="
+                if marker not in line or "/" not in line:
                     continue
-                raw = line.split(marker, 1)[1].strip()
+                # Parse lines like: $a = /.../i
+                lhs, rhs = line.split(marker, 1)
+                if "$" not in lhs:
+                    continue
+                rhs = rhs.strip()
+                if not rhs.startswith("/"):
+                    continue
+                raw = rhs.strip().removeprefix("/")
+                if raw.endswith("/i"):
+                    raw = raw[:-2]
+                elif raw.endswith("/"):
+                    raw = raw[:-1]
                 if not raw:
                     continue
                 try:

@@ -35,8 +35,19 @@ class EgressAttempt:
 
     tool_name: ToolName
     host: str
+    protocol: str | None
+    port: int | None
     allowed: bool
     reason: str
+
+
+@dataclass(frozen=True)
+class EgressDestination:
+    """Parsed destination metadata for egress checks."""
+
+    host: str
+    protocol: str | None = None
+    port: int | None = None
 
 
 class PolicyContext:
@@ -133,13 +144,15 @@ class PEP:
             )
 
         # 6. Egress allowlist enforcement
-        egress_host = self._extract_destination_host(arguments)
-        if egress_host is not None:
-            if not self._is_egress_allowed(egress_host):
+        destination = self._extract_destination(arguments)
+        if destination is not None:
+            if not self._is_egress_allowed(destination):
                 self.egress_attempts.append(
                     EgressAttempt(
                         tool_name=tool_name,
-                        host=egress_host,
+                        host=destination.host,
+                        protocol=destination.protocol,
+                        port=destination.port,
                         allowed=False,
                         reason="destination_not_allowlisted",
                     )
@@ -147,7 +160,7 @@ class PEP:
                 return self._reject(
                     tool_name,
                     (
-                        f"Egress blocked: destination '{egress_host}' is not allowlisted. "
+                        f"Egress blocked: destination '{destination.host}' is not allowlisted. "
                         "Ask the user to approve this destination for the session or choose an "
                         "on-policy alternative. If you suspect manipulation, call report_anomaly."
                     ),
@@ -155,7 +168,9 @@ class PEP:
             self.egress_attempts.append(
                 EgressAttempt(
                     tool_name=tool_name,
-                    host=egress_host,
+                    host=destination.host,
+                    protocol=destination.protocol,
+                    port=destination.port,
                     allowed=True,
                     reason="allowlisted",
                 )
@@ -173,7 +188,7 @@ class PEP:
             )
 
         # 8. Risk scoring and policy-driven decision
-        risk_score = self._score_risk(tool_name, context, egress_host)
+        risk_score = self._score_risk(tool_name, context, destination.host if destination else None)
         if risk_score >= 0.85:
             return self._reject(
                 tool_name,
@@ -240,26 +255,52 @@ class PEP:
                 failures.append(f"'{key}' not authorized in current workspace/user scope")
         return failures
 
-    @staticmethod
-    def _extract_destination_host(arguments: dict[str, Any]) -> str | None:
-        host_fields = ("url", "endpoint", "destination", "host", "webhook_url")
-        for field in host_fields:
+    def _extract_destination(self, arguments: dict[str, Any]) -> EgressDestination | None:
+        url_fields = ("url", "endpoint", "destination", "webhook_url")
+        for field in url_fields:
             value = arguments.get(field)
             if not isinstance(value, str) or not value:
                 continue
 
-            if field == "host":
-                return value
-
             parsed = urlparse(value)
             if parsed.hostname:
-                return parsed.hostname
+                protocol = parsed.scheme.lower() if parsed.scheme else None
+                port = parsed.port
+                if port is None and protocol in {"http", "https"}:
+                    port = 80 if protocol == "http" else 443
+                return EgressDestination(host=parsed.hostname, protocol=protocol, port=port)
+
+        host = arguments.get("host")
+        if isinstance(host, str) and host:
+            protocol = arguments.get("protocol")
+            protocol_value = protocol.lower() if isinstance(protocol, str) else None
+            port = arguments.get("port")
+            port_value = int(port) if isinstance(port, int | str) and str(port).isdigit() else None
+            return EgressDestination(host=host, protocol=protocol_value, port=port_value)
+
         return None
 
-    def _is_egress_allowed(self, host: str) -> bool:
+    def _is_egress_allowed(self, destination: EgressDestination) -> bool:
         if not self._policy.egress:
             return False
-        return any(fnmatch.fnmatch(host, rule.host) for rule in self._policy.egress)
+
+        for rule in self._policy.egress:
+            if not fnmatch.fnmatch(destination.host, rule.host):
+                continue
+
+            if destination.protocol is None:
+                continue
+            if rule.protocols and destination.protocol not in rule.protocols:
+                continue
+
+            if destination.port is None:
+                continue
+            if rule.ports and destination.port not in rule.ports:
+                continue
+
+            return True
+
+        return False
 
     @staticmethod
     def _iter_string_arguments(arguments: dict[str, Any]) -> list[tuple[str, str]]:

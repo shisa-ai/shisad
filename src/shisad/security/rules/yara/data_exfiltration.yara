@@ -2,7 +2,7 @@ rule data_exfiltration {
   meta:
     description = "M1 baseline rule"
   strings:
-    // pattern: exfiltrat(e|ion)|webhook
+    $a = /exfiltrat(e|ion)|webhook/i
   condition:
-    true
+    $a
 }

@@ -2,7 +2,7 @@ rule tool_spoofing {
   meta:
     description = "M1 baseline rule"
   strings:
-    // pattern: <\s*(use_tool|tool_call|function_call)
+    $a = /<\s*(use_tool|tool_call|function_call)/i
   condition:
-    true
+    $a
 }

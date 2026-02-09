@@ -2,7 +2,7 @@ rule prompt_injection_unicode_steganography {
   meta:
     description = "M1 baseline rule"
   strings:
-    // pattern: \u200b|\u200c|\u200d
+    $a = /\x{200B}|\x{200C}|\x{200D}|\x{202E}/i
   condition:
-    true
+    $a
 }
