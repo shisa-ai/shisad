@@ -49,6 +49,24 @@ class FilesystemRule(BaseModel):
     mode: str = "read"  # "read" | "write" | "deny"
 
 
+class RiskPolicy(BaseModel):
+    """Risk scoring thresholds and policy version metadata."""
+
+    version: str = "v1"
+    auto_approve_threshold: float = 0.45
+    block_threshold: float = 0.85
+
+
+class RateLimitPolicy(BaseModel):
+    """Rate limiting defaults for per-tool/per-user/per-session counters."""
+
+    window_seconds: int = 60
+    per_tool: int = 15
+    per_user: int = 40
+    per_session: int = 30
+    burst_multiplier: float = 2.0
+
+
 class PolicyBundle(BaseModel):
     """Top-level policy bundle matching docs/SECURITY.md Section 4.2."""
 
@@ -73,6 +91,12 @@ class PolicyBundle(BaseModel):
         default_factory=list,
         description="Optional per-session default tool allowlist.",
     )
+
+    # M2 controls
+    risk_policy: RiskPolicy = Field(default_factory=RiskPolicy)
+    rate_limits: RateLimitPolicy = Field(default_factory=RateLimitPolicy)
+    yara_required: bool = False
+    safe_output_domains: list[str] = Field(default_factory=list)
 
 
 # --- Policy loader ---

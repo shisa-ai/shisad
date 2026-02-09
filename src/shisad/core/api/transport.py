@@ -14,7 +14,7 @@ import os
 import struct
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from pydantic import ValidationError
 
@@ -411,3 +411,22 @@ class ControlClient:
             raise RuntimeError(f"RPC error {response.error.code}: {response.error.message}")
 
         return response.result
+
+    async def subscribe_events(
+        self,
+        params: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Subscribe to event stream on the current connection."""
+        result = await self.call("events.subscribe", params=params or {})
+        if not isinstance(result, dict):
+            raise RuntimeError("Invalid subscribe response")
+        return result
+
+    async def read_event(self) -> dict[str, Any]:
+        """Read one event line from a subscribed stream."""
+        if self._reader is None:
+            raise RuntimeError("Not connected")
+        line = await self._reader.readline()
+        if not line:
+            raise ConnectionError("Connection closed")
+        return cast(dict[str, Any], json.loads(line))

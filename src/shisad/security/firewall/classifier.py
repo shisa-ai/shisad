@@ -81,6 +81,14 @@ class PatternInjectionClassifier:
         self._yara_rules = self._compile_yara_rules(yara_rules_dir)
         self._extra_patterns = self._load_fallback_patterns(yara_rules_dir)
 
+    @property
+    def mode(self) -> str:
+        if self._yara_rules is not None:
+            return "yara"
+        if self._extra_patterns:
+            return "fallback_regex"
+        return "base_patterns"
+
     def classify(self, text: str) -> InjectionClassification:
         """Classify text for likely injection indicators."""
         score = 0.0

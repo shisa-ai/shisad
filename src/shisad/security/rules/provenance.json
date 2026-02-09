@@ -1,0 +1,60 @@
+{
+  "version": "m2-baseline-2026-02-10",
+  "source_repo": "https://github.com/cisco-ai-defense/skill-scanner",
+  "source_commit": "4c4f5d3f4f4af7f01f3e2cfab23358e9a5db7b32",
+  "license": "Apache-2.0",
+  "assets": [
+    {
+      "path": "yara/autonomy_abuse.yara",
+      "sha256": "afc7b48791f5414a63d0cc42b175e94efc3e40440603628f57b65b29df585787"
+    },
+    {
+      "path": "yara/capability_inflation.yara",
+      "sha256": "b9ba468788b34b5f13499791c267327d142170ffa17176261643df6e5fc8bd90"
+    },
+    {
+      "path": "yara/code_execution.yara",
+      "sha256": "09b6ff6f1e3047f2ea0154a33799327b25784bbb10a9ad1ee1cfd4eba641c94a"
+    },
+    {
+      "path": "yara/command_injection.yara",
+      "sha256": "e9e8e801cd450248c5bce0b8487712a52470baa167dff2bbe6aea0c5800c927a"
+    },
+    {
+      "path": "yara/credential_harvesting.yara",
+      "sha256": "ab014650282f4b753405ec21c384668531c791032f7b99b9ae5c3d4912f0337d"
+    },
+    {
+      "path": "yara/data_exfiltration.yara",
+      "sha256": "9caaaf4ad97fccb909a90b0fc7d6d84d2dedcf881093fb686d199e697ebe4959"
+    },
+    {
+      "path": "yara/masquerading_authority.yara",
+      "sha256": "190ba9320da13226090db5a164ff4f4f62bdf27f5bf1abfb3752181e9553350f"
+    },
+    {
+      "path": "yara/prompt_injection_direct.yara",
+      "sha256": "0118c981184df6420815ba47e2a2d5466433085009c1a67d2577f8b2602d1d3e"
+    },
+    {
+      "path": "yara/prompt_injection_indirect.yara",
+      "sha256": "26863ab658e19ccb38e5076db8dfedb0d8bc23abf8912c564a0f810998cf94c3"
+    },
+    {
+      "path": "yara/prompt_injection_unicode_steganography.yara",
+      "sha256": "0ff48ab3575706d46e3862fd97cf8f4d03dafce1c72c2ed4369c0bf044a9cd53"
+    },
+    {
+      "path": "yara/system_manipulation.yara",
+      "sha256": "0de7cd30a99a344788c6b7d0cf54fad5bed13738b05515bbb4f8e4ac12048e79"
+    },
+    {
+      "path": "yara/tool_chaining_abuse.yara",
+      "sha256": "03d2316c353db3fbdab9b62261a2ea5c5bb618b87491904283884a0ef9aa847e"
+    },
+    {
+      "path": "yara/tool_spoofing.yara",
+      "sha256": "40cfe1a188a7b83f187a29ae16046bddee613f3a1470128b8b9aaae3edc675e2"
+    }
+  ]
+}

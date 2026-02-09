@@ -297,5 +297,150 @@ def audit_verify() -> None:
         sys.exit(1)
 
 
+@cli.group()
+def events() -> None:
+    """Subscribe to daemon event stream."""
+
+
+@events.command("subscribe")
+@click.option("--event-type", "event_types", multiple=True, help="Filter by event type")
+@click.option("--session", "session_id", help="Filter by session id")
+@click.option("--count", default=0, help="Stop after N events (0 = stream forever)")
+def events_subscribe(
+    event_types: tuple[str, ...],
+    session_id: str | None,
+    count: int,
+) -> None:
+    """Stream events from the daemon."""
+    config = _get_config()
+
+    async def _subscribe() -> None:
+        from shisad.core.api.transport import ControlClient
+
+        client = ControlClient(config.socket_path)
+        received = 0
+        try:
+            await client.connect()
+            params: dict[str, object] = {}
+            if event_types:
+                params["event_types"] = list(event_types)
+            if session_id:
+                params["session_id"] = session_id
+            await client.subscribe_events(params)
+            while True:
+                event = await client.read_event()
+                click.echo(json.dumps(event, sort_keys=True))
+                received += 1
+                if count > 0 and received >= count:
+                    break
+        except KeyboardInterrupt:
+            return
+        except Exception as e:
+            click.echo(f"Error: {e}", err=True)
+            sys.exit(1)
+        finally:
+            await client.close()
+
+    asyncio.run(_subscribe())
+
+
+@cli.group()
+def memory() -> None:
+    """Memory manager operations."""
+
+
+@memory.command("list")
+@click.option("--limit", default=100, help="Maximum entries")
+def memory_list(limit: int) -> None:
+    config = _get_config()
+
+    async def _list() -> None:
+        from shisad.core.api.transport import ControlClient
+
+        client = ControlClient(config.socket_path)
+        try:
+            await client.connect()
+            result = await client.call("memory.list", {"limit": limit})
+            for item in result.get("entries", []):
+                click.echo(f"{item['id']} {item['entry_type']} {item['key']}")
+        finally:
+            await client.close()
+
+    asyncio.run(_list())
+
+
+@memory.command("write")
+@click.option(
+    "--type",
+    "entry_type",
+    required=True,
+    type=click.Choice(["fact", "preference", "context"]),
+)
+@click.option("--key", required=True)
+@click.option("--value", required=True)
+@click.option("--origin", default="user", type=click.Choice(["user", "external", "inferred"]))
+@click.option("--source-id", default="cli")
+@click.option("--confirm", is_flag=True, help="Confirm external/suspicious writes")
+def memory_write(
+    entry_type: str,
+    key: str,
+    value: str,
+    origin: str,
+    source_id: str,
+    confirm: bool,
+) -> None:
+    config = _get_config()
+
+    async def _write() -> None:
+        from shisad.core.api.transport import ControlClient
+
+        client = ControlClient(config.socket_path)
+        try:
+            await client.connect()
+            result = await client.call(
+                "memory.write",
+                {
+                    "entry_type": entry_type,
+                    "key": key,
+                    "value": value,
+                    "source": {
+                        "origin": origin,
+                        "source_id": source_id,
+                        "extraction_method": "cli",
+                    },
+                    "user_confirmed": confirm,
+                },
+            )
+            click.echo(json.dumps(result, indent=2))
+        finally:
+            await client.close()
+
+    asyncio.run(_write())
+
+
+@cli.group()
+def task() -> None:
+    """Scheduler task operations."""
+
+
+@task.command("list")
+def task_list() -> None:
+    config = _get_config()
+
+    async def _list() -> None:
+        from shisad.core.api.transport import ControlClient
+
+        client = ControlClient(config.socket_path)
+        try:
+            await client.connect()
+            result = await client.call("task.list")
+            for item in result.get("tasks", []):
+                click.echo(f"{item['id']} {item['name']} enabled={item['enabled']}")
+        finally:
+            await client.close()
+
+    asyncio.run(_list())
+
+
 if __name__ == "__main__":
     cli()

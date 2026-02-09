@@ -76,6 +76,7 @@ class PolicyContext:
         action_count: int = 0,
         resource_authorizer: Callable[[str, WorkspaceId, UserId], bool] | None = None,
         tool_allowlist: set[ToolName] | None = None,
+        trust_level: str = "untrusted",
     ) -> None:
         self.capabilities: set[Capability] = capabilities or set()
         self.taint_labels: set[TaintLabel] = taint_labels or set()
@@ -84,6 +85,7 @@ class PolicyContext:
         self.action_count = action_count
         self.resource_authorizer = resource_authorizer
         self.tool_allowlist = tool_allowlist
+        self.trust_level = trust_level
 
 
 class PEP:
@@ -228,8 +230,15 @@ class PEP:
             )
 
         # 8. Risk scoring and policy-driven decision
-        risk_score = self._score_risk(tool_name, context, destination.host if destination else None)
-        if risk_score >= 0.85:
+        risk_score = self._score_risk(
+            tool_name,
+            context,
+            destination.host if destination else None,
+        )
+        block_threshold = self._policy.risk_policy.block_threshold
+        auto_approve_threshold = self._policy.risk_policy.auto_approve_threshold
+
+        if risk_score >= block_threshold:
             return self._reject(
                 tool_name,
                 (
@@ -239,13 +248,21 @@ class PEP:
                 ),
             )
 
+        # Alarm bell must remain callable to surface suspected attacks.
+        if str(tool_name) == "report_anomaly":
+            return PEPDecision(
+                kind=PEPDecisionKind.ALLOW,
+                tool_name=tool_name,
+                risk_score=risk_score,
+            )
+
         tool_policy = self._policy.tools.get(tool_name)
         needs_confirmation = (
             taint_decision.require_confirmation
             or tool.require_confirmation
             or (tool_policy is not None and tool_policy.require_confirmation)
             or self._policy.default_require_confirmation
-            or risk_score >= 0.45
+            or risk_score >= auto_approve_threshold
         )
 
         if needs_confirmation:
@@ -256,9 +273,14 @@ class PEP:
                     "Use an approved destination/scope or ask for explicit user approval."
                 ),
                 tool_name=tool_name,
+                risk_score=risk_score,
             )
 
-        return PEPDecision(kind=PEPDecisionKind.ALLOW, tool_name=tool_name)
+        return PEPDecision(
+            kind=PEPDecisionKind.ALLOW,
+            tool_name=tool_name,
+            risk_score=risk_score,
+        )
 
     def _effective_tool_allowlist(
         self,
@@ -555,8 +577,22 @@ class PEP:
         if context.action_count >= 3:
             score += min(context.action_count * 0.03, 0.2)
 
+        # Channel trust can soften risk for verified identities.
+        trust = context.trust_level.lower().strip()
+        trust_discount = {
+            "trusted": 0.15,
+            "verified": 0.15,
+            "internal": 0.1,
+            "medium": 0.05,
+        }.get(trust, 0.0)
+        score = max(0.0, score - trust_discount)
+
         return min(score, 1.0)
 
     @staticmethod
     def _reject(tool_name: ToolName, reason: str) -> PEPDecision:
-        return PEPDecision(kind=PEPDecisionKind.REJECT, reason=reason, tool_name=tool_name)
+        return PEPDecision(
+            kind=PEPDecisionKind.REJECT,
+            reason=reason,
+            tool_name=tool_name,
+        )

@@ -120,6 +120,58 @@ class CredentialAccessed(BaseEvent):
     reason: str = ""
 
 
+class MonitorEvaluated(BaseEvent):
+    """Action monitor outcome for a planner proposal."""
+
+    tool_name: ToolName
+    decision: str = ""
+    reason: str = ""
+
+
+class LockdownChanged(BaseEvent):
+    """Session lockdown state transition."""
+
+    level: str = ""
+    reason: str = ""
+    trigger: str = ""
+
+
+class RateLimitTriggered(BaseEvent):
+    """Rate limiter blocked or escalated tool activity."""
+
+    tool_name: ToolName
+    reason: str = ""
+    count: int = 0
+
+
+class MemoryEntryStored(BaseEvent):
+    """Memory entry persisted."""
+
+    memory_id: str = ""
+    key: str = ""
+    source_origin: str = ""
+
+
+class MemoryEntryDeleted(BaseEvent):
+    """Memory entry soft-deleted."""
+
+    memory_id: str = ""
+
+
+class TaskScheduled(BaseEvent):
+    """Background task created."""
+
+    task_id: str = ""
+    name: str = ""
+
+
+class TaskTriggered(BaseEvent):
+    """Background task trigger accepted."""
+
+    task_id: str = ""
+    event_type: str = ""
+
+
 # Union of all event types for type-safe handling
 type AnyEvent = (
     SessionCreated
@@ -133,6 +185,13 @@ type AnyEvent = (
     | ToolExecuted
     | AnomalyReported
     | CredentialAccessed
+    | MonitorEvaluated
+    | LockdownChanged
+    | RateLimitTriggered
+    | MemoryEntryStored
+    | MemoryEntryDeleted
+    | TaskScheduled
+    | TaskTriggered
 )
 
 EVENT_TYPES: dict[str, type[BaseEvent]] = {
@@ -147,6 +206,13 @@ EVENT_TYPES: dict[str, type[BaseEvent]] = {
     "ToolExecuted": ToolExecuted,
     "AnomalyReported": AnomalyReported,
     "CredentialAccessed": CredentialAccessed,
+    "MonitorEvaluated": MonitorEvaluated,
+    "LockdownChanged": LockdownChanged,
+    "RateLimitTriggered": RateLimitTriggered,
+    "MemoryEntryStored": MemoryEntryStored,
+    "MemoryEntryDeleted": MemoryEntryDeleted,
+    "TaskScheduled": TaskScheduled,
+    "TaskTriggered": TaskTriggered,
 }
 
 

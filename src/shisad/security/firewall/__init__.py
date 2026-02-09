@@ -39,6 +39,10 @@ class ContentFirewall:
         rules_dir = Path(__file__).resolve().parent.parent / "rules" / "yara"
         self._classifier = PatternInjectionClassifier(yara_rules_dir=rules_dir)
 
+    @property
+    def classifier_mode(self) -> str:
+        return self._classifier.mode
+
     def inspect(
         self,
         text: str,
