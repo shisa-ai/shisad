@@ -32,3 +32,18 @@ def test_m2_t8_markdown_sanitizer_disables_external_images() -> None:
     assert "[IMAGE_REMOVED]" in result.sanitized_text
     assert "markdown_external_image" in result.reason_codes
 
+
+def test_m2_t8_entropy_detector_redacts_unknown_secrets_and_alerts() -> None:
+    alerts: list[dict[str, object]] = []
+
+    firewall = OutputFirewall(
+        safe_domains=["api.good.com"],
+        alert_hook=lambda payload: alerts.append(payload),
+    )
+    # High-entropy random-looking token not matched by explicit regex signatures.
+    token = "QWxhZGRpbjpPcGVuU2VzYW1lLTIwMjYtWFlaMTIzNDU2Nzg5MA=="
+    result = firewall.inspect(f"debug token: {token}", context={"session_id": "s1"})
+    assert "[REDACTED:high_entropy_secret]" in result.sanitized_text
+    assert "high_entropy_secret" in result.secret_findings
+    assert alerts
+    assert alerts[0]["context"] == {"session_id": "s1"}

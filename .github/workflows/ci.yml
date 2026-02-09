@@ -60,3 +60,18 @@ jobs:
 
       - name: Validate coverage baseline
         run: uv run python scripts/coverage_baseline.py --xml coverage.xml
+
+      - name: Generate per-package coverage trend artifact
+        run: uv run python scripts/coverage_trend.py --xml coverage.xml --output artifacts/coverage-trend.json
+
+      - name: Generate YARA parity metrics artifact
+        run: uv run python scripts/yara_parity_report.py --output artifacts/yara-parity.json
+
+      - name: Upload security runtime artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: security-runtime-artifacts
+          path: |
+            coverage.xml
+            artifacts/coverage-trend.json
+            artifacts/yara-parity.json

@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import math
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import ClassVar
+from typing import Any, ClassVar
 from urllib.parse import urlparse
 
 from pydantic import BaseModel, Field
@@ -39,6 +41,7 @@ class OutputFirewall:
     """Last-choke-point filter for outbound content."""
 
     safe_domains: list[str]
+    alert_hook: Callable[[dict[str, Any]], None] | None = None
 
     _SECRET_PATTERNS: ClassVar[list[tuple[str, re.Pattern[str]]]] = [
         ("openai_key", re.compile(r"\bsk-[A-Za-z0-9_-]{16,}\b")),
@@ -46,8 +49,9 @@ class OutputFirewall:
         ("oauth_token", re.compile(r"\bya29\.[A-Za-z0-9._-]{20,}\b")),
     ]
     _MALICIOUS_HOST_HINTS: ClassVar[set[str]] = {"evil.com", "attacker.com", "malware.test"}
+    _HIGH_ENTROPY_TOKEN_RE: ClassVar[re.Pattern[str]] = re.compile(r"\b[A-Za-z0-9+/=_-]{24,}\b")
 
-    def inspect(self, text: str) -> OutputFirewallResult:
+    def inspect(self, text: str, *, context: dict[str, Any] | None = None) -> OutputFirewallResult:
         normalized = normalize_text(text)
         reason_codes: list[str] = []
         findings: list[str] = []
@@ -59,6 +63,11 @@ class OutputFirewall:
                 sanitized = pattern.sub(f"[REDACTED:{kind}]", sanitized)
         if findings:
             reason_codes.append("secret_redaction")
+
+        sanitized, entropy_findings = self._redact_high_entropy_tokens(sanitized)
+        if entropy_findings:
+            findings.extend(entropy_findings)
+            reason_codes.append("entropy_secret_redaction")
 
         url_findings = self._inspect_urls(sanitized)
         blocked = any(finding.suspicious for finding in url_findings)
@@ -84,7 +93,7 @@ class OutputFirewall:
             require_confirmation = True
             reason_codes.append("outbound_policy_toxicity")
 
-        return OutputFirewallResult(
+        result = OutputFirewallResult(
             sanitized_text=sanitized,
             blocked=blocked,
             require_confirmation=require_confirmation,
@@ -93,6 +102,18 @@ class OutputFirewall:
             url_findings=url_findings,
             toxicity_score=toxicity_score,
         )
+        if self.alert_hook is not None and (result.secret_findings or result.reason_codes):
+            self.alert_hook(
+                {
+                    "blocked": result.blocked,
+                    "require_confirmation": result.require_confirmation,
+                    "reason_codes": list(result.reason_codes),
+                    "secret_findings": list(result.secret_findings),
+                    "url_findings": [item.model_dump(mode="json") for item in result.url_findings],
+                    "context": context or {},
+                }
+            )
+        return result
 
     def _inspect_urls(self, text: str) -> list[UrlFinding]:
         findings: list[UrlFinding] = []
@@ -135,3 +156,33 @@ class OutputFirewall:
             if token in lowered:
                 score += 0.45
         return min(score, 1.0)
+
+    @classmethod
+    def _redact_high_entropy_tokens(cls, text: str) -> tuple[str, list[str]]:
+        redacted = text
+        findings: list[str] = []
+        for token in sorted(set(cls._HIGH_ENTROPY_TOKEN_RE.findall(text)), key=len, reverse=True):
+            if token.startswith("http"):
+                continue
+            if "." in token and "/" in token:
+                continue
+            entropy = cls._shannon_entropy(token)
+            if entropy < 4.0:
+                continue
+            findings.append("high_entropy_secret")
+            redacted = redacted.replace(token, "[REDACTED:high_entropy_secret]")
+        return redacted, findings
+
+    @staticmethod
+    def _shannon_entropy(value: str) -> float:
+        if not value:
+            return 0.0
+        counts: dict[str, int] = {}
+        for char in value:
+            counts[char] = counts.get(char, 0) + 1
+        length = len(value)
+        entropy = 0.0
+        for count in counts.values():
+            p = count / length
+            entropy -= p * math.log2(p)
+        return entropy

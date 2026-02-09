@@ -172,6 +172,15 @@ class TaskTriggered(BaseEvent):
     event_type: str = ""
 
 
+class OutputFirewallAlert(BaseEvent):
+    """Outbound content triggered firewall controls."""
+
+    blocked: bool = False
+    require_confirmation: bool = False
+    reason_codes: list[str] = Field(default_factory=list)
+    secret_findings: list[str] = Field(default_factory=list)
+
+
 # Union of all event types for type-safe handling
 type AnyEvent = (
     SessionCreated
@@ -192,6 +201,7 @@ type AnyEvent = (
     | MemoryEntryDeleted
     | TaskScheduled
     | TaskTriggered
+    | OutputFirewallAlert
 )
 
 EVENT_TYPES: dict[str, type[BaseEvent]] = {
@@ -213,6 +223,7 @@ EVENT_TYPES: dict[str, type[BaseEvent]] = {
     "MemoryEntryDeleted": MemoryEntryDeleted,
     "TaskScheduled": TaskScheduled,
     "TaskTriggered": TaskTriggered,
+    "OutputFirewallAlert": OutputFirewallAlert,
 }
 
 

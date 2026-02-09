@@ -6,12 +6,14 @@ import asyncio
 import hashlib
 import json
 import logging
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
 from shisad.channels.base import ChannelMessage
 from shisad.channels.identity import ChannelIdentityMap
 from shisad.channels.ingress import ChannelIngressProcessor
+from shisad.channels.matrix import MatrixChannel, MatrixConfig
 from shisad.core.api.transport import ControlServer
 from shisad.core.audit import AuditLog
 from shisad.core.config import DaemonConfig, ModelConfig
@@ -23,6 +25,7 @@ from shisad.core.events import (
     MemoryEntryDeleted,
     MemoryEntryStored,
     MonitorEvaluated,
+    OutputFirewallAlert,
     RateLimitTriggered,
     SessionCreated,
     SessionMessageReceived,
@@ -48,7 +51,7 @@ from shisad.core.tools.registry import ToolRegistry
 from shisad.core.tools.schema import ToolDefinition
 from shisad.core.transcript import TranscriptStore
 from shisad.core.types import Capability, SessionId, ToolName, UserId, WorkspaceId
-from shisad.memory.ingestion import IngestionPipeline, RetrieveRagTool
+from shisad.memory.ingestion import EmbeddingFingerprint, IngestionPipeline, RetrieveRagTool
 from shisad.memory.manager import MemoryManager
 from shisad.memory.schema import MemorySource
 from shisad.scheduler.manager import SchedulerManager
@@ -133,6 +136,26 @@ class _LocalPlannerProvider:
             digest = hashlib.sha256(text.encode("utf-8")).digest()
             vectors.append([digest[i] / 255.0 for i in range(12)])
         return EmbeddingResponse(vectors=vectors, model="local-stub", usage={"total_tokens": 0})
+
+
+class _SyncEmbeddingsAdapter:
+    """Threaded adapter to use async provider embeddings from sync retrieval code."""
+
+    def __init__(self, provider: _LocalPlannerProvider, *, model_id: str) -> None:
+        self._provider = provider
+        self._model_id = model_id
+        self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="shisad-embed")
+
+    def embed(self, input_texts: list[str]) -> list[list[float]]:
+        future = self._executor.submit(self._run_embed, list(input_texts))
+        return future.result(timeout=15.0)
+
+    def _run_embed(self, input_texts: list[str]) -> list[list[float]]:
+        response = asyncio.run(self._provider.embeddings(input_texts, model_id=self._model_id))
+        return response.vectors
+
+    def close(self) -> None:
+        self._executor.shutdown(wait=False, cancel_futures=True)
 
 
 def _validate_model_endpoints(model_config: ModelConfig, router: ModelRouter) -> None:
@@ -293,6 +316,24 @@ async def run_daemon(config: DaemonConfig) -> None:
                 )
             )
 
+    def _audit_output_event(data: dict[str, Any]) -> None:
+        context = data.get("context", {})
+        if isinstance(context, dict):
+            raw_session_id = str(context.get("session_id", "")).strip()
+        else:
+            raw_session_id = ""
+        session_id = SessionId(raw_session_id) if raw_session_id else None
+        _publish_async(
+            OutputFirewallAlert(
+                session_id=session_id,
+                actor="output_firewall",
+                blocked=bool(data.get("blocked", False)),
+                require_confirmation=bool(data.get("require_confirmation", False)),
+                reason_codes=[str(item) for item in data.get("reason_codes", [])],
+                secret_findings=[str(item) for item in data.get("secret_findings", [])],
+            )
+        )
+
     def _lockdown_notify(session_id: SessionId, message: str) -> None:
         state = lockdown_manager.state_for(session_id)
         _publish_async(
@@ -329,12 +370,52 @@ async def run_daemon(config: DaemonConfig) -> None:
             "Policy requires yara mode, but classifier is not running with yara-python"
         )
     output_firewall = OutputFirewall(
-        safe_domains=policy_loader.policy.safe_output_domains or ["api.example.com", "example.com"]
+        safe_domains=policy_loader.policy.safe_output_domains or ["api.example.com", "example.com"],
+        alert_hook=_audit_output_event,
     )
     channel_ingress = ChannelIngressProcessor(firewall)
     identity_map = ChannelIdentityMap(default_trust=_CHANNEL_TRUST_DEFAULTS)
+    matrix_channel: MatrixChannel | None = None
+    if config.matrix_enabled:
+        required = {
+            "matrix_homeserver": config.matrix_homeserver,
+            "matrix_user_id": config.matrix_user_id,
+            "matrix_access_token": config.matrix_access_token,
+            "matrix_room_id": config.matrix_room_id,
+        }
+        missing = [name for name, value in required.items() if not value]
+        if missing:
+            raise ValueError(
+                "Matrix channel is enabled but missing required config fields: "
+                + ", ".join(missing)
+            )
+        matrix_channel = MatrixChannel(
+            MatrixConfig(
+                homeserver=config.matrix_homeserver,
+                user_id=config.matrix_user_id,
+                access_token=config.matrix_access_token,
+                room_id=config.matrix_room_id,
+                enable_e2ee=config.matrix_e2ee,
+                room_workspace_map=dict(config.matrix_room_workspace_map),
+                trusted_users=set(config.matrix_trusted_users),
+            )
+        )
+        await matrix_channel.connect()
 
-    ingestion = IngestionPipeline(config.data_dir / "memory")
+    local_provider = _LocalPlannerProvider()
+    embeddings_route = router.route_for(ModelComponent.EMBEDDINGS)
+    embeddings_adapter = _SyncEmbeddingsAdapter(
+        local_provider,
+        model_id=embeddings_route.model_id,
+    )
+    ingestion = IngestionPipeline(
+        config.data_dir / "memory",
+        embedding_fingerprint=EmbeddingFingerprint(
+            model_id=embeddings_route.model_id,
+            base_url=embeddings_route.base_url,
+        ),
+        embeddings_provider=embeddings_adapter,
+    )
     memory_manager = MemoryManager(
         config.data_dir / "memory_entries",
         audit_hook=_audit_memory_event,
@@ -369,7 +450,7 @@ async def run_daemon(config: DaemonConfig) -> None:
         registry,
         credential_audit_hook=_audit_credential_use,
     )
-    planner = Planner(_LocalPlannerProvider(), pep)
+    planner = Planner(local_provider, pep)
 
     shutdown_event = asyncio.Event()
 
@@ -632,7 +713,10 @@ async def run_daemon(config: DaemonConfig) -> None:
                 executed += 1
 
         response_text = planner_result.output.assistant_response
-        output_result = output_firewall.inspect(response_text)
+        output_result = output_firewall.inspect(
+            response_text,
+            context={"session_id": sid, "actor": "assistant"},
+        )
         if output_result.blocked:
             response_text = "Response blocked by output policy."
         else:
@@ -744,6 +828,14 @@ async def run_daemon(config: DaemonConfig) -> None:
                 "auto_approve": policy_loader.policy.risk_policy.auto_approve_threshold,
                 "block": policy_loader.policy.risk_policy.block_threshold,
             },
+            "channels": {
+                "matrix": {
+                    "enabled": config.matrix_enabled,
+                    "available": matrix_channel.available if matrix_channel else False,
+                    "connected": matrix_channel.connected if matrix_channel else False,
+                    "e2ee_enabled": matrix_channel.e2ee_enabled if matrix_channel else False,
+                }
+            },
             "provenance": provenance_status,
         }
 
@@ -822,6 +914,15 @@ async def run_daemon(config: DaemonConfig) -> None:
         verified = memory_manager.verify(entry_id)
         return {"verified": verified, "entry_id": entry_id}
 
+    async def handle_memory_rotate_key(params: dict[str, Any]) -> dict[str, Any]:
+        reencrypt_existing = bool(params.get("reencrypt_existing", True))
+        key_id = ingestion.rotate_data_key(reencrypt_existing=reencrypt_existing)
+        return {
+            "rotated": True,
+            "active_key_id": key_id,
+            "reencrypt_existing": reencrypt_existing,
+        }
+
     async def handle_task_create(params: dict[str, Any]) -> dict[str, Any]:
         schedule = Schedule.model_validate(params.get("schedule", {}))
         task = scheduler.create_task(
@@ -894,8 +995,19 @@ async def run_daemon(config: DaemonConfig) -> None:
 
     async def handle_channel_ingest(params: dict[str, Any]) -> dict[str, Any]:
         message = ChannelMessage.model_validate(params.get("message", {}))
+        if matrix_channel is not None and message.channel == "matrix":
+            room_hint = message.workspace_hint or config.matrix_room_id
+            message = message.model_copy(
+                update={"workspace_hint": matrix_channel.workspace_for_room(room_hint)}
+            )
         declared_trust = str(params.get("trust_level", "")).strip()
         if bool(params.get("matrix_verified", False)) and message.channel == "matrix":
+            declared_trust = "trusted"
+        if (
+            matrix_channel is not None
+            and message.channel == "matrix"
+            and matrix_channel.is_user_verified(message.external_user_id)
+        ):
             declared_trust = "trusted"
         if not declared_trust:
             declared_trust = identity_map.trust_for_channel(message.channel)
@@ -975,6 +1087,7 @@ async def run_daemon(config: DaemonConfig) -> None:
     server.register_method("memory.delete", handle_memory_delete)
     server.register_method("memory.export", handle_memory_export)
     server.register_method("memory.verify", handle_memory_verify)
+    server.register_method("memory.rotate_key", handle_memory_rotate_key, admin_only=True)
     server.register_method("task.create", handle_task_create)
     server.register_method("task.list", handle_task_list)
     server.register_method("task.disable", handle_task_disable)
@@ -989,5 +1102,8 @@ async def run_daemon(config: DaemonConfig) -> None:
     try:
         await shutdown_event.wait()
     finally:
+        embeddings_adapter.close()
+        if matrix_channel is not None:
+            await matrix_channel.disconnect()
         await server.stop()
         logger.info("shisad daemon stopped")

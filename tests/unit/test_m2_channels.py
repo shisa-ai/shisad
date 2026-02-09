@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 
+from shisad.channels.base import InMemoryChannel
 from shisad.channels.identity import ChannelIdentityMap
 from shisad.channels.matrix import MatrixChannel, MatrixConfig
 from shisad.core.tools.registry import ToolRegistry
@@ -74,6 +75,44 @@ def test_channel_trust_level_influences_pep_risk_outcome() -> None:
 
     assert untrusted.kind == PEPDecisionKind.REQUIRE_CONFIRMATION
     assert trusted.kind == PEPDecisionKind.ALLOW
+
+
+@pytest.mark.asyncio
+async def test_inmemory_channel_offline_buffer_heartbeat_and_health() -> None:
+    channel = InMemoryChannel(name="test", max_buffer=8)
+    await channel.send("queued-while-offline")
+    assert channel.pending_outgoing() == 1
+
+    await channel.connect()
+    health = channel.health_status()
+    assert health["connected"] is True
+    assert health["last_heartbeat"] is not None
+    assert channel.pending_outgoing() == 1
+    assert await channel.pop_outgoing() == "queued-while-offline"
+
+    await channel.heartbeat()
+    assert channel.health_status()["heartbeat_age_seconds"] is not None
+    await channel.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_inmemory_channel_reconnect_exponential_backoff() -> None:
+    channel = InMemoryChannel(
+        name="test",
+        reconnect_backoff_base=0.001,
+        reconnect_backoff_max=0.002,
+    )
+    attempts = {"count": 0}
+
+    async def flaky_operation() -> str:
+        attempts["count"] += 1
+        if attempts["count"] < 3:
+            raise ConnectionError("transient")
+        return "ok"
+
+    result = await channel.run_with_reconnect(flaky_operation, attempts=4)
+    assert result == "ok"
+    assert attempts["count"] == 3
 
 
 @pytest.mark.asyncio

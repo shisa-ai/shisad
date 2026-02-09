@@ -44,6 +44,50 @@ class DaemonConfig(BaseSettings):
         description="When to create checkpoints during tool execution.",
     )
 
+    # Optional Matrix runtime channel
+    matrix_enabled: bool = Field(default=False, description="Enable Matrix channel runtime.")
+    matrix_homeserver: str = Field(default="", description="Matrix homeserver URL.")
+    matrix_user_id: str = Field(default="", description="Matrix user id for bot account.")
+    matrix_access_token: str = Field(default="", description="Matrix access token.")
+    matrix_room_id: str = Field(default="", description="Default Matrix room id.")
+    matrix_e2ee: bool = Field(default=True, description="Enable Matrix E2EE when available.")
+    matrix_trusted_users: list[str] = Field(
+        default_factory=list,
+        description="Matrix users considered verified/trusted for policy decisions.",
+    )
+    matrix_room_workspace_map: dict[str, str] = Field(
+        default_factory=dict,
+        description="Map Matrix room ids to workspace ids.",
+    )
+
+    @field_validator("matrix_trusted_users", mode="before")
+    @classmethod
+    def _parse_matrix_trusted_users(cls, value: object) -> object:
+        if isinstance(value, str):
+            stripped = value.strip()
+            if not stripped:
+                return []
+            if stripped.startswith("["):
+                parsed = json.loads(stripped)
+                if isinstance(parsed, list):
+                    return [str(item) for item in parsed]
+                raise ValueError("SHISAD_MATRIX_TRUSTED_USERS JSON must be a list")
+            return [entry.strip() for entry in stripped.split(",") if entry.strip()]
+        return value
+
+    @field_validator("matrix_room_workspace_map", mode="before")
+    @classmethod
+    def _parse_matrix_room_workspace_map(cls, value: object) -> object:
+        if isinstance(value, str):
+            stripped = value.strip()
+            if not stripped:
+                return {}
+            parsed = json.loads(stripped)
+            if isinstance(parsed, dict):
+                return {str(key): str(item) for key, item in parsed.items()}
+            raise ValueError("SHISAD_MATRIX_ROOM_WORKSPACE_MAP JSON must be an object")
+        return value
+
     @model_validator(mode="after")
     def _ensure_data_dir(self) -> Self:
         self.data_dir.mkdir(parents=True, exist_ok=True)

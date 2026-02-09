@@ -75,3 +75,21 @@ def test_m2_t19_authenticated_encryption_detects_tampering(tmp_path: Path) -> No
 
     assert pipeline.read_original(stored.chunk_id) is None
 
+
+def test_m2_t19_key_manifest_is_wrapped_and_rotation_preserves_reads(tmp_path: Path) -> None:
+    pipeline = IngestionPipeline(tmp_path / "memory", encryption_key="unit-test-master-key")
+    first = pipeline.ingest(
+        source_id="doc-rotate",
+        source_type="external",
+        content="Encrypted payload before rotation",
+    )
+
+    manifest_path = tmp_path / "memory" / "keys.json"
+    manifest = manifest_path.read_text(encoding="utf-8")
+    assert "\"wrapped_key_b64\"" in manifest
+    assert not (tmp_path / "memory" / "key.bin").exists()
+
+    old_key_id = pipeline.active_key_id
+    new_key_id = pipeline.rotate_data_key(reencrypt_existing=True)
+    assert new_key_id != old_key_id
+    assert pipeline.read_original(first.chunk_id) == "Encrypted payload before rotation"

@@ -172,6 +172,55 @@ async def test_m2_t17_t18_report_anomaly_triggers_lockdown_and_notification(
 
 
 @pytest.mark.asyncio
+async def test_m2_t18_output_firewall_alert_is_audited(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SHISAD_MODEL_BASE_URL", "https://api.example.com/v1")
+    monkeypatch.setenv("SHISAD_MODEL_PLANNER_BASE_URL", "https://planner.example.com/v1")
+    monkeypatch.setenv("SHISAD_MODEL_EMBEDDINGS_BASE_URL", "https://embed.example.com/v1")
+    monkeypatch.setenv("SHISAD_MODEL_MONITOR_BASE_URL", "https://monitor.example.com/v1")
+
+    config = DaemonConfig(
+        data_dir=tmp_path / "data",
+        socket_path=tmp_path / "control.sock",
+        policy_path=tmp_path / "policy.yaml",
+        log_level="INFO",
+    )
+    daemon_task = asyncio.create_task(run_daemon(config))
+    client = ControlClient(config.socket_path)
+    try:
+        await _wait_for_socket(config.socket_path)
+        await client.connect()
+        created = await client.call(
+            "session.create",
+            {"channel": "cli", "user_id": "alice", "workspace_id": "ws1"},
+        )
+        sid = created["session_id"]
+        reply = await client.call(
+            "session.message",
+            {
+                "session_id": sid,
+                "channel": "cli",
+                "user_id": "alice",
+                "workspace_id": "ws1",
+                "content": "please include token AKIAABCDEFGHIJKLMNOP in summary",
+            },
+        )
+        assert "[REDACTED:aws_access_key]" in reply["response"]
+        events = await client.call(
+            "audit.query",
+            {"event_type": "OutputFirewallAlert", "session_id": sid, "limit": 10},
+        )
+        assert events["total"] >= 1
+    finally:
+        with suppress(Exception):
+            await client.call("daemon.shutdown")
+        await client.close()
+        await asyncio.wait_for(daemon_task, timeout=3)
+
+
+@pytest.mark.asyncio
 async def test_m2_t22_daemon_status_exposes_classifier_mode(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -194,6 +243,45 @@ async def test_m2_t22_daemon_status_exposes_classifier_mode(
         status = await client.call("daemon.status")
         assert status["classifier_mode"] in {"yara", "fallback_regex", "base_patterns"}
         assert "risk_policy_version" in status
+    finally:
+        with suppress(Exception):
+            await client.call("daemon.shutdown")
+        await client.close()
+        await asyncio.wait_for(daemon_task, timeout=3)
+
+
+@pytest.mark.asyncio
+async def test_m2_t22_daemon_status_exposes_matrix_runtime_fields(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SHISAD_MODEL_BASE_URL", "https://api.example.com/v1")
+    monkeypatch.setenv("SHISAD_MODEL_PLANNER_BASE_URL", "https://planner.example.com/v1")
+    monkeypatch.setenv("SHISAD_MODEL_EMBEDDINGS_BASE_URL", "https://embed.example.com/v1")
+    monkeypatch.setenv("SHISAD_MODEL_MONITOR_BASE_URL", "https://monitor.example.com/v1")
+    config = DaemonConfig(
+        data_dir=tmp_path / "data",
+        socket_path=tmp_path / "control.sock",
+        policy_path=tmp_path / "policy.yaml",
+        log_level="INFO",
+        matrix_enabled=True,
+        matrix_homeserver="https://matrix.example.org",
+        matrix_user_id="@bot:example.org",
+        matrix_access_token="token",
+        matrix_room_id="!room:example.org",
+    )
+    daemon_task = asyncio.create_task(run_daemon(config))
+    client = ControlClient(config.socket_path)
+    try:
+        await _wait_for_socket(config.socket_path)
+        await client.connect()
+        status = await client.call("daemon.status")
+        assert "channels" in status
+        matrix = status["channels"]["matrix"]
+        assert matrix["enabled"] is True
+        assert "available" in matrix
+        assert "connected" in matrix
+        assert "e2ee_enabled" in matrix
     finally:
         with suppress(Exception):
             await client.call("daemon.shutdown")

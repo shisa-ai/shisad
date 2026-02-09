@@ -15,6 +15,9 @@ def test_m2_t23_ci_generates_coverage_and_validates_baseline() -> None:
     ci = Path(".github/workflows/ci.yml").read_text()
     assert "--cov=src" in ci
     assert "scripts/coverage_baseline.py" in ci
+    assert "scripts/coverage_trend.py" in ci
+    assert "scripts/yara_parity_report.py" in ci
+    assert "actions/upload-artifact@v4" in ci
 
 
 def test_m2_t24_provenance_drift_check_detects_modified_assets(tmp_path: Path) -> None:
@@ -69,3 +72,65 @@ def test_m2_provenance_script_verify_succeeds() -> None:
     )
     assert result.returncode == 0, result.stdout + result.stderr
 
+
+def test_m2_yara_parity_report_script_writes_metrics(tmp_path: Path) -> None:
+    output = tmp_path / "yara-parity.json"
+    result = subprocess.run(
+        [
+            "uv",
+            "run",
+            "python",
+            "scripts/yara_parity_report.py",
+            "--output",
+            str(output),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    payload = output.read_text()
+    assert "\"modes\"" in payload
+    assert "\"delta\"" in payload
+
+
+def test_m2_coverage_trend_script_writes_per_package_metrics(tmp_path: Path) -> None:
+    coverage_xml = tmp_path / "coverage.xml"
+    coverage_xml.write_text(
+        """
+<coverage line-rate="1.0">
+  <packages>
+    <package>
+      <classes>
+        <class filename="src/shisad/security/pep.py">
+          <lines>
+            <line number="1" hits="1" />
+            <line number="2" hits="0" />
+          </lines>
+        </class>
+      </classes>
+    </package>
+  </packages>
+</coverage>
+""",
+        encoding="utf-8",
+    )
+    output = tmp_path / "coverage-trend.json"
+    result = subprocess.run(
+        [
+            "uv",
+            "run",
+            "python",
+            "scripts/coverage_trend.py",
+            "--xml",
+            str(coverage_xml),
+            "--output",
+            str(output),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    payload = output.read_text()
+    assert "\"package\": \"security\"" in payload
