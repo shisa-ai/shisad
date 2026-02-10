@@ -8,8 +8,10 @@ from __future__ import annotations
 import asyncio
 import json
 import sys
+from pathlib import Path
 
 import click
+import yaml
 
 from shisad.core.config import DaemonConfig
 
@@ -469,6 +471,114 @@ def task_list() -> None:
             await client.close()
 
     asyncio.run(_list())
+
+
+@cli.group()
+def skill() -> None:
+    """Skill profiling and lock workflow."""
+
+
+@skill.command("profile")
+@click.argument("skill_path", type=click.Path(exists=True, file_okay=False, path_type=Path))
+@click.option("--duration", default="1h", help="Profile duration hint (metadata only)")
+def skill_profile(skill_path: Path, duration: str) -> None:
+    """Run skill static profile and save capability profile."""
+    from shisad.skills import CapabilityInferenceAnalyzer, SkillProfiler, load_skill_bundle
+
+    bundle = load_skill_bundle(skill_path)
+    inferred = CapabilityInferenceAnalyzer().infer(bundle)
+    profiler = SkillProfiler()
+    for host in inferred.network_domains:
+        profiler.record_network(host)
+    for path in inferred.file_paths:
+        profiler.record_filesystem(path)
+    for command in inferred.shell_commands:
+        profiler.record_shell(command)
+    for env_name in inferred.environment_vars:
+        profiler.record_environment(env_name)
+
+    out_path = skill_path / ".shisad-profile.json"
+    profiler.save(out_path)
+    click.echo(f"Profile captured ({duration}) -> {out_path}")
+
+
+@skill.command("generate-manifest")
+@click.argument("skill_path", type=click.Path(exists=True, file_okay=False, path_type=Path))
+@click.option("--from-profile", "from_profile", is_flag=True, default=False)
+@click.option("--author", default="local-user")
+@click.option("--source-repo", default="local")
+def skill_generate_manifest(
+    skill_path: Path,
+    from_profile: bool,
+    author: str,
+    source_repo: str,
+) -> None:
+    """Generate skill.manifest.yaml from profile output."""
+    from shisad.skills import SkillProfiler, generate_manifest_from_profile
+
+    if not from_profile:
+        raise click.ClickException("--from-profile is required for this command")
+    profile_path = skill_path / ".shisad-profile.json"
+    profiler = SkillProfiler.load(profile_path)
+    manifest = generate_manifest_from_profile(
+        profile=profiler.profile,
+        name=skill_path.name,
+        author=author,
+        source_repo=source_repo,
+        version="1.0.0",
+    )
+    payload = manifest.model_dump(mode="json")
+    payload["signature"] = f"sha256:{manifest.manifest_hash()}"
+    out_path = skill_path / "skill.manifest.yaml"
+    out_path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
+    click.echo(f"Generated manifest -> {out_path}")
+
+
+@skill.command("lock")
+@click.argument("skill_path", type=click.Path(exists=True, file_okay=False, path_type=Path))
+def skill_lock(skill_path: Path) -> None:
+    """Lock skill to manifest hash."""
+    from shisad.skills import lock_skill_manifest, parse_manifest
+
+    manifest_path = skill_path / "skill.manifest.yaml"
+    manifest = parse_manifest(manifest_path)
+    lock_path = skill_path / ".shisad-skill.lock"
+    digest = lock_skill_manifest(manifest, lock_path)
+    click.echo(f"Locked {manifest.name}@{manifest.version} -> {digest[:16]}…")
+
+
+@cli.group()
+def policy() -> None:
+    """Policy compiler and explanation helpers."""
+
+
+@policy.command("explain")
+@click.option("--session", "session_id", default="", help="Session ID")
+@click.option("--action", default="", help="Action to explain")
+@click.option("--tool", "tool_name", default="", help="Tool name")
+def policy_explain(session_id: str, action: str, tool_name: str) -> None:
+    """Explain effective policy inheritance for a session/action."""
+    config = _get_config()
+
+    async def _explain() -> None:
+        from shisad.core.api.transport import ControlClient
+
+        client = ControlClient(config.socket_path)
+        try:
+            await client.connect()
+            result = await client.call(
+                "policy.explain",
+                {
+                    "session_id": session_id or None,
+                    "action": action,
+                    "tool_name": tool_name or None,
+                },
+            )
+            click.echo(json.dumps(result, indent=2))
+        finally:
+            await client.close()
+
+    asyncio.run(_explain())
 
 
 if __name__ == "__main__":

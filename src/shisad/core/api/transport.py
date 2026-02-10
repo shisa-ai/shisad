@@ -246,7 +246,8 @@ class ControlServer:
         try:
             if params_model is not None:
                 validated = params_model.model_validate(request.params)
-                params = validated.model_dump(mode="json")
+                # Preserve caller tri-state semantics without injecting default nulls.
+                params = validated.model_dump(mode="json", exclude_unset=True)
             else:
                 params = dict(request.params)
             params["_rpc_peer"] = peer.as_dict()

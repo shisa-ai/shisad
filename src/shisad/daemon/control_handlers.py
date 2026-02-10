@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 from shisad.channels.base import ChannelMessage
 from shisad.channels.identity import ChannelIdentityMap
@@ -25,6 +26,9 @@ from shisad.core.events import (
     ProxyRequestEvaluated,
     SandboxDegraded,
     SandboxEscapeDetected,
+    SandboxExecutionCompleted,
+    SandboxExecutionIntent,
+    SandboxPreCheckpoint,
     SessionCreated,
     SessionMessageReceived,
     SessionMessageResponded,
@@ -55,6 +59,13 @@ from shisad.executors.sandbox import (
     SandboxResult,
     SandboxType,
 )
+from shisad.governance.merge import (
+    PolicyMerge,
+    PolicyMergeError,
+    ToolExecutionPolicy,
+    normalize_patch,
+)
+from shisad.governance.scopes import ScopedPolicy, ScopedPolicyCompiler, ScopeLevel
 from shisad.memory.ingestion import IngestionPipeline
 from shisad.memory.manager import MemoryManager
 from shisad.memory.schema import MemorySource
@@ -69,6 +80,8 @@ from shisad.security.policy import PolicyLoader
 from shisad.security.ratelimit import RateLimiter
 from shisad.security.risk import RiskCalibrator, RiskObservation
 from shisad.security.spotlight import render_spotlight_context
+from shisad.skills.manager import SkillManager
+from shisad.skills.sandbox import SkillExecutionRequest
 
 _SIDE_EFFECT_CAPABILITIES: set[Capability] = {
     Capability.EMAIL_WRITE,
@@ -148,6 +161,7 @@ class DaemonControlHandlers:
         ingestion: IngestionPipeline,
         memory_manager: MemoryManager,
         scheduler: SchedulerManager,
+        skill_manager: SkillManager,
         sandbox: SandboxOrchestrator,
         browser_sandbox: BrowserSandbox,
         shutdown_event: asyncio.Event,
@@ -179,6 +193,7 @@ class DaemonControlHandlers:
         self._ingestion = ingestion
         self._memory_manager = memory_manager
         self._scheduler = scheduler
+        self._skill_manager = skill_manager
         self._sandbox = sandbox
         self._browser_sandbox = browser_sandbox
         self._shutdown_event = shutdown_event
@@ -191,6 +206,180 @@ class DaemonControlHandlers:
         self._pending_by_session: dict[SessionId, list[str]] = {}
         self._monitor_reject_counts: dict[SessionId, int] = {}
         self._load_pending_actions()
+
+    def _compute_tool_policy_floor(
+        self,
+        *,
+        tool_name: ToolName,
+        tool_definition: ToolDefinition | None,
+    ) -> ToolExecutionPolicy:
+        sandbox_policy = self._policy_loader.policy.sandbox
+        is_unknown_tool = tool_definition is None
+        if tool_definition is not None and tool_definition.sandbox_type:
+            sandbox_type = SandboxType(str(tool_definition.sandbox_type))
+        elif tool_definition is not None and tool_definition.destinations:
+            sandbox_type = SandboxType(sandbox_policy.network_backend)
+        else:
+            sandbox_type = SandboxType(sandbox_policy.default_backend)
+
+        network = NetworkPolicy(
+            allow_network=bool(tool_definition and tool_definition.destinations)
+            or is_unknown_tool,
+            allowed_domains=(
+                list(tool_definition.destinations)
+                if tool_definition is not None
+                else ["*"]
+            ),
+            deny_private_ranges=True,
+            deny_ip_literals=True,
+        )
+        filesystem = (
+            FilesystemPolicy(mounts=[{"path": "/**", "mode": "rw"}])
+            if is_unknown_tool
+            else FilesystemPolicy()
+        )
+        environment = EnvironmentPolicy(
+            allowed_keys=list(sandbox_policy.env_allowlist),
+            max_keys=sandbox_policy.env_max_keys,
+            max_total_bytes=sandbox_policy.env_max_total_bytes,
+        )
+        limits = ResourceLimits()
+        if is_unknown_tool:
+            degraded_mode = DegradedModePolicy.FAIL_OPEN
+            security_critical = False
+        else:
+            degraded_mode = (
+                DegradedModePolicy.FAIL_CLOSED
+                if sandbox_policy.fail_closed_security_critical
+                else DegradedModePolicy.FAIL_OPEN
+            )
+            security_critical = True
+
+        override = sandbox_policy.tool_overrides.get(tool_name)
+        if override is not None:
+            if override.sandbox_type:
+                sandbox_type = SandboxType(str(override.sandbox_type))
+            if override.network is not None:
+                network = NetworkPolicy.model_validate(override.network.model_dump(mode="json"))
+            if override.filesystem is not None:
+                filesystem = FilesystemPolicy.model_validate(
+                    override.filesystem.model_dump(mode="json")
+                )
+            if override.environment is not None:
+                env_payload = override.environment.model_dump(mode="json")
+                if not env_payload.get("allowed_keys"):
+                    env_payload["allowed_keys"] = list(sandbox_policy.env_allowlist)
+                if env_payload.get("max_keys") is None:
+                    env_payload["max_keys"] = sandbox_policy.env_max_keys
+                if env_payload.get("max_total_bytes") is None:
+                    env_payload["max_total_bytes"] = sandbox_policy.env_max_total_bytes
+                environment = EnvironmentPolicy.model_validate(env_payload)
+            if override.limits is not None:
+                limit_payload = {
+                    **limits.model_dump(mode="json"),
+                    **override.limits.model_dump(mode="json", exclude_none=True),
+                }
+                limits = ResourceLimits.model_validate(limit_payload)
+            if override.degraded_mode:
+                degraded_mode = DegradedModePolicy(str(override.degraded_mode))
+            if override.security_critical is not None:
+                security_critical = bool(override.security_critical)
+
+        return ToolExecutionPolicy(
+            sandbox_type=sandbox_type,
+            network=network,
+            filesystem=filesystem,
+            environment=environment,
+            limits=limits,
+            degraded_mode=degraded_mode,
+            security_critical=security_critical,
+        )
+
+    @staticmethod
+    def _action_hash(*, session_id: SessionId, tool_name: ToolName, command: list[str]) -> str:
+        payload = {
+            "session_id": str(session_id),
+            "tool_name": str(tool_name),
+            "command": list(command),
+        }
+        encoded = json.dumps(payload, sort_keys=True).encode("utf-8")
+        return hashlib.sha256(encoded).hexdigest()
+
+    async def _execute_sandbox_config(
+        self,
+        *,
+        sid: SessionId,
+        session: Session,
+        tool_name: ToolName,
+        config: SandboxConfig,
+    ) -> SandboxResult:
+        action_hash = self._action_hash(
+            session_id=sid,
+            tool_name=tool_name,
+            command=list(config.command),
+        )
+        command_hash = hashlib.sha256(
+            " ".join(config.command).encode("utf-8", errors="ignore")
+        ).hexdigest()
+        try:
+            await self._event_bus.publish(
+                SandboxExecutionIntent(
+                    session_id=sid,
+                    actor="sandbox",
+                    tool_name=tool_name,
+                    action_hash=action_hash,
+                    command_hash=command_hash,
+                )
+            )
+        except Exception:
+            return SandboxResult(
+                allowed=False,
+                reason="audit_unavailable_prelaunch",
+                backend=config.sandbox_type,
+                action_hash=action_hash,
+            )
+
+        if SandboxOrchestrator.is_destructive(config.command):
+            try:
+                await self._event_bus.publish(
+                    SandboxPreCheckpoint(
+                        session_id=sid,
+                        actor="sandbox",
+                        tool_name=tool_name,
+                        action_hash=action_hash,
+                    )
+                )
+            except Exception:
+                return SandboxResult(
+                    allowed=False,
+                    reason="audit_unavailable_prelaunch",
+                    backend=config.sandbox_type,
+                    action_hash=action_hash,
+                )
+
+        result = await self._sandbox.execute_async(config, session=session)
+        result = result.model_copy(update={"action_hash": action_hash})
+        try:
+            await self._event_bus.publish(
+                SandboxExecutionCompleted(
+                    session_id=sid,
+                    actor="sandbox",
+                    tool_name=tool_name,
+                    action_hash=action_hash,
+                    success=bool(
+                        result.allowed and not result.timed_out and (result.exit_code or 0) == 0
+                    ),
+                    error="" if result.allowed else result.reason,
+                )
+            )
+        except Exception as exc:
+            await self._handle_lockdown_transition(
+                sid,
+                trigger="audit_failure",
+                reason=f"audit durability failure after launch: {exc.__class__.__name__}",
+                recommended_action="quarantine",
+            )
+        return result
 
     async def _handle_lockdown_transition(
         self,
@@ -457,43 +646,16 @@ class DaemonControlHandlers:
                     tool_name=str(tool.name),
                     command=[],
                 ),
-                session=session,
+                    session=session,
+                )
+        floor = self._compute_tool_policy_floor(tool_name=tool.name, tool_definition=tool)
+        try:
+            merged_policy = PolicyMerge.merge(
+                server=floor,
+                caller=normalize_patch(arguments),
             )
-        filesystem = FilesystemPolicy.model_validate(arguments.get("filesystem", {}))
-        network_payload = dict(arguments.get("network", {}))
-        if not network_payload and tool.destinations:
-            network_payload = {
-                "allow_network": True,
-                "allowed_domains": list(tool.destinations),
-            }
-        network = NetworkPolicy.model_validate(network_payload)
-        environment_data: dict[str, Any] = dict(arguments.get("environment", {}))
-        if not environment_data:
-            environment_data = {
-                "allowed_keys": list(self._policy_loader.policy.sandbox.env_allowlist),
-                "max_keys": self._policy_loader.policy.sandbox.env_max_keys,
-                "max_total_bytes": self._policy_loader.policy.sandbox.env_max_total_bytes,
-            }
-        environment = EnvironmentPolicy.model_validate(environment_data)
-        limits = ResourceLimits.model_validate(arguments.get("limits", {}))
-
-        override = self._policy_loader.policy.sandbox.tool_overrides.get(tool.name)
-        sandbox_type: SandboxType | None = None
-        if override:
-            sandbox_type = SandboxType(override)
-        elif tool.sandbox_type:
-            sandbox_type = SandboxType(str(tool.sandbox_type))
-        elif network.allow_network:
-            sandbox_type = SandboxType(self._policy_loader.policy.sandbox.network_backend)
-        else:
-            sandbox_type = SandboxType(self._policy_loader.policy.sandbox.default_backend)
-
-        degraded_default = (
-            "fail_closed"
-            if self._policy_loader.policy.sandbox.fail_closed_security_critical
-            else "fail_open"
-        )
-        degraded_mode = DegradedModePolicy(str(arguments.get("degraded_mode", degraded_default)))
+        except PolicyMergeError as exc:
+            return SandboxResult(allowed=False, reason=f"policy_merge:{exc}")
 
         config = SandboxConfig(
             session_id=str(sid),
@@ -508,16 +670,21 @@ class DaemonControlHandlers:
             },
             request_body=str(arguments.get("request_body", "")),
             cwd=str(arguments.get("cwd", "")),
-            sandbox_type=sandbox_type,
-            security_critical=bool(arguments.get("security_critical", True)),
+            sandbox_type=merged_policy.sandbox_type,
+            security_critical=merged_policy.security_critical,
             approved_by_pep=True,
-            filesystem=filesystem,
-            network=network,
-            environment=environment,
-            limits=limits,
-            degraded_mode=degraded_mode,
+            filesystem=merged_policy.filesystem,
+            network=merged_policy.network,
+            environment=merged_policy.environment,
+            limits=merged_policy.limits,
+            degraded_mode=merged_policy.degraded_mode,
         )
-        return await self._sandbox.execute_async(config, session=session)
+        return await self._execute_sandbox_config(
+            sid=sid,
+            session=session,
+            tool_name=tool.name,
+            config=config,
+        )
 
     async def _publish_sandbox_events(
         self,
@@ -931,48 +1098,69 @@ class DaemonControlHandlers:
         if session is None:
             raise ValueError(f"Unknown session: {sid}")
 
-        sandbox_type_raw = params.get("sandbox_type")
-        sandbox_type: SandboxType | None = None
-        if isinstance(sandbox_type_raw, str) and sandbox_type_raw.strip():
-            sandbox_type = SandboxType(sandbox_type_raw.strip())
-
-        filesystem = FilesystemPolicy.model_validate(params.get("filesystem", {}))
-        network = NetworkPolicy.model_validate(params.get("network", {}))
-        environment_data: dict[str, Any] = dict(params.get("environment", {}))
-        if not environment_data:
-            environment_data = {
-                "allowed_keys": list(self._policy_loader.policy.sandbox.env_allowlist),
-                "max_keys": self._policy_loader.policy.sandbox.env_max_keys,
-                "max_total_bytes": self._policy_loader.policy.sandbox.env_max_total_bytes,
-            }
-        environment = EnvironmentPolicy.model_validate(environment_data)
-        limits = ResourceLimits.model_validate(params.get("limits", {}))
-        degraded_default = (
-            "fail_closed"
-            if self._policy_loader.policy.sandbox.fail_closed_security_critical
-            else "fail_open"
-        )
-        degraded_mode = DegradedModePolicy(str(params.get("degraded_mode", degraded_default)))
-
         tool_name_value = str(params.get("tool_name", ""))
-        if sandbox_type is None:
-            override = self._policy_loader.policy.sandbox.tool_overrides.get(
-                ToolName(tool_name_value)
+        tool_name = ToolName(tool_name_value)
+        skill_name = str(params.get("skill_name") or "").strip()
+        if skill_name:
+            network_hosts: list[str] = []
+            for raw in params.get("network_urls", []):
+                token = str(raw).strip()
+                if not token:
+                    continue
+                host = urlparse(token).hostname or ""
+                if host:
+                    network_hosts.append(host.lower())
+            runtime_decision = self._skill_manager.authorize_runtime(
+                skill_name=skill_name,
+                request=SkillExecutionRequest(
+                    skill_name=skill_name,
+                    network_hosts=network_hosts,
+                    filesystem_paths=[
+                        str(item) for item in params.get("read_paths", [])
+                    ]
+                    + [str(item) for item in params.get("write_paths", [])],
+                    shell_commands=[" ".join(str(token) for token in params.get("command", []))],
+                    environment_vars=list(dict(params.get("env", {})).keys()),
+                ),
             )
-            if override:
-                sandbox_type = SandboxType(override)
-            else:
-                tool_def = self._registry.get_tool(ToolName(tool_name_value))
-                if tool_def is not None and tool_def.sandbox_type:
-                    sandbox_type = SandboxType(str(tool_def.sandbox_type))
-                elif network.allow_network or list(params.get("network_urls", [])):
-                    sandbox_type = SandboxType(self._policy_loader.policy.sandbox.network_backend)
-                else:
-                    sandbox_type = SandboxType(self._policy_loader.policy.sandbox.default_backend)
+            if not runtime_decision.allowed:
+                reason = runtime_decision.reason
+                if runtime_decision.violations:
+                    reason = reason + ":" + ",".join(runtime_decision.violations)
+                await self._event_bus.publish(
+                    ToolRejected(
+                        session_id=sid,
+                        actor="skill_sandbox",
+                        tool_name=tool_name,
+                        reason=reason,
+                    )
+                )
+                return SandboxResult(
+                    allowed=False,
+                    reason=reason,
+                ).model_dump(mode="json")
+
+        tool_def = self._registry.get_tool(tool_name)
+        floor = self._compute_tool_policy_floor(
+            tool_name=tool_name,
+            tool_definition=tool_def,
+        )
+        try:
+            merged_policy = PolicyMerge.merge(server=floor, caller=normalize_patch(params))
+        except PolicyMergeError as exc:
+            await self._event_bus.publish(
+                ToolRejected(
+                    session_id=sid,
+                    actor="control_api",
+                    tool_name=tool_name,
+                    reason=f"policy_floor_violation:{exc}",
+                )
+            )
+            raise ValueError(f"policy floor violation: {exc}") from exc
 
         config = SandboxConfig(
             session_id=str(sid),
-            tool_name=str(params.get("tool_name", "")),
+            tool_name=tool_name_value,
             command=list(params.get("command", [])),
             read_paths=[str(item) for item in params.get("read_paths", [])],
             write_paths=[str(item) for item in params.get("write_paths", [])],
@@ -983,16 +1171,21 @@ class DaemonControlHandlers:
             },
             request_body=str(params.get("request_body", "")),
             cwd=str(params.get("cwd", "")),
-            sandbox_type=sandbox_type,
-            security_critical=bool(params.get("security_critical", True)),
+            sandbox_type=merged_policy.sandbox_type,
+            security_critical=merged_policy.security_critical,
             approved_by_pep=bool(params.get("approved_by_pep", False)),
-            filesystem=filesystem,
-            network=network,
-            environment=environment,
-            limits=limits,
-            degraded_mode=degraded_mode,
+            filesystem=merged_policy.filesystem,
+            network=merged_policy.network,
+            environment=merged_policy.environment,
+            limits=merged_policy.limits,
+            degraded_mode=merged_policy.degraded_mode,
         )
-        result = await self._sandbox.execute_async(config, session=session)
+        result = await self._execute_sandbox_config(
+            sid=sid,
+            session=session,
+            tool_name=ToolName(config.tool_name),
+            config=config,
+        )
         await self._publish_sandbox_events(
             sid=sid,
             config_tool_name=ToolName(config.tool_name),
@@ -1126,9 +1319,39 @@ class DaemonControlHandlers:
             },
             "executors": {
                 "sandbox_backends": [item.value for item in SandboxType],
+                "connect_path": self._sandbox.connect_path_status(),
                 "browser": self._browser_sandbox.policy.model_dump(mode="json"),
             },
             "provenance": self._provenance_status,
+        }
+
+    async def handle_policy_explain(self, params: dict[str, Any]) -> dict[str, Any]:
+        sid_raw = params.get("session_id")
+        sid = SessionId(str(sid_raw)) if sid_raw else SessionId("")
+        tool_name_raw = str(params.get("tool_name") or "").strip()
+        action = str(params.get("action", "")).strip()
+        if not tool_name_raw and action.startswith("tool:"):
+            tool_name_raw = action.split(":", 1)[1].strip()
+
+        tool_name = ToolName(tool_name_raw or "shell_exec")
+        tool_def = self._registry.get_tool(tool_name)
+        floor = self._compute_tool_policy_floor(tool_name=tool_name, tool_definition=tool_def)
+        compiled = ScopedPolicyCompiler.compile_chain(
+            [
+                ScopedPolicy(
+                    level=ScopeLevel.ORG,
+                    constraints=floor,
+                    defaults={"action": action},
+                    preferences={},
+                )
+            ]
+        )
+        return {
+            "session_id": str(sid),
+            "tool_name": str(tool_name),
+            "action": action,
+            "effective_policy": compiled.effective.model_dump(mode="json"),
+            "contributors": {key: value.value for key, value in compiled.contributors.items()},
         }
 
     async def handle_daemon_shutdown(self, params: dict[str, Any]) -> dict[str, Any]:
@@ -1214,6 +1437,29 @@ class DaemonControlHandlers:
             "active_key_id": key_id,
             "reencrypt_existing": reencrypt_existing,
         }
+
+    async def handle_skill_review(self, params: dict[str, Any]) -> dict[str, Any]:
+        skill_path = Path(str(params.get("skill_path", "")).strip())
+        if not skill_path.exists():
+            raise ValueError(f"skill path not found: {skill_path}")
+        return self._skill_manager.review(skill_path)
+
+    async def handle_skill_install(self, params: dict[str, Any]) -> dict[str, Any]:
+        skill_path = Path(str(params.get("skill_path", "")).strip())
+        if not skill_path.exists():
+            raise ValueError(f"skill path not found: {skill_path}")
+        decision = await self._skill_manager.install(
+            skill_path,
+            approve_untrusted=bool(params.get("approve_untrusted", False)),
+        )
+        return decision.model_dump(mode="json")
+
+    async def handle_skill_profile(self, params: dict[str, Any]) -> dict[str, Any]:
+        skill_path = Path(str(params.get("skill_path", "")).strip())
+        if not skill_path.exists():
+            raise ValueError(f"skill path not found: {skill_path}")
+        profile = self._skill_manager.profile(skill_path)
+        return profile.profile.to_json()
 
     async def handle_task_create(self, params: dict[str, Any]) -> dict[str, Any]:
         schedule = Schedule.model_validate(params.get("schedule", {}))

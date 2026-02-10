@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from shisad.core.types import Capability, ToolName
 
@@ -68,16 +68,89 @@ class RateLimitPolicy(BaseModel):
     burst_window_seconds: int | None = None
 
 
+class SandboxToolOverrideNetwork(BaseModel):
+    allow_network: bool = False
+    allowed_domains: list[str] = Field(default_factory=list)
+    deny_private_ranges: bool = True
+    deny_ip_literals: bool = True
+
+
+class SandboxToolOverrideFilesystem(BaseModel):
+    mounts: list[dict[str, str]] = Field(default_factory=list)
+    denylist: list[str] = Field(default_factory=list)
+
+
+class SandboxToolOverrideEnvironment(BaseModel):
+    allowed_keys: list[str] = Field(default_factory=list)
+    denied_prefixes: list[str] = Field(default_factory=list)
+    max_keys: int | None = None
+    max_total_bytes: int | None = None
+
+
+class SandboxToolOverrideLimits(BaseModel):
+    cpu_shares: int | None = None
+    memory_mb: int | None = None
+    timeout_seconds: int | None = None
+    output_bytes: int | None = None
+    pids: int | None = None
+
+
+class SandboxToolOverride(BaseModel):
+    sandbox_type: str | None = None
+    network: SandboxToolOverrideNetwork | None = None
+    filesystem: SandboxToolOverrideFilesystem | None = None
+    environment: SandboxToolOverrideEnvironment | None = None
+    limits: SandboxToolOverrideLimits | None = None
+    degraded_mode: str | None = None
+    security_critical: bool | None = None
+
+
 class SandboxPolicy(BaseModel):
     """Sandbox policy defaults and per-tool overrides."""
 
     default_backend: str = "nsjail"
     network_backend: str = "container"
     fail_closed_security_critical: bool = True
-    tool_overrides: dict[ToolName, str] = Field(default_factory=dict)
+    tool_overrides: dict[ToolName, SandboxToolOverride] = Field(default_factory=dict)
     env_allowlist: list[str] = Field(default_factory=lambda: ["PATH", "LANG", "TERM", "HOME"])
     env_max_keys: int = 32
     env_max_total_bytes: int = 8192
+    dependency_source_allowlist: list[str] = Field(
+        default_factory=lambda: ["shisa-registry", "local"]
+    )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _migrate_legacy_tool_overrides(cls, value: Any) -> Any:
+        if not isinstance(value, dict):
+            return value
+        overrides = value.get("tool_overrides")
+        if not isinstance(overrides, dict):
+            return value
+        migrated: dict[str, Any] = {}
+        for key, item in overrides.items():
+            if isinstance(item, str):
+                logger.warning(
+                    "Deprecated sandbox.tool_overrides scalar for tool '%s'; "
+                    "interpreting as sandbox_type override",
+                    key,
+                )
+                migrated[str(key)] = {"sandbox_type": item}
+            else:
+                migrated[str(key)] = item
+        value["tool_overrides"] = migrated
+        return value
+
+
+class SkillPolicy(BaseModel):
+    """Skill install/review policy controls."""
+
+    require_review_on_update: bool = True
+    require_signature_for_auto_install: bool = True
+    trusted_key_ids: list[str] = Field(default_factory=list)
+    dependency_source_allowlist: list[str] = Field(
+        default_factory=lambda: ["shisa-registry", "local"]
+    )
 
 
 class PolicyBundle(BaseModel):
@@ -109,6 +182,7 @@ class PolicyBundle(BaseModel):
     risk_policy: RiskPolicy = Field(default_factory=RiskPolicy)
     rate_limits: RateLimitPolicy = Field(default_factory=RateLimitPolicy)
     sandbox: SandboxPolicy = Field(default_factory=SandboxPolicy)
+    skills: SkillPolicy = Field(default_factory=SkillPolicy)
     yara_required: bool = False
     safe_output_domains: list[str] = Field(default_factory=list)
 

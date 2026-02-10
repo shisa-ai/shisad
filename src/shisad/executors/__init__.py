@@ -12,6 +12,7 @@ from shisad.executors.browser import (
     BrowserSandboxPolicy,
     BrowserScreenshotResult,
 )
+from shisad.executors.connect_path import ConnectPathProxy, ConnectPathResult, NoopConnectPathProxy
 from shisad.executors.mounts import (
     FilesystemAccessDecision,
     FilesystemPolicy,
@@ -40,6 +41,8 @@ __all__ = [
     "BrowserSandboxMode",
     "BrowserSandboxPolicy",
     "BrowserScreenshotResult",
+    "ConnectPathProxy",
+    "ConnectPathResult",
     "DegradedModePolicy",
     "EgressProxy",
     "EnvironmentPolicy",
@@ -48,6 +51,7 @@ __all__ = [
     "MountManager",
     "MountRule",
     "NetworkPolicy",
+    "NoopConnectPathProxy",
     "ProxyDecision",
     "ResourceLimits",
     "SandboxConfig",

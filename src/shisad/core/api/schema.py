@@ -232,9 +232,16 @@ class ActionDecisionParams(_StrictParams):
     reason: str = ""
 
 
+class PolicyExplainParams(_StrictParams):
+    session_id: str | None = None
+    action: str = ""
+    tool_name: str | None = None
+
+
 class ToolExecuteParams(_StrictParams):
     session_id: str
     tool_name: str
+    skill_name: str | None = None
     command: list[str] = Field(min_length=1)
     read_paths: list[str] = Field(default_factory=list)
     write_paths: list[str] = Field(default_factory=list)
@@ -263,3 +270,16 @@ class BrowserScreenshotParams(_StrictParams):
     session_id: str
     image_base64: str
     ocr_text: str = ""
+
+
+class SkillReviewParams(_StrictParams):
+    skill_path: str
+
+
+class SkillInstallParams(_StrictParams):
+    skill_path: str
+    approve_untrusted: bool = False
+
+
+class SkillProfileParams(_StrictParams):
+    skill_path: str

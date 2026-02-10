@@ -34,11 +34,15 @@ from shisad.core.api.schema import (
     MemoryRotateKeyParams,
     MemoryWriteParams,
     NoParams,
+    PolicyExplainParams,
     SessionCreateParams,
     SessionGrantCapabilitiesParams,
     SessionMessageParams,
     SessionRestoreParams,
     SessionRollbackParams,
+    SkillInstallParams,
+    SkillProfileParams,
+    SkillReviewParams,
     TaskCreateParams,
     TaskDisableParams,
     TaskPendingConfirmationsParams,
@@ -75,6 +79,7 @@ from shisad.core.transcript import TranscriptStore
 from shisad.core.types import CredentialRef, SessionId, ToolName
 from shisad.daemon.control_handlers import DaemonControlHandlers
 from shisad.executors.browser import BrowserSandbox, BrowserSandboxPolicy
+from shisad.executors.connect_path import NoopConnectPathProxy
 from shisad.executors.proxy import EgressProxy
 from shisad.executors.sandbox import SandboxOrchestrator
 from shisad.memory.ingestion import EmbeddingFingerprint, IngestionPipeline, RetrieveRagTool
@@ -90,6 +95,7 @@ from shisad.security.policy import PolicyLoader
 from shisad.security.provenance import SecurityAssetManifest, load_manifest, verify_assets
 from shisad.security.ratelimit import RateLimitConfig, RateLimiter, RateLimitEvent
 from shisad.security.risk import RiskCalibrator
+from shisad.skills.manager import SkillManager
 
 logger = logging.getLogger(__name__)
 
@@ -559,8 +565,17 @@ async def run_daemon(config: DaemonConfig) -> None:
             CredentialConfig(allowed_hosts=["api.shisa.ai"]),
         )
     egress_proxy = EgressProxy(credential_store=credential_store)
+    connect_path_proxy = NoopConnectPathProxy()
+    if not connect_path_proxy.net_admin_available:
+        logger.warning(
+            "[shisad] Connect-path enforcement unavailable: CAP_NET_ADMIN not granted. "
+            "Network-enabled sandbox processes have unrestricted IP-level access. "
+            "Pre-execution DNS and domain policy checks are still enforced. "
+            "To enable: run daemon with CAP_NET_ADMIN or as root."
+        )
     sandbox = SandboxOrchestrator(
         proxy=egress_proxy,
+        connect_path_proxy=connect_path_proxy,
         checkpoint_store=checkpoint_store,
     )
     ingestion = IngestionPipeline(
@@ -576,6 +591,10 @@ async def run_daemon(config: DaemonConfig) -> None:
         audit_hook=_audit_memory_event,
     )
     scheduler = SchedulerManager(storage_dir=config.data_dir / "tasks")
+    skill_manager = SkillManager(
+        storage_dir=config.data_dir / "skills",
+        policy=policy_loader.policy.skills,
+    )
     lockdown_manager = LockdownManager(notification_hook=_lockdown_notify)
     rate_limiter = RateLimiter(
         RateLimitConfig(
@@ -637,6 +656,7 @@ async def run_daemon(config: DaemonConfig) -> None:
         ingestion=ingestion,
         memory_manager=memory_manager,
         scheduler=scheduler,
+        skill_manager=skill_manager,
         sandbox=sandbox,
         browser_sandbox=browser_sandbox,
         shutdown_event=shutdown_event,
@@ -675,6 +695,11 @@ async def run_daemon(config: DaemonConfig) -> None:
         params_model=SessionGrantCapabilitiesParams,
     )
     server.register_method("daemon.status", handlers.handle_daemon_status, params_model=NoParams)
+    server.register_method(
+        "policy.explain",
+        handlers.handle_policy_explain,
+        params_model=PolicyExplainParams,
+    )
     server.register_method(
         "daemon.shutdown",
         handlers.handle_daemon_shutdown,
@@ -730,6 +755,24 @@ async def run_daemon(config: DaemonConfig) -> None:
         handlers.handle_memory_rotate_key,
         admin_only=True,
         params_model=MemoryRotateKeyParams,
+    )
+    server.register_method(
+        "skill.review",
+        handlers.handle_skill_review,
+        admin_only=True,
+        params_model=SkillReviewParams,
+    )
+    server.register_method(
+        "skill.install",
+        handlers.handle_skill_install,
+        admin_only=True,
+        params_model=SkillInstallParams,
+    )
+    server.register_method(
+        "skill.profile",
+        handlers.handle_skill_profile,
+        admin_only=True,
+        params_model=SkillProfileParams,
     )
     server.register_method(
         "task.create",

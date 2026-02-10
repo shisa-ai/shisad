@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import logging
 import os
 import re
 import shutil
@@ -20,9 +21,12 @@ from urllib.parse import urlparse
 from pydantic import BaseModel, Field
 
 from shisad.core.session import CheckpointStore, Session
+from shisad.executors.connect_path import ConnectPathProxy, ConnectPathResult, NoopConnectPathProxy
 from shisad.executors.mounts import FilesystemAccessDecision, FilesystemPolicy, MountManager
 from shisad.executors.proxy import EgressProxy, NetworkPolicy, ProxyDecision
 from shisad.security.credentials import is_placeholder
+
+logger = logging.getLogger(__name__)
 
 _ESCAPE_SIGNAL_TOKENS = {
     "unshare",
@@ -159,6 +163,8 @@ class SandboxResult(BaseModel):
     fs_decisions: list[FilesystemAccessDecision] = Field(default_factory=list)
     network_decisions: list[ProxyDecision] = Field(default_factory=list)
     rollback_files_restored: int = 0
+    connect_path: ConnectPathResult | None = None
+    action_hash: str = ""
 
 
 class SandboxBackend:
@@ -189,10 +195,12 @@ class SandboxOrchestrator:
         self,
         *,
         proxy: EgressProxy,
+        connect_path_proxy: ConnectPathProxy | None = None,
         checkpoint_store: CheckpointStore | None = None,
         audit_hook: Callable[[dict[str, object]], None] | None = None,
     ) -> None:
         self._proxy = proxy
+        self._connect_path_proxy = connect_path_proxy or NoopConnectPathProxy()
         self._checkpoint_store = checkpoint_store
         self._audit_hook = audit_hook
         self._bwrap = self._detect_usable_bwrap()
@@ -242,6 +250,14 @@ class SandboxOrchestrator:
             ),
         }
 
+    def connect_path_status(self) -> dict[str, object]:
+        available = getattr(self._connect_path_proxy, "net_admin_available", False)
+        return {
+            "method": "none",
+            "enforced": False,
+            "cap_net_admin_available": bool(available),
+        }
+
     async def execute_async(
         self,
         config: SandboxConfig,
@@ -262,8 +278,21 @@ class SandboxOrchestrator:
         backend_type = self._select_backend(config)
         backend = self._backends[backend_type]
         degraded_controls = self._degraded_controls(config, backend.enforcement)
-        if degraded_controls and (
+        fail_closed = (
             config.degraded_mode == DegradedModePolicy.FAIL_CLOSED or config.security_critical
+        )
+        if config.network.allow_network and not backend.enforcement.network:
+            degraded_controls = sorted({*degraded_controls, "network_boundary"})
+            self._audit(
+                "sandbox.network_boundary_degraded",
+                {
+                    "tool_name": config.tool_name,
+                    "backend": backend_type.value,
+                    "session_id": config.session_id,
+                },
+            )
+        if degraded_controls and (
+            fail_closed
         ):
             self._audit(
                 "sandbox.degraded",
@@ -375,6 +404,37 @@ class SandboxOrchestrator:
                     degraded_controls=degraded_controls,
                 )
 
+        connect_path_result: ConnectPathResult | None = None
+        if config.network.allow_network:
+            allowed_ips: list[str] = []
+            for net_decision in network_decisions:
+                allowed_ips.extend(net_decision.resolved_addresses)
+            connect_path_result = self._connect_path_proxy.enforce(
+                allowed_ips=sorted(set(allowed_ips)),
+                namespace_pid=0,
+            )
+            if not connect_path_result.enforced:
+                degraded_controls = sorted({*degraded_controls, "connect_path"})
+                self._audit(
+                    "sandbox.connect_path_degraded",
+                    {
+                        "tool_name": config.tool_name,
+                        "reason": connect_path_result.reason,
+                        "method": connect_path_result.method,
+                        "session_id": config.session_id,
+                    },
+                )
+                if fail_closed:
+                    return SandboxResult(
+                        allowed=False,
+                        reason="connect_path_unavailable",
+                        backend=backend_type,
+                        fs_decisions=fs_decisions,
+                        network_decisions=network_decisions,
+                        degraded_controls=degraded_controls,
+                        connect_path=connect_path_result,
+                    )
+
         command, env, inject_err = self._inject_credentials(
             command=config.command,
             env=env,
@@ -405,9 +465,10 @@ class SandboxOrchestrator:
                     reason=f"network:{revalidated.reason}",
                     backend=backend_type,
                     fs_decisions=fs_decisions,
-                    network_decisions=network_decisions,
-                    degraded_controls=degraded_controls,
-                )
+                network_decisions=network_decisions,
+                degraded_controls=degraded_controls,
+                connect_path=connect_path_result,
+            )
 
         escape_reason = self._escape_signal_reason(command)
         if escape_reason is not None:
@@ -427,6 +488,7 @@ class SandboxOrchestrator:
                 fs_decisions=fs_decisions,
                 network_decisions=network_decisions,
                 degraded_controls=degraded_controls,
+                connect_path=connect_path_result,
             )
 
         checkpoint_id = ""
@@ -497,6 +559,7 @@ class SandboxOrchestrator:
                 fs_decisions=fs_decisions,
                 network_decisions=network_decisions,
                 degraded_controls=degraded_controls,
+                connect_path=connect_path_result,
             )
 
         return SandboxResult(
@@ -512,6 +575,7 @@ class SandboxOrchestrator:
             fs_decisions=fs_decisions,
             network_decisions=network_decisions,
             degraded_controls=degraded_controls,
+            connect_path=connect_path_result,
         )
 
     def _run_process(

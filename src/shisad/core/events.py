@@ -213,6 +213,30 @@ class SessionRolledBack(BaseEvent):
     checkpoint_id: str = ""
 
 
+class SandboxExecutionIntent(BaseEvent):
+    """Write-ahead envelope before sandbox subprocess launch."""
+
+    tool_name: ToolName
+    action_hash: str
+    command_hash: str = ""
+
+
+class SandboxPreCheckpoint(BaseEvent):
+    """Audit marker before destructive execution checkpoint workflow."""
+
+    tool_name: ToolName
+    action_hash: str
+
+
+class SandboxExecutionCompleted(BaseEvent):
+    """Execution envelope completion record."""
+
+    tool_name: ToolName
+    action_hash: str
+    success: bool = True
+    error: str = ""
+
+
 # Union of all event types for type-safe handling
 type AnyEvent = (
     SessionCreated
@@ -238,6 +262,9 @@ type AnyEvent = (
     | SandboxEscapeDetected
     | ProxyRequestEvaluated
     | SessionRolledBack
+    | SandboxExecutionIntent
+    | SandboxPreCheckpoint
+    | SandboxExecutionCompleted
 )
 
 EVENT_TYPES: dict[str, type[BaseEvent]] = {
@@ -264,6 +291,9 @@ EVENT_TYPES: dict[str, type[BaseEvent]] = {
     "SandboxEscapeDetected": SandboxEscapeDetected,
     "ProxyRequestEvaluated": ProxyRequestEvaluated,
     "SessionRolledBack": SessionRolledBack,
+    "SandboxExecutionIntent": SandboxExecutionIntent,
+    "SandboxPreCheckpoint": SandboxPreCheckpoint,
+    "SandboxExecutionCompleted": SandboxExecutionCompleted,
 }
 
 
