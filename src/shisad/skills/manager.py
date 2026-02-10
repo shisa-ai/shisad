@@ -144,6 +144,18 @@ class SkillManager:
                 summary=summary,
                 artifact_state=ArtifactState.REVOKED,
             )
+        if (
+            self._policy.require_signature_for_auto_install
+            and signature.status is not SignatureStatus.TRUSTED
+        ):
+            return SkillInstallDecision(
+                allowed=False,
+                status="review",
+                reason="signature_required_policy",
+                findings=findings,
+                summary=summary,
+                artifact_state=ArtifactState.REVIEW,
+            )
         if signature.require_confirmation and not approve_untrusted:
             return SkillInstallDecision(
                 allowed=False,

@@ -7,7 +7,7 @@ import re
 from shisad.skills.analyzer import Finding
 
 _PLACEHOLDER_RE = re.compile(
-    r"(YOUR_API_KEY|REPLACE_ME|example\.com|dummy|placeholder)",
+    r"\b(?:YOUR_API_KEY|REPLACE_ME|dummy|placeholder)\b",
     re.IGNORECASE,
 )
 _EDUCATIONAL_RE = re.compile(
@@ -46,7 +46,7 @@ class MetaAnalyzer:
     def _is_false_positive(finding: Finding, context: str) -> bool:
         if not context:
             return False
-        if _PLACEHOLDER_RE.search(finding.detail):
+        if _PLACEHOLDER_RE.search(finding.detail) and _EDUCATIONAL_RE.search(context):
             return True
         if _PLACEHOLDER_RE.search(context) and _EDUCATIONAL_RE.search(context):
             return True

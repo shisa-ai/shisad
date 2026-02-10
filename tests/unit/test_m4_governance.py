@@ -215,3 +215,41 @@ def test_m4_t32_structured_tool_override_migration_warns(caplog: pytest.LogCaptu
     )
     assert policy.tool_overrides["shell_exec"].sandbox_type == "container"
     assert any("Deprecated sandbox.tool_overrides scalar" in rec.message for rec in caplog.records)
+
+
+def test_m4_rr1_policy_merge_limits_respects_explicit_zero_values() -> None:
+    server = _floor_policy()
+    caller = PolicyPatch.model_validate(
+        {
+            "limits": {
+                "cpu_shares": 0,
+                "memory_mb": 0,
+                "timeout_seconds": 0,
+                "output_bytes": 0,
+                "pids": 0,
+            }
+        }
+    )
+    merged = PolicyMerge.merge(server=server, caller=caller)
+    assert merged.limits.cpu_shares == 0
+    assert merged.limits.memory_mb == 0
+    assert merged.limits.timeout_seconds == 0
+    assert merged.limits.output_bytes == 0
+    assert merged.limits.pids == 0
+
+
+def test_m4_rr2_mount_intersection_does_not_match_sibling_prefixes() -> None:
+    server = _floor_policy()
+    server.filesystem = FilesystemPolicy(
+        mounts=[MountRule(path="/workspace/a/**", mode="rw")],
+        denylist=[],
+    )
+    caller = PolicyPatch.model_validate(
+        {
+            "filesystem": {
+                "mounts": [{"path": "/workspace/ab/**", "mode": "rw"}],
+            }
+        }
+    )
+    merged = PolicyMerge.merge(server=server, caller=caller)
+    assert merged.filesystem.mounts == []

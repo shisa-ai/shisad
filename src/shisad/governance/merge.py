@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import PurePosixPath
 from typing import Any
 
 from pydantic import BaseModel, model_validator
@@ -85,6 +86,10 @@ _SANDBOX_RANK: dict[str, int] = {
 }
 
 
+def sandbox_rank(value: str) -> int:
+    return _SANDBOX_RANK.get(value, 0)
+
+
 class PolicyMerge:
     """Most-restrictive merge where server policy is authoritative floor."""
 
@@ -115,7 +120,7 @@ class PolicyMerge:
         requested_raw = str(caller.sandbox_type).strip()
         if requested_raw not in _SANDBOX_RANK:
             raise PolicyMergeError(f"unsupported sandbox_type '{requested_raw}'")
-        if _SANDBOX_RANK[requested_raw] < _SANDBOX_RANK[server.value]:
+        if sandbox_rank(requested_raw) < sandbox_rank(server.value):
             raise PolicyMergeError("sandbox_type weaker than server floor")
         return SandboxType(requested_raw)
 
@@ -238,15 +243,32 @@ class PolicyMerge:
         if patch is None:
             return server.model_copy(deep=True)
 
+        cpu_shares = server.cpu_shares
+        if "cpu_shares" in patch.model_fields_set and patch.cpu_shares is not None:
+            cpu_shares = min(server.cpu_shares, int(patch.cpu_shares))
+
+        memory_mb = server.memory_mb
+        if "memory_mb" in patch.model_fields_set and patch.memory_mb is not None:
+            memory_mb = min(server.memory_mb, int(patch.memory_mb))
+
+        timeout_seconds = server.timeout_seconds
+        if "timeout_seconds" in patch.model_fields_set and patch.timeout_seconds is not None:
+            timeout_seconds = min(server.timeout_seconds, int(patch.timeout_seconds))
+
+        output_bytes = server.output_bytes
+        if "output_bytes" in patch.model_fields_set and patch.output_bytes is not None:
+            output_bytes = min(server.output_bytes, int(patch.output_bytes))
+
+        pids = server.pids
+        if "pids" in patch.model_fields_set and patch.pids is not None:
+            pids = min(server.pids, int(patch.pids))
+
         return ResourceLimits(
-            cpu_shares=min(server.cpu_shares, patch.cpu_shares or server.cpu_shares),
-            memory_mb=min(server.memory_mb, patch.memory_mb or server.memory_mb),
-            timeout_seconds=min(
-                server.timeout_seconds,
-                patch.timeout_seconds or server.timeout_seconds,
-            ),
-            output_bytes=min(server.output_bytes, patch.output_bytes or server.output_bytes),
-            pids=min(server.pids, patch.pids or server.pids),
+            cpu_shares=cpu_shares,
+            memory_mb=memory_mb,
+            timeout_seconds=timeout_seconds,
+            output_bytes=output_bytes,
+            pids=pids,
         )
 
     @staticmethod
@@ -271,7 +293,7 @@ class PolicyMerge:
         candidate: ToolExecutionPolicy,
         floor: ToolExecutionPolicy,
     ) -> bool:
-        if _SANDBOX_RANK[candidate.sandbox_type.value] < _SANDBOX_RANK[floor.sandbox_type.value]:
+        if sandbox_rank(candidate.sandbox_type.value) < sandbox_rank(floor.sandbox_type.value):
             return False
         if floor.network.allow_network is False and candidate.network.allow_network is True:
             return False
@@ -312,9 +334,33 @@ def _intersect_mounts(server: list[MountRule], caller: list[MountRule]) -> list[
 
 
 def _mount_overlaps(a: str, b: str) -> bool:
-    a_base = a.replace("/**", "")
-    b_base = b.replace("/**", "")
-    return a_base.startswith(b_base) or b_base.startswith(a_base)
+    a_base = _mount_base_path(a)
+    b_base = _mount_base_path(b)
+    return _path_within_or_equal(a_base, b_base) or _path_within_or_equal(b_base, a_base)
+
+
+def _mount_base_path(pattern: str) -> PurePosixPath:
+    normalized = pattern.replace("\\", "/")
+    if "/**" in normalized:
+        normalized = normalized.split("/**", 1)[0]
+    wildcard_index = min(
+        [idx for idx, char in enumerate(normalized) if char in {"*", "?", "["}],
+        default=len(normalized),
+    )
+    normalized = normalized[:wildcard_index]
+    if not normalized:
+        normalized = "/"
+    if not normalized.startswith("/"):
+        normalized = "/" + normalized.lstrip("/")
+    return PurePosixPath(normalized)
+
+
+def _path_within_or_equal(path: PurePosixPath, parent: PurePosixPath) -> bool:
+    try:
+        path.relative_to(parent)
+        return True
+    except ValueError:
+        return False
 
 
 def normalize_patch(params: dict[str, Any]) -> PolicyPatch:

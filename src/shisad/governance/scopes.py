@@ -14,6 +14,7 @@ from shisad.governance.merge import (
     PolicyMergeError,
     PolicyPatch,
     ToolExecutionPolicy,
+    sandbox_rank,
 )
 
 
@@ -153,8 +154,8 @@ def _record_contributors(
 def _enforce_delegation(*, parent: ScopedPolicy, child: ScopedPolicy) -> None:
     grant = parent.delegation
     if not grant.allow_sandbox_downgrade:
-        parent_rank = _sandbox_rank(parent.constraints.sandbox_type.value)
-        child_rank = _sandbox_rank(child.constraints.sandbox_type.value)
+        parent_rank = sandbox_rank(parent.constraints.sandbox_type.value)
+        child_rank = sandbox_rank(child.constraints.sandbox_type.value)
         if child_rank < parent_rank:
             raise PolicyMergeError("delegation blocked sandbox downgrade")
 
@@ -174,13 +175,3 @@ def _enforce_delegation(*, parent: ScopedPolicy, child: ScopedPolicy) -> None:
             if normalized in parent.constraints.network.allowed_domains:
                 continue
             raise PolicyMergeError(f"delegation blocked domain extension: {domain}")
-
-
-def _sandbox_rank(value: str) -> int:
-    if value == "vm":
-        return 3
-    if value == "nsjail":
-        return 2
-    if value == "container":
-        return 1
-    return 0

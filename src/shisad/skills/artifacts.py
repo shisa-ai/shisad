@@ -59,6 +59,8 @@ def _transition(current: ArtifactState, action: str) -> ArtifactState:
     normalized = action.strip().lower()
     if current == ArtifactState.DRAFT and normalized == "submit":
         return ArtifactState.REVIEW
+    if current == ArtifactState.PUBLISHED and normalized == "submit":
+        return ArtifactState.REVIEW
     if current == ArtifactState.REVIEW and normalized == "approve":
         return ArtifactState.PUBLISHED
     if current == ArtifactState.PUBLISHED and normalized == "revoke":
@@ -66,4 +68,3 @@ def _transition(current: ArtifactState, action: str) -> ArtifactState:
     if current in {ArtifactState.DRAFT, ArtifactState.REVIEW} and normalized == "recall":
         return ArtifactState.DRAFT
     return current
-

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import base64
-import hashlib
 import json
 from dataclasses import dataclass
 from enum import StrEnum
@@ -202,10 +201,4 @@ def verify_dependency_chain(
             errors.append(f"dependency digest invalid: {dep.name}")
         if dep.signature.count(":") < 1:
             errors.append(f"dependency signature invalid: {dep.name}")
-        # Deterministic fingerprint used for audit chain references.
-        fingerprint = hashlib.sha256(
-            f"{dep.name}|{dep.version}|{dep.source}|{dep.digest}".encode()
-        ).hexdigest()
-        if not fingerprint:
-            errors.append(f"dependency fingerprint failure: {dep.name}")
     return (not errors, errors)

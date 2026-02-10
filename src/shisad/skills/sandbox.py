@@ -43,10 +43,16 @@ class SkillRuntimeSandbox:
             if normalized and normalized not in allowed_domains:
                 violations.append(f"undeclared_network:{normalized}")
 
-        allowed_commands = {item.command.strip() for item in manifest.capabilities.shell}
+        allowed_commands = [
+            _normalize_command(item.command)
+            for item in manifest.capabilities.shell
+            if item.command.strip()
+        ]
         for command in request.shell_commands:
-            normalized = command.strip()
-            if normalized and normalized not in allowed_commands:
+            normalized = _normalize_command(command)
+            if not normalized:
+                continue
+            if not any(_shell_command_matches(normalized, allowed) for allowed in allowed_commands):
                 violations.append(f"undeclared_shell:{normalized}")
 
         allowed_env = {item.var.upper() for item in manifest.capabilities.environment}
@@ -56,16 +62,25 @@ class SkillRuntimeSandbox:
                 violations.append(f"undeclared_env:{normalized}")
 
         allowed_paths = [
-            Path(item.path).expanduser() for item in manifest.capabilities.filesystem
+            _resolve_path(Path(item.path))
+            for item in manifest.capabilities.filesystem
         ]
+        if not allowed_paths and request.filesystem_paths:
+            for raw_path in request.filesystem_paths:
+                if raw_path.strip():
+                    violations.append(f"undeclared_filesystem:{raw_path}")
+            if violations:
+                return SkillSandboxDecision(
+                    allowed=False,
+                    reason="undeclared_capability",
+                    violations=sorted(set(violations)),
+                )
         for raw_path in request.filesystem_paths:
-            path = Path(raw_path).expanduser()
+            path = _resolve_path(Path(raw_path))
             if self._violates_isolation(path, manifest.name):
                 violations.append(f"isolation_violation:{raw_path}")
                 continue
-            if allowed_paths and not any(
-                _path_within(path, allowed) for allowed in allowed_paths
-            ):
+            if not any(_path_within(path, allowed) for allowed in allowed_paths):
                 violations.append(f"undeclared_filesystem:{raw_path}")
 
         if violations:
@@ -77,12 +92,12 @@ class SkillRuntimeSandbox:
         return SkillSandboxDecision(allowed=True, reason="allowed")
 
     def _violates_isolation(self, path: Path, skill_name: str) -> bool:
-        resolved = path.resolve()
-        config_root = self._config_root.resolve()
+        resolved = _resolve_path(path)
+        config_root = _resolve_path(self._config_root)
         if _path_within(resolved, config_root):
             return True
 
-        skills_root = self._skills_root.resolve()
+        skills_root = _resolve_path(self._skills_root)
         if _path_within(resolved, skills_root):
             skill_root = skills_root / skill_name
             if not _path_within(resolved, skill_root):
@@ -106,8 +121,32 @@ class SkillRuntimeSandbox:
 
 
 def _path_within(path: Path, parent: Path) -> bool:
+    resolved_path = _resolve_path(path)
+    resolved_parent = _resolve_path(parent)
     try:
-        path.relative_to(parent)
+        resolved_path.relative_to(resolved_parent)
         return True
     except ValueError:
         return False
+
+
+def _resolve_path(path: Path) -> Path:
+    return path.expanduser().resolve(strict=False)
+
+
+def _normalize_command(command: str) -> str:
+    return " ".join(command.strip().split())
+
+
+def _shell_command_matches(inferred: str, declared: str) -> bool:
+    inferred_norm = _normalize_command(inferred)
+    declared_norm = _normalize_command(declared)
+    if not inferred_norm or not declared_norm:
+        return False
+    if inferred_norm == declared_norm:
+        return True
+    if inferred_norm.startswith(declared_norm) or declared_norm.startswith(inferred_norm):
+        return True
+    inferred_head = inferred_norm.split(" ", 1)[0]
+    declared_head = declared_norm.split(" ", 1)[0]
+    return inferred_head == declared_head

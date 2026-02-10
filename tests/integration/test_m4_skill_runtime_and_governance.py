@@ -191,6 +191,28 @@ async def test_m4_t12_profile_then_lock_captures_actual_capabilities(
 
 
 @pytest.mark.asyncio
+async def test_m4_rr9_tool_execute_unknown_tool_rejected(
+    model_env: None,
+    tmp_path: Path,
+) -> None:
+    daemon_task, client = await _start_daemon(tmp_path)
+    try:
+        created = await client.call("session.create", {"channel": "cli"})
+        sid = created["session_id"]
+        with pytest.raises(RuntimeError, match=r"unknown tool"):
+            await client.call(
+                "tool.execute",
+                {
+                    "session_id": sid,
+                    "tool_name": "unknown.tool",
+                    "command": [sys.executable, "-c", "print('noop')"],
+                },
+            )
+    finally:
+        await _shutdown(daemon_task, client)
+
+
+@pytest.mark.asyncio
 async def test_m4_t25_tool_execute_narrows_caller_wildcard_to_server_allowlist(
     model_env: None,
     tmp_path: Path,

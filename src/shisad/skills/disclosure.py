@@ -69,6 +69,14 @@ def diff_versions(
     for path in all_paths:
         before = old_by_path.get(path)
         after = new_by_path.get(path)
+        binary_changed = bool(
+            before is not None
+            and after is not None
+            and (before.binary or after.binary)
+            and before.sha256 != after.sha256
+        )
+        binary_added = before is None and after is not None and after.binary
+        binary_removed = before is not None and after is None and before.binary
         before_lines = [] if before is None else before.content.splitlines()
         after_lines = [] if after is None else after.content.splitlines()
         diff = list(
@@ -89,12 +97,27 @@ def diff_versions(
                 if finding.file_path == path and finding.severity in {"high", "critical"}
             }
         )
+        unified_diff = "\n".join(diff)
+        if binary_changed:
+            if before is None or after is None:
+                raise ValueError("binary_changed requires both before and after files")
+            unified_diff = (
+                f"[binary changed] sha256 {before.sha256[:12]} -> {after.sha256[:12]}"
+            )
+        elif binary_added:
+            if after is None:
+                raise ValueError("binary_added requires after file")
+            unified_diff = f"[binary added] sha256 {after.sha256[:12]}"
+        elif binary_removed:
+            if before is None:
+                raise ValueError("binary_removed requires before file")
+            unified_diff = f"[binary removed] sha256 {before.sha256[:12]}"
         entries.append(
             DiffEntry(
                 path=path,
                 added_lines=added,
                 removed_lines=removed,
-                unified_diff="\n".join(diff),
+                unified_diff=unified_diff,
                 dangerous_additions=dangerous_additions,
             )
         )
@@ -130,4 +153,3 @@ def render_risk_summary(
         f"  critical={severities['critical']} high={severities['high']} "
         f"medium={severities['medium']} low={severities['low']}"
     )
-

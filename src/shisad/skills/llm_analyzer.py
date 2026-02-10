@@ -83,7 +83,17 @@ class LlmSkillAnalyzer:
         try:
             payload = json.loads(content)
         except json.JSONDecodeError:
-            payload = {"risk_score": 0.0, "mismatch": False, "findings": []}
+            return [
+                Finding(
+                    analyzer="llm-semantic",
+                    category=ThreatCategory.SUPPLY_CHAIN,
+                    severity=FindingSeverity.MEDIUM,
+                    title="LLM semantic analyzer returned invalid JSON",
+                    detail=content[:240],
+                    tags=["llm_parse_error"],
+                    metadata={"risk_score": 0.0},
+                )
+            ]
 
         risk = float(payload.get("risk_score", 0.0) or 0.0)
         mismatch = bool(payload.get("mismatch", False))

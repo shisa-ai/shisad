@@ -213,47 +213,45 @@ class DaemonControlHandlers:
         tool_name: ToolName,
         tool_definition: ToolDefinition | None,
     ) -> ToolExecutionPolicy:
+        if tool_definition is None:
+            raise ValueError(f"unknown tool: {tool_name}")
         sandbox_policy = self._policy_loader.policy.sandbox
-        is_unknown_tool = tool_definition is None
-        if tool_definition is not None and tool_definition.sandbox_type:
+        if tool_definition.sandbox_type:
             sandbox_type = SandboxType(str(tool_definition.sandbox_type))
-        elif tool_definition is not None and tool_definition.destinations:
+        elif tool_definition.destinations:
             sandbox_type = SandboxType(sandbox_policy.network_backend)
         else:
             sandbox_type = SandboxType(sandbox_policy.default_backend)
 
+        required_caps = set(tool_definition.capabilities_required)
+        default_allow_network = bool(tool_definition.destinations) or (
+            Capability.HTTP_REQUEST in required_caps
+        )
+        default_domains = (
+            list(tool_definition.destinations)
+            if tool_definition.destinations
+            else (["*"] if default_allow_network else [])
+        )
         network = NetworkPolicy(
-            allow_network=bool(tool_definition and tool_definition.destinations)
-            or is_unknown_tool,
-            allowed_domains=(
-                list(tool_definition.destinations)
-                if tool_definition is not None
-                else ["*"]
-            ),
+            allow_network=default_allow_network,
+            allowed_domains=default_domains,
             deny_private_ranges=True,
             deny_ip_literals=True,
         )
-        filesystem = (
-            FilesystemPolicy(mounts=[{"path": "/**", "mode": "rw"}])
-            if is_unknown_tool
-            else FilesystemPolicy()
-        )
+        if Capability.FILE_WRITE in required_caps:
+            filesystem = FilesystemPolicy(mounts=[{"path": "/**", "mode": "rw"}])
+        elif Capability.FILE_READ in required_caps:
+            filesystem = FilesystemPolicy(mounts=[{"path": "/**", "mode": "ro"}])
+        else:
+            filesystem = FilesystemPolicy()
         environment = EnvironmentPolicy(
             allowed_keys=list(sandbox_policy.env_allowlist),
             max_keys=sandbox_policy.env_max_keys,
             max_total_bytes=sandbox_policy.env_max_total_bytes,
         )
         limits = ResourceLimits()
-        if is_unknown_tool:
-            degraded_mode = DegradedModePolicy.FAIL_OPEN
-            security_critical = False
-        else:
-            degraded_mode = (
-                DegradedModePolicy.FAIL_CLOSED
-                if sandbox_policy.fail_closed_security_critical
-                else DegradedModePolicy.FAIL_OPEN
-            )
-            security_critical = True
+        degraded_mode = DegradedModePolicy.FAIL_OPEN
+        security_critical = False
 
         override = sandbox_policy.tool_overrides.get(tool_name)
         if override is not None:
@@ -1100,6 +1098,17 @@ class DaemonControlHandlers:
 
         tool_name_value = str(params.get("tool_name", ""))
         tool_name = ToolName(tool_name_value)
+        tool_def = self._registry.get_tool(tool_name)
+        if tool_def is None:
+            await self._event_bus.publish(
+                ToolRejected(
+                    session_id=sid,
+                    actor="control_api",
+                    tool_name=tool_name,
+                    reason="unknown_tool",
+                )
+            )
+            raise ValueError(f"unknown tool: {tool_name}")
         skill_name = str(params.get("skill_name") or "").strip()
         if skill_name:
             network_hosts: list[str] = []
@@ -1140,7 +1149,6 @@ class DaemonControlHandlers:
                     reason=reason,
                 ).model_dump(mode="json")
 
-        tool_def = self._registry.get_tool(tool_name)
         floor = self._compute_tool_policy_floor(
             tool_name=tool_name,
             tool_definition=tool_def,

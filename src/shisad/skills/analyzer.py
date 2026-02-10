@@ -36,8 +36,9 @@ _SHELL_FRAGMENT_RE = re.compile(
     re.IGNORECASE,
 )
 _INVISIBLE_RE = re.compile(r"[\u200b-\u200f\u2060\ufeff]")
-_HOMOGLYPH_RE = re.compile(r"[\u0400-\u04FF\u0391-\u03A9\u03B1-\u03C9]")
+_HOMOGLYPH_CHAR_RE = re.compile(r"[\u0400-\u04FF\u0391-\u03A9\u03B1-\u03C9]")
 _HIGH_ENTROPY_RE = re.compile(r"[A-Za-z0-9+/=]{48,}")
+_MAX_BUNDLE_FILE_BYTES = 8 * 1024 * 1024
 
 
 class FindingSeverity(StrEnum):
@@ -108,6 +109,11 @@ def load_skill_bundle(
         if path.name == "skill.manifest.yaml":
             continue
         raw = path.read_bytes()
+        if len(raw) > _MAX_BUNDLE_FILE_BYTES:
+            raise ValueError(
+                "Skill file too large for analysis: "
+                f"{path} ({len(raw)} bytes > {_MAX_BUNDLE_FILE_BYTES})"
+            )
         sha256 = hashlib.sha256(raw).hexdigest()
         binary = b"\x00" in raw
         content = "" if binary else raw.decode("utf-8", errors="ignore")
@@ -386,7 +392,7 @@ class ObfuscationAnalyzer:
                             tags=["unicode_invisible"],
                         )
                     )
-                if _HOMOGLYPH_RE.search(line):
+                if _has_suspicious_mixed_script_token(line):
                     findings.append(
                         Finding(
                             analyzer="obfuscation",
@@ -440,7 +446,6 @@ def _entropy(value: str) -> float:
 
 
 def _scan_delivery_chain(*, path: str, content: str) -> list[Finding]:
-    lowered = content.lower()
     has_url = bool(_URL_RE.search(content))
     has_download = bool(_DOWNLOAD_TOOL_RE.search(content))
     has_script_exec = bool(_SCRIPT_EXEC_RE.search(content))
@@ -482,18 +487,6 @@ def _scan_delivery_chain(*, path: str, content: str) -> list[Finding]:
                 detail=path,
                 file_path=path,
                 tags=["multi_stage_delivery"],
-            )
-        )
-    if "xattr -d com.apple.quarantine" in lowered or "spctl --master-disable" in lowered:
-        findings.append(
-            Finding(
-                analyzer="dangerous-pattern",
-                category=ThreatCategory.PRIVILEGE_ESCALATION,
-                severity=FindingSeverity.CRITICAL,
-                title="Gatekeeper bypass command",
-                detail=path,
-                file_path=path,
-                tags=["gatekeeper_bypass"],
             )
         )
     return findings
@@ -595,3 +588,14 @@ def _shell_command_matches(inferred: str, declared: str) -> bool:
     if inferred_urls and declared_urls:
         return inferred_urls == declared_urls
     return True
+
+
+def _has_suspicious_mixed_script_token(line: str) -> bool:
+    for token in re.split(r"\s+", line):
+        if not token:
+            continue
+        if not _HOMOGLYPH_CHAR_RE.search(token):
+            continue
+        if re.search(r"[A-Za-z]", token):
+            return True
+    return False

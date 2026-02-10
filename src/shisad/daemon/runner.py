@@ -75,8 +75,9 @@ from shisad.core.session import CheckpointStore, SessionManager
 from shisad.core.tools.builtin.alarm import AlarmTool
 from shisad.core.tools.builtin.shell_exec import ShellExecTool
 from shisad.core.tools.registry import ToolRegistry
+from shisad.core.tools.schema import ToolDefinition, ToolParameter
 from shisad.core.transcript import TranscriptStore
-from shisad.core.types import CredentialRef, SessionId, ToolName
+from shisad.core.types import Capability, CredentialRef, SessionId, ToolName
 from shisad.daemon.control_handlers import DaemonControlHandlers
 from shisad.executors.browser import BrowserSandbox, BrowserSandboxPolicy
 from shisad.executors.connect_path import NoopConnectPathProxy
@@ -618,6 +619,70 @@ async def run_daemon(config: DaemonConfig) -> None:
     registry = ToolRegistry()
     registry.register(RetrieveRagTool.tool_definition())
     registry.register(ShellExecTool.tool_definition())
+    registry.register(
+        ToolDefinition(
+            name=ToolName("shell.exec"),
+            description="Legacy shell execution alias routed via sandbox runtime.",
+            parameters=[
+                ToolParameter(
+                    name="command",
+                    type="array",
+                    description="Command token list to execute",
+                    required=True,
+                ),
+                ToolParameter(name="read_paths", type="array", required=False),
+                ToolParameter(name="write_paths", type="array", required=False),
+                ToolParameter(name="network_urls", type="array", required=False),
+                ToolParameter(name="env", type="object", required=False),
+                ToolParameter(name="cwd", type="string", required=False),
+            ],
+            capabilities_required=[Capability.SHELL_EXEC],
+            sandbox_type="nsjail",
+            require_confirmation=False,
+        )
+    )
+    registry.register(
+        ToolDefinition(
+            name=ToolName("http_request"),
+            description="HTTP request runtime tool for sandbox egress policy testing.",
+            parameters=[
+                ToolParameter(name="command", type="array", required=True),
+                ToolParameter(name="network_urls", type="array", required=False),
+                ToolParameter(name="request_headers", type="object", required=False),
+                ToolParameter(name="request_body", type="string", required=False),
+            ],
+            capabilities_required=[Capability.HTTP_REQUEST],
+            destinations=["*"],
+            sandbox_type="container",
+            require_confirmation=False,
+        )
+    )
+    registry.register(
+        ToolDefinition(
+            name=ToolName("file.read"),
+            description="File read runtime tool for sandbox filesystem policy testing.",
+            parameters=[
+                ToolParameter(name="command", type="array", required=True),
+                ToolParameter(name="read_paths", type="array", required=False),
+            ],
+            capabilities_required=[Capability.FILE_READ],
+            sandbox_type="nsjail",
+            require_confirmation=False,
+        )
+    )
+    registry.register(
+        ToolDefinition(
+            name=ToolName("file.write"),
+            description="File write runtime tool for sandbox filesystem policy testing.",
+            parameters=[
+                ToolParameter(name="command", type="array", required=True),
+                ToolParameter(name="write_paths", type="array", required=False),
+            ],
+            capabilities_required=[Capability.FILE_WRITE],
+            sandbox_type="nsjail",
+            require_confirmation=False,
+        )
+    )
     alarm_tool = AlarmTool(event_bus)
     registry.register(alarm_tool.tool_definition())
 

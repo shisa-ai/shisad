@@ -28,6 +28,10 @@ _EXFIL_RE = re.compile(
 _OBFUSCATION_RE = re.compile(r"(base64|xxd|eval\s*\(|\$\(|\\x[0-9a-f]{2})", re.IGNORECASE)
 _TRIGGER_COLLECTION_RE = re.compile(r"\b(capture|collect|index|gather|ingest)\b", re.IGNORECASE)
 _TRIGGER_TRANSMIT_RE = re.compile(r"\b(send|post|transmit|sync|publish|notify)\b", re.IGNORECASE)
+_PROCESS_RE = re.compile(
+    r"\b(process|transform|normalize|parse|summari[sz]e|enrich|aggregate|filter)\b",
+    re.IGNORECASE,
+)
 _URL_RE = re.compile(r"https?://([A-Za-z0-9.-]+\.[A-Za-z]{2,})(?::\d+)?")
 
 
@@ -41,6 +45,7 @@ def scan_cross_skill(skills: list[SkillBundle]) -> list[Finding]:
     skill_exfils: dict[str, bool] = {}
     skill_obf: dict[str, set[str]] = {}
     skill_desc: dict[str, str] = {}
+    skill_processes: dict[str, bool] = {}
     skill_author: dict[str, str] = {}
 
     for skill in skills:
@@ -55,8 +60,20 @@ def scan_cross_skill(skills: list[SkillBundle]) -> list[Finding]:
             token.group(0).lower()
             for token in _OBFUSCATION_RE.finditer(text_corpus)
         }
+        skill_processes[name] = bool(
+            _PROCESS_RE.search(skill.manifest.description or "")
+            or _PROCESS_RE.search(text_corpus)
+        )
 
     findings.extend(_detect_data_relay(skills, skill_collects, skill_exfils))
+    findings.extend(
+        _detect_transitive_data_relay(
+            skills,
+            collects=skill_collects,
+            exfils=skill_exfils,
+            processes=skill_processes,
+        )
+    )
     findings.extend(_detect_shared_c2(skill_domains))
     findings.extend(_detect_trigger_chain(skill_desc))
     findings.extend(_detect_shared_obfuscation(skill_obf, skill_author))
@@ -101,6 +118,53 @@ def _detect_data_relay(
                     metadata={"collector": dst, "exfiltrator": src},
                 )
             )
+    return findings
+
+
+def _detect_transitive_data_relay(
+    skills: list[SkillBundle],
+    *,
+    collects: dict[str, bool],
+    exfils: dict[str, bool],
+    processes: dict[str, bool],
+) -> list[Finding]:
+    findings: list[Finding] = []
+    names = [skill.manifest.name for skill in skills]
+    seen: set[tuple[str, str, str]] = set()
+    for collector in names:
+        if not collects.get(collector):
+            continue
+        for exfiltrator in names:
+            if exfiltrator == collector or not exfils.get(exfiltrator):
+                continue
+            for processor in names:
+                if processor in {collector, exfiltrator}:
+                    continue
+                if not processes.get(processor):
+                    continue
+                key = (collector, processor, exfiltrator)
+                if key in seen:
+                    continue
+                seen.add(key)
+                findings.append(
+                    Finding(
+                        analyzer="cross-skill",
+                        category=ThreatCategory.DATA_EXFILTRATION,
+                        severity=FindingSeverity.CRITICAL,
+                        title="Transitive multi-skill relay chain",
+                        detail=(
+                            f"{collector} collects sensitive data, {processor} appears to "
+                            f"process intermediate payloads, and {exfiltrator} contains "
+                            "exfiltration patterns"
+                        ),
+                        tags=["relay", "transitive_relay", "multi_skill"],
+                        metadata={
+                            "collector": collector,
+                            "processor": processor,
+                            "exfiltrator": exfiltrator,
+                        },
+                    )
+                )
     return findings
 
 
