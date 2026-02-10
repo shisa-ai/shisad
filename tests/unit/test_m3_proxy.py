@@ -181,3 +181,15 @@ def test_m3_proxy_ipv6_private_ranges_are_blocked() -> None:
     for candidate in ["::1", "fc00::1", "fe80::1234"]:
         assert ipaddress.ip_address(candidate).version == 6
         assert proxy._is_private(candidate) is True
+
+
+def test_m3_proxy_fails_closed_on_empty_dns_resolution() -> None:
+    proxy = EgressProxy(resolver=lambda _host: [])
+    decision = proxy.authorize_request(
+        tool_name="http_request",
+        url="https://api.good.com/v1/send",
+        policy=NetworkPolicy(allow_network=True, allowed_domains=["api.good.com"]),
+        approved_by_pep=True,
+    )
+    assert decision.allowed is False
+    assert decision.reason == "dns_resolution_failed"

@@ -16,7 +16,9 @@ from shisad.executors.sandbox import (
     DegradedModePolicy,
     EnvironmentPolicy,
     ResourceLimits,
+    SandboxBackend,
     SandboxConfig,
+    SandboxEnforcement,
     SandboxOrchestrator,
     SandboxType,
 )
@@ -251,6 +253,65 @@ def test_m3_sandbox_blocks_placeholder_injection_without_pep_approval() -> None:
     )
     assert result.allowed is False
     assert result.reason == "network:pep_not_approved"
+
+
+def test_m3_rr2_unavailable_runtime_blocks_undeclared_file_write(tmp_path: Path) -> None:
+    target = tmp_path / "outside.txt"
+    orchestrator = SandboxOrchestrator(proxy=EgressProxy(resolver=_resolver))
+    orchestrator._backends[SandboxType.NSJAIL] = SandboxBackend(
+        backend=SandboxType.NSJAIL,
+        runtime="",
+        enforcement=SandboxEnforcement(
+            filesystem=False,
+            network=False,
+            env=True,
+            seccomp=False,
+            resource_limits=True,
+            dns_control=False,
+        ),
+    )
+    result = orchestrator.execute(
+        SandboxConfig(
+            tool_name="shell.exec",
+            command=[sys.executable, "-c", f"open(r'{target}', 'w').write('x')"],
+            degraded_mode=DegradedModePolicy.FAIL_CLOSED,
+            security_critical=True,
+        )
+    )
+    assert result.allowed is False
+    assert result.reason == "degraded_enforcement"
+    assert target.exists() is False
+
+
+def test_m3_rr2_unavailable_runtime_blocks_undeclared_network_attempt() -> None:
+    orchestrator = SandboxOrchestrator(proxy=EgressProxy(resolver=_resolver))
+    orchestrator._backends[SandboxType.NSJAIL] = SandboxBackend(
+        backend=SandboxType.NSJAIL,
+        runtime="",
+        enforcement=SandboxEnforcement(
+            filesystem=False,
+            network=False,
+            env=True,
+            seccomp=False,
+            resource_limits=True,
+            dns_control=False,
+        ),
+    )
+    result = orchestrator.execute(
+        SandboxConfig(
+            tool_name="shell.exec",
+            command=[
+                sys.executable,
+                "-c",
+                "import socket; socket.create_connection(('example.com', 443), 0.2)",
+            ],
+            network=NetworkPolicy(allow_network=False, allowed_domains=[]),
+            degraded_mode=DegradedModePolicy.FAIL_CLOSED,
+            security_critical=True,
+        )
+    )
+    assert result.allowed is False
+    assert result.reason == "degraded_enforcement"
 
 
 @pytest.mark.asyncio

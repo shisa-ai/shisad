@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import os
 import re
 import shutil
@@ -52,6 +53,7 @@ _DOMAIN_TOKEN_RE = re.compile(r"^[A-Za-z0-9.-]+\.[A-Za-z]{2,}(?::\d+)?$")
 _SHELL_REDIRECT_RE = re.compile(r"(^|[^>])>([^>]|$)")
 _PLACEHOLDER_RE = re.compile(r"SHISAD_SECRET_PLACEHOLDER_[A-Fa-f0-9]{32}")
 _BWRAP_BASE_RO_DIRS = ("/usr", "/bin", "/sbin", "/lib", "/lib64", "/etc")
+_CHECKPOINT_FILE_SNAPSHOT_LIMIT = 1_000_000
 
 
 class SandboxType(StrEnum):
@@ -156,6 +158,7 @@ class SandboxResult(BaseModel):
     degraded_controls: list[str] = Field(default_factory=list)
     fs_decisions: list[FilesystemAccessDecision] = Field(default_factory=list)
     network_decisions: list[ProxyDecision] = Field(default_factory=list)
+    rollback_files_restored: int = 0
 
 
 class SandboxBackend:
@@ -201,26 +204,26 @@ class SandboxOrchestrator:
             SandboxType.CONTAINER: SandboxBackend(
                 backend=SandboxType.CONTAINER,
                 enforcement=SandboxEnforcement(
-                    filesystem=True,
-                    network=True,
+                    filesystem=bool(container_runtime),
+                    network=bool(container_runtime),
                     env=True,
-                    seccomp=True,
+                    seccomp=bool(container_runtime),
                     resource_limits=True,
                     cgroups=False,
-                    dns_control=True,
+                    dns_control=bool(container_runtime),
                 ),
                 runtime=container_runtime,
             ),
             SandboxType.NSJAIL: SandboxBackend(
                 backend=SandboxType.NSJAIL,
                 enforcement=SandboxEnforcement(
-                    filesystem=True,
-                    network=True,
+                    filesystem=bool(nsjail_runtime),
+                    network=bool(nsjail_runtime),
                     env=True,
-                    seccomp=True,
+                    seccomp=bool(nsjail_runtime),
                     resource_limits=True,
                     cgroups=False,
-                    dns_control=True,
+                    dns_control=bool(nsjail_runtime),
                 ),
                 runtime=nsjail_runtime,
             ),
@@ -254,10 +257,14 @@ class SandboxOrchestrator:
         *,
         session: Session | None = None,
     ) -> SandboxResult:
+        if not config.command:
+            return SandboxResult(allowed=False, reason="invalid_command")
         backend_type = self._select_backend(config)
         backend = self._backends[backend_type]
         degraded_controls = self._degraded_controls(config, backend.enforcement)
-        if degraded_controls and config.degraded_mode == DegradedModePolicy.FAIL_CLOSED:
+        if degraded_controls and (
+            config.degraded_mode == DegradedModePolicy.FAIL_CLOSED or config.security_critical
+        ):
             self._audit(
                 "sandbox.degraded",
                 {
@@ -435,6 +442,7 @@ class SandboxOrchestrator:
                     "tool_name": config.tool_name,
                     "command": list(command),
                     "write_paths": list(config.write_paths),
+                    "filesystem_snapshot": self._capture_filesystem_snapshot(config.write_paths),
                     "created_at": datetime.now(UTC).isoformat(),
                 },
             )
@@ -480,6 +488,16 @@ class SandboxOrchestrator:
                     "session_id": config.session_id,
                 },
             )
+        if process["blocked_reason"]:
+            return SandboxResult(
+                allowed=False,
+                reason=process["blocked_reason"],
+                backend=backend_type,
+                checkpoint_id=checkpoint_id,
+                fs_decisions=fs_decisions,
+                network_decisions=network_decisions,
+                degraded_controls=degraded_controls,
+            )
 
         return SandboxResult(
             allowed=True,
@@ -508,6 +526,7 @@ class SandboxOrchestrator:
         truncated = False
         resource_limit_warning = ""
         isolation_degraded = False
+        blocked_reason = ""
 
         run_command = list(command)
         run_env = env
@@ -537,6 +556,18 @@ class SandboxOrchestrator:
 
         if wrapped_used and self._isolation_runtime_failed(exit_code=exit_code, stderr=stderr):
             isolation_degraded = True
+            if config.degraded_mode == DegradedModePolicy.FAIL_CLOSED or config.security_critical:
+                blocked_reason = "runtime_isolation_unavailable"
+                return {
+                    "stdout": stdout,
+                    "stderr": stderr,
+                    "exit_code": exit_code,
+                    "timed_out": timed_out,
+                    "truncated": truncated,
+                    "resource_limit_warning": resource_limit_warning,
+                    "isolation_degraded": isolation_degraded,
+                    "blocked_reason": blocked_reason,
+                }
             stdout, stderr, exit_code, timed_out = self._invoke(
                 command,
                 env=env,
@@ -569,6 +600,7 @@ class SandboxOrchestrator:
             "truncated": truncated,
             "resource_limit_warning": resource_limit_warning,
             "isolation_degraded": isolation_degraded,
+            "blocked_reason": blocked_reason,
         }
 
     @staticmethod
@@ -633,11 +665,9 @@ class SandboxOrchestrator:
         config: SandboxConfig,
         enforcement: SandboxEnforcement,
     ) -> list[str]:
-        required: set[str] = {"env", "resource_limits"}
-        if config.read_paths or config.write_paths:
-            required.add("filesystem")
+        required: set[str] = {"filesystem", "network", "env", "resource_limits"}
         if config.network.allow_network or config.network_urls:
-            required.update({"network", "dns_control"})
+            required.add("dns_control")
         if config.security_critical:
             required.add("seccomp")
 
@@ -1051,3 +1081,26 @@ class SandboxOrchestrator:
         if completed.returncode != 0:
             return ""
         return binary
+
+    @staticmethod
+    def _capture_filesystem_snapshot(paths: list[str]) -> list[dict[str, Any]]:
+        snapshots: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for raw in paths:
+            candidate = Path(raw).expanduser()
+            normalized = str(candidate)
+            if not normalized or normalized in seen:
+                continue
+            seen.add(normalized)
+            entry: dict[str, Any] = {"path": normalized, "existed": candidate.exists()}
+            if candidate.exists() and candidate.is_file():
+                try:
+                    data = candidate.read_bytes()
+                    if len(data) > _CHECKPOINT_FILE_SNAPSHOT_LIMIT:
+                        entry["snapshot_skipped"] = "file_too_large"
+                    else:
+                        entry["content_b64"] = base64.b64encode(data).decode("utf-8")
+                except Exception:
+                    entry["snapshot_skipped"] = "read_error"
+            snapshots.append(entry)
+        return snapshots

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import hashlib
 import json
 import uuid
@@ -36,7 +37,7 @@ from shisad.core.events import (
     ToolRejected,
 )
 from shisad.core.planner import Planner
-from shisad.core.session import CheckpointStore, SessionManager
+from shisad.core.session import CheckpointStore, Session, SessionManager
 from shisad.core.tools.builtin.alarm import AlarmTool, AnomalyReportInput
 from shisad.core.tools.registry import ToolRegistry
 from shisad.core.tools.schema import ToolDefinition
@@ -51,6 +52,7 @@ from shisad.executors.sandbox import (
     ResourceLimits,
     SandboxConfig,
     SandboxOrchestrator,
+    SandboxResult,
     SandboxType,
 )
 from shisad.memory.ingestion import IngestionPipeline
@@ -390,15 +392,177 @@ class DaemonControlHandlers:
             )
             return True, checkpoint_id
 
+        if tool is None:
+            await self._event_bus.publish(
+                ToolExecuted(
+                    session_id=sid,
+                    actor="tool_runtime",
+                    tool_name=tool_name,
+                    success=False,
+                )
+            )
+            return False, checkpoint_id
+
+        sandbox_result = await self._execute_via_sandbox(
+            sid=sid,
+            session=session,
+            tool=tool,
+            arguments=arguments,
+        )
+        await self._publish_sandbox_events(
+            sid=sid,
+            config_tool_name=tool_name,
+            result=sandbox_result,
+        )
+        if sandbox_result.checkpoint_id and not checkpoint_id:
+            checkpoint_id = sandbox_result.checkpoint_id
+        success = bool(
+            sandbox_result.allowed
+            and not sandbox_result.timed_out
+            and (sandbox_result.exit_code or 0) == 0
+        )
+        if not success:
+            await self._event_bus.publish(
+                ToolRejected(
+                    session_id=sid,
+                    actor="tool_runtime",
+                    tool_name=tool_name,
+                    reason=sandbox_result.reason or "sandbox_execution_failed",
+                )
+            )
         await self._event_bus.publish(
             ToolExecuted(
                 session_id=sid,
-                actor="tool_runtime",
+                actor="sandbox",
                 tool_name=tool_name,
-                success=False,
+                success=success,
             )
         )
-        return False, checkpoint_id
+        return success, checkpoint_id
+
+    async def _execute_via_sandbox(
+        self,
+        *,
+        sid: SessionId,
+        session: Session,
+        tool: ToolDefinition,
+        arguments: dict[str, Any],
+    ) -> SandboxResult:
+        raw_command = arguments.get("command", [])
+        command = [str(token) for token in raw_command] if isinstance(raw_command, list) else []
+        if not command:
+            return await self._sandbox.execute_async(
+                SandboxConfig(
+                    session_id=str(sid),
+                    tool_name=str(tool.name),
+                    command=[],
+                ),
+                session=session,
+            )
+        filesystem = FilesystemPolicy.model_validate(arguments.get("filesystem", {}))
+        network_payload = dict(arguments.get("network", {}))
+        if not network_payload and tool.destinations:
+            network_payload = {
+                "allow_network": True,
+                "allowed_domains": list(tool.destinations),
+            }
+        network = NetworkPolicy.model_validate(network_payload)
+        environment_data: dict[str, Any] = dict(arguments.get("environment", {}))
+        if not environment_data:
+            environment_data = {
+                "allowed_keys": list(self._policy_loader.policy.sandbox.env_allowlist),
+                "max_keys": self._policy_loader.policy.sandbox.env_max_keys,
+                "max_total_bytes": self._policy_loader.policy.sandbox.env_max_total_bytes,
+            }
+        environment = EnvironmentPolicy.model_validate(environment_data)
+        limits = ResourceLimits.model_validate(arguments.get("limits", {}))
+
+        override = self._policy_loader.policy.sandbox.tool_overrides.get(tool.name)
+        sandbox_type: SandboxType | None = None
+        if override:
+            sandbox_type = SandboxType(override)
+        elif tool.sandbox_type:
+            sandbox_type = SandboxType(str(tool.sandbox_type))
+        elif network.allow_network:
+            sandbox_type = SandboxType(self._policy_loader.policy.sandbox.network_backend)
+        else:
+            sandbox_type = SandboxType(self._policy_loader.policy.sandbox.default_backend)
+
+        degraded_default = (
+            "fail_closed"
+            if self._policy_loader.policy.sandbox.fail_closed_security_critical
+            else "fail_open"
+        )
+        degraded_mode = DegradedModePolicy(str(arguments.get("degraded_mode", degraded_default)))
+
+        config = SandboxConfig(
+            session_id=str(sid),
+            tool_name=str(tool.name),
+            command=command,
+            read_paths=[str(item) for item in arguments.get("read_paths", [])],
+            write_paths=[str(item) for item in arguments.get("write_paths", [])],
+            network_urls=[str(item) for item in arguments.get("network_urls", [])],
+            env={str(k): str(v) for k, v in dict(arguments.get("env", {})).items()},
+            request_headers={
+                str(k): str(v) for k, v in dict(arguments.get("request_headers", {})).items()
+            },
+            request_body=str(arguments.get("request_body", "")),
+            cwd=str(arguments.get("cwd", "")),
+            sandbox_type=sandbox_type,
+            security_critical=bool(arguments.get("security_critical", True)),
+            approved_by_pep=True,
+            filesystem=filesystem,
+            network=network,
+            environment=environment,
+            limits=limits,
+            degraded_mode=degraded_mode,
+        )
+        return await self._sandbox.execute_async(config, session=session)
+
+    async def _publish_sandbox_events(
+        self,
+        *,
+        sid: SessionId,
+        config_tool_name: ToolName,
+        result: SandboxResult,
+    ) -> None:
+        if result.degraded_controls:
+            await self._event_bus.publish(
+                SandboxDegraded(
+                    session_id=sid,
+                    actor="sandbox",
+                    tool_name=config_tool_name,
+                    backend=result.backend.value if result.backend is not None else "",
+                    controls=list(result.degraded_controls),
+                )
+            )
+        for decision in result.network_decisions:
+            await self._event_bus.publish(
+                ProxyRequestEvaluated(
+                    session_id=sid,
+                    actor="egress_proxy",
+                    tool_name=config_tool_name,
+                    destination_host=decision.destination_host,
+                    destination_port=decision.destination_port,
+                    allowed=decision.allowed,
+                    reason=decision.reason,
+                    credential_placeholders=list(decision.used_placeholders),
+                )
+            )
+        if result.escape_detected:
+            await self._event_bus.publish(
+                SandboxEscapeDetected(
+                    session_id=sid,
+                    actor="sandbox",
+                    tool_name=config_tool_name,
+                    reason=result.reason,
+                )
+            )
+            await self._handle_lockdown_transition(
+                sid,
+                trigger="sandbox_escape",
+                reason=result.reason or "sandbox escape detected",
+            )
 
     async def handle_session_create(self, params: dict[str, Any]) -> dict[str, Any]:
         channel = str(params.get("channel", "cli"))
@@ -729,8 +893,18 @@ class DaemonControlHandlers:
             raise ValueError("checkpoint_id is required")
         checkpoint = self._checkpoint_store.restore(checkpoint_id)
         if checkpoint is None:
-            return {"rolled_back": False, "checkpoint_id": checkpoint_id, "session_id": None}
+            return {
+                "rolled_back": False,
+                "checkpoint_id": checkpoint_id,
+                "session_id": None,
+                "files_restored": 0,
+                "files_deleted": 0,
+                "restore_errors": [],
+            }
         restored = self._session_manager.restore_from_checkpoint(checkpoint)
+        files_restored, files_deleted, restore_errors = self._restore_filesystem_from_checkpoint(
+            checkpoint.state
+        )
         await self._event_bus.publish(
             SessionRolledBack(
                 session_id=restored.id,
@@ -738,12 +912,21 @@ class DaemonControlHandlers:
                 checkpoint_id=checkpoint_id,
             )
         )
-        return {"rolled_back": True, "checkpoint_id": checkpoint_id, "session_id": restored.id}
+        return {
+            "rolled_back": True,
+            "checkpoint_id": checkpoint_id,
+            "session_id": restored.id,
+            "files_restored": files_restored,
+            "files_deleted": files_deleted,
+            "restore_errors": restore_errors,
+        }
 
     async def handle_tool_execute(self, params: dict[str, Any]) -> dict[str, Any]:
         sid = SessionId(str(params.get("session_id", "")))
         if not sid:
             raise ValueError("session_id is required")
+        if not list(params.get("command", [])):
+            raise ValueError("command must contain at least one token")
         session = self._session_manager.get(sid)
         if session is None:
             raise ValueError(f"Unknown session: {sid}")
@@ -810,45 +993,11 @@ class DaemonControlHandlers:
             degraded_mode=degraded_mode,
         )
         result = await self._sandbox.execute_async(config, session=session)
-
-        if result.degraded_controls:
-            await self._event_bus.publish(
-                SandboxDegraded(
-                    session_id=sid,
-                    actor="sandbox",
-                    tool_name=ToolName(config.tool_name),
-                    backend=result.backend.value if result.backend is not None else "",
-                    controls=list(result.degraded_controls),
-                )
-            )
-        for decision in result.network_decisions:
-            await self._event_bus.publish(
-                ProxyRequestEvaluated(
-                    session_id=sid,
-                    actor="egress_proxy",
-                    tool_name=ToolName(config.tool_name),
-                    destination_host=decision.destination_host,
-                    destination_port=decision.destination_port,
-                    allowed=decision.allowed,
-                    reason=decision.reason,
-                    credential_placeholders=list(decision.used_placeholders),
-                )
-            )
-
-        if result.escape_detected:
-            await self._event_bus.publish(
-                SandboxEscapeDetected(
-                    session_id=sid,
-                    actor="sandbox",
-                    tool_name=ToolName(config.tool_name),
-                    reason=result.reason,
-                )
-            )
-            await self._handle_lockdown_transition(
-                sid,
-                trigger="sandbox_escape",
-                reason=result.reason or "sandbox escape detected",
-            )
+        await self._publish_sandbox_events(
+            sid=sid,
+            config_tool_name=ToolName(config.tool_name),
+            result=result,
+        )
 
         await self._event_bus.publish(
             ToolExecuted(
@@ -862,6 +1011,41 @@ class DaemonControlHandlers:
             )
         )
         return result.model_dump(mode="json")
+
+    @staticmethod
+    def _restore_filesystem_from_checkpoint(
+        state: dict[str, Any],
+    ) -> tuple[int, int, list[str]]:
+        snapshots = state.get("filesystem_snapshot", [])
+        if not isinstance(snapshots, list):
+            return 0, 0, []
+        restored = 0
+        deleted = 0
+        errors: list[str] = []
+        for item in snapshots:
+            if not isinstance(item, dict):
+                continue
+            path = str(item.get("path", "")).strip()
+            if not path:
+                continue
+            candidate = Path(path).expanduser()
+            existed = bool(item.get("existed", False))
+            try:
+                if existed:
+                    encoded = item.get("content_b64")
+                    if not isinstance(encoded, str):
+                        continue
+                    data = base64.b64decode(encoded.encode("utf-8"), validate=True)
+                    candidate.parent.mkdir(parents=True, exist_ok=True)
+                    candidate.write_bytes(data)
+                    restored += 1
+                    continue
+                if candidate.exists() and candidate.is_file():
+                    candidate.unlink()
+                    deleted += 1
+            except Exception as exc:  # pragma: no cover - defensive
+                errors.append(f"{path}:{exc.__class__.__name__}")
+        return restored, deleted, errors
 
     async def handle_browser_paste(self, params: dict[str, Any]) -> dict[str, Any]:
         sid = SessionId(str(params.get("session_id", "")))

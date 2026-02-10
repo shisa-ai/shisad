@@ -68,6 +68,8 @@ async def test_m3_t1_blocks_non_allowlisted_domain(model_env: None, tmp_path: Pa
                 "tool_name": "http_request",
                 "command": [sys.executable, "-c", "print('ok')"],
                 "network_urls": ["https://evil.com/collect"],
+                "security_critical": False,
+                "degraded_mode": "fail_open",
                 "network": {
                     "allow_network": True,
                     "allowed_domains": ["api.good.com"],
@@ -78,6 +80,28 @@ async def test_m3_t1_blocks_non_allowlisted_domain(model_env: None, tmp_path: Pa
         )
         assert result["allowed"] is False
         assert result["reason"] == "network:host_not_allowlisted"
+    finally:
+        await _shutdown(daemon_task, client)
+
+
+@pytest.mark.asyncio
+async def test_m3_rr2_empty_command_rejected_as_invalid_params(
+    model_env: None,
+    tmp_path: Path,
+) -> None:
+    daemon_task, client, _ = await _start_daemon(tmp_path)
+    try:
+        created = await client.call("session.create", {"channel": "cli"})
+        sid = created["session_id"]
+        with pytest.raises(RuntimeError, match=r"RPC error -32602"):
+            await client.call(
+                "tool.execute",
+                {
+                    "session_id": sid,
+                    "tool_name": "shell_exec",
+                    "command": [],
+                },
+            )
     finally:
         await _shutdown(daemon_task, client)
 
@@ -105,6 +129,8 @@ async def test_m3_t2_t3_filesystem_mount_and_denylist_enforced(
                 "tool_name": "file.read",
                 "command": [sys.executable, "-c", "print('noop')"],
                 "read_paths": [str(outside)],
+                "security_critical": False,
+                "degraded_mode": "fail_open",
                 "filesystem": {"mounts": [{"path": f"{workspace.as_posix()}/**", "mode": "ro"}]},
             },
         )
@@ -118,6 +144,8 @@ async def test_m3_t2_t3_filesystem_mount_and_denylist_enforced(
                 "tool_name": "file.read",
                 "command": [sys.executable, "-c", "print('noop')"],
                 "read_paths": [str(denied)],
+                "security_critical": False,
+                "degraded_mode": "fail_open",
                 "filesystem": {
                     "mounts": [{"path": f"{workspace.as_posix()}/**", "mode": "ro"}],
                     "denylist": ["**/*.pem"],
@@ -194,6 +222,7 @@ async def test_m3_t6_checkpoint_before_destructive_and_t7_rollback_restores_sess
         )
         checkpoint_id = str(destructive["checkpoint_id"])
         assert checkpoint_id
+        assert target.exists() is False
 
         await client.call(
             "session.grant_capabilities",
@@ -211,12 +240,15 @@ async def test_m3_t6_checkpoint_before_destructive_and_t7_rollback_restores_sess
 
         rollback = await client.call("session.rollback", {"checkpoint_id": checkpoint_id})
         assert rollback["rolled_back"] is True
+        assert rollback["files_restored"] >= 1
 
         listed_after_rollback = await client.call("session.list")
         session_after_rollback = next(
             item for item in listed_after_rollback["sessions"] if item["id"] == sid
         )
         assert "http.request" not in session_after_rollback["capabilities"]
+        assert target.exists() is True
+        assert target.read_text(encoding="utf-8") == "danger"
     finally:
         await _shutdown(daemon_task, client)
 
@@ -268,6 +300,61 @@ async def test_m3_t9_browser_paste_runs_output_firewall(model_env: None, tmp_pat
         assert blocked["allowed"] is False
         assert blocked["blocked"] is True
         assert "malicious_url" in blocked["reason_codes"]
+    finally:
+        await _shutdown(daemon_task, client)
+
+
+@pytest.mark.asyncio
+async def test_m3_rr2_planner_confirmed_action_executes_via_sandbox(
+    model_env: None,
+    tmp_path: Path,
+) -> None:
+    daemon_task, client, _ = await _start_daemon(tmp_path)
+    try:
+        created = await client.call(
+            "session.create",
+            {"channel": "cli", "user_id": "alice", "workspace_id": "ws1"},
+        )
+        sid = created["session_id"]
+        await client.call(
+            "session.grant_capabilities",
+            {
+                "session_id": sid,
+                "capabilities": ["shell.exec"],
+                "reason": "planner sandbox runtime test",
+            },
+        )
+        reply = await client.call(
+            "session.message",
+            {
+                "session_id": sid,
+                "channel": "cli",
+                "user_id": "alice",
+                "workspace_id": "ws1",
+                "content": (
+                    "write a command result and run: "
+                    "python -c \"print('planner-sandbox-ok')\""
+                ),
+            },
+        )
+        pending_ids = list(reply.get("pending_confirmation_ids", []))
+        assert pending_ids
+        confirmed = await client.call(
+            "action.confirm",
+            {"confirmation_id": pending_ids[0], "reason": "approved for test"},
+        )
+        assert confirmed["status"] in {"approved", "failed"}
+
+        executed = await client.call(
+            "audit.query",
+            {"event_type": "ToolExecuted", "session_id": sid, "limit": 20},
+        )
+        matching = [
+            event
+            for event in executed["events"]
+            if event["data"].get("tool_name") == "shell_exec"
+        ]
+        assert matching
     finally:
         await _shutdown(daemon_task, client)
 

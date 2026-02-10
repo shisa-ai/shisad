@@ -235,7 +235,7 @@ class ActionDecisionParams(_StrictParams):
 class ToolExecuteParams(_StrictParams):
     session_id: str
     tool_name: str
-    command: list[str]
+    command: list[str] = Field(min_length=1)
     read_paths: list[str] = Field(default_factory=list)
     write_paths: list[str] = Field(default_factory=list)
     network_urls: list[str] = Field(default_factory=list)

@@ -5,7 +5,12 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from shisad.core.api.schema import JsonRpcRequest, SessionCreateParams, SessionMessageParams
+from shisad.core.api.schema import (
+    JsonRpcRequest,
+    SessionCreateParams,
+    SessionMessageParams,
+    ToolExecuteParams,
+)
 
 
 class TestApiSchemaValidation:
@@ -28,3 +33,13 @@ class TestApiSchemaValidation:
         params = SessionCreateParams()
         assert params.user_id == ""
         assert params.workspace_id == ""
+
+    def test_tool_execute_rejects_empty_command(self) -> None:
+        with pytest.raises(ValidationError):
+            ToolExecuteParams.model_validate(
+                {
+                    "session_id": "s1",
+                    "tool_name": "shell_exec",
+                    "command": [],
+                }
+            )

@@ -122,6 +122,11 @@ class EgressProxy:
 
         resolved = self._resolver(host)
         decision.resolved_addresses = list(resolved)
+        if not resolved:
+            decision.reason = "dns_resolution_failed"
+            decision.alert = True
+            self._audit(tool_name=tool_name, url=url, decision=decision, body=body)
+            return decision
         if expected_addresses and set(expected_addresses) != set(resolved):
             decision.reason = "dns_rebinding_blocked"
             decision.alert = True

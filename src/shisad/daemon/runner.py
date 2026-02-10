@@ -8,6 +8,8 @@ import hashlib
 import json
 import logging
 import os
+import re
+import shlex
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Protocol
@@ -67,6 +69,7 @@ from shisad.core.providers.base import (
 from shisad.core.providers.routing import ModelComponent, ModelRouter
 from shisad.core.session import CheckpointStore, SessionManager
 from shisad.core.tools.builtin.alarm import AlarmTool
+from shisad.core.tools.builtin.shell_exec import ShellExecTool
 from shisad.core.tools.registry import ToolRegistry
 from shisad.core.transcript import TranscriptStore
 from shisad.core.types import CredentialRef, SessionId, ToolName
@@ -107,7 +110,15 @@ class _LocalPlannerProvider:
         _ = tools
         user_content = messages[-1].content if messages else ""
         normalized_content = user_content.replace("^", "")
-        normalized_lower = normalized_content.lower()
+        goal_text = normalized_content
+        goal_match = re.search(
+            r"=== USER GOAL ===\n.*?\n(.*?)\n\n=== EXTERNAL CONTENT",
+            normalized_content,
+            flags=re.DOTALL,
+        )
+        if goal_match:
+            goal_text = goal_match.group(1).strip()
+        goal_lower = goal_text.lower()
         actions: list[dict[str, Any]] = []
 
         anomaly_triggers = (
@@ -116,8 +127,8 @@ class _LocalPlannerProvider:
             "possible compromise",
             "suspicious behavior",
         )
-        if "retrieve:" in normalized_lower or "retrieve evidence" in normalized_lower:
-            query = normalized_content.split(":", 1)[-1].strip() or normalized_content[:180]
+        if "retrieve:" in goal_lower or "retrieve evidence" in goal_lower:
+            query = goal_text.split(":", 1)[-1].strip() or goal_text[:180]
             actions.append(
                 {
                     "action_id": "local-retrieve-1",
@@ -131,7 +142,32 @@ class _LocalPlannerProvider:
                 }
             )
 
-        if any(token in normalized_lower for token in anomaly_triggers):
+        run_match = re.search(
+            r"\b(?:run|execute)\s*:\s*(.+)",
+            goal_text,
+            flags=re.DOTALL | re.IGNORECASE,
+        )
+        if run_match:
+            command_text = run_match.group(1).strip()
+            command_tokens: list[str]
+            try:
+                command_tokens = shlex.split(command_text)
+            except ValueError:
+                command_tokens = []
+            if command_tokens:
+                actions.append(
+                    {
+                        "action_id": "local-shell-1",
+                        "tool_name": "shell_exec",
+                        "arguments": {
+                            "command": command_tokens,
+                        },
+                        "reasoning": "Run explicit command requested by user via sandbox runtime",
+                        "data_sources": ["user_signal"],
+                    }
+                )
+
+        if any(token in goal_lower for token in anomaly_triggers):
             actions.append(
                 {
                     "action_id": "local-anomaly-1",
@@ -562,6 +598,7 @@ async def run_daemon(config: DaemonConfig) -> None:
 
     registry = ToolRegistry()
     registry.register(RetrieveRagTool.tool_definition())
+    registry.register(ShellExecTool.tool_definition())
     alarm_tool = AlarmTool(event_bus)
     registry.register(alarm_tool.tool_definition())
 
