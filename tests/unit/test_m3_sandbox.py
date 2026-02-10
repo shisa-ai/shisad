@@ -283,6 +283,64 @@ def test_m3_rr2_unavailable_runtime_blocks_undeclared_file_write(tmp_path: Path)
     assert target.exists() is False
 
 
+def test_m3_rr2_runtime_metadata_drift_fail_closed_blocks_preinvoke(tmp_path: Path) -> None:
+    target = tmp_path / "drift-write.txt"
+    orchestrator = SandboxOrchestrator(proxy=EgressProxy(resolver=_resolver))
+    orchestrator._backends[SandboxType.NSJAIL] = SandboxBackend(
+        backend=SandboxType.NSJAIL,
+        runtime="",
+        enforcement=SandboxEnforcement(
+            filesystem=True,
+            network=True,
+            env=True,
+            seccomp=True,
+            resource_limits=True,
+            dns_control=True,
+        ),
+    )
+    result = orchestrator.execute(
+        SandboxConfig(
+            tool_name="shell.exec",
+            command=[sys.executable, "-c", f"open(r'{target}', 'w').write('x')"],
+            degraded_mode=DegradedModePolicy.FAIL_CLOSED,
+            security_critical=True,
+        )
+    )
+    assert result.allowed is False
+    assert result.reason == "runtime_isolation_unavailable"
+    assert "runtime_isolation" in result.degraded_controls
+    assert target.exists() is False
+
+
+def test_m3_rr2_unknown_runtime_wrapper_fail_closed_blocks_preinvoke(tmp_path: Path) -> None:
+    target = tmp_path / "wrapper-mismatch.txt"
+    orchestrator = SandboxOrchestrator(proxy=EgressProxy(resolver=_resolver))
+    orchestrator._backends[SandboxType.NSJAIL] = SandboxBackend(
+        backend=SandboxType.NSJAIL,
+        runtime="/tmp/not-a-supported-wrapper",
+        enforcement=SandboxEnforcement(
+            filesystem=True,
+            network=True,
+            env=True,
+            seccomp=True,
+            resource_limits=True,
+            dns_control=True,
+        ),
+    )
+    result = orchestrator.execute(
+        SandboxConfig(
+            tool_name="shell.exec",
+            command=[sys.executable, "-c", f"open(r'{target}', 'w').write('x')"],
+            degraded_mode=DegradedModePolicy.FAIL_CLOSED,
+            security_critical=True,
+        )
+    )
+    assert result.allowed is False
+    assert result.reason == "runtime_isolation_unavailable"
+    assert "runtime_isolation" in result.degraded_controls
+    assert target.exists() is False
+
+
 def test_m3_rr2_unavailable_runtime_blocks_undeclared_network_attempt() -> None:
     orchestrator = SandboxOrchestrator(proxy=EgressProxy(resolver=_resolver))
     orchestrator._backends[SandboxType.NSJAIL] = SandboxBackend(

@@ -531,19 +531,48 @@ class SandboxOrchestrator:
         run_command = list(command)
         run_env = env
         wrapped_used = False
+        fail_closed = (
+            config.degraded_mode == DegradedModePolicy.FAIL_CLOSED or config.security_critical
+        )
         if backend.runtime:
             wrapped = self._wrap_isolated_command(
                 backend=backend,
                 config=config,
                 command=command,
             )
-            if wrapped:
+            if wrapped and wrapped != command:
                 run_command = wrapped
                 run_env = dict(env)
                 cwd = None
-                wrapped_used = run_command != command
+                wrapped_used = True
+            else:
+                isolation_degraded = True
+                if fail_closed:
+                    blocked_reason = "runtime_isolation_unavailable"
+                    return {
+                        "stdout": "",
+                        "stderr": "",
+                        "exit_code": None,
+                        "timed_out": False,
+                        "truncated": truncated,
+                        "resource_limit_warning": resource_limit_warning,
+                        "isolation_degraded": isolation_degraded,
+                        "blocked_reason": blocked_reason,
+                    }
         else:
             isolation_degraded = True
+            if fail_closed:
+                blocked_reason = "runtime_isolation_unavailable"
+                return {
+                    "stdout": "",
+                    "stderr": "",
+                    "exit_code": None,
+                    "timed_out": False,
+                    "truncated": truncated,
+                    "resource_limit_warning": resource_limit_warning,
+                    "isolation_degraded": isolation_degraded,
+                    "blocked_reason": blocked_reason,
+                }
 
         preexec = self._preexec_limits(config.limits)
         stdout, stderr, exit_code, timed_out = self._invoke(
@@ -556,7 +585,7 @@ class SandboxOrchestrator:
 
         if wrapped_used and self._isolation_runtime_failed(exit_code=exit_code, stderr=stderr):
             isolation_degraded = True
-            if config.degraded_mode == DegradedModePolicy.FAIL_CLOSED or config.security_critical:
+            if fail_closed:
                 blocked_reason = "runtime_isolation_unavailable"
                 return {
                     "stdout": stdout,
