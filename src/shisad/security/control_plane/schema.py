@@ -136,6 +136,42 @@ _WRITE_COMMAND_HINTS = {
 }
 
 _DOMAIN_TOKEN_RE = re.compile(r"^[A-Za-z0-9.-]+\.[A-Za-z]{2,}(?::\d+)?$")
+_COMMAND_HOST_PREFIXES = (
+    "--url=",
+    "--uri=",
+    "--endpoint=",
+    "--destination=",
+    "--host=",
+    "url=",
+    "uri=",
+    "endpoint=",
+    "destination=",
+    "host=",
+)
+_LOCAL_FILE_EXTENSIONS = {
+    ".txt",
+    ".md",
+    ".rst",
+    ".json",
+    ".yaml",
+    ".yml",
+    ".toml",
+    ".ini",
+    ".conf",
+    ".cfg",
+    ".csv",
+    ".tsv",
+    ".log",
+    ".xml",
+    ".py",
+    ".ts",
+    ".js",
+    ".sh",
+    ".bash",
+    ".zsh",
+    ".ps1",
+    ".sql",
+}
 
 _BANNED_TEXT_FIELDS = {
     "content",
@@ -295,10 +331,7 @@ def extract_network_hosts(arguments: dict[str, Any]) -> list[str]:
 
     command = arguments.get("command")
     if isinstance(command, list):
-        for token in command:
-            host = _host_from_token(str(token))
-            if host:
-                hosts.append(host)
+        hosts.extend(_extract_hosts_from_command_tokens(command))
 
     deduped: list[str] = []
     seen: set[str] = set()
@@ -391,6 +424,55 @@ def _host_from_token(token: str) -> str:
         host = value.split(":", 1)[0]
         return host.lower()
     return ""
+
+
+def _extract_hosts_from_command_tokens(command: list[Any]) -> list[str]:
+    if not command:
+        return []
+    executable = Path(str(command[0])).name.lower()
+    hosts: list[str] = []
+    for raw_token in command[1:]:
+        token = str(raw_token).strip()
+        if not token:
+            continue
+        if "://" in token:
+            host = _host_from_token(token)
+            if host:
+                hosts.append(host)
+            continue
+
+        lowered = token.lower()
+        prefixed_host = ""
+        for prefix in _COMMAND_HOST_PREFIXES:
+            if not lowered.startswith(prefix):
+                continue
+            candidate = token[len(prefix) :].strip()
+            prefixed_host = _host_from_token(candidate)
+            break
+        if prefixed_host:
+            hosts.append(prefixed_host)
+            continue
+
+        if executable not in _NETWORK_COMMANDS:
+            continue
+        if _looks_like_local_path_token(token):
+            continue
+        host = _host_from_token(token)
+        if host:
+            hosts.append(host)
+    return hosts
+
+
+def _looks_like_local_path_token(token: str) -> bool:
+    stripped = token.strip()
+    if not stripped:
+        return False
+    if stripped.startswith(("/", "./", "../", "~/", ".\\", "..\\")):
+        return True
+    if "\\" in stripped or "/" in stripped:
+        return True
+    suffix = Path(stripped).suffix.lower()
+    return suffix in _LOCAL_FILE_EXTENSIONS
 
 
 def _parse_size_value(value: Any) -> int | None:

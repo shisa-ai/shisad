@@ -89,6 +89,44 @@ class SessionActionHistoryStore:
     def all_for_session(self, session_id: str) -> list[ActionHistoryRecord]:
         return list(self._records.get(session_id, []))
 
+    def for_analysis(
+        self,
+        session_id: str,
+        *,
+        window_seconds: int | None = None,
+        last_n: int | None = None,
+        now: datetime | None = None,
+    ) -> list[ActionHistoryRecord]:
+        rows: list[ActionHistoryRecord]
+        if window_seconds is not None:
+            rows = self.in_window(session_id, window_seconds, now=now)
+        elif last_n is not None:
+            rows = self.last_n(session_id, last_n)
+        else:
+            rows = self.all_for_session(session_id)
+        return self.dedupe_for_analysis(rows)
+
+    @classmethod
+    def dedupe_for_analysis(cls, rows: list[ActionHistoryRecord]) -> list[ActionHistoryRecord]:
+        deduped: list[ActionHistoryRecord] = []
+        seen: set[tuple[str, str, str, str]] = set()
+        for row in rows:
+            key = cls._analysis_key(row)
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(row)
+        return deduped
+
+    @staticmethod
+    def _analysis_key(record: ActionHistoryRecord) -> tuple[str, str, str, str]:
+        return (
+            record.timestamp.isoformat(),
+            record.action_kind.value,
+            record.resource_id,
+            record.tool_name,
+        )
+
     def _load(self) -> None:
         if self._storage_path is None or not self._storage_path.exists():
             return

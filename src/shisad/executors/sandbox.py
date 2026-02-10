@@ -418,36 +418,14 @@ class SandboxOrchestrator:
                 )
 
         connect_path_result: ConnectPathResult | None = None
-        if config.network.allow_network:
-            allowed_ips: list[str] = []
-            for net_decision in network_decisions:
-                allowed_ips.extend(net_decision.resolved_addresses)
-            connect_path_result = self._connect_path_proxy.enforce(
-                allowed_ips=sorted(set(allowed_ips)),
-                namespace_pid=0,
-            )
-            if not connect_path_result.enforced:
-                degraded_controls = sorted({*degraded_controls, "connect_path"})
-                self._audit(
-                    "sandbox.connect_path_degraded",
-                    {
-                        "tool_name": config.tool_name,
-                        "reason": connect_path_result.reason,
-                        "method": connect_path_result.method,
-                        "session_id": config.session_id,
-                    },
-                )
-                if fail_closed:
-                    return SandboxResult(
-                        allowed=False,
-                        reason="connect_path_unavailable",
-                        backend=backend_type,
-                        fs_decisions=fs_decisions,
-                        network_decisions=network_decisions,
-                        degraded_controls=degraded_controls,
-                        connect_path=connect_path_result,
-                        origin=dict(config.origin),
-                    )
+        connect_path_allowed_ips = sorted(
+            {
+                address.strip()
+                for decision in network_decisions
+                for address in decision.resolved_addresses
+                if address.strip()
+            }
+        )
 
         command, env, inject_err = self._inject_credentials(
             command=config.command,
@@ -542,9 +520,32 @@ class SandboxOrchestrator:
                 backend=backend,
                 command=command,
                 env=env,
+                connect_path_allowed_ips=connect_path_allowed_ips,
+                enforce_connect_path=config.network.allow_network,
             )
         finally:
             backend.destroy(instance)
+
+        process_connect_path = process["connect_path_result"]
+        if isinstance(process_connect_path, ConnectPathResult):
+            connect_path_result = process_connect_path
+        if process["connect_path_degraded"]:
+            degraded_controls = sorted({*degraded_controls, "connect_path"})
+            self._audit(
+                "sandbox.connect_path_degraded",
+                {
+                    "tool_name": config.tool_name,
+                    "reason": (
+                        connect_path_result.reason
+                        if connect_path_result is not None
+                        else "connect_path_unavailable"
+                    ),
+                    "method": (
+                        connect_path_result.method if connect_path_result is not None else "none"
+                    ),
+                    "session_id": config.session_id,
+                },
+            )
 
         if process["resource_limit_warning"]:
             warning = process["resource_limit_warning"]
@@ -604,12 +605,16 @@ class SandboxOrchestrator:
         backend: SandboxBackend,
         command: list[str],
         env: dict[str, str],
+        connect_path_allowed_ips: list[str],
+        enforce_connect_path: bool,
     ) -> dict[str, Any]:
         cwd = config.cwd or None
         truncated = False
         resource_limit_warning = ""
         isolation_degraded = False
         blocked_reason = ""
+        connect_path_result: ConnectPathResult | None = None
+        connect_path_degraded = False
 
         run_command = list(command)
         run_env = env
@@ -641,6 +646,8 @@ class SandboxOrchestrator:
                         "resource_limit_warning": resource_limit_warning,
                         "isolation_degraded": isolation_degraded,
                         "blocked_reason": blocked_reason,
+                        "connect_path_result": connect_path_result,
+                        "connect_path_degraded": connect_path_degraded,
                     }
         else:
             isolation_degraded = True
@@ -655,16 +662,39 @@ class SandboxOrchestrator:
                     "resource_limit_warning": resource_limit_warning,
                     "isolation_degraded": isolation_degraded,
                     "blocked_reason": blocked_reason,
+                    "connect_path_result": connect_path_result,
+                    "connect_path_degraded": connect_path_degraded,
                 }
 
         preexec = self._preexec_limits(config.limits)
-        stdout, stderr, exit_code, timed_out = self._invoke(
+        on_started: Callable[[int], str | None] | None = None
+        if enforce_connect_path:
+            allowed_ips = sorted({item for item in connect_path_allowed_ips if item})
+
+            def _on_started(namespace_pid: int) -> str | None:
+                nonlocal connect_path_result, connect_path_degraded
+                connect_path_result = self._connect_path_proxy.enforce(
+                    allowed_ips=allowed_ips,
+                    namespace_pid=namespace_pid,
+                )
+                if not connect_path_result.enforced:
+                    connect_path_degraded = True
+                    if fail_closed:
+                        return "connect_path_unavailable"
+                return None
+
+            on_started = _on_started
+
+        stdout, stderr, exit_code, timed_out, invoke_blocked_reason = self._invoke(
             run_command,
             env=run_env,
             cwd=cwd,
             timeout_seconds=config.limits.timeout_seconds,
             preexec=preexec,
+            on_started=on_started,
         )
+        if invoke_blocked_reason:
+            blocked_reason = invoke_blocked_reason
 
         if wrapped_used and self._isolation_runtime_failed(exit_code=exit_code, stderr=stderr):
             isolation_degraded = True
@@ -679,14 +709,19 @@ class SandboxOrchestrator:
                     "resource_limit_warning": resource_limit_warning,
                     "isolation_degraded": isolation_degraded,
                     "blocked_reason": blocked_reason,
+                    "connect_path_result": connect_path_result,
+                    "connect_path_degraded": connect_path_degraded,
                 }
-            stdout, stderr, exit_code, timed_out = self._invoke(
+            stdout, stderr, exit_code, timed_out, invoke_blocked_reason = self._invoke(
                 command,
                 env=env,
                 cwd=config.cwd or None,
                 timeout_seconds=config.limits.timeout_seconds,
                 preexec=preexec,
+                on_started=on_started,
             )
+            if invoke_blocked_reason:
+                blocked_reason = invoke_blocked_reason
 
         max_bytes = max(1, config.limits.output_bytes)
         stdout_bytes = stdout.encode("utf-8", errors="ignore")
@@ -713,6 +748,8 @@ class SandboxOrchestrator:
             "resource_limit_warning": resource_limit_warning,
             "isolation_degraded": isolation_degraded,
             "blocked_reason": blocked_reason,
+            "connect_path_result": connect_path_result,
+            "connect_path_degraded": connect_path_degraded,
         }
 
     @staticmethod
@@ -723,31 +760,52 @@ class SandboxOrchestrator:
         cwd: str | None,
         timeout_seconds: int,
         preexec: Any,
-    ) -> tuple[str, str, int | None, bool]:
+        on_started: Callable[[int], str | None] | None = None,
+    ) -> tuple[str, str, int | None, bool, str | None]:
         timed_out = False
         stdout = ""
         stderr = ""
         exit_code: int | None = None
+        blocked_reason: str | None = None
         try:
-            completed = subprocess.run(
+            completed = subprocess.Popen(
                 command,
-                capture_output=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
                 text=True,
-                timeout=timeout_seconds,
                 env=env,
                 cwd=cwd,
                 preexec_fn=preexec,
-                check=False,
             )
-            stdout = completed.stdout
-            stderr = completed.stderr
-            exit_code = completed.returncode
+
+            if on_started is not None and completed.pid > 0:
+                blocked_reason = on_started(completed.pid)
+                if blocked_reason:
+                    completed.terminate()
+                    try:
+                        stdout, stderr = completed.communicate(timeout=1)
+                    except subprocess.TimeoutExpired:
+                        completed.kill()
+                        stdout, stderr = completed.communicate()
+                    exit_code = completed.returncode
+                    return stdout, stderr, exit_code, timed_out, blocked_reason
+
+            try:
+                stdout, stderr = completed.communicate(timeout=timeout_seconds)
+                exit_code = completed.returncode
+            except subprocess.TimeoutExpired:
+                timed_out = True
+                completed.kill()
+                timeout_out, timeout_err = completed.communicate()
+                stdout = timeout_out or ""
+                stderr = timeout_err or ""
+                exit_code = None
         except subprocess.TimeoutExpired as exc:
             timed_out = True
             stdout = SandboxOrchestrator._to_text(exc.stdout)
             stderr = SandboxOrchestrator._to_text(exc.stderr)
             exit_code = None
-        return stdout, stderr, exit_code, timed_out
+        return stdout, stderr, exit_code, timed_out, blocked_reason
 
     @staticmethod
     def _isolation_runtime_failed(*, exit_code: int | None, stderr: str) -> bool:

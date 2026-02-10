@@ -91,9 +91,14 @@ class ResourceAccessMonitor:
                     )
                 )
 
-        recent = history.in_window(session_id, self._enum_window_seconds, now=current)
+        recent = history.for_analysis(
+            session_id,
+            window_seconds=self._enum_window_seconds,
+            now=current,
+        )
         recent = list(recent)
         recent.append(candidate_record)
+        recent = history.dedupe_for_analysis(recent)
 
         fs_events = [
             item

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sys
 
-from shisad.executors.connect_path import NoopConnectPathProxy
+from shisad.executors.connect_path import ConnectPathResult, NoopConnectPathProxy
 from shisad.executors.proxy import EgressProxy, NetworkPolicy
 from shisad.executors.sandbox import (
     DegradedModePolicy,
@@ -51,3 +51,50 @@ def test_m4_t26_connect_path_degraded_signal_emitted_when_unavailable() -> None:
     )
     assert result.allowed is True
     assert "connect_path" in result.degraded_controls
+
+
+class _CaptureConnectPathProxy:
+    net_admin_available = True
+
+    def __init__(self) -> None:
+        self.namespace_pids: list[int] = []
+
+    def enforce(self, *, allowed_ips: list[str], namespace_pid: int) -> ConnectPathResult:
+        _ = allowed_ips
+        self.namespace_pids.append(namespace_pid)
+        return ConnectPathResult(enforced=True, method="iptables", reason="enforced")
+
+
+def test_m5_rt12_connect_path_uses_runtime_process_pid() -> None:
+    proxy = _CaptureConnectPathProxy()
+    orchestrator = SandboxOrchestrator(
+        proxy=EgressProxy(resolver=_resolver),
+        connect_path_proxy=proxy,
+    )
+    orchestrator._backends[SandboxType.CONTAINER] = SandboxBackend(
+        backend=SandboxType.CONTAINER,
+        runtime="",
+        enforcement=SandboxEnforcement(
+            filesystem=True,
+            network=True,
+            env=True,
+            seccomp=True,
+            resource_limits=True,
+            cgroups=False,
+            dns_control=True,
+        ),
+    )
+    result = orchestrator.execute(
+        SandboxConfig(
+            tool_name="http_request",
+            command=[sys.executable, "-c", "print('ok')"],
+            sandbox_type=SandboxType.CONTAINER,
+            network=NetworkPolicy(allow_network=True, allowed_domains=["api.good.com"]),
+            network_urls=["https://api.good.com/v1"],
+            degraded_mode=DegradedModePolicy.FAIL_OPEN,
+            security_critical=False,
+        )
+    )
+    assert result.allowed is True
+    assert proxy.namespace_pids
+    assert all(pid > 0 for pid in proxy.namespace_pids)

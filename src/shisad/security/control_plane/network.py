@@ -194,7 +194,10 @@ class NetworkIntelligenceMonitor:
         self._cache_ttl_seconds = cache_ttl_seconds
         self._high_critical_timeout_action = high_critical_timeout_action.upper()
         self._low_medium_timeout_action = low_medium_timeout_action.upper()
-        self._cache: dict[tuple[str, str], tuple[datetime, NetworkMonitorDecision]] = {}
+        self._cache: dict[
+            tuple[str, str, str, str, tuple[str, ...], str],
+            tuple[datetime, NetworkMonitorDecision],
+        ] = {}
         self._recent: dict[str, list[NetworkMetadata]] = defaultdict(list)
 
     async def evaluate(
@@ -205,20 +208,29 @@ class NetworkIntelligenceMonitor:
         risk_tier: RiskTier,
     ) -> NetworkMonitorDecision:
         self._observe(metadata)
-        enrichment = self.enrich(metadata=metadata, declared_domains=declared_domains)
-
-        cache_key = (metadata.origin.skill_name or "none", metadata.destination_host)
-        cached = self._cache.get(cache_key)
-        if cached is not None:
-            expires_at, decision = cached
-            if expires_at > datetime.now(UTC):
-                return decision.model_copy(update={"enrichment": dict(enrichment)})
-
+        canonical_domains = sorted(
+            {item.strip().lower() for item in declared_domains if item.strip()}
+        )
+        enrichment = self.enrich(metadata=metadata, declared_domains=canonical_domains)
         heuristic = self._heuristic_decision(enrichment=enrichment, risk_tier=risk_tier)
 
         if self._monitor_provider is None:
-            self._cache_decision(cache_key, heuristic)
             return heuristic
+
+        cache_key = self._cache_key(
+            metadata=metadata,
+            declared_domains=canonical_domains,
+            risk_tier=risk_tier,
+        )
+        cached = self._cache.get(cache_key)
+        if cached is not None:
+            expires_at, provider_decision = cached
+            if expires_at > datetime.now(UTC):
+                combined = self._combine_decisions(
+                    heuristic=heuristic,
+                    llm=provider_decision.model_copy(update={"enrichment": dict(enrichment)}),
+                )
+                return combined
 
         try:
             llm_decision = await asyncio.wait_for(
@@ -226,16 +238,15 @@ class NetworkIntelligenceMonitor:
                 timeout=self._timeout_seconds,
             )
         except TimeoutError:
-            fallback = self._timeout_fallback(risk_tier=risk_tier, enrichment=enrichment)
-            self._cache_decision(cache_key, fallback)
-            return fallback
+            provider_decision = self._timeout_fallback(risk_tier=risk_tier, enrichment=enrichment)
+            self._cache_decision(cache_key, provider_decision)
+            return self._combine_decisions(heuristic=heuristic, llm=provider_decision)
         except Exception:
             logger.exception("Network monitor LLM failure; using heuristic fallback")
-            self._cache_decision(cache_key, heuristic)
             return heuristic
 
+        self._cache_decision(cache_key, llm_decision)
         combined = self._combine_decisions(heuristic=heuristic, llm=llm_decision)
-        self._cache_decision(cache_key, combined)
         return combined
 
     def enrich(
@@ -476,9 +487,30 @@ class NetworkIntelligenceMonitor:
         reason_codes = list(dict.fromkeys([*heuristic.reason_codes, *llm.reason_codes]))
         return chosen.model_copy(update={"reason_codes": reason_codes, "source": "combined"})
 
-    def _cache_decision(self, cache_key: tuple[str, str], decision: NetworkMonitorDecision) -> None:
+    def _cache_decision(
+        self,
+        cache_key: tuple[str, str, str, str, tuple[str, ...], str],
+        decision: NetworkMonitorDecision,
+    ) -> None:
         expires = datetime.now(UTC) + timedelta(seconds=self._cache_ttl_seconds)
         self._cache[cache_key] = (expires, decision)
+
+    @staticmethod
+    def _cache_key(
+        *,
+        metadata: NetworkMetadata,
+        declared_domains: list[str],
+        risk_tier: RiskTier,
+    ) -> tuple[str, str, str, str, tuple[str, ...], str]:
+        origin = metadata.origin
+        return (
+            origin.workspace_id or "none",
+            origin.user_id or "anonymous",
+            origin.skill_name or "none",
+            metadata.destination_host.lower(),
+            tuple(declared_domains),
+            risk_tier.value,
+        )
 
 
 def extract_network_metadata(

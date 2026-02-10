@@ -494,6 +494,14 @@ def test_m5_t15_action_normalization_maps_aliases_to_canonical_kind() -> None:
     ) == ActionKind.EGRESS
 
 
+def test_m5_rt9_command_filename_token_is_not_misclassified_as_egress() -> None:
+    kind = infer_action_kind(
+        "shell.exec",
+        {"command": ["cat", "config.json"]},
+    )
+    assert kind != ActionKind.EGRESS
+
+
 def test_m5_t16_control_plane_metadata_events_exclude_raw_payload_fields() -> None:
     disallowed = {
         "payload",
@@ -569,6 +577,57 @@ async def test_m5_t17_high_critical_monitor_timeout_cannot_fail_open() -> None:
     )
     assert decision.timed_out is True
     assert decision.decision != "ALLOW"
+
+
+@pytest.mark.asyncio
+async def test_m5_rt10_network_cache_does_not_reuse_allow_across_contexts() -> None:
+    monitor = NetworkIntelligenceMonitor(
+        baseline_db=BaselineDatabase(),
+        cache_ttl_seconds=300,
+    )
+    first_origin = Origin(
+        session_id="s-cache-1",
+        user_id="user-a",
+        workspace_id="ws-a",
+        skill_name="skill-x",
+        actor="planner",
+    )
+    second_origin = Origin(
+        session_id="s-cache-2",
+        user_id="user-b",
+        workspace_id="ws-b",
+        skill_name="skill-x",
+        actor="planner",
+    )
+
+    first = extract_network_metadata(
+        origin=first_origin,
+        tool_name="http_request",
+        destination_host="api.good.example",
+        destination_port=443,
+        protocol="https",
+        request_size=128,
+    )
+    second = extract_network_metadata(
+        origin=second_origin,
+        tool_name="http_request",
+        destination_host="api.good.example",
+        destination_port=443,
+        protocol="https",
+        request_size=128,
+    )
+    _ = await monitor.evaluate(
+        metadata=first,
+        declared_domains=["api.good.example"],
+        risk_tier=RiskTier.LOW,
+    )
+    second_decision = await monitor.evaluate(
+        metadata=second,
+        declared_domains=[],
+        risk_tier=RiskTier.HIGH,
+    )
+    assert second_decision.decision != "ALLOW"
+    assert "network:undeclared_new_domain" in second_decision.reason_codes
 
 
 def test_m5_t18_plan_lifecycle_expiry_cancel_amendment_semantics() -> None:
@@ -688,3 +747,30 @@ def test_m5_rt8_history_load_logs_malformed_records(
     caplog.set_level("WARNING", logger="shisad.security.control_plane.history")
     _ = SessionActionHistoryStore(history_path)
     assert "skipping malformed record" in caplog.text
+
+
+def test_m5_rt11_sequence_analyzer_dedupes_preflight_and_execution_rows() -> None:
+    history = SessionActionHistoryStore()
+    analyzer = BehavioralSequenceAnalyzer()
+    origin = _origin("s-seq-dedupe")
+    now = datetime.now(UTC)
+    for index in range(2):
+        action = ControlPlaneAction(
+            timestamp=now + timedelta(seconds=index),
+            origin=origin,
+            tool_name="file.read",
+            action_kind=ActionKind.FS_LIST,
+            resource_id=f"/tmp/{index}",
+        )
+        history.append_action(action, decision_status="allow")
+        history.append_action(action, decision_status="allow", execution_status="success")
+
+    candidate = ControlPlaneAction(
+        timestamp=now + timedelta(seconds=3),
+        origin=origin,
+        tool_name="file.read",
+        action_kind=ActionKind.FS_LIST,
+        resource_id="/tmp/2",
+    )
+    findings = analyzer.analyze(history=history, candidate_action=candidate, now=now)
+    assert all(item.pattern_name != "mass_enum" for item in findings)

@@ -146,13 +146,18 @@ class BehavioralSequenceAnalyzer:
     ) -> list[ActionHistoryRecord]:
         records: list[ActionHistoryRecord]
         if pattern.window_seconds is not None:
-            records = history.in_window(session_id, pattern.window_seconds, now=now)
+            records = history.for_analysis(
+                session_id,
+                window_seconds=pattern.window_seconds,
+                now=now,
+            )
         elif pattern.window_actions is not None:
-            records = history.last_n(session_id, pattern.window_actions)
+            records = history.for_analysis(session_id, last_n=pattern.window_actions)
         else:
-            records = history.all_for_session(session_id)
+            records = history.for_analysis(session_id)
         records = list(records)
         records.append(candidate_record)
+        records = history.dedupe_for_analysis(records)
         if pattern.window_actions is not None and len(records) > pattern.window_actions:
             records = records[-pattern.window_actions :]
         return records
