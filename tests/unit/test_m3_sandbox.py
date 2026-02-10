@@ -2,19 +2,25 @@
 
 from __future__ import annotations
 
+import asyncio
 import sys
 from pathlib import Path
 
+import pytest
+
 from shisad.core.session import CheckpointStore, SessionManager
+from shisad.core.types import CredentialRef
 from shisad.executors.mounts import FilesystemPolicy, MountRule
 from shisad.executors.proxy import EgressProxy, NetworkPolicy
 from shisad.executors.sandbox import (
     DegradedModePolicy,
+    EnvironmentPolicy,
     ResourceLimits,
     SandboxConfig,
     SandboxOrchestrator,
     SandboxType,
 )
+from shisad.security.credentials import CredentialConfig, InMemoryCredentialStore
 
 
 def _resolver(_hostname: str) -> list[str]:
@@ -108,15 +114,162 @@ def test_m3_sandbox_fail_closed_on_degraded_security_critical_controls() -> None
     orchestrator = SandboxOrchestrator(proxy=EgressProxy(resolver=_resolver))
     result = orchestrator.execute(
         SandboxConfig(
-            tool_name="http_request",
+            tool_name="shell.exec",
             command=[sys.executable, "-c", "print('ok')"],
-            network=NetworkPolicy(allow_network=True, allowed_domains=["api.good.com"]),
-            network_urls=["https://api.good.com/v1/ping"],
-            sandbox_type=SandboxType.NSJAIL,
+            sandbox_type=SandboxType.VM,
             security_critical=True,
             degraded_mode=DegradedModePolicy.FAIL_CLOSED,
         )
     )
     assert result.allowed is False
     assert result.reason == "degraded_enforcement"
-    assert "network" in result.degraded_controls
+    assert "seccomp" in result.degraded_controls
+
+
+def test_m3_sandbox_build_environment_edge_cases() -> None:
+    orchestrator = SandboxOrchestrator(proxy=EgressProxy(resolver=_resolver))
+    env, err, dropped = orchestrator._build_environment(
+        EnvironmentPolicy(allowed_keys=["ALLOWED"], max_keys=4, max_total_bytes=64),
+        {"NOT_ALLOWED": "x"},
+    )
+    assert err is None
+    assert dropped == ["NOT_ALLOWED"]
+    assert env == {}
+
+    env2, err2, _ = orchestrator._build_environment(
+        EnvironmentPolicy(allowed_keys=["A", "B"], max_keys=1, max_total_bytes=64),
+        {"A": "1", "B": "2"},
+    )
+    assert env2 == {}
+    assert err2 == "env_too_many_keys"
+
+    env3, err3, _ = orchestrator._build_environment(
+        EnvironmentPolicy(allowed_keys=["A"], max_keys=4, max_total_bytes=8),
+        {"A": "0123456789"},
+    )
+    assert env3 == {}
+    assert err3 == "env_too_large"
+
+    env4, err4, _ = orchestrator._build_environment(
+        EnvironmentPolicy(allowed_keys=["LD_PRELOAD"], denied_prefixes=["LD_"]),
+        {"LD_PRELOAD": "/tmp/evil.so"},
+    )
+    assert env4 == {}
+    assert err4 == "env_key_denied:LD_PRELOAD"
+
+
+def test_m3_sandbox_select_backend_logic() -> None:
+    orchestrator = SandboxOrchestrator(proxy=EgressProxy(resolver=_resolver))
+    explicit = orchestrator._select_backend(
+        SandboxConfig(
+            tool_name="shell.exec",
+            command=[sys.executable, "-c", "print('ok')"],
+            sandbox_type=SandboxType.VM,
+        )
+    )
+    assert explicit == SandboxType.VM
+
+    network = orchestrator._select_backend(
+        SandboxConfig(
+            tool_name="http_request",
+            command=[sys.executable, "-c", "print('ok')"],
+            network=NetworkPolicy(allow_network=True, allowed_domains=["api.good.com"]),
+        )
+    )
+    assert network == SandboxType.CONTAINER
+
+    file_only = orchestrator._select_backend(
+        SandboxConfig(
+            tool_name="file.read",
+            command=[sys.executable, "-c", "print('ok')"],
+            read_paths=["/tmp/file.txt"],
+        )
+    )
+    assert file_only == SandboxType.NSJAIL
+
+
+def test_m3_sandbox_destructive_detection_edge_cases() -> None:
+    assert SandboxOrchestrator.is_destructive(["ls", "-la"]) is False
+    assert SandboxOrchestrator.is_destructive(["git", "status"]) is False
+    assert SandboxOrchestrator.is_destructive(["git", "clean", "-d", "-f"]) is True
+    assert SandboxOrchestrator.is_destructive(["git", "reset", "HEAD", "--hard"]) is True
+    assert SandboxOrchestrator.is_destructive(["git", "push", "--force"]) is True
+    assert SandboxOrchestrator.is_destructive(["bash", "-lc", "echo hi > note.txt"]) is True
+
+
+def test_m3_sandbox_injects_placeholders_into_command_and_env() -> None:
+    store = InMemoryCredentialStore()
+    store.register(
+        CredentialRef("gmail_primary"),
+        "real-secret-token",
+        CredentialConfig(allowed_hosts=["api.good.com"]),
+    )
+    placeholder = store.get_placeholder(CredentialRef("gmail_primary"))
+    orchestrator = SandboxOrchestrator(
+        proxy=EgressProxy(credential_store=store, resolver=_resolver)
+    )
+    result = orchestrator.execute(
+        SandboxConfig(
+            tool_name="shell.exec",
+            command=[sys.executable, "-c", "import os; print(os.environ['AUTH'])"],
+            env={"AUTH": placeholder},
+            environment=EnvironmentPolicy(allowed_keys=["PATH", "LANG", "TERM", "HOME", "AUTH"]),
+            network=NetworkPolicy(allow_network=True, allowed_domains=["api.good.com"]),
+            network_urls=["https://api.good.com/v1/send"],
+            approved_by_pep=True,
+            degraded_mode=DegradedModePolicy.FAIL_OPEN,
+            security_critical=False,
+        )
+    )
+    assert result.allowed is True
+    assert "real-secret-token" in result.stdout
+
+
+def test_m3_sandbox_blocks_placeholder_injection_without_pep_approval() -> None:
+    store = InMemoryCredentialStore()
+    store.register(
+        CredentialRef("gmail_primary"),
+        "real-secret-token",
+        CredentialConfig(allowed_hosts=["api.good.com"]),
+    )
+    placeholder = store.get_placeholder(CredentialRef("gmail_primary"))
+    orchestrator = SandboxOrchestrator(
+        proxy=EgressProxy(credential_store=store, resolver=_resolver)
+    )
+    result = orchestrator.execute(
+        SandboxConfig(
+            tool_name="shell.exec",
+            command=[sys.executable, "-c", "print('noop')"],
+            env={"AUTH": placeholder},
+            environment=EnvironmentPolicy(allowed_keys=["PATH", "LANG", "TERM", "HOME", "AUTH"]),
+            network=NetworkPolicy(allow_network=True, allowed_domains=["api.good.com"]),
+            network_urls=["https://api.good.com/v1/send"],
+            approved_by_pep=False,
+            degraded_mode=DegradedModePolicy.FAIL_OPEN,
+            security_critical=False,
+        )
+    )
+    assert result.allowed is False
+    assert result.reason == "network:pep_not_approved"
+
+
+@pytest.mark.asyncio
+async def test_m3_sandbox_execute_async_does_not_block_event_loop() -> None:
+    orchestrator = SandboxOrchestrator(proxy=EgressProxy(resolver=_resolver))
+    loop = asyncio.get_running_loop()
+    started = loop.time()
+    execution = asyncio.create_task(
+        orchestrator.execute_async(
+            SandboxConfig(
+                tool_name="shell.exec",
+                command=[sys.executable, "-c", "import time; time.sleep(0.2)"],
+                limits=ResourceLimits(timeout_seconds=2, output_bytes=1024),
+                degraded_mode=DegradedModePolicy.FAIL_OPEN,
+                security_critical=False,
+            )
+        )
+    )
+    await asyncio.sleep(0.05)
+    elapsed = loop.time() - started
+    assert elapsed < 0.15
+    await execution

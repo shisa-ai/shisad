@@ -5,8 +5,14 @@ from __future__ import annotations
 import base64
 from pathlib import Path
 
+import pytest
+
 from shisad.core.types import TaintLabel
-from shisad.executors.browser import BrowserSandbox, BrowserSandboxPolicy
+from shisad.executors.browser import (
+    BrowserClipboardMode,
+    BrowserSandbox,
+    BrowserSandboxPolicy,
+)
 from shisad.security.firewall.output import OutputFirewall
 
 
@@ -14,7 +20,7 @@ def _browser(tmp_path: Path) -> BrowserSandbox:
     return BrowserSandbox(
         output_firewall=OutputFirewall(safe_domains=["api.good.com"]),
         screenshots_dir=tmp_path / "screenshots",
-        policy=BrowserSandboxPolicy(clipboard="enabled"),
+        policy=BrowserSandboxPolicy(clipboard=BrowserClipboardMode.ENABLED),
     )
 
 
@@ -46,3 +52,31 @@ def test_m3_browser_screenshot_storage_marks_untrusted(tmp_path: Path) -> None:
     )
     assert Path(result.path).exists()
     assert result.ocr_taint == TaintLabel.UNTRUSTED.value
+
+
+def test_m3_browser_screenshot_rejects_invalid_payload(tmp_path: Path) -> None:
+    browser = _browser(tmp_path)
+    with pytest.raises(ValueError, match="invalid_screenshot_payload"):
+        browser.store_screenshot(
+            session_id="s1",
+            image_base64="!!!not-base64!!!",
+            ocr_text="broken",
+        )
+
+
+def test_m3_browser_screenshot_rejects_oversized_payload(tmp_path: Path) -> None:
+    browser = BrowserSandbox(
+        output_firewall=OutputFirewall(safe_domains=["api.good.com"]),
+        screenshots_dir=tmp_path / "screenshots",
+        policy=BrowserSandboxPolicy(
+            clipboard=BrowserClipboardMode.ENABLED,
+            max_screenshot_bytes=8,
+        ),
+    )
+    large = base64.b64encode(b"0123456789").decode("utf-8")
+    with pytest.raises(ValueError, match="screenshot_too_large"):
+        browser.store_screenshot(
+            session_id="s1",
+            image_base64=large,
+            ocr_text="large",
+        )

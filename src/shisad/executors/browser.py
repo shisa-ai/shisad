@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import base64
+import binascii
 import hashlib
 from datetime import UTC, datetime
+from enum import StrEnum
 from pathlib import Path
 
 from pydantic import BaseModel, Field
@@ -13,15 +15,46 @@ from shisad.core.types import TaintLabel
 from shisad.security.firewall.output import OutputFirewall
 
 
+class BrowserSandboxMode(StrEnum):
+    CONTAINER_HARDENED = "container_hardened"
+    VM = "vm"
+
+
+class BrowserClipboardMode(StrEnum):
+    DISABLED = "disabled"
+    ENABLED = "enabled"
+
+
+class BrowserDownloadsMode(StrEnum):
+    DISABLED = "disabled"
+    ENABLED = "enabled"
+
+
+class BrowserLocalNetworkMode(StrEnum):
+    BLOCKED = "blocked"
+    ALLOWED = "allowed"
+
+
+class BrowserCookiesMode(StrEnum):
+    SESSION_ONLY = "session_only"
+    PERSISTENT = "persistent"
+
+
+class BrowserExtensionsMode(StrEnum):
+    NONE = "none"
+    ALLOWED = "allowed"
+
+
 class BrowserSandboxPolicy(BaseModel):
     """Browser runtime policy."""
 
-    sandbox: str = "container_hardened"
-    clipboard: str = "disabled"
-    downloads: str = "disabled"
-    local_network: str = "blocked"
-    cookies: str = "session_only"
-    extensions: str = "none"
+    sandbox: BrowserSandboxMode = BrowserSandboxMode.CONTAINER_HARDENED
+    clipboard: BrowserClipboardMode = BrowserClipboardMode.DISABLED
+    downloads: BrowserDownloadsMode = BrowserDownloadsMode.DISABLED
+    local_network: BrowserLocalNetworkMode = BrowserLocalNetworkMode.BLOCKED
+    cookies: BrowserCookiesMode = BrowserCookiesMode.SESSION_ONLY
+    extensions: BrowserExtensionsMode = BrowserExtensionsMode.NONE
+    max_screenshot_bytes: int = 5_000_000
 
 
 class BrowserPasteResult(BaseModel):
@@ -72,7 +105,7 @@ class BrowserSandbox:
         taint_labels: set[TaintLabel] | None = None,
     ) -> BrowserPasteResult:
         labels = taint_labels or set()
-        if self._policy.clipboard == "disabled":
+        if self._policy.clipboard == BrowserClipboardMode.DISABLED:
             return BrowserPasteResult(allowed=False, blocked=True, reason="clipboard_disabled")
         if labels & {
             TaintLabel.SENSITIVE_FILE,
@@ -103,7 +136,12 @@ class BrowserSandbox:
         image_base64: str,
         ocr_text: str = "",
     ) -> BrowserScreenshotResult:
-        payload = base64.b64decode(image_base64.encode("utf-8"))
+        try:
+            payload = base64.b64decode(image_base64.encode("utf-8"), validate=True)
+        except binascii.Error as exc:
+            raise ValueError("invalid_screenshot_payload") from exc
+        if len(payload) > self._policy.max_screenshot_bytes:
+            raise ValueError("screenshot_too_large")
         digest = hashlib.sha256(payload).hexdigest()[:16]
         screenshot_id = f"{session_id}-{datetime.now(UTC).strftime('%Y%m%d%H%M%S')}-{digest}"
         path = self._screenshots_dir / f"{screenshot_id}.png"

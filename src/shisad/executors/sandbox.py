@@ -2,28 +2,27 @@
 
 from __future__ import annotations
 
-import contextlib
+import asyncio
 import os
 import re
+import shutil
 import subprocess
 import uuid
 from collections.abc import Callable
 from datetime import UTC, datetime
 from enum import StrEnum
+from functools import partial
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 from pydantic import BaseModel, Field
 
 from shisad.core.session import CheckpointStore, Session
 from shisad.executors.mounts import FilesystemAccessDecision, FilesystemPolicy, MountManager
 from shisad.executors.proxy import EgressProxy, NetworkPolicy, ProxyDecision
+from shisad.security.credentials import is_placeholder
 
-_DESTRUCTIVE_GIT_ARGS = {
-    ("reset", "--hard"),
-    ("clean", "-fd"),
-    ("clean", "-xdf"),
-}
 _ESCAPE_SIGNAL_TOKENS = {
     "unshare",
     "nsenter",
@@ -32,6 +31,27 @@ _ESCAPE_SIGNAL_TOKENS = {
     "chroot",
     "ptrace",
 }
+_NETWORK_EXECUTABLES = {
+    "curl",
+    "wget",
+    "nc",
+    "ncat",
+    "telnet",
+    "ping",
+    "nslookup",
+    "dig",
+    "host",
+    "ssh",
+    "scp",
+    "sftp",
+    "rsync",
+    "ftp",
+    "socat",
+}
+_DOMAIN_TOKEN_RE = re.compile(r"^[A-Za-z0-9.-]+\.[A-Za-z]{2,}(?::\d+)?$")
+_SHELL_REDIRECT_RE = re.compile(r"(^|[^>])>([^>]|$)")
+_PLACEHOLDER_RE = re.compile(r"SHISAD_SECRET_PLACEHOLDER_[A-Fa-f0-9]{32}")
+_BWRAP_BASE_RO_DIRS = ("/usr", "/bin", "/sbin", "/lib", "/lib64", "/etc")
 
 
 class SandboxType(StrEnum):
@@ -39,6 +59,7 @@ class SandboxType(StrEnum):
 
     CONTAINER = "container"
     NSJAIL = "nsjail"
+    VM = "vm"
 
 
 class DegradedModePolicy(StrEnum):
@@ -106,7 +127,9 @@ class SandboxConfig(BaseModel):
     limits: ResourceLimits = Field(default_factory=ResourceLimits)
     degraded_mode: DegradedModePolicy = DegradedModePolicy.FAIL_CLOSED
     security_critical: bool = True
-    approved_by_pep: bool = True
+    approved_by_pep: bool = False
+    request_headers: dict[str, str] = Field(default_factory=dict)
+    request_body: str = ""
 
 
 class SandboxInstance(BaseModel):
@@ -138,9 +161,16 @@ class SandboxResult(BaseModel):
 class SandboxBackend:
     """Backend adapter with declared enforcement capabilities."""
 
-    def __init__(self, *, backend: SandboxType, enforcement: SandboxEnforcement) -> None:
+    def __init__(
+        self,
+        *,
+        backend: SandboxType,
+        enforcement: SandboxEnforcement,
+        runtime: str = "",
+    ) -> None:
         self.backend = backend
         self.enforcement = enforcement
+        self.runtime = runtime
 
     def create(self, _config: SandboxConfig) -> SandboxInstance:
         return SandboxInstance(backend=self.backend)
@@ -162,6 +192,11 @@ class SandboxOrchestrator:
         self._proxy = proxy
         self._checkpoint_store = checkpoint_store
         self._audit_hook = audit_hook
+        self._bwrap = self._detect_usable_bwrap()
+        self._nsjail = shutil.which("nsjail") or ""
+        container_runtime = self._bwrap
+        nsjail_runtime = self._nsjail or self._bwrap
+        vm_runtime = self._bwrap
         self._backends: dict[SandboxType, SandboxBackend] = {
             SandboxType.CONTAINER: SandboxBackend(
                 backend=SandboxType.CONTAINER,
@@ -174,20 +209,44 @@ class SandboxOrchestrator:
                     cgroups=False,
                     dns_control=True,
                 ),
+                runtime=container_runtime,
             ),
             SandboxType.NSJAIL: SandboxBackend(
                 backend=SandboxType.NSJAIL,
                 enforcement=SandboxEnforcement(
                     filesystem=True,
-                    network=False,
+                    network=True,
                     env=True,
                     seccomp=True,
                     resource_limits=True,
                     cgroups=False,
-                    dns_control=False,
+                    dns_control=True,
                 ),
+                runtime=nsjail_runtime,
+            ),
+            SandboxType.VM: SandboxBackend(
+                backend=SandboxType.VM,
+                enforcement=SandboxEnforcement(
+                    filesystem=bool(vm_runtime),
+                    network=bool(vm_runtime),
+                    env=True,
+                    seccomp=False,
+                    resource_limits=True,
+                    cgroups=False,
+                    dns_control=bool(vm_runtime),
+                ),
+                runtime=vm_runtime,
             ),
         }
+
+    async def execute_async(
+        self,
+        config: SandboxConfig,
+        *,
+        session: Session | None = None,
+    ) -> SandboxResult:
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(None, partial(self.execute, config, session=session))
 
     def execute(
         self,
@@ -214,13 +273,22 @@ class SandboxOrchestrator:
                 degraded_controls=degraded_controls,
             )
 
-        env, env_err = self._build_environment(config.environment, config.env)
+        env, env_err, dropped_env_keys = self._build_environment(config.environment, config.env)
         if env_err is not None:
             return SandboxResult(
                 allowed=False,
                 reason=env_err,
                 backend=backend_type,
                 degraded_controls=degraded_controls,
+            )
+        if dropped_env_keys:
+            self._audit(
+                "sandbox.env_sanitized",
+                {
+                    "tool_name": config.tool_name,
+                    "dropped_keys": dropped_env_keys,
+                    "session_id": config.session_id,
+                },
             )
 
         mount_manager = MountManager(config.filesystem)
@@ -276,8 +344,19 @@ class SandboxOrchestrator:
                 tool_name=config.tool_name,
                 url=url,
                 policy=config.network,
+                headers=config.request_headers,
+                body=config.request_body,
                 approved_by_pep=config.approved_by_pep,
             )
+            if network_decision.injected_headers:
+                network_decision = network_decision.model_copy(
+                    update={
+                        "injected_headers": {
+                            key: "[redacted]"
+                            for key in network_decision.injected_headers
+                        }
+                    }
+                )
             network_decisions.append(network_decision)
             if not network_decision.allowed:
                 return SandboxResult(
@@ -289,7 +368,41 @@ class SandboxOrchestrator:
                     degraded_controls=degraded_controls,
                 )
 
-        escape_reason = self._escape_signal_reason(config.command)
+        command, env, inject_err = self._inject_credentials(
+            command=config.command,
+            env=env,
+            network_decisions=network_decisions,
+            approved_by_pep=config.approved_by_pep,
+        )
+        if inject_err is not None:
+            return SandboxResult(
+                allowed=False,
+                reason=f"network:{inject_err}",
+                backend=backend_type,
+                fs_decisions=fs_decisions,
+                network_decisions=network_decisions,
+                degraded_controls=degraded_controls,
+            )
+
+        for url, prior in zip(network_urls, network_decisions, strict=False):
+            revalidated = self._proxy.authorize_request(
+                tool_name=config.tool_name,
+                url=url,
+                policy=config.network,
+                approved_by_pep=config.approved_by_pep,
+                expected_addresses=list(prior.resolved_addresses),
+            )
+            if not revalidated.allowed:
+                return SandboxResult(
+                    allowed=False,
+                    reason=f"network:{revalidated.reason}",
+                    backend=backend_type,
+                    fs_decisions=fs_decisions,
+                    network_decisions=network_decisions,
+                    degraded_controls=degraded_controls,
+                )
+
+        escape_reason = self._escape_signal_reason(command)
         if escape_reason is not None:
             self._audit(
                 "sandbox.escape_detected",
@@ -320,7 +433,7 @@ class SandboxOrchestrator:
                 state={
                     "session": session.model_dump(mode="json"),
                     "tool_name": config.tool_name,
-                    "command": list(config.command),
+                    "command": list(command),
                     "write_paths": list(config.write_paths),
                     "created_at": datetime.now(UTC).isoformat(),
                 },
@@ -337,9 +450,36 @@ class SandboxOrchestrator:
 
         instance = backend.create(config)
         try:
-            process = self._run_process(config, env=env)
+            process = self._run_process(
+                config,
+                backend=backend,
+                command=command,
+                env=env,
+            )
         finally:
             backend.destroy(instance)
+
+        if process["resource_limit_warning"]:
+            warning = process["resource_limit_warning"]
+            degraded_controls = sorted({*degraded_controls, "resource_limits"})
+            self._audit(
+                "sandbox.resource_limit_degraded",
+                {
+                    "tool_name": config.tool_name,
+                    "warning": warning,
+                    "session_id": config.session_id,
+                },
+            )
+        if process["isolation_degraded"]:
+            degraded_controls = sorted({*degraded_controls, "runtime_isolation"})
+            self._audit(
+                "sandbox.runtime_degraded",
+                {
+                    "tool_name": config.tool_name,
+                    "backend": backend_type.value,
+                    "session_id": config.session_id,
+                },
+            )
 
         return SandboxResult(
             allowed=True,
@@ -356,34 +496,54 @@ class SandboxOrchestrator:
             degraded_controls=degraded_controls,
         )
 
-    def _run_process(self, config: SandboxConfig, *, env: dict[str, str]) -> dict[str, Any]:
+    def _run_process(
+        self,
+        config: SandboxConfig,
+        *,
+        backend: SandboxBackend,
+        command: list[str],
+        env: dict[str, str],
+    ) -> dict[str, Any]:
         cwd = config.cwd or None
-        timed_out = False
         truncated = False
-        stdout = ""
-        stderr = ""
-        exit_code: int | None = None
+        resource_limit_warning = ""
+        isolation_degraded = False
+
+        run_command = list(command)
+        run_env = env
+        wrapped_used = False
+        if backend.runtime:
+            wrapped = self._wrap_isolated_command(
+                backend=backend,
+                config=config,
+                command=command,
+            )
+            if wrapped:
+                run_command = wrapped
+                run_env = dict(env)
+                cwd = None
+                wrapped_used = run_command != command
+        else:
+            isolation_degraded = True
 
         preexec = self._preexec_limits(config.limits)
-        try:
-            completed = subprocess.run(
-                config.command,
-                capture_output=True,
-                text=True,
-                timeout=config.limits.timeout_seconds,
+        stdout, stderr, exit_code, timed_out = self._invoke(
+            run_command,
+            env=run_env,
+            cwd=cwd,
+            timeout_seconds=config.limits.timeout_seconds,
+            preexec=preexec,
+        )
+
+        if wrapped_used and self._isolation_runtime_failed(exit_code=exit_code, stderr=stderr):
+            isolation_degraded = True
+            stdout, stderr, exit_code, timed_out = self._invoke(
+                command,
                 env=env,
-                cwd=cwd,
-                preexec_fn=preexec,
-                check=False,
+                cwd=config.cwd or None,
+                timeout_seconds=config.limits.timeout_seconds,
+                preexec=preexec,
             )
-            stdout = completed.stdout
-            stderr = completed.stderr
-            exit_code = completed.returncode
-        except subprocess.TimeoutExpired as exc:
-            timed_out = True
-            stdout = self._to_text(exc.stdout)
-            stderr = self._to_text(exc.stderr)
-            exit_code = None
 
         max_bytes = max(1, config.limits.output_bytes)
         stdout_bytes = stdout.encode("utf-8", errors="ignore")
@@ -395,13 +555,69 @@ class SandboxOrchestrator:
             truncated = True
             stderr = stderr_bytes[:max_bytes].decode("utf-8", errors="ignore")
 
+        limit_warning_prefix = "[shisad sandbox] resource limits degraded:"
+        for line in stderr.splitlines():
+            if line.startswith(limit_warning_prefix):
+                resource_limit_warning = line[len(limit_warning_prefix) :].strip()
+                break
+
         return {
             "stdout": stdout,
             "stderr": stderr,
             "exit_code": exit_code,
             "timed_out": timed_out,
             "truncated": truncated,
+            "resource_limit_warning": resource_limit_warning,
+            "isolation_degraded": isolation_degraded,
         }
+
+    @staticmethod
+    def _invoke(
+        command: list[str],
+        *,
+        env: dict[str, str],
+        cwd: str | None,
+        timeout_seconds: int,
+        preexec: Any,
+    ) -> tuple[str, str, int | None, bool]:
+        timed_out = False
+        stdout = ""
+        stderr = ""
+        exit_code: int | None = None
+        try:
+            completed = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                timeout=timeout_seconds,
+                env=env,
+                cwd=cwd,
+                preexec_fn=preexec,
+                check=False,
+            )
+            stdout = completed.stdout
+            stderr = completed.stderr
+            exit_code = completed.returncode
+        except subprocess.TimeoutExpired as exc:
+            timed_out = True
+            stdout = SandboxOrchestrator._to_text(exc.stdout)
+            stderr = SandboxOrchestrator._to_text(exc.stderr)
+            exit_code = None
+        return stdout, stderr, exit_code, timed_out
+
+    @staticmethod
+    def _isolation_runtime_failed(*, exit_code: int | None, stderr: str) -> bool:
+        if exit_code in {0, None}:
+            return False
+        lowered = stderr.lower()
+        markers = (
+            "creating new namespace failed",
+            "operation not permitted",
+            "permission denied",
+            "namespace",
+            "cannot create user namespace",
+        )
+        return any(marker in lowered for marker in markers)
 
     def _select_backend(self, config: SandboxConfig) -> SandboxType:
         if config.sandbox_type is not None:
@@ -444,28 +660,30 @@ class SandboxOrchestrator:
         self,
         policy: EnvironmentPolicy,
         requested: dict[str, str],
-    ) -> tuple[dict[str, str], str | None]:
+    ) -> tuple[dict[str, str], str | None, list[str]]:
         defaults: dict[str, str] = {}
         for key in policy.allowed_keys:
             if key in os.environ:
                 defaults[key] = os.environ[key]
 
         sanitized = dict(defaults)
+        dropped_keys: list[str] = []
         for key, value in requested.items():
             if key not in policy.allowed_keys:
+                dropped_keys.append(key)
                 continue
             if any(key.startswith(prefix) for prefix in policy.denied_prefixes):
-                return {}, f"env_key_denied:{key}"
+                return {}, f"env_key_denied:{key}", dropped_keys
             sanitized[key] = value
 
         if len(sanitized) > policy.max_keys:
-            return {}, "env_too_many_keys"
+            return {}, "env_too_many_keys", dropped_keys
         total_bytes = 0
         for key, value in sanitized.items():
             total_bytes += len(key.encode("utf-8")) + len(value.encode("utf-8")) + 1
         if total_bytes > policy.max_total_bytes:
-            return {}, "env_too_large"
-        return sanitized, None
+            return {}, "env_too_large", dropped_keys
+        return sanitized, None, dropped_keys
 
     @staticmethod
     def _preexec_limits(limits: ResourceLimits) -> Any:
@@ -476,10 +694,24 @@ class SandboxOrchestrator:
 
         def _apply() -> None:
             memory_bytes = limits.memory_mb * 1024 * 1024
-            with contextlib.suppress(Exception):
+            errors: list[str] = []
+            try:
                 resource.setrlimit(resource.RLIMIT_AS, (memory_bytes, memory_bytes))
-            with contextlib.suppress(Exception):
+            except Exception as exc:  # pragma: no cover - platform dependent
+                errors.append(f"RLIMIT_AS={exc.__class__.__name__}")
+            try:
                 resource.setrlimit(resource.RLIMIT_NPROC, (limits.pids, limits.pids))
+            except Exception as exc:  # pragma: no cover - platform dependent
+                errors.append(f"RLIMIT_NPROC={exc.__class__.__name__}")
+            if errors:
+                os.write(
+                    2,
+                    (
+                        "[shisad sandbox] resource limits degraded: "
+                        + ",".join(errors)
+                        + "\n"
+                    ).encode("utf-8", errors="ignore"),
+                )
 
         return _apply
 
@@ -488,16 +720,37 @@ class SandboxOrchestrator:
         if not command:
             return False
         executable = Path(command[0]).name
-        if executable in {"rm", "rmdir", "truncate", "dd"}:
+        if executable in {"rm", "rmdir", "truncate", "dd", "shred"}:
             return True
-        if executable == "mv":
+        if executable in {"mv", "chmod", "chown"}:
+            return True
+        if executable == "cp" and len(command) >= 3 and command[1] == "/dev/null":
+            return True
+        if executable == "sed" and any(arg == "-i" or arg.startswith("-i") for arg in command[1:]):
+            return True
+        if executable == "tee" and "-a" not in command[1:]:
             return True
         if executable == "git":
-            for first, second in _DESTRUCTIVE_GIT_ARGS:
-                if len(command) >= 3 and command[1] == first and command[2] == second:
+            if len(command) < 2:
+                return False
+            subcommand = command[1]
+            args = command[2:]
+            if subcommand == "reset" and any(
+                arg == "--hard" or arg.startswith("--hard=") for arg in command[2:]
+            ):
+                return True
+            if subcommand == "clean":
+                flag_tokens = [arg for arg in args if arg.startswith("-")]
+                if any("f" in token for token in flag_tokens) or "--force" in args:
                     return True
-            return len(command) >= 3 and command[1] == "reset" and command[2].startswith("--hard")
-        return False
+            if subcommand == "push" and any(
+                arg in {"-f", "--force", "--force-with-lease"} or arg.startswith("--force")
+                for arg in command[2:]
+            ):
+                return True
+        return executable in {"sh", "bash", "zsh"} and any(
+            _SHELL_REDIRECT_RE.search(token) for token in command[1:]
+        )
 
     @staticmethod
     def _escape_signal_reason(command: list[str]) -> str | None:
@@ -513,28 +766,49 @@ class SandboxOrchestrator:
         for token in command:
             if token.startswith(("http://", "https://")):
                 targets.append(token)
+                continue
+            if token.startswith("--url="):
+                targets.append(token.split("=", 1)[1])
+                continue
+            if token.startswith(("ftp://", "ftps://")):
+                targets.append(token.replace("ftp://", "https://", 1))
+                continue
+            if "=" in token:
+                _, rhs = token.split("=", 1)
+                if rhs.startswith(("http://", "https://")):
+                    targets.append(rhs)
+                    continue
+            if _DOMAIN_TOKEN_RE.match(token):
+                host = token
+                if "://" in host:
+                    parsed = urlparse(host)
+                    host = parsed.hostname or ""
+                if host:
+                    targets.append(f"https://{host}/")
         if command and Path(command[0]).name in {"nslookup", "dig", "host"} and len(command) >= 2:
             host = command[-1].strip()
             if host and "://" not in host:
                 targets.append(f"https://{host}/")
-        return targets
+        deduped: list[str] = []
+        seen: set[str] = set()
+        for target in targets:
+            if target not in seen:
+                deduped.append(target)
+                seen.add(target)
+        return deduped
 
     @staticmethod
     def _command_attempts_network(command: list[str]) -> bool:
         if not command:
             return False
         executable = Path(command[0]).name
-        return executable in {
-            "curl",
-            "wget",
-            "nc",
-            "ncat",
-            "telnet",
-            "ping",
-            "nslookup",
-            "dig",
-            "host",
-        }
+        if executable in _NETWORK_EXECUTABLES:
+            return True
+        return any(
+            token.startswith(("http://", "https://", "ftp://", "ftps://"))
+            or _DOMAIN_TOKEN_RE.match(token)
+            for token in command[1:]
+        )
 
     @staticmethod
     def _to_text(value: bytes | str | None) -> str:
@@ -548,3 +822,232 @@ class SandboxOrchestrator:
         if self._audit_hook is None:
             return
         self._audit_hook({"action": action, **payload})
+
+    def _inject_credentials(
+        self,
+        *,
+        command: list[str],
+        env: dict[str, str],
+        network_decisions: list[ProxyDecision],
+        approved_by_pep: bool,
+    ) -> tuple[list[str], dict[str, str], str | None]:
+        hosts = [d.destination_host for d in network_decisions if d.allowed and d.destination_host]
+        if not hosts:
+            return list(command), dict(env), None
+
+        resolved_cache: dict[str, str] = {}
+
+        def _resolve_placeholder(value: str) -> tuple[str | None, str | None]:
+            if value in resolved_cache:
+                return resolved_cache[value], None
+            if not is_placeholder(value):
+                return None, None
+            if not approved_by_pep:
+                return None, "pep_not_approved"
+            for host in hosts:
+                resolved = self._proxy.resolve_placeholder(
+                    placeholder=value,
+                    host=host,
+                    approved_by_pep=approved_by_pep,
+                )
+                if resolved is not None:
+                    resolved_cache[value] = resolved
+                    return resolved, None
+            return None, "credential_host_mismatch"
+
+        transformed_command: list[str] = []
+        for token in command:
+            replaced = token
+            if is_placeholder(token):
+                resolved, reason = _resolve_placeholder(token)
+                if resolved is None:
+                    return [], {}, reason or "credential_host_mismatch"
+                replaced = resolved
+            else:
+                for placeholder in _PLACEHOLDER_RE.findall(token):
+                    resolved, reason = _resolve_placeholder(placeholder)
+                    if resolved is None:
+                        return [], {}, reason or "credential_host_mismatch"
+                    replaced = replaced.replace(placeholder, resolved)
+            transformed_command.append(replaced)
+
+        transformed_env: dict[str, str] = {}
+        for key, value in env.items():
+            replaced = value
+            if is_placeholder(value):
+                resolved, reason = _resolve_placeholder(value)
+                if resolved is None:
+                    return [], {}, reason or "credential_host_mismatch"
+                replaced = resolved
+            else:
+                for placeholder in _PLACEHOLDER_RE.findall(value):
+                    resolved, reason = _resolve_placeholder(placeholder)
+                    if resolved is None:
+                        return [], {}, reason or "credential_host_mismatch"
+                    replaced = replaced.replace(placeholder, resolved)
+            transformed_env[key] = replaced
+        return transformed_command, transformed_env, None
+
+    def _wrap_isolated_command(
+        self,
+        *,
+        backend: SandboxBackend,
+        config: SandboxConfig,
+        command: list[str],
+    ) -> list[str]:
+        if backend.runtime == self._bwrap and self._bwrap:
+            return self._build_bwrap_command(config=config, command=command)
+        if backend.runtime == self._nsjail and self._nsjail:
+            return self._build_nsjail_command(config=config, command=command)
+        return list(command)
+
+    def _build_bwrap_command(self, *, config: SandboxConfig, command: list[str]) -> list[str]:
+        args: list[str] = [
+            self._bwrap,
+            "--die-with-parent",
+            "--new-session",
+            "--proc",
+            "/proc",
+            "--dev",
+            "/dev",
+            "--tmpfs",
+            "/tmp",
+            "--tmpfs",
+            "/run",
+            "--unshare-pid",
+            "--unshare-uts",
+            "--unshare-ipc",
+        ]
+        if not config.network.allow_network:
+            args.append("--unshare-net")
+        bind_modes: dict[Path, str] = {}
+        for base in _BWRAP_BASE_RO_DIRS:
+            base_path = Path(base)
+            if base_path.exists():
+                bind_modes[base_path] = "ro"
+
+        def _mark_bind(path: Path, mode: str) -> None:
+            existing = bind_modes.get(path)
+            if existing == "rw":
+                return
+            bind_modes[path] = mode if existing is None else ("rw" if mode == "rw" else existing)
+
+        for item in config.read_paths:
+            candidate = Path(item).expanduser()
+            if candidate.exists():
+                _mark_bind(candidate, "ro")
+        for item in config.write_paths:
+            candidate = Path(item).expanduser()
+            if candidate.exists():
+                _mark_bind(candidate, "rw")
+            elif candidate.parent.exists():
+                _mark_bind(candidate.parent, "rw")
+        if config.cwd:
+            cwd_path = Path(config.cwd).expanduser()
+            if cwd_path.exists():
+                writeable = any(
+                    str(cwd_path).startswith(str(Path(path).expanduser()))
+                    for path in config.write_paths
+                )
+                _mark_bind(cwd_path, "rw" if writeable else "ro")
+
+        executable = command[0] if command else ""
+        resolved_executable = (
+            shutil.which(executable)
+            if executable and not Path(executable).exists()
+            else executable
+        )
+        if resolved_executable:
+            executable_path = Path(resolved_executable).expanduser()
+            if executable_path.exists():
+                parent_parent = executable_path.parent.parent
+                prefix = parent_parent if parent_parent.exists() else executable_path.parent
+                _mark_bind(prefix, "ro")
+        for token in command[1:]:
+            token_path = Path(token).expanduser()
+            if token_path.is_absolute() and token_path.exists():
+                _mark_bind(token_path if token_path.is_dir() else token_path.parent, "ro")
+
+        for path, mode in sorted(bind_modes.items(), key=lambda item: len(str(item[0]))):
+            if mode == "rw":
+                args.extend(["--bind", str(path), str(path)])
+            else:
+                args.extend(["--ro-bind", str(path), str(path)])
+
+        if config.cwd:
+            cwd_path = Path(config.cwd).expanduser()
+            if cwd_path.exists():
+                args.extend(["--chdir", str(cwd_path)])
+            else:
+                args.extend(["--chdir", "/tmp"])
+        else:
+            args.extend(["--chdir", "/tmp"])
+        args.extend(["--", *command])
+        return args
+
+    def _build_nsjail_command(self, *, config: SandboxConfig, command: list[str]) -> list[str]:
+        args: list[str] = [
+            self._nsjail,
+            "--mode",
+            "o",
+            "--quiet",
+            "--time_limit",
+            str(max(1, config.limits.timeout_seconds)),
+            "--rlimit_as",
+            str(max(1, config.limits.memory_mb)),
+            "--max_cpus",
+            "1",
+        ]
+        if config.network.allow_network:
+            args.extend(["--disable_clone_newnet"])
+        for base in _BWRAP_BASE_RO_DIRS:
+            base_path = Path(base)
+            if base_path.exists():
+                args.extend(["--bindmount_ro", f"{base}:{base}"])
+        for item in config.read_paths:
+            candidate = Path(item).expanduser()
+            if candidate.exists():
+                args.extend(["--bindmount_ro", f"{candidate}:{candidate}"])
+        for item in config.write_paths:
+            candidate = Path(item).expanduser()
+            if candidate.exists():
+                args.extend(["--bindmount", f"{candidate}:{candidate}"])
+            elif candidate.parent.exists():
+                args.extend(["--bindmount", f"{candidate.parent}:{candidate.parent}"])
+        if config.cwd:
+            cwd_path = Path(config.cwd).expanduser()
+            if cwd_path.exists():
+                args.extend(["--cwd", str(cwd_path)])
+        args.extend(["--", *command])
+        return args
+
+    @staticmethod
+    def _detect_usable_bwrap() -> str:
+        binary = shutil.which("bwrap") or ""
+        if not binary:
+            return ""
+        probe = [
+            binary,
+            "--ro-bind",
+            "/",
+            "/",
+            "--proc",
+            "/proc",
+            "--dev",
+            "/dev",
+            "--",
+            "/bin/true",
+        ]
+        try:
+            completed = subprocess.run(
+                probe,
+                capture_output=True,
+                text=True,
+                timeout=2,
+                check=False,
+            )
+        except Exception:
+            return ""
+        if completed.returncode != 0:
+            return ""
+        return binary

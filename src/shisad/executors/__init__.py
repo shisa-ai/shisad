@@ -1,8 +1,14 @@
 """Sandboxed executor subsystem."""
 
 from shisad.executors.browser import (
+    BrowserClipboardMode,
+    BrowserCookiesMode,
+    BrowserDownloadsMode,
+    BrowserExtensionsMode,
+    BrowserLocalNetworkMode,
     BrowserPasteResult,
     BrowserSandbox,
+    BrowserSandboxMode,
     BrowserSandboxPolicy,
     BrowserScreenshotResult,
 )
@@ -24,8 +30,14 @@ from shisad.executors.sandbox import (
 )
 
 __all__ = [
+    "BrowserClipboardMode",
+    "BrowserCookiesMode",
+    "BrowserDownloadsMode",
+    "BrowserExtensionsMode",
+    "BrowserLocalNetworkMode",
     "BrowserPasteResult",
     "BrowserSandbox",
+    "BrowserSandboxMode",
     "BrowserSandboxPolicy",
     "BrowserScreenshotResult",
     "DegradedModePolicy",

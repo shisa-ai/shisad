@@ -272,6 +272,30 @@ async def test_m3_t9_browser_paste_runs_output_firewall(model_env: None, tmp_pat
         await _shutdown(daemon_task, client)
 
 
+@pytest.mark.asyncio
+async def test_m3_rt5_security_critical_fail_closed_path(model_env: None, tmp_path: Path) -> None:
+    daemon_task, client, _ = await _start_daemon(tmp_path)
+    try:
+        created = await client.call("session.create", {"channel": "cli"})
+        sid = created["session_id"]
+        result = await client.call(
+            "tool.execute",
+            {
+                "session_id": sid,
+                "tool_name": "shell.exec",
+                "command": [sys.executable, "-c", "print('ok')"],
+                "sandbox_type": "vm",
+                "security_critical": True,
+                "degraded_mode": "fail_closed",
+            },
+        )
+        assert result["allowed"] is False
+        assert result["reason"] == "degraded_enforcement"
+        assert "seccomp" in result["degraded_controls"]
+    finally:
+        await _shutdown(daemon_task, client)
+
+
 def test_m3_t10_t11_t12_proxy_injection_and_placeholder_exfiltration() -> None:
     store = InMemoryCredentialStore()
     store.register(

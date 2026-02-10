@@ -795,17 +795,21 @@ class DaemonControlHandlers:
             write_paths=[str(item) for item in params.get("write_paths", [])],
             network_urls=[str(item) for item in params.get("network_urls", [])],
             env={str(k): str(v) for k, v in dict(params.get("env", {})).items()},
+            request_headers={
+                str(k): str(v) for k, v in dict(params.get("request_headers", {})).items()
+            },
+            request_body=str(params.get("request_body", "")),
             cwd=str(params.get("cwd", "")),
             sandbox_type=sandbox_type,
             security_critical=bool(params.get("security_critical", True)),
-            approved_by_pep=bool(params.get("approved_by_pep", True)),
+            approved_by_pep=bool(params.get("approved_by_pep", False)),
             filesystem=filesystem,
             network=network,
             environment=environment,
             limits=limits,
             degraded_mode=degraded_mode,
         )
-        result = self._sandbox.execute(config, session=session)
+        result = await self._sandbox.execute_async(config, session=session)
 
         if result.degraded_controls:
             await self._event_bus.publish(

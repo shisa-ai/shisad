@@ -84,7 +84,7 @@ def test_m3_a4_memory_allocation_bomb_hits_resource_limits() -> None:
         )
     )
     assert result.allowed is True
-    assert result.exit_code is None or result.exit_code != 0
+    assert result.timed_out is True or (result.exit_code is not None and result.exit_code != 0)
 
 
 def test_m3_a5_dns_exfiltration_attempt_blocked() -> None:

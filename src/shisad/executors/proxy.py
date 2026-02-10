@@ -79,7 +79,8 @@ class EgressProxy:
         policy: NetworkPolicy,
         headers: dict[str, str] | None = None,
         body: str = "",
-        approved_by_pep: bool = True,
+        approved_by_pep: bool = False,
+        expected_addresses: list[str] | None = None,
     ) -> ProxyDecision:
         """Authorize a request and inject credentials if allowed."""
         parsed = urlparse(url)
@@ -121,6 +122,11 @@ class EgressProxy:
 
         resolved = self._resolver(host)
         decision.resolved_addresses = list(resolved)
+        if expected_addresses and set(expected_addresses) != set(resolved):
+            decision.reason = "dns_rebinding_blocked"
+            decision.alert = True
+            self._audit(tool_name=tool_name, url=url, decision=decision, body=body)
+            return decision
         if policy.deny_private_ranges:
             for addr in resolved:
                 if self._is_private(addr):
@@ -205,10 +211,6 @@ class EgressProxy:
                 continue
             if fnmatch.fnmatch(host, value):
                 return True
-            if value.startswith("*.") and host.endswith(value[1:]):
-                return True
-            if host == value:
-                return True
         return False
 
     @staticmethod
@@ -241,6 +243,17 @@ class EgressProxy:
                 if candidate not in resolved:
                     resolved.append(candidate)
         return resolved
+
+    def resolve_placeholder(
+        self,
+        *,
+        placeholder: str,
+        host: str,
+        approved_by_pep: bool,
+    ) -> str | None:
+        if not approved_by_pep:
+            return None
+        return self._resolve_placeholder(placeholder, host)
 
     @classmethod
     def _looks_like_dns_exfil(cls, host: str) -> bool:
