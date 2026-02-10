@@ -250,7 +250,6 @@ class ToolExecuteParams(_StrictParams):
     cwd: str = ""
     sandbox_type: str | None = None
     security_critical: bool = True
-    approved_by_pep: bool = False
     request_headers: dict[str, str] = Field(default_factory=dict)
     request_body: str = ""
     degraded_mode: str = "fail_closed"

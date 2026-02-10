@@ -80,12 +80,14 @@ from shisad.core.transcript import TranscriptStore
 from shisad.core.types import Capability, CredentialRef, SessionId, ToolName
 from shisad.daemon.control_handlers import DaemonControlHandlers
 from shisad.executors.browser import BrowserSandbox, BrowserSandboxPolicy
-from shisad.executors.connect_path import NoopConnectPathProxy
+from shisad.executors.connect_path import IptablesConnectPathProxy
 from shisad.executors.proxy import EgressProxy
 from shisad.executors.sandbox import SandboxOrchestrator
 from shisad.memory.ingestion import EmbeddingFingerprint, IngestionPipeline, RetrieveRagTool
 from shisad.memory.manager import MemoryManager
 from shisad.scheduler.manager import SchedulerManager
+from shisad.security.control_plane.consensus import ConsensusPolicy
+from shisad.security.control_plane.engine import ControlPlaneEngine
 from shisad.security.credentials import CredentialConfig, InMemoryCredentialStore
 from shisad.security.firewall import ContentFirewall
 from shisad.security.firewall.output import OutputFirewall
@@ -227,6 +229,7 @@ class _RoutedOpenAIProvider:
         headers = {"Authorization": f"Bearer {api_key}"}
         planner_route = router.route_for(ModelComponent.PLANNER)
         embeddings_route = router.route_for(ModelComponent.EMBEDDINGS)
+        monitor_route = router.route_for(ModelComponent.MONITOR)
         self._planner_provider = OpenAICompatibleProvider(
             base_url=planner_route.base_url,
             model_id=planner_route.model_id,
@@ -235,6 +238,11 @@ class _RoutedOpenAIProvider:
         self._embeddings_provider = OpenAICompatibleProvider(
             base_url=embeddings_route.base_url,
             model_id=embeddings_route.model_id,
+            headers=headers,
+        )
+        self._monitor_provider = OpenAICompatibleProvider(
+            base_url=monitor_route.base_url,
+            model_id=monitor_route.model_id,
             headers=headers,
         )
         self._embeddings_model_id = embeddings_route.model_id
@@ -268,6 +276,36 @@ class _RoutedOpenAIProvider:
             logger.warning("Remote embeddings provider failed; falling back to local provider")
             return await self._fallback.embeddings(input_texts, model_id=target_model)
 
+    async def monitor_complete(
+        self,
+        messages: list[Message],
+        tools: list[dict[str, Any]] | None = None,
+    ) -> ProviderResponse:
+        try:
+            return await self._monitor_provider.complete(messages, tools)
+        except Exception:
+            logger.warning(
+                "Remote monitor provider failed; using deterministic monitor fallback",
+            )
+            return ProviderResponse(
+                message=Message(
+                    role="assistant",
+                    content=json.dumps(
+                        {
+                            "decision": "FLAG",
+                            "reason_codes": ["network:monitor_route_fallback"],
+                        },
+                        sort_keys=True,
+                    ),
+                ),
+                finish_reason="stop",
+                usage={
+                    "prompt_tokens": 0,
+                    "completion_tokens": 0,
+                    "total_tokens": 0,
+                },
+            )
+
 
 class _EmbeddingsProvider(Protocol):
     async def embeddings(
@@ -276,6 +314,20 @@ class _EmbeddingsProvider(Protocol):
         *,
         model_id: str | None = None,
     ) -> EmbeddingResponse: ...
+
+
+class _MonitorProviderAdapter:
+    """Adapter exposing MONITOR route completion for control-plane monitor calls."""
+
+    def __init__(self, provider: _RoutedOpenAIProvider) -> None:
+        self._provider = provider
+
+    async def complete(
+        self,
+        messages: list[Message],
+        tools: list[dict[str, Any]] | None = None,
+    ) -> ProviderResponse:
+        return await self._provider.monitor_complete(messages, tools)
 
 
 class _SyncEmbeddingsAdapter:
@@ -538,6 +590,7 @@ async def run_daemon(config: DaemonConfig) -> None:
     shisa_api_key = api_key_candidate.strip()
     local_fallback = _LocalPlannerProvider()
     provider: _LocalPlannerProvider | _RoutedOpenAIProvider = local_fallback
+    monitor_provider: _MonitorProviderAdapter | None = None
     remote_enabled = os.getenv("SHISAD_MODEL_REMOTE_ENABLED", "").strip().lower() in {
         "1",
         "true",
@@ -552,6 +605,8 @@ async def run_daemon(config: DaemonConfig) -> None:
             api_key=shisa_api_key,
             fallback=local_fallback,
         )
+    if isinstance(provider, _RoutedOpenAIProvider):
+        monitor_provider = _MonitorProviderAdapter(provider)
 
     embeddings_route = router.route_for(ModelComponent.EMBEDDINGS)
     embeddings_adapter = _SyncEmbeddingsAdapter(
@@ -566,7 +621,7 @@ async def run_daemon(config: DaemonConfig) -> None:
             CredentialConfig(allowed_hosts=["api.shisa.ai"]),
         )
     egress_proxy = EgressProxy(credential_store=credential_store)
-    connect_path_proxy = NoopConnectPathProxy()
+    connect_path_proxy = IptablesConnectPathProxy()
     if not connect_path_proxy.net_admin_available:
         logger.warning(
             "[shisad] Connect-path enforcement unavailable: CAP_NET_ADMIN not granted. "
@@ -609,6 +664,32 @@ async def run_daemon(config: DaemonConfig) -> None:
         anomaly_hook=_on_ratelimit,
     )
     monitor = ActionMonitor()
+    control_plane_policy = policy_loader.policy.control_plane
+    control_plane = ControlPlaneEngine.build(
+        data_dir=config.data_dir,
+        monitor_provider=monitor_provider,
+        monitor_timeout_seconds=max(0.05, control_plane_policy.network.timeout_ms / 1000.0),
+        monitor_cache_ttl_seconds=int(control_plane_policy.network.cache_ttl_seconds),
+        baseline_learning_rate=float(control_plane_policy.network.baseline_learning_rate),
+        high_critical_timeout_action=control_plane_policy.network.high_critical_timeout_action,
+        low_medium_timeout_action=control_plane_policy.network.low_medium_timeout_action,
+        trace_ttl_seconds=int(control_plane_policy.trace.ttl_seconds),
+        trace_max_actions=int(control_plane_policy.trace.max_actions),
+        consensus_policy=ConsensusPolicy(
+            required_approvals_low=int(control_plane_policy.consensus.required_approvals_low),
+            required_approvals_medium=int(
+                control_plane_policy.consensus.required_approvals_medium
+            ),
+            required_approvals_high=int(control_plane_policy.consensus.required_approvals_high),
+            required_approvals_critical=int(
+                control_plane_policy.consensus.required_approvals_critical
+            ),
+            veto_for_high_and_critical=bool(
+                control_plane_policy.consensus.veto_for_high_and_critical
+            ),
+            voter_timeout_seconds=float(control_plane_policy.consensus.voter_timeout_seconds),
+        ),
+    )
 
     provenance_manifest_path = (
         Path(__file__).resolve().parents[1] / "security" / "rules" / "provenance.json"
@@ -722,6 +803,7 @@ async def run_daemon(config: DaemonConfig) -> None:
         scheduler=scheduler,
         skill_manager=skill_manager,
         sandbox=sandbox,
+        control_plane=control_plane,
         browser_sandbox=browser_sandbox,
         shutdown_event=shutdown_event,
         provenance_status=provenance_status,

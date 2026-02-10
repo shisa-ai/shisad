@@ -202,9 +202,90 @@ class ProxyRequestEvaluated(BaseEvent):
     tool_name: ToolName
     destination_host: str = ""
     destination_port: int | None = None
+    protocol: str = "https"
+    request_size: int = 0
+    resolved_addresses: list[str] = Field(default_factory=list)
     allowed: bool = False
     reason: str = ""
     credential_placeholders: list[str] = Field(default_factory=list)
+    origin: dict[str, str] = Field(default_factory=dict)
+
+
+class ControlPlaneActionObserved(BaseEvent):
+    """Metadata-only action observation emitted to control-plane stream."""
+
+    tool_name: ToolName
+    action_kind: str = ""
+    resource_id: str = ""
+    decision: str = ""
+    reason_codes: list[str] = Field(default_factory=list)
+    origin: dict[str, str] = Field(default_factory=dict)
+
+
+class ControlPlaneResourceObserved(BaseEvent):
+    """Metadata-only resource access observation."""
+
+    tool_name: ToolName
+    action_kind: str = ""
+    resource_id: str = ""
+    category: str = ""
+    origin: dict[str, str] = Field(default_factory=dict)
+
+
+class ControlPlaneNetworkObserved(BaseEvent):
+    """Metadata-only network access observation."""
+
+    tool_name: ToolName
+    destination_host: str = ""
+    destination_port: int | None = None
+    protocol: str = "https"
+    request_size: int = 0
+    allowed: bool = False
+    reason: str = ""
+    resolved_addresses: list[str] = Field(default_factory=list)
+    origin: dict[str, str] = Field(default_factory=dict)
+
+
+class PlanCommitted(BaseEvent):
+    """Plan commitment created for a session."""
+
+    plan_hash: str = ""
+    stage: str = ""
+    expires_at: str = ""
+
+
+class PlanAmended(BaseEvent):
+    """Plan commitment amended with explicit approval."""
+
+    plan_hash: str = ""
+    amendment_of: str = ""
+    stage: str = ""
+
+
+class PlanCancelled(BaseEvent):
+    """Plan commitment cancelled."""
+
+    plan_hash: str = ""
+    reason: str = ""
+
+
+class PlanViolationDetected(BaseEvent):
+    """Execution action violated active committed plan."""
+
+    tool_name: ToolName
+    action_kind: str = ""
+    reason_code: str = ""
+    risk_tier: str = ""
+
+
+class ConsensusEvaluated(BaseEvent):
+    """Consensus voting decision for one proposed action."""
+
+    tool_name: ToolName
+    decision: str = ""
+    risk_tier: str = ""
+    reason_codes: list[str] = Field(default_factory=list)
+    votes: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class SessionRolledBack(BaseEvent):
@@ -261,6 +342,14 @@ type AnyEvent = (
     | SandboxDegraded
     | SandboxEscapeDetected
     | ProxyRequestEvaluated
+    | ControlPlaneActionObserved
+    | ControlPlaneResourceObserved
+    | ControlPlaneNetworkObserved
+    | PlanCommitted
+    | PlanAmended
+    | PlanCancelled
+    | PlanViolationDetected
+    | ConsensusEvaluated
     | SessionRolledBack
     | SandboxExecutionIntent
     | SandboxPreCheckpoint
@@ -290,6 +379,14 @@ EVENT_TYPES: dict[str, type[BaseEvent]] = {
     "SandboxDegraded": SandboxDegraded,
     "SandboxEscapeDetected": SandboxEscapeDetected,
     "ProxyRequestEvaluated": ProxyRequestEvaluated,
+    "ControlPlaneActionObserved": ControlPlaneActionObserved,
+    "ControlPlaneResourceObserved": ControlPlaneResourceObserved,
+    "ControlPlaneNetworkObserved": ControlPlaneNetworkObserved,
+    "PlanCommitted": PlanCommitted,
+    "PlanAmended": PlanAmended,
+    "PlanCancelled": PlanCancelled,
+    "PlanViolationDetected": PlanViolationDetected,
+    "ConsensusEvaluated": ConsensusEvaluated,
     "SessionRolledBack": SessionRolledBack,
     "SandboxExecutionIntent": SandboxExecutionIntent,
     "SandboxPreCheckpoint": SandboxPreCheckpoint,

@@ -136,6 +136,7 @@ class SandboxConfig(BaseModel):
     approved_by_pep: bool = False
     request_headers: dict[str, str] = Field(default_factory=dict)
     request_body: str = ""
+    origin: dict[str, str] = Field(default_factory=dict)
 
 
 class SandboxInstance(BaseModel):
@@ -165,6 +166,7 @@ class SandboxResult(BaseModel):
     rollback_files_restored: int = 0
     connect_path: ConnectPathResult | None = None
     action_hash: str = ""
+    origin: dict[str, str] = Field(default_factory=dict)
 
 
 class SandboxBackend:
@@ -252,8 +254,9 @@ class SandboxOrchestrator:
 
     def connect_path_status(self) -> dict[str, object]:
         available = getattr(self._connect_path_proxy, "net_admin_available", False)
+        method = "iptables" if "Iptables" in self._connect_path_proxy.__class__.__name__ else "none"
         return {
-            "method": "none",
+            "method": method,
             "enforced": False,
             "cap_net_admin_available": bool(available),
         }
@@ -274,7 +277,11 @@ class SandboxOrchestrator:
         session: Session | None = None,
     ) -> SandboxResult:
         if not config.command:
-            return SandboxResult(allowed=False, reason="invalid_command")
+            return SandboxResult(
+                allowed=False,
+                reason="invalid_command",
+                origin=dict(config.origin),
+            )
         backend_type = self._select_backend(config)
         backend = self._backends[backend_type]
         degraded_controls = self._degraded_controls(config, backend.enforcement)
@@ -307,6 +314,7 @@ class SandboxOrchestrator:
                 reason="degraded_enforcement",
                 backend=backend_type,
                 degraded_controls=degraded_controls,
+                origin=dict(config.origin),
             )
 
         env, env_err, dropped_env_keys = self._build_environment(config.environment, config.env)
@@ -316,6 +324,7 @@ class SandboxOrchestrator:
                 reason=env_err,
                 backend=backend_type,
                 degraded_controls=degraded_controls,
+                origin=dict(config.origin),
             )
         if dropped_env_keys:
             self._audit(
@@ -343,6 +352,7 @@ class SandboxOrchestrator:
                     backend=backend_type,
                     fs_decisions=fs_decisions,
                     degraded_controls=degraded_controls,
+                    origin=dict(config.origin),
                 )
         for path in config.write_paths:
             decision = mount_manager.check_access(path, write=True)
@@ -358,6 +368,7 @@ class SandboxOrchestrator:
                     backend=backend_type,
                     fs_decisions=fs_decisions,
                     degraded_controls=degraded_controls,
+                    origin=dict(config.origin),
                 )
 
         network_decisions: list[ProxyDecision] = []
@@ -373,6 +384,7 @@ class SandboxOrchestrator:
                 fs_decisions=fs_decisions,
                 network_decisions=network_decisions,
                 degraded_controls=degraded_controls,
+                origin=dict(config.origin),
             )
 
         for url in network_urls:
@@ -402,6 +414,7 @@ class SandboxOrchestrator:
                     fs_decisions=fs_decisions,
                     network_decisions=network_decisions,
                     degraded_controls=degraded_controls,
+                    origin=dict(config.origin),
                 )
 
         connect_path_result: ConnectPathResult | None = None
@@ -433,6 +446,7 @@ class SandboxOrchestrator:
                         network_decisions=network_decisions,
                         degraded_controls=degraded_controls,
                         connect_path=connect_path_result,
+                        origin=dict(config.origin),
                     )
 
         command, env, inject_err = self._inject_credentials(
@@ -449,6 +463,7 @@ class SandboxOrchestrator:
                 fs_decisions=fs_decisions,
                 network_decisions=network_decisions,
                 degraded_controls=degraded_controls,
+                origin=dict(config.origin),
             )
 
         for url, prior in zip(network_urls, network_decisions, strict=False):
@@ -465,10 +480,11 @@ class SandboxOrchestrator:
                     reason=f"network:{revalidated.reason}",
                     backend=backend_type,
                     fs_decisions=fs_decisions,
-                network_decisions=network_decisions,
-                degraded_controls=degraded_controls,
-                connect_path=connect_path_result,
-            )
+                    network_decisions=network_decisions,
+                    degraded_controls=degraded_controls,
+                    connect_path=connect_path_result,
+                    origin=dict(config.origin),
+                )
 
         escape_reason = self._escape_signal_reason(command)
         if escape_reason is not None:
@@ -489,6 +505,7 @@ class SandboxOrchestrator:
                 network_decisions=network_decisions,
                 degraded_controls=degraded_controls,
                 connect_path=connect_path_result,
+                origin=dict(config.origin),
             )
 
         checkpoint_id = ""
@@ -560,6 +577,7 @@ class SandboxOrchestrator:
                 network_decisions=network_decisions,
                 degraded_controls=degraded_controls,
                 connect_path=connect_path_result,
+                origin=dict(config.origin),
             )
 
         return SandboxResult(
@@ -576,6 +594,7 @@ class SandboxOrchestrator:
             network_decisions=network_decisions,
             degraded_controls=degraded_controls,
             connect_path=connect_path_result,
+            origin=dict(config.origin),
         )
 
     def _run_process(

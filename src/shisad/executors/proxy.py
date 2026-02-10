@@ -51,6 +51,8 @@ class ProxyDecision(BaseModel):
     reason: str = ""
     destination_host: str = ""
     destination_port: int | None = None
+    protocol: str = "https"
+    request_size: int = 0
     resolved_addresses: list[str] = Field(default_factory=list)
     injected_headers: dict[str, str] = Field(default_factory=dict)
     used_placeholders: list[str] = Field(default_factory=list)
@@ -94,6 +96,8 @@ class EgressProxy:
             reason="",
             destination_host=host,
             destination_port=port,
+            protocol=(parsed.scheme or "").lower(),
+            request_size=len(body.encode("utf-8")),
         )
 
         if not policy.allow_network:

@@ -68,6 +68,71 @@ class RateLimitPolicy(BaseModel):
     burst_window_seconds: int | None = None
 
 
+class ControlPlaneSequencePolicy(BaseModel):
+    """Behavioral sequence analyzer policy controls."""
+
+    rapid_fire_window_seconds: int = 1
+    exfil_after_read_window_actions: int = 5
+    env_then_egress_window_actions: int = 3
+    mass_enum_window_actions: int = 10
+
+
+class ControlPlaneResourcePolicy(BaseModel):
+    """Resource monitor policy controls."""
+
+    enumeration_resource_threshold: int = 20
+    enumeration_directory_threshold: int = 10
+    enumeration_window_seconds: int = 60
+
+
+class ControlPlaneNetworkPolicy(BaseModel):
+    """Network monitor policy controls."""
+
+    timeout_ms: int = 500
+    cache_ttl_seconds: int = 300
+    baseline_learning_rate: float = 0.1
+    low_medium_timeout_action: str = "FLAG"
+    high_critical_timeout_action: str = "BLOCK"
+    ingress_metadata_scope: str = "defer_to_m6"
+
+
+class ControlPlaneConsensusPolicy(BaseModel):
+    """Consensus threshold and veto policy controls."""
+
+    required_approvals_low: int = 1
+    required_approvals_medium: int = 3
+    required_approvals_high: int = 4
+    required_approvals_critical: int = 5
+    veto_for_high_and_critical: bool = True
+    voter_timeout_seconds: float = 0.5
+
+
+class ControlPlaneTracePolicy(BaseModel):
+    """Plan commitment and trace verifier lifecycle policy controls."""
+
+    ttl_seconds: int = 1800
+    max_actions: int = 10
+    allow_amendment: bool = True
+    escalation_threshold: int = 2
+
+
+class ControlPlaneEgressPolicy(BaseModel):
+    """Egress wildcard hardening rollout controls."""
+
+    wildcard_rollout_phase: str = "enforce"  # warn -> deprecate -> enforce
+
+
+class ControlPlanePolicy(BaseModel):
+    """Top-level control-plane policy section for M5 components."""
+
+    sequence: ControlPlaneSequencePolicy = Field(default_factory=ControlPlaneSequencePolicy)
+    resource: ControlPlaneResourcePolicy = Field(default_factory=ControlPlaneResourcePolicy)
+    network: ControlPlaneNetworkPolicy = Field(default_factory=ControlPlaneNetworkPolicy)
+    consensus: ControlPlaneConsensusPolicy = Field(default_factory=ControlPlaneConsensusPolicy)
+    trace: ControlPlaneTracePolicy = Field(default_factory=ControlPlaneTracePolicy)
+    egress: ControlPlaneEgressPolicy = Field(default_factory=ControlPlaneEgressPolicy)
+
+
 class SandboxToolOverrideNetwork(BaseModel):
     allow_network: bool = False
     allowed_domains: list[str] = Field(default_factory=list)
@@ -181,6 +246,7 @@ class PolicyBundle(BaseModel):
     # M2 controls
     risk_policy: RiskPolicy = Field(default_factory=RiskPolicy)
     rate_limits: RateLimitPolicy = Field(default_factory=RateLimitPolicy)
+    control_plane: ControlPlanePolicy = Field(default_factory=ControlPlanePolicy)
     sandbox: SandboxPolicy = Field(default_factory=SandboxPolicy)
     skills: SkillPolicy = Field(default_factory=SkillPolicy)
     yara_required: bool = False

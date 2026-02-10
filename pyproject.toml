@@ -24,6 +24,9 @@ packages = ["src/shisad"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+markers = [
+    "requires_cap_net_admin: tests that require CAP_NET_ADMIN capability",
+]
 
 [tool.ruff]
 target-version = "py312"

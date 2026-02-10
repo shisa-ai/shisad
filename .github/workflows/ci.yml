@@ -35,7 +35,7 @@ jobs:
         run: uv run python scripts/security_assets.py verify
 
       - name: Run tests
-        run: uv run pytest -v
+        run: uv run pytest -v -m "not requires_cap_net_admin"
 
   security-runtime:
     runs-on: ubuntu-latest
@@ -56,7 +56,7 @@ jobs:
         run: uv run python scripts/security_assets.py verify
 
       - name: Run tests with coverage
-        run: uv run pytest --cov=src --cov-report=term-missing --cov-report=xml -q
+        run: uv run pytest -m "not requires_cap_net_admin" --cov=src --cov-report=term-missing --cov-report=xml -q
 
       - name: Validate coverage baseline
         run: uv run python scripts/coverage_baseline.py --xml coverage.xml
@@ -75,3 +75,32 @@ jobs:
             coverage.xml
             artifacts/coverage-trend.json
             artifacts/yara-parity.json
+
+  privileged-connect-path:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Set up Python 3.12
+        run: uv python install 3.12
+
+      - name: Install dependencies (default profile)
+        run: uv sync --dev
+
+      - name: Detect CAP_NET_ADMIN availability
+        id: capcheck
+        run: |
+          available="$(uv run python -c 'from shisad.executors.connect_path import IptablesConnectPathProxy; print("true" if IptablesConnectPathProxy.detect_net_admin_capability() else "false")')"
+          echo "available=${available}" >> "$GITHUB_OUTPUT"
+
+      - name: Run privileged connect-path tests
+        if: steps.capcheck.outputs.available == 'true'
+        run: uv run pytest -v -m requires_cap_net_admin
+
+      - name: Skip privileged connect-path tests
+        if: steps.capcheck.outputs.available != 'true'
+        run: echo "CAP_NET_ADMIN unavailable on this runner; skipping optional privileged lane."
