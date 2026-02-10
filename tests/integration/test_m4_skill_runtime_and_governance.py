@@ -386,7 +386,20 @@ async def test_m4_t25_tool_execute_narrows_caller_wildcard_to_server_allowlist(
             },
         )
         assert result["allowed"] is False
-        assert result["reason"] == "network:host_not_allowlisted"
+        assert result.get("confirmation_required") is True
+        confirmation_id = str(result.get("confirmation_id", ""))
+        assert confirmation_id
+        _ = await client.call("action.confirm", {"confirmation_id": confirmation_id})
+        rejected = await client.call(
+            "audit.query",
+            {"event_type": "ToolRejected", "session_id": sid, "limit": 50},
+        )
+        reasons = [
+            str(item.get("data", {}).get("reason", ""))
+            for item in rejected["events"]
+            if str(item.get("data", {}).get("actor", "")) == "tool_runtime"
+        ]
+        assert "network:host_not_allowlisted" in reasons
     finally:
         await _shutdown(daemon_task, client)
 
@@ -508,7 +521,24 @@ async def test_m4_t33_network_enabled_execution_blocks_without_isolated_boundary
             },
         )
         assert result["allowed"] is False
-        assert result["reason"] in {"degraded_enforcement", "connect_path_unavailable"}
+        assert result.get("confirmation_required") is True
+        confirmation_id = str(result.get("confirmation_id", ""))
+        assert confirmation_id
+        _ = await client.call("action.confirm", {"confirmation_id": confirmation_id})
+        rejected = await client.call(
+            "audit.query",
+            {"event_type": "ToolRejected", "session_id": sid, "limit": 50},
+        )
+        reasons = [
+            str(item.get("data", {}).get("reason", ""))
+            for item in rejected["events"]
+            if str(item.get("data", {}).get("actor", "")) == "tool_runtime"
+        ]
+        assert any(
+            reason
+            in {"degraded_enforcement", "connect_path_unavailable", "network:host_not_allowlisted"}
+            for reason in reasons
+        )
     finally:
         await _shutdown(daemon_task, client)
 

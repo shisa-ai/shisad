@@ -126,13 +126,14 @@ class BehavioralSequenceAnalyzer:
     def _matches_pattern(kinds: list[str], pattern: list[str]) -> bool:
         if len(kinds) < len(pattern):
             return False
-        tail = kinds[-len(pattern) :]
-        for observed, expected in zip(tail, pattern, strict=True):
-            if expected == "*":
-                continue
-            if observed != expected:
-                return False
-        return True
+        index = 0
+        for observed in kinds:
+            if index >= len(pattern):
+                return True
+            expected = pattern[index]
+            if expected == "*" or observed == expected:
+                index += 1
+        return index == len(pattern)
 
     @staticmethod
     def _window_records(

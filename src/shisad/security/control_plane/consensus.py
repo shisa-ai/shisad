@@ -22,6 +22,7 @@ from shisad.security.control_plane.schema import (
     ControlPlaneAction,
     RiskTier,
     contains_freeform_text,
+    risk_rank,
 )
 from shisad.security.control_plane.sequence import BehavioralSequenceAnalyzer
 from shisad.security.control_plane.trace import PlanVerificationResult
@@ -78,7 +79,7 @@ class SequenceVoter:
                 risk_tier=RiskTier.LOW,
                 reason_codes=["sequence:ok"],
             )
-        highest = max(findings, key=lambda item: _risk_rank(item.risk_tier))
+        highest = max(findings, key=lambda item: risk_rank(item.risk_tier))
         kind = (
             VoteKind.BLOCK
             if highest.risk_tier in {RiskTier.HIGH, RiskTier.CRITICAL}
@@ -112,8 +113,12 @@ class ResourceVoter:
                 risk_tier=RiskTier.LOW,
                 reason_codes=["resource:ok"],
             )
-        highest = max(findings, key=lambda item: _risk_rank(item.risk_tier))
-        kind = VoteKind.BLOCK if highest.risk_tier == RiskTier.CRITICAL else VoteKind.FLAG
+        highest = max(findings, key=lambda item: risk_rank(item.risk_tier))
+        kind = (
+            VoteKind.BLOCK
+            if highest.risk_tier in {RiskTier.HIGH, RiskTier.CRITICAL}
+            else VoteKind.FLAG
+        )
         return VoterDecision(
             voter="ResourceAccessMonitor",
             decision=kind,
@@ -162,7 +167,7 @@ class NetworkVoter:
                 for item in data.network_metadata
             ]
         )
-        highest = max(decisions, key=lambda item: _risk_rank(item.risk_tier))
+        highest = max(decisions, key=lambda item: risk_rank(item.risk_tier))
         if any(item.decision == NetworkMonitorDecisionKind.BLOCK for item in decisions):
             vote = VoteKind.BLOCK
         elif any(item.decision == NetworkMonitorDecisionKind.FLAG for item in decisions):
@@ -250,30 +255,14 @@ class ConsensusVotingSystem:
         self._audit_hook = audit_hook
 
     async def evaluate(self, data: ConsensusInput) -> ConsensusDecision:
-        votes: list[VoterDecision] = []
+        vote_payload = data.model_dump_json()
         session_id = data.action.origin.session_id
-        for voter in self._voters:
-            frozen_input = ConsensusInput.model_validate_json(data.model_dump_json())
-            try:
-                vote = await asyncio.wait_for(
-                    voter.cast_vote(frozen_input),
-                    timeout=self._policy.voter_timeout_seconds,
-                )
-            except TimeoutError:
-                vote = VoterDecision(
-                    voter=voter.__class__.__name__,
-                    decision=VoteKind.FLAG,
-                    risk_tier=RiskTier.HIGH,
-                    reason_codes=["consensus:voter_timeout"],
-                )
-            except Exception:
-                vote = VoterDecision(
-                    voter=voter.__class__.__name__,
-                    decision=VoteKind.FLAG,
-                    risk_tier=RiskTier.HIGH,
-                    reason_codes=["consensus:voter_error"],
-                )
-            votes.append(vote)
+        votes = await asyncio.gather(
+            *[
+                self._evaluate_voter(voter=voter, vote_payload=vote_payload)
+                for voter in self._voters
+            ]
+        )
 
         risk_tier = _max_risk(votes) if votes else RiskTier.LOW
         required = self._required_approvals(risk_tier)
@@ -333,6 +322,29 @@ class ConsensusVotingSystem:
         self._audit(decision, session_id=session_id)
         return decision
 
+    async def _evaluate_voter(self, *, voter: Voter, vote_payload: str) -> VoterDecision:
+        frozen_input = ConsensusInput.model_validate_json(vote_payload)
+        voter_name = voter.__class__.__name__
+        try:
+            return await asyncio.wait_for(
+                voter.cast_vote(frozen_input),
+                timeout=self._policy.voter_timeout_seconds,
+            )
+        except TimeoutError:
+            return VoterDecision(
+                voter=voter_name,
+                decision=VoteKind.FLAG,
+                risk_tier=RiskTier.HIGH,
+                reason_codes=["consensus:voter_timeout"],
+            )
+        except Exception:
+            return VoterDecision(
+                voter=voter_name,
+                decision=VoteKind.FLAG,
+                risk_tier=RiskTier.HIGH,
+                reason_codes=["consensus:voter_error"],
+            )
+
     def _required_approvals(self, risk_tier: RiskTier) -> int:
         if risk_tier == RiskTier.CRITICAL:
             return self._policy.required_approvals_critical
@@ -357,18 +369,9 @@ class ConsensusVotingSystem:
         )
 
 
-def _risk_rank(value: RiskTier) -> int:
-    return {
-        RiskTier.LOW: 0,
-        RiskTier.MEDIUM: 1,
-        RiskTier.HIGH: 2,
-        RiskTier.CRITICAL: 3,
-    }[value]
-
-
 def _max_risk(votes: list[VoterDecision]) -> RiskTier:
     highest = RiskTier.LOW
     for vote in votes:
-        if _risk_rank(vote.risk_tier) > _risk_rank(highest):
+        if risk_rank(vote.risk_tier) > risk_rank(highest):
             highest = vote.risk_tier
     return highest

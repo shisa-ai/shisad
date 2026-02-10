@@ -2,13 +2,23 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 
 from shisad.security.firewall.classifier import PatternInjectionClassifier
 from shisad.security.provenance import SecurityAssetManifest, hash_file, verify_assets
+
+
+def _script_env() -> dict[str, str]:
+    env = dict(os.environ)
+    src_root = str(Path("src").resolve())
+    current = env.get("PYTHONPATH", "").strip()
+    env["PYTHONPATH"] = src_root if not current else f"{src_root}:{current}"
+    return env
 
 
 def test_m2_t23_ci_generates_coverage_and_validates_baseline() -> None:
@@ -89,10 +99,11 @@ def test_m2_9_2_yara_and_fallback_modes_have_parity(monkeypatch: pytest.MonkeyPa
 
 def test_m2_provenance_script_verify_succeeds() -> None:
     result = subprocess.run(
-        ["uv", "run", "python", "scripts/security_assets.py", "verify"],
+        [sys.executable, "scripts/security_assets.py", "verify"],
         check=False,
         capture_output=True,
         text=True,
+        env=_script_env(),
     )
     assert result.returncode == 0, result.stdout + result.stderr
 
@@ -101,9 +112,7 @@ def test_m2_yara_parity_report_script_writes_metrics(tmp_path: Path) -> None:
     output = tmp_path / "yara-parity.json"
     result = subprocess.run(
         [
-            "uv",
-            "run",
-            "python",
+            sys.executable,
             "scripts/yara_parity_report.py",
             "--output",
             str(output),
@@ -111,6 +120,7 @@ def test_m2_yara_parity_report_script_writes_metrics(tmp_path: Path) -> None:
         check=False,
         capture_output=True,
         text=True,
+        env=_script_env(),
     )
     assert result.returncode == 0, result.stdout + result.stderr
     payload = output.read_text()
@@ -142,9 +152,7 @@ def test_m2_coverage_trend_script_writes_per_package_metrics(tmp_path: Path) -> 
     output = tmp_path / "coverage-trend.json"
     result = subprocess.run(
         [
-            "uv",
-            "run",
-            "python",
+            sys.executable,
             "scripts/coverage_trend.py",
             "--xml",
             str(coverage_xml),
@@ -154,6 +162,7 @@ def test_m2_coverage_trend_script_writes_per_package_metrics(tmp_path: Path) -> 
         check=False,
         capture_output=True,
         text=True,
+        env=_script_env(),
     )
     assert result.returncode == 0, result.stdout + result.stderr
     payload = output.read_text()

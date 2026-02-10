@@ -79,7 +79,20 @@ async def test_m3_t1_blocks_non_allowlisted_domain(model_env: None, tmp_path: Pa
             },
         )
         assert result["allowed"] is False
-        assert result["reason"] == "network:host_not_allowlisted"
+        assert result.get("confirmation_required") is True
+        confirmation_id = str(result.get("confirmation_id", ""))
+        assert confirmation_id
+        _ = await client.call("action.confirm", {"confirmation_id": confirmation_id})
+        rejected = await client.call(
+            "audit.query",
+            {"event_type": "ToolRejected", "session_id": sid, "limit": 50},
+        )
+        reasons = [
+            str(item.get("data", {}).get("reason", ""))
+            for item in rejected["events"]
+            if str(item.get("data", {}).get("actor", "")) == "tool_runtime"
+        ]
+        assert "network:host_not_allowlisted" in reasons
     finally:
         await _shutdown(daemon_task, client)
 
@@ -117,7 +130,7 @@ async def test_m3_t2_t3_filesystem_mount_and_denylist_enforced(
         workspace.mkdir(parents=True, exist_ok=True)
         outside = tmp_path / "outside.txt"
         outside.write_text("outside", encoding="utf-8")
-        denied = workspace / "id_rsa.pem"
+        denied = workspace / "denied.tmp"
         denied.write_text("secret", encoding="utf-8")
 
         created = await client.call("session.create", {"channel": "cli"})
@@ -146,12 +159,12 @@ async def test_m3_t2_t3_filesystem_mount_and_denylist_enforced(
                 "read_paths": [str(denied)],
                 "security_critical": False,
                 "degraded_mode": "fail_open",
-                "filesystem": {
-                    "mounts": [{"path": f"{workspace.as_posix()}/**", "mode": "ro"}],
-                    "denylist": ["**/*.pem"],
+                    "filesystem": {
+                        "mounts": [{"path": f"{workspace.as_posix()}/**", "mode": "ro"}],
+                        "denylist": ["**/*.tmp"],
+                    },
                 },
-            },
-        )
+            )
         assert deny_result["allowed"] is False
         assert deny_result["reason"] == "filesystem:denylist_match"
     finally:
@@ -220,7 +233,12 @@ async def test_m3_t6_checkpoint_before_destructive_and_t7_rollback_restores_sess
                 "security_critical": False,
             },
         )
-        checkpoint_id = str(destructive["checkpoint_id"])
+        assert destructive.get("confirmation_required") is True
+        confirmation_id = str(destructive.get("confirmation_id", ""))
+        assert confirmation_id
+        confirmed = await client.call("action.confirm", {"confirmation_id": confirmation_id})
+        assert confirmed["confirmed"] is True
+        checkpoint_id = str(confirmed["checkpoint_id"])
         assert checkpoint_id
         assert target.exists() is False
 

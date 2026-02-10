@@ -86,6 +86,7 @@ from shisad.security.control_plane.schema import (
     Origin,
     RiskTier,
     build_action,
+    extract_request_size_bytes,
 )
 from shisad.security.firewall import ContentFirewall, FirewallResult
 from shisad.security.firewall.output import OutputFirewall
@@ -730,13 +731,14 @@ class DaemonControlHandlers:
             tool=tool,
             arguments=arguments,
             origin=origin,
+            approved_by_pep=True,
         )
         await self._publish_sandbox_events(
             sid=sid,
             config_tool_name=tool_name,
             result=sandbox_result,
         )
-        if sandbox_result.checkpoint_id and not checkpoint_id:
+        if sandbox_result.checkpoint_id:
             checkpoint_id = sandbox_result.checkpoint_id
         success = bool(
             sandbox_result.allowed
@@ -771,6 +773,7 @@ class DaemonControlHandlers:
         tool: ToolDefinition,
         arguments: dict[str, Any],
         origin: Origin,
+        approved_by_pep: bool,
     ) -> SandboxResult:
         raw_command = arguments.get("command", [])
         command = [str(token) for token in raw_command] if isinstance(raw_command, list) else []
@@ -812,7 +815,7 @@ class DaemonControlHandlers:
             cwd=str(arguments.get("cwd", "")),
             sandbox_type=merged_policy.sandbox_type,
             security_critical=merged_policy.security_critical,
-            approved_by_pep=True,
+            approved_by_pep=approved_by_pep,
             filesystem=merged_policy.filesystem,
             network=merged_policy.network,
             environment=merged_policy.environment,
@@ -1134,10 +1137,8 @@ class DaemonControlHandlers:
                         destination_host=host,
                         destination_port=443,
                         protocol="https",
-                        request_size=len(
-                            str(proposal.arguments.get("request_body", "")).encode("utf-8")
-                        ),
-                        allowed=cp_eval.decision != ControlDecision.BLOCK,
+                        request_size=extract_request_size_bytes(dict(proposal.arguments)),
+                        allowed=cp_eval.decision == ControlDecision.ALLOW,
                         reason="preflight",
                         origin=cp_eval.action.origin.model_dump(mode="json"),
                     )
@@ -1618,50 +1619,72 @@ class DaemonControlHandlers:
                     destination_host=host,
                     destination_port=443,
                     protocol="https",
-                    request_size=len(str(params.get("request_body", "")).encode("utf-8")),
-                    allowed=cp_eval.decision != ControlDecision.BLOCK,
+                    request_size=extract_request_size_bytes(dict(params)),
+                    allowed=cp_eval.decision == ControlDecision.ALLOW,
                     reason="preflight",
                     origin=cp_eval.action.origin.model_dump(mode="json"),
                 )
             )
 
-        if (
+        stage2_upgrade_required = (
             cp_eval.trace_result.reason_code == "trace:stage2_upgrade_required"
-            and bool(self._policy_loader.policy.control_plane.trace.allow_amendment)
+        )
+        trace_only_stage2_block = stage2_upgrade_required and not any(
+            vote.decision.value == "BLOCK" and vote.voter != "ExecutionTraceVerifier"
+            for vote in cp_eval.consensus.votes
+        )
+        if trace_only_stage2_block and not bool(
+            self._policy_loader.policy.control_plane.trace.allow_amendment
         ):
-            previous_hash = self._control_plane.active_plan_hash(str(sid))
-            amended_hash = self._control_plane.approve_stage2(
-                action=cp_eval.action,
-                approved_by="control_api",
-            )
+            reason = "trace:plan_amendment_disabled"
             await self._event_bus.publish(
-                PlanAmended(
+                ToolRejected(
                     session_id=sid,
                     actor="control_api",
-                    plan_hash=amended_hash,
-                    amendment_of=previous_hash,
-                    stage="stage2_postevidence",
+                    tool_name=tool_name,
+                    reason=reason,
                 )
             )
-            cp_eval = await self._control_plane.evaluate_action(
-                tool_name=tool_name_value,
+            return SandboxResult(
+                allowed=False,
+                reason=reason,
+                origin=cp_eval.action.origin.model_dump(mode="json"),
+            ).model_dump(mode="json")
+
+        if trace_only_stage2_block or cp_eval.decision == ControlDecision.REQUIRE_CONFIRMATION:
+            reason_codes = list(cp_eval.reason_codes)
+            if trace_only_stage2_block and "trace:stage2_upgrade_required" not in reason_codes:
+                reason_codes.append("trace:stage2_upgrade_required")
+            reason = ",".join(reason_codes) or "control_plane_confirmation_required"
+            effective_caps = self._lockdown_manager.apply_capability_restrictions(
+                sid,
+                session.capabilities,
+            )
+            pending = self._queue_pending_action(
+                session_id=sid,
+                user_id=session.user_id,
+                workspace_id=session.workspace_id,
+                tool_name=tool_name,
                 arguments=dict(params),
-                origin=operator_origin,
-                risk_tier=risk_tier,
-                declared_domains=merged_domains,
-                explicit_side_effect_intent=True,
+                reason=reason,
+                capabilities=effective_caps,
             )
             await self._event_bus.publish(
-                ConsensusEvaluated(
+                ToolRejected(
                     session_id=sid,
-                    actor="control_plane",
+                    actor="control_api",
                     tool_name=tool_name,
-                    decision=cp_eval.decision.value,
-                    risk_tier=cp_eval.consensus.risk_tier.value,
-                    reason_codes=list(cp_eval.reason_codes),
-                    votes=[vote.model_dump(mode="json") for vote in cp_eval.consensus.votes],
+                    reason=f"{reason} ({pending.confirmation_id})",
                 )
             )
+            confirmation_payload = SandboxResult(
+                allowed=False,
+                reason=reason,
+                origin=cp_eval.action.origin.model_dump(mode="json"),
+            ).model_dump(mode="json")
+            confirmation_payload["confirmation_required"] = True
+            confirmation_payload["confirmation_id"] = pending.confirmation_id
+            return confirmation_payload
 
         if cp_eval.decision == ControlDecision.BLOCK:
             if not cp_eval.trace_result.allowed:
@@ -1702,7 +1725,7 @@ class DaemonControlHandlers:
             cwd=str(params.get("cwd", "")),
             sandbox_type=merged_policy.sandbox_type,
             security_critical=merged_policy.security_critical,
-            approved_by_pep=True,
+            approved_by_pep=cp_eval.decision == ControlDecision.ALLOW,
             filesystem=merged_policy.filesystem,
             network=merged_policy.network,
             environment=merged_policy.environment,

@@ -35,6 +35,8 @@ from shisad.security.control_plane.schema import (
     Origin,
     RiskTier,
     build_action,
+    extract_request_size_bytes,
+    sanitize_metadata_payload,
 )
 from shisad.security.control_plane.sequence import BehavioralSequenceAnalyzer
 from shisad.security.control_plane.trace import ExecutionTraceVerifier, PlanVerificationResult
@@ -182,9 +184,10 @@ class ControlPlaneEngine:
         declared_domains: list[str],
         explicit_side_effect_intent: bool,
     ) -> ControlPlaneEvaluation:
+        metadata_arguments = sanitize_metadata_payload(arguments)
         action = build_action(
             tool_name=tool_name,
-            arguments=arguments,
+            arguments=metadata_arguments,
             origin=origin,
             risk_tier=risk_tier,
         )
@@ -194,7 +197,7 @@ class ControlPlaneEngine:
             action=action,
         )
 
-        request_size = len(str(arguments.get("request_body", "")).encode("utf-8"))
+        request_size = extract_request_size_bytes(arguments)
         network_metadata = [
             extract_network_metadata(
                 origin=origin,
@@ -219,6 +222,7 @@ class ControlPlaneEngine:
                     "action_kind": action.action_kind.value,
                     "resource_ids": list(action.resource_ids),
                     "network_hosts": list(action.network_hosts),
+                    "request_size_bytes": request_size,
                 },
             )
         )

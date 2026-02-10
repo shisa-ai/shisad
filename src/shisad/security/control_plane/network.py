@@ -8,6 +8,7 @@ import json
 import logging
 from collections import defaultdict
 from datetime import UTC, datetime, timedelta
+from enum import StrEnum
 from itertools import pairwise
 from statistics import pstdev
 from typing import Any, Protocol
@@ -15,7 +16,7 @@ from typing import Any, Protocol
 from pydantic import BaseModel, Field
 
 from shisad.core.providers.base import Message, ProviderResponse
-from shisad.security.control_plane.schema import Origin, RiskTier
+from shisad.security.control_plane.schema import Origin, RiskTier, risk_rank
 
 logger = logging.getLogger(__name__)
 
@@ -38,14 +39,14 @@ class BaselineEntry(BaseModel):
     average_request_size: float = 0.0
 
 
-class NetworkMonitorDecisionKind(str):
+class NetworkMonitorDecisionKind(StrEnum):
     ALLOW = "ALLOW"
     FLAG = "FLAG"
     BLOCK = "BLOCK"
 
 
 class NetworkMonitorDecision(BaseModel, frozen=True):
-    decision: str
+    decision: NetworkMonitorDecisionKind
     risk_tier: RiskTier
     reason_codes: list[str] = Field(default_factory=list)
     enrichment: dict[str, Any] = Field(default_factory=dict)
@@ -138,7 +139,9 @@ class BaselineDatabase:
         hosts: set[str] = set()
         for key in self._entries:
             if key.startswith(prefix):
-                hosts.add(key.split(":")[-1])
+                host = key[len(prefix) :].strip().lower()
+                if host:
+                    hosts.add(host)
         return hosts
 
     def _persist(self) -> None:
@@ -339,7 +342,7 @@ class NetworkIntelligenceMonitor:
             reason_codes.append("network:undeclared_new_domain")
             if decision != NetworkMonitorDecisionKind.BLOCK:
                 decision = NetworkMonitorDecisionKind.FLAG
-                resulting_risk = max(resulting_risk, RiskTier.HIGH, key=_risk_rank)
+                resulting_risk = max(resulting_risk, RiskTier.HIGH, key=risk_rank)
 
         if int(enrichment.get("small_requests_last_minute", 0)) >= 8 and bool(
             enrichment.get("new_domain")
@@ -352,13 +355,13 @@ class NetworkIntelligenceMonitor:
             reason_codes.append("network:c2_beacon_pattern")
             if decision != NetworkMonitorDecisionKind.BLOCK:
                 decision = NetworkMonitorDecisionKind.FLAG
-                resulting_risk = max(resulting_risk, RiskTier.HIGH, key=_risk_rank)
+                resulting_risk = max(resulting_risk, RiskTier.HIGH, key=risk_rank)
 
         if int(enrichment.get("fan_out_domains_last_minute", 0)) >= 6:
             reason_codes.append("network:fanout_anomaly")
             if decision == NetworkMonitorDecisionKind.ALLOW:
                 decision = NetworkMonitorDecisionKind.FLAG
-                resulting_risk = max(resulting_risk, RiskTier.MEDIUM, key=_risk_rank)
+                resulting_risk = max(resulting_risk, RiskTier.MEDIUM, key=risk_rank)
 
         if not reason_codes:
             reason_codes.append("network:baseline_ok")
@@ -418,7 +421,7 @@ class NetworkIntelligenceMonitor:
             else ["network:llm"]
         )
         return NetworkMonitorDecision(
-            decision=decision_raw,
+            decision=NetworkMonitorDecisionKind(decision_raw),
             risk_tier=risk_tier,
             reason_codes=reason_codes,
             enrichment=enrichment,
@@ -448,7 +451,7 @@ class NetworkIntelligenceMonitor:
                 else NetworkMonitorDecisionKind.FLAG
             )
         return NetworkMonitorDecision(
-            decision=decision,
+            decision=NetworkMonitorDecisionKind(decision),
             risk_tier=risk_tier,
             reason_codes=["network:monitor_timeout"],
             enrichment=enrichment,
@@ -467,8 +470,8 @@ class NetworkIntelligenceMonitor:
             NetworkMonitorDecisionKind.FLAG: 1,
             NetworkMonitorDecisionKind.BLOCK: 2,
         }
-        left = str(heuristic.decision)
-        right = str(llm.decision)
+        left = heuristic.decision
+        right = llm.decision
         chosen = heuristic if order[left] >= order[right] else llm
         reason_codes = list(dict.fromkeys([*heuristic.reason_codes, *llm.reason_codes]))
         return chosen.model_copy(update={"reason_codes": reason_codes, "source": "combined"})
@@ -499,12 +502,3 @@ def extract_network_metadata(
         resolved_addresses=list(resolved_addresses or []),
         timestamp=timestamp or datetime.now(UTC),
     )
-
-
-def _risk_rank(value: RiskTier) -> int:
-    return {
-        RiskTier.LOW: 0,
-        RiskTier.MEDIUM: 1,
-        RiskTier.HIGH: 2,
-        RiskTier.CRITICAL: 3,
-    }[value]

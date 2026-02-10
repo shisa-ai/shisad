@@ -265,6 +265,80 @@ async def test_m5_t21_tool_execute_has_declared_threat_model_path_and_no_bypass(
         await _shutdown(daemon_task, client)
 
 
+@pytest.mark.asyncio
+async def test_m5_rt1_tool_execute_stage2_upgrade_requires_confirmation_gate(
+    model_env: None,
+    tmp_path: Path,
+) -> None:
+    daemon_task, client = await _start_daemon_with_policy(tmp_path)
+    try:
+        created = await client.call("session.create", {"channel": "cli"})
+        sid = created["session_id"]
+
+        result = await client.call(
+            "tool.execute",
+            {
+                "session_id": sid,
+                "tool_name": "http_request",
+                "command": [sys.executable, "-c", "print('ok')"],
+                "network_urls": ["https://api.good.example/upload"],
+                "network": {
+                    "allow_network": True,
+                    "allowed_domains": ["api.good.example"],
+                    "deny_private_ranges": True,
+                    "deny_ip_literals": True,
+                },
+                "degraded_mode": "fail_open",
+                "security_critical": False,
+            },
+        )
+        assert result["allowed"] is False
+        assert result.get("confirmation_required") is True
+        confirmation_id = str(result.get("confirmation_id", ""))
+        assert confirmation_id
+
+        pending = await client.call(
+            "action.pending",
+            {"session_id": sid, "status": "pending", "limit": 20},
+        )
+        assert any(item["confirmation_id"] == confirmation_id for item in pending["actions"])
+        assert any(
+            "stage2_upgrade_required" in str(item.get("reason", ""))
+            for item in pending["actions"]
+            if item["confirmation_id"] == confirmation_id
+        )
+
+        amendments_before = await client.call(
+            "audit.query",
+            {"event_type": "PlanAmended", "session_id": sid, "limit": 20},
+        )
+        assert amendments_before["total"] == 0
+    finally:
+        await _shutdown(daemon_task, client)
+
+
+@pytest.mark.asyncio
+async def test_m5_rt2_policy_explain_includes_control_plane_section(
+    model_env: None,
+    tmp_path: Path,
+) -> None:
+    daemon_task, client = await _start_daemon_with_policy(tmp_path)
+    try:
+        created = await client.call("session.create", {"channel": "cli"})
+        sid = created["session_id"]
+        explained = await client.call(
+            "policy.explain",
+            {"session_id": sid, "action": "tool:shell_exec"},
+        )
+        control_plane = explained.get("control_plane")
+        assert isinstance(control_plane, dict)
+        assert {"sequence", "resource", "network", "consensus", "trace", "egress"}.issubset(
+            set(control_plane.keys())
+        )
+    finally:
+        await _shutdown(daemon_task, client)
+
+
 @pytest.mark.requires_cap_net_admin
 def test_m5_t22_privileged_connect_path_marker_and_ci_semantics(
     monkeypatch: pytest.MonkeyPatch,

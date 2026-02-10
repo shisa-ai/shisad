@@ -68,11 +68,11 @@ class ControlPlaneAuditLog:
         count = 0
         with self._path.open(encoding="utf-8") as handle:
             for index, raw in enumerate(handle, start=1):
-                text = raw.strip()
-                if not text:
+                payload = raw[:-1] if raw.endswith("\n") else raw
+                if not payload.strip():
                     continue
                 try:
-                    entry = ControlPlaneAuditEntry.model_validate_json(text)
+                    entry = ControlPlaneAuditEntry.model_validate_json(payload)
                 except Exception as exc:
                     return (False, count, f"line {index}: invalid entry ({exc})")
                 if entry.previous_hash != previous:
@@ -82,7 +82,7 @@ class ControlPlaneAuditLog:
                 ).hexdigest()
                 if expected_hash != entry.data_hash:
                     return (False, count, f"line {index}: data hash mismatch")
-                previous = hashlib.sha256(text.encode("utf-8")).hexdigest()
+                previous = hashlib.sha256(payload.encode("utf-8")).hexdigest()
                 count += 1
         return (True, count, "")
 
@@ -116,8 +116,8 @@ class ControlPlaneAuditLog:
             return
         with self._path.open(encoding="utf-8") as handle:
             for raw in handle:
-                text = raw.strip()
-                if not text:
+                payload = raw[:-1] if raw.endswith("\n") else raw
+                if not payload.strip():
                     continue
-                self._previous_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()
+                self._previous_hash = hashlib.sha256(payload.encode("utf-8")).hexdigest()
                 self._entry_count += 1

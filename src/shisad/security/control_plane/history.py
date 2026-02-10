@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import json
+import logging
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from pydantic import BaseModel, Field
 
 from shisad.security.control_plane.schema import ActionKind, ControlPlaneAction, Origin
+
+logger = logging.getLogger(__name__)
 
 
 class ActionHistoryRecord(BaseModel, frozen=True):
@@ -90,13 +93,17 @@ class SessionActionHistoryStore:
         if self._storage_path is None or not self._storage_path.exists():
             return
         with self._storage_path.open(encoding="utf-8") as handle:
-            for line in handle:
+            for line_number, line in enumerate(handle, start=1):
                 text = line.strip()
                 if not text:
                     continue
                 try:
                     record = ActionHistoryRecord.model_validate_json(text)
                 except Exception:
+                    logger.warning(
+                        "control-plane history: skipping malformed record line %s",
+                        line_number,
+                    )
                     continue
                 self._records.setdefault(record.session_id, []).append(record)
 

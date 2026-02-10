@@ -162,6 +162,15 @@ class NormalizationResult(BaseModel, frozen=True):
     action: ControlPlaneAction
 
 
+def risk_rank(value: RiskTier) -> int:
+    return {
+        RiskTier.LOW: 0,
+        RiskTier.MEDIUM: 1,
+        RiskTier.HIGH: 2,
+        RiskTier.CRITICAL: 3,
+    }[value]
+
+
 def build_action(
     *,
     tool_name: str,
@@ -301,6 +310,24 @@ def extract_network_hosts(arguments: dict[str, Any]) -> list[str]:
     return deduped
 
 
+def extract_request_size_bytes(arguments: dict[str, Any]) -> int:
+    for key in ("request_size", "request_bytes", "content_length"):
+        value = arguments.get(key)
+        parsed = _parse_size_value(value)
+        if parsed is not None:
+            return parsed
+
+    headers = arguments.get("request_headers")
+    if isinstance(headers, dict):
+        for key, value in headers.items():
+            if str(key).strip().lower() != "content-length":
+                continue
+            parsed = _parse_size_value(value)
+            if parsed is not None:
+                return parsed
+    return 0
+
+
 def contains_freeform_text(payload: Any) -> bool:
     if isinstance(payload, dict):
         for key, value in payload.items():
@@ -314,7 +341,7 @@ def contains_freeform_text(payload: Any) -> bool:
         return any(contains_freeform_text(item) for item in payload)
     if isinstance(payload, str):
         # Long free-form text is disallowed in voter payloads.
-        return len(payload) > 512 or ("\n" in payload and len(payload) > 128)
+        return len(payload) > 256 or ("\n" in payload and len(payload) > 64)
     return False
 
 
@@ -364,3 +391,17 @@ def _host_from_token(token: str) -> str:
         host = value.split(":", 1)[0]
         return host.lower()
     return ""
+
+
+def _parse_size_value(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return max(0, value)
+    if isinstance(value, float):
+        return max(0, int(value))
+    if isinstance(value, str):
+        text = value.strip()
+        if text.isdigit():
+            return int(text)
+    return None
