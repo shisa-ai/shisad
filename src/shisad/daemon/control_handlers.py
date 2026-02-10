@@ -1119,6 +1119,10 @@ class DaemonControlHandlers:
                 host = urlparse(token).hostname or ""
                 if host:
                     network_hosts.append(host.lower())
+            for token in params.get("command", []):
+                host = urlparse(str(token)).hostname or ""
+                if host:
+                    network_hosts.append(host.lower())
             runtime_decision = self._skill_manager.authorize_runtime(
                 skill_name=skill_name,
                 request=SkillExecutionRequest(
@@ -1149,12 +1153,31 @@ class DaemonControlHandlers:
                     reason=reason,
                 ).model_dump(mode="json")
 
+        patch_params = normalize_patch(params)
+        # Default direct admin execution posture to fail-closed when omitted.
+        if (
+            "degraded_mode" not in patch_params.model_fields_set
+            or "security_critical" not in patch_params.model_fields_set
+        ):
+            strict_defaults = self._policy_loader.policy.sandbox.fail_closed_security_critical
+            patched_params = dict(params)
+            if "degraded_mode" not in patch_params.model_fields_set:
+                patched_params["degraded_mode"] = (
+                    DegradedModePolicy.FAIL_CLOSED.value
+                    if strict_defaults
+                    else DegradedModePolicy.FAIL_OPEN.value
+                )
+            if "security_critical" not in patch_params.model_fields_set:
+                patched_params["security_critical"] = bool(strict_defaults)
+            params = patched_params
+            patch_params = normalize_patch(params)
+
         floor = self._compute_tool_policy_floor(
             tool_name=tool_name,
             tool_definition=tool_def,
         )
         try:
-            merged_policy = PolicyMerge.merge(server=floor, caller=normalize_patch(params))
+            merged_policy = PolicyMerge.merge(server=floor, caller=patch_params)
         except PolicyMergeError as exc:
             await self._event_bus.publish(
                 ToolRejected(
@@ -1165,6 +1188,39 @@ class DaemonControlHandlers:
                 )
             )
             raise ValueError(f"policy floor violation: {exc}") from exc
+
+        required_caps = set(tool_def.capabilities_required)
+        if Capability.HTTP_REQUEST in required_caps and not tool_def.destinations:
+            domains = [
+                item.strip().lower()
+                for item in merged_policy.network.allowed_domains
+                if item
+            ]
+            if not domains:
+                await self._event_bus.publish(
+                    ToolRejected(
+                        session_id=sid,
+                        actor="control_api",
+                        tool_name=tool_name,
+                        reason="http_request_allowlist_required",
+                    )
+                )
+                raise ValueError(
+                    "http_request requires explicit network.allowed_domains "
+                    "(policy override or per-call narrowing)"
+                )
+            if "*" in domains:
+                await self._event_bus.publish(
+                    ToolRejected(
+                        session_id=sid,
+                        actor="control_api",
+                        tool_name=tool_name,
+                        reason="http_request_wildcard_disallowed",
+                    )
+                )
+                raise ValueError(
+                    "http_request wildcard domains are not allowed; provide explicit domains"
+                )
 
         config = SandboxConfig(
             session_id=str(sid),

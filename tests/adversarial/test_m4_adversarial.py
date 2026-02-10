@@ -10,6 +10,7 @@ import pytest
 import yaml
 
 from shisad.core.providers.base import Message, ProviderResponse
+from shisad.security.policy import SkillPolicy
 from shisad.skills import (
     DangerousPatternAnalyzer,
     LlmSkillAnalyzer,
@@ -137,7 +138,10 @@ def test_m4_a4_dependency_confusion_blocked_by_manifest_validation(tmp_path: Pat
 
 @pytest.mark.asyncio
 async def test_m4_a5_maintainer_compromise_update_gets_review_gated(tmp_path: Path) -> None:
-    manager = SkillManager(storage_dir=tmp_path / "state")
+    manager = SkillManager(
+        storage_dir=tmp_path / "state",
+        policy=SkillPolicy(require_signature_for_auto_install=False),
+    )
     v1 = _write_skill(
         tmp_path / "a5_v1",
         manifest=_manifest_payload(name="maintainer-skill", version="1.0.0"),

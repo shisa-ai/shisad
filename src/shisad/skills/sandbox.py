@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
+from urllib.parse import urlparse
 
 from pydantic import BaseModel, Field
 
 from shisad.skills.manifest import SkillManifest
+
+_URL_RE = re.compile(r"https?://[^\s'\"<>`]+", re.IGNORECASE)
 
 
 class SkillSandboxDecision(BaseModel):
@@ -145,8 +149,25 @@ def _shell_command_matches(inferred: str, declared: str) -> bool:
         return False
     if inferred_norm == declared_norm:
         return True
-    if inferred_norm.startswith(declared_norm) or declared_norm.startswith(inferred_norm):
+    if inferred_norm.startswith(declared_norm):
         return True
     inferred_head = inferred_norm.split(" ", 1)[0]
     declared_head = declared_norm.split(" ", 1)[0]
-    return inferred_head == declared_head
+    if inferred_head != declared_head:
+        return False
+    declared_hosts = _extract_url_hosts(declared_norm)
+    if not declared_hosts:
+        return True
+    inferred_hosts = _extract_url_hosts(inferred_norm)
+    if not inferred_hosts:
+        return False
+    return inferred_hosts.issubset(declared_hosts)
+
+
+def _extract_url_hosts(value: str) -> set[str]:
+    hosts: set[str] = set()
+    for token in _URL_RE.findall(value):
+        host = urlparse(token).hostname
+        if host:
+            hosts.add(host.lower())
+    return hosts

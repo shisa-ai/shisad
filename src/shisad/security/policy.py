@@ -146,7 +146,7 @@ class SkillPolicy(BaseModel):
     """Skill install/review policy controls."""
 
     require_review_on_update: bool = True
-    require_signature_for_auto_install: bool = False
+    require_signature_for_auto_install: bool = True
     trusted_key_ids: list[str] = Field(default_factory=list)
     dependency_source_allowlist: list[str] = Field(
         default_factory=lambda: ["shisa-registry", "local"]

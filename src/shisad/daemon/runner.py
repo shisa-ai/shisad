@@ -652,7 +652,6 @@ async def run_daemon(config: DaemonConfig) -> None:
                 ToolParameter(name="request_body", type="string", required=False),
             ],
             capabilities_required=[Capability.HTTP_REQUEST],
-            destinations=["*"],
             sandbox_type="container",
             require_confirmation=False,
         )
