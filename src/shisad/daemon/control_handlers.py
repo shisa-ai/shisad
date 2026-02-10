@@ -21,9 +21,13 @@ from shisad.core.events import (
     EventBus,
     LockdownChanged,
     MonitorEvaluated,
+    ProxyRequestEvaluated,
+    SandboxDegraded,
+    SandboxEscapeDetected,
     SessionCreated,
     SessionMessageReceived,
     SessionMessageResponded,
+    SessionRolledBack,
     TaskScheduled,
     TaskTriggered,
     ToolApproved,
@@ -37,7 +41,18 @@ from shisad.core.tools.builtin.alarm import AlarmTool, AnomalyReportInput
 from shisad.core.tools.registry import ToolRegistry
 from shisad.core.tools.schema import ToolDefinition
 from shisad.core.transcript import TranscriptStore
-from shisad.core.types import Capability, SessionId, ToolName, UserId, WorkspaceId
+from shisad.core.types import Capability, SessionId, TaintLabel, ToolName, UserId, WorkspaceId
+from shisad.executors.browser import BrowserSandbox
+from shisad.executors.mounts import FilesystemPolicy
+from shisad.executors.proxy import NetworkPolicy
+from shisad.executors.sandbox import (
+    DegradedModePolicy,
+    EnvironmentPolicy,
+    ResourceLimits,
+    SandboxConfig,
+    SandboxOrchestrator,
+    SandboxType,
+)
 from shisad.memory.ingestion import IngestionPipeline
 from shisad.memory.manager import MemoryManager
 from shisad.memory.schema import MemorySource
@@ -131,6 +146,8 @@ class DaemonControlHandlers:
         ingestion: IngestionPipeline,
         memory_manager: MemoryManager,
         scheduler: SchedulerManager,
+        sandbox: SandboxOrchestrator,
+        browser_sandbox: BrowserSandbox,
         shutdown_event: asyncio.Event,
         provenance_status: dict[str, Any],
         model_routes: dict[str, str],
@@ -160,6 +177,8 @@ class DaemonControlHandlers:
         self._ingestion = ingestion
         self._memory_manager = memory_manager
         self._scheduler = scheduler
+        self._sandbox = sandbox
+        self._browser_sandbox = browser_sandbox
         self._shutdown_event = shutdown_event
         self._provenance_status = provenance_status
         self._model_routes = model_routes
@@ -680,6 +699,7 @@ class DaemonControlHandlers:
                     "user_id": s.user_id,
                     "workspace_id": s.workspace_id,
                     "channel": s.channel,
+                    "capabilities": sorted(cap.value for cap in s.capabilities),
                     "trust_level": str(s.metadata.get("trust_level", "untrusted")),
                     "session_key": s.session_key,
                     "created_at": s.created_at.isoformat(),
@@ -702,6 +722,175 @@ class DaemonControlHandlers:
             "checkpoint_id": checkpoint_id,
             "session_id": restored.id,
         }
+
+    async def handle_session_rollback(self, params: dict[str, Any]) -> dict[str, Any]:
+        checkpoint_id = str(params.get("checkpoint_id", "")).strip()
+        if not checkpoint_id:
+            raise ValueError("checkpoint_id is required")
+        checkpoint = self._checkpoint_store.restore(checkpoint_id)
+        if checkpoint is None:
+            return {"rolled_back": False, "checkpoint_id": checkpoint_id, "session_id": None}
+        restored = self._session_manager.restore_from_checkpoint(checkpoint)
+        await self._event_bus.publish(
+            SessionRolledBack(
+                session_id=restored.id,
+                actor="control_api",
+                checkpoint_id=checkpoint_id,
+            )
+        )
+        return {"rolled_back": True, "checkpoint_id": checkpoint_id, "session_id": restored.id}
+
+    async def handle_tool_execute(self, params: dict[str, Any]) -> dict[str, Any]:
+        sid = SessionId(str(params.get("session_id", "")))
+        if not sid:
+            raise ValueError("session_id is required")
+        session = self._session_manager.get(sid)
+        if session is None:
+            raise ValueError(f"Unknown session: {sid}")
+
+        sandbox_type_raw = params.get("sandbox_type")
+        sandbox_type: SandboxType | None = None
+        if isinstance(sandbox_type_raw, str) and sandbox_type_raw.strip():
+            sandbox_type = SandboxType(sandbox_type_raw.strip())
+
+        filesystem = FilesystemPolicy.model_validate(params.get("filesystem", {}))
+        network = NetworkPolicy.model_validate(params.get("network", {}))
+        environment_data: dict[str, Any] = dict(params.get("environment", {}))
+        if not environment_data:
+            environment_data = {
+                "allowed_keys": list(self._policy_loader.policy.sandbox.env_allowlist),
+                "max_keys": self._policy_loader.policy.sandbox.env_max_keys,
+                "max_total_bytes": self._policy_loader.policy.sandbox.env_max_total_bytes,
+            }
+        environment = EnvironmentPolicy.model_validate(environment_data)
+        limits = ResourceLimits.model_validate(params.get("limits", {}))
+        degraded_default = (
+            "fail_closed"
+            if self._policy_loader.policy.sandbox.fail_closed_security_critical
+            else "fail_open"
+        )
+        degraded_mode = DegradedModePolicy(str(params.get("degraded_mode", degraded_default)))
+
+        tool_name_value = str(params.get("tool_name", ""))
+        if sandbox_type is None:
+            override = self._policy_loader.policy.sandbox.tool_overrides.get(
+                ToolName(tool_name_value)
+            )
+            if override:
+                sandbox_type = SandboxType(override)
+            else:
+                tool_def = self._registry.get_tool(ToolName(tool_name_value))
+                if tool_def is not None and tool_def.sandbox_type:
+                    sandbox_type = SandboxType(str(tool_def.sandbox_type))
+                elif network.allow_network or list(params.get("network_urls", [])):
+                    sandbox_type = SandboxType(self._policy_loader.policy.sandbox.network_backend)
+                else:
+                    sandbox_type = SandboxType(self._policy_loader.policy.sandbox.default_backend)
+
+        config = SandboxConfig(
+            session_id=str(sid),
+            tool_name=str(params.get("tool_name", "")),
+            command=list(params.get("command", [])),
+            read_paths=[str(item) for item in params.get("read_paths", [])],
+            write_paths=[str(item) for item in params.get("write_paths", [])],
+            network_urls=[str(item) for item in params.get("network_urls", [])],
+            env={str(k): str(v) for k, v in dict(params.get("env", {})).items()},
+            cwd=str(params.get("cwd", "")),
+            sandbox_type=sandbox_type,
+            security_critical=bool(params.get("security_critical", True)),
+            approved_by_pep=bool(params.get("approved_by_pep", True)),
+            filesystem=filesystem,
+            network=network,
+            environment=environment,
+            limits=limits,
+            degraded_mode=degraded_mode,
+        )
+        result = self._sandbox.execute(config, session=session)
+
+        if result.degraded_controls:
+            await self._event_bus.publish(
+                SandboxDegraded(
+                    session_id=sid,
+                    actor="sandbox",
+                    tool_name=ToolName(config.tool_name),
+                    backend=result.backend.value if result.backend is not None else "",
+                    controls=list(result.degraded_controls),
+                )
+            )
+        for decision in result.network_decisions:
+            await self._event_bus.publish(
+                ProxyRequestEvaluated(
+                    session_id=sid,
+                    actor="egress_proxy",
+                    tool_name=ToolName(config.tool_name),
+                    destination_host=decision.destination_host,
+                    destination_port=decision.destination_port,
+                    allowed=decision.allowed,
+                    reason=decision.reason,
+                    credential_placeholders=list(decision.used_placeholders),
+                )
+            )
+
+        if result.escape_detected:
+            await self._event_bus.publish(
+                SandboxEscapeDetected(
+                    session_id=sid,
+                    actor="sandbox",
+                    tool_name=ToolName(config.tool_name),
+                    reason=result.reason,
+                )
+            )
+            await self._handle_lockdown_transition(
+                sid,
+                trigger="sandbox_escape",
+                reason=result.reason or "sandbox escape detected",
+            )
+
+        await self._event_bus.publish(
+            ToolExecuted(
+                session_id=sid,
+                actor="sandbox",
+                tool_name=ToolName(config.tool_name),
+                success=bool(
+                    result.allowed and not result.timed_out and (result.exit_code or 0) == 0
+                ),
+                error="" if result.allowed else result.reason,
+            )
+        )
+        return result.model_dump(mode="json")
+
+    async def handle_browser_paste(self, params: dict[str, Any]) -> dict[str, Any]:
+        sid = SessionId(str(params.get("session_id", "")))
+        if not sid:
+            raise ValueError("session_id is required")
+        labels: set[TaintLabel] = set()
+        for raw in params.get("taint_labels", []):
+            try:
+                labels.add(TaintLabel(str(raw)))
+            except ValueError:
+                continue
+        result = self._browser_sandbox.paste(str(params.get("text", "")), taint_labels=labels)
+        if not result.allowed:
+            await self._event_bus.publish(
+                ToolRejected(
+                    session_id=sid,
+                    actor="browser_sandbox",
+                    tool_name=ToolName("browser.paste"),
+                    reason=result.reason or "browser_paste_blocked",
+                )
+            )
+        return result.model_dump(mode="json")
+
+    async def handle_browser_screenshot(self, params: dict[str, Any]) -> dict[str, Any]:
+        sid = SessionId(str(params.get("session_id", "")))
+        if not sid:
+            raise ValueError("session_id is required")
+        result = self._browser_sandbox.store_screenshot(
+            session_id=str(sid),
+            image_base64=str(params.get("image_base64", "")),
+            ocr_text=str(params.get("ocr_text", "")),
+        )
+        return result.model_dump(mode="json")
 
     async def handle_session_grant_capabilities(self, params: dict[str, Any]) -> dict[str, Any]:
         sid = SessionId(params.get("session_id", ""))
@@ -746,6 +935,10 @@ class DaemonControlHandlers:
                         self._matrix_channel.e2ee_enabled if self._matrix_channel else False
                     ),
                 }
+            },
+            "executors": {
+                "sandbox_backends": [item.value for item in SandboxType],
+                "browser": self._browser_sandbox.policy.model_dump(mode="json"),
             },
             "provenance": self._provenance_status,
         }

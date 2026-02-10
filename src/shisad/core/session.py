@@ -200,11 +200,18 @@ class SessionManager:
     def restore_from_checkpoint(self, checkpoint: Checkpoint) -> Session:
         """Restore session state from a checkpoint payload."""
         state = checkpoint.state
-        if isinstance(state, dict) and "id" in state:
-            restored = Session.model_validate(state)
+        restored: Session
+        if isinstance(state, dict):
+            if "id" in state:
+                restored = Session.model_validate(state)
+            elif isinstance(state.get("session"), dict):
+                restored = Session.model_validate(state["session"])
+            else:
+                restored = Session(id=checkpoint.session_id)
+                restored.metadata["checkpoint_state"] = state
         else:
             restored = Session(id=checkpoint.session_id)
-            restored.metadata["checkpoint_state"] = state
+            restored.metadata["checkpoint_state"] = {"raw": state}
         restored.state = SessionState.ACTIVE
         self._sessions[restored.id] = restored
         logger.info(

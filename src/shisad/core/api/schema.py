@@ -100,6 +100,12 @@ class SessionRestoreParams(_StrictParams):
     checkpoint_id: str
 
 
+class SessionRollbackParams(_StrictParams):
+    """Parameters for session.rollback."""
+
+    checkpoint_id: str
+
+
 class SessionRestoreResult(BaseModel):
     """Result for session.restore."""
 
@@ -224,3 +230,34 @@ class ActionPendingParams(_StrictParams):
 class ActionDecisionParams(_StrictParams):
     confirmation_id: str
     reason: str = ""
+
+
+class ToolExecuteParams(_StrictParams):
+    session_id: str
+    tool_name: str
+    command: list[str]
+    read_paths: list[str] = Field(default_factory=list)
+    write_paths: list[str] = Field(default_factory=list)
+    network_urls: list[str] = Field(default_factory=list)
+    env: dict[str, str] = Field(default_factory=dict)
+    cwd: str = ""
+    sandbox_type: str | None = None
+    security_critical: bool = True
+    approved_by_pep: bool = True
+    degraded_mode: str = "fail_closed"
+    filesystem: dict[str, Any] = Field(default_factory=dict)
+    network: dict[str, Any] = Field(default_factory=dict)
+    environment: dict[str, Any] = Field(default_factory=dict)
+    limits: dict[str, Any] = Field(default_factory=dict)
+
+
+class BrowserPasteParams(_StrictParams):
+    session_id: str
+    text: str
+    taint_labels: list[str] = Field(default_factory=list)
+
+
+class BrowserScreenshotParams(_StrictParams):
+    session_id: str
+    image_base64: str
+    ocr_text: str = ""

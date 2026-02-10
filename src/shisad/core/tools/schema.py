@@ -41,6 +41,7 @@ class ToolDefinition(BaseModel):
     capabilities_required: list[Capability] = Field(default_factory=list)
     destinations: list[str] = Field(default_factory=list)
     require_confirmation: bool = False
+    sandbox_type: str | None = None
 
     model_config = {"frozen": True}
 
@@ -52,6 +53,7 @@ class ToolDefinition(BaseModel):
                 "parameters": [p.model_dump() for p in self.parameters],
                 "capabilities_required": sorted(self.capabilities_required),
                 "destinations": sorted(self.destinations),
+                "sandbox_type": self.sandbox_type or "",
             },
             sort_keys=True,
         )

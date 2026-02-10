@@ -7,9 +7,11 @@ import contextlib
 import hashlib
 import json
 import logging
+import os
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
+from urllib.parse import urlparse
 
 from shisad.channels.identity import ChannelIdentityMap
 from shisad.channels.ingress import ChannelIngressProcessor
@@ -18,6 +20,8 @@ from shisad.core.api.schema import (
     ActionDecisionParams,
     ActionPendingParams,
     AuditQueryParams,
+    BrowserPasteParams,
+    BrowserScreenshotParams,
     ChannelIngestParams,
     LockdownSetParams,
     MemoryEntryParams,
@@ -32,10 +36,12 @@ from shisad.core.api.schema import (
     SessionGrantCapabilitiesParams,
     SessionMessageParams,
     SessionRestoreParams,
+    SessionRollbackParams,
     TaskCreateParams,
     TaskDisableParams,
     TaskPendingConfirmationsParams,
     TaskTriggerEventParams,
+    ToolExecuteParams,
 )
 from shisad.core.api.transport import ControlServer
 from shisad.core.audit import AuditLog
@@ -54,6 +60,7 @@ from shisad.core.planner import Planner
 from shisad.core.providers.base import (
     EmbeddingResponse,
     Message,
+    OpenAICompatibleProvider,
     ProviderResponse,
     validate_endpoint,
 )
@@ -62,11 +69,15 @@ from shisad.core.session import CheckpointStore, SessionManager
 from shisad.core.tools.builtin.alarm import AlarmTool
 from shisad.core.tools.registry import ToolRegistry
 from shisad.core.transcript import TranscriptStore
-from shisad.core.types import SessionId, ToolName
+from shisad.core.types import CredentialRef, SessionId, ToolName
 from shisad.daemon.control_handlers import DaemonControlHandlers
+from shisad.executors.browser import BrowserSandbox, BrowserSandboxPolicy
+from shisad.executors.proxy import EgressProxy
+from shisad.executors.sandbox import SandboxOrchestrator
 from shisad.memory.ingestion import EmbeddingFingerprint, IngestionPipeline, RetrieveRagTool
 from shisad.memory.manager import MemoryManager
 from shisad.scheduler.manager import SchedulerManager
+from shisad.security.credentials import CredentialConfig, InMemoryCredentialStore
 from shisad.security.firewall import ContentFirewall
 from shisad.security.firewall.output import OutputFirewall
 from shisad.security.lockdown import LockdownManager
@@ -160,10 +171,74 @@ class _LocalPlannerProvider:
         return EmbeddingResponse(vectors=vectors, model="local-stub", usage={"total_tokens": 0})
 
 
+class _RoutedOpenAIProvider:
+    """OpenAI-compatible provider bound to router component routes."""
+
+    def __init__(
+        self,
+        *,
+        router: ModelRouter,
+        api_key: str,
+        fallback: _LocalPlannerProvider | None = None,
+    ) -> None:
+        headers = {"Authorization": f"Bearer {api_key}"}
+        planner_route = router.route_for(ModelComponent.PLANNER)
+        embeddings_route = router.route_for(ModelComponent.EMBEDDINGS)
+        self._planner_provider = OpenAICompatibleProvider(
+            base_url=planner_route.base_url,
+            model_id=planner_route.model_id,
+            headers=headers,
+        )
+        self._embeddings_provider = OpenAICompatibleProvider(
+            base_url=embeddings_route.base_url,
+            model_id=embeddings_route.model_id,
+            headers=headers,
+        )
+        self._embeddings_model_id = embeddings_route.model_id
+        self._fallback = fallback
+
+    async def complete(
+        self,
+        messages: list[Message],
+        tools: list[dict[str, Any]] | None = None,
+    ) -> ProviderResponse:
+        try:
+            return await self._planner_provider.complete(messages, tools)
+        except Exception:
+            if self._fallback is None:
+                raise
+            logger.warning("Remote planner provider failed; falling back to local provider")
+            return await self._fallback.complete(messages, tools)
+
+    async def embeddings(
+        self,
+        input_texts: list[str],
+        *,
+        model_id: str | None = None,
+    ) -> EmbeddingResponse:
+        target_model = model_id or self._embeddings_model_id
+        try:
+            return await self._embeddings_provider.embeddings(input_texts, model_id=target_model)
+        except Exception:
+            if self._fallback is None:
+                raise
+            logger.warning("Remote embeddings provider failed; falling back to local provider")
+            return await self._fallback.embeddings(input_texts, model_id=target_model)
+
+
+class _EmbeddingsProvider(Protocol):
+    async def embeddings(
+        self,
+        input_texts: list[str],
+        *,
+        model_id: str | None = None,
+    ) -> EmbeddingResponse: ...
+
+
 class _SyncEmbeddingsAdapter:
     """Threaded adapter to use async provider embeddings from sync retrieval code."""
 
-    def __init__(self, provider: _LocalPlannerProvider, *, model_id: str) -> None:
+    def __init__(self, provider: _EmbeddingsProvider, *, model_id: str) -> None:
         self._provider = provider
         self._model_id = model_id
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="shisad-embed")
@@ -380,6 +455,11 @@ async def run_daemon(config: DaemonConfig) -> None:
         safe_domains=policy_loader.policy.safe_output_domains or ["api.example.com", "example.com"],
         alert_hook=_audit_output_event,
     )
+    browser_sandbox = BrowserSandbox(
+        output_firewall=output_firewall,
+        screenshots_dir=config.data_dir / "screenshots",
+        policy=BrowserSandboxPolicy(clipboard="enabled"),
+    )
     channel_ingress = ChannelIngressProcessor(firewall)
     identity_map = ChannelIdentityMap(default_trust=_CHANNEL_TRUST_DEFAULTS)
     matrix_channel: MatrixChannel | None = None
@@ -409,11 +489,43 @@ async def run_daemon(config: DaemonConfig) -> None:
         )
         await matrix_channel.connect()
 
-    local_provider = _LocalPlannerProvider()
+    api_key_candidate = model_config.api_key
+    if api_key_candidate is None:
+        api_key_candidate = os.getenv("SHISA_API_KEY", "")
+    shisa_api_key = api_key_candidate.strip()
+    local_fallback = _LocalPlannerProvider()
+    provider: _LocalPlannerProvider | _RoutedOpenAIProvider = local_fallback
+    remote_enabled = os.getenv("SHISAD_MODEL_REMOTE_ENABLED", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+    }
+    planner_url = router.route_for(ModelComponent.PLANNER).base_url
+    planner_host = (urlparse(planner_url).hostname or "").lower()
+    use_shisa_default_host = planner_host == "api.shisa.ai"
+    if shisa_api_key and (remote_enabled or use_shisa_default_host):
+        provider = _RoutedOpenAIProvider(
+            router=router,
+            api_key=shisa_api_key,
+            fallback=local_fallback,
+        )
+
     embeddings_route = router.route_for(ModelComponent.EMBEDDINGS)
     embeddings_adapter = _SyncEmbeddingsAdapter(
-        local_provider,
+        provider,
         model_id=embeddings_route.model_id,
+    )
+    credential_store = InMemoryCredentialStore()
+    if shisa_api_key:
+        credential_store.register(
+            CredentialRef("shisa_primary"),
+            shisa_api_key,
+            CredentialConfig(allowed_hosts=["api.shisa.ai"]),
+        )
+    egress_proxy = EgressProxy(credential_store=credential_store)
+    sandbox = SandboxOrchestrator(
+        proxy=egress_proxy,
+        checkpoint_store=checkpoint_store,
     )
     ingestion = IngestionPipeline(
         config.data_dir / "memory",
@@ -458,7 +570,7 @@ async def run_daemon(config: DaemonConfig) -> None:
         registry,
         credential_audit_hook=_audit_credential_use,
     )
-    planner = Planner(local_provider, pep)
+    planner = Planner(provider, pep)
 
     shutdown_event = asyncio.Event()
     model_routes = {
@@ -488,6 +600,8 @@ async def run_daemon(config: DaemonConfig) -> None:
         ingestion=ingestion,
         memory_manager=memory_manager,
         scheduler=scheduler,
+        sandbox=sandbox,
+        browser_sandbox=browser_sandbox,
         shutdown_event=shutdown_event,
         provenance_status=provenance_status,
         model_routes=model_routes,
@@ -510,6 +624,12 @@ async def run_daemon(config: DaemonConfig) -> None:
         "session.restore",
         handlers.handle_session_restore,
         params_model=SessionRestoreParams,
+    )
+    server.register_method(
+        "session.rollback",
+        handlers.handle_session_rollback,
+        admin_only=True,
+        params_model=SessionRollbackParams,
     )
     server.register_method(
         "session.grant_capabilities",
@@ -634,6 +754,24 @@ async def run_daemon(config: DaemonConfig) -> None:
         handlers.handle_channel_ingest,
         admin_only=True,
         params_model=ChannelIngestParams,
+    )
+    server.register_method(
+        "tool.execute",
+        handlers.handle_tool_execute,
+        admin_only=True,
+        params_model=ToolExecuteParams,
+    )
+    server.register_method(
+        "browser.paste",
+        handlers.handle_browser_paste,
+        admin_only=True,
+        params_model=BrowserPasteParams,
+    )
+    server.register_method(
+        "browser.screenshot",
+        handlers.handle_browser_screenshot,
+        admin_only=True,
+        params_model=BrowserScreenshotParams,
     )
 
     async def _matrix_receive_pump() -> None:

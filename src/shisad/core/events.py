@@ -181,6 +181,38 @@ class OutputFirewallAlert(BaseEvent):
     secret_findings: list[str] = Field(default_factory=list)
 
 
+class SandboxDegraded(BaseEvent):
+    """Sandbox backend could not enforce requested controls."""
+
+    tool_name: ToolName
+    backend: str = ""
+    controls: list[str] = Field(default_factory=list)
+
+
+class SandboxEscapeDetected(BaseEvent):
+    """Sandbox escape signal detected during execution."""
+
+    tool_name: ToolName
+    reason: str = ""
+
+
+class ProxyRequestEvaluated(BaseEvent):
+    """Egress proxy evaluated an outbound request."""
+
+    tool_name: ToolName
+    destination_host: str = ""
+    destination_port: int | None = None
+    allowed: bool = False
+    reason: str = ""
+    credential_placeholders: list[str] = Field(default_factory=list)
+
+
+class SessionRolledBack(BaseEvent):
+    """Session state restored to a prior checkpoint."""
+
+    checkpoint_id: str = ""
+
+
 # Union of all event types for type-safe handling
 type AnyEvent = (
     SessionCreated
@@ -202,6 +234,10 @@ type AnyEvent = (
     | TaskScheduled
     | TaskTriggered
     | OutputFirewallAlert
+    | SandboxDegraded
+    | SandboxEscapeDetected
+    | ProxyRequestEvaluated
+    | SessionRolledBack
 )
 
 EVENT_TYPES: dict[str, type[BaseEvent]] = {
@@ -224,6 +260,10 @@ EVENT_TYPES: dict[str, type[BaseEvent]] = {
     "TaskScheduled": TaskScheduled,
     "TaskTriggered": TaskTriggered,
     "OutputFirewallAlert": OutputFirewallAlert,
+    "SandboxDegraded": SandboxDegraded,
+    "SandboxEscapeDetected": SandboxEscapeDetected,
+    "ProxyRequestEvaluated": ProxyRequestEvaluated,
+    "SessionRolledBack": SessionRolledBack,
 }
 
 

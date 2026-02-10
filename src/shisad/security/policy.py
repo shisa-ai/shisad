@@ -68,6 +68,18 @@ class RateLimitPolicy(BaseModel):
     burst_window_seconds: int | None = None
 
 
+class SandboxPolicy(BaseModel):
+    """Sandbox policy defaults and per-tool overrides."""
+
+    default_backend: str = "nsjail"
+    network_backend: str = "container"
+    fail_closed_security_critical: bool = True
+    tool_overrides: dict[ToolName, str] = Field(default_factory=dict)
+    env_allowlist: list[str] = Field(default_factory=lambda: ["PATH", "LANG", "TERM", "HOME"])
+    env_max_keys: int = 32
+    env_max_total_bytes: int = 8192
+
+
 class PolicyBundle(BaseModel):
     """Top-level policy bundle matching docs/SECURITY.md Section 4.2."""
 
@@ -96,6 +108,7 @@ class PolicyBundle(BaseModel):
     # M2 controls
     risk_policy: RiskPolicy = Field(default_factory=RiskPolicy)
     rate_limits: RateLimitPolicy = Field(default_factory=RateLimitPolicy)
+    sandbox: SandboxPolicy = Field(default_factory=SandboxPolicy)
     yara_required: bool = False
     safe_output_domains: list[str] = Field(default_factory=list)
 

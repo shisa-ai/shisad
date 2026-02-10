@@ -135,15 +135,15 @@ class ModelConfig(BaseSettings):
 
     # Provider
     base_url: str = Field(
-        default="https://api.openai.com/v1",
+        default="https://api.shisa.ai/openai/v1",
         description="Base URL for the OpenAI-compatible API",
     )
     model_id: str = Field(
-        default="gpt-4o",
+        default="shisa-ai/shisa-v2.1-unphi4-14b",
         description="Model identifier (provider/model format)",
     )
     planner_model_id: str = Field(
-        default="gpt-4o",
+        default="shisa-ai/shisa-v2.1-unphi4-14b",
         description="Model ID for planner component",
     )
     embeddings_model_id: str = Field(
@@ -151,8 +151,12 @@ class ModelConfig(BaseSettings):
         description="Model ID for embeddings component",
     )
     monitor_model_id: str = Field(
-        default="gpt-4o-mini",
+        default="shisa-ai/shisa-v2.1-unphi4-14b",
         description="Model ID for monitor component",
+    )
+    api_key: str | None = Field(
+        default=None,
+        description="Optional API key override (falls back to SHISA_API_KEY).",
     )
 
     planner_base_url: str | None = Field(

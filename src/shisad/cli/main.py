@@ -218,6 +218,35 @@ def session_restore(checkpoint_id: str) -> None:
     asyncio.run(_restore())
 
 
+@session.command("rollback")
+@click.argument("checkpoint_id")
+def session_rollback(checkpoint_id: str) -> None:
+    """Rollback a session to a checkpoint ID."""
+    config = _get_config()
+
+    async def _rollback() -> None:
+        from shisad.core.api.transport import ControlClient
+
+        client = ControlClient(config.socket_path)
+        try:
+            await client.connect()
+            result = await client.call("session.rollback", {"checkpoint_id": checkpoint_id})
+            if result.get("rolled_back"):
+                click.echo(
+                    f"Rolled back session {result.get('session_id')} to checkpoint {checkpoint_id}"
+                )
+            else:
+                click.echo(f"Checkpoint not found: {checkpoint_id}", err=True)
+                sys.exit(1)
+        except Exception as e:
+            click.echo(f"Error: {e}", err=True)
+            sys.exit(1)
+        finally:
+            await client.close()
+
+    asyncio.run(_rollback())
+
+
 # --- Audit commands ---
 
 
