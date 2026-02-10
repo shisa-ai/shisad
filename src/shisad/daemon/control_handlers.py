@@ -83,6 +83,7 @@ from shisad.security.control_plane.engine import ControlPlaneEngine
 from shisad.security.control_plane.schema import (
     ActionKind,
     ControlDecision,
+    ControlPlaneAction,
     Origin,
     RiskTier,
     build_action,
@@ -155,6 +156,7 @@ class PendingAction:
     reason: str
     capabilities: set[Capability]
     created_at: datetime
+    preflight_action: ControlPlaneAction | None = None
     status: str = "pending"
     status_reason: str = ""
 
@@ -495,7 +497,7 @@ class DaemonControlHandlers:
 
     @staticmethod
     def _pending_to_dict(pending: PendingAction) -> dict[str, Any]:
-        return {
+        payload: dict[str, Any] = {
             "confirmation_id": pending.confirmation_id,
             "session_id": str(pending.session_id),
             "user_id": str(pending.user_id),
@@ -508,6 +510,9 @@ class DaemonControlHandlers:
             "status": pending.status,
             "status_reason": pending.status_reason,
         }
+        if pending.preflight_action is not None:
+            payload["preflight_action"] = pending.preflight_action.model_dump(mode="json")
+        return payload
 
     def _queue_pending_action(
         self,
@@ -519,6 +524,7 @@ class DaemonControlHandlers:
         arguments: dict[str, Any],
         reason: str,
         capabilities: set[Capability],
+        preflight_action: ControlPlaneAction | None = None,
     ) -> PendingAction:
         confirmation_id = uuid.uuid4().hex
         pending = PendingAction(
@@ -531,6 +537,7 @@ class DaemonControlHandlers:
             reason=reason,
             capabilities=set(capabilities),
             created_at=datetime.now(UTC),
+            preflight_action=preflight_action,
         )
         self._pending_actions[confirmation_id] = pending
         self._pending_by_session.setdefault(session_id, []).append(confirmation_id)
@@ -560,6 +567,12 @@ class DaemonControlHandlers:
                     continue
                 created_at = datetime.fromisoformat(str(item.get("created_at", "")).strip())
                 session_id = SessionId(str(item.get("session_id", "")))
+                preflight_action_payload = item.get("preflight_action")
+                preflight_action = (
+                    ControlPlaneAction.model_validate(preflight_action_payload)
+                    if isinstance(preflight_action_payload, dict)
+                    else None
+                )
                 pending = PendingAction(
                     confirmation_id=confirmation_id,
                     session_id=session_id,
@@ -574,6 +587,7 @@ class DaemonControlHandlers:
                         if str(cap)
                     },
                     created_at=created_at,
+                    preflight_action=preflight_action,
                     status=str(item.get("status", "pending")),
                     status_reason=str(item.get("status_reason", "")),
                 )
@@ -635,6 +649,7 @@ class DaemonControlHandlers:
         arguments: dict[str, Any],
         capabilities: set[Capability],
         approval_actor: str,
+        execution_action: ControlPlaneAction | None = None,
     ) -> tuple[bool, str | None]:
         session = self._session_manager.get(sid)
         if session is None:
@@ -645,7 +660,7 @@ class DaemonControlHandlers:
             actor=approval_actor,
             skill_name=str(arguments.get("skill_name") or "").strip(),
         )
-        executed_action = build_action(
+        executed_action = execution_action or build_action(
             tool_name=str(tool_name),
             arguments=dict(arguments),
             origin=origin,
@@ -1226,6 +1241,7 @@ class DaemonControlHandlers:
                     arguments=proposal.arguments,
                     reason=final_reason or "requires_confirmation",
                     capabilities=effective_caps,
+                    preflight_action=cp_eval.action,
                 )
                 pending_confirmation_ids.append(pending.confirmation_id)
                 await self._event_bus.publish(
@@ -1248,6 +1264,7 @@ class DaemonControlHandlers:
                 arguments=proposal.arguments,
                 capabilities=effective_caps,
                 approval_actor="policy_loop",
+                execution_action=cp_eval.action,
             )
             if checkpoint_id:
                 checkpoint_ids.append(checkpoint_id)
@@ -1668,6 +1685,7 @@ class DaemonControlHandlers:
                 arguments=dict(params),
                 reason=reason,
                 capabilities=effective_caps,
+                preflight_action=cp_eval.action,
             )
             await self._event_bus.publish(
                 ToolRejected(
@@ -2166,6 +2184,7 @@ class DaemonControlHandlers:
                 "reason": "session_missing",
             }
 
+        pending_preflight_action = pending.preflight_action
         stage2_reason = "stage2_upgrade_required" in pending.reason
         if stage2_reason:
             if not bool(self._policy_loader.policy.control_plane.trace.allow_amendment):
@@ -2177,7 +2196,7 @@ class DaemonControlHandlers:
                     "confirmation_id": confirmation_id,
                     "reason": "plan_amendment_disabled",
                 }
-            approved_action = build_action(
+            approved_action = pending_preflight_action or build_action(
                 tool_name=str(pending.tool_name),
                 arguments=dict(pending.arguments),
                 origin=self._origin_for(session=session, actor="human_confirmation"),
@@ -2205,6 +2224,7 @@ class DaemonControlHandlers:
             arguments=pending.arguments,
             capabilities=set(pending.capabilities),
             approval_actor="human_confirmation",
+            execution_action=pending_preflight_action,
         )
         pending.status = "approved" if success else "failed"
         pending.status_reason = str(params.get("reason", "")).strip() or pending.status

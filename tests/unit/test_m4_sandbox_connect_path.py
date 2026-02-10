@@ -4,7 +4,11 @@ from __future__ import annotations
 
 import sys
 
-from shisad.executors.connect_path import ConnectPathResult, NoopConnectPathProxy
+from shisad.executors.connect_path import (
+    ConnectPathResult,
+    IptablesConnectPathProxy,
+    NoopConnectPathProxy,
+)
 from shisad.executors.proxy import EgressProxy, NetworkPolicy
 from shisad.executors.sandbox import (
     DegradedModePolicy,
@@ -98,3 +102,22 @@ def test_m5_rt12_connect_path_uses_runtime_process_pid() -> None:
     assert result.allowed is True
     assert proxy.namespace_pids
     assert all(pid > 0 for pid in proxy.namespace_pids)
+
+
+def test_m5_rt13_connect_path_refuses_host_namespace(monkeypatch) -> None:
+    proxy = IptablesConnectPathProxy(net_admin_available=True)
+    proxy._iptables = "/usr/sbin/iptables"
+    proxy._nsenter = "/usr/bin/nsenter"
+    calls: list[list[str]] = []
+
+    def _fake_run(namespace_pid: int, args: list[str]) -> None:
+        _ = namespace_pid
+        calls.append(list(args))
+
+    monkeypatch.setattr(proxy, "_is_isolated_namespace", lambda namespace_pid: False)
+    monkeypatch.setattr(proxy, "_run", _fake_run)
+
+    result = proxy.enforce(allowed_ips=["93.184.216.34"], namespace_pid=1234)
+    assert result.enforced is False
+    assert result.reason == "host_namespace_unsafe"
+    assert calls == []

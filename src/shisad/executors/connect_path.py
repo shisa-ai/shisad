@@ -28,6 +28,7 @@ class IptablesConnectPathProxy:
     def __init__(self, *, net_admin_available: bool | None = None) -> None:
         self._iptables = shutil.which("iptables") or ""
         self._nsenter = shutil.which("nsenter") or ""
+        self._daemon_netns_signature = self._namespace_signature(os.getpid())
         self._net_admin_available = (
             self.detect_net_admin_capability()
             if net_admin_available is None
@@ -57,6 +58,12 @@ class IptablesConnectPathProxy:
                 method="iptables",
                 reason="invalid_namespace_pid",
             )
+        if not self._is_isolated_namespace(namespace_pid):
+            return ConnectPathResult(
+                enforced=False,
+                method="iptables",
+                reason="host_namespace_unsafe",
+            )
 
         unique_ips = sorted({ip.strip() for ip in allowed_ips if ip.strip()})
         if not unique_ips:
@@ -80,6 +87,22 @@ class IptablesConnectPathProxy:
             )
 
         return ConnectPathResult(enforced=True, method="iptables", reason="enforced")
+
+    def _is_isolated_namespace(self, namespace_pid: int) -> bool:
+        target_signature = self._namespace_signature(namespace_pid)
+        if not target_signature:
+            return False
+        daemon_signature = self._daemon_netns_signature or self._namespace_signature(os.getpid())
+        if not daemon_signature:
+            return False
+        return target_signature != daemon_signature
+
+    @staticmethod
+    def _namespace_signature(pid: int) -> str:
+        try:
+            return os.readlink(f"/proc/{pid}/ns/net")
+        except OSError:
+            return ""
 
     def _run(self, namespace_pid: int, args: list[str]) -> None:
         cmd = [

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import sys
 from contextlib import suppress
@@ -339,6 +340,47 @@ async def test_m5_rt2_policy_explain_includes_control_plane_section(
         await _shutdown(daemon_task, client)
 
 
+@pytest.mark.asyncio
+async def test_m5_rt3_session_message_execution_reuses_preflight_action_timestamp(
+    model_env: None,
+    tmp_path: Path,
+) -> None:
+    daemon_task, client = await _start_daemon_with_policy(tmp_path)
+    try:
+        created = await client.call("session.create", {"channel": "cli"})
+        sid = created["session_id"]
+        response = await client.call(
+            "session.message",
+            {"session_id": sid, "content": "retrieve: recent security incidents"},
+        )
+        assert response["executed_actions"] >= 1
+
+        history_path = tmp_path / "data" / "control_plane" / "history.jsonl"
+        assert history_path.exists()
+        grouped_statuses: dict[tuple[str, str, str, str], set[str]] = {}
+        for line in history_path.read_text(encoding="utf-8").splitlines():
+            payload = json.loads(line)
+            if str(payload.get("session_id", "")) != sid:
+                continue
+            key = (
+                str(payload.get("timestamp", "")),
+                str(payload.get("action_kind", "")),
+                str(payload.get("resource_id", "")),
+                str(payload.get("tool_name", "")),
+            )
+            statuses = grouped_statuses.setdefault(key, set())
+            if str(payload.get("decision_status", "")).strip():
+                statuses.add("decision")
+            if str(payload.get("execution_status", "")).strip():
+                statuses.add("execution")
+        assert any(
+            {"decision", "execution"}.issubset(statuses)
+            for statuses in grouped_statuses.values()
+        )
+    finally:
+        await _shutdown(daemon_task, client)
+
+
 @pytest.mark.requires_cap_net_admin
 def test_m5_t22_privileged_connect_path_marker_and_ci_semantics(
     monkeypatch: pytest.MonkeyPatch,
@@ -356,6 +398,7 @@ def test_m5_t22_privileged_connect_path_marker_and_ci_semantics(
         calls.append(list(args))
 
     monkeypatch.setattr(proxy, "_run", _fake_run)
+    monkeypatch.setattr(proxy, "_is_isolated_namespace", lambda namespace_pid: True)
     result = proxy.enforce(allowed_ips=["93.184.216.34"], namespace_pid=os.getpid())
     assert result.enforced is True
     assert result.method == "iptables"
