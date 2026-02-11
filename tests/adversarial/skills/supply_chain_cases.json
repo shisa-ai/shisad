@@ -1,0 +1,12 @@
+[
+  {
+    "id": "skill-1",
+    "manifest": "name: typosquat\nversion: 1.0.0\n",
+    "notes": "Contains hidden payload in non-SKILL file"
+  },
+  {
+    "id": "skill-2",
+    "manifest": "name: maintainer-compromise\nversion: 1.0.1\n",
+    "notes": "Dependency confusion attempt"
+  }
+]

@@ -7,8 +7,8 @@ import base64
 import hashlib
 import json
 import uuid
-from dataclasses import dataclass
-from datetime import UTC, datetime
+from dataclasses import dataclass, field
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -20,6 +20,7 @@ from shisad.channels.matrix import MatrixChannel
 from shisad.core.audit import AuditLog
 from shisad.core.config import DaemonConfig
 from shisad.core.events import (
+    AnomalyReported,
     ConsensusEvaluated,
     ControlPlaneActionObserved,
     ControlPlaneNetworkObserved,
@@ -41,6 +42,10 @@ from shisad.core.events import (
     SessionMessageReceived,
     SessionMessageResponded,
     SessionRolledBack,
+    SkillInstalled,
+    SkillProfiled,
+    SkillReviewRequested,
+    SkillRevoked,
     TaskScheduled,
     TaskTriggered,
     ToolApproved,
@@ -91,15 +96,25 @@ from shisad.security.control_plane.schema import (
 )
 from shisad.security.firewall import ContentFirewall, FirewallResult
 from shisad.security.firewall.output import OutputFirewall
+from shisad.security.leakcheck import CrossThreadLeakDetector
 from shisad.security.lockdown import LockdownManager
 from shisad.security.monitor import ActionMonitor, MonitorDecisionType, combine_monitor_with_policy
 from shisad.security.pep import PolicyContext
 from shisad.security.policy import PolicyLoader
 from shisad.security.ratelimit import RateLimiter
+from shisad.security.reputation import ReputationScorer
 from shisad.security.risk import RiskCalibrator, RiskObservation
 from shisad.security.spotlight import render_spotlight_context
 from shisad.skills.manager import SkillManager
+from shisad.skills.manifest import parse_manifest
 from shisad.skills.sandbox import SkillExecutionRequest
+from shisad.ui.confirmation import (
+    ConfirmationAnalytics,
+    ConfirmationWarningGenerator,
+    render_structured_confirmation,
+    safe_summary,
+)
+from shisad.ui.dashboard import DashboardQuery, SecurityDashboard
 
 _SIDE_EFFECT_CAPABILITIES: set[Capability] = {
     Capability.EMAIL_WRITE,
@@ -112,6 +127,8 @@ _SIDE_EFFECT_CAPABILITIES: set[Capability] = {
 }
 _SIDE_EFFECT_TOOL_NAMES: set[str] = {"report_anomaly"}
 _MONITOR_REJECT_THRESHOLD = 3
+_HIGH_RISK_CONFIRM_TOKENS: tuple[str, ...] = ("send", "share", "delete")
+_CONFIRMATION_ALERT_COOLDOWN_SECONDS = 600
 
 
 def _is_side_effect_tool(tool: ToolDefinition) -> bool:
@@ -148,6 +165,7 @@ def _risk_tier_from_score(score: float) -> RiskTier:
 @dataclass(slots=True)
 class PendingAction:
     confirmation_id: str
+    decision_nonce: str
     session_id: SessionId
     user_id: UserId
     workspace_id: WorkspaceId
@@ -157,6 +175,10 @@ class PendingAction:
     capabilities: set[Capability]
     created_at: datetime
     preflight_action: ControlPlaneAction | None = None
+    execute_after: datetime | None = None
+    safe_preview: str = ""
+    warnings: list[str] = field(default_factory=list)
+    leak_check: dict[str, Any] = field(default_factory=dict)
     status: str = "pending"
     status_reason: str = ""
 
@@ -237,7 +259,109 @@ class DaemonControlHandlers:
         self._pending_by_session: dict[SessionId, list[str]] = {}
         self._monitor_reject_counts: dict[SessionId, int] = {}
         self._plan_violation_counts: dict[SessionId, int] = {}
+        self._confirmation_warning_generator = ConfirmationWarningGenerator()
+        self._confirmation_analytics = ConfirmationAnalytics()
+        self._confirmation_alerted_at: dict[str, datetime] = {}
+        self._leak_detector = CrossThreadLeakDetector()
+        self._reputation_scorer = ReputationScorer(submission_limit=20)
+        self._dashboard = SecurityDashboard(
+            audit_log=self._audit_log,
+            marks_path=self._config.data_dir / "dashboard" / "false_positives.json",
+        )
         self._load_pending_actions()
+
+    @staticmethod
+    def _load_skill_manifest(skill_path: Path) -> Any | None:
+        manifest_path = skill_path / "skill.manifest.yaml"
+        if not manifest_path.exists():
+            return None
+        try:
+            return parse_manifest(manifest_path)
+        except Exception:
+            return None
+
+    def _skill_reputation(
+        self,
+        *,
+        manifest: Any | None,
+        signature_status: str,
+        findings: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        positives: list[str] = []
+        negatives: list[str] = []
+        if manifest is not None:
+            source_repo = str(getattr(manifest, "source_repo", "")).lower().strip()
+            author = str(getattr(manifest, "author", "")).strip()
+            description = str(getattr(manifest, "description", "")).lower()
+            capabilities = getattr(manifest, "capabilities", None)
+            if source_repo.startswith("https://github.com/") or source_repo.startswith(
+                "git@github.com:"
+            ):
+                positives.append("verified_repo")
+            if author:
+                positives.append("verified_author")
+            if "audit" in description:
+                positives.append("audited")
+            if capabilities is not None:
+                if list(getattr(capabilities, "shell", []) or []):
+                    negatives.append("shell_access")
+                if list(getattr(capabilities, "network", []) or []):
+                    negatives.append("network_egress")
+        if signature_status.lower() in {"trusted", "untrusted"}:
+            positives.append("signed")
+        for finding in findings:
+            code = str(finding.get("code", "")).lower()
+            description = str(finding.get("description", "")).lower()
+            if "obfus" in code or "obfus" in description:
+                negatives.append("obfuscated")
+                break
+        result = self._reputation_scorer.score(
+            positive=sorted(set(positives)),
+            negative=sorted(set(negatives)),
+        )
+        return {
+            "score": result.score,
+            "tier": result.tier,
+            "breakdown": result.breakdown,
+            "positive_signals": sorted(set(positives)),
+            "negative_signals": sorted(set(negatives)),
+        }
+
+    async def _maybe_emit_confirmation_hygiene_alert(
+        self,
+        *,
+        user_id: str,
+        session_id: SessionId,
+    ) -> None:
+        metrics = self._confirmation_analytics.metrics(user_id=user_id)
+        if not (metrics.get("rubber_stamping") or metrics.get("fatigue_detected")):
+            return
+        now = datetime.now(UTC)
+        last = self._confirmation_alerted_at.get(user_id)
+        if (
+            last is not None
+            and (now - last).total_seconds() < _CONFIRMATION_ALERT_COOLDOWN_SECONDS
+        ):
+            return
+        reasons: list[str] = []
+        if metrics.get("rubber_stamping"):
+            reasons.append("rubber_stamping")
+        if metrics.get("fatigue_detected"):
+            reasons.append("fatigue_detected")
+        await self._event_bus.publish(
+            AnomalyReported(
+                session_id=session_id,
+                actor="confirmation_analytics",
+                severity="warning",
+                description=(
+                    "confirmation hygiene degraded: " + ",".join(reasons)
+                    if reasons
+                    else "confirmation hygiene degraded"
+                ),
+                recommended_action="review confirmations and reduce approval fatigue",
+            )
+        )
+        self._confirmation_alerted_at[user_id] = now
 
     def _compute_tool_policy_floor(
         self,
@@ -499,6 +623,7 @@ class DaemonControlHandlers:
     def _pending_to_dict(pending: PendingAction) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "confirmation_id": pending.confirmation_id,
+            "decision_nonce": pending.decision_nonce,
             "session_id": str(pending.session_id),
             "user_id": str(pending.user_id),
             "workspace_id": str(pending.workspace_id),
@@ -507,12 +632,48 @@ class DaemonControlHandlers:
             "reason": pending.reason,
             "capabilities": sorted(cap.value for cap in pending.capabilities),
             "created_at": pending.created_at.isoformat(),
+            "execute_after": pending.execute_after.isoformat() if pending.execute_after else "",
+            "safe_preview": pending.safe_preview,
+            "warnings": list(pending.warnings),
+            "leak_check": dict(pending.leak_check),
             "status": pending.status,
             "status_reason": pending.status_reason,
         }
         if pending.preflight_action is not None:
             payload["preflight_action"] = pending.preflight_action.model_dump(mode="json")
         return payload
+
+    @staticmethod
+    def _is_high_risk_confirmation(tool_name: ToolName, arguments: dict[str, Any]) -> bool:
+        lowered = str(tool_name).lower()
+        if any(token in lowered for token in _HIGH_RISK_CONFIRM_TOKENS):
+            return True
+        candidate = str(
+            arguments.get("to")
+            or arguments.get("recipient")
+            or arguments.get("destination")
+            or arguments.get("url")
+            or ""
+        ).lower()
+        return bool(
+            candidate and ("http://" in candidate or "https://" in candidate or "@" in candidate)
+        )
+
+    def _session_source_text_by_id(self, session_id: SessionId) -> dict[str, str]:
+        source_text: dict[str, str] = {}
+        for entry in self._transcript_store.list_entries(session_id):
+            if entry.role != "user":
+                continue
+            source_text[entry.content_hash] = entry.content_preview
+        return source_text
+
+    @staticmethod
+    def _extract_outbound_text(arguments: dict[str, Any]) -> str:
+        for key in ("body", "content", "message", "text", "request_body"):
+            value = arguments.get(key)
+            if isinstance(value, str) and value.strip():
+                return value
+        return ""
 
     def _queue_pending_action(
         self,
@@ -525,10 +686,61 @@ class DaemonControlHandlers:
         reason: str,
         capabilities: set[Capability],
         preflight_action: ControlPlaneAction | None = None,
+        taint_labels: list[TaintLabel] | None = None,
     ) -> PendingAction:
+        created_at = datetime.now(UTC)
+        decision_nonce = uuid.uuid4().hex
         confirmation_id = uuid.uuid4().hex
+        summary = safe_summary(
+            action=str(tool_name),
+            risk_level=(
+                "high" if self._is_high_risk_confirmation(tool_name, arguments) else "medium"
+            ),
+            arguments=arguments,
+        )
+        warnings = self._confirmation_warning_generator.generate(
+            user_id=str(user_id),
+            tool_name=str(tool_name),
+            arguments=arguments,
+            taint_labels=[label.value for label in taint_labels or []],
+        )
+        leak_result_payload: dict[str, Any] = {}
+        outbound_text = self._extract_outbound_text(arguments)
+        if outbound_text:
+            leak_result = self._leak_detector.evaluate(
+                outbound_text=outbound_text,
+                source_text_by_id=self._session_source_text_by_id(session_id),
+                allowed_source_ids={
+                    str(item)
+                    for item in arguments.get("source_ids", [])
+                    if str(item).strip()
+                }
+                if isinstance(arguments.get("source_ids"), list)
+                else set(),
+                explicit_cross_thread_intent=bool(arguments.get("explicit_share_intent")),
+            )
+            leak_result_payload = {
+                "detected": leak_result.detected,
+                "overlap_score": leak_result.overlap_score,
+                "matched_source_ids": list(leak_result.matched_source_ids),
+                "reason_codes": list(leak_result.reason_codes),
+                "requires_confirmation": leak_result.requires_confirmation,
+                "detector_version": leak_result.detector_version,
+            }
+            if leak_result.detected:
+                warnings.append("Cross-thread overlap detected")
+                if leak_result.requires_confirmation:
+                    reason = (
+                        f"{reason},leakcheck:high_overlap_requires_confirmation"
+                        if reason
+                        else "leakcheck:high_overlap_requires_confirmation"
+                    )
+        execute_after: datetime | None = None
+        if self._is_high_risk_confirmation(tool_name, arguments):
+            execute_after = created_at + timedelta(seconds=3)
         pending = PendingAction(
             confirmation_id=confirmation_id,
+            decision_nonce=decision_nonce,
             session_id=session_id,
             user_id=user_id,
             workspace_id=workspace_id,
@@ -536,8 +748,12 @@ class DaemonControlHandlers:
             arguments=dict(arguments),
             reason=reason,
             capabilities=set(capabilities),
-            created_at=datetime.now(UTC),
+            created_at=created_at,
             preflight_action=preflight_action,
+            execute_after=execute_after,
+            safe_preview=render_structured_confirmation(summary, warnings=sorted(set(warnings))),
+            warnings=sorted(set(warnings)),
+            leak_check=leak_result_payload,
         )
         self._pending_actions[confirmation_id] = pending
         self._pending_by_session.setdefault(session_id, []).append(confirmation_id)
@@ -573,8 +789,13 @@ class DaemonControlHandlers:
                     if isinstance(preflight_action_payload, dict)
                     else None
                 )
+                execute_after_raw = str(item.get("execute_after", "")).strip()
+                execute_after = (
+                    datetime.fromisoformat(execute_after_raw) if execute_after_raw else None
+                )
                 pending = PendingAction(
                     confirmation_id=confirmation_id,
+                    decision_nonce=str(item.get("decision_nonce", "")) or uuid.uuid4().hex,
                     session_id=session_id,
                     user_id=UserId(str(item.get("user_id", ""))),
                     workspace_id=WorkspaceId(str(item.get("workspace_id", ""))),
@@ -588,6 +809,10 @@ class DaemonControlHandlers:
                     },
                     created_at=created_at,
                     preflight_action=preflight_action,
+                    execute_after=execute_after,
+                    safe_preview=str(item.get("safe_preview", "")),
+                    warnings=[str(value) for value in item.get("warnings", [])],
+                    leak_check=dict(item.get("leak_check", {})),
                     status=str(item.get("status", "pending")),
                     status_reason=str(item.get("status_reason", "")),
                 )
@@ -1242,6 +1467,7 @@ class DaemonControlHandlers:
                     reason=final_reason or "requires_confirmation",
                     capabilities=effective_caps,
                     preflight_action=cp_eval.action,
+                    taint_labels=list(context.taint_labels),
                 )
                 pending_confirmation_ids.append(pending.confirmation_id)
                 await self._event_bus.publish(
@@ -1250,7 +1476,7 @@ class DaemonControlHandlers:
                         actor="policy_loop",
                         tool_name=proposal.tool_name,
                         reason=(
-                            f"{final_reason or 'requires_confirmation'} "
+                            f"{pending.reason or 'requires_confirmation'} "
                             f"({pending.confirmation_id})"
                         ),
                     )
@@ -1686,13 +1912,14 @@ class DaemonControlHandlers:
                 reason=reason,
                 capabilities=effective_caps,
                 preflight_action=cp_eval.action,
+                taint_labels=[],
             )
             await self._event_bus.publish(
                 ToolRejected(
                     session_id=sid,
                     actor="control_api",
                     tool_name=tool_name,
-                    reason=f"{reason} ({pending.confirmation_id})",
+                    reason=f"{pending.reason} ({pending.confirmation_id})",
                 )
             )
             confirmation_payload = SandboxResult(
@@ -1702,6 +1929,11 @@ class DaemonControlHandlers:
             ).model_dump(mode="json")
             confirmation_payload["confirmation_required"] = True
             confirmation_payload["confirmation_id"] = pending.confirmation_id
+            confirmation_payload["decision_nonce"] = pending.decision_nonce
+            confirmation_payload["safe_preview"] = pending.safe_preview
+            confirmation_payload["warnings"] = list(pending.warnings)
+            if pending.execute_after is not None:
+                confirmation_payload["execute_after"] = pending.execute_after.isoformat()
             return confirmation_payload
 
         if cp_eval.decision == ControlDecision.BLOCK:
@@ -1944,6 +2176,94 @@ class DaemonControlHandlers:
         )
         return {"events": results, "total": len(results)}
 
+    async def handle_dashboard_audit_explorer(self, params: dict[str, Any]) -> dict[str, Any]:
+        since = AuditLog.parse_since(params.get("since"))
+        query = DashboardQuery(
+            since=since,
+            event_type=str(params.get("event_type") or "").strip() or None,
+            session_id=str(params.get("session_id") or "").strip() or None,
+            actor=str(params.get("actor") or "").strip() or None,
+            text_search=str(params.get("text_search") or ""),
+            limit=max(1, int(params.get("limit", 100))),
+        )
+        payload = self._dashboard.audit_explorer(query)
+        valid, checked, error = self._audit_log.verify_chain()
+        payload["hash_chain"] = {
+            "valid": valid,
+            "entries_checked": checked,
+            "error": error,
+        }
+        return payload
+
+    async def handle_dashboard_egress_review(self, params: dict[str, Any]) -> dict[str, Any]:
+        limit = max(1, int(params.get("limit", 200)))
+        return self._dashboard.blocked_or_flagged_egress(limit=limit)
+
+    async def handle_dashboard_skill_provenance(self, params: dict[str, Any]) -> dict[str, Any]:
+        limit = max(1, int(params.get("limit", 200)))
+        payload = self._dashboard.skill_provenance(limit=limit)
+        installed = [item.model_dump(mode="json") for item in self._skill_manager.list_installed()]
+        timeline: dict[str, dict[str, Any]] = {}
+        for row in payload.get("events", []):
+            if not isinstance(row, dict):
+                continue
+            data = row.get("data", {})
+            if not isinstance(data, dict):
+                continue
+            skill_name = str(
+                data.get("skill_name")
+                or data.get("name")
+                or ""
+            ).strip()
+            if not skill_name:
+                continue
+            bucket = timeline.setdefault(
+                skill_name,
+                {"skill_name": skill_name, "versions": [], "events": []},
+            )
+            version = str(data.get("version") or "").strip()
+            if version and version not in bucket["versions"]:
+                bucket["versions"].append(version)
+            bucket["events"].append(
+                {
+                    "event_type": row.get("event_type"),
+                    "timestamp": row.get("timestamp"),
+                    "signature_status": data.get("signature_status", ""),
+                    "capabilities": data.get("capabilities", {}),
+                    "status": data.get("status", ""),
+                }
+            )
+        payload["installed"] = installed
+        payload["timeline"] = sorted(timeline.values(), key=lambda item: item["skill_name"])
+        return payload
+
+    async def handle_dashboard_alerts(self, params: dict[str, Any]) -> dict[str, Any]:
+        limit = max(1, int(params.get("limit", 200)))
+        return self._dashboard.alerts(limit=limit)
+
+    async def handle_dashboard_mark_false_positive(self, params: dict[str, Any]) -> dict[str, Any]:
+        event_id = str(params.get("event_id", "")).strip()
+        if not event_id:
+            raise ValueError("event_id is required")
+        reason = str(params.get("reason", "false_positive")).strip() or "false_positive"
+        self._dashboard.mark_false_positive(event_id=event_id, reason=reason)
+        return {"marked": True, "event_id": event_id, "reason": reason}
+
+    async def handle_confirmation_metrics(self, params: dict[str, Any]) -> dict[str, Any]:
+        window_seconds = max(60, int(params.get("window_seconds", 900)))
+        requested_user = str(params.get("user_id") or "").strip()
+        if requested_user:
+            metrics = self._confirmation_analytics.metrics(
+                user_id=requested_user,
+                window_seconds=window_seconds,
+            )
+            return {"metrics": [metrics], "count": 1}
+        rows = [
+            self._confirmation_analytics.metrics(user_id=user, window_seconds=window_seconds)
+            for user in self._confirmation_analytics.users()
+        ]
+        return {"metrics": rows, "count": len(rows)}
+
     async def handle_memory_ingest(self, params: dict[str, Any]) -> dict[str, Any]:
         result = self._ingestion.ingest(
             source_id=params.get("source_id", ""),
@@ -2012,28 +2332,172 @@ class DaemonControlHandlers:
             "reencrypt_existing": reencrypt_existing,
         }
 
+    async def handle_skill_list(self, params: dict[str, Any]) -> dict[str, Any]:
+        _ = params
+        skills = [item.model_dump(mode="json") for item in self._skill_manager.list_installed()]
+        return {"skills": skills, "count": len(skills)}
+
     async def handle_skill_review(self, params: dict[str, Any]) -> dict[str, Any]:
         skill_path = Path(str(params.get("skill_path", "")).strip())
         if not skill_path.exists():
             raise ValueError(f"skill path not found: {skill_path}")
-        return self._skill_manager.review(skill_path)
+        result = self._skill_manager.review(skill_path)
+        manifest = self._load_skill_manifest(skill_path)
+        findings = [item for item in result.get("findings", []) if isinstance(item, dict)]
+        signature_status = str(result.get("signature", ""))
+        reputation = self._skill_reputation(
+            manifest=manifest,
+            signature_status=signature_status,
+            findings=findings,
+        )
+        result["reputation"] = reputation
+        manifest_payload = result.get("manifest", {})
+        if not isinstance(manifest_payload, dict):
+            manifest_payload = {}
+        await self._event_bus.publish(
+            SkillReviewRequested(
+                session_id=None,
+                actor="skill_manager",
+                skill_name=str(manifest_payload.get("name", "")),
+                version=str(manifest_payload.get("version", "")),
+                source_repo=str(manifest_payload.get("source_repo", "")),
+                signature_status=signature_status,
+                findings_count=len(findings),
+            )
+        )
+        return result
 
     async def handle_skill_install(self, params: dict[str, Any]) -> dict[str, Any]:
         skill_path = Path(str(params.get("skill_path", "")).strip())
         if not skill_path.exists():
             raise ValueError(f"skill path not found: {skill_path}")
+        manifest = self._load_skill_manifest(skill_path)
+        author_id = str(getattr(manifest, "author", "")).strip() or "unknown"
+        if not self._reputation_scorer.can_submit(author_id=author_id):
+            manifest_hash = manifest.manifest_hash() if manifest is not None else ""
+            reputation = self._skill_reputation(
+                manifest=manifest,
+                signature_status="unknown",
+                findings=[],
+            )
+            payload = {
+                "allowed": False,
+                "status": "review",
+                "reason": "submission_rate_limited",
+                "findings": [],
+                "summary": "Submission temporarily rate-limited for this author.",
+                "artifact_state": "review",
+                "reputation": reputation,
+            }
+            await self._event_bus.publish(
+                SkillInstalled(
+                    session_id=None,
+                    actor="skill_manager",
+                    skill_name=str(getattr(manifest, "name", "")),
+                    version=str(getattr(manifest, "version", "")),
+                    source_repo=str(getattr(manifest, "source_repo", "")),
+                    manifest_hash=manifest_hash,
+                    status="rate_limited",
+                    allowed=False,
+                    signature_status="unknown",
+                    findings_count=0,
+                    artifact_state="review",
+                )
+            )
+            return payload
+
         decision = await self._skill_manager.install(
             skill_path,
             approve_untrusted=bool(params.get("approve_untrusted", False)),
         )
-        return decision.model_dump(mode="json")
+        self._reputation_scorer.record_submission(author_id=author_id)
+        payload = decision.model_dump(mode="json")
+        raw_findings = payload.get("findings")
+        findings = [
+            item for item in raw_findings if isinstance(item, dict)
+        ] if isinstance(raw_findings, list) else []
+        reputation = self._skill_reputation(
+            manifest=manifest,
+            signature_status="trusted" if decision.allowed else "unknown",
+            findings=findings,
+        )
+        payload["reputation"] = reputation
+        manifest_hash = manifest.manifest_hash() if manifest is not None else ""
+        await self._event_bus.publish(
+            SkillInstalled(
+                session_id=None,
+                actor="skill_manager",
+                skill_name=str(getattr(manifest, "name", "")),
+                version=str(getattr(manifest, "version", "")),
+                source_repo=str(getattr(manifest, "source_repo", "")),
+                manifest_hash=manifest_hash,
+                status=str(payload.get("status", "")),
+                allowed=bool(payload.get("allowed", False)),
+                signature_status="trusted" if decision.allowed else "unknown",
+                findings_count=len(findings),
+                artifact_state=str(payload.get("artifact_state", "")),
+            )
+        )
+        return payload
 
     async def handle_skill_profile(self, params: dict[str, Any]) -> dict[str, Any]:
         skill_path = Path(str(params.get("skill_path", "")).strip())
         if not skill_path.exists():
             raise ValueError(f"skill path not found: {skill_path}")
         profile = self._skill_manager.profile(skill_path)
-        return profile.profile.to_json()
+        payload = profile.profile.to_json()
+        manifest = self._load_skill_manifest(skill_path)
+        await self._event_bus.publish(
+            SkillProfiled(
+                session_id=None,
+                actor="skill_manager",
+                skill_name=str(getattr(manifest, "name", "")),
+                version=str(getattr(manifest, "version", "")),
+                capabilities={
+                    "network": [str(item.get("domain", "")) for item in payload.get("network", [])],
+                    "filesystem": [
+                        str(item.get("path", ""))
+                        for item in payload.get("filesystem", [])
+                    ],
+                    "shell": [str(item.get("command", "")) for item in payload.get("shell", [])],
+                    "environment": [
+                        str(item.get("var", ""))
+                        for item in payload.get("environment", [])
+                    ],
+                },
+            )
+        )
+        return payload
+
+    async def handle_skill_revoke(self, params: dict[str, Any]) -> dict[str, Any]:
+        skill_name = str(params.get("skill_name", "")).strip()
+        if not skill_name:
+            raise ValueError("skill_name is required")
+        reason = str(params.get("reason", "security_revoke")).strip() or "security_revoke"
+        existing = next(
+            (item for item in self._skill_manager.list_installed() if item.name == skill_name),
+            None,
+        )
+        if existing is None:
+            return {"revoked": False, "skill_name": skill_name, "reason": "not_found"}
+        updated = self._skill_manager.revoke(skill_name=skill_name, reason=reason)
+        if updated is None:
+            return {"revoked": False, "skill_name": skill_name, "reason": "not_found"}
+        await self._event_bus.publish(
+            SkillRevoked(
+                session_id=None,
+                actor="skill_manager",
+                skill_name=skill_name,
+                reason=reason,
+                previous_state=existing.state.value,
+            )
+        )
+        return {
+            "revoked": True,
+            "skill_name": skill_name,
+            "reason": reason,
+            "state": updated.state.value,
+        }
 
     async def handle_task_create(self, params: dict[str, Any]) -> dict[str, Any]:
         schedule = Schedule.model_validate(params.get("schedule", {}))
@@ -2128,6 +2592,7 @@ class DaemonControlHandlers:
         session_filter = str(params.get("session_id") or "").strip()
         status_filter = str(params.get("status") or "").strip().lower()
         limit = int(params.get("limit", 100))
+        include_ui = bool(params.get("include_ui", True))
 
         pending_items = list(self._pending_actions.values())
         pending_items.sort(key=lambda item: item.created_at, reverse=True)
@@ -2137,24 +2602,48 @@ class DaemonControlHandlers:
                 continue
             if status_filter and item.status.lower() != status_filter:
                 continue
-            rows.append(self._pending_to_dict(item))
+            payload = self._pending_to_dict(item)
+            if not include_ui:
+                payload.pop("safe_preview", None)
+                payload.pop("warnings", None)
+                payload.pop("leak_check", None)
+            rows.append(payload)
             if len(rows) >= limit:
                 break
         return {"actions": rows, "count": len(rows)}
 
     async def handle_action_confirm(self, params: dict[str, Any]) -> dict[str, Any]:
+        batch_ids = params.get("confirmation_ids")
+        if isinstance(batch_ids, list) and len(batch_ids) > 1:
+            return {"confirmed": False, "reason": "batch_confirmation_not_allowed"}
         confirmation_id = str(params.get("confirmation_id", "")).strip()
         if not confirmation_id:
             raise ValueError("confirmation_id is required")
         pending = self._pending_actions.get(confirmation_id)
         if pending is None:
             return {"confirmed": False, "confirmation_id": confirmation_id, "reason": "not_found"}
+        provided_nonce = str(params.get("decision_nonce", "")).strip()
+        if provided_nonce and provided_nonce != pending.decision_nonce:
+            return {
+                "confirmed": False,
+                "confirmation_id": confirmation_id,
+                "reason": "invalid_decision_nonce",
+            }
         if pending.status != "pending":
             return {
                 "confirmed": False,
                 "confirmation_id": confirmation_id,
                 "reason": f"already_{pending.status}",
             }
+        if pending.execute_after is not None:
+            remaining = (pending.execute_after - datetime.now(UTC)).total_seconds()
+            if remaining > 0:
+                return {
+                    "confirmed": False,
+                    "confirmation_id": confirmation_id,
+                    "reason": "cooldown_active",
+                    "retry_after_seconds": round(remaining, 3),
+                }
         if self._lockdown_manager.should_block_all_actions(pending.session_id):
             pending.status = "rejected"
             pending.status_reason = "session_in_lockdown"
@@ -2167,6 +2656,15 @@ class DaemonControlHandlers:
                 )
             )
             self._persist_pending_actions()
+            self._confirmation_analytics.record(
+                user_id=str(pending.user_id),
+                decision="reject",
+                created_at=pending.created_at,
+            )
+            await self._maybe_emit_confirmation_hygiene_alert(
+                user_id=str(pending.user_id),
+                session_id=pending.session_id,
+            )
             return {
                 "confirmed": False,
                 "confirmation_id": confirmation_id,
@@ -2178,6 +2676,15 @@ class DaemonControlHandlers:
             pending.status = "failed"
             pending.status_reason = "session_missing"
             self._persist_pending_actions()
+            self._confirmation_analytics.record(
+                user_id=str(pending.user_id),
+                decision="reject",
+                created_at=pending.created_at,
+            )
+            await self._maybe_emit_confirmation_hygiene_alert(
+                user_id=str(pending.user_id),
+                session_id=pending.session_id,
+            )
             return {
                 "confirmed": False,
                 "confirmation_id": confirmation_id,
@@ -2191,6 +2698,15 @@ class DaemonControlHandlers:
                 pending.status = "rejected"
                 pending.status_reason = "plan_amendment_disabled"
                 self._persist_pending_actions()
+                self._confirmation_analytics.record(
+                    user_id=str(pending.user_id),
+                    decision="reject",
+                    created_at=pending.created_at,
+                )
+                await self._maybe_emit_confirmation_hygiene_alert(
+                    user_id=str(pending.user_id),
+                    session_id=pending.session_id,
+                )
                 return {
                     "confirmed": False,
                     "confirmation_id": confirmation_id,
@@ -2229,9 +2745,19 @@ class DaemonControlHandlers:
         pending.status = "approved" if success else "failed"
         pending.status_reason = str(params.get("reason", "")).strip() or pending.status
         self._persist_pending_actions()
+        self._confirmation_analytics.record(
+            user_id=str(pending.user_id),
+            decision="approve" if success else "reject",
+            created_at=pending.created_at,
+        )
+        await self._maybe_emit_confirmation_hygiene_alert(
+            user_id=str(pending.user_id),
+            session_id=pending.session_id,
+        )
         return {
             "confirmed": success,
             "confirmation_id": confirmation_id,
+            "decision_nonce": pending.decision_nonce,
             "status": pending.status,
             "status_reason": pending.status_reason,
             "checkpoint_id": checkpoint_id,
@@ -2256,6 +2782,15 @@ class DaemonControlHandlers:
             )
         )
         self._persist_pending_actions()
+        self._confirmation_analytics.record(
+            user_id=str(pending.user_id),
+            decision="reject",
+            created_at=pending.created_at,
+        )
+        await self._maybe_emit_confirmation_hygiene_alert(
+            user_id=str(pending.user_id),
+            session_id=pending.session_id,
+        )
         return {
             "rejected": True,
             "confirmation_id": confirmation_id,

@@ -225,10 +225,12 @@ class ActionPendingParams(_StrictParams):
     session_id: str | None = None
     status: str | None = None
     limit: int = 100
+    include_ui: bool = True
 
 
 class ActionDecisionParams(_StrictParams):
     confirmation_id: str
+    decision_nonce: str | None = None
     reason: str = ""
 
 
@@ -252,6 +254,8 @@ class ToolExecuteParams(_StrictParams):
     security_critical: bool = True
     request_headers: dict[str, str] = Field(default_factory=dict)
     request_body: str = ""
+    source_ids: list[str] = Field(default_factory=list)
+    explicit_share_intent: bool = False
     degraded_mode: str = "fail_closed"
     filesystem: dict[str, Any] = Field(default_factory=dict)
     network: dict[str, Any] = Field(default_factory=dict)
@@ -282,3 +286,27 @@ class SkillInstallParams(_StrictParams):
 
 class SkillProfileParams(_StrictParams):
     skill_path: str
+
+
+class SkillRevokeParams(_StrictParams):
+    skill_name: str
+    reason: str = "security_revoke"
+
+
+class DashboardQueryParams(_StrictParams):
+    since: str | None = None
+    event_type: str | None = None
+    session_id: str | None = None
+    actor: str | None = None
+    text_search: str = ""
+    limit: int = 100
+
+
+class DashboardMarkFalsePositiveParams(_StrictParams):
+    event_id: str
+    reason: str = "false_positive"
+
+
+class ConfirmationMetricsParams(_StrictParams):
+    user_id: str | None = None
+    window_seconds: int = 900

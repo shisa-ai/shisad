@@ -6,13 +6,14 @@ import ipaddress
 import math
 import re
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, ClassVar
 from urllib.parse import unquote, urlparse
 
 from pydantic import BaseModel, Field
 
 from shisad.security.firewall.normalize import normalize_text
+from shisad.security.firewall.pii import PIIDetector
 
 _URL_RE = re.compile(r"https?://[^\s)>]+")
 _DATA_URI_RE = re.compile(r"\bdata:[^\s)>]+", re.IGNORECASE)
@@ -34,6 +35,7 @@ class OutputFirewallResult(BaseModel):
     require_confirmation: bool = False
     reason_codes: list[str] = Field(default_factory=list)
     secret_findings: list[str] = Field(default_factory=list)
+    pii_findings: list[str] = Field(default_factory=list)
     url_findings: list[UrlFinding] = Field(default_factory=list)
     toxicity_score: float = 0.0
 
@@ -44,6 +46,7 @@ class OutputFirewall:
 
     safe_domains: list[str]
     alert_hook: Callable[[dict[str, Any]], None] | None = None
+    pii_detector: PIIDetector = field(default_factory=PIIDetector)
 
     _SECRET_PATTERNS: ClassVar[list[tuple[str, re.Pattern[str]]]] = [
         ("openai_key", re.compile(r"\bsk-[A-Za-z0-9_-]{16,}\b")),
@@ -103,6 +106,12 @@ class OutputFirewall:
             findings.extend(entropy_findings)
             reason_codes.append("entropy_secret_redaction")
 
+        pii_redacted, pii_findings = self.pii_detector.redact(sanitized)
+        sanitized = pii_redacted
+        pii_kinds = sorted({finding.kind for finding in pii_findings})
+        if pii_kinds:
+            reason_codes.append("pii_redaction")
+
         # Inspect URLs on pre-redaction text so encoded-query risk scoring remains intact.
         url_findings = self._inspect_urls(normalized)
         blocked = any(finding.suspicious for finding in url_findings)
@@ -134,16 +143,20 @@ class OutputFirewall:
             require_confirmation=require_confirmation,
             reason_codes=sorted(set(reason_codes)),
             secret_findings=sorted(set(findings)),
+            pii_findings=pii_kinds,
             url_findings=url_findings,
             toxicity_score=toxicity_score,
         )
-        if self.alert_hook is not None and (result.secret_findings or result.reason_codes):
+        if self.alert_hook is not None and (
+            result.secret_findings or result.reason_codes or result.pii_findings
+        ):
             self.alert_hook(
                 {
                     "blocked": result.blocked,
                     "require_confirmation": result.require_confirmation,
                     "reason_codes": list(result.reason_codes),
                     "secret_findings": list(result.secret_findings),
+                    "pii_findings": list(result.pii_findings),
                     "url_findings": [item.model_dump(mode="json") for item in result.url_findings],
                     "context": context or {},
                 }

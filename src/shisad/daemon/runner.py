@@ -25,6 +25,9 @@ from shisad.core.api.schema import (
     BrowserPasteParams,
     BrowserScreenshotParams,
     ChannelIngestParams,
+    ConfirmationMetricsParams,
+    DashboardMarkFalsePositiveParams,
+    DashboardQueryParams,
     LockdownSetParams,
     MemoryEntryParams,
     MemoryExportParams,
@@ -43,6 +46,7 @@ from shisad.core.api.schema import (
     SkillInstallParams,
     SkillProfileParams,
     SkillReviewParams,
+    SkillRevokeParams,
     TaskCreateParams,
     TaskDisableParams,
     TaskPendingConfirmationsParams,
@@ -367,6 +371,28 @@ def _validate_model_endpoints(model_config: ModelConfig, router: ModelRouter) ->
             )
 
 
+def _validate_security_route_pins(model_config: ModelConfig, router: ModelRouter) -> None:
+    """Validate pinned model ids for security-critical routes."""
+    if not model_config.enforce_security_route_pinning:
+        return
+    monitor_route = router.route_for(ModelComponent.MONITOR)
+    planner_route = router.route_for(ModelComponent.PLANNER)
+    if model_config.pinned_monitor_model_id and (
+        monitor_route.model_id != model_config.pinned_monitor_model_id
+    ):
+        raise ValueError(
+            "Security monitor route model id mismatch: "
+            f"expected {model_config.pinned_monitor_model_id}, got {monitor_route.model_id}"
+        )
+    if model_config.pinned_planner_model_id and (
+        planner_route.model_id != model_config.pinned_planner_model_id
+    ):
+        raise ValueError(
+            "Security planner route model id mismatch: "
+            f"expected {model_config.pinned_planner_model_id}, got {planner_route.model_id}"
+        )
+
+
 def _load_provenance(
     manifest_path: Path,
     root: Path,
@@ -411,6 +437,7 @@ async def run_daemon(config: DaemonConfig) -> None:
     model_config = ModelConfig()
     router = ModelRouter(model_config)
     _validate_model_endpoints(model_config, router)
+    _validate_security_route_pins(model_config, router)
 
     transcript_root = config.data_dir / "sessions"
     transcript_store = TranscriptStore(transcript_root)
@@ -508,6 +535,7 @@ async def run_daemon(config: DaemonConfig) -> None:
                 require_confirmation=bool(data.get("require_confirmation", False)),
                 reason_codes=[str(item) for item in data.get("reason_codes", [])],
                 secret_findings=[str(item) for item in data.get("secret_findings", [])],
+                pii_findings=[str(item) for item in data.get("pii_findings", [])],
             )
         )
 
@@ -857,6 +885,42 @@ async def run_daemon(config: DaemonConfig) -> None:
         params_model=AuditQueryParams,
     )
     server.register_method(
+        "dashboard.audit_explorer",
+        handlers.handle_dashboard_audit_explorer,
+        admin_only=True,
+        params_model=DashboardQueryParams,
+    )
+    server.register_method(
+        "dashboard.egress_review",
+        handlers.handle_dashboard_egress_review,
+        admin_only=True,
+        params_model=DashboardQueryParams,
+    )
+    server.register_method(
+        "dashboard.skill_provenance",
+        handlers.handle_dashboard_skill_provenance,
+        admin_only=True,
+        params_model=DashboardQueryParams,
+    )
+    server.register_method(
+        "dashboard.alerts",
+        handlers.handle_dashboard_alerts,
+        admin_only=True,
+        params_model=DashboardQueryParams,
+    )
+    server.register_method(
+        "dashboard.mark_false_positive",
+        handlers.handle_dashboard_mark_false_positive,
+        admin_only=True,
+        params_model=DashboardMarkFalsePositiveParams,
+    )
+    server.register_method(
+        "confirmation.metrics",
+        handlers.handle_confirmation_metrics,
+        admin_only=True,
+        params_model=ConfirmationMetricsParams,
+    )
+    server.register_method(
         "memory.ingest",
         handlers.handle_memory_ingest,
         admin_only=True,
@@ -903,6 +967,12 @@ async def run_daemon(config: DaemonConfig) -> None:
         params_model=MemoryRotateKeyParams,
     )
     server.register_method(
+        "skill.list",
+        handlers.handle_skill_list,
+        admin_only=True,
+        params_model=NoParams,
+    )
+    server.register_method(
         "skill.review",
         handlers.handle_skill_review,
         admin_only=True,
@@ -919,6 +989,12 @@ async def run_daemon(config: DaemonConfig) -> None:
         handlers.handle_skill_profile,
         admin_only=True,
         params_model=SkillProfileParams,
+    )
+    server.register_method(
+        "skill.revoke",
+        handlers.handle_skill_revoke,
+        admin_only=True,
+        params_model=SkillRevokeParams,
     )
     server.register_method(
         "task.create",

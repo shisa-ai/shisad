@@ -1,0 +1,16 @@
+{
+  "core": {
+    "attack_success_rate": 0.01,
+    "utility_retention": 0.99,
+    "false_positive_rate": 0.01,
+    "detection_latency_ms": 0.25,
+    "memory_usage_mb": 32.0
+  },
+  "full": {
+    "attack_success_rate": 0.03,
+    "utility_retention": 0.99,
+    "false_positive_rate": 0.01,
+    "detection_latency_ms": 0.35,
+    "memory_usage_mb": 64.0
+  }
+}

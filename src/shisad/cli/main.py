@@ -8,10 +8,14 @@ from __future__ import annotations
 import asyncio
 import json
 import sys
+import time
+from contextlib import contextmanager
 from pathlib import Path
+from typing import Any
 
 import click
 import yaml
+from click.shell_completion import get_completion_class
 
 from shisad.core.config import DaemonConfig
 
@@ -20,10 +24,87 @@ def _get_config() -> DaemonConfig:
     return DaemonConfig()
 
 
+def _colors_enabled() -> bool:
+    ctx = click.get_current_context(silent=True)
+    if ctx is None:
+        return True
+    return not bool((ctx.obj or {}).get("no_color", False))
+
+
+def _echo(message: str, *, fg: str | None = None, bold: bool = False, err: bool = False) -> None:
+    if fg and _colors_enabled():
+        click.secho(message, fg=fg, bold=bold, err=err)
+        return
+    click.echo(message, err=err)
+
+
+@contextmanager
+def _progress(label: str) -> Any:
+    start = time.monotonic()
+    _echo(f"{label}...", fg="cyan")
+    try:
+        yield
+    finally:
+        elapsed = time.monotonic() - start
+        _echo(f"{label} done ({elapsed:.2f}s)", fg="green")
+
+
 @click.group()
+@click.option("--no-color", is_flag=True, help="Disable colored output.")
 @click.version_option()
-def cli() -> None:
+@click.pass_context
+def cli(ctx: click.Context, no_color: bool) -> None:
     """shisad — Security-first AI agent daemon."""
+    ctx.ensure_object(dict)
+    ctx.obj["no_color"] = no_color
+
+
+@cli.command("completion")
+@click.option("--shell", type=click.Choice(["bash", "zsh", "fish"]), required=True)
+def completion(shell: str) -> None:
+    """Print shell completion script."""
+    completion_class = get_completion_class(shell)
+    if completion_class is None:
+        raise click.ClickException(f"Unsupported shell: {shell}")
+    complete = completion_class(
+        cli=cli,
+        ctx_args={},
+        prog_name="shisad",
+        complete_var="_SHISAD_COMPLETE",
+    )
+    script = complete.source()
+    click.echo(script)
+
+
+@cli.command("tui")
+@click.option("--interactive", is_flag=True, help="Run interactive confirmation/audit loop.")
+@click.option("--plain", is_flag=True, help="Disable rich rendering.")
+def tui(interactive: bool, plain: bool) -> None:
+    """Render optional terminal dashboard over control API."""
+    from shisad.ui.tui import run_interactive, run_once
+
+    config = _get_config()
+    if interactive:
+        asyncio.run(run_interactive(config.socket_path))
+        return
+    rendered = asyncio.run(run_once(config.socket_path, rich_output=not plain))
+    click.echo(rendered)
+
+
+@cli.command("web-ui")
+@click.option(
+    "--output",
+    type=click.Path(path_type=Path, dir_okay=False),
+    default=Path("artifacts/shisad-dashboard.html"),
+    help="Output HTML path for dashboard snapshot.",
+)
+def web_ui(output: Path) -> None:
+    """Generate optional API-first web dashboard snapshot."""
+    from shisad.ui.web import write_web_snapshot
+
+    config = _get_config()
+    out_path = asyncio.run(write_web_snapshot(socket_path=config.socket_path, output_path=output))
+    _echo(f"Wrote dashboard snapshot: {out_path}", fg="green")
 
 
 # --- Daemon lifecycle ---
@@ -36,19 +117,19 @@ def start(foreground: bool) -> None:
     config = _get_config()
 
     if not foreground:
-        click.echo(f"Starting shisad daemon (socket: {config.socket_path})")
+        _echo(f"Starting shisad daemon (socket: {config.socket_path})", fg="cyan")
         # Full daemonization is a future enhancement; for now, run in foreground
-        click.echo("Note: --foreground is currently the only supported mode")
+        _echo("Note: --foreground is currently the only supported mode", fg="yellow")
 
-    click.echo(f"Data directory: {config.data_dir}")
-    click.echo(f"Control socket: {config.socket_path}")
+    _echo(f"Data directory: {config.data_dir}")
+    _echo(f"Control socket: {config.socket_path}")
 
     from shisad.daemon.runner import run_daemon
 
     try:
         asyncio.run(run_daemon(config))
     except KeyboardInterrupt:
-        click.echo("\nShutting down...")
+        _echo("\nShutting down...", fg="yellow")
 
 
 @cli.command()
@@ -57,7 +138,7 @@ def stop() -> None:
     config = _get_config()
 
     if not config.socket_path.exists():
-        click.echo("Daemon does not appear to be running (no socket found)")
+        _echo("Daemon does not appear to be running (no socket found)", err=True)
         sys.exit(1)
 
     async def _stop() -> None:
@@ -65,11 +146,12 @@ def stop() -> None:
 
         client = ControlClient(config.socket_path)
         try:
-            await client.connect()
+            with _progress("Connecting"):
+                await client.connect()
             await client.call("daemon.shutdown")
-            click.echo("Shutdown signal sent")
+            _echo("Shutdown signal sent", fg="green")
         except Exception as e:
-            click.echo(f"Error: {e}", err=True)
+            _echo(f"Error: {e}", err=True)
             sys.exit(1)
         finally:
             await client.close()
@@ -83,7 +165,7 @@ def status() -> None:
     config = _get_config()
 
     if not config.socket_path.exists():
-        click.echo("Status: not running")
+        _echo("Status: not running", fg="yellow")
         sys.exit(1)
 
     async def _status() -> None:
@@ -91,12 +173,13 @@ def status() -> None:
 
         client = ControlClient(config.socket_path)
         try:
-            await client.connect()
-            result = await client.call("daemon.status")
-            click.echo("Status: running")
+            with _progress("Querying daemon status"):
+                await client.connect()
+                result = await client.call("daemon.status")
+            _echo("Status: running", fg="green")
             click.echo(json.dumps(result, indent=2))
         except Exception as e:
-            click.echo(f"Status: error ({e})")
+            _echo(f"Status: error ({e})", err=True)
             sys.exit(1)
         finally:
             await client.close()
@@ -376,6 +459,288 @@ def events_subscribe(
 
 
 @cli.group()
+def action() -> None:
+    """Pending action review and decision commands."""
+
+
+@action.command("pending")
+@click.option("--session", "session_id", default="", help="Filter by session id")
+@click.option("--status", default="", help="Filter by status")
+@click.option("--limit", default=50, help="Maximum rows")
+@click.option("--raw", is_flag=True, help="Disable UI preview payloads")
+def action_pending(session_id: str, status: str, limit: int, raw: bool) -> None:
+    """List pending confirmations."""
+    config = _get_config()
+
+    async def _pending() -> None:
+        from shisad.core.api.transport import ControlClient
+
+        client = ControlClient(config.socket_path)
+        try:
+            await client.connect()
+            result = await client.call(
+                "action.pending",
+                {
+                    "session_id": session_id or None,
+                    "status": status or None,
+                    "limit": limit,
+                    "include_ui": not raw,
+                },
+            )
+            rows = result.get("actions", [])
+            if not rows:
+                _echo("No pending confirmations", fg="yellow")
+                return
+            for row in rows:
+                click.echo(
+                    f"{row['confirmation_id']} status={row['status']} "
+                    f"tool={row['tool_name']} reason={row.get('reason','')}"
+                )
+                preview = str(row.get("safe_preview", "")).strip()
+                if preview:
+                    click.echo(preview)
+                    click.echo("")
+        finally:
+            await client.close()
+
+    asyncio.run(_pending())
+
+
+@action.command("confirm")
+@click.argument("confirmation_id")
+@click.option("--nonce", default="", help="Decision nonce for replay-safe confirmation")
+@click.option("--reason", default="", help="Operator note")
+def action_confirm(confirmation_id: str, nonce: str, reason: str) -> None:
+    """Approve one pending confirmation."""
+    config = _get_config()
+
+    async def _confirm() -> None:
+        from shisad.core.api.transport import ControlClient
+
+        client = ControlClient(config.socket_path)
+        try:
+            await client.connect()
+            result = await client.call(
+                "action.confirm",
+                {
+                    "confirmation_id": confirmation_id,
+                    "decision_nonce": nonce or None,
+                    "reason": reason,
+                },
+            )
+            click.echo(json.dumps(result, indent=2))
+        finally:
+            await client.close()
+
+    asyncio.run(_confirm())
+
+
+@action.command("reject")
+@click.argument("confirmation_id")
+@click.option("--reason", default="manual_reject", help="Rejection reason")
+def action_reject(confirmation_id: str, reason: str) -> None:
+    """Reject one pending confirmation."""
+    config = _get_config()
+
+    async def _reject() -> None:
+        from shisad.core.api.transport import ControlClient
+
+        client = ControlClient(config.socket_path)
+        try:
+            await client.connect()
+            result = await client.call(
+                "action.reject",
+                {"confirmation_id": confirmation_id, "reason": reason},
+            )
+            click.echo(json.dumps(result, indent=2))
+        finally:
+            await client.close()
+
+    asyncio.run(_reject())
+
+
+@cli.group()
+def dashboard() -> None:
+    """Security dashboard and incident-review queries."""
+
+
+@dashboard.command("audit")
+@click.option("--since", default="", help="Since filter (e.g. 1h)")
+@click.option("--type", "event_type", default="", help="Event type filter")
+@click.option("--session", "session_id", default="", help="Session id filter")
+@click.option("--actor", default="", help="Actor filter")
+@click.option("--search", "text_search", default="", help="Full-text search")
+@click.option("--limit", default=100, help="Maximum rows")
+def dashboard_audit(
+    since: str,
+    event_type: str,
+    session_id: str,
+    actor: str,
+    text_search: str,
+    limit: int,
+) -> None:
+    """Audit explorer with hash-chain status."""
+    config = _get_config()
+
+    async def _audit() -> None:
+        from shisad.core.api.transport import ControlClient
+
+        client = ControlClient(config.socket_path)
+        try:
+            await client.connect()
+            result = await client.call(
+                "dashboard.audit_explorer",
+                {
+                    "since": since or None,
+                    "event_type": event_type or None,
+                    "session_id": session_id or None,
+                    "actor": actor or None,
+                    "text_search": text_search,
+                    "limit": limit,
+                },
+            )
+            chain = result.get("hash_chain", {})
+            click.echo(
+                f"hash_chain valid={chain.get('valid')} checked={chain.get('entries_checked')}"
+            )
+            for event in result.get("events", []):
+                click.echo(
+                    f"{event.get('timestamp')} {event.get('event_type')} "
+                    f"session={event.get('session_id')} actor={event.get('actor')}"
+                )
+        finally:
+            await client.close()
+
+    asyncio.run(_audit())
+
+
+@dashboard.command("egress")
+@click.option("--limit", default=100, help="Maximum rows")
+def dashboard_egress(limit: int) -> None:
+    """Review blocked/flagged egress attempts."""
+    config = _get_config()
+
+    async def _egress() -> None:
+        from shisad.core.api.transport import ControlClient
+
+        client = ControlClient(config.socket_path)
+        try:
+            await client.connect()
+            result = await client.call("dashboard.egress_review", {"limit": limit})
+            for event in result.get("events", []):
+                data = event.get("data", {})
+                click.echo(
+                    f"{event.get('timestamp')} host={data.get('destination_host','')} "
+                    f"allowed={data.get('allowed')} reason={data.get('reason','')}"
+                )
+        finally:
+            await client.close()
+
+    asyncio.run(_egress())
+
+
+@dashboard.command("skill-provenance")
+@click.option("--limit", default=100, help="Maximum rows")
+def dashboard_skill_provenance(limit: int) -> None:
+    """View skill installation/review/profile/revocation timeline."""
+    config = _get_config()
+
+    async def _provenance() -> None:
+        from shisad.core.api.transport import ControlClient
+
+        client = ControlClient(config.socket_path)
+        try:
+            await client.connect()
+            result = await client.call("dashboard.skill_provenance", {"limit": limit})
+            for row in result.get("timeline", []):
+                click.echo(
+                    f"{row.get('skill_name','')} "
+                    f"versions={','.join(row.get('versions', []))}"
+                )
+        finally:
+            await client.close()
+
+    asyncio.run(_provenance())
+
+
+@dashboard.command("alerts")
+@click.option("--limit", default=100, help="Maximum rows")
+def dashboard_alerts(limit: int) -> None:
+    """List active/recent alerts."""
+    config = _get_config()
+
+    async def _alerts() -> None:
+        from shisad.core.api.transport import ControlClient
+
+        client = ControlClient(config.socket_path)
+        try:
+            await client.connect()
+            result = await client.call("dashboard.alerts", {"limit": limit})
+            for row in result.get("alerts", []):
+                click.echo(
+                    f"{row.get('event_id')} {row.get('event_type')} "
+                    f"ack={row.get('acknowledged_reason','')}"
+                )
+        finally:
+            await client.close()
+
+    asyncio.run(_alerts())
+
+
+@dashboard.command("mark-fp")
+@click.argument("event_id")
+@click.option("--reason", default="false_positive", help="Acknowledgment reason")
+def dashboard_mark_fp(event_id: str, reason: str) -> None:
+    """Mark a dashboard alert as false-positive/acknowledged."""
+    config = _get_config()
+
+    async def _mark() -> None:
+        from shisad.core.api.transport import ControlClient
+
+        client = ControlClient(config.socket_path)
+        try:
+            await client.connect()
+            result = await client.call(
+                "dashboard.mark_false_positive",
+                {"event_id": event_id, "reason": reason},
+            )
+            click.echo(json.dumps(result, indent=2))
+        finally:
+            await client.close()
+
+    asyncio.run(_mark())
+
+
+@cli.group()
+def confirmation() -> None:
+    """Confirmation analytics and hygiene checks."""
+
+
+@confirmation.command("metrics")
+@click.option("--user", "user_id", default="", help="User filter")
+@click.option("--window", "window_seconds", default=900, help="Window in seconds")
+def confirmation_metrics(user_id: str, window_seconds: int) -> None:
+    """Show confirmation hygiene metrics."""
+    config = _get_config()
+
+    async def _metrics() -> None:
+        from shisad.core.api.transport import ControlClient
+
+        client = ControlClient(config.socket_path)
+        try:
+            await client.connect()
+            result = await client.call(
+                "confirmation.metrics",
+                {"user_id": user_id or None, "window_seconds": window_seconds},
+            )
+            click.echo(json.dumps(result, indent=2))
+        finally:
+            await client.close()
+
+    asyncio.run(_metrics())
+
+
+@cli.group()
 def memory() -> None:
     """Memory manager operations."""
 
@@ -449,6 +814,33 @@ def memory_write(
     asyncio.run(_write())
 
 
+@memory.command("rotate-key")
+@click.option(
+    "--no-reencrypt",
+    is_flag=True,
+    help="Rotate active key only (do not re-encrypt existing records).",
+)
+def memory_rotate_key(no_reencrypt: bool) -> None:
+    """Rotate memory/retrieval encryption key material."""
+    config = _get_config()
+
+    async def _rotate() -> None:
+        from shisad.core.api.transport import ControlClient
+
+        client = ControlClient(config.socket_path)
+        try:
+            await client.connect()
+            result = await client.call(
+                "memory.rotate_key",
+                {"reencrypt_existing": not no_reencrypt},
+            )
+            click.echo(json.dumps(result, indent=2))
+        finally:
+            await client.close()
+
+    asyncio.run(_rotate())
+
+
 @cli.group()
 def task() -> None:
     """Scheduler task operations."""
@@ -476,6 +868,104 @@ def task_list() -> None:
 @cli.group()
 def skill() -> None:
     """Skill profiling and lock workflow."""
+
+
+@skill.command("list")
+def skill_list() -> None:
+    """List installed skills tracked by the daemon inventory."""
+    config = _get_config()
+
+    async def _list() -> None:
+        from shisad.core.api.transport import ControlClient
+
+        client = ControlClient(config.socket_path)
+        try:
+            await client.connect()
+            result = await client.call("skill.list")
+            skills = result.get("skills", [])
+            if not skills:
+                _echo("No installed skills", fg="yellow")
+                return
+            for item in skills:
+                click.echo(
+                    f"{item.get('name','')}@{item.get('version','')} "
+                    f"state={item.get('state','')} author={item.get('author','')}"
+                )
+        finally:
+            await client.close()
+
+    asyncio.run(_list())
+
+
+@skill.command("review")
+@click.argument("skill_path", type=click.Path(exists=True, file_okay=False, path_type=Path))
+def skill_review(skill_path: Path) -> None:
+    """Run daemon-backed skill review and show findings/reputation."""
+    config = _get_config()
+
+    async def _review() -> None:
+        from shisad.core.api.transport import ControlClient
+
+        client = ControlClient(config.socket_path)
+        try:
+            await client.connect()
+            result = await client.call("skill.review", {"skill_path": str(skill_path)})
+            click.echo(json.dumps(result, indent=2))
+        finally:
+            await client.close()
+
+    asyncio.run(_review())
+
+
+@skill.command("install")
+@click.argument("skill_path", type=click.Path(exists=True, file_okay=False, path_type=Path))
+@click.option("--approve-untrusted", is_flag=True, help="Approve untrusted signature state.")
+def skill_install(skill_path: Path, approve_untrusted: bool) -> None:
+    """Install a reviewed skill through daemon policy gates."""
+    config = _get_config()
+
+    async def _install() -> None:
+        from shisad.core.api.transport import ControlClient
+
+        client = ControlClient(config.socket_path)
+        try:
+            await client.connect()
+            result = await client.call(
+                "skill.install",
+                {
+                    "skill_path": str(skill_path),
+                    "approve_untrusted": approve_untrusted,
+                },
+            )
+            click.echo(json.dumps(result, indent=2))
+        finally:
+            await client.close()
+
+    asyncio.run(_install())
+
+
+@skill.command("revoke")
+@click.argument("skill_name")
+@click.option("--reason", default="security_revoke", help="Revocation reason")
+def skill_revoke(skill_name: str, reason: str) -> None:
+    """Revoke an installed skill (state transition to revoked)."""
+    config = _get_config()
+
+    async def _revoke() -> None:
+        from shisad.core.api.transport import ControlClient
+
+        client = ControlClient(config.socket_path)
+        try:
+            await client.connect()
+            result = await client.call(
+                "skill.revoke",
+                {"skill_name": skill_name, "reason": reason},
+            )
+            click.echo(json.dumps(result, indent=2))
+        finally:
+            await client.close()
+
+    asyncio.run(_revoke())
 
 
 @skill.command("profile")

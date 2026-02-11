@@ -1,0 +1,19 @@
+[
+  {
+    "id": "exfil-1",
+    "kind": "staged_small_requests",
+    "destination_host": "tracker.evil.example",
+    "request_size": 64,
+    "count": 8,
+    "expected_reason": "network:staged_exfil_small_requests"
+  },
+  {
+    "id": "exfil-2",
+    "kind": "beacon",
+    "destination_host": "beacon.evil.example",
+    "request_size": 300,
+    "count": 6,
+    "interval_seconds": 2,
+    "expected_reason": "network:c2_beacon_pattern"
+  }
+]

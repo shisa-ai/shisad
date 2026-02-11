@@ -158,6 +158,46 @@ class MemoryEntryDeleted(BaseEvent):
     memory_id: str = ""
 
 
+class SkillReviewRequested(BaseEvent):
+    """Skill review request completed with static findings."""
+
+    skill_name: str = ""
+    version: str = ""
+    source_repo: str = ""
+    signature_status: str = ""
+    findings_count: int = 0
+
+
+class SkillInstalled(BaseEvent):
+    """Skill installation decision recorded."""
+
+    skill_name: str = ""
+    version: str = ""
+    source_repo: str = ""
+    manifest_hash: str = ""
+    status: str = ""
+    allowed: bool = False
+    signature_status: str = ""
+    findings_count: int = 0
+    artifact_state: str = ""
+
+
+class SkillProfiled(BaseEvent):
+    """Skill capability profile generated."""
+
+    skill_name: str = ""
+    version: str = ""
+    capabilities: dict[str, list[str]] = Field(default_factory=dict)
+
+
+class SkillRevoked(BaseEvent):
+    """Installed skill moved into revoked state."""
+
+    skill_name: str = ""
+    reason: str = ""
+    previous_state: str = ""
+
+
 class TaskScheduled(BaseEvent):
     """Background task created."""
 
@@ -179,6 +219,7 @@ class OutputFirewallAlert(BaseEvent):
     require_confirmation: bool = False
     reason_codes: list[str] = Field(default_factory=list)
     secret_findings: list[str] = Field(default_factory=list)
+    pii_findings: list[str] = Field(default_factory=list)
 
 
 class SandboxDegraded(BaseEvent):

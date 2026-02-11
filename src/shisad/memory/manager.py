@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, ClassVar
 
 from shisad.memory.schema import MemoryEntry, MemorySource, MemoryWriteDecision
+from shisad.security.firewall.pii import PIIDetector
 
 
 class MemoryManager:
@@ -40,12 +41,14 @@ class MemoryManager:
         *,
         default_ttl_days: int = 30,
         audit_hook: Callable[[str, dict[str, Any]], None] | None = None,
+        pii_detector: PIIDetector | None = None,
     ) -> None:
         self._storage_dir = storage_dir
         self._storage_dir.mkdir(parents=True, exist_ok=True)
         self._entries: dict[str, MemoryEntry] = {}
         self._default_ttl_days = default_ttl_days
         self._audit_hook = audit_hook
+        self._pii_detector = pii_detector or PIIDetector()
         self._load_existing_entries()
 
     def write(
@@ -78,6 +81,14 @@ class MemoryManager:
                 reason="suspicious_memory_write_requires_confirmation",
             )
 
+        stored_value = value
+        pii_findings: list[str] = []
+        if isinstance(value, str):
+            redacted, findings = self._pii_detector.redact(value)
+            if findings:
+                pii_findings = sorted({finding.kind for finding in findings})
+                stored_value = redacted
+
         expires_at = None
         if source.origin != "user":
             expires_at = datetime.now(UTC) + timedelta(days=self._default_ttl_days)
@@ -85,7 +96,7 @@ class MemoryManager:
         entry = MemoryEntry(
             entry_type=entry_type,
             key=key,
-            value=value,
+            value=stored_value,
             source=source,
             confidence=confidence,
             expires_at=expires_at,
@@ -94,7 +105,12 @@ class MemoryManager:
         self._persist_entry(entry)
         self._audit(
             "memory.write",
-            {"entry_id": entry.id, "key": key, "source_origin": source.origin},
+            {
+                "entry_id": entry.id,
+                "key": key,
+                "source_origin": source.origin,
+                "pii_findings": pii_findings,
+            },
         )
         return MemoryWriteDecision(kind="allow", entry=entry)
 
@@ -147,6 +163,8 @@ class MemoryManager:
 
     def export(self, *, fmt: str = "json") -> str:
         items = [entry.model_dump(mode="json") for entry in self.list_entries(include_deleted=True)]
+        for item in items:
+            item["value"] = self._redact_export_value(item.get("value"))
         if fmt == "json":
             return json.dumps(items, indent=2)
         if fmt == "csv":
@@ -174,7 +192,7 @@ class MemoryManager:
                         "id": item["id"],
                         "entry_type": item["entry_type"],
                         "key": item["key"],
-                        "value": item["value"],
+                        "value": self._redact_export_value(item["value"]),
                         "origin": source.get("origin", ""),
                         "source_id": source.get("source_id", ""),
                         "created_at": item["created_at"],
@@ -228,6 +246,12 @@ class MemoryManager:
     def _audit(self, action: str, payload: dict[str, Any]) -> None:
         if self._audit_hook is not None:
             self._audit_hook(action, payload)
+
+    def _redact_export_value(self, value: Any) -> Any:
+        if not isinstance(value, str):
+            return value
+        redacted, _ = self._pii_detector.redact(value)
+        return redacted
 
     @classmethod
     def _looks_instruction_like(cls, text: str) -> bool:

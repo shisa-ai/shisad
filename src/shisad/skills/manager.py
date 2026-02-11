@@ -226,6 +226,18 @@ class SkillManager:
     def list_installed(self) -> list[InstalledSkill]:
         return sorted(self._inventory.values(), key=lambda item: item.name)
 
+    def revoke(self, *, skill_name: str, reason: str = "") -> InstalledSkill | None:
+        installed = self._inventory.get(skill_name)
+        if installed is None:
+            return None
+        if installed.state == ArtifactState.REVOKED:
+            return installed
+        updated = installed.model_copy(update={"state": ArtifactState.REVOKED})
+        self._inventory[skill_name] = updated
+        self._persist_inventory()
+        _ = reason
+        return updated
+
     def authorize_runtime(
         self,
         *,

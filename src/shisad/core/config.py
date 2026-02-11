@@ -154,6 +154,18 @@ class ModelConfig(BaseSettings):
         default="shisa-ai/shisa-v2.1-unphi4-14b",
         description="Model ID for monitor component",
     )
+    pinned_monitor_model_id: str = Field(
+        default="shisa-ai/shisa-v2.1-unphi4-14b",
+        description="Pinned model id for security-critical monitor route.",
+    )
+    pinned_planner_model_id: str = Field(
+        default="shisa-ai/shisa-v2.1-unphi4-14b",
+        description="Pinned model id for planner route used in security-sensitive analyses.",
+    )
+    enforce_security_route_pinning: bool = Field(
+        default=True,
+        description="Require pinned model IDs for security-critical routes.",
+    )
     api_key: str | None = Field(
         default=None,
         description="Optional API key override (falls back to SHISA_API_KEY).",
