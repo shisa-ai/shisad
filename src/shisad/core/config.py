@@ -44,6 +44,12 @@ class DaemonConfig(BaseSettings):
         description="When to create checkpoints during tool execution.",
     )
 
+    # Trace recording
+    trace_enabled: bool = Field(
+        default=False,
+        description="Enable training-ready LLM trace recording.",
+    )
+
     # Optional Matrix runtime channel
     matrix_enabled: bool = Field(default=False, description="Enable Matrix channel runtime.")
     matrix_homeserver: str = Field(default="", description="Matrix homeserver URL.")

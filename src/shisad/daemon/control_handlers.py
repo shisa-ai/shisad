@@ -6,6 +6,7 @@ import asyncio
 import base64
 import hashlib
 import json
+import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -55,6 +56,7 @@ from shisad.core.events import (
 )
 from shisad.core.planner import Planner
 from shisad.core.session import CheckpointStore, Session, SessionManager
+from shisad.core.trace import TraceMessage, TraceRecorder, TraceToolCall, TraceTurn
 from shisad.core.tools.builtin.alarm import AlarmTool, AnomalyReportInput
 from shisad.core.tools.registry import ToolRegistry
 from shisad.core.tools.schema import ToolDefinition
@@ -198,6 +200,7 @@ class DaemonControlHandlers:
         alarm_tool: AlarmTool,
         session_manager: SessionManager,
         transcript_store: TranscriptStore,
+        trace_recorder: TraceRecorder | None,
         transcript_root: Path,
         checkpoint_store: CheckpointStore,
         firewall: ContentFirewall,
@@ -219,6 +222,7 @@ class DaemonControlHandlers:
         shutdown_event: asyncio.Event,
         provenance_status: dict[str, Any],
         model_routes: dict[str, str],
+        planner_model_id: str,
         classifier_mode: str,
         internal_ingress_marker: object,
     ) -> None:
@@ -231,6 +235,7 @@ class DaemonControlHandlers:
         self._alarm_tool = alarm_tool
         self._session_manager = session_manager
         self._transcript_store = transcript_store
+        self._trace_recorder = trace_recorder
         self._transcript_root = transcript_root
         self._checkpoint_store = checkpoint_store
         self._firewall = firewall
@@ -252,6 +257,7 @@ class DaemonControlHandlers:
         self._shutdown_event = shutdown_event
         self._provenance_status = provenance_status
         self._model_routes = model_routes
+        self._planner_model_id = planner_model_id
         self._classifier_mode = classifier_mode
         self._internal_ingress_marker = internal_ingress_marker
         self._pending_actions_file = self._config.data_dir / "pending_actions.json"
@@ -1291,7 +1297,11 @@ class DaemonControlHandlers:
             encode_untrusted=firewall_result.risk_score >= 0.7,
         )
 
+        trace_t0 = time.monotonic() if self._trace_recorder is not None else 0.0
         planner_result = await self._planner.propose(spotlighted_content, context)
+
+        # --- trace: capture planner response metadata ---
+        trace_tool_calls: list[TraceToolCall] = []
 
         rejected = 0
         pending_confirmation = 0
@@ -1456,6 +1466,17 @@ class DaemonControlHandlers:
                         reason_code=cp_eval.trace_result.reason_code,
                         risk_tier=cp_eval.trace_result.risk_tier,
                     )
+                if self._trace_recorder is not None:
+                    trace_tool_calls.append(TraceToolCall(
+                        tool_name=str(proposal.tool_name),
+                        arguments=dict(proposal.arguments),
+                        pep_decision=evaluated.decision.kind.value,
+                        monitor_decision=monitor_decision.kind.value,
+                        control_plane_decision=cp_eval.decision.value,
+                        final_decision=final_kind,
+                        executed=False,
+                        execution_success=None,
+                    ))
                 continue
 
             if final_kind == "require_confirmation":
@@ -1483,6 +1504,17 @@ class DaemonControlHandlers:
                         ),
                     )
                 )
+                if self._trace_recorder is not None:
+                    trace_tool_calls.append(TraceToolCall(
+                        tool_name=str(proposal.tool_name),
+                        arguments=dict(proposal.arguments),
+                        pep_decision=evaluated.decision.kind.value,
+                        monitor_decision=monitor_decision.kind.value,
+                        control_plane_decision=cp_eval.decision.value,
+                        final_decision=final_kind,
+                        executed=False,
+                        execution_success=None,
+                    ))
                 continue
 
             success, checkpoint_id = await self._execute_approved_action(
@@ -1498,6 +1530,17 @@ class DaemonControlHandlers:
                 checkpoint_ids.append(checkpoint_id)
             if success:
                 executed += 1
+            if self._trace_recorder is not None:
+                trace_tool_calls.append(TraceToolCall(
+                    tool_name=str(proposal.tool_name),
+                    arguments=dict(proposal.arguments),
+                    pep_decision=evaluated.decision.kind.value,
+                    monitor_decision=monitor_decision.kind.value,
+                    control_plane_decision=cp_eval.decision.value,
+                    final_decision=final_kind,
+                    executed=True,
+                    execution_success=success,
+                ))
 
         response_text = planner_result.output.assistant_response
         output_result = self._output_firewall.inspect(
@@ -1521,6 +1564,30 @@ class DaemonControlHandlers:
             content=response_text,
             taint_labels=set(),
         )
+
+        # --- trace: record full turn ---
+        if self._trace_recorder is not None:
+            provider_resp = planner_result.provider_response
+            trace_messages = [
+                TraceMessage(role="system", content=self._planner._system_prompt),
+                TraceMessage(role="user", content=spotlighted_content),
+            ]
+            self._trace_recorder.record(TraceTurn(
+                session_id=str(sid),
+                user_content=content,
+                messages_sent=trace_messages,
+                llm_response=provider_resp.message.content if provider_resp else "",
+                usage=dict(provider_resp.usage) if provider_resp else {},
+                finish_reason=provider_resp.finish_reason if provider_resp else "",
+                tool_calls=trace_tool_calls,
+                assistant_response=response_text,
+                model_id=self._planner_model_id,
+                risk_score=firewall_result.risk_score,
+                trust_level=trust_level,
+                taint_labels=[label.value for label in context.taint_labels],
+                duration_ms=(time.monotonic() - trace_t0) * 1000.0,
+            ))
+
         await self._event_bus.publish(
             SessionMessageResponded(
                 session_id=sid,

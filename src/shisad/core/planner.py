@@ -13,7 +13,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field, ValidationError
 
-from shisad.core.providers.base import Message, ModelProvider
+from shisad.core.providers.base import Message, ModelProvider, ProviderResponse
 from shisad.core.types import PEPDecision, ToolName
 from shisad.security.pep import PEP, PolicyContext
 
@@ -68,6 +68,7 @@ class PlannerResult:
     output: PlannerOutput
     evaluated: list[EvaluatedProposal]
     attempts: int
+    provider_response: ProviderResponse | None = None
 
 
 class Planner:
@@ -114,7 +115,12 @@ class Planner:
                     )
                     for proposal in output.actions
                 ]
-                return PlannerResult(output=output, evaluated=evaluated, attempts=attempt + 1)
+                return PlannerResult(
+                    output=output,
+                    evaluated=evaluated,
+                    attempts=attempt + 1,
+                    provider_response=response,
+                )
             except PlannerOutputError as exc:
                 logger.warning("Planner returned invalid JSON output: %s", exc)
                 if attempt >= self._max_retries:

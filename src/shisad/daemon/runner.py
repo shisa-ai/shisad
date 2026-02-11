@@ -80,6 +80,7 @@ from shisad.core.tools.builtin.alarm import AlarmTool
 from shisad.core.tools.builtin.shell_exec import ShellExecTool
 from shisad.core.tools.registry import ToolRegistry
 from shisad.core.tools.schema import ToolDefinition, ToolParameter
+from shisad.core.trace import TraceRecorder
 from shisad.core.transcript import TranscriptStore
 from shisad.core.types import Capability, CredentialRef, SessionId, ToolName
 from shisad.daemon.control_handlers import DaemonControlHandlers
@@ -441,6 +442,9 @@ async def run_daemon(config: DaemonConfig) -> None:
 
     transcript_root = config.data_dir / "sessions"
     transcript_store = TranscriptStore(transcript_root)
+    trace_recorder: TraceRecorder | None = None
+    if config.trace_enabled:
+        trace_recorder = TraceRecorder(config.data_dir / "traces")
     checkpoint_store = CheckpointStore(config.data_dir / "checkpoints")
     risk_calibrator = RiskCalibrator(
         policy_path=config.data_dir / "risk" / "policy.json",
@@ -803,6 +807,7 @@ async def run_daemon(config: DaemonConfig) -> None:
     planner = Planner(provider, pep)
 
     shutdown_event = asyncio.Event()
+    planner_model_id = router.route_for(ModelComponent.PLANNER).model_id
     model_routes = {
         component.value: router.route_for(component).base_url for component in ModelComponent
     }
@@ -816,6 +821,7 @@ async def run_daemon(config: DaemonConfig) -> None:
         alarm_tool=alarm_tool,
         session_manager=session_manager,
         transcript_store=transcript_store,
+        trace_recorder=trace_recorder,
         transcript_root=transcript_root,
         checkpoint_store=checkpoint_store,
         firewall=firewall,
@@ -837,6 +843,7 @@ async def run_daemon(config: DaemonConfig) -> None:
         shutdown_event=shutdown_event,
         provenance_status=provenance_status,
         model_routes=model_routes,
+        planner_model_id=planner_model_id,
         classifier_mode=firewall.classifier_mode,
         internal_ingress_marker=_internal_ingress_marker,
     )
