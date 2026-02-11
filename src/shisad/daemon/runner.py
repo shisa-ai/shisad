@@ -655,7 +655,8 @@ async def run_daemon(config: DaemonConfig) -> None:
             "[shisad] Connect-path enforcement unavailable: CAP_NET_ADMIN not granted. "
             "Network-enabled sandbox processes have unrestricted IP-level access. "
             "Pre-execution DNS and domain policy checks are still enforced. "
-            "To enable: run daemon with CAP_NET_ADMIN or as root."
+            "Note: CAP_NET_ADMIN is necessary but not sufficient; connect-path also "
+            "requires isolated target network namespaces at execution time."
         )
     sandbox = SandboxOrchestrator(
         proxy=egress_proxy,
