@@ -105,7 +105,12 @@ class PatternInjectionClassifier:
             return "fallback_regex"
         return "base_patterns"
 
-    def classify(self, text: str) -> InjectionClassification:
+    def classify(
+        self,
+        text: str,
+        *,
+        context_factors: list[str] | tuple[str, ...] | None = None,
+    ) -> InjectionClassification:
         """Classify text for likely injection indicators."""
         score = 0.0
         factors: list[str] = []
@@ -132,6 +137,9 @@ class PatternInjectionClassifier:
             factors.extend(semantic.risk_factors)
             matches.extend(semantic.matched_patterns)
             score = max(score, semantic.risk_score)
+
+        if context_factors and score > 0.0:
+            factors.extend(str(item) for item in context_factors)
 
         return InjectionClassification(
             risk_score=min(score, 1.0),

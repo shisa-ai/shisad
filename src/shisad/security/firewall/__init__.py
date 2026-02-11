@@ -11,7 +11,7 @@ from pydantic import BaseModel, Field
 
 from shisad.core.types import TaintLabel
 from shisad.security.firewall.classifier import PatternInjectionClassifier
-from shisad.security.firewall.normalize import normalize_text
+from shisad.security.firewall.normalize import decode_text_layers, normalize_text
 from shisad.security.firewall.secrets import SecretFinding, redact_ingress_secrets
 
 
@@ -52,8 +52,12 @@ class ContentFirewall:
         """Process untrusted input and return sanitized content + metadata."""
         original_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()
         normalized = normalize_text(text)
-        redacted, secret_findings = redact_ingress_secrets(normalized)
-        classification = self._classifier.classify(redacted)
+        decoded = decode_text_layers(normalized)
+        redacted, secret_findings = redact_ingress_secrets(decoded.text)
+        classification = self._classifier.classify(
+            redacted,
+            context_factors=decoded.reason_codes,
+        )
 
         sanitized = redacted
         extracted_facts: list[str] = []

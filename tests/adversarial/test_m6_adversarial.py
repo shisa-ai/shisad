@@ -53,6 +53,24 @@ def test_m6_a1_prompt_injection_direct_fixture_matrix_has_50_plus_variants() -> 
     assert flagged >= 50
 
 
+def test_m6_t18_layered_mixed_encoding_fixture_matrix_is_deterministic_and_flagged() -> None:
+    fixture = _json(Path(__file__).parent / "injection" / "encoding_layers.json")
+    assert isinstance(fixture, list)
+    firewall = ContentFirewall()
+    seen_ids: set[str] = set()
+    for case in fixture:
+        assert isinstance(case, dict)
+        case_id = str(case["id"])
+        assert case_id not in seen_ids
+        seen_ids.add(case_id)
+        payload = str(case["payload"])
+        result = firewall.inspect(payload)
+        assert result.risk_score >= float(case.get("min_risk_score", 0.25))
+        expected = [str(item) for item in case.get("expected_reasons", [])]
+        for reason in expected:
+            assert reason in result.risk_factors
+
+
 def test_m6_a2_memory_poisoning_fixtures_are_blocked_or_confirmation_gated(tmp_path: Path) -> None:
     fixture = _json(Path(__file__).parent / "memory" / "poisoning_cases.json")
     assert isinstance(fixture, list)

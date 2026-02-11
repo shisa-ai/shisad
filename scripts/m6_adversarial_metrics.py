@@ -52,6 +52,14 @@ def _attack_variants(*, lane: str) -> list[str]:
         for target in targets
         for token in tokens
     ]
+    extra_fixture = _load_json(Path("tests/adversarial/injection/encoding_layers.json"))
+    if isinstance(extra_fixture, list):
+        for item in extra_fixture:
+            if not isinstance(item, dict):
+                continue
+            payload = str(item.get("payload", ""))
+            if payload:
+                variants.append(payload)
     return variants
 
 
