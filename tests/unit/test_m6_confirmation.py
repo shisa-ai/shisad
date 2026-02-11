@@ -56,7 +56,7 @@ def test_m6_t3_warning_generator_detects_first_time_recipient() -> None:
 
 def test_m6_t4_confirmation_analytics_detects_rubber_stamping() -> None:
     analytics = ConfirmationAnalytics()
-    base = datetime(2026, 2, 11, 10, 0, tzinfo=UTC)
+    base = datetime.now(UTC) - timedelta(minutes=10)
     for index in range(12):
         created = base + timedelta(seconds=index * 30)
         decided = created + timedelta(seconds=max(1, 15 - index))
