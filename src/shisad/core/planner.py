@@ -69,6 +69,7 @@ class PlannerResult:
     evaluated: list[EvaluatedProposal]
     attempts: int
     provider_response: ProviderResponse | None = None
+    messages_sent: tuple[Message, ...] = ()
 
 
 class Planner:
@@ -120,6 +121,7 @@ class Planner:
                     evaluated=evaluated,
                     attempts=attempt + 1,
                     provider_response=response,
+                    messages_sent=tuple(messages),
                 )
             except PlannerOutputError as exc:
                 logger.warning("Planner returned invalid JSON output: %s", exc)

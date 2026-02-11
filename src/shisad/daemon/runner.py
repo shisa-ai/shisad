@@ -203,6 +203,7 @@ class _LocalPlannerProvider:
         }
         return ProviderResponse(
             message=Message(role="assistant", content=json.dumps(payload)),
+            model="local-fallback",
             finish_reason="stop",
             usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
         )
@@ -303,6 +304,7 @@ class _RoutedOpenAIProvider:
                         sort_keys=True,
                     ),
                 ),
+                model="local-fallback",
                 finish_reason="stop",
                 usage={
                     "prompt_tokens": 0,

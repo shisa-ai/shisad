@@ -166,6 +166,96 @@ class TestTraceMessageRedaction:
         assert "sk-secret1234567890abc" not in msg.content
         assert "[REDACTED:openai_key]" in msg.content
 
+    def test_messages_sent_tool_calls_redacted(self, recorder: TraceRecorder) -> None:
+        turn = TraceTurn(
+            session_id="sess-1",
+            user_content="clean",
+            messages_sent=[
+                TraceMessage(
+                    role="assistant",
+                    content="",
+                    tool_calls=[{"function": {"arguments": "sk-toolcall_secret12345678"}}],
+                ),
+            ],
+            llm_response="ok",
+            assistant_response="done",
+        )
+        recorder.record(turn)
+        turns = recorder.read_turns("sess-1")
+        tc = turns[0].messages_sent[0].tool_calls[0]
+        assert "sk-toolcall_secret12345678" not in json.dumps(tc)
+        assert "[REDACTED:openai_key]" in json.dumps(tc)
+
+
+class TestTraceToolCallArgumentsRedaction:
+    def test_secret_in_arguments_redacted(self, recorder: TraceRecorder) -> None:
+        turn = TraceTurn(
+            session_id="sess-1",
+            user_content="clean",
+            llm_response="ok",
+            assistant_response="done",
+            tool_calls=[
+                TraceToolCall(
+                    tool_name="http_request",
+                    arguments={"url": "https://api.example.com", "token": "sk-argkey_1234567890abc"},
+                    final_decision="allow",
+                    executed=True,
+                ),
+            ],
+        )
+        recorder.record(turn)
+        turns = recorder.read_turns("sess-1")
+        args = turns[0].tool_calls[0].arguments
+        assert "sk-argkey_1234567890abc" not in json.dumps(args)
+        assert "[REDACTED:openai_key]" in json.dumps(args)
+
+    def test_pii_in_arguments_redacted(self, recorder: TraceRecorder) -> None:
+        turn = TraceTurn(
+            session_id="sess-1",
+            user_content="clean",
+            llm_response="ok",
+            assistant_response="done",
+            tool_calls=[
+                TraceToolCall(
+                    tool_name="send_email",
+                    arguments={"to": "victim@example.com", "body": "SSN: 123-45-6789"},
+                    final_decision="reject",
+                ),
+            ],
+        )
+        recorder.record(turn)
+        turns = recorder.read_turns("sess-1")
+        args = turns[0].tool_calls[0].arguments
+        assert "victim@example.com" not in json.dumps(args)
+        assert "123-45-6789" not in json.dumps(args)
+        assert "[REDACTED:email]" in json.dumps(args)
+        assert "[REDACTED:ssn]" in json.dumps(args)
+
+    def test_nested_arguments_redacted(self, recorder: TraceRecorder) -> None:
+        turn = TraceTurn(
+            session_id="sess-1",
+            user_content="clean",
+            llm_response="ok",
+            assistant_response="done",
+            tool_calls=[
+                TraceToolCall(
+                    tool_name="complex_tool",
+                    arguments={
+                        "config": {"api_key": "sk-nested_secret1234567890"},
+                        "items": ["sk-list_secret_1234567890ab"],
+                    },
+                    final_decision="allow",
+                    executed=True,
+                ),
+            ],
+        )
+        recorder.record(turn)
+        turns = recorder.read_turns("sess-1")
+        args = turns[0].tool_calls[0].arguments
+        serialized = json.dumps(args)
+        assert "sk-nested_secret1234567890" not in serialized
+        assert "sk-list_secret_1234567890ab" not in serialized
+
 
 class TestTraceFilePermissions:
     def test_file_created_with_restricted_permissions(

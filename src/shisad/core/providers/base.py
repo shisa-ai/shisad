@@ -38,6 +38,7 @@ class ProviderResponse(BaseModel):
     """Response from a model provider."""
 
     message: Message
+    model: str = ""
     finish_reason: str = ""
     usage: dict[str, int] = Field(default_factory=dict)
 
@@ -126,6 +127,7 @@ class OpenAICompatibleProvider:
                     else None
                 ),
             ),
+            model=str(response_data.get("model", self._model_id)),
             finish_reason=str(first_choice.get("finish_reason", "")),
             usage=self._coerce_usage(response_data.get("usage")),
         )

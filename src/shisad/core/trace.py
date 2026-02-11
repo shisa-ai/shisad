@@ -33,6 +33,17 @@ def _redact_text(text: str) -> str:
     return redacted
 
 
+def _redact_value(value: Any) -> Any:
+    """Recursively redact string values inside dicts, lists, and scalars."""
+    if isinstance(value, str):
+        return _redact_text(value)
+    if isinstance(value, dict):
+        return {k: _redact_value(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_redact_value(item) for item in value]
+    return value
+
+
 # ---------------------------------------------------------------------------
 # Pydantic models (frozen where possible for safety)
 # ---------------------------------------------------------------------------
@@ -131,10 +142,23 @@ class TraceRecorder:
             TraceMessage(
                 role=msg.role,
                 content=_redact_text(msg.content),
-                tool_calls=msg.tool_calls,
+                tool_calls=_redact_value(msg.tool_calls),
                 tool_call_id=msg.tool_call_id,
             )
             for msg in turn.messages_sent
+        ]
+        redacted_tool_calls = [
+            TraceToolCall(
+                tool_name=tc.tool_name,
+                arguments=_redact_value(tc.arguments),
+                pep_decision=tc.pep_decision,
+                monitor_decision=tc.monitor_decision,
+                control_plane_decision=tc.control_plane_decision,
+                final_decision=tc.final_decision,
+                executed=tc.executed,
+                execution_success=tc.execution_success,
+            )
+            for tc in turn.tool_calls
         ]
         return TraceTurn(
             turn_id=turn.turn_id,
@@ -145,7 +169,7 @@ class TraceRecorder:
             llm_response=_redact_text(turn.llm_response),
             usage=dict(turn.usage),
             finish_reason=turn.finish_reason,
-            tool_calls=list(turn.tool_calls),
+            tool_calls=redacted_tool_calls,
             assistant_response=_redact_text(turn.assistant_response),
             model_id=turn.model_id,
             risk_score=turn.risk_score,

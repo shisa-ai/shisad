@@ -1567,26 +1567,34 @@ class DaemonControlHandlers:
 
         # --- trace: record full turn ---
         if self._trace_recorder is not None:
-            provider_resp = planner_result.provider_response
-            trace_messages = [
-                TraceMessage(role="system", content=self._planner._system_prompt),
-                TraceMessage(role="user", content=spotlighted_content),
-            ]
-            self._trace_recorder.record(TraceTurn(
-                session_id=str(sid),
-                user_content=content,
-                messages_sent=trace_messages,
-                llm_response=provider_resp.message.content if provider_resp else "",
-                usage=dict(provider_resp.usage) if provider_resp else {},
-                finish_reason=provider_resp.finish_reason if provider_resp else "",
-                tool_calls=trace_tool_calls,
-                assistant_response=response_text,
-                model_id=self._planner_model_id,
-                risk_score=firewall_result.risk_score,
-                trust_level=trust_level,
-                taint_labels=[label.value for label in context.taint_labels],
-                duration_ms=(time.monotonic() - trace_t0) * 1000.0,
-            ))
+            try:
+                provider_resp = planner_result.provider_response
+                trace_messages = [
+                    TraceMessage(role=m.role, content=m.content, tool_calls=m.tool_calls,
+                                 tool_call_id=m.tool_call_id)
+                    for m in planner_result.messages_sent
+                ] if planner_result.messages_sent else []
+                model_id = self._planner_model_id
+                if provider_resp and provider_resp.model:
+                    model_id = provider_resp.model
+                self._trace_recorder.record(TraceTurn(
+                    session_id=str(sid),
+                    user_content=content,
+                    messages_sent=trace_messages,
+                    llm_response=provider_resp.message.content if provider_resp else "",
+                    usage=dict(provider_resp.usage) if provider_resp else {},
+                    finish_reason=provider_resp.finish_reason if provider_resp else "",
+                    tool_calls=trace_tool_calls,
+                    assistant_response=response_text,
+                    model_id=model_id,
+                    risk_score=firewall_result.risk_score,
+                    trust_level=trust_level,
+                    taint_labels=[label.value for label in context.taint_labels],
+                    duration_ms=(time.monotonic() - trace_t0) * 1000.0,
+                ))
+            except Exception:
+                logger.warning("Trace recording failed; continuing without trace",
+                               exc_info=True)
 
         await self._event_bus.publish(
             SessionMessageResponded(
