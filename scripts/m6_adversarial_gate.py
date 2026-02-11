@@ -34,6 +34,8 @@ def _parse_metrics(payload: dict[str, Any]) -> AdversarialMetrics:
         false_positive_rate=float(metrics_payload.get("false_positive_rate", 1.0)),
         detection_latency_ms=float(metrics_payload.get("detection_latency_ms", 10_000.0)),
         memory_usage_mb=float(metrics_payload.get("memory_usage_mb", 0.0)),
+        decode_depth_max=int(metrics_payload.get("decode_depth_max", 0)),
+        decode_depth_nonzero_rate=float(metrics_payload.get("decode_depth_nonzero_rate", 0.0)),
     )
 
 
@@ -47,6 +49,8 @@ def _select_baseline(payload: dict[str, Any], *, lane: str) -> AdversarialMetric
         false_positive_rate=float(lane_payload.get("false_positive_rate", 1.0)),
         detection_latency_ms=float(lane_payload.get("detection_latency_ms", 10_000.0)),
         memory_usage_mb=float(lane_payload.get("memory_usage_mb", 0.0)),
+        decode_depth_max=int(lane_payload.get("decode_depth_max", 0)),
+        decode_depth_nonzero_rate=float(lane_payload.get("decode_depth_nonzero_rate", 0.0)),
     )
 
 

@@ -253,12 +253,16 @@ class SandboxOrchestrator:
         }
 
     def connect_path_status(self) -> dict[str, object]:
-        available = getattr(self._connect_path_proxy, "net_admin_available", False)
+        net_admin_available = getattr(self._connect_path_proxy, "net_admin_available", False)
         method = "iptables" if "Iptables" in self._connect_path_proxy.__class__.__name__ else "none"
+        # Static daemon status reports capability only.
+        # Per-run engagement is surfaced in SandboxResult.connect_path.
+        available = bool(net_admin_available and method != "none")
         return {
             "method": method,
-            "enforced": False,
-            "cap_net_admin_available": bool(available),
+            "available": available,
+            "engaged": False,
+            "cap_net_admin_available": bool(net_admin_available),
         }
 
     async def execute_async(

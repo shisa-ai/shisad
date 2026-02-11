@@ -1427,6 +1427,8 @@ class DaemonControlHandlers:
                     features={
                         "taints": sorted(label.value for label in context.taint_labels),
                         "firewall_risk": firewall_result.risk_score,
+                        "firewall_decode_depth": int(firewall_result.decode_depth),
+                        "firewall_decode_reasons": list(firewall_result.decode_reason_codes),
                     },
                 )
             )

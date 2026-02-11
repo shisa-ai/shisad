@@ -221,8 +221,14 @@ async def compute_metrics(*, lane: str) -> AdversarialMetrics:
     start = time.perf_counter()
 
     detected_attacks = 0
+    decode_depth_max = 0
+    decode_depth_nonzero = 0
     for variant in variants:
-        if firewall.inspect(variant).risk_score > 0.0:
+        inspected = firewall.inspect(variant)
+        decode_depth_max = max(decode_depth_max, int(inspected.decode_depth))
+        if inspected.decode_depth > 0:
+            decode_depth_nonzero += 1
+        if inspected.risk_score > 0.0:
             detected_attacks += 1
 
     network_detected, network_total = await _network_exfil_checks()
@@ -258,6 +264,8 @@ async def compute_metrics(*, lane: str) -> AdversarialMetrics:
         false_positive_rate=round(fpr, 6),
         detection_latency_ms=round(latency_ms, 3),
         memory_usage_mb=round(memory_mb, 3),
+        decode_depth_max=decode_depth_max,
+        decode_depth_nonzero_rate=round(decode_depth_nonzero / float(max(len(variants), 1)), 6),
     )
 
 

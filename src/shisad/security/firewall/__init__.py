@@ -30,6 +30,8 @@ class FirewallResult(BaseModel):
     original_hash: str
     taint_labels: list[TaintLabel] = Field(default_factory=list)
     secret_findings: list[str] = Field(default_factory=list)
+    decode_depth: int = 0
+    decode_reason_codes: list[str] = Field(default_factory=list)
 
 
 class ContentFirewall:
@@ -79,6 +81,8 @@ class ContentFirewall:
             original_hash=original_hash,
             taint_labels=sorted(taints),
             secret_findings=[f.kind for f in secret_findings],
+            decode_depth=decoded.decode_depth,
+            decode_reason_codes=list(decoded.reason_codes),
         )
 
     @staticmethod

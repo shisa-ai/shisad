@@ -13,6 +13,8 @@ class AdversarialMetrics:
     false_positive_rate: float
     detection_latency_ms: float
     memory_usage_mb: float = 0.0
+    decode_depth_max: int = 0
+    decode_depth_nonzero_rate: float = 0.0
 
 
 @dataclass(slots=True, frozen=True)

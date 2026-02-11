@@ -171,9 +171,13 @@ def _rot13_decode_candidate(text: str) -> str | None:
         return None
     lowered_raw = text.lower()
     lowered_decoded = decoded.lower()
-    if not any(token in lowered_decoded for token in _ROT13_SIGNAL_TOKENS):
+    decoded_hits = {token for token in _ROT13_SIGNAL_TOKENS if token in lowered_decoded}
+    if not decoded_hits:
         return None
-    if any(token in lowered_raw for token in _ROT13_SIGNAL_TOKENS):
+    raw_hits = {token for token in _ROT13_SIGNAL_TOKENS if token in lowered_raw}
+    # Decode when ROT13 reveals at least one signal token that is absent in raw text.
+    # This prevents simple raw-token decoys (e.g. appending "http://...") from suppressing decoding.
+    if not (decoded_hits - raw_hits):
         return None
     return decoded
 

@@ -449,7 +449,8 @@ async def test_m4_t28_daemon_status_reports_connect_path_capability(
         connect_path = status["executors"]["connect_path"]
         assert set(connect_path.keys()) == {
             "method",
-            "enforced",
+            "available",
+            "engaged",
             "cap_net_admin_available",
         }
     finally:
