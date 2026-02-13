@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from shisad.core.api.transport import ControlServer, PeerCredentials
+from shisad.daemon.context import RequestContext
 
 
 def test_admin_peer_accepts_current_uid() -> None:
@@ -31,7 +32,8 @@ def test_admin_peer_rejects_other_uid() -> None:
 async def test_admin_only_method_rejects_non_admin_peer(tmp_path: Path) -> None:
     server = ControlServer(socket_path=tmp_path / "sock")
 
-    async def handler(params: dict[str, object]) -> dict[str, str]:
+    async def handler(params: object, ctx: RequestContext) -> dict[str, str]:
+        _ = (params, ctx)
         return {"ok": "yes"}
 
     server.register_method("session.grant_capabilities", handler, admin_only=True)

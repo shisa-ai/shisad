@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, cast
 
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, Field, ValidationError
 
 from shisad.core.api.schema import (
     INTERNAL_ERROR,
@@ -28,12 +28,18 @@ from shisad.core.api.schema import (
     JsonRpcRequest,
     JsonRpcResponse,
 )
+from shisad.core.interfaces import TypedHandler, TypedMethodRegistration
+from shisad.daemon.context import RequestContext
 
 logger = logging.getLogger(__name__)
 
-# Method handler type
-type MethodHandler = Any  # Callable[[dict[str, Any]], Awaitable[Any]]
 PERMISSION_DENIED = -32001
+
+
+class _UntypedParams(BaseModel):
+    """Fallback params wrapper for methods without explicit param schema."""
+
+    payload: dict[str, Any] = Field(default_factory=dict)
 
 
 class PeerCredentials:
@@ -86,7 +92,7 @@ class ControlServer:
     def __init__(self, socket_path: Path, *, event_queue_size: int = 256) -> None:
         self._socket_path = socket_path
         self._server: asyncio.Server | None = None
-        self._methods: dict[str, tuple[MethodHandler, bool, type[BaseModel] | None]] = {}
+        self._methods: dict[str, TypedMethodRegistration] = {}
         self._event_subscribers: dict[asyncio.StreamWriter, _EventSubscription] = {}
         self._event_queue_size = event_queue_size
 
@@ -97,7 +103,7 @@ class ControlServer:
     def register_method(
         self,
         name: str,
-        handler: MethodHandler,
+        handler: TypedHandler,
         *,
         admin_only: bool = False,
         params_model: type[BaseModel] | None = None,
@@ -245,15 +251,19 @@ class ControlServer:
 
         try:
             if params_model is not None:
-                validated = params_model.model_validate(request.params)
-                # Preserve caller tri-state semantics without injecting default nulls.
-                params = validated.model_dump(mode="json", exclude_unset=True)
+                # Preserve caller tri-state semantics for optional fields.
+                params = params_model.model_validate(request.params)
             else:
-                params = dict(request.params)
-            params["_rpc_peer"] = peer.as_dict()
-            result = await handler(params)
-            return self._success_response(request.id, result)
-        except (TypeError, ValueError) as e:
+                params = _UntypedParams(payload=dict(request.params))
+
+            ctx = RequestContext(rpc_peer=peer.as_dict())
+            result = await handler(params, ctx)
+            if isinstance(result, BaseModel):
+                payload = result.model_dump(mode="json", exclude_unset=True)
+            else:
+                payload = result
+            return self._success_response(request.id, payload)
+        except (TypeError, ValueError, ValidationError) as e:
             return self._error_response(request.id, INVALID_PARAMS, str(e))
         except Exception as e:
             logger.exception("Method %s failed", request.method)
