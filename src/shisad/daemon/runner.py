@@ -64,6 +64,7 @@ from shisad.core.api.schema import (
     TaskPendingConfirmationsParams,
     TaskTriggerEventParams,
     ToolExecuteParams,
+    ToolExecuteResult,
 )
 from shisad.core.api.transport import ControlServer
 from shisad.core.audit import AuditLog
@@ -98,7 +99,12 @@ from shisad.core.transcript import TranscriptStore
 from shisad.core.types import Capability, CredentialRef, SessionId, ToolName
 from shisad.daemon.context import RequestContext
 from shisad.daemon.control_handlers import DaemonControlHandlers
-from shisad.executors.browser import BrowserSandbox, BrowserSandboxPolicy
+from shisad.executors.browser import (
+    BrowserPasteResult,
+    BrowserSandbox,
+    BrowserSandboxPolicy,
+    BrowserScreenshotResult,
+)
 from shisad.executors.connect_path import IptablesConnectPathProxy
 from shisad.executors.proxy import EgressProxy
 from shisad.executors.sandbox import SandboxOrchestrator
@@ -1025,14 +1031,20 @@ async def run_daemon(config: DaemonConfig) -> None:
         ("lockdown.set", handlers.handle_lockdown_set, True, LockdownSetParams, None),
         ("risk.calibrate", handlers.handle_risk_calibrate, True, NoParams, None),
         ("channel.ingest", handlers.handle_channel_ingest, True, ChannelIngestParams, None),
-        ("tool.execute", handlers.handle_tool_execute, True, ToolExecuteParams, None),
-        ("browser.paste", handlers.handle_browser_paste, True, BrowserPasteParams, None),
+        ("tool.execute", handlers.handle_tool_execute, True, ToolExecuteParams, ToolExecuteResult),
+        (
+            "browser.paste",
+            handlers.handle_browser_paste,
+            True,
+            BrowserPasteParams,
+            BrowserPasteResult,
+        ),
         (
             "browser.screenshot",
             handlers.handle_browser_screenshot,
             True,
             BrowserScreenshotParams,
-            None,
+            BrowserScreenshotResult,
         ),
     ]
     for method_name, method_handler, admin_only, params_model, result_model in method_specs:

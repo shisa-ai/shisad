@@ -6,6 +6,8 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from shisad.executors.sandbox import SandboxResult
+
 # --- JSON-RPC 2.0 wire format ---
 
 
@@ -304,6 +306,18 @@ class ToolExecuteParams(_StrictParams):
     network: dict[str, Any] = Field(default_factory=dict)
     environment: dict[str, Any] = Field(default_factory=dict)
     limits: dict[str, Any] = Field(default_factory=dict)
+
+
+class ToolExecuteResult(SandboxResult):
+    """Result envelope for tool.execute, including confirmation metadata."""
+
+    model_config = ConfigDict(extra="allow")
+    confirmation_required: bool | None = None
+    confirmation_id: str | None = None
+    decision_nonce: str | None = None
+    safe_preview: str | None = None
+    warnings: list[str] = Field(default_factory=list)
+    execute_after: str | None = None
 
 
 class BrowserPasteParams(_StrictParams):

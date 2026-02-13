@@ -16,6 +16,7 @@ from shisad.core.api.schema import (
     SessionMessageParams,
     SessionRollbackResult,
     ToolExecuteParams,
+    ToolExecuteResult,
 )
 
 
@@ -49,6 +50,20 @@ class TestApiSchemaValidation:
                     "command": [],
                 }
             )
+
+    def test_tool_execute_result_preserves_confirmation_fields(self) -> None:
+        result = ToolExecuteResult.model_validate(
+            {
+                "allowed": False,
+                "reason": "control_plane_confirmation_required",
+                "confirmation_required": True,
+                "confirmation_id": "confirm-1",
+                "decision_nonce": "nonce-1",
+            }
+        )
+        dumped = result.model_dump(mode="json", exclude_unset=True)
+        assert dumped["confirmation_required"] is True
+        assert dumped["confirmation_id"] == "confirm-1"
 
     def test_session_rollback_result_validation(self) -> None:
         result = SessionRollbackResult.model_validate(
