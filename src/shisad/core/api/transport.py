@@ -29,7 +29,7 @@ from shisad.core.api.schema import (
     JsonRpcResponse,
 )
 from shisad.core.interfaces import TypedHandler, TypedMethodRegistration
-from shisad.daemon.context import RequestContext
+from shisad.core.request_context import RequestContext
 
 logger = logging.getLogger(__name__)
 
@@ -208,8 +208,9 @@ class ControlServer:
         try:
             request = JsonRpcRequest.model_validate(data)
         except ValidationError as e:
+            request_id = data.get("id") if isinstance(data, dict) else None
             return self._error_response(
-                data.get("id"), INVALID_REQUEST, f"Invalid request: {e}"
+                request_id, INVALID_REQUEST, f"Invalid request: {e}"
             )
 
         # Handle event subscription
@@ -255,7 +256,10 @@ class ControlServer:
                 params = params_model.model_validate(request.params)
             else:
                 params = _UntypedParams(payload=dict(request.params))
+        except (TypeError, ValueError, ValidationError) as e:
+            return self._error_response(request.id, INVALID_PARAMS, str(e))
 
+        try:
             ctx = RequestContext(rpc_peer=peer.as_dict())
             result = await handler(params, ctx)
             if isinstance(result, BaseModel):
@@ -263,7 +267,10 @@ class ControlServer:
             else:
                 payload = result
             return self._success_response(request.id, payload)
-        except (TypeError, ValueError, ValidationError) as e:
+        except ValidationError as e:
+            logger.exception("Method %s returned invalid response shape", request.method)
+            return self._error_response(request.id, INTERNAL_ERROR, str(e))
+        except (TypeError, ValueError) as e:
             return self._error_response(request.id, INVALID_PARAMS, str(e))
         except Exception as e:
             logger.exception("Method %s failed", request.method)

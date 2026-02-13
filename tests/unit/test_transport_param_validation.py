@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 
 import pytest
+from pydantic import BaseModel
 
 from shisad.core.api.schema import JsonRpcResponse, SessionCreateParams
 from shisad.core.api.transport import ControlServer
@@ -85,6 +86,66 @@ async def test_transport_preserves_model_field_tristate_and_hides_rpc_peer(
         peer = captured["ctx_peer"]
         assert isinstance(peer, dict)
         assert peer["uid"] == os.getuid()
+    finally:
+        if writer is not None:
+            writer.close()
+            await writer.wait_closed()
+        await server.stop()
+
+
+@pytest.mark.asyncio
+async def test_transport_handles_non_object_invalid_request_without_crashing(
+    tmp_path: Path,
+) -> None:
+    server = ControlServer(tmp_path / "control.sock")
+    await server.start()
+    reader: asyncio.StreamReader | None = None
+    writer: asyncio.StreamWriter | None = None
+    try:
+        reader, writer = await asyncio.open_unix_connection(str(tmp_path / "control.sock"))
+        writer.write(b"[]\n")
+        await writer.drain()
+        response = JsonRpcResponse.model_validate_json(await reader.readline())
+        assert response.error is not None
+        assert response.error.code == -32600
+    finally:
+        if writer is not None:
+            writer.close()
+            await writer.wait_closed()
+        await server.stop()
+
+
+@pytest.mark.asyncio
+async def test_transport_maps_handler_validation_error_to_internal_error(
+    tmp_path: Path,
+) -> None:
+    server = ControlServer(tmp_path / "control.sock")
+
+    class _ResponseEnvelope(BaseModel):
+        ok: bool
+
+    async def _handler(params: SessionCreateParams, ctx: RequestContext) -> dict[str, object]:
+        _ = params, ctx
+        _ResponseEnvelope.model_validate({"unexpected": "shape"})
+        return {"ok": True}
+
+    server.register_method("session.create", _handler, params_model=SessionCreateParams)
+    await server.start()
+    reader: asyncio.StreamReader | None = None
+    writer: asyncio.StreamWriter | None = None
+    try:
+        reader, writer = await asyncio.open_unix_connection(str(tmp_path / "control.sock"))
+        request = {
+            "jsonrpc": "2.0",
+            "method": "session.create",
+            "params": {"channel": "cli"},
+            "id": 3,
+        }
+        writer.write(json.dumps(request).encode("utf-8") + b"\n")
+        await writer.drain()
+        response = JsonRpcResponse.model_validate_json(await reader.readline())
+        assert response.error is not None
+        assert response.error.code == -32603
     finally:
         if writer is not None:
             writer.close()
