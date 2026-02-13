@@ -22,13 +22,17 @@ from shisad.channels.identity import ChannelIdentityMap
 from shisad.channels.ingress import ChannelIngressProcessor
 from shisad.channels.matrix import MatrixChannel, MatrixConfig
 from shisad.core.api.schema import (
+    ActionConfirmResult,
     ActionDecisionParams,
     ActionPendingParams,
+    ActionPendingResult,
+    ActionRejectResult,
     AuditQueryParams,
     BrowserPasteParams,
     BrowserScreenshotParams,
     ChannelIngestParams,
     ConfirmationMetricsParams,
+    ConfirmationMetricsResult,
     DashboardMarkFalsePositiveParams,
     DashboardQueryParams,
     LockdownSetParams,
@@ -42,10 +46,15 @@ from shisad.core.api.schema import (
     NoParams,
     PolicyExplainParams,
     SessionCreateParams,
+    SessionCreateResult,
     SessionGrantCapabilitiesParams,
+    SessionGrantCapabilitiesResult,
+    SessionListResult,
     SessionMessageParams,
     SessionRestoreParams,
+    SessionRestoreResult,
     SessionRollbackParams,
+    SessionRollbackResult,
     SkillInstallParams,
     SkillProfileParams,
     SkillReviewParams,
@@ -857,8 +866,13 @@ async def run_daemon(config: DaemonConfig) -> None:
 
     def _adapt_legacy_handler(
         legacy_handler: Callable[[dict[str, Any]], Awaitable[dict[str, Any]]],
+        *,
+        result_model: type[BaseModel] | None = None,
     ) -> TypedHandler:
-        async def _wrapped(params: BaseModel, ctx: RequestContext) -> dict[str, Any]:
+        async def _wrapped(
+            params: BaseModel,
+            ctx: RequestContext,
+        ) -> BaseModel | dict[str, Any]:
             payload = params.model_dump(mode="json", exclude_unset=True)
             if ctx.rpc_peer is not None:
                 payload["_rpc_peer"] = dict(ctx.rpc_peer)
@@ -868,7 +882,10 @@ async def run_daemon(config: DaemonConfig) -> None:
                 payload["trust_level"] = ctx.trust_level_override
             if ctx.firewall_result is not None:
                 payload["_firewall_result"] = ctx.firewall_result.model_dump(mode="json")
-            return await legacy_handler(payload)
+            result = await legacy_handler(payload)
+            if result_model is None:
+                return result
+            return result_model.model_validate(result)
 
         return _wrapped
 
@@ -880,93 +897,149 @@ async def run_daemon(config: DaemonConfig) -> None:
             Callable[[dict[str, Any]], Awaitable[dict[str, Any]]],
             bool,
             type[BaseModel],
+            type[BaseModel] | None,
         ]
     ] = [
-        ("session.create", handlers.handle_session_create, False, SessionCreateParams),
-        ("session.message", handlers.handle_session_message, False, SessionMessageParams),
-        ("session.list", handlers.handle_session_list, False, NoParams),
-        ("session.restore", handlers.handle_session_restore, False, SessionRestoreParams),
-        ("session.rollback", handlers.handle_session_rollback, True, SessionRollbackParams),
+        (
+            "session.create",
+            handlers.handle_session_create,
+            False,
+            SessionCreateParams,
+            SessionCreateResult,
+        ),
+        ("session.message", handlers.handle_session_message, False, SessionMessageParams, None),
+        ("session.list", handlers.handle_session_list, False, NoParams, SessionListResult),
+        (
+            "session.restore",
+            handlers.handle_session_restore,
+            False,
+            SessionRestoreParams,
+            SessionRestoreResult,
+        ),
+        (
+            "session.rollback",
+            handlers.handle_session_rollback,
+            True,
+            SessionRollbackParams,
+            SessionRollbackResult,
+        ),
         (
             "session.grant_capabilities",
             handlers.handle_session_grant_capabilities,
             True,
             SessionGrantCapabilitiesParams,
+            SessionGrantCapabilitiesResult,
         ),
-        ("daemon.status", handlers.handle_daemon_status, False, NoParams),
-        ("policy.explain", handlers.handle_policy_explain, False, PolicyExplainParams),
-        ("daemon.shutdown", handlers.handle_daemon_shutdown, False, NoParams),
-        ("audit.query", handlers.handle_audit_query, False, AuditQueryParams),
+        ("daemon.status", handlers.handle_daemon_status, False, NoParams, None),
+        ("policy.explain", handlers.handle_policy_explain, False, PolicyExplainParams, None),
+        ("daemon.shutdown", handlers.handle_daemon_shutdown, False, NoParams, None),
+        ("audit.query", handlers.handle_audit_query, False, AuditQueryParams, None),
         (
             "dashboard.audit_explorer",
             handlers.handle_dashboard_audit_explorer,
             True,
             DashboardQueryParams,
+            None,
         ),
         (
             "dashboard.egress_review",
             handlers.handle_dashboard_egress_review,
             True,
             DashboardQueryParams,
+            None,
         ),
         (
             "dashboard.skill_provenance",
             handlers.handle_dashboard_skill_provenance,
             True,
             DashboardQueryParams,
+            None,
         ),
-        ("dashboard.alerts", handlers.handle_dashboard_alerts, True, DashboardQueryParams),
+        ("dashboard.alerts", handlers.handle_dashboard_alerts, True, DashboardQueryParams, None),
         (
             "dashboard.mark_false_positive",
             handlers.handle_dashboard_mark_false_positive,
             True,
             DashboardMarkFalsePositiveParams,
+            None,
         ),
         (
             "confirmation.metrics",
             handlers.handle_confirmation_metrics,
             True,
             ConfirmationMetricsParams,
+            ConfirmationMetricsResult,
         ),
-        ("memory.ingest", handlers.handle_memory_ingest, True, MemoryIngestParams),
-        ("memory.retrieve", handlers.handle_memory_retrieve, False, MemoryRetrieveParams),
-        ("memory.write", handlers.handle_memory_write, True, MemoryWriteParams),
-        ("memory.list", handlers.handle_memory_list, False, MemoryListParams),
-        ("memory.get", handlers.handle_memory_get, False, MemoryEntryParams),
-        ("memory.delete", handlers.handle_memory_delete, True, MemoryEntryParams),
-        ("memory.export", handlers.handle_memory_export, False, MemoryExportParams),
-        ("memory.verify", handlers.handle_memory_verify, True, MemoryEntryParams),
-        ("memory.rotate_key", handlers.handle_memory_rotate_key, True, MemoryRotateKeyParams),
-        ("skill.list", handlers.handle_skill_list, True, NoParams),
-        ("skill.review", handlers.handle_skill_review, True, SkillReviewParams),
-        ("skill.install", handlers.handle_skill_install, True, SkillInstallParams),
-        ("skill.profile", handlers.handle_skill_profile, True, SkillProfileParams),
-        ("skill.revoke", handlers.handle_skill_revoke, True, SkillRevokeParams),
-        ("task.create", handlers.handle_task_create, True, TaskCreateParams),
-        ("task.list", handlers.handle_task_list, False, NoParams),
-        ("task.disable", handlers.handle_task_disable, True, TaskDisableParams),
-        ("task.trigger_event", handlers.handle_task_trigger_event, True, TaskTriggerEventParams),
+        ("memory.ingest", handlers.handle_memory_ingest, True, MemoryIngestParams, None),
+        ("memory.retrieve", handlers.handle_memory_retrieve, False, MemoryRetrieveParams, None),
+        ("memory.write", handlers.handle_memory_write, True, MemoryWriteParams, None),
+        ("memory.list", handlers.handle_memory_list, False, MemoryListParams, None),
+        ("memory.get", handlers.handle_memory_get, False, MemoryEntryParams, None),
+        ("memory.delete", handlers.handle_memory_delete, True, MemoryEntryParams, None),
+        ("memory.export", handlers.handle_memory_export, False, MemoryExportParams, None),
+        ("memory.verify", handlers.handle_memory_verify, True, MemoryEntryParams, None),
+        ("memory.rotate_key", handlers.handle_memory_rotate_key, True, MemoryRotateKeyParams, None),
+        ("skill.list", handlers.handle_skill_list, True, NoParams, None),
+        ("skill.review", handlers.handle_skill_review, True, SkillReviewParams, None),
+        ("skill.install", handlers.handle_skill_install, True, SkillInstallParams, None),
+        ("skill.profile", handlers.handle_skill_profile, True, SkillProfileParams, None),
+        ("skill.revoke", handlers.handle_skill_revoke, True, SkillRevokeParams, None),
+        ("task.create", handlers.handle_task_create, True, TaskCreateParams, None),
+        ("task.list", handlers.handle_task_list, False, NoParams, None),
+        ("task.disable", handlers.handle_task_disable, True, TaskDisableParams, None),
+        (
+            "task.trigger_event",
+            handlers.handle_task_trigger_event,
+            True,
+            TaskTriggerEventParams,
+            None,
+        ),
         (
             "task.pending_confirmations",
             handlers.handle_task_pending_confirmations,
             True,
             TaskPendingConfirmationsParams,
+            None,
         ),
-        ("action.pending", handlers.handle_action_pending, True, ActionPendingParams),
-        ("action.confirm", handlers.handle_action_confirm, True, ActionDecisionParams),
-        ("action.reject", handlers.handle_action_reject, True, ActionDecisionParams),
-        ("lockdown.set", handlers.handle_lockdown_set, True, LockdownSetParams),
-        ("risk.calibrate", handlers.handle_risk_calibrate, True, NoParams),
-        ("channel.ingest", handlers.handle_channel_ingest, True, ChannelIngestParams),
-        ("tool.execute", handlers.handle_tool_execute, True, ToolExecuteParams),
-        ("browser.paste", handlers.handle_browser_paste, True, BrowserPasteParams),
-        ("browser.screenshot", handlers.handle_browser_screenshot, True, BrowserScreenshotParams),
+        (
+            "action.pending",
+            handlers.handle_action_pending,
+            True,
+            ActionPendingParams,
+            ActionPendingResult,
+        ),
+        (
+            "action.confirm",
+            handlers.handle_action_confirm,
+            True,
+            ActionDecisionParams,
+            ActionConfirmResult,
+        ),
+        (
+            "action.reject",
+            handlers.handle_action_reject,
+            True,
+            ActionDecisionParams,
+            ActionRejectResult,
+        ),
+        ("lockdown.set", handlers.handle_lockdown_set, True, LockdownSetParams, None),
+        ("risk.calibrate", handlers.handle_risk_calibrate, True, NoParams, None),
+        ("channel.ingest", handlers.handle_channel_ingest, True, ChannelIngestParams, None),
+        ("tool.execute", handlers.handle_tool_execute, True, ToolExecuteParams, None),
+        ("browser.paste", handlers.handle_browser_paste, True, BrowserPasteParams, None),
+        (
+            "browser.screenshot",
+            handlers.handle_browser_screenshot,
+            True,
+            BrowserScreenshotParams,
+            None,
+        ),
     ]
-    for method_name, method_handler, admin_only, params_model in method_specs:
+    for method_name, method_handler, admin_only, params_model, result_model in method_specs:
         if method_name == "channel.ingest":
             wrapped_handler = channel_ingest_handler
         else:
-            wrapped_handler = _adapt_legacy_handler(method_handler)
+            wrapped_handler = _adapt_legacy_handler(method_handler, result_model=result_model)
         server.register_method(
             method_name,
             wrapped_handler,

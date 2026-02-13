@@ -114,6 +114,17 @@ class SessionRestoreResult(BaseModel):
     checkpoint_id: str
 
 
+class SessionRollbackResult(BaseModel):
+    """Result for session.rollback."""
+
+    rolled_back: bool
+    checkpoint_id: str
+    session_id: str | None = None
+    files_restored: int = 0
+    files_deleted: int = 0
+    restore_errors: list[str] = Field(default_factory=list)
+
+
 class SessionGrantCapabilitiesParams(_StrictParams):
     """Parameters for session.grant_capabilities."""
 
@@ -121,6 +132,14 @@ class SessionGrantCapabilitiesParams(_StrictParams):
     capabilities: list[str] = Field(default_factory=list)
     actor: str | None = None
     reason: str = ""
+
+
+class SessionGrantCapabilitiesResult(BaseModel):
+    """Result for session.grant_capabilities."""
+
+    session_id: str
+    granted: bool
+    capabilities: list[str] = Field(default_factory=list)
 
 
 class AuditQueryParams(_StrictParams):
@@ -234,6 +253,30 @@ class ActionDecisionParams(_StrictParams):
     reason: str = ""
 
 
+class ActionPendingResult(BaseModel):
+    actions: list[dict[str, Any]] = Field(default_factory=list)
+    count: int = 0
+
+
+class ActionConfirmResult(BaseModel):
+    confirmed: bool
+    confirmation_id: str
+    decision_nonce: str | None = None
+    status: str | None = None
+    status_reason: str | None = None
+    checkpoint_id: str | None = None
+    reason: str | None = None
+    retry_after_seconds: float | None = None
+
+
+class ActionRejectResult(BaseModel):
+    rejected: bool
+    confirmation_id: str
+    status: str | None = None
+    status_reason: str | None = None
+    reason: str | None = None
+
+
 class PolicyExplainParams(_StrictParams):
     session_id: str | None = None
     action: str = ""
@@ -310,3 +353,8 @@ class DashboardMarkFalsePositiveParams(_StrictParams):
 class ConfirmationMetricsParams(_StrictParams):
     user_id: str | None = None
     window_seconds: int = 900
+
+
+class ConfirmationMetricsResult(BaseModel):
+    metrics: list[dict[str, Any]] = Field(default_factory=list)
+    count: int = 0
