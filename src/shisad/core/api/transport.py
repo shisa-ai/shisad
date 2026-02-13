@@ -208,7 +208,11 @@ class ControlServer:
         try:
             request = JsonRpcRequest.model_validate(data)
         except ValidationError as e:
-            request_id = data.get("id") if isinstance(data, dict) else None
+            request_id = (
+                self._sanitize_request_id(data.get("id"))
+                if isinstance(data, dict)
+                else None
+            )
             return self._error_response(
                 request_id, INVALID_REQUEST, f"Invalid request: {e}"
             )
@@ -267,14 +271,14 @@ class ControlServer:
             else:
                 payload = result
             return self._success_response(request.id, payload)
-        except ValidationError as e:
+        except ValidationError:
             logger.exception("Method %s returned invalid response shape", request.method)
-            return self._error_response(request.id, INTERNAL_ERROR, str(e))
+            return self._error_response(request.id, INTERNAL_ERROR, "Internal error")
         except (TypeError, ValueError) as e:
             return self._error_response(request.id, INVALID_PARAMS, str(e))
-        except Exception as e:
+        except Exception:
             logger.exception("Method %s failed", request.method)
-            return self._error_response(request.id, INTERNAL_ERROR, str(e))
+            return self._error_response(request.id, INTERNAL_ERROR, "Internal error")
 
     @staticmethod
     def _parse_subscription_filters(
@@ -361,8 +365,19 @@ class ControlServer:
         return resp.model_dump_json()
 
     @staticmethod
-    def _error_response(req_id: str | int | None, code: int, message: str) -> str:
-        resp = JsonRpcResponse(id=req_id, error=JsonRpcError(code=code, message=message))
+    def _sanitize_request_id(value: Any) -> str | int | None:
+        if isinstance(value, str):
+            return value
+        if isinstance(value, bool):
+            return None
+        if isinstance(value, int):
+            return value
+        return None
+
+    @classmethod
+    def _error_response(cls, req_id: str | int | None, code: int, message: str) -> str:
+        safe_id = cls._sanitize_request_id(req_id)
+        resp = JsonRpcResponse(id=safe_id, error=JsonRpcError(code=code, message=message))
         return resp.model_dump_json()
 
     @staticmethod
