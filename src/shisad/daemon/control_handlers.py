@@ -6,6 +6,7 @@ import asyncio
 import base64
 import hashlib
 import json
+import logging
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -56,10 +57,10 @@ from shisad.core.events import (
 )
 from shisad.core.planner import Planner
 from shisad.core.session import CheckpointStore, Session, SessionManager
-from shisad.core.trace import TraceMessage, TraceRecorder, TraceToolCall, TraceTurn
 from shisad.core.tools.builtin.alarm import AlarmTool, AnomalyReportInput
 from shisad.core.tools.registry import ToolRegistry
 from shisad.core.tools.schema import ToolDefinition
+from shisad.core.trace import TraceMessage, TraceRecorder, TraceToolCall, TraceTurn
 from shisad.core.transcript import TranscriptStore
 from shisad.core.types import Capability, SessionId, TaintLabel, ToolName, UserId, WorkspaceId
 from shisad.executors.browser import BrowserSandbox
@@ -117,6 +118,8 @@ from shisad.ui.confirmation import (
     safe_summary,
 )
 from shisad.ui.dashboard import DashboardQuery, SecurityDashboard
+
+logger = logging.getLogger(__name__)
 
 _SIDE_EFFECT_CAPABILITIES: set[Capability] = {
     Capability.EMAIL_WRITE,

@@ -8,6 +8,7 @@ import stat
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
 from shisad.core.trace import TraceMessage, TraceRecorder, TraceToolCall, TraceTurn
 
@@ -118,7 +119,10 @@ class TestTraceSecretRedaction:
         assert "[REDACTED:aws_access_key]" in turns[0].assistant_response
 
     def test_jwt_redacted(self, recorder: TraceRecorder) -> None:
-        jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U"
+        jwt = (
+            "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0."
+            "dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U"
+        )
         turn = _make_turn(user_content=f"my jwt: {jwt}")
         recorder.record(turn)
         turns = recorder.read_turns("sess-1")
@@ -197,7 +201,10 @@ class TestTraceToolCallArgumentsRedaction:
             tool_calls=[
                 TraceToolCall(
                     tool_name="http_request",
-                    arguments={"url": "https://api.example.com", "token": "sk-argkey_1234567890abc"},
+                    arguments={
+                        "url": "https://api.example.com",
+                        "token": "sk-argkey_1234567890abc",
+                    },
                     final_decision="allow",
                     executed=True,
                 ),
@@ -288,11 +295,11 @@ class TestTraceSchemaRoundtrip:
 
     def test_frozen_models(self) -> None:
         msg = TraceMessage(role="user", content="hello")
-        with pytest.raises(Exception):
+        with pytest.raises(ValidationError):
             msg.content = "modified"  # type: ignore[misc]
 
         tc = TraceToolCall(tool_name="echo", executed=True)
-        with pytest.raises(Exception):
+        with pytest.raises(ValidationError):
             tc.executed = False  # type: ignore[misc]
 
 
