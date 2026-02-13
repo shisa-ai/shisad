@@ -67,3 +67,69 @@ async def test_daemon_services_matrix_missing_config_raises(tmp_path) -> None:
     )
     with pytest.raises(ValueError, match="Matrix channel is enabled but missing required config"):
         await DaemonServices.build(config)
+
+
+@pytest.mark.asyncio
+async def test_daemon_services_build_rolls_back_connected_matrix_on_failure(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    disconnected = False
+
+    class _MatrixStub:
+        async def disconnect(self) -> None:
+            nonlocal disconnected
+            disconnected = True
+
+    async def _fake_build_matrix_channel(config: DaemonConfig):  # type: ignore[no-untyped-def]
+        _ = config
+        return _MatrixStub()
+
+    class _ExplodingCredentialStore:
+        def __init__(self) -> None:
+            raise RuntimeError("credential store exploded")
+
+    monkeypatch.setattr(
+        "shisad.daemon.services._build_matrix_channel",
+        _fake_build_matrix_channel,
+    )
+    monkeypatch.setattr(
+        "shisad.daemon.services.InMemoryCredentialStore",
+        _ExplodingCredentialStore,
+    )
+    config = DaemonConfig(
+        data_dir=tmp_path / "data",
+        socket_path=tmp_path / "control.sock",
+        policy_path=tmp_path / "policy.yaml",
+    )
+    with pytest.raises(RuntimeError, match="credential store exploded"):
+        await DaemonServices.build(config)
+    assert disconnected is True
+
+
+@pytest.mark.asyncio
+async def test_daemon_services_shutdown_continues_after_disconnect_error() -> None:
+    calls: list[str] = []
+
+    class _EmbeddingsAdapterStub:
+        def close(self, *, wait: bool = True) -> None:
+            calls.append(f"embed:{wait}")
+
+    class _MatrixStub:
+        async def disconnect(self) -> None:
+            calls.append("matrix")
+            raise RuntimeError("disconnect failed")
+
+    class _ServerStub:
+        async def stop(self) -> None:
+            calls.append("server")
+
+    services = object.__new__(DaemonServices)
+    services.embeddings_adapter = _EmbeddingsAdapterStub()  # type: ignore[assignment]
+    services.matrix_channel = _MatrixStub()  # type: ignore[assignment]
+    services.server = _ServerStub()  # type: ignore[assignment]
+
+    await DaemonServices.shutdown(services)
+    assert calls[0] == "embed:True"
+    assert "matrix" in calls
+    assert calls[-1] == "server"

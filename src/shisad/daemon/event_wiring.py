@@ -43,6 +43,7 @@ class DaemonEventWiring:
     def __init__(self, *, event_bus: EventBus, server: ControlServer) -> None:
         self._event_bus = event_bus
         self._server = server
+        self._loop = asyncio.get_running_loop()
         self._lockdown_manager: LockdownManager | None = None
 
     def bind_lockdown_manager(self, manager: LockdownManager) -> None:
@@ -54,7 +55,6 @@ class DaemonEventWiring:
         await self._server.broadcast_event(payload)
 
     def publish_async(self, event: BaseEvent) -> None:
-        task = asyncio.create_task(self._event_bus.publish(event))
         event_type = type(event).__name__
 
         def _done_callback(done_task: asyncio.Task[None]) -> None:
@@ -63,7 +63,25 @@ class DaemonEventWiring:
             except Exception:
                 logger.exception("Async event publish failed for %s", event_type)
 
-        task.add_done_callback(_done_callback)
+        def _schedule() -> None:
+            task = self._loop.create_task(self._event_bus.publish(event))
+            task.add_done_callback(_done_callback)
+
+        try:
+            running_loop = asyncio.get_running_loop()
+        except RuntimeError:
+            running_loop = None
+
+        if running_loop is self._loop:
+            _schedule()
+            return
+        try:
+            self._loop.call_soon_threadsafe(_schedule)
+        except RuntimeError:
+            logger.exception(
+                "Async event publish failed for %s: event loop unavailable",
+                event_type,
+            )
 
     def audit_capability_event(self, action: str, data: dict[str, Any]) -> None:
         if action != "session.capability_granted":

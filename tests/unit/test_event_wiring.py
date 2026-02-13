@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
@@ -146,3 +147,22 @@ async def test_matrix_receive_pump_forwards_message_as_internal_ingress() -> Non
     assert payload["message"]["channel"] == "matrix"
     assert payload["message"]["content"] == "hello"
     assert is_internal is True
+
+
+@pytest.mark.asyncio
+async def test_publish_async_handles_cross_thread_invocation() -> None:
+    bus = _RecordingEventBus()
+    server = _RecordingServer()
+    wiring = DaemonEventWiring(event_bus=bus, server=server)  # type: ignore[arg-type]
+
+    event = SessionCreated(session_id=SessionId("s1"), actor="tester", user_id="u1")
+
+    thread = threading.Thread(target=lambda: wiring.publish_async(event))
+    thread.start()
+    thread.join(timeout=1.0)
+    assert not thread.is_alive()
+
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    assert bus.events
+    assert isinstance(bus.events[0], SessionCreated)

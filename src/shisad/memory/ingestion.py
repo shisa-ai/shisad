@@ -65,7 +65,7 @@ class RetrievalResult(BaseModel):
     corroborated: bool = False
 
 
-class EmbeddingsProvider(Protocol):
+class SyncEmbeddingsProvider(Protocol):
     """Embeddings provider abstraction."""
 
     def embed(self, input_texts: list[str]) -> list[list[float]]: ...
@@ -92,7 +92,7 @@ class IngestionPipeline:
         *,
         firewall: ContentFirewall | None = None,
         embedding_fingerprint: EmbeddingFingerprint | None = None,
-        embeddings_provider: EmbeddingsProvider | None = None,
+        embeddings_provider: SyncEmbeddingsProvider | None = None,
         encryption_key: str | None = None,
         quarantine_threshold: float = 0.75,
         audit_hook: Callable[[str, dict[str, Any]], None] | None = None,
