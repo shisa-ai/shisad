@@ -29,6 +29,7 @@ from shisad.core.api.schema import (
     PolicyExplainResult,
     SessionCreateParams,
     SessionGrantCapabilitiesResult,
+    SessionListResult,
     SessionMessageParams,
     SessionRollbackResult,
     SkillInstallResult,
@@ -162,7 +163,9 @@ class TestApiSchemaValidation:
             }
         )
         memory_write = MemoryWriteResult.model_validate({"kind": "allow", "entry": {"id": "e1"}})
-        memory_list = MemoryListResult.model_validate({"entries": [], "count": 0})
+        memory_list = MemoryListResult.model_validate(
+            {"entries": [{"id": "e1", "entry_type": "fact", "key": "k1"}], "count": 1}
+        )
         memory_get = MemoryGetResult.model_validate({"entry": {"id": "e1"}})
         memory_delete = MemoryDeleteResult.model_validate({"deleted": True, "entry_id": "e1"})
         memory_export = MemoryExportResult.model_validate({"format": "json", "data": {}})
@@ -178,13 +181,25 @@ class TestApiSchemaValidation:
             {"revoked": True, "skill_name": "s1", "reason": "manual"}
         )
         task_create = TaskCreateResult.model_validate({"id": "t1"})
-        task_list = TaskListResult.model_validate({"tasks": [], "count": 0})
+        task_list = TaskListResult.model_validate(
+            {"tasks": [{"id": "t1", "name": "demo", "enabled": True}], "count": 1}
+        )
+        session_list = SessionListResult.model_validate(
+            {"sessions": [{"id": "s1", "state": "active", "user_id": "alice"}]}
+        )
         task_disable = TaskDisableResult.model_validate({"disabled": True, "task_id": "t1"})
         task_trigger = TaskTriggerEventResult.model_validate({"runs": [], "count": 0})
         task_pending = TaskPendingConfirmationsResult.model_validate(
             {"task_id": "t1", "pending": [], "count": 0}
         )
-        dashboard = DashboardQueryResult.model_validate({"count": 0})
+        dashboard = DashboardQueryResult.model_validate(
+            {
+                "count": 1,
+                "events": [{"event_type": "SessionCreated", "session_id": "s1"}],
+                "alerts": [{"event_id": "evt", "event_type": "AlertRaised"}],
+                "timeline": [{"skill_name": "demo", "versions": ["1.0.0"]}],
+            }
+        )
         dashboard_marked = DashboardMarkFalsePositiveResult.model_validate(
             {"marked": True, "event_id": "evt", "reason": "manual"}
         )
@@ -212,7 +227,8 @@ class TestApiSchemaValidation:
         assert memory_ingest.chunk_id == "m1"
         assert memory_retrieve.count == 1
         assert memory_write.kind == "allow"
-        assert memory_list.count == 0
+        assert memory_list.count == 1
+        assert memory_list.entries[0].id == "e1"
         assert memory_get.entry == {"id": "e1"}
         assert memory_delete.deleted is True
         assert memory_export.format == "json"
@@ -224,11 +240,14 @@ class TestApiSchemaValidation:
         assert skill_profile.network_domains == []
         assert skill_revoke.revoked is True
         assert task_create.model_dump(mode="json")["id"] == "t1"
-        assert task_list.count == 0
+        assert task_list.count == 1
+        assert task_list.tasks[0].id == "t1"
+        assert session_list.sessions[0].id == "s1"
         assert task_disable.disabled is True
         assert task_trigger.count == 0
         assert task_pending.task_id == "t1"
-        assert dashboard.model_dump(mode="json")["count"] == 0
+        assert dashboard.model_dump(mode="json")["count"] == 1
+        assert dashboard.events[0].session_id == "s1"
         assert dashboard_marked.marked is True
         assert daemon_status.status == "running"
         assert daemon_shutdown.status == "shutting_down"
@@ -236,3 +255,37 @@ class TestApiSchemaValidation:
         assert lockdown.level == "caution"
         assert risk.allowed is True
         assert ingest.ingress_risk == 0.1
+
+    def test_m4_list_entry_models_preserve_additional_payload_fields(self) -> None:
+        memory_list = MemoryListResult.model_validate(
+            {
+                "entries": [
+                    {
+                        "entry_id": "e1",
+                        "entry_type": "fact",
+                        "key": "favorite_color",
+                        "value": "blue",
+                        "created_at": "2026-02-13T00:00:00+00:00",
+                    }
+                ],
+                "count": 1,
+            }
+        )
+        action_pending = ActionPendingResult.model_validate(
+            {
+                "actions": [
+                    {
+                        "confirmation_id": "c1",
+                        "status": "pending",
+                        "tool_name": "http_request",
+                        "extra_runtime_field": "kept",
+                    }
+                ],
+                "count": 1,
+            }
+        )
+
+        memory_dump = memory_list.model_dump(mode="json")
+        action_dump = action_pending.model_dump(mode="json")
+        assert memory_dump["entries"][0]["value"] == "blue"
+        assert action_dump["actions"][0]["extra_runtime_field"] == "kept"

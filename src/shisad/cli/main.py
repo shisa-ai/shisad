@@ -5,7 +5,6 @@ Click-based CLI that connects to the daemon via the control API (Unix socket).
 
 from __future__ import annotations
 
-import asyncio
 import json
 import sys
 import time
@@ -16,7 +15,33 @@ from typing import Any
 import click
 import yaml
 from click.shell_completion import get_completion_class
+from pydantic import BaseModel
 
+from shisad.cli.rpc import rpc_call, rpc_run, run_async
+from shisad.core.api.schema import (
+    ActionConfirmResult,
+    ActionPendingResult,
+    ActionRejectResult,
+    ConfirmationMetricsResult,
+    DaemonShutdownResult,
+    DaemonStatusResult,
+    DashboardMarkFalsePositiveResult,
+    DashboardQueryResult,
+    MemoryListResult,
+    MemoryRotateKeyResult,
+    MemoryWriteResult,
+    PolicyExplainResult,
+    SessionCreateResult,
+    SessionListResult,
+    SessionMessageResult,
+    SessionRestoreResult,
+    SessionRollbackResult,
+    SkillInstallResult,
+    SkillListResult,
+    SkillReviewResult,
+    SkillRevokeResult,
+    TaskListResult,
+)
 from shisad.core.config import DaemonConfig
 
 
@@ -38,13 +63,21 @@ def _echo(message: str, *, fg: str | None = None, bold: bool = False, err: bool 
     click.echo(message, err=err)
 
 
+def _dump_model(model: BaseModel) -> str:
+    return json.dumps(model.model_dump(mode="json", exclude_unset=True), indent=2)
+
+
 @contextmanager
 def _progress(label: str) -> Any:
     start = time.monotonic()
     _echo(f"{label}...", fg="cyan")
     try:
         yield
-    finally:
+    except Exception:
+        elapsed = time.monotonic() - start
+        _echo(f"{label} failed ({elapsed:.2f}s)", fg="red", err=True)
+        raise
+    else:
         elapsed = time.monotonic() - start
         _echo(f"{label} done ({elapsed:.2f}s)", fg="green")
 
@@ -85,9 +118,9 @@ def tui(interactive: bool, plain: bool) -> None:
 
     config = _get_config()
     if interactive:
-        asyncio.run(run_interactive(config.socket_path))
+        run_async(run_interactive(config.socket_path))
         return
-    rendered = asyncio.run(run_once(config.socket_path, rich_output=not plain))
+    rendered = run_async(run_once(config.socket_path, rich_output=not plain))
     click.echo(rendered)
 
 
@@ -103,7 +136,7 @@ def web_ui(output: Path) -> None:
     from shisad.ui.web import write_web_snapshot
 
     config = _get_config()
-    out_path = asyncio.run(write_web_snapshot(socket_path=config.socket_path, output_path=output))
+    out_path = run_async(write_web_snapshot(socket_path=config.socket_path, output_path=output))
     _echo(f"Wrote dashboard snapshot: {out_path}", fg="green")
 
 
@@ -127,7 +160,7 @@ def start(foreground: bool) -> None:
     from shisad.daemon.runner import run_daemon
 
     try:
-        asyncio.run(run_daemon(config))
+        run_async(run_daemon(config))
     except KeyboardInterrupt:
         _echo("\nShutting down...", fg="yellow")
 
@@ -141,22 +174,9 @@ def stop() -> None:
         _echo("Daemon does not appear to be running (no socket found)", err=True)
         sys.exit(1)
 
-    async def _stop() -> None:
-        from shisad.core.api.transport import ControlClient
-
-        client = ControlClient(config.socket_path)
-        try:
-            with _progress("Connecting"):
-                await client.connect()
-            await client.call("daemon.shutdown")
-            _echo("Shutdown signal sent", fg="green")
-        except Exception as e:
-            _echo(f"Error: {e}", err=True)
-            sys.exit(1)
-        finally:
-            await client.close()
-
-    asyncio.run(_stop())
+    with _progress("Connecting"):
+        rpc_call(config, "daemon.shutdown", response_model=DaemonShutdownResult)
+    _echo("Shutdown signal sent", fg="green")
 
 
 @cli.command()
@@ -168,23 +188,15 @@ def status() -> None:
         _echo("Status: not running", fg="yellow")
         sys.exit(1)
 
-    async def _status() -> None:
-        from shisad.core.api.transport import ControlClient
+    try:
+        with _progress("Querying daemon status"):
+            result = rpc_call(config, "daemon.status", response_model=DaemonStatusResult)
+    except click.ClickException as exc:
+        _echo(f"Status: error ({exc.message})", err=True)
+        sys.exit(1)
 
-        client = ControlClient(config.socket_path)
-        try:
-            with _progress("Querying daemon status"):
-                await client.connect()
-                result = await client.call("daemon.status")
-            _echo("Status: running", fg="green")
-            click.echo(json.dumps(result, indent=2))
-        except Exception as e:
-            _echo(f"Status: error ({e})", err=True)
-            sys.exit(1)
-        finally:
-            await client.close()
-
-    asyncio.run(_status())
+    _echo("Status: running", fg="green")
+    click.echo(_dump_model(result))
 
 
 # --- Session commands ---
@@ -202,23 +214,13 @@ def session_create(user: str, workspace: str) -> None:
     """Create a new session."""
     config = _get_config()
 
-    async def _create() -> None:
-        from shisad.core.api.transport import ControlClient
-
-        client = ControlClient(config.socket_path)
-        try:
-            await client.connect()
-            result = await client.call(
-                "session.create", {"user_id": user, "workspace_id": workspace}
-            )
-            click.echo(f"Session created: {result['session_id']}")
-        except Exception as e:
-            click.echo(f"Error: {e}", err=True)
-            sys.exit(1)
-        finally:
-            await client.close()
-
-    asyncio.run(_create())
+    result = rpc_call(
+        config,
+        "session.create",
+        {"user_id": user, "workspace_id": workspace},
+        response_model=SessionCreateResult,
+    )
+    click.echo(f"Session created: {result.session_id}")
 
 
 @session.command("message")
@@ -228,23 +230,13 @@ def session_message(session_id: str, content: str) -> None:
     """Send a message to a session."""
     config = _get_config()
 
-    async def _message() -> None:
-        from shisad.core.api.transport import ControlClient
-
-        client = ControlClient(config.socket_path)
-        try:
-            await client.connect()
-            result = await client.call(
-                "session.message", {"session_id": session_id, "content": content}
-            )
-            click.echo(result.get("response", ""))
-        except Exception as e:
-            click.echo(f"Error: {e}", err=True)
-            sys.exit(1)
-        finally:
-            await client.close()
-
-    asyncio.run(_message())
+    result = rpc_call(
+        config,
+        "session.message",
+        {"session_id": session_id, "content": content},
+        response_model=SessionMessageResult,
+    )
+    click.echo(result.response)
 
 
 @session.command("list")
@@ -252,26 +244,12 @@ def session_list() -> None:
     """List active sessions."""
     config = _get_config()
 
-    async def _list() -> None:
-        from shisad.core.api.transport import ControlClient
-
-        client = ControlClient(config.socket_path)
-        try:
-            await client.connect()
-            result = await client.call("session.list")
-            sessions = result.get("sessions", [])
-            if not sessions:
-                click.echo("No active sessions")
-            else:
-                for s in sessions:
-                    click.echo(f"  {s['id']}  state={s['state']}  user={s.get('user_id', '')}")
-        except Exception as e:
-            click.echo(f"Error: {e}", err=True)
-            sys.exit(1)
-        finally:
-            await client.close()
-
-    asyncio.run(_list())
+    result = rpc_call(config, "session.list", response_model=SessionListResult)
+    if not result.sessions:
+        click.echo("No active sessions")
+        return
+    for item in result.sessions:
+        click.echo(f"  {item.id}  state={item.state}  user={item.user_id}")
 
 
 @session.command("restore")
@@ -280,27 +258,17 @@ def session_restore(checkpoint_id: str) -> None:
     """Restore a session from a checkpoint ID."""
     config = _get_config()
 
-    async def _restore() -> None:
-        from shisad.core.api.transport import ControlClient
-
-        client = ControlClient(config.socket_path)
-        try:
-            await client.connect()
-            result = await client.call("session.restore", {"checkpoint_id": checkpoint_id})
-            if result.get("restored"):
-                click.echo(
-                    f"Restored session {result.get('session_id')} from checkpoint {checkpoint_id}"
-                )
-            else:
-                click.echo(f"Checkpoint not found: {checkpoint_id}", err=True)
-                sys.exit(1)
-        except Exception as e:
-            click.echo(f"Error: {e}", err=True)
-            sys.exit(1)
-        finally:
-            await client.close()
-
-    asyncio.run(_restore())
+    result = rpc_call(
+        config,
+        "session.restore",
+        {"checkpoint_id": checkpoint_id},
+        response_model=SessionRestoreResult,
+    )
+    if result.restored:
+        click.echo(f"Restored session {result.session_id} from checkpoint {checkpoint_id}")
+        return
+    click.echo(f"Checkpoint not found: {checkpoint_id}", err=True)
+    sys.exit(1)
 
 
 @session.command("rollback")
@@ -309,27 +277,17 @@ def session_rollback(checkpoint_id: str) -> None:
     """Rollback a session to a checkpoint ID."""
     config = _get_config()
 
-    async def _rollback() -> None:
-        from shisad.core.api.transport import ControlClient
-
-        client = ControlClient(config.socket_path)
-        try:
-            await client.connect()
-            result = await client.call("session.rollback", {"checkpoint_id": checkpoint_id})
-            if result.get("rolled_back"):
-                click.echo(
-                    f"Rolled back session {result.get('session_id')} to checkpoint {checkpoint_id}"
-                )
-            else:
-                click.echo(f"Checkpoint not found: {checkpoint_id}", err=True)
-                sys.exit(1)
-        except Exception as e:
-            click.echo(f"Error: {e}", err=True)
-            sys.exit(1)
-        finally:
-            await client.close()
-
-    asyncio.run(_rollback())
+    result = rpc_call(
+        config,
+        "session.rollback",
+        {"checkpoint_id": checkpoint_id},
+        response_model=SessionRollbackResult,
+    )
+    if result.rolled_back:
+        click.echo(f"Rolled back session {result.session_id} to checkpoint {checkpoint_id}")
+        return
+    click.echo(f"Checkpoint not found: {checkpoint_id}", err=True)
+    sys.exit(1)
 
 
 # --- Audit commands ---
@@ -428,34 +386,25 @@ def events_subscribe(
     """Stream events from the daemon."""
     config = _get_config()
 
-    async def _subscribe() -> None:
-        from shisad.core.api.transport import ControlClient
-
-        client = ControlClient(config.socket_path)
+    async def _subscribe(client: Any) -> None:
         received = 0
-        try:
-            await client.connect()
-            params: dict[str, object] = {}
-            if event_types:
-                params["event_types"] = list(event_types)
-            if session_id:
-                params["session_id"] = session_id
-            await client.subscribe_events(params)
-            while True:
-                event = await client.read_event()
-                click.echo(json.dumps(event, sort_keys=True))
-                received += 1
-                if count > 0 and received >= count:
-                    break
-        except KeyboardInterrupt:
-            return
-        except Exception as e:
-            click.echo(f"Error: {e}", err=True)
-            sys.exit(1)
-        finally:
-            await client.close()
+        params: dict[str, object] = {}
+        if event_types:
+            params["event_types"] = list(event_types)
+        if session_id:
+            params["session_id"] = session_id
+        await client.subscribe_events(params)
+        while True:
+            event = await client.read_event()
+            click.echo(json.dumps(event, sort_keys=True))
+            received += 1
+            if count > 0 and received >= count:
+                break
 
-    asyncio.run(_subscribe())
+    try:
+        rpc_run(config, _subscribe, action="events.subscribe")
+    except KeyboardInterrupt:
+        return
 
 
 @cli.group()
@@ -471,39 +420,30 @@ def action() -> None:
 def action_pending(session_id: str, status: str, limit: int, raw: bool) -> None:
     """List pending confirmations."""
     config = _get_config()
-
-    async def _pending() -> None:
-        from shisad.core.api.transport import ControlClient
-
-        client = ControlClient(config.socket_path)
-        try:
-            await client.connect()
-            result = await client.call(
-                "action.pending",
-                {
-                    "session_id": session_id or None,
-                    "status": status or None,
-                    "limit": limit,
-                    "include_ui": not raw,
-                },
-            )
-            rows = result.get("actions", [])
-            if not rows:
-                _echo("No pending confirmations", fg="yellow")
-                return
-            for row in rows:
-                click.echo(
-                    f"{row['confirmation_id']} status={row['status']} "
-                    f"tool={row['tool_name']} reason={row.get('reason','')}"
-                )
-                preview = str(row.get("safe_preview", "")).strip()
-                if preview:
-                    click.echo(preview)
-                    click.echo("")
-        finally:
-            await client.close()
-
-    asyncio.run(_pending())
+    result = rpc_call(
+        config,
+        "action.pending",
+        {
+            "session_id": session_id or None,
+            "status": status or None,
+            "limit": limit,
+            "include_ui": not raw,
+        },
+        response_model=ActionPendingResult,
+    )
+    rows = result.actions
+    if not rows:
+        _echo("No pending confirmations", fg="yellow")
+        return
+    for row in rows:
+        click.echo(
+            f"{row.confirmation_id} status={row.status} "
+            f"tool={row.tool_name} reason={row.reason}"
+        )
+        preview = (row.safe_preview or "").strip()
+        if preview:
+            click.echo(preview)
+            click.echo("")
 
 
 @action.command("confirm")
@@ -513,26 +453,17 @@ def action_pending(session_id: str, status: str, limit: int, raw: bool) -> None:
 def action_confirm(confirmation_id: str, nonce: str, reason: str) -> None:
     """Approve one pending confirmation."""
     config = _get_config()
-
-    async def _confirm() -> None:
-        from shisad.core.api.transport import ControlClient
-
-        client = ControlClient(config.socket_path)
-        try:
-            await client.connect()
-            result = await client.call(
-                "action.confirm",
-                {
-                    "confirmation_id": confirmation_id,
-                    "decision_nonce": nonce or None,
-                    "reason": reason,
-                },
-            )
-            click.echo(json.dumps(result, indent=2))
-        finally:
-            await client.close()
-
-    asyncio.run(_confirm())
+    result = rpc_call(
+        config,
+        "action.confirm",
+        {
+            "confirmation_id": confirmation_id,
+            "decision_nonce": nonce or None,
+            "reason": reason,
+        },
+        response_model=ActionConfirmResult,
+    )
+    click.echo(_dump_model(result))
 
 
 @action.command("reject")
@@ -541,22 +472,13 @@ def action_confirm(confirmation_id: str, nonce: str, reason: str) -> None:
 def action_reject(confirmation_id: str, reason: str) -> None:
     """Reject one pending confirmation."""
     config = _get_config()
-
-    async def _reject() -> None:
-        from shisad.core.api.transport import ControlClient
-
-        client = ControlClient(config.socket_path)
-        try:
-            await client.connect()
-            result = await client.call(
-                "action.reject",
-                {"confirmation_id": confirmation_id, "reason": reason},
-            )
-            click.echo(json.dumps(result, indent=2))
-        finally:
-            await client.close()
-
-    asyncio.run(_reject())
+    result = rpc_call(
+        config,
+        "action.reject",
+        {"confirmation_id": confirmation_id, "reason": reason},
+        response_model=ActionRejectResult,
+    )
+    click.echo(_dump_model(result))
 
 
 @cli.group()
@@ -581,37 +503,26 @@ def dashboard_audit(
 ) -> None:
     """Audit explorer with hash-chain status."""
     config = _get_config()
-
-    async def _audit() -> None:
-        from shisad.core.api.transport import ControlClient
-
-        client = ControlClient(config.socket_path)
-        try:
-            await client.connect()
-            result = await client.call(
-                "dashboard.audit_explorer",
-                {
-                    "since": since or None,
-                    "event_type": event_type or None,
-                    "session_id": session_id or None,
-                    "actor": actor or None,
-                    "text_search": text_search,
-                    "limit": limit,
-                },
-            )
-            chain = result.get("hash_chain", {})
-            click.echo(
-                f"hash_chain valid={chain.get('valid')} checked={chain.get('entries_checked')}"
-            )
-            for event in result.get("events", []):
-                click.echo(
-                    f"{event.get('timestamp')} {event.get('event_type')} "
-                    f"session={event.get('session_id')} actor={event.get('actor')}"
-                )
-        finally:
-            await client.close()
-
-    asyncio.run(_audit())
+    result = rpc_call(
+        config,
+        "dashboard.audit_explorer",
+        {
+            "since": since or None,
+            "event_type": event_type or None,
+            "session_id": session_id or None,
+            "actor": actor or None,
+            "text_search": text_search,
+            "limit": limit,
+        },
+        response_model=DashboardQueryResult,
+    )
+    chain = result.hash_chain or {}
+    click.echo(f"hash_chain valid={chain.get('valid')} checked={chain.get('entries_checked')}")
+    for event in result.events:
+        click.echo(
+            f"{event.timestamp} {event.event_type} "
+            f"session={event.session_id} actor={event.actor}"
+        )
 
 
 @dashboard.command("egress")
@@ -619,24 +530,17 @@ def dashboard_audit(
 def dashboard_egress(limit: int) -> None:
     """Review blocked/flagged egress attempts."""
     config = _get_config()
-
-    async def _egress() -> None:
-        from shisad.core.api.transport import ControlClient
-
-        client = ControlClient(config.socket_path)
-        try:
-            await client.connect()
-            result = await client.call("dashboard.egress_review", {"limit": limit})
-            for event in result.get("events", []):
-                data = event.get("data", {})
-                click.echo(
-                    f"{event.get('timestamp')} host={data.get('destination_host','')} "
-                    f"allowed={data.get('allowed')} reason={data.get('reason','')}"
-                )
-        finally:
-            await client.close()
-
-    asyncio.run(_egress())
+    result = rpc_call(
+        config,
+        "dashboard.egress_review",
+        {"limit": limit},
+        response_model=DashboardQueryResult,
+    )
+    for event in result.events:
+        click.echo(
+            f"{event.timestamp} host={event.data.get('destination_host','')} "
+            f"allowed={event.data.get('allowed')} reason={event.data.get('reason','')}"
+        )
 
 
 @dashboard.command("skill-provenance")
@@ -644,23 +548,14 @@ def dashboard_egress(limit: int) -> None:
 def dashboard_skill_provenance(limit: int) -> None:
     """View skill installation/review/profile/revocation timeline."""
     config = _get_config()
-
-    async def _provenance() -> None:
-        from shisad.core.api.transport import ControlClient
-
-        client = ControlClient(config.socket_path)
-        try:
-            await client.connect()
-            result = await client.call("dashboard.skill_provenance", {"limit": limit})
-            for row in result.get("timeline", []):
-                click.echo(
-                    f"{row.get('skill_name','')} "
-                    f"versions={','.join(row.get('versions', []))}"
-                )
-        finally:
-            await client.close()
-
-    asyncio.run(_provenance())
+    result = rpc_call(
+        config,
+        "dashboard.skill_provenance",
+        {"limit": limit},
+        response_model=DashboardQueryResult,
+    )
+    for row in result.timeline:
+        click.echo(f"{row.skill_name} versions={','.join(row.versions)}")
 
 
 @dashboard.command("alerts")
@@ -668,23 +563,14 @@ def dashboard_skill_provenance(limit: int) -> None:
 def dashboard_alerts(limit: int) -> None:
     """List active/recent alerts."""
     config = _get_config()
-
-    async def _alerts() -> None:
-        from shisad.core.api.transport import ControlClient
-
-        client = ControlClient(config.socket_path)
-        try:
-            await client.connect()
-            result = await client.call("dashboard.alerts", {"limit": limit})
-            for row in result.get("alerts", []):
-                click.echo(
-                    f"{row.get('event_id')} {row.get('event_type')} "
-                    f"ack={row.get('acknowledged_reason','')}"
-                )
-        finally:
-            await client.close()
-
-    asyncio.run(_alerts())
+    result = rpc_call(
+        config,
+        "dashboard.alerts",
+        {"limit": limit},
+        response_model=DashboardQueryResult,
+    )
+    for row in result.alerts:
+        click.echo(f"{row.event_id} {row.event_type} ack={row.acknowledged_reason}")
 
 
 @dashboard.command("mark-fp")
@@ -693,22 +579,13 @@ def dashboard_alerts(limit: int) -> None:
 def dashboard_mark_fp(event_id: str, reason: str) -> None:
     """Mark a dashboard alert as false-positive/acknowledged."""
     config = _get_config()
-
-    async def _mark() -> None:
-        from shisad.core.api.transport import ControlClient
-
-        client = ControlClient(config.socket_path)
-        try:
-            await client.connect()
-            result = await client.call(
-                "dashboard.mark_false_positive",
-                {"event_id": event_id, "reason": reason},
-            )
-            click.echo(json.dumps(result, indent=2))
-        finally:
-            await client.close()
-
-    asyncio.run(_mark())
+    result = rpc_call(
+        config,
+        "dashboard.mark_false_positive",
+        {"event_id": event_id, "reason": reason},
+        response_model=DashboardMarkFalsePositiveResult,
+    )
+    click.echo(_dump_model(result))
 
 
 @cli.group()
@@ -722,22 +599,13 @@ def confirmation() -> None:
 def confirmation_metrics(user_id: str, window_seconds: int) -> None:
     """Show confirmation hygiene metrics."""
     config = _get_config()
-
-    async def _metrics() -> None:
-        from shisad.core.api.transport import ControlClient
-
-        client = ControlClient(config.socket_path)
-        try:
-            await client.connect()
-            result = await client.call(
-                "confirmation.metrics",
-                {"user_id": user_id or None, "window_seconds": window_seconds},
-            )
-            click.echo(json.dumps(result, indent=2))
-        finally:
-            await client.close()
-
-    asyncio.run(_metrics())
+    result = rpc_call(
+        config,
+        "confirmation.metrics",
+        {"user_id": user_id or None, "window_seconds": window_seconds},
+        response_model=ConfirmationMetricsResult,
+    )
+    click.echo(_dump_model(result))
 
 
 @cli.group()
@@ -749,20 +617,9 @@ def memory() -> None:
 @click.option("--limit", default=100, help="Maximum entries")
 def memory_list(limit: int) -> None:
     config = _get_config()
-
-    async def _list() -> None:
-        from shisad.core.api.transport import ControlClient
-
-        client = ControlClient(config.socket_path)
-        try:
-            await client.connect()
-            result = await client.call("memory.list", {"limit": limit})
-            for item in result.get("entries", []):
-                click.echo(f"{item['id']} {item['entry_type']} {item['key']}")
-        finally:
-            await client.close()
-
-    asyncio.run(_list())
+    result = rpc_call(config, "memory.list", {"limit": limit}, response_model=MemoryListResult)
+    for item in result.entries:
+        click.echo(f"{item.id} {item.entry_type} {item.key}")
 
 
 @memory.command("write")
@@ -786,32 +643,23 @@ def memory_write(
     confirm: bool,
 ) -> None:
     config = _get_config()
-
-    async def _write() -> None:
-        from shisad.core.api.transport import ControlClient
-
-        client = ControlClient(config.socket_path)
-        try:
-            await client.connect()
-            result = await client.call(
-                "memory.write",
-                {
-                    "entry_type": entry_type,
-                    "key": key,
-                    "value": value,
-                    "source": {
-                        "origin": origin,
-                        "source_id": source_id,
-                        "extraction_method": "cli",
-                    },
-                    "user_confirmed": confirm,
-                },
-            )
-            click.echo(json.dumps(result, indent=2))
-        finally:
-            await client.close()
-
-    asyncio.run(_write())
+    result = rpc_call(
+        config,
+        "memory.write",
+        {
+            "entry_type": entry_type,
+            "key": key,
+            "value": value,
+            "source": {
+                "origin": origin,
+                "source_id": source_id,
+                "extraction_method": "cli",
+            },
+            "user_confirmed": confirm,
+        },
+        response_model=MemoryWriteResult,
+    )
+    click.echo(_dump_model(result))
 
 
 @memory.command("rotate-key")
@@ -823,22 +671,13 @@ def memory_write(
 def memory_rotate_key(no_reencrypt: bool) -> None:
     """Rotate memory/retrieval encryption key material."""
     config = _get_config()
-
-    async def _rotate() -> None:
-        from shisad.core.api.transport import ControlClient
-
-        client = ControlClient(config.socket_path)
-        try:
-            await client.connect()
-            result = await client.call(
-                "memory.rotate_key",
-                {"reencrypt_existing": not no_reencrypt},
-            )
-            click.echo(json.dumps(result, indent=2))
-        finally:
-            await client.close()
-
-    asyncio.run(_rotate())
+    result = rpc_call(
+        config,
+        "memory.rotate_key",
+        {"reencrypt_existing": not no_reencrypt},
+        response_model=MemoryRotateKeyResult,
+    )
+    click.echo(_dump_model(result))
 
 
 @cli.group()
@@ -849,20 +688,9 @@ def task() -> None:
 @task.command("list")
 def task_list() -> None:
     config = _get_config()
-
-    async def _list() -> None:
-        from shisad.core.api.transport import ControlClient
-
-        client = ControlClient(config.socket_path)
-        try:
-            await client.connect()
-            result = await client.call("task.list")
-            for item in result.get("tasks", []):
-                click.echo(f"{item['id']} {item['name']} enabled={item['enabled']}")
-        finally:
-            await client.close()
-
-    asyncio.run(_list())
+    result = rpc_call(config, "task.list", response_model=TaskListResult)
+    for item in result.tasks:
+        click.echo(f"{item.id} {item.name} enabled={item.enabled}")
 
 
 @cli.group()
@@ -874,27 +702,12 @@ def skill() -> None:
 def skill_list() -> None:
     """List installed skills tracked by the daemon inventory."""
     config = _get_config()
-
-    async def _list() -> None:
-        from shisad.core.api.transport import ControlClient
-
-        client = ControlClient(config.socket_path)
-        try:
-            await client.connect()
-            result = await client.call("skill.list")
-            skills = result.get("skills", [])
-            if not skills:
-                _echo("No installed skills", fg="yellow")
-                return
-            for item in skills:
-                click.echo(
-                    f"{item.get('name','')}@{item.get('version','')} "
-                    f"state={item.get('state','')} author={item.get('author','')}"
-                )
-        finally:
-            await client.close()
-
-    asyncio.run(_list())
+    result = rpc_call(config, "skill.list", response_model=SkillListResult)
+    if not result.skills:
+        _echo("No installed skills", fg="yellow")
+        return
+    for item in result.skills:
+        click.echo(f"{item.name}@{item.version} state={item.state} author={item.author}")
 
 
 @skill.command("review")
@@ -902,19 +715,13 @@ def skill_list() -> None:
 def skill_review(skill_path: Path) -> None:
     """Run daemon-backed skill review and show findings/reputation."""
     config = _get_config()
-
-    async def _review() -> None:
-        from shisad.core.api.transport import ControlClient
-
-        client = ControlClient(config.socket_path)
-        try:
-            await client.connect()
-            result = await client.call("skill.review", {"skill_path": str(skill_path)})
-            click.echo(json.dumps(result, indent=2))
-        finally:
-            await client.close()
-
-    asyncio.run(_review())
+    result = rpc_call(
+        config,
+        "skill.review",
+        {"skill_path": str(skill_path)},
+        response_model=SkillReviewResult,
+    )
+    click.echo(_dump_model(result))
 
 
 @skill.command("install")
@@ -923,25 +730,13 @@ def skill_review(skill_path: Path) -> None:
 def skill_install(skill_path: Path, approve_untrusted: bool) -> None:
     """Install a reviewed skill through daemon policy gates."""
     config = _get_config()
-
-    async def _install() -> None:
-        from shisad.core.api.transport import ControlClient
-
-        client = ControlClient(config.socket_path)
-        try:
-            await client.connect()
-            result = await client.call(
-                "skill.install",
-                {
-                    "skill_path": str(skill_path),
-                    "approve_untrusted": approve_untrusted,
-                },
-            )
-            click.echo(json.dumps(result, indent=2))
-        finally:
-            await client.close()
-
-    asyncio.run(_install())
+    result = rpc_call(
+        config,
+        "skill.install",
+        {"skill_path": str(skill_path), "approve_untrusted": approve_untrusted},
+        response_model=SkillInstallResult,
+    )
+    click.echo(_dump_model(result))
 
 
 @skill.command("revoke")
@@ -950,22 +745,13 @@ def skill_install(skill_path: Path, approve_untrusted: bool) -> None:
 def skill_revoke(skill_name: str, reason: str) -> None:
     """Revoke an installed skill (state transition to revoked)."""
     config = _get_config()
-
-    async def _revoke() -> None:
-        from shisad.core.api.transport import ControlClient
-
-        client = ControlClient(config.socket_path)
-        try:
-            await client.connect()
-            result = await client.call(
-                "skill.revoke",
-                {"skill_name": skill_name, "reason": reason},
-            )
-            click.echo(json.dumps(result, indent=2))
-        finally:
-            await client.close()
-
-    asyncio.run(_revoke())
+    result = rpc_call(
+        config,
+        "skill.revoke",
+        {"skill_name": skill_name, "reason": reason},
+        response_model=SkillRevokeResult,
+    )
+    click.echo(_dump_model(result))
 
 
 @skill.command("profile")
@@ -1049,26 +835,13 @@ def policy() -> None:
 def policy_explain(session_id: str, action: str, tool_name: str) -> None:
     """Explain effective policy inheritance for a session/action."""
     config = _get_config()
-
-    async def _explain() -> None:
-        from shisad.core.api.transport import ControlClient
-
-        client = ControlClient(config.socket_path)
-        try:
-            await client.connect()
-            result = await client.call(
-                "policy.explain",
-                {
-                    "session_id": session_id or None,
-                    "action": action,
-                    "tool_name": tool_name or None,
-                },
-            )
-            click.echo(json.dumps(result, indent=2))
-        finally:
-            await client.close()
-
-    asyncio.run(_explain())
+    result = rpc_call(
+        config,
+        "policy.explain",
+        {"session_id": session_id or None, "action": action, "tool_name": tool_name or None},
+        response_model=PolicyExplainResult,
+    )
+    click.echo(_dump_model(result))
 
 
 if __name__ == "__main__":

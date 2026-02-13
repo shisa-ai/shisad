@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, StrictInt, StrictStr
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, StrictInt, StrictStr
 
 from shisad.executors.sandbox import SandboxResult
 
@@ -106,10 +106,25 @@ class SessionMessageResult(BaseModel):
     output_policy: dict[str, Any] = Field(default_factory=dict)
 
 
+class SessionListEntry(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    id: str
+    state: str = ""
+    user_id: str = ""
+    workspace_id: str = ""
+    channel: str = ""
+    capabilities: list[str] = Field(default_factory=list)
+    trust_level: str = ""
+    session_key: str | None = None
+    created_at: str | None = None
+    lockdown_level: str | None = None
+
+
 class SessionListResult(BaseModel):
     """Result for session.list."""
 
-    sessions: list[dict[str, Any]]
+    sessions: list[SessionListEntry] = Field(default_factory=list)
 
 
 class SessionRestoreParams(_StrictParams):
@@ -244,8 +259,16 @@ class MemoryWriteResult(BaseModel):
     entry: dict[str, Any] | None = None
 
 
+class MemoryListEntry(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    id: str = Field(default="", validation_alias=AliasChoices("id", "entry_id"))
+    entry_type: str = ""
+    key: str = ""
+
+
 class MemoryListResult(BaseModel):
-    entries: list[dict[str, Any]] = Field(default_factory=list)
+    entries: list[MemoryListEntry] = Field(default_factory=list)
     count: int = 0
 
 
@@ -313,7 +336,7 @@ class TaskCreateResult(BaseModel):
 
 
 class TaskListResult(BaseModel):
-    tasks: list[dict[str, Any]] = Field(default_factory=list)
+    tasks: list[TaskCreateResult] = Field(default_factory=list)
     count: int = 0
 
 
@@ -370,8 +393,30 @@ class ActionDecisionParams(_StrictParams):
     reason: str = ""
 
 
+class ActionPendingEntry(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    confirmation_id: str = ""
+    decision_nonce: str = ""
+    session_id: str = ""
+    user_id: str = ""
+    workspace_id: str = ""
+    status: str = ""
+    tool_name: str = ""
+    arguments: dict[str, Any] = Field(default_factory=dict)
+    reason: str = ""
+    capabilities: list[str] = Field(default_factory=list)
+    created_at: str = ""
+    execute_after: str | None = None
+    safe_preview: str | None = None
+    warnings: list[str] = Field(default_factory=list)
+    leak_check: dict[str, Any] = Field(default_factory=dict)
+    status_reason: str | None = None
+    preflight_action: dict[str, Any] | None = None
+
+
 class ActionPendingResult(BaseModel):
-    actions: list[dict[str, Any]] = Field(default_factory=list)
+    actions: list[ActionPendingEntry] = Field(default_factory=list)
     count: int = 0
 
 
@@ -533,8 +578,19 @@ class SkillRevokeParams(_StrictParams):
     reason: str = "security_revoke"
 
 
+class SkillListEntry(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    name: str = ""
+    version: str = ""
+    path: str = ""
+    manifest_hash: str = ""
+    state: str = ""
+    author: str = ""
+
+
 class SkillListResult(BaseModel):
-    skills: list[dict[str, Any]] = Field(default_factory=list)
+    skills: list[SkillListEntry] = Field(default_factory=list)
     count: int = 0
 
 
@@ -559,14 +615,40 @@ class DashboardMarkFalsePositiveParams(_StrictParams):
     reason: str = "false_positive"
 
 
-class DashboardQueryResult(BaseModel):
+class DashboardEventEntry(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    timestamp: str | None = None
+    event_type: str | None = None
+    session_id: str | None = None
+    actor: str | None = None
+    data: dict[str, Any] = Field(default_factory=dict)
+
+
+class DashboardAlertEntry(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    event_id: str = ""
+    event_type: str = ""
+    acknowledged_reason: str = ""
+
+
+class DashboardTimelineEntry(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    skill_name: str = ""
+    versions: list[str] = Field(default_factory=list)
     events: list[dict[str, Any]] = Field(default_factory=list)
-    alerts: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class DashboardQueryResult(BaseModel):
+    events: list[DashboardEventEntry] = Field(default_factory=list)
+    alerts: list[DashboardAlertEntry] = Field(default_factory=list)
     total: int = 0
     count: int = 0
     hash_chain: dict[str, Any] | None = None
-    installed: list[dict[str, Any]] = Field(default_factory=list)
-    timeline: list[dict[str, Any]] = Field(default_factory=list)
+    installed: list[SkillListEntry] = Field(default_factory=list)
+    timeline: list[DashboardTimelineEntry] = Field(default_factory=list)
 
 
 class DashboardMarkFalsePositiveResult(BaseModel):
