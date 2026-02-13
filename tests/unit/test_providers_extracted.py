@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+import threading
+import time
 from typing import Any
 
 import pytest
@@ -134,6 +137,76 @@ async def test_sync_embeddings_adapter_bridges_async_provider() -> None:
         assert vectors == [[2.0], [4.0]]
     finally:
         adapter.close()
+
+
+@pytest.mark.asyncio
+async def test_sync_embeddings_adapter_timeout_path() -> None:
+    class _SlowEmbeddingsProvider(EmbeddingsProvider):
+        async def embeddings(
+            self,
+            input_texts: list[str],
+            *,
+            model_id: str | None = None,
+        ) -> EmbeddingResponse:
+            _ = (input_texts, model_id)
+            await asyncio.sleep(0.05)
+            return EmbeddingResponse(vectors=[[1.0]])
+
+    adapter = SyncEmbeddingsAdapter(
+        _SlowEmbeddingsProvider(),
+        model_id="embed-v1",
+        timeout_seconds=0.01,
+    )
+    try:
+        with pytest.raises(TimeoutError, match="adapter timeout"):
+            adapter.embed(["x"])
+    finally:
+        adapter.close()
+
+
+@pytest.mark.asyncio
+async def test_sync_embeddings_adapter_close_wait_false_does_not_block() -> None:
+    started = threading.Event()
+    released = threading.Event()
+    result: dict[str, Any] = {}
+
+    class _BlockingEmbeddingsProvider(EmbeddingsProvider):
+        async def embeddings(
+            self,
+            input_texts: list[str],
+            *,
+            model_id: str | None = None,
+        ) -> EmbeddingResponse:
+            _ = (input_texts, model_id)
+            started.set()
+            await asyncio.to_thread(released.wait)
+            return EmbeddingResponse(vectors=[[2.0]])
+
+    adapter = SyncEmbeddingsAdapter(
+        _BlockingEmbeddingsProvider(),
+        model_id="embed-v1",
+        timeout_seconds=2.0,
+    )
+
+    def _run_embed() -> None:
+        try:
+            result["vectors"] = adapter.embed(["x"])
+        except Exception as exc:
+            result["error"] = exc
+
+    worker = threading.Thread(target=_run_embed)
+    worker.start()
+    assert started.wait(timeout=1.0)
+    before = time.monotonic()
+    adapter.close(wait=False)
+    elapsed = time.monotonic() - before
+    assert elapsed < 0.2
+
+    released.set()
+    worker.join(timeout=1.0)
+    assert not worker.is_alive()
+    assert "error" not in result
+    assert result["vectors"] == [[2.0]]
 
 
 @pytest.mark.asyncio

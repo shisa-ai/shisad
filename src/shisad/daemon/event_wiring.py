@@ -64,7 +64,14 @@ class DaemonEventWiring:
                 logger.exception("Async event publish failed for %s", event_type)
 
         def _schedule() -> None:
-            task = self._loop.create_task(self._event_bus.publish(event))
+            try:
+                task = self._loop.create_task(self._event_bus.publish(event))
+            except RuntimeError:
+                logger.exception(
+                    "Async event publish failed for %s: event loop unavailable",
+                    event_type,
+                )
+                return
             task.add_done_callback(_done_callback)
 
         try:

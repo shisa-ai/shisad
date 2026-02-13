@@ -64,6 +64,15 @@ class _ChannelIngestHandlerStub:
         self._shutdown_event.set()
 
 
+class _ClosedLoopStub:
+    def create_task(self, coro: Any) -> Any:
+        coro.close()
+        raise RuntimeError("Event loop is closed")
+
+    def call_soon_threadsafe(self, callback: Any) -> None:
+        callback()
+
+
 @pytest.mark.asyncio
 async def test_forward_event_to_subscribers_adds_event_type() -> None:
     bus = _RecordingEventBus()
@@ -166,3 +175,20 @@ async def test_publish_async_handles_cross_thread_invocation() -> None:
     await asyncio.sleep(0)
     assert bus.events
     assert isinstance(bus.events[0], SessionCreated)
+
+
+def test_publish_async_same_loop_closed_is_swallowed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bus = _RecordingEventBus()
+    server = _RecordingServer()
+    loop_stub = _ClosedLoopStub()
+    wiring = object.__new__(DaemonEventWiring)
+    wiring._event_bus = bus
+    wiring._server = server
+    wiring._loop = loop_stub
+    wiring._lockdown_manager = None
+    monkeypatch.setattr(asyncio, "get_running_loop", lambda: loop_stub)
+
+    wiring.publish_async(SessionCreated(session_id=SessionId("s1"), actor="tester", user_id="u1"))
+    assert bus.events == []
