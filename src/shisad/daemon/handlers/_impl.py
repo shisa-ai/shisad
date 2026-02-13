@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import base64
 import hashlib
 import json
@@ -13,15 +12,11 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 
 from shisad.channels.base import ChannelMessage
-from shisad.channels.identity import ChannelIdentityMap
-from shisad.channels.ingress import ChannelIngressProcessor
-from shisad.channels.matrix import MatrixChannel
 from shisad.core.audit import AuditLog
-from shisad.core.config import DaemonConfig
 from shisad.core.events import (
     AnomalyReported,
     BaseEvent,
@@ -57,16 +52,12 @@ from shisad.core.events import (
     ToolProposed,
     ToolRejected,
 )
-from shisad.core.planner import Planner
-from shisad.core.session import CheckpointStore, Session, SessionManager
-from shisad.core.tools.builtin.alarm import AlarmTool, AnomalyReportInput
-from shisad.core.tools.registry import ToolRegistry
+from shisad.core.session import Session
+from shisad.core.tools.builtin.alarm import AnomalyReportInput
 from shisad.core.tools.schema import ToolDefinition
-from shisad.core.trace import TraceMessage, TraceRecorder, TraceToolCall, TraceTurn
-from shisad.core.transcript import TranscriptStore
+from shisad.core.trace import TraceMessage, TraceToolCall, TraceTurn
 from shisad.core.types import Capability, SessionId, TaintLabel, ToolName, UserId, WorkspaceId
 from shisad.daemon.handlers._helpers import publish_event
-from shisad.executors.browser import BrowserSandbox
 from shisad.executors.mounts import FilesystemPolicy
 from shisad.executors.proxy import NetworkPolicy
 from shisad.executors.sandbox import (
@@ -85,12 +76,8 @@ from shisad.governance.merge import (
     normalize_patch,
 )
 from shisad.governance.scopes import ScopedPolicy, ScopedPolicyCompiler, ScopeLevel
-from shisad.memory.ingestion import IngestionPipeline
-from shisad.memory.manager import MemoryManager
 from shisad.memory.schema import MemorySource
-from shisad.scheduler.manager import SchedulerManager
 from shisad.scheduler.schema import Schedule
-from shisad.security.control_plane.engine import ControlPlaneEngine
 from shisad.security.control_plane.schema import (
     ActionKind,
     ControlDecision,
@@ -100,18 +87,13 @@ from shisad.security.control_plane.schema import (
     build_action,
     extract_request_size_bytes,
 )
-from shisad.security.firewall import ContentFirewall, FirewallResult
-from shisad.security.firewall.output import OutputFirewall
+from shisad.security.firewall import FirewallResult
 from shisad.security.leakcheck import CrossThreadLeakDetector
-from shisad.security.lockdown import LockdownManager
-from shisad.security.monitor import ActionMonitor, MonitorDecisionType, combine_monitor_with_policy
+from shisad.security.monitor import MonitorDecisionType, combine_monitor_with_policy
 from shisad.security.pep import PolicyContext
-from shisad.security.policy import PolicyLoader
-from shisad.security.ratelimit import RateLimiter
 from shisad.security.reputation import ReputationScorer
-from shisad.security.risk import RiskCalibrator, RiskObservation
+from shisad.security.risk import RiskObservation
 from shisad.security.spotlight import render_spotlight_context
-from shisad.skills.manager import SkillManager
 from shisad.skills.manifest import parse_manifest
 from shisad.skills.sandbox import SkillExecutionRequest
 from shisad.ui.confirmation import (
@@ -121,6 +103,9 @@ from shisad.ui.confirmation import (
     safe_summary,
 )
 from shisad.ui.dashboard import DashboardQuery, SecurityDashboard
+
+if TYPE_CHECKING:
+    from shisad.daemon.services import DaemonServices
 
 logger = logging.getLogger(__name__)
 
@@ -202,78 +187,41 @@ class PendingAction:
 class HandlerImplementation:
     """Owns JSON-RPC control handlers for the daemon."""
 
-    def __init__(
-        self,
-        *,
-        config: DaemonConfig,
-        audit_log: AuditLog,
-        event_bus: EventBus,
-        policy_loader: PolicyLoader,
-        planner: Planner,
-        registry: ToolRegistry,
-        alarm_tool: AlarmTool,
-        session_manager: SessionManager,
-        transcript_store: TranscriptStore,
-        trace_recorder: TraceRecorder | None,
-        transcript_root: Path,
-        checkpoint_store: CheckpointStore,
-        firewall: ContentFirewall,
-        output_firewall: OutputFirewall,
-        channel_ingress: ChannelIngressProcessor,
-        identity_map: ChannelIdentityMap,
-        matrix_channel: MatrixChannel | None,
-        lockdown_manager: LockdownManager,
-        rate_limiter: RateLimiter,
-        monitor: ActionMonitor,
-        risk_calibrator: RiskCalibrator,
-        ingestion: IngestionPipeline,
-        memory_manager: MemoryManager,
-        scheduler: SchedulerManager,
-        skill_manager: SkillManager,
-        sandbox: SandboxOrchestrator,
-        control_plane: ControlPlaneEngine,
-        browser_sandbox: BrowserSandbox,
-        shutdown_event: asyncio.Event,
-        provenance_status: dict[str, Any],
-        model_routes: dict[str, str],
-        planner_model_id: str,
-        classifier_mode: str,
-        internal_ingress_marker: object,
-    ) -> None:
-        self._config = config
-        self._audit_log = audit_log
-        self._event_bus = _EventPublisher(event_bus)
-        self._policy_loader = policy_loader
-        self._planner = planner
-        self._registry = registry
-        self._alarm_tool = alarm_tool
-        self._session_manager = session_manager
-        self._transcript_store = transcript_store
-        self._trace_recorder = trace_recorder
-        self._transcript_root = transcript_root
-        self._checkpoint_store = checkpoint_store
-        self._firewall = firewall
-        self._output_firewall = output_firewall
-        self._channel_ingress = channel_ingress
-        self._identity_map = identity_map
-        self._matrix_channel = matrix_channel
-        self._lockdown_manager = lockdown_manager
-        self._rate_limiter = rate_limiter
-        self._monitor = monitor
-        self._risk_calibrator = risk_calibrator
-        self._ingestion = ingestion
-        self._memory_manager = memory_manager
-        self._scheduler = scheduler
-        self._skill_manager = skill_manager
-        self._sandbox = sandbox
-        self._control_plane = control_plane
-        self._browser_sandbox = browser_sandbox
-        self._shutdown_event = shutdown_event
-        self._provenance_status = provenance_status
-        self._model_routes = model_routes
-        self._planner_model_id = planner_model_id
-        self._classifier_mode = classifier_mode
-        self._internal_ingress_marker = internal_ingress_marker
+    def __init__(self, *, services: DaemonServices) -> None:
+        self._config = services.config
+        self._audit_log = services.audit_log
+        self._event_bus = _EventPublisher(services.event_bus)
+        self._policy_loader = services.policy_loader
+        self._planner = services.planner
+        self._registry = services.registry
+        self._alarm_tool = services.alarm_tool
+        self._session_manager = services.session_manager
+        self._transcript_store = services.transcript_store
+        self._trace_recorder = services.trace_recorder
+        self._transcript_root = services.transcript_root
+        self._checkpoint_store = services.checkpoint_store
+        self._firewall = services.firewall
+        self._output_firewall = services.output_firewall
+        self._channel_ingress = services.channel_ingress
+        self._identity_map = services.identity_map
+        self._matrix_channel = services.matrix_channel
+        self._lockdown_manager = services.lockdown_manager
+        self._rate_limiter = services.rate_limiter
+        self._monitor = services.monitor
+        self._risk_calibrator = services.risk_calibrator
+        self._ingestion = services.ingestion
+        self._memory_manager = services.memory_manager
+        self._scheduler = services.scheduler
+        self._skill_manager = services.skill_manager
+        self._sandbox = services.sandbox
+        self._control_plane = services.control_plane
+        self._browser_sandbox = services.browser_sandbox
+        self._shutdown_event = services.shutdown_event
+        self._provenance_status = services.provenance_status
+        self._model_routes = services.model_routes
+        self._planner_model_id = services.planner_model_id
+        self._classifier_mode = services.firewall.classifier_mode
+        self._internal_ingress_marker = services.internal_ingress_marker
         self._pending_actions_file = self._config.data_dir / "pending_actions.json"
         self._pending_actions: dict[str, PendingAction] = {}
         self._pending_by_session: dict[SessionId, list[str]] = {}

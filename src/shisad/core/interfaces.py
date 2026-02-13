@@ -6,6 +6,7 @@ from typing import Any, Protocol, runtime_checkable
 
 from pydantic import BaseModel
 
+from shisad.core.providers.base import EmbeddingResponse
 from shisad.core.request_context import RequestContext
 
 
@@ -18,3 +19,16 @@ class TypedHandler(Protocol):
 
 
 type TypedMethodRegistration = tuple[TypedHandler, bool, type[BaseModel] | None]
+
+
+@runtime_checkable
+class EmbeddingsProvider(Protocol):
+    """Async embeddings provider consumed by sync adapter bridges."""
+
+    async def embeddings(
+        self,
+        input_texts: list[str],
+        *,
+        model_id: str | None = None,
+    ) -> EmbeddingResponse:
+        """Return embeddings vectors for one or more input texts."""

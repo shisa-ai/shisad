@@ -2,13 +2,8 @@
 
 from __future__ import annotations
 
-import asyncio
-from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING
 
-from shisad.channels.identity import ChannelIdentityMap
-from shisad.channels.ingress import ChannelIngressProcessor
-from shisad.channels.matrix import MatrixChannel
 from shisad.core.api.schema import (
     ActionConfirmResult,
     ActionDecisionParams,
@@ -83,15 +78,6 @@ from shisad.core.api.schema import (
     ToolExecuteParams,
     ToolExecuteResult,
 )
-from shisad.core.audit import AuditLog
-from shisad.core.config import DaemonConfig
-from shisad.core.events import EventBus
-from shisad.core.planner import Planner
-from shisad.core.session import CheckpointStore, SessionManager
-from shisad.core.tools.builtin.alarm import AlarmTool
-from shisad.core.tools.registry import ToolRegistry
-from shisad.core.trace import TraceRecorder
-from shisad.core.transcript import TranscriptStore
 from shisad.daemon.context import RequestContext
 from shisad.daemon.handlers import (
     AdminHandlers,
@@ -104,111 +90,47 @@ from shisad.daemon.handlers import (
     ToolExecutionHandlers,
 )
 from shisad.daemon.handlers._impl import HandlerImplementation
-from shisad.executors.browser import BrowserPasteResult, BrowserSandbox, BrowserScreenshotResult
-from shisad.executors.sandbox import SandboxOrchestrator
-from shisad.memory.ingestion import IngestionPipeline
-from shisad.memory.manager import MemoryManager
-from shisad.scheduler.manager import SchedulerManager
-from shisad.security.control_plane.engine import ControlPlaneEngine
-from shisad.security.firewall import ContentFirewall
-from shisad.security.firewall.output import OutputFirewall
-from shisad.security.lockdown import LockdownManager
-from shisad.security.monitor import ActionMonitor
-from shisad.security.policy import PolicyLoader
-from shisad.security.ratelimit import RateLimiter
-from shisad.security.risk import RiskCalibrator
-from shisad.skills.manager import SkillManager
+from shisad.executors.browser import BrowserPasteResult, BrowserScreenshotResult
+
+if TYPE_CHECKING:
+    from shisad.daemon.services import DaemonServices
 
 
 class DaemonControlHandlers:
     """Thin routing facade over split handler modules."""
 
-    def __init__(
-        self,
-        *,
-        config: DaemonConfig,
-        audit_log: AuditLog,
-        event_bus: EventBus,
-        policy_loader: PolicyLoader,
-        planner: Planner,
-        registry: ToolRegistry,
-        alarm_tool: AlarmTool,
-        session_manager: SessionManager,
-        transcript_store: TranscriptStore,
-        trace_recorder: TraceRecorder | None,
-        transcript_root: Path,
-        checkpoint_store: CheckpointStore,
-        firewall: ContentFirewall,
-        output_firewall: OutputFirewall,
-        channel_ingress: ChannelIngressProcessor,
-        identity_map: ChannelIdentityMap,
-        matrix_channel: MatrixChannel | None,
-        lockdown_manager: LockdownManager,
-        rate_limiter: RateLimiter,
-        monitor: ActionMonitor,
-        risk_calibrator: RiskCalibrator,
-        ingestion: IngestionPipeline,
-        memory_manager: MemoryManager,
-        scheduler: SchedulerManager,
-        skill_manager: SkillManager,
-        sandbox: SandboxOrchestrator,
-        control_plane: ControlPlaneEngine,
-        browser_sandbox: BrowserSandbox,
-        shutdown_event: asyncio.Event,
-        provenance_status: dict[str, Any],
-        model_routes: dict[str, str],
-        planner_model_id: str,
-        classifier_mode: str,
-        internal_ingress_marker: object,
-    ) -> None:
-        impl = HandlerImplementation(
-            config=config,
-            audit_log=audit_log,
-            event_bus=event_bus,
-            policy_loader=policy_loader,
-            planner=planner,
-            registry=registry,
-            alarm_tool=alarm_tool,
-            session_manager=session_manager,
-            transcript_store=transcript_store,
-            trace_recorder=trace_recorder,
-            transcript_root=transcript_root,
-            checkpoint_store=checkpoint_store,
-            firewall=firewall,
-            output_firewall=output_firewall,
-            channel_ingress=channel_ingress,
-            identity_map=identity_map,
-            matrix_channel=matrix_channel,
-            lockdown_manager=lockdown_manager,
-            rate_limiter=rate_limiter,
-            monitor=monitor,
-            risk_calibrator=risk_calibrator,
-            ingestion=ingestion,
-            memory_manager=memory_manager,
-            scheduler=scheduler,
-            skill_manager=skill_manager,
-            sandbox=sandbox,
-            control_plane=control_plane,
-            browser_sandbox=browser_sandbox,
-            shutdown_event=shutdown_event,
-            provenance_status=provenance_status,
-            model_routes=model_routes,
-            planner_model_id=planner_model_id,
-            classifier_mode=classifier_mode,
-            internal_ingress_marker=internal_ingress_marker,
-        )
+    def __init__(self, *, services: DaemonServices) -> None:
+        impl = HandlerImplementation(services=services)
+        internal_ingress_marker = services.internal_ingress_marker
         self._session = SessionHandlers(impl, internal_ingress_marker=internal_ingress_marker)
         self._tool_execution = ToolExecutionHandlers(
-            impl, internal_ingress_marker=internal_ingress_marker
+            impl,
+            internal_ingress_marker=internal_ingress_marker,
         )
         self._confirmation = ConfirmationHandlers(
-            impl, internal_ingress_marker=internal_ingress_marker
+            impl,
+            internal_ingress_marker=internal_ingress_marker,
         )
-        self._memory = MemoryHandlers(impl, internal_ingress_marker=internal_ingress_marker)
-        self._skills = SkillHandlers(impl, internal_ingress_marker=internal_ingress_marker)
-        self._tasks = TaskHandlers(impl, internal_ingress_marker=internal_ingress_marker)
-        self._dashboard = DashboardHandlers(impl, internal_ingress_marker=internal_ingress_marker)
-        self._admin = AdminHandlers(impl, internal_ingress_marker=internal_ingress_marker)
+        self._memory = MemoryHandlers(
+            impl,
+            internal_ingress_marker=internal_ingress_marker,
+        )
+        self._skills = SkillHandlers(
+            impl,
+            internal_ingress_marker=internal_ingress_marker,
+        )
+        self._tasks = TaskHandlers(
+            impl,
+            internal_ingress_marker=internal_ingress_marker,
+        )
+        self._dashboard = DashboardHandlers(
+            impl,
+            internal_ingress_marker=internal_ingress_marker,
+        )
+        self._admin = AdminHandlers(
+            impl,
+            internal_ingress_marker=internal_ingress_marker,
+        )
 
     async def handle_session_create(
         self, params: SessionCreateParams, ctx: RequestContext
