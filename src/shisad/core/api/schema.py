@@ -86,6 +86,7 @@ class SessionMessageParams(_StrictParams):
 class SessionMessageResult(BaseModel):
     """Result for session.message."""
 
+    model_config = ConfigDict(extra="allow")
     response: str
     session_id: str
 
@@ -200,6 +201,49 @@ class MemoryRotateKeyParams(_StrictParams):
     reencrypt_existing: bool = True
 
 
+class MemoryIngestResult(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+
+class MemoryRetrieveResult(BaseModel):
+    results: list[dict[str, Any]] = Field(default_factory=list)
+    count: int = 0
+
+
+class MemoryWriteResult(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+
+class MemoryListResult(BaseModel):
+    entries: list[dict[str, Any]] = Field(default_factory=list)
+    count: int = 0
+
+
+class MemoryGetResult(BaseModel):
+    entry: dict[str, Any] | None = None
+
+
+class MemoryDeleteResult(BaseModel):
+    deleted: bool
+    entry_id: str
+
+
+class MemoryExportResult(BaseModel):
+    format: str
+    data: Any = None
+
+
+class MemoryVerifyResult(BaseModel):
+    verified: bool
+    entry_id: str
+
+
+class MemoryRotateKeyResult(BaseModel):
+    rotated: bool
+    active_key_id: str
+    reencrypt_existing: bool
+
+
 class TaskCreateParams(_StrictParams):
     schedule: dict[str, Any]
     name: str
@@ -224,6 +268,33 @@ class TaskPendingConfirmationsParams(_StrictParams):
     task_id: str
 
 
+class TaskCreateResult(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+
+class TaskListResult(BaseModel):
+    tasks: list[dict[str, Any]] = Field(default_factory=list)
+    count: int = 0
+
+
+class TaskDisableResult(BaseModel):
+    disabled: bool
+    task_id: str
+
+
+class TaskTriggerEventResult(BaseModel):
+    runs: list[dict[str, Any]] = Field(default_factory=list)
+    count: int = 0
+    queued_confirmations: int = 0
+    blocked_runs: int = 0
+
+
+class TaskPendingConfirmationsResult(BaseModel):
+    task_id: str
+    pending: list[dict[str, Any]] = Field(default_factory=list)
+    count: int = 0
+
+
 class LockdownSetParams(_StrictParams):
     session_id: str
     action: str = "caution"
@@ -240,6 +311,10 @@ class ChannelMessageParams(_StrictParams):
 class ChannelIngestParams(_StrictParams):
     message: ChannelMessageParams
     session_id: str = ""
+
+
+class ChannelIngestResult(SessionMessageResult):
+    ingress_risk: float
 
 
 class ActionPendingParams(_StrictParams):
@@ -283,6 +358,35 @@ class PolicyExplainParams(_StrictParams):
     session_id: str | None = None
     action: str = ""
     tool_name: str | None = None
+
+
+class PolicyExplainResult(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    session_id: str
+    tool_name: str
+    action: str
+    effective_policy: dict[str, Any] = Field(default_factory=dict)
+    control_plane: dict[str, Any] = Field(default_factory=dict)
+    contributors: dict[str, str] = Field(default_factory=dict)
+
+
+class DaemonStatusResult(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    status: str
+
+
+class DaemonShutdownResult(BaseModel):
+    status: str
+
+
+class LockdownSetResult(BaseModel):
+    session_id: str
+    level: str
+    reason: str
+
+
+class RiskCalibrateResult(BaseModel):
+    model_config = ConfigDict(extra="allow")
 
 
 class ToolExecuteParams(_StrictParams):
@@ -336,18 +440,42 @@ class SkillReviewParams(_StrictParams):
     skill_path: str
 
 
+class SkillReviewResult(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+
 class SkillInstallParams(_StrictParams):
     skill_path: str
     approve_untrusted: bool = False
+
+
+class SkillInstallResult(BaseModel):
+    model_config = ConfigDict(extra="allow")
 
 
 class SkillProfileParams(_StrictParams):
     skill_path: str
 
 
+class SkillProfileResult(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+
 class SkillRevokeParams(_StrictParams):
     skill_name: str
     reason: str = "security_revoke"
+
+
+class SkillListResult(BaseModel):
+    skills: list[dict[str, Any]] = Field(default_factory=list)
+    count: int = 0
+
+
+class SkillRevokeResult(BaseModel):
+    revoked: bool
+    skill_name: str
+    reason: str
+    state: str | None = None
 
 
 class DashboardQueryParams(_StrictParams):
@@ -362,6 +490,16 @@ class DashboardQueryParams(_StrictParams):
 class DashboardMarkFalsePositiveParams(_StrictParams):
     event_id: str
     reason: str = "false_positive"
+
+
+class DashboardQueryResult(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+
+class DashboardMarkFalsePositiveResult(BaseModel):
+    marked: bool
+    event_id: str
+    reason: str
 
 
 class ConfirmationMetricsParams(_StrictParams):
