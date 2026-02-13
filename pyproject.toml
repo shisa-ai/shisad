@@ -9,6 +9,7 @@ dependencies = [
     "pydantic-settings>=2.7,<3",
     "click>=8.1,<9",
     "pyyaml>=6.0,<7",
+    "cryptography>=44.0,<46",
 ]
 
 [project.scripts]
@@ -51,7 +52,6 @@ dev = [
     "types-pyyaml>=6.0.12.20250915",
 ]
 security-runtime = [
-    "cryptography>=44.0,<46",
     "yara-python>=4.5,<5",
 ]
 coverage = [

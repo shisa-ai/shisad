@@ -1,5 +1,5 @@
 version = 1
-revision = 2
+revision = 3
 requires-python = ">=3.12"
 
 [[package]]
@@ -1269,6 +1269,7 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "click" },
+    { name = "cryptography" },
     { name = "pydantic" },
     { name = "pydantic-settings" },
     { name = "pyyaml" },
@@ -1289,13 +1290,13 @@ dev = [
     { name = "types-pyyaml" },
 ]
 security-runtime = [
-    { name = "cryptography" },
     { name = "yara-python" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "click", specifier = ">=8.1,<9" },
+    { name = "cryptography", specifier = ">=44.0,<46" },
     { name = "pydantic", specifier = ">=2.10,<3" },
     { name = "pydantic-settings", specifier = ">=2.7,<3" },
     { name = "pyyaml", specifier = ">=6.0,<7" },
@@ -1311,10 +1312,7 @@ dev = [
     { name = "ruff", specifier = ">=0.9,<1" },
     { name = "types-pyyaml", specifier = ">=6.0.12.20250915" },
 ]
-security-runtime = [
-    { name = "cryptography", specifier = ">=44.0,<46" },
-    { name = "yara-python", specifier = ">=4.5,<5" },
-]
+security-runtime = [{ name = "yara-python", specifier = ">=4.5,<5" }]
 
 [[package]]
 name = "types-pyyaml"

@@ -6,7 +6,7 @@ from typing import Any, Protocol, runtime_checkable
 
 from pydantic import BaseModel
 
-from shisad.daemon.context import RequestContext
+from shisad.core.request_context import RequestContext
 
 
 @runtime_checkable
@@ -18,4 +18,3 @@ class TypedHandler(Protocol):
 
 
 type TypedMethodRegistration = tuple[TypedHandler, bool, type[BaseModel] | None]
-

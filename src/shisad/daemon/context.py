@@ -1,18 +1,5 @@
-"""Request-scoped adapter context for control handler dispatch."""
+"""Compatibility re-export for request context."""
 
-from __future__ import annotations
+from shisad.core.request_context import RequestContext
 
-from dataclasses import dataclass
-
-from shisad.security.firewall import FirewallResult
-
-
-@dataclass(frozen=True, slots=True)
-class RequestContext:
-    """Adapter-only runtime context passed alongside validated params."""
-
-    rpc_peer: dict[str, int | None] | None = None
-    is_internal_ingress: bool = False
-    trust_level_override: str | None = None
-    firewall_result: FirewallResult | None = None
-
+__all__ = ["RequestContext"]
