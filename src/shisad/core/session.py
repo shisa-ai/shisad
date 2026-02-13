@@ -14,7 +14,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 from shisad.core.types import Capability, SessionId, SessionState, UserId, WorkspaceId
 
@@ -278,7 +278,7 @@ class CheckpointStore:
                 data = json.loads(path.read_text())
                 if data.get("session_id") == session_id:
                     checkpoints.append(Checkpoint.model_validate(data))
-            except Exception:
+            except (OSError, ValidationError, TypeError, json.JSONDecodeError):
                 logger.warning("Invalid checkpoint file: %s", path)
 
         return sorted(checkpoints, key=lambda c: c.created_at, reverse=True)

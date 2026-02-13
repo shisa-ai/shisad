@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, ValidationError, model_validator
 
 from shisad.core.types import Capability, ToolName
 
@@ -328,7 +328,7 @@ class PolicyLoader:
             logger.info("SIGHUP received, reloading policy")
             try:
                 self.load()
-            except Exception:
+            except (OSError, ValueError, ValidationError, yaml.YAMLError):
                 logger.exception("Failed to reload policy, keeping previous")
 
         signal.signal(signal.SIGHUP, _reload_handler)

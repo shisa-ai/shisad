@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import base64
+import binascii
 import json
 from dataclasses import dataclass
 from enum import StrEnum
 
+from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey, Ed25519PublicKey
 
 from shisad.skills.manifest import SkillDependency, SkillManifest
@@ -123,7 +125,7 @@ def verify_manifest_signature(
     try:
         _, key_id, encoded = signature.split(":", 2)
         signature_bytes = base64.b64decode(encoded.encode("ascii"), validate=True)
-    except Exception:
+    except (ValueError, binascii.Error):
         return VerificationResult(
             status=SignatureStatus.INVALID,
             reason="malformed ed25519 signature",
@@ -149,7 +151,7 @@ def verify_manifest_signature(
     payload = canonical_signature_payload(manifest=manifest, file_hashes=file_hashes)
     try:
         key.public_key.verify(signature_bytes, payload)
-    except Exception:
+    except InvalidSignature:
         return VerificationResult(
             status=SignatureStatus.INVALID,
             key_id=key_id,

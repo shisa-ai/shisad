@@ -13,10 +13,11 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal, Protocol
 
+from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 from shisad.core.tools.schema import ToolDefinition, ToolParameter
 from shisad.core.types import Capability, ToolName
@@ -240,7 +241,7 @@ class IngestionPipeline:
             return None
         try:
             decrypted = self._decrypt_payload(path.read_bytes(), chunk_id=chunk_id)
-        except Exception:
+        except (InvalidTag, OSError, ValueError, TypeError):
             self._audit(
                 "memory.original_read_failed",
                 {"chunk_id": chunk_id, "reason": "decrypt_failed"},
@@ -429,7 +430,7 @@ class IngestionPipeline:
         for path in sorted(self._sanitized_dir.glob("*.json")):
             try:
                 record = RetrievalResult.model_validate_json(path.read_text(encoding="utf-8"))
-            except Exception:
+            except (OSError, ValidationError):
                 continue
             self._records[record.chunk_id] = record
             self._vectors[record.chunk_id] = self._embed_text(record.content_sanitized)
@@ -452,7 +453,7 @@ class IngestionPipeline:
         envelope: Any | None = None
         try:
             envelope = json.loads(payload.decode("utf-8"))
-        except Exception:
+        except (UnicodeDecodeError, json.JSONDecodeError):
             envelope = None
 
         if isinstance(envelope, dict) and envelope.get("v") in {2, 3}:
@@ -504,7 +505,7 @@ class IngestionPipeline:
                     values = [float(v) for v in vectors[0]]
                     norm = math.sqrt(sum(v * v for v in values)) or 1.0
                     return [v / norm for v in values]
-            except Exception:
+            except (OSError, RuntimeError, TypeError, ValueError):
                 # Fail closed to deterministic local fallback.
                 pass
 

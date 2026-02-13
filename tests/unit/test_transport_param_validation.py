@@ -12,6 +12,7 @@ from pydantic import BaseModel
 
 from shisad.core.api.schema import JsonRpcResponse, SessionCreateParams
 from shisad.core.api.transport import ControlServer
+from shisad.core.errors import PolicyError
 from shisad.daemon.context import RequestContext
 
 
@@ -44,6 +45,7 @@ async def test_transport_rejects_extra_params_when_model_is_registered(tmp_path:
         response = JsonRpcResponse.model_validate_json(await reader.readline())
         assert response.error is not None
         assert response.error.code == -32602
+        assert response.error.data == {"reason_code": "rpc.invalid_params"}
     finally:
         if writer is not None:
             writer.close()
@@ -206,6 +208,47 @@ async def test_transport_invalid_request_rejects_boolean_id(
         assert response.error is not None
         assert response.error.code == -32600
         assert response.id is None
+        assert response.error.data == {"reason_code": "rpc.invalid_request"}
+    finally:
+        if writer is not None:
+            writer.close()
+            await writer.wait_closed()
+        await server.stop()
+
+
+@pytest.mark.asyncio
+async def test_transport_maps_shisad_errors_to_structured_reason_codes(
+    tmp_path: Path,
+) -> None:
+    server = ControlServer(tmp_path / "control.sock")
+
+    async def _handler(params: SessionCreateParams, ctx: RequestContext) -> dict[str, object]:
+        _ = params, ctx
+        raise PolicyError(
+            "capability denied",
+            reason_code="policy.capability_denied",
+            details={"capability": "network"},
+        )
+
+    server.register_method("session.create", _handler, params_model=SessionCreateParams)
+    await server.start()
+    reader: asyncio.StreamReader | None = None
+    writer: asyncio.StreamWriter | None = None
+    try:
+        reader, writer = await asyncio.open_unix_connection(str(tmp_path / "control.sock"))
+        request = {
+            "jsonrpc": "2.0",
+            "method": "session.create",
+            "params": {"channel": "cli"},
+            "id": 4,
+        }
+        writer.write(json.dumps(request).encode("utf-8") + b"\n")
+        await writer.drain()
+        response = JsonRpcResponse.model_validate_json(await reader.readline())
+        assert response.error is not None
+        assert response.error.code == -32602
+        assert response.error.message == "capability denied"
+        assert response.error.data == {"reason_code": "policy.capability_denied"}
     finally:
         if writer is not None:
             writer.close()

@@ -8,7 +8,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 from shisad.security.control_plane.schema import sanitize_metadata_payload
 
@@ -73,7 +73,7 @@ class ControlPlaneAuditLog:
                     continue
                 try:
                     entry = ControlPlaneAuditEntry.model_validate_json(payload)
-                except Exception as exc:
+                except ValidationError as exc:
                     return (False, count, f"line {index}: invalid entry ({exc})")
                 if entry.previous_hash != previous:
                     return (False, count, f"line {index}: chain break")
@@ -102,7 +102,7 @@ class ControlPlaneAuditLog:
                     continue
                 try:
                     entry = ControlPlaneAuditEntry.model_validate_json(text)
-                except Exception:
+                except ValidationError:
                     continue
                 if event_type and entry.event_type != event_type:
                     continue

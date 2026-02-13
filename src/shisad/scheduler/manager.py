@@ -8,6 +8,8 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from pydantic import ValidationError
+
 from shisad.core.types import Capability, UserId
 from shisad.scheduler.schema import Schedule, ScheduledTask, ScheduleKind, TaskRunRequest
 
@@ -159,14 +161,14 @@ class SchedulerManager:
             return
         try:
             raw = json.loads(self._tasks_file.read_text(encoding="utf-8"))
-        except Exception:
+        except (OSError, json.JSONDecodeError):
             return
         if not isinstance(raw, list):
             return
         for item in raw:
             try:
                 task = ScheduledTask.model_validate(item)
-            except Exception:
+            except ValidationError:
                 continue
             self._tasks[task.id] = task
 
@@ -181,7 +183,7 @@ class SchedulerManager:
             return
         try:
             raw = json.loads(self._pending_file.read_text(encoding="utf-8"))
-        except Exception:
+        except (OSError, json.JSONDecodeError):
             return
         if not isinstance(raw, dict):
             return

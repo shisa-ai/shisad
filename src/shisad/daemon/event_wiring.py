@@ -60,7 +60,7 @@ class DaemonEventWiring:
         def _done_callback(done_task: asyncio.Task[None]) -> None:
             try:
                 done_task.result()
-            except Exception:
+            except (OSError, RuntimeError, ValueError, TypeError):
                 logger.exception("Async event publish failed for %s", event_type)
 
         def _schedule() -> None:
@@ -218,7 +218,7 @@ async def matrix_receive_pump(
             continue
         except asyncio.CancelledError:
             raise
-        except Exception:
+        except (OSError, RuntimeError, ValueError, TypeError):
             logger.exception("Matrix receive loop error")
             await asyncio.sleep(0.2)
             continue
@@ -235,5 +235,5 @@ async def matrix_receive_pump(
                 ),
                 RequestContext(is_internal_ingress=True),
             )
-        except Exception:
+        except (OSError, RuntimeError, ValueError, TypeError):
             logger.exception("Matrix ingress processing failed")

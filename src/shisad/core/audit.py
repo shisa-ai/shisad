@@ -16,7 +16,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, model_validator
+from pydantic import BaseModel, ValidationError, model_validator
 
 from shisad.core.events import BaseEvent
 
@@ -138,7 +138,7 @@ class AuditLog:
 
                 try:
                     entry = AuditEntry.model_validate_json(line)
-                except Exception as e:
+                except ValidationError as e:
                     return (False, count, f"Line {line_num}: invalid entry: {e}")
 
                 # Check chain link

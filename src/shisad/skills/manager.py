@@ -296,7 +296,7 @@ class SkillManager:
                         allowed_dependency_sources=set(self._policy.dependency_source_allowlist),
                     )
                 )
-            except Exception:
+            except (FileNotFoundError, OSError, TypeError, ValueError):
                 continue
         return bundles
 

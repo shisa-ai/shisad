@@ -357,14 +357,14 @@ class DaemonServices:
                 model_routes=model_routes,
                 internal_ingress_marker=internal_ingress_marker,
             )
-        except Exception:
+        except (OSError, RuntimeError, TypeError, ValueError):
             if embeddings_adapter is not None:
-                with contextlib.suppress(Exception):
+                with contextlib.suppress(OSError, RuntimeError):
                     embeddings_adapter.close(wait=False)
             if matrix_channel is not None:
-                with contextlib.suppress(Exception):
+                with contextlib.suppress(OSError, RuntimeError):
                     await matrix_channel.disconnect()
-            with contextlib.suppress(Exception):
+            with contextlib.suppress(OSError, RuntimeError):
                 await server.stop()
             raise
 
@@ -372,16 +372,16 @@ class DaemonServices:
         """Close async/sync resources in reverse runtime order."""
         try:
             self.embeddings_adapter.close(wait=True)
-        except Exception:
+        except (OSError, RuntimeError):
             logger.exception("Error closing embeddings adapter")
         if self.matrix_channel is not None:
             try:
                 await self.matrix_channel.disconnect()
-            except Exception:
+            except (OSError, RuntimeError):
                 logger.exception("Error disconnecting matrix channel")
         try:
             await self.server.stop()
-        except Exception:
+        except (OSError, RuntimeError):
             logger.exception("Error stopping control server")
 
 

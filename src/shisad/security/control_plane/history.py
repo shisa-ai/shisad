@@ -7,7 +7,7 @@ import logging
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 from shisad.security.control_plane.schema import ActionKind, ControlPlaneAction, Origin
 
@@ -137,7 +137,7 @@ class SessionActionHistoryStore:
                     continue
                 try:
                     record = ActionHistoryRecord.model_validate_json(text)
-                except Exception:
+                except ValidationError:
                     logger.warning(
                         "control-plane history: skipping malformed record line %s",
                         line_number,

@@ -11,6 +11,8 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, ClassVar
 
+from pydantic import ValidationError
+
 from shisad.memory.schema import MemoryEntry, MemorySource, MemoryWriteDecision
 from shisad.security.firewall.pii import PIIDetector
 
@@ -231,7 +233,7 @@ class MemoryManager:
         for path in sorted(self._storage_dir.glob("*.json")):
             try:
                 entry = MemoryEntry.model_validate_json(path.read_text(encoding="utf-8"))
-            except Exception:
+            except (OSError, ValidationError):
                 continue
             self._entries[entry.id] = entry
 

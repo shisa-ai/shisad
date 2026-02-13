@@ -79,7 +79,7 @@ class IptablesConnectPathProxy:
             for ip in unique_ips:
                 self._run(namespace_pid, ["-A", "OUTPUT", "-d", ip, "-j", "ACCEPT"])
             self._run(namespace_pid, ["-A", "OUTPUT", "-j", "DROP"])
-        except Exception as exc:
+        except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as exc:
             return ConnectPathResult(
                 enforced=False,
                 method="iptables",
@@ -136,7 +136,7 @@ class IptablesConnectPathProxy:
                 timeout=1,
                 check=False,
             )
-        except Exception:
+        except (OSError, subprocess.SubprocessError):
             return False
         output = f"{completed.stdout}\n{completed.stderr}".lower()
         return "cap_net_admin" in output and "ep" in output

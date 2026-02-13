@@ -409,7 +409,7 @@ def _normalize_path(value: str) -> str:
         return ""
     try:
         return str(Path(text).expanduser().resolve(strict=False))
-    except Exception:
+    except (OSError, RuntimeError, ValueError):
         return text
 
 

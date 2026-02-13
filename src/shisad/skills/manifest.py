@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 
 _SEMVER_RE = re.compile(
     r"^(?P<major>0|[1-9]\d*)\.(?P<minor>0|[1-9]\d*)\.(?P<patch>0|[1-9]\d*)"
@@ -224,7 +224,7 @@ def parse_manifest(
 
     try:
         manifest = SkillManifest.model_validate(raw)
-    except Exception as exc:
+    except ValidationError as exc:
         raise SkillManifestError(f"Manifest validation failed: {exc}") from exc
 
     if previous_manifest is not None and requires_major_bump(previous_manifest, manifest):

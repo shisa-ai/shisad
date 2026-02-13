@@ -57,7 +57,7 @@ class RoutedOpenAIProvider:
     ) -> ProviderResponse:
         try:
             return await self._planner_provider.complete(messages, tools)
-        except Exception:
+        except (OSError, RuntimeError, TypeError, ValueError):
             if self._fallback is None:
                 raise
             logger.warning("Remote planner provider failed; falling back to local provider")
@@ -72,7 +72,7 @@ class RoutedOpenAIProvider:
         target_model = model_id or self._embeddings_model_id
         try:
             return await self._embeddings_provider.embeddings(input_texts, model_id=target_model)
-        except Exception:
+        except (OSError, RuntimeError, TypeError, ValueError):
             if self._fallback is None:
                 raise
             logger.warning("Remote embeddings provider failed; falling back to local provider")
@@ -85,7 +85,7 @@ class RoutedOpenAIProvider:
     ) -> ProviderResponse:
         try:
             return await self._monitor_provider.complete(messages, tools)
-        except Exception:
+        except (OSError, RuntimeError, TypeError, ValueError):
             logger.warning(
                 "Remote monitor provider failed; using deterministic monitor fallback",
             )

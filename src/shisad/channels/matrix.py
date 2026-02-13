@@ -15,7 +15,7 @@ from shisad.channels.base import ChannelMessage, InMemoryChannel
 
 try:  # pragma: no cover - optional dependency.
     import nio  # type: ignore
-except Exception:  # pragma: no cover - optional dependency.
+except ImportError:  # pragma: no cover - optional dependency.
     nio = None
 
 
@@ -91,7 +91,7 @@ class MatrixChannel(InMemoryChannel):
         if self._client is not None:
             close = getattr(self._client, "close", None)
             if callable(close):
-                with contextlib.suppress(Exception):
+                with contextlib.suppress(OSError, RuntimeError):
                     await close()
             self._client = None
 
@@ -127,7 +127,7 @@ class MatrixChannel(InMemoryChannel):
             await sync_forever(timeout=30_000, full_state=True)
         except asyncio.CancelledError:
             raise
-        except Exception:
+        except (OSError, RuntimeError, ValueError):
             return
 
     async def _on_room_message(self, room: Any, event: Any) -> None:

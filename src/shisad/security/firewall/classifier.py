@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 import base64
+import binascii
+import logging
 import re
 from pathlib import Path
 from typing import Any, ClassVar, Protocol
 
 from pydantic import BaseModel, Field
+
+logger = logging.getLogger(__name__)
 
 
 class InjectionClassification(BaseModel):
@@ -167,7 +171,7 @@ class PatternInjectionClassifier:
             padding = "=" * ((4 - (len(current) % 4)) % 4)
             try:
                 decoded = base64.b64decode(current + padding, validate=True)
-            except Exception:
+            except (ValueError, binascii.Error):
                 return False
             decoded_text = decoded.decode("utf-8", errors="ignore")
             lowered = decoded_text.lower()
@@ -187,7 +191,7 @@ class PatternInjectionClassifier:
             return None
         try:
             import yara  # type: ignore
-        except Exception:
+        except ImportError:
             return None
 
         filepaths = {path.stem: str(path) for path in sorted(rules_dir.glob("*.yara"))}
@@ -196,6 +200,10 @@ class PatternInjectionClassifier:
         try:
             return yara.compile(filepaths=filepaths)
         except Exception:
+            logger.warning(
+                "YARA compile failed; reason_code=firewall.yara_compile_failed",
+                exc_info=True,
+            )
             return None
 
     @staticmethod

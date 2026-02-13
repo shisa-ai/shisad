@@ -92,7 +92,7 @@ def render_rich(snapshot: TuiSnapshot) -> str:
         rich_console = importlib.import_module("rich.console")
         rich_panel = importlib.import_module("rich.panel")
         rich_table = importlib.import_module("rich.table")
-    except Exception:
+    except ImportError:
         return render_plain(snapshot)
     Console = rich_console.Console
     Panel = rich_panel.Panel

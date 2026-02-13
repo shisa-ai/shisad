@@ -10,7 +10,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 from shisad.security.control_plane.schema import ActionKind, ControlPlaneAction, Origin, RiskTier
 
@@ -290,7 +290,7 @@ class ExecutionTraceVerifier:
             return
         try:
             payload = json.loads(self._storage_path.read_text(encoding="utf-8"))
-        except Exception:
+        except (OSError, json.JSONDecodeError):
             return
         if not isinstance(payload, dict):
             return
@@ -299,5 +299,5 @@ class ExecutionTraceVerifier:
                 continue
             try:
                 self._plans[key] = CommittedPlan.model_validate(value)
-            except Exception:
+            except ValidationError:
                 continue

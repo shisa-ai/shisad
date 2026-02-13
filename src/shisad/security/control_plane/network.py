@@ -13,7 +13,7 @@ from itertools import pairwise
 from statistics import pstdev
 from typing import Any, Protocol
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 from shisad.core.providers.base import Message, ProviderResponse
 from shisad.security.control_plane.schema import Origin, RiskTier, risk_rank
@@ -160,7 +160,7 @@ class BaselineDatabase:
         try:
             with open(self._storage_path, encoding="utf-8") as handle:
                 payload = json.load(handle)
-        except Exception:
+        except (OSError, json.JSONDecodeError):
             return
         if not isinstance(payload, dict):
             return
@@ -169,7 +169,7 @@ class BaselineDatabase:
                 continue
             try:
                 self._entries[key] = BaselineEntry.model_validate(value)
-            except Exception:
+            except ValidationError:
                 continue
 
 
@@ -241,7 +241,7 @@ class NetworkIntelligenceMonitor:
             provider_decision = self._timeout_fallback(risk_tier=risk_tier, enrichment=enrichment)
             self._cache_decision(cache_key, provider_decision)
             return self._combine_decisions(heuristic=heuristic, llm=provider_decision)
-        except Exception:
+        except (OSError, RuntimeError, TypeError, ValueError):
             logger.exception("Network monitor LLM failure; using heuristic fallback")
             return heuristic
 

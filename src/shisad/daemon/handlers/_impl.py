@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import binascii
 import hashlib
 import json
 import logging
@@ -14,6 +15,8 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
+
+from pydantic import ValidationError
 
 from shisad.channels.base import ChannelMessage
 from shisad.core.audit import AuditLog
@@ -245,7 +248,7 @@ class HandlerImplementation:
             return None
         try:
             return parse_manifest(manifest_path)
-        except Exception:
+        except (OSError, TypeError, ValueError):
             return None
 
     def _skill_reputation(
@@ -512,7 +515,7 @@ class HandlerImplementation:
                     command_hash=command_hash,
                 )
             )
-        except Exception:
+        except (OSError, RuntimeError, TypeError, ValueError):
             return SandboxResult(
                 allowed=False,
                 reason="audit_unavailable_prelaunch",
@@ -531,7 +534,7 @@ class HandlerImplementation:
                         action_hash=action_hash,
                     )
                 )
-            except Exception:
+            except (OSError, RuntimeError, TypeError, ValueError):
                 return SandboxResult(
                     allowed=False,
                     reason="audit_unavailable_prelaunch",
@@ -555,7 +558,7 @@ class HandlerImplementation:
                     error="" if result.allowed else result.reason,
                 )
             )
-        except Exception as exc:
+        except (OSError, RuntimeError, TypeError, ValueError) as exc:
             await self._handle_lockdown_transition(
                 sid,
                 trigger="audit_failure",
@@ -738,7 +741,7 @@ class HandlerImplementation:
             return
         try:
             raw = json.loads(self._pending_actions_file.read_text(encoding="utf-8"))
-        except Exception:
+        except (OSError, json.JSONDecodeError):
             return
         if not isinstance(raw, list):
             return
@@ -784,7 +787,7 @@ class HandlerImplementation:
                     status=str(item.get("status", "pending")),
                     status_reason=str(item.get("status_reason", "")),
                 )
-            except Exception:
+            except (TypeError, ValueError, ValidationError):
                 continue
             self._pending_actions[pending.confirmation_id] = pending
             self._pending_by_session.setdefault(
@@ -1048,7 +1051,7 @@ class HandlerImplementation:
         origin_data = {str(key): str(value) for key, value in dict(result.origin).items()}
         try:
             origin = Origin.model_validate(origin_data)
-        except Exception:
+        except ValidationError:
             origin = Origin(session_id=str(sid), actor="sandbox")
         if result.degraded_controls:
             await self._event_bus.publish(
@@ -1554,7 +1557,7 @@ class HandlerImplementation:
                     taint_labels=[label.value for label in context.taint_labels],
                     duration_ms=(time.monotonic() - trace_t0) * 1000.0,
                 ))
-            except Exception:
+            except (OSError, RuntimeError, TypeError, ValueError):
                 logger.warning("Trace recording failed; continuing without trace",
                                exc_info=True)
 
@@ -2080,7 +2083,7 @@ class HandlerImplementation:
                 if candidate.exists() and candidate.is_file():
                     candidate.unlink()
                     deleted += 1
-            except Exception as exc:  # pragma: no cover - defensive
+            except (OSError, TypeError, ValueError, binascii.Error) as exc:  # pragma: no cover
                 errors.append(f"{path}:{exc.__class__.__name__}")
         return restored, deleted, errors
 

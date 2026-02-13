@@ -73,7 +73,7 @@ def _progress(label: str) -> Any:
     _echo(f"{label}...", fg="cyan")
     try:
         yield
-    except Exception:
+    except (click.ClickException, OSError, RuntimeError, TypeError, ValueError):
         elapsed = time.monotonic() - start
         _echo(f"{label} failed ({elapsed:.2f}s)", fg="red", err=True)
         raise

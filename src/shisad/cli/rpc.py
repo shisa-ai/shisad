@@ -55,7 +55,7 @@ def rpc_run[T](
         return run_async(_rpc_run_async(config, operation))
     except click.ClickException:
         raise
-    except Exception as exc:
+    except (OSError, RuntimeError, TypeError, ValueError) as exc:
         raise click.ClickException(f"{action} failed: {exc}") from exc
 
 
@@ -99,7 +99,7 @@ def rpc_call(
         payload = run_async(_rpc_call_async(config, method, params))
     except click.ClickException:
         raise
-    except Exception as exc:
+    except (OSError, RuntimeError, TypeError, ValueError) as exc:
         raise click.ClickException(f"{method} failed: {exc}") from exc
 
     if response_model is None:
@@ -113,5 +113,5 @@ def rpc_call(
         return response_model.model_validate(payload)
     except ValidationError as exc:
         raise click.ClickException(f"{method} returned invalid response: {exc}") from exc
-    except Exception as exc:
+    except (RuntimeError, TypeError, ValueError) as exc:
         raise click.ClickException(f"{method} response validation failed: {exc}") from exc

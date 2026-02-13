@@ -337,7 +337,7 @@ class ConsensusVotingSystem:
                 risk_tier=RiskTier.HIGH,
                 reason_codes=["consensus:voter_timeout"],
             )
-        except Exception:
+        except (OSError, RuntimeError, TypeError, ValueError):
             return VoterDecision(
                 voter=voter_name,
                 decision=VoteKind.FLAG,

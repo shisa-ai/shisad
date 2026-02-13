@@ -141,7 +141,7 @@ class SecurityDashboard:
             return
         try:
             payload = json.loads(self._marks_path.read_text(encoding="utf-8"))
-        except Exception:
+        except (OSError, json.JSONDecodeError):
             return
         if isinstance(payload, dict):
             self._marks = {str(key): str(value) for key, value in payload.items()}

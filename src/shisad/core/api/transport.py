@@ -28,6 +28,7 @@ from shisad.core.api.schema import (
     JsonRpcRequest,
     JsonRpcResponse,
 )
+from shisad.core.errors import ShisadError
 from shisad.core.interfaces import TypedHandler, TypedMethodRegistration
 from shisad.core.request_context import RequestContext
 
@@ -180,14 +181,14 @@ class ControlServer:
                 await writer.drain()
         except asyncio.CancelledError:
             pass
-        except Exception:
+        except (ConnectionError, OSError, RuntimeError, json.JSONDecodeError, ValidationError):
             logger.exception("Error handling connection")
         finally:
             await self._remove_subscription(writer, close_writer=False)
             try:
                 writer.close()
                 await writer.wait_closed()
-            except Exception:
+            except OSError:
                 pass
 
     async def _process_message(
@@ -202,7 +203,12 @@ class ControlServer:
         try:
             data = json.loads(raw)
         except json.JSONDecodeError as e:
-            return self._error_response(None, PARSE_ERROR, f"Parse error: {e}")
+            return self._error_response(
+                None,
+                PARSE_ERROR,
+                f"Parse error: {e}",
+                reason_code="rpc.parse_error",
+            )
 
         # Validate request structure
         try:
@@ -214,7 +220,10 @@ class ControlServer:
                 else None
             )
             return self._error_response(
-                request_id, INVALID_REQUEST, f"Invalid request: {e}"
+                request_id,
+                INVALID_REQUEST,
+                f"Invalid request: {e}",
+                reason_code="rpc.invalid_request",
             )
 
         # Handle event subscription
@@ -224,11 +233,17 @@ class ControlServer:
                     request.id,
                     INVALID_PARAMS,
                     "events.subscribe requires an active connection",
+                    reason_code="rpc.subscription_requires_connection",
                 )
             try:
                 event_types, session_id = self._parse_subscription_filters(request.params)
             except ValueError as exc:
-                return self._error_response(request.id, INVALID_PARAMS, str(exc))
+                return self._error_response(
+                    request.id,
+                    INVALID_PARAMS,
+                    str(exc),
+                    reason_code="rpc.subscription_filter_invalid",
+                )
             await self._register_event_subscription(writer, event_types, session_id)
             return self._success_response(
                 request.id,
@@ -244,7 +259,10 @@ class ControlServer:
         method_entry = self._methods.get(request.method)
         if method_entry is None:
             return self._error_response(
-                request.id, METHOD_NOT_FOUND, f"Method not found: {request.method}"
+                request.id,
+                METHOD_NOT_FOUND,
+                f"Method not found: {request.method}",
+                reason_code="rpc.method_not_found",
             )
         handler, admin_only, params_model = method_entry
         if admin_only and not self._is_admin_peer(peer):
@@ -252,6 +270,7 @@ class ControlServer:
                 request.id,
                 PERMISSION_DENIED,
                 "Permission denied: admin peer credentials required",
+                reason_code="rpc.permission_denied",
             )
 
         try:
@@ -261,7 +280,12 @@ class ControlServer:
             else:
                 params = _UntypedParams(payload=dict(request.params))
         except (TypeError, ValueError, ValidationError) as e:
-            return self._error_response(request.id, INVALID_PARAMS, str(e))
+            return self._error_response(
+                request.id,
+                INVALID_PARAMS,
+                str(e),
+                reason_code="rpc.invalid_params",
+            )
 
         try:
             ctx = RequestContext(rpc_peer=peer.as_dict())
@@ -271,14 +295,41 @@ class ControlServer:
             else:
                 payload = result
             return self._success_response(request.id, payload)
+        except ShisadError as exc:
+            logger.warning(
+                "Method %s failed with reason_code=%s",
+                request.method,
+                exc.reason_code,
+            )
+            return self._error_response(
+                request.id,
+                exc.rpc_code,
+                exc.public_message,
+                reason_code=exc.reason_code,
+            )
         except ValidationError:
             logger.exception("Method %s returned invalid response shape", request.method)
-            return self._error_response(request.id, INTERNAL_ERROR, "Internal error")
+            return self._error_response(
+                request.id,
+                INTERNAL_ERROR,
+                "Internal error",
+                reason_code="rpc.response_validation_failed",
+            )
         except (TypeError, ValueError) as e:
-            return self._error_response(request.id, INVALID_PARAMS, str(e))
+            return self._error_response(
+                request.id,
+                INVALID_PARAMS,
+                str(e),
+                reason_code="rpc.invalid_params",
+            )
         except Exception:
-            logger.exception("Method %s failed", request.method)
-            return self._error_response(request.id, INTERNAL_ERROR, "Internal error")
+            logger.exception("Method %s failed; reason_code=rpc.internal_error", request.method)
+            return self._error_response(
+                request.id,
+                INTERNAL_ERROR,
+                "Internal error",
+                reason_code="rpc.internal_error",
+            )
 
     @staticmethod
     def _parse_subscription_filters(
@@ -338,12 +389,12 @@ class ControlServer:
         current_task = asyncio.current_task()
         if subscription.task is not None and subscription.task is not current_task:
             subscription.task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
+            with contextlib.suppress(asyncio.CancelledError, RuntimeError, OSError):
                 await subscription.task
         elif subscription.task is not None:
             subscription.task.cancel()
         if close_writer:
-            with contextlib.suppress(Exception):
+            with contextlib.suppress(OSError, RuntimeError):
                 writer.close()
 
     async def _stream_events(self, subscription: _EventSubscription) -> None:
@@ -355,7 +406,7 @@ class ControlServer:
                 await writer.drain()
         except asyncio.CancelledError:
             raise
-        except Exception:
+        except (ConnectionError, OSError, RuntimeError):
             logger.debug("Event subscriber disconnected: %s", writer)
             await self._remove_subscription(writer, close_writer=False)
 
@@ -374,10 +425,40 @@ class ControlServer:
             return value
         return None
 
+    @staticmethod
+    def _default_reason_code(code: int) -> str:
+        if code == PARSE_ERROR:
+            return "rpc.parse_error"
+        if code == INVALID_REQUEST:
+            return "rpc.invalid_request"
+        if code == METHOD_NOT_FOUND:
+            return "rpc.method_not_found"
+        if code == INVALID_PARAMS:
+            return "rpc.invalid_params"
+        if code == INTERNAL_ERROR:
+            return "rpc.internal_error"
+        if code == PERMISSION_DENIED:
+            return "rpc.permission_denied"
+        return "rpc.error"
+
     @classmethod
-    def _error_response(cls, req_id: str | int | None, code: int, message: str) -> str:
+    def _error_response(
+        cls,
+        req_id: str | int | None,
+        code: int,
+        message: str,
+        *,
+        reason_code: str | None = None,
+    ) -> str:
         safe_id = cls._sanitize_request_id(req_id)
-        resp = JsonRpcResponse(id=safe_id, error=JsonRpcError(code=code, message=message))
+        resp = JsonRpcResponse(
+            id=safe_id,
+            error=JsonRpcError(
+                code=code,
+                message=message,
+                data={"reason_code": reason_code or cls._default_reason_code(code)},
+            ),
+        )
         return resp.model_dump_json()
 
     @staticmethod
@@ -390,7 +471,7 @@ class ControlServer:
                 cred = sock.getsockopt(1, SO_PEERCRED, struct.calcsize("3i"))  # SOL_SOCKET=1
                 pid, uid, gid = struct.unpack("3i", cred)
                 return PeerCredentials(pid=pid, uid=uid, gid=gid)
-        except Exception:
+        except OSError:
             pass
         return PeerCredentials()
 
