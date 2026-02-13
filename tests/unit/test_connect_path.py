@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import sys
 
+import pytest
+
 from shisad.executors.connect_path import (
     ConnectPathResult,
     IptablesConnectPathProxy,
@@ -121,3 +123,72 @@ def test_m5_rt13_connect_path_refuses_host_namespace(monkeypatch) -> None:
     assert result.enforced is False
     assert result.reason == "host_namespace_unsafe"
     assert calls == []
+
+
+def test_m6_connect_path_guard_branches_for_invalid_pid_and_empty_ips() -> None:
+    proxy = IptablesConnectPathProxy(net_admin_available=True)
+    proxy._iptables = "/usr/sbin/iptables"
+    proxy._nsenter = "/usr/bin/nsenter"
+    assert (
+        proxy.enforce(allowed_ips=["93.184.216.34"], namespace_pid=0).reason
+        == "invalid_namespace_pid"
+    )
+    proxy._is_isolated_namespace = lambda _pid: True  # type: ignore[method-assign]
+    assert proxy.enforce(allowed_ips=[], namespace_pid=1234).reason == "empty_allowed_ips"
+
+
+def test_m6_connect_path_reports_iptables_failures(monkeypatch: pytest.MonkeyPatch) -> None:
+    proxy = IptablesConnectPathProxy(net_admin_available=True)
+    proxy._iptables = "/usr/sbin/iptables"
+    proxy._nsenter = "/usr/bin/nsenter"
+    monkeypatch.setattr(proxy, "_is_isolated_namespace", lambda namespace_pid: True)
+    monkeypatch.setattr(
+        proxy,
+        "_run",
+        lambda namespace_pid, args: (_ for _ in ()).throw(RuntimeError("boom")),
+    )
+    result = proxy.enforce(allowed_ips=["93.184.216.34"], namespace_pid=1234)
+    assert result.enforced is False
+    assert result.reason == "iptables_failed:RuntimeError"
+
+
+def test_m6_connect_path_success_enforcement_runs_expected_rules(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    proxy = IptablesConnectPathProxy(net_admin_available=True)
+    proxy._iptables = "/usr/sbin/iptables"
+    proxy._nsenter = "/usr/bin/nsenter"
+    monkeypatch.setattr(proxy, "_is_isolated_namespace", lambda namespace_pid: True)
+    calls: list[list[str]] = []
+    monkeypatch.setattr(proxy, "_run", lambda namespace_pid, args: calls.append(list(args)))
+    result = proxy.enforce(allowed_ips=["93.184.216.34", "93.184.216.34"], namespace_pid=1234)
+    assert result.enforced is True
+    assert result.reason == "enforced"
+    assert calls[0] == ["-F", "OUTPUT"]
+    assert calls[-1] == ["-A", "OUTPUT", "-j", "DROP"]
+
+
+def test_m6_connect_path_detect_capability_branches(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("os.geteuid", lambda: 0)
+    monkeypatch.setattr(
+        "shisad.executors.connect_path.shutil.which",
+        lambda name: "/usr/sbin/iptables",
+    )
+    assert IptablesConnectPathProxy.detect_net_admin_capability() is True
+
+    monkeypatch.setattr("os.geteuid", lambda: 1000)
+    monkeypatch.setattr(
+        "shisad.executors.connect_path.shutil.which",
+        lambda name: "/usr/bin/capsh" if name == "capsh" else "",
+    )
+    monkeypatch.setattr(
+        "subprocess.run",
+        lambda *args, **kwargs: (_ for _ in ()).throw(OSError("no capsh")),
+    )
+    assert IptablesConnectPathProxy.detect_net_admin_capability() is False
+
+    monkeypatch.setattr(
+        "subprocess.run",
+        lambda *args, **kwargs: type("Result", (), {"stdout": "cap_net_admin+ep", "stderr": ""})(),
+    )
+    assert IptablesConnectPathProxy.detect_net_admin_capability() is True

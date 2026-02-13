@@ -48,6 +48,9 @@ jobs:
       - name: Run tests
         run: uv run pytest -v -m "not requires_cap_net_admin"
 
+      - name: Audit test files contain test functions
+        run: uv run python scripts/test_function_audit.py --tests-root tests
+
   security-runtime:
     if: github.event_name == 'push' || github.event_name == 'pull_request'
     runs-on: ubuntu-latest
@@ -72,6 +75,9 @@ jobs:
 
       - name: Validate coverage baseline
         run: uv run python scripts/coverage_baseline.py --xml coverage.xml
+
+      - name: Enforce per-module coverage floors
+        run: uv run python scripts/coverage_module_gate.py --xml coverage.xml --critical-floor 80 --module-floor 60
 
       - name: Generate per-package coverage trend artifact
         run: uv run python scripts/coverage_trend.py --xml coverage.xml --output artifacts/coverage-trend.json
