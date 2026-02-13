@@ -5,11 +5,14 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, StrictInt, StrictStr
 
 from shisad.executors.sandbox import SandboxResult
 
 # --- JSON-RPC 2.0 wire format ---
+
+
+JsonRpcId = StrictStr | StrictInt
 
 
 class JsonRpcRequest(BaseModel):
@@ -18,7 +21,7 @@ class JsonRpcRequest(BaseModel):
     jsonrpc: str = "2.0"
     method: str
     params: dict[str, Any] = Field(default_factory=dict)
-    id: str | int | None = None
+    id: JsonRpcId | None = None
 
 
 class JsonRpcError(BaseModel):
@@ -35,7 +38,7 @@ class JsonRpcResponse(BaseModel):
     jsonrpc: str = "2.0"
     result: Any = None
     error: JsonRpcError | None = None
-    id: str | int | None = None
+    id: JsonRpcId | None = None
 
 
 # --- Standard JSON-RPC error codes ---

@@ -2538,6 +2538,26 @@ class HandlerImplementation:
         profile = self._skill_manager.profile(skill_path)
         payload = profile.profile.to_json()
         manifest = self._load_skill_manifest(skill_path)
+
+        def _extract_capabilities(
+            values: Any,
+            *,
+            legacy_key: str,
+        ) -> list[str]:
+            if not isinstance(values, list):
+                return []
+            extracted: list[str] = []
+            for value in values:
+                if isinstance(value, str):
+                    item = value
+                elif isinstance(value, dict):
+                    item = str(value.get(legacy_key, ""))
+                else:
+                    item = ""
+                if item:
+                    extracted.append(item)
+            return extracted
+
         await self._event_bus.publish(
             SkillProfiled(
                 session_id=None,
@@ -2545,16 +2565,22 @@ class HandlerImplementation:
                 skill_name=str(getattr(manifest, "name", "")),
                 version=str(getattr(manifest, "version", "")),
                 capabilities={
-                    "network": [str(item.get("domain", "")) for item in payload.get("network", [])],
-                    "filesystem": [
-                        str(item.get("path", ""))
-                        for item in payload.get("filesystem", [])
-                    ],
-                    "shell": [str(item.get("command", "")) for item in payload.get("shell", [])],
-                    "environment": [
-                        str(item.get("var", ""))
-                        for item in payload.get("environment", [])
-                    ],
+                    "network": _extract_capabilities(
+                        payload.get("network_domains", payload.get("network", [])),
+                        legacy_key="domain",
+                    ),
+                    "filesystem": _extract_capabilities(
+                        payload.get("filesystem_paths", payload.get("filesystem", [])),
+                        legacy_key="path",
+                    ),
+                    "shell": _extract_capabilities(
+                        payload.get("shell_commands", payload.get("shell", [])),
+                        legacy_key="command",
+                    ),
+                    "environment": _extract_capabilities(
+                        payload.get("environment_vars", payload.get("environment", [])),
+                        legacy_key="var",
+                    ),
                 },
             )
         )

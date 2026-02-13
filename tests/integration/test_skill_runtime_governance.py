@@ -205,6 +205,19 @@ async def test_m4_t12_profile_then_lock_captures_actual_capabilities(
         )
         assert "api.good.com" in profile["network_domains"]
         assert "AWS_TOKEN" in profile["environment_vars"]
+        audit = await client.call(
+            "audit.query",
+            {"event_type": "SkillProfiled", "limit": 20},
+        )
+        profiled = [
+            item
+            for item in audit["events"]
+            if str(item.get("data", {}).get("skill_name", "")) == "profiled-capability-skill"
+        ]
+        assert profiled
+        capabilities = profiled[0].get("data", {}).get("capabilities", {})
+        assert "api.good.com" in capabilities.get("network", [])
+        assert "AWS_TOKEN" in capabilities.get("environment", [])
     finally:
         await _shutdown(daemon_task, client)
 
