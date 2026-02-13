@@ -132,11 +132,36 @@ class TestApiSchemaValidation:
         assert metrics.count == 1
 
     def test_m1_additional_result_models_accept_runtime_shapes(self) -> None:
-        memory_ingest = MemoryIngestResult.model_validate({"id": "m1"})
-        memory_retrieve = MemoryRetrieveResult.model_validate(
-            {"results": [{"id": "e1"}], "count": 1}
+        memory_ingest = MemoryIngestResult.model_validate(
+            {
+                "chunk_id": "m1",
+                "source_id": "src-1",
+                "source_type": "user",
+                "collection": "user_curated",
+                "created_at": "2026-02-13T00:00:00+00:00",
+                "content_sanitized": "safe",
+                "risk_score": 0.1,
+                "original_hash": "h1",
+            }
         )
-        memory_write = MemoryWriteResult.model_validate({"written": True})
+        memory_retrieve = MemoryRetrieveResult.model_validate(
+            {
+                "results": [
+                    {
+                        "chunk_id": "m1",
+                        "source_id": "src-1",
+                        "source_type": "user",
+                        "collection": "user_curated",
+                        "created_at": "2026-02-13T00:00:00+00:00",
+                        "content_sanitized": "safe",
+                        "risk_score": 0.1,
+                        "original_hash": "h1",
+                    }
+                ],
+                "count": 1,
+            }
+        )
+        memory_write = MemoryWriteResult.model_validate({"kind": "allow", "entry": {"id": "e1"}})
         memory_list = MemoryListResult.model_validate({"entries": [], "count": 0})
         memory_get = MemoryGetResult.model_validate({"entry": {"id": "e1"}})
         memory_delete = MemoryDeleteResult.model_validate({"deleted": True, "entry_id": "e1"})
@@ -146,9 +171,9 @@ class TestApiSchemaValidation:
             {"rotated": True, "active_key_id": "k1", "reencrypt_existing": False}
         )
         skill_list = SkillListResult.model_validate({"skills": [], "count": 0})
-        skill_review = SkillReviewResult.model_validate({"allowed": True})
-        skill_install = SkillInstallResult.model_validate({"status": "installed"})
-        skill_profile = SkillProfileResult.model_validate({"network": []})
+        skill_review = SkillReviewResult.model_validate({"signature": "trusted"})
+        skill_install = SkillInstallResult.model_validate({"allowed": True, "status": "installed"})
+        skill_profile = SkillProfileResult.model_validate({"network_domains": []})
         skill_revoke = SkillRevokeResult.model_validate(
             {"revoked": True, "skill_name": "s1", "reason": "manual"}
         )
@@ -178,12 +203,15 @@ class TestApiSchemaValidation:
         lockdown = LockdownSetResult.model_validate(
             {"session_id": "s1", "level": "caution", "reason": "manual"}
         )
+        risk = ToolExecuteResult.model_validate(
+            {"allowed": True, "exit_code": 0, "confirmation_required": False}
+        )
         ingest = ChannelIngestResult.model_validate(
             {"session_id": "s1", "response": "ok", "ingress_risk": 0.1}
         )
-        assert memory_ingest.model_dump(mode="json")["id"] == "m1"
+        assert memory_ingest.chunk_id == "m1"
         assert memory_retrieve.count == 1
-        assert memory_write.model_dump(mode="json")["written"] is True
+        assert memory_write.kind == "allow"
         assert memory_list.count == 0
         assert memory_get.entry == {"id": "e1"}
         assert memory_delete.deleted is True
@@ -191,9 +219,9 @@ class TestApiSchemaValidation:
         assert memory_verify.verified is True
         assert memory_rotate.active_key_id == "k1"
         assert skill_list.count == 0
-        assert skill_review.model_dump(mode="json")["allowed"] is True
+        assert skill_review.signature == "trusted"
         assert skill_install.model_dump(mode="json")["status"] == "installed"
-        assert skill_profile.model_dump(mode="json")["network"] == []
+        assert skill_profile.network_domains == []
         assert skill_revoke.revoked is True
         assert task_create.model_dump(mode="json")["id"] == "t1"
         assert task_list.count == 0
@@ -206,4 +234,5 @@ class TestApiSchemaValidation:
         assert daemon_shutdown.status == "shutting_down"
         assert policy_explain.tool_name == "shell_exec"
         assert lockdown.level == "caution"
+        assert risk.allowed is True
         assert ingest.ingress_risk == 0.1

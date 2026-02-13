@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -86,9 +87,20 @@ class SessionMessageParams(_StrictParams):
 class SessionMessageResult(BaseModel):
     """Result for session.message."""
 
-    model_config = ConfigDict(extra="allow")
     response: str
     session_id: str
+    plan_hash: str | None = None
+    risk_score: float | None = None
+    blocked_actions: int = 0
+    confirmation_required_actions: int = 0
+    executed_actions: int = 0
+    checkpoint_ids: list[str] = Field(default_factory=list)
+    checkpoints_created: int = 0
+    transcript_root: str | None = None
+    lockdown_level: str | None = None
+    trust_level: str | None = None
+    pending_confirmation_ids: list[str] = Field(default_factory=list)
+    output_policy: dict[str, Any] = Field(default_factory=dict)
 
 
 class SessionListResult(BaseModel):
@@ -202,16 +214,31 @@ class MemoryRotateKeyParams(_StrictParams):
 
 
 class MemoryIngestResult(BaseModel):
-    model_config = ConfigDict(extra="allow")
+    chunk_id: str
+    source_id: str
+    source_type: str
+    collection: str
+    created_at: datetime | str
+    content_sanitized: str
+    extracted_facts: list[dict[str, Any]] = Field(default_factory=list)
+    risk_score: float
+    original_hash: str
+    quarantined: bool = False
+    lexical_score: float = 0.0
+    semantic_score: float = 0.0
+    blended_score: float = 0.0
+    corroborated: bool = False
 
 
 class MemoryRetrieveResult(BaseModel):
-    results: list[dict[str, Any]] = Field(default_factory=list)
+    results: list[MemoryIngestResult] = Field(default_factory=list)
     count: int = 0
 
 
 class MemoryWriteResult(BaseModel):
-    model_config = ConfigDict(extra="allow")
+    kind: str
+    reason: str = ""
+    entry: dict[str, Any] | None = None
 
 
 class MemoryListResult(BaseModel):
@@ -269,7 +296,17 @@ class TaskPendingConfirmationsParams(_StrictParams):
 
 
 class TaskCreateResult(BaseModel):
-    model_config = ConfigDict(extra="allow")
+    id: str
+    name: str = ""
+    schedule: dict[str, Any] = Field(default_factory=dict)
+    goal: str = ""
+    capability_snapshot: list[str] = Field(default_factory=list)
+    policy_snapshot_ref: str = ""
+    allowed_recipients: list[str] = Field(default_factory=list)
+    allowed_domains: list[str] = Field(default_factory=list)
+    created_by: str = ""
+    created_at: datetime | str | None = None
+    enabled: bool = True
 
 
 class TaskListResult(BaseModel):
@@ -361,7 +398,6 @@ class PolicyExplainParams(_StrictParams):
 
 
 class PolicyExplainResult(BaseModel):
-    model_config = ConfigDict(extra="allow")
     session_id: str
     tool_name: str
     action: str
@@ -371,8 +407,19 @@ class PolicyExplainResult(BaseModel):
 
 
 class DaemonStatusResult(BaseModel):
-    model_config = ConfigDict(extra="allow")
     status: str
+    sessions_active: int = 0
+    audit_entries: int = 0
+    policy_hash: str = ""
+    tools_registered: list[str] = Field(default_factory=list)
+    model_routes: dict[str, str] = Field(default_factory=dict)
+    classifier_mode: str = ""
+    yara_required: bool = False
+    risk_policy_version: str = ""
+    risk_thresholds: dict[str, float] = Field(default_factory=dict)
+    channels: dict[str, Any] = Field(default_factory=dict)
+    executors: dict[str, Any] = Field(default_factory=dict)
+    provenance: dict[str, Any] = Field(default_factory=dict)
 
 
 class DaemonShutdownResult(BaseModel):
@@ -386,7 +433,9 @@ class LockdownSetResult(BaseModel):
 
 
 class RiskCalibrateResult(BaseModel):
-    model_config = ConfigDict(extra="allow")
+    version: str
+    thresholds: dict[str, float] = Field(default_factory=dict)
+    updated_at: datetime | str | None = None
 
 
 class ToolExecuteParams(_StrictParams):
@@ -415,7 +464,6 @@ class ToolExecuteParams(_StrictParams):
 class ToolExecuteResult(SandboxResult):
     """Result envelope for tool.execute, including confirmation metadata."""
 
-    model_config = ConfigDict(extra="allow")
     confirmation_required: bool | None = None
     confirmation_id: str | None = None
     decision_nonce: str | None = None
@@ -441,7 +489,14 @@ class SkillReviewParams(_StrictParams):
 
 
 class SkillReviewResult(BaseModel):
-    model_config = ConfigDict(extra="allow")
+    manifest: dict[str, Any] = Field(default_factory=dict)
+    files: list[dict[str, Any]] = Field(default_factory=list)
+    findings: list[dict[str, Any]] = Field(default_factory=list)
+    signature: str = ""
+    signature_reason: str = ""
+    summary: str = ""
+    diff: list[dict[str, Any]] = Field(default_factory=list)
+    reputation: dict[str, Any] | None = None
 
 
 class SkillInstallParams(_StrictParams):
@@ -450,7 +505,13 @@ class SkillInstallParams(_StrictParams):
 
 
 class SkillInstallResult(BaseModel):
-    model_config = ConfigDict(extra="allow")
+    allowed: bool
+    status: str
+    reason: str = ""
+    findings: list[dict[str, Any]] = Field(default_factory=list)
+    summary: str = ""
+    artifact_state: str = ""
+    reputation: dict[str, Any] | None = None
 
 
 class SkillProfileParams(_StrictParams):
@@ -458,7 +519,10 @@ class SkillProfileParams(_StrictParams):
 
 
 class SkillProfileResult(BaseModel):
-    model_config = ConfigDict(extra="allow")
+    network_domains: list[str] = Field(default_factory=list)
+    filesystem_paths: list[str] = Field(default_factory=list)
+    shell_commands: list[str] = Field(default_factory=list)
+    environment_vars: list[str] = Field(default_factory=list)
 
 
 class SkillRevokeParams(_StrictParams):
@@ -493,7 +557,13 @@ class DashboardMarkFalsePositiveParams(_StrictParams):
 
 
 class DashboardQueryResult(BaseModel):
-    model_config = ConfigDict(extra="allow")
+    events: list[dict[str, Any]] = Field(default_factory=list)
+    alerts: list[dict[str, Any]] = Field(default_factory=list)
+    total: int = 0
+    count: int = 0
+    hash_chain: dict[str, Any] | None = None
+    installed: list[dict[str, Any]] = Field(default_factory=list)
+    timeline: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class DashboardMarkFalsePositiveResult(BaseModel):

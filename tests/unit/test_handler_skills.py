@@ -17,10 +17,20 @@ class _StubImpl:
         return {"skill_path": str(payload["skill_path"]), "allowed": True}
 
     async def do_skill_install(self, payload: dict[str, object]) -> dict[str, object]:
-        return {"status": "installed", "skill_path": str(payload["skill_path"])}
+        return {
+            "allowed": True,
+            "status": "installed",
+            "reason": "ok",
+            "summary": str(payload["skill_path"]),
+        }
 
     async def do_skill_profile(self, _payload: dict[str, object]) -> dict[str, object]:
-        return {"network": [], "filesystem": [], "shell": []}
+        return {
+            "network_domains": [],
+            "filesystem_paths": [],
+            "shell_commands": [],
+            "environment_vars": [],
+        }
 
     async def do_skill_revoke(self, payload: dict[str, object]) -> dict[str, object]:
         return {"revoked": True, "skill_name": str(payload["skill_name"]), "reason": "manual"}

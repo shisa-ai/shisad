@@ -16,7 +16,16 @@ from shisad.daemon.handlers.memory import MemoryHandlers
 
 class _StubImpl:
     async def do_memory_ingest(self, payload: dict[str, object]) -> dict[str, object]:
-        return {"id": "ing-1", "source_id": payload["source_id"]}
+        return {
+            "chunk_id": "ing-1",
+            "source_id": str(payload["source_id"]),
+            "source_type": "user",
+            "collection": "user_curated",
+            "created_at": "2026-02-13T00:00:00+00:00",
+            "content_sanitized": "safe",
+            "risk_score": 0.1,
+            "original_hash": "hash-1",
+        }
 
     async def do_memory_retrieve(self, _payload: dict[str, object]) -> dict[str, object]:
         return {"results": [{"entry_id": "e1"}], "count": 1}
