@@ -37,7 +37,7 @@ jobs:
         run: uv sync --dev
 
       - name: Lint with ruff
-        run: uv run ruff check src/ tests/
+        run: uv run ruff check src/ tests/ scripts/
 
       - name: Type check with mypy
         run: uv run mypy src/shisad/
@@ -139,13 +139,13 @@ jobs:
       - name: Run deterministic core adversarial subset
         run: |
           uv run pytest -q \
-            tests/adversarial/test_m6_adversarial.py::test_m6_a1_prompt_injection_direct_fixture_matrix_has_50_plus_variants \
-            tests/adversarial/test_m6_adversarial.py::test_m6_t18_layered_mixed_encoding_fixture_matrix_is_deterministic_and_flagged \
-            tests/adversarial/test_m6_adversarial.py::test_m6_t9_staged_small_request_exfil_fixture_yields_block_reason_codes \
-            tests/adversarial/test_m6_adversarial.py::test_m6_t10_dns_exfil_simulation_is_flagged_or_blocked_with_deterministic_reason \
-            tests/adversarial/test_m6_adversarial.py::test_m6_t11_browser_exfil_attempt_cannot_bypass_policy_gate \
-            tests/integration/test_m6_security_hardening.py::test_m6_t12_cross_thread_high_overlap_requires_confirmation_and_audit_metadata \
-            tests/integration/test_m6_security_hardening.py::test_m6_t13_explicit_forward_intent_allows_warning_trail
+            tests/adversarial/test_adversarial_hardening.py::test_m6_a1_prompt_injection_direct_fixture_matrix_has_50_plus_variants \
+            tests/adversarial/test_adversarial_hardening.py::test_m6_t18_layered_mixed_encoding_fixture_matrix_is_deterministic_and_flagged \
+            tests/adversarial/test_adversarial_hardening.py::test_m6_t9_staged_small_request_exfil_fixture_yields_block_reason_codes \
+            tests/adversarial/test_adversarial_hardening.py::test_m6_t10_dns_exfil_simulation_is_flagged_or_blocked_with_deterministic_reason \
+            tests/adversarial/test_adversarial_hardening.py::test_m6_t11_browser_exfil_attempt_cannot_bypass_policy_gate \
+            tests/integration/test_security_hardening_integration.py::test_m6_t12_cross_thread_high_overlap_requires_confirmation_and_audit_metadata \
+            tests/integration/test_security_hardening_integration.py::test_m6_t13_explicit_forward_intent_allows_warning_trail
 
       - name: Compute core adversarial metrics
         run: uv run python scripts/m6_adversarial_metrics.py --lane core --output artifacts/m6-core-metrics.json
@@ -204,7 +204,7 @@ jobs:
         run: uv sync --dev
 
       - name: Run full M6 adversarial suites
-        run: uv run pytest -q tests/adversarial/test_m6_adversarial.py tests/integration/test_m6_security_hardening.py
+        run: uv run pytest -q tests/adversarial/test_adversarial_hardening.py tests/integration/test_security_hardening_integration.py
 
       - name: Compute full adversarial metrics
         run: uv run python scripts/m6_adversarial_metrics.py --lane full --output artifacts/m6-full-metrics.json
