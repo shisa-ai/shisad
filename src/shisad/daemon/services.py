@@ -311,9 +311,7 @@ class DaemonServices:
                 component.value: router.route_for(component).base_url
                 for component in ModelComponent
             }
-            startup_complete = True
-
-            return cls(
+            services = cls(
                 config=config,
                 audit_log=audit_log,
                 event_bus=event_bus,
@@ -359,6 +357,8 @@ class DaemonServices:
                 model_routes=model_routes,
                 internal_ingress_marker=internal_ingress_marker,
             )
+            startup_complete = True
+            return services
         finally:
             if not startup_complete:
                 if embeddings_adapter is not None:
