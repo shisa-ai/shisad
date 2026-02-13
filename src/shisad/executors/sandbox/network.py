@@ -143,15 +143,6 @@ class SandboxNetworkManager:
                 body=request_body,
                 approved_by_pep=approved_by_pep,
             )
-            if decision.injected_headers:
-                decision = decision.model_copy(
-                    update={
-                        "injected_headers": {
-                            key: "[redacted]"
-                            for key in decision.injected_headers
-                        }
-                    }
-                )
             decisions.append(decision)
             if not decision.allowed:
                 return decisions, decision.reason
@@ -166,7 +157,9 @@ class SandboxNetworkManager:
         prior_decisions: list[ProxyDecision],
         approved_by_pep: bool,
     ) -> str | None:
-        for url, prior in zip(urls, prior_decisions, strict=False):
+        if len(urls) != len(prior_decisions):
+            return "revalidation_decision_mismatch"
+        for url, prior in zip(urls, prior_decisions, strict=True):
             revalidated = self._proxy.authorize_request(
                 tool_name=tool_name,
                 url=url,

@@ -173,7 +173,7 @@ class SandboxOrchestrator:
                 fs_decisions=fs_decisions,
                 degraded_controls=degraded_controls,
             )
-        network_decisions, network_reason = self._network.authorize_requests(
+        raw_network_decisions, network_reason = self._network.authorize_requests(
             tool_name=config.tool_name,
             urls=network_urls,
             policy=config.network,
@@ -181,6 +181,7 @@ class SandboxOrchestrator:
             request_body=config.request_body,
             approved_by_pep=config.approved_by_pep,
         )
+        network_decisions = self._redact_network_decisions(raw_network_decisions)
         if network_reason is not None:
             return self._denied(
                 config,
@@ -193,7 +194,7 @@ class SandboxOrchestrator:
         command, resolved_env, inject_error = self._inject_credentials(
             command=config.command,
             env=env,
-            network_decisions=network_decisions,
+            network_decisions=raw_network_decisions,
             approved_by_pep=config.approved_by_pep,
         )
         if inject_error is not None:
@@ -209,7 +210,7 @@ class SandboxOrchestrator:
             tool_name=config.tool_name,
             urls=network_urls,
             policy=config.network,
-            prior_decisions=network_decisions,
+            prior_decisions=raw_network_decisions,
             approved_by_pep=config.approved_by_pep,
         )
         if revalidate_reason is not None:
@@ -242,7 +243,7 @@ class SandboxOrchestrator:
             backend=backend,
             command=command,
             env=resolved_env,
-            network_decisions=network_decisions,
+            network_decisions=raw_network_decisions,
         )
         return self._result_from_process(
             config=config,
@@ -253,6 +254,25 @@ class SandboxOrchestrator:
             degraded_controls=degraded_controls,
             process=process,
         )
+
+    @staticmethod
+    def _redact_network_decisions(decisions: list[ProxyDecision]) -> list[ProxyDecision]:
+        redacted: list[ProxyDecision] = []
+        for decision in decisions:
+            if not decision.injected_headers:
+                redacted.append(decision)
+                continue
+            redacted.append(
+                decision.model_copy(
+                    update={
+                        "injected_headers": {
+                            key: "[redacted]"
+                            for key in decision.injected_headers
+                        }
+                    }
+                )
+            )
+        return redacted
 
     def _execute_process(
         self,

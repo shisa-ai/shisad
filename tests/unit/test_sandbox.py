@@ -227,6 +227,34 @@ def test_m3_sandbox_injects_placeholders_into_command_and_env() -> None:
     assert "real-secret-token" in result.stdout
 
 
+def test_m3_sandbox_redacts_injected_headers_in_result_payload() -> None:
+    store = InMemoryCredentialStore()
+    store.register(
+        CredentialRef("gmail_primary"),
+        "real-secret-token",
+        CredentialConfig(allowed_hosts=["api.good.com"]),
+    )
+    placeholder = store.get_placeholder(CredentialRef("gmail_primary"))
+    orchestrator = SandboxOrchestrator(
+        proxy=EgressProxy(credential_store=store, resolver=_resolver)
+    )
+    result = orchestrator.execute(
+        SandboxConfig(
+            tool_name="http_request",
+            command=[sys.executable, "-c", "print('noop')"],
+            network=NetworkPolicy(allow_network=True, allowed_domains=["api.good.com"]),
+            network_urls=["https://api.good.com/v1/send"],
+            request_headers={"Authorization": placeholder},
+            approved_by_pep=True,
+            degraded_mode=DegradedModePolicy.FAIL_OPEN,
+            security_critical=False,
+        )
+    )
+    assert result.allowed is True
+    assert result.network_decisions
+    assert result.network_decisions[0].injected_headers["Authorization"] == "[redacted]"
+
+
 def test_m3_sandbox_blocks_placeholder_injection_without_pep_approval() -> None:
     store = InMemoryCredentialStore()
     store.register(
