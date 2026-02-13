@@ -108,6 +108,44 @@ async def test_daemon_services_build_rolls_back_connected_matrix_on_failure(
 
 
 @pytest.mark.asyncio
+async def test_daemon_services_build_rolls_back_connected_matrix_on_unexpected_failure(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    disconnected = False
+
+    class _MatrixStub:
+        async def disconnect(self) -> None:
+            nonlocal disconnected
+            disconnected = True
+
+    async def _fake_build_matrix_channel(config: DaemonConfig):  # type: ignore[no-untyped-def]
+        _ = config
+        return _MatrixStub()
+
+    class _ExplodingCredentialStore:
+        def __init__(self) -> None:
+            raise KeyError("credential store exploded")
+
+    monkeypatch.setattr(
+        "shisad.daemon.services._build_matrix_channel",
+        _fake_build_matrix_channel,
+    )
+    monkeypatch.setattr(
+        "shisad.daemon.services.InMemoryCredentialStore",
+        _ExplodingCredentialStore,
+    )
+    config = DaemonConfig(
+        data_dir=tmp_path / "data",
+        socket_path=tmp_path / "control.sock",
+        policy_path=tmp_path / "policy.yaml",
+    )
+    with pytest.raises(KeyError, match="credential store exploded"):
+        await DaemonServices.build(config)
+    assert disconnected is True
+
+
+@pytest.mark.asyncio
 async def test_daemon_services_shutdown_continues_after_disconnect_error() -> None:
     calls: list[str] = []
 

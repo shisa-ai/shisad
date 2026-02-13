@@ -430,7 +430,7 @@ class IngestionPipeline:
         for path in sorted(self._sanitized_dir.glob("*.json")):
             try:
                 record = RetrievalResult.model_validate_json(path.read_text(encoding="utf-8"))
-            except (OSError, ValidationError):
+            except (OSError, UnicodeError, ValidationError):
                 continue
             self._records[record.chunk_id] = record
             self._vectors[record.chunk_id] = self._embed_text(record.content_sanitized)

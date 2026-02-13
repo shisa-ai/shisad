@@ -233,7 +233,7 @@ class MemoryManager:
         for path in sorted(self._storage_dir.glob("*.json")):
             try:
                 entry = MemoryEntry.model_validate_json(path.read_text(encoding="utf-8"))
-            except (OSError, ValidationError):
+            except (OSError, UnicodeError, ValidationError):
                 continue
             self._entries[entry.id] = entry
 

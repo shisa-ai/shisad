@@ -214,6 +214,17 @@ def test_m2_scheduler_hydrates_pending_confirmations_after_restart(tmp_path: Pat
     assert pending[0]["task_id"] == created.id
 
 
+def test_m2_scheduler_skips_corrupt_utf8_persisted_files(tmp_path: Path) -> None:
+    storage = tmp_path / "tasks"
+    storage.mkdir(parents=True, exist_ok=True)
+    (storage / "tasks.json").write_bytes(b"\xff")
+    (storage / "pending_confirmations.json").write_bytes(b"\xff")
+
+    restarted = SchedulerManager(storage_dir=storage)
+    assert restarted.list_tasks() == []
+    assert restarted.pending_confirmations("missing-task") == []
+
+
 def test_m2_t21_risk_policy_versioning_is_deterministic(tmp_path: Path) -> None:
     calibrator = RiskCalibrator(
         policy_path=tmp_path / "risk-policy.json",

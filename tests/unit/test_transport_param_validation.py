@@ -119,6 +119,28 @@ async def test_transport_handles_non_object_invalid_request_without_crashing(
 
 
 @pytest.mark.asyncio
+async def test_transport_returns_parse_error_for_non_utf8_frame(tmp_path: Path) -> None:
+    server = ControlServer(tmp_path / "control.sock")
+    await server.start()
+    reader: asyncio.StreamReader | None = None
+    writer: asyncio.StreamWriter | None = None
+    try:
+        reader, writer = await asyncio.open_unix_connection(str(tmp_path / "control.sock"))
+        writer.write(b"\xff\n")
+        await writer.drain()
+        response = JsonRpcResponse.model_validate_json(await reader.readline())
+        assert response.error is not None
+        assert response.error.code == -32700
+        assert response.error.data == {"reason_code": "rpc.parse_error"}
+        assert response.id is None
+    finally:
+        if writer is not None:
+            writer.close()
+            await writer.wait_closed()
+        await server.stop()
+
+
+@pytest.mark.asyncio
 async def test_transport_maps_handler_validation_error_to_internal_error(
     tmp_path: Path,
 ) -> None:

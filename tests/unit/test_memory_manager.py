@@ -135,6 +135,15 @@ def test_m2_memory_manager_hydrates_entries_after_restart(tmp_path: Path) -> Non
     assert any(entry.id == decision.entry.id for entry in loaded)
 
 
+def test_m2_memory_manager_skips_corrupt_utf8_entry_files(tmp_path: Path) -> None:
+    storage = tmp_path / "memory"
+    storage.mkdir(parents=True, exist_ok=True)
+    (storage / "bad.json").write_bytes(b"\xff")
+
+    restarted = MemoryManager(storage)
+    assert restarted.list_entries(limit=10) == []
+
+
 def test_m2_ingestion_pipeline_hydrates_records_after_restart(tmp_path: Path) -> None:
     storage = tmp_path / "ingestion"
     first = IngestionPipeline(storage)
@@ -146,6 +155,16 @@ def test_m2_ingestion_pipeline_hydrates_records_after_restart(tmp_path: Path) ->
     restarted = IngestionPipeline(storage)
     results = restarted.retrieve("defense layers", limit=5)
     assert results
+
+
+def test_m2_ingestion_pipeline_skips_corrupt_utf8_record_files(tmp_path: Path) -> None:
+    storage = tmp_path / "ingestion"
+    sanitized = storage / "sanitized"
+    sanitized.mkdir(parents=True, exist_ok=True)
+    (sanitized / "bad.json").write_bytes(b"\xff")
+
+    restarted = IngestionPipeline(storage)
+    assert restarted.retrieve("anything", limit=5) == []
 
 
 @pytest.mark.asyncio

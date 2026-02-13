@@ -150,6 +150,7 @@ class DaemonServices:
         internal_ingress_marker = object()
         matrix_channel: MatrixChannel | None = None
         embeddings_adapter: SyncEmbeddingsAdapter | None = None
+        startup_complete = False
 
         try:
             session_manager = SessionManager(audit_hook=event_wiring.audit_capability_event)
@@ -310,6 +311,7 @@ class DaemonServices:
                 component.value: router.route_for(component).base_url
                 for component in ModelComponent
             }
+            startup_complete = True
 
             return cls(
                 config=config,
@@ -357,16 +359,16 @@ class DaemonServices:
                 model_routes=model_routes,
                 internal_ingress_marker=internal_ingress_marker,
             )
-        except (OSError, RuntimeError, TypeError, ValueError):
-            if embeddings_adapter is not None:
+        finally:
+            if not startup_complete:
+                if embeddings_adapter is not None:
+                    with contextlib.suppress(OSError, RuntimeError):
+                        embeddings_adapter.close(wait=False)
+                if matrix_channel is not None:
+                    with contextlib.suppress(OSError, RuntimeError):
+                        await matrix_channel.disconnect()
                 with contextlib.suppress(OSError, RuntimeError):
-                    embeddings_adapter.close(wait=False)
-            if matrix_channel is not None:
-                with contextlib.suppress(OSError, RuntimeError):
-                    await matrix_channel.disconnect()
-            with contextlib.suppress(OSError, RuntimeError):
-                await server.stop()
-            raise
+                    await server.stop()
 
     async def shutdown(self) -> None:
         """Close async/sync resources in reverse runtime order."""

@@ -161,7 +161,7 @@ class SchedulerManager:
             return
         try:
             raw = json.loads(self._tasks_file.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
+        except (OSError, UnicodeError, json.JSONDecodeError):
             return
         if not isinstance(raw, list):
             return
@@ -183,7 +183,7 @@ class SchedulerManager:
             return
         try:
             raw = json.loads(self._pending_file.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
+        except (OSError, UnicodeError, json.JSONDecodeError):
             return
         if not isinstance(raw, dict):
             return

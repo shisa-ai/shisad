@@ -181,7 +181,14 @@ class ControlServer:
                 await writer.drain()
         except asyncio.CancelledError:
             pass
-        except (ConnectionError, OSError, RuntimeError, json.JSONDecodeError, ValidationError):
+        except (
+            ConnectionError,
+            OSError,
+            RuntimeError,
+            UnicodeDecodeError,
+            ValueError,
+            ValidationError,
+        ):
             logger.exception("Error handling connection")
         finally:
             await self._remove_subscription(writer, close_writer=False)
@@ -202,7 +209,7 @@ class ControlServer:
         # Parse JSON
         try:
             data = json.loads(raw)
-        except json.JSONDecodeError as e:
+        except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as e:
             return self._error_response(
                 None,
                 PARSE_ERROR,
@@ -297,10 +304,12 @@ class ControlServer:
             return self._success_response(request.id, payload)
         except ShisadError as exc:
             logger.warning(
-                "Method %s failed with reason_code=%s",
+                "Method %s failed (%s); reason_code=%s",
                 request.method,
+                exc.__class__.__name__,
                 exc.reason_code,
             )
+            logger.debug("Method %s error detail: %s", request.method, exc)
             return self._error_response(
                 request.id,
                 exc.rpc_code,
