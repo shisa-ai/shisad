@@ -45,11 +45,11 @@ jobs:
       - name: Verify security asset provenance
         run: uv run python scripts/security_assets.py verify
 
-      - name: Run tests
-        run: uv run pytest -v -m "not requires_cap_net_admin"
-
       - name: Audit test files contain test functions
         run: uv run python scripts/test_function_audit.py --tests-root tests
+
+      - name: Run tests
+        run: uv run pytest -v -m "not requires_cap_net_admin"
 
   security-runtime:
     if: github.event_name == 'push' || github.event_name == 'pull_request'

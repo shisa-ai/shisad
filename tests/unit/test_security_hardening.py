@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
@@ -25,9 +26,14 @@ def test_m2_t23_ci_generates_coverage_and_validates_baseline() -> None:
     ci = Path(".github/workflows/ci.yml").read_text()
     assert "--cov=src" in ci
     assert "scripts/coverage_baseline.py" in ci
+    assert "scripts/coverage_module_gate.py" in ci
     assert "scripts/coverage_trend.py" in ci
+    assert "scripts/test_function_audit.py" in ci
     assert "scripts/yara_parity_report.py" in ci
     assert "actions/upload-artifact@v4" in ci
+    assert ci.index("scripts/test_function_audit.py") < ci.index(
+        "pytest -v -m \"not requires_cap_net_admin\""
+    )
 
 
 def test_m2_t24_provenance_drift_check_detects_modified_assets(tmp_path: Path) -> None:
@@ -167,3 +173,119 @@ def test_m2_coverage_trend_script_writes_per_package_metrics(tmp_path: Path) -> 
     assert result.returncode == 0, result.stdout + result.stderr
     payload = output.read_text()
     assert "\"package\": \"security\"" in payload
+
+
+def test_m6_coverage_module_gate_fails_when_no_modules_checked(tmp_path: Path) -> None:
+    coverage_xml = tmp_path / "coverage.xml"
+    coverage_xml.write_text(
+        """
+<coverage line-rate="1.0">
+  <packages>
+    <package>
+      <classes>
+        <class filename="outside/module.py">
+          <lines>
+            <line number="1" hits="1" />
+          </lines>
+        </class>
+      </classes>
+    </package>
+  </packages>
+</coverage>
+""",
+        encoding="utf-8",
+    )
+    result = subprocess.run(
+        [
+            sys.executable,
+            "scripts/coverage_module_gate.py",
+            "--xml",
+            str(coverage_xml),
+            "--critical-floor",
+            "80",
+            "--module-floor",
+            "60",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=_script_env(),
+    )
+    assert result.returncode == 2, result.stdout + result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["status"] == "no_modules_checked"
+    assert payload["checked_modules"] == 0
+    assert payload["below"] == []
+
+
+def test_m6_test_function_audit_counts_pytest_default_file_patterns(tmp_path: Path) -> None:
+    tests_root = tmp_path / "tests"
+    tests_root.mkdir()
+    (tests_root / "test_alpha.py").write_text(
+        """
+def test_alpha():
+    assert True
+""",
+        encoding="utf-8",
+    )
+    (tests_root / "beta_test.py").write_text(
+        """
+class TestBeta:
+    def test_beta(self):
+        assert True
+""",
+        encoding="utf-8",
+    )
+    result = subprocess.run(
+        [
+            sys.executable,
+            "scripts/test_function_audit.py",
+            "--tests-root",
+            str(tests_root),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=_script_env(),
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["status"] == "ok"
+    assert payload["checked_files"] == 2
+    assert payload["empty_test_files"] == []
+
+
+def test_m6_test_function_audit_ignores_non_collectable_test_defs(tmp_path: Path) -> None:
+    tests_root = tmp_path / "tests"
+    tests_root.mkdir()
+    target = tests_root / "shadow_test.py"
+    target.write_text(
+        """
+def helper():
+    def test_nested():
+        assert True
+    return test_nested
+
+class Helper:
+    def test_method(self):
+        assert True
+""",
+        encoding="utf-8",
+    )
+    result = subprocess.run(
+        [
+            sys.executable,
+            "scripts/test_function_audit.py",
+            "--tests-root",
+            str(tests_root),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=_script_env(),
+    )
+    assert result.returncode == 2, result.stdout + result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["status"] == "empty_files_found"
+    assert payload["checked_files"] == 1
+    assert str(target) in payload["empty_test_files"]

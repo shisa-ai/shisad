@@ -78,15 +78,24 @@ def main() -> int:
         if percent < threshold:
             below.append(record)
 
+    status = "ok"
+    exit_code = 0
+    if not checked:
+        status = "no_modules_checked"
+        exit_code = 2
+    elif below:
+        status = "below_floor"
+        exit_code = 2
+
     payload = {
         "checked_modules": len(checked),
         "critical_floor_percent": float(args.critical_floor),
         "module_floor_percent": float(args.module_floor),
-        "status": "ok" if not below else "below_floor",
+        "status": status,
         "below": sorted(below, key=lambda item: float(item["coverage_percent"])),
     }
     print(json.dumps(payload, indent=2))
-    return 0 if not below else 2
+    return exit_code
 
 
 if __name__ == "__main__":
