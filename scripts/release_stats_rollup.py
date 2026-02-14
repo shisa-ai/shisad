@@ -6,10 +6,13 @@ from __future__ import annotations
 import argparse
 import ast
 import json
+import re
 import subprocess
+from bisect import bisect_left, bisect_right
 from collections import Counter
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+from itertools import pairwise
 from pathlib import Path
 from typing import Any
 
@@ -48,7 +51,7 @@ def _git_stats(repo_root: Path, from_ref: str, to_ref: str) -> dict[str, Any]:
     unique_files = {line.strip() for line in files_output.splitlines() if line.strip()}
     numstat_output = _run_git(repo_root, "log", "--pretty=tformat:", "--numstat", range_spec)
     insertions, deletions = _parse_numstat(numstat_output)
-    tag_commit = _run_git(repo_root, "rev-parse", "--short", to_ref).strip()
+    tag_commit = _run_git(repo_root, "rev-parse", "--short", f"{to_ref}^{{}}").strip()
     return {
         "from_ref": from_ref,
         "to_ref": to_ref,
@@ -187,6 +190,358 @@ def _parse_timestamp(raw: str) -> datetime:
     return datetime.fromisoformat(raw.replace("Z", "+00:00")).astimezone(UTC)
 
 
+@dataclass(frozen=True)
+class CommitEvent:
+    timestamp_utc: datetime
+    subject: str | None
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "timestamp_utc": self.timestamp_utc.isoformat(),
+            "subject": self.subject,
+        }
+
+
+def _parse_tool_arguments(raw: Any) -> dict[str, Any] | None:
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, str):
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            return None
+        return parsed if isinstance(parsed, dict) else None
+    return None
+
+
+@dataclass(frozen=True)
+class GitCommit:
+    sha: str
+    timestamp_utc: datetime
+    subject: str
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "sha": self.sha,
+            "sha_short": self.sha[:7],
+            "timestamp_utc": self.timestamp_utc.isoformat(),
+            "subject": self.subject,
+        }
+
+
+def _git_commit_timeline(repo_root: Path, from_ref: str, to_ref: str) -> list[GitCommit]:
+    range_spec = f"{from_ref}..{to_ref}"
+    output = _run_git(repo_root, "log", "--reverse", "--format=%H|%cI|%s", range_spec)
+    commits: list[GitCommit] = []
+    for line in output.splitlines():
+        if not line.strip():
+            continue
+        sha, ts_raw, subject = line.split("|", 2)
+        ts = datetime.fromisoformat(ts_raw).astimezone(UTC)
+        commits.append(GitCommit(sha=sha, timestamp_utc=ts, subject=subject))
+    return commits
+
+
+_COMMIT_SUBJECT_RE = re.compile(r"(?:^|\s)-m\s+(?:\"([^\"]*)\"|'([^']*)')")
+
+
+def _extract_git_commit_subjects(cmd: str) -> list[str]:
+    subjects: list[str] = []
+    for match in re.finditer(r"\bgit\s+commit\b", cmd):
+        tail = cmd[match.start() :]
+        subject_match = _COMMIT_SUBJECT_RE.search(tail)
+        if subject_match is None:
+            continue
+        subject = subject_match.group(1) or subject_match.group(2)
+        if subject is not None:
+            subjects.append(subject)
+    return subjects
+
+
+def _window_activity_breakdown(
+    timestamps_sorted: list[datetime],
+    *,
+    start_utc: datetime,
+    end_utc: datetime,
+    idle_threshold: timedelta,
+) -> tuple[float, float, float]:
+    if end_utc <= start_utc:
+        return 0.0, 0.0, 0.0
+
+    start_idx = bisect_left(timestamps_sorted, start_utc)
+    end_idx = bisect_right(timestamps_sorted, end_utc)
+    window = [start_utc, *timestamps_sorted[start_idx:end_idx], end_utc]
+    window.sort()
+
+    wall_seconds = (end_utc - start_utc).total_seconds()
+    active_seconds = 0.0
+    idle_seconds = 0.0
+    prev = window[0]
+    for current in window[1:]:
+        if current <= prev:
+            prev = current
+            continue
+        gap = (current - prev).total_seconds()
+        if current - prev > idle_threshold:
+            idle_seconds += gap
+        else:
+            active_seconds += gap
+        prev = current
+
+    return wall_seconds, active_seconds, idle_seconds
+
+
+def _session_timing(
+    session_path: Path,
+    *,
+    repo_root: Path | None = None,
+    from_ref: str | None = None,
+    to_ref: str | None = None,
+    start_utc: datetime | None = None,
+    end_utc: datetime | None = None,
+    idle_threshold: timedelta = timedelta(minutes=5),
+    max_idle_gaps: int = 10,
+) -> dict[str, Any]:
+    timestamps: list[datetime] = []
+    commit_events: list[CommitEvent] = []
+
+    for line in session_path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        obj = json.loads(line)
+        timestamp_raw = obj.get("timestamp")
+        if not isinstance(timestamp_raw, str):
+            continue
+        ts = _parse_timestamp(timestamp_raw)
+        if start_utc is not None and ts < start_utc:
+            continue
+        if end_utc is not None and ts > end_utc:
+            continue
+        timestamps.append(ts)
+
+        if obj.get("type") != "response_item":
+            continue
+        payload = obj.get("payload")
+        if not isinstance(payload, dict):
+            continue
+        if payload.get("type") != "function_call":
+            continue
+        if payload.get("name") != "exec_command":
+            continue
+
+        args = _parse_tool_arguments(payload.get("arguments"))
+        if not args:
+            continue
+        cmd = args.get("cmd")
+        if not isinstance(cmd, str) or "git commit" not in cmd:
+            continue
+
+        for subject in _extract_git_commit_subjects(cmd):
+            commit_events.append(CommitEvent(timestamp_utc=ts, subject=subject))
+
+    if not timestamps:
+        raise ValueError(f"session file has no timestamps: {session_path}")
+
+    timestamps.sort()
+    commit_events.sort(key=lambda ev: ev.timestamp_utc)
+
+    analysis_start = start_utc if start_utc is not None else timestamps[0]
+    analysis_end = end_utc if end_utc is not None else timestamps[-1]
+
+    first_ts = timestamps[0]
+    last_ts = timestamps[-1]
+    wall_seconds, active_seconds, idle_seconds = _window_activity_breakdown(
+        timestamps_sorted=timestamps,
+        start_utc=analysis_start,
+        end_utc=analysis_end,
+        idle_threshold=idle_threshold,
+    )
+
+    idle_gaps: list[tuple[datetime, datetime, float]] = []
+    window = [analysis_start, *timestamps, analysis_end]
+    window.sort()
+    prev = window[0]
+    for current in window[1:]:
+        if current <= prev:
+            prev = current
+            continue
+        if current - prev > idle_threshold:
+            idle_gaps.append((prev, current, (current - prev).total_seconds()))
+        prev = current
+
+    idle_gaps.sort(key=lambda row: row[2], reverse=True)
+    idle_gaps = idle_gaps[: max(0, max_idle_gaps)]
+
+    git_commits_in_window: list[GitCommit] = []
+    if repo_root is not None and from_ref is not None and to_ref is not None:
+        git_commits = _git_commit_timeline(repo_root, from_ref, to_ref)
+        git_commits_in_window = [
+            commit
+            for commit in git_commits
+            if analysis_start <= commit.timestamp_utc <= analysis_end
+        ]
+
+    commit_markers: list[tuple[datetime, str | None, str | None]] = [
+        (commit.timestamp_utc, commit.subject, commit.sha[:7]) for commit in git_commits_in_window
+    ]
+    if not commit_markers:
+        commit_markers = [(ev.timestamp_utc, ev.subject, None) for ev in commit_events]
+
+    commit_ts = [ts for ts, _, _ in commit_markers]
+    idle_gap_rows: list[dict[str, Any]] = []
+    for gap_start, gap_end, gap_seconds in idle_gaps:
+        prev_commit: tuple[datetime, str | None, str | None] | None = None
+        next_commit: tuple[datetime, str | None, str | None] | None = None
+        prev_idx = bisect_right(commit_ts, gap_start) - 1
+        if prev_idx >= 0:
+            prev_commit = commit_markers[prev_idx]
+        next_idx = bisect_left(commit_ts, gap_end)
+        if 0 <= next_idx < len(commit_markers):
+            next_commit = commit_markers[next_idx]
+        idle_gap_rows.append(
+            {
+                "start_utc": gap_start.isoformat(),
+                "end_utc": gap_end.isoformat(),
+                "duration_minutes": round(gap_seconds / 60.0, 2),
+                "prev_commit_sha_short": prev_commit[2] if prev_commit else None,
+                "prev_commit_subject": prev_commit[1] if prev_commit else None,
+                "next_commit_sha_short": next_commit[2] if next_commit else None,
+                "next_commit_subject": next_commit[1] if next_commit else None,
+            }
+        )
+
+    boundaries: list[tuple[datetime, str]] = [(first_ts, "<session_start>")]
+    boundaries.extend((ev.timestamp_utc, ev.subject or "<unknown_commit>") for ev in commit_events)
+    boundaries.append((last_ts, "<session_end>"))
+    commit_intervals: list[dict[str, Any]] = []
+    for (from_ts, from_label), (to_ts, to_label) in pairwise(boundaries):
+        interval_wall, interval_active, interval_idle = _window_activity_breakdown(
+            timestamps_sorted=timestamps,
+            start_utc=from_ts,
+            end_utc=to_ts,
+            idle_threshold=idle_threshold,
+        )
+        commit_intervals.append(
+            {
+                "from_utc": from_ts.isoformat(),
+                "to_utc": to_ts.isoformat(),
+                "from_label": from_label,
+                "to_label": to_label,
+                "wall_minutes": round(interval_wall / 60.0, 2),
+                "active_minutes": round(interval_active / 60.0, 2),
+                "idle_minutes": round(interval_idle / 60.0, 2),
+                "active_ratio": round(interval_active / interval_wall, 4)
+                if interval_wall
+                else None,
+            }
+        )
+
+    git_commit_timing: dict[str, Any] | None = None
+    if repo_root is not None and from_ref is not None and to_ref is not None:
+        git_boundaries: list[tuple[datetime, str, str | None]] = [
+            (analysis_start, "<analysis_start>", None)
+        ]
+        git_boundaries.extend(
+            (commit.timestamp_utc, commit.subject, commit.sha[:7])
+            for commit in git_commits_in_window
+        )
+        git_boundaries.append((analysis_end, "<analysis_end>", None))
+        git_intervals: list[dict[str, Any]] = []
+        for (from_ts, from_label, from_sha), (to_ts, to_label, to_sha) in pairwise(git_boundaries):
+            interval_wall, interval_active, interval_idle = _window_activity_breakdown(
+                timestamps_sorted=timestamps,
+                start_utc=from_ts,
+                end_utc=to_ts,
+                idle_threshold=idle_threshold,
+            )
+            git_intervals.append(
+                {
+                    "from_utc": from_ts.isoformat(),
+                    "to_utc": to_ts.isoformat(),
+                    "from_sha_short": from_sha,
+                    "from_subject": from_label,
+                    "to_sha_short": to_sha,
+                    "to_subject": to_label,
+                    "wall_minutes": round(interval_wall / 60.0, 2),
+                    "active_minutes": round(interval_active / 60.0, 2),
+                    "idle_minutes": round(interval_idle / 60.0, 2),
+                    "active_ratio": round(interval_active / interval_wall, 4)
+                    if interval_wall
+                    else None,
+                }
+            )
+        git_commit_timing = {
+            "from_ref": from_ref,
+            "to_ref": to_ref,
+            "analysis_start_utc": analysis_start.isoformat(),
+            "analysis_end_utc": analysis_end.isoformat(),
+            "commits_in_window": [commit.as_dict() for commit in git_commits_in_window],
+            "intervals": git_intervals,
+        }
+
+    remediation_marker = "(remediation)"
+    commit_next_action: dict[str, Any] | None = None
+    if git_commit_timing is not None:
+        intervals = git_commit_timing.get("intervals", [])
+        commit_intervals_only = [
+            interval
+            for interval in intervals
+            if interval.get("from_sha_short") is not None
+            and interval.get("to_sha_short") is not None
+        ]
+        remediation_intervals = [
+            interval
+            for interval in commit_intervals_only
+            if remediation_marker in (interval.get("to_subject") or "")
+        ]
+        non_remediation_intervals = [
+            interval
+            for interval in commit_intervals_only
+            if remediation_marker not in (interval.get("to_subject") or "")
+        ]
+        remediation_cycle_starts = [
+            interval
+            for interval in remediation_intervals
+            if remediation_marker not in (interval.get("from_subject") or "")
+        ]
+
+        def _totals(rows: list[dict[str, Any]]) -> dict[str, Any]:
+            return {
+                "intervals": len(rows),
+                "wall_minutes": round(sum(row.get("wall_minutes", 0.0) for row in rows), 2),
+                "active_minutes": round(sum(row.get("active_minutes", 0.0) for row in rows), 2),
+                "idle_minutes": round(sum(row.get("idle_minutes", 0.0) for row in rows), 2),
+            }
+
+        top_idle_intervals = sorted(
+            commit_intervals_only, key=lambda row: row.get("idle_minutes", 0.0), reverse=True
+        )[:10]
+        commit_next_action = {
+            "remediation_marker": remediation_marker,
+            "commit_to_commit_totals": _totals(commit_intervals_only),
+            "remediation_totals": _totals(remediation_intervals),
+            "non_remediation_totals": _totals(non_remediation_intervals),
+            "remediation_cycle_starts": remediation_cycle_starts,
+            "top_idle_intervals": top_idle_intervals,
+        }
+
+    return {
+        "idle_threshold_seconds": int(idle_threshold.total_seconds()),
+        "analysis_start_utc": analysis_start.isoformat(),
+        "analysis_end_utc": analysis_end.isoformat(),
+        "first_event_utc": first_ts.isoformat(),
+        "last_event_utc": last_ts.isoformat(),
+        "wall_minutes": round(wall_seconds / 60.0, 2),
+        "active_minutes": round(active_seconds / 60.0, 2),
+        "idle_minutes": round(idle_seconds / 60.0, 2),
+        "idle_gaps_top": idle_gap_rows,
+        "commit_events": [ev.as_dict() for ev in commit_events],
+        "commit_intervals": commit_intervals,
+        "git_commit_timing": git_commit_timing,
+        "commit_next_action": commit_next_action,
+    }
+
+
 def _session_stats(
     session_path: Path,
     *,
@@ -280,6 +635,21 @@ def main() -> int:
     )
     parser.add_argument("--session-start-utc", help="Optional ISO timestamp filter start")
     parser.add_argument("--session-end-utc", help="Optional ISO timestamp filter end")
+    parser.add_argument(
+        "--session-idle-threshold-seconds",
+        type=int,
+        default=300,
+        help=(
+            "Activity-gap threshold in seconds used to classify idle vs active time "
+            "in session timing"
+        ),
+    )
+    parser.add_argument(
+        "--session-max-idle-gaps",
+        type=int,
+        default=10,
+        help="Maximum number of largest idle gaps to include in session timing output",
+    )
     parser.add_argument("--output", help="Optional output JSON path")
     args = parser.parse_args()
 
@@ -316,6 +686,16 @@ def main() -> int:
             start_utc=start_utc,
             end_utc=end_utc,
         ).as_dict()
+        payload["session_timing"] = _session_timing(
+            session_file,
+            repo_root=repo_root,
+            from_ref=args.from_ref,
+            to_ref=args.to_ref,
+            start_utc=start_utc,
+            end_utc=end_utc,
+            idle_threshold=timedelta(seconds=max(0, args.session_idle_threshold_seconds)),
+            max_idle_gaps=max(0, args.session_max_idle_gaps),
+        )
         payload["session_filters"] = {
             "start_utc": start_utc.isoformat() if start_utc is not None else None,
             "end_utc": end_utc.isoformat() if end_utc is not None else None,
