@@ -243,6 +243,9 @@ def _git_commit_timeline(repo_root: Path, from_ref: str, to_ref: str) -> list[Gi
 
 
 _COMMIT_SUBJECT_RE = re.compile(r"(?:^|\s)-m\s+(?:\"([^\"]*)\"|'([^']*)')")
+_MILESTONE_RE = re.compile(r"\bM(\d+)\b")
+_REMEDIATION_PASS_RE = re.compile(r"\bM(\d+)\.(RR\d+|R-open)\b")
+_REMEDIATION_PASS_SPACED_RE = re.compile(r"\bM(\d+)\s+(RR\d+|R-open)\b")
 
 
 def _extract_git_commit_subjects(cmd: str) -> list[str]:
@@ -256,6 +259,42 @@ def _extract_git_commit_subjects(cmd: str) -> list[str]:
         if subject is not None:
             subjects.append(subject)
     return subjects
+
+
+def _milestone_mentions(subject: str) -> set[str]:
+    return {f"M{num}" for num in _MILESTONE_RE.findall(subject)}
+
+
+def _single_milestone(subject: str | None) -> str | None:
+    if not subject:
+        return None
+    mentions = _milestone_mentions(subject)
+    return next(iter(mentions)) if len(mentions) == 1 else None
+
+
+def _is_remediation_related_subject(subject: str | None) -> bool:
+    if not subject:
+        return False
+    lowered = subject.lower()
+    if "(remediation)" in lowered:
+        return True
+    if "re-review closure" in lowered:
+        return True
+    if _REMEDIATION_PASS_RE.search(subject) is not None:
+        return True
+    return _REMEDIATION_PASS_SPACED_RE.search(subject) is not None
+
+
+def _remediation_passes_for_milestone(subject: str, milestone: str) -> set[str]:
+    milestone_num = milestone[1:]
+    passes: set[str] = set()
+    for match_num, match_pass in _REMEDIATION_PASS_RE.findall(subject):
+        if match_num == milestone_num:
+            passes.add(match_pass)
+    for match_num, match_pass in _REMEDIATION_PASS_SPACED_RE.findall(subject):
+        if match_num == milestone_num:
+            passes.add(match_pass)
+    return passes
 
 
 def _window_activity_breakdown(
@@ -505,6 +544,28 @@ def _session_timing(
             if remediation_marker not in (interval.get("from_subject") or "")
         ]
 
+        def _empty_totals() -> dict[str, Any]:
+            return {
+                "intervals": 0,
+                "wall_minutes": 0.0,
+                "active_minutes": 0.0,
+                "idle_minutes": 0.0,
+            }
+
+        def _add_to_totals(totals: dict[str, Any], row: dict[str, Any]) -> None:
+            totals["intervals"] += 1
+            totals["wall_minutes"] += float(row.get("wall_minutes") or 0.0)
+            totals["active_minutes"] += float(row.get("active_minutes") or 0.0)
+            totals["idle_minutes"] += float(row.get("idle_minutes") or 0.0)
+
+        def _round_totals(totals: dict[str, Any]) -> dict[str, Any]:
+            return {
+                "intervals": int(totals.get("intervals", 0)),
+                "wall_minutes": round(float(totals.get("wall_minutes", 0.0)), 2),
+                "active_minutes": round(float(totals.get("active_minutes", 0.0)), 2),
+                "idle_minutes": round(float(totals.get("idle_minutes", 0.0)), 2),
+            }
+
         def _totals(rows: list[dict[str, Any]]) -> dict[str, Any]:
             return {
                 "intervals": len(rows),
@@ -512,6 +573,115 @@ def _session_timing(
                 "active_minutes": round(sum(row.get("active_minutes", 0.0) for row in rows), 2),
                 "idle_minutes": round(sum(row.get("idle_minutes", 0.0) for row in rows), 2),
             }
+
+        commit_milestones: dict[str, str | None] = {}
+        milestone_assignment = {
+            "strategy": (
+                "Assign commits with exactly one M# mention to that milestone; "
+                "forward-fill unlabeled commits from the most recent single-milestone commit; "
+                "leave multi-milestone commits unassigned."
+            ),
+            "explicit_commits": 0,
+            "inferred_commits": 0,
+            "multi_milestone_commits": 0,
+        }
+        last_single: str | None = None
+        for commit in git_commits_in_window:
+            sha_short = commit.sha[:7]
+            mentions = _milestone_mentions(commit.subject)
+            if len(mentions) == 1:
+                milestone = next(iter(mentions))
+                commit_milestones[sha_short] = milestone
+                last_single = milestone
+                milestone_assignment["explicit_commits"] += 1
+            elif len(mentions) == 0:
+                commit_milestones[sha_short] = last_single
+                if last_single is not None:
+                    milestone_assignment["inferred_commits"] += 1
+            else:
+                commit_milestones[sha_short] = None
+                milestone_assignment["multi_milestone_commits"] += 1
+
+        by_milestone_raw: dict[str, dict[str, Any]] = {}
+
+        def _get_bucket(milestone: str) -> dict[str, Any]:
+            return by_milestone_raw.setdefault(
+                milestone,
+                {
+                    "initial_totals": _empty_totals(),
+                    "remediation_totals": _empty_totals(),
+                    "total": _empty_totals(),
+                    "by_remediation_pass": {},
+                },
+            )
+
+        for interval in commit_intervals_only:
+            to_sha = interval.get("to_sha_short")
+            to_subject = interval.get("to_subject")
+            milestone: str | None = (
+                commit_milestones.get(to_sha) if isinstance(to_sha, str) else None
+            )
+            if milestone is None:
+                milestone = _single_milestone(to_subject)
+            milestone_key = milestone or "unassigned"
+            bucket = _get_bucket(milestone_key)
+            _add_to_totals(bucket["total"], interval)
+
+            is_remediation_related = _is_remediation_related_subject(
+                to_subject if isinstance(to_subject, str) else None
+            )
+            if is_remediation_related:
+                _add_to_totals(bucket["remediation_totals"], interval)
+                pass_label = "unknown"
+                if milestone is not None and isinstance(to_subject, str):
+                    passes = _remediation_passes_for_milestone(to_subject, milestone)
+                    if len(passes) == 1:
+                        pass_label = next(iter(passes))
+                    elif len(passes) > 1:
+                        pass_label = "multiple"
+                pass_bucket = bucket["by_remediation_pass"].setdefault(
+                    pass_label, _empty_totals()
+                )
+                _add_to_totals(pass_bucket, interval)
+            else:
+                _add_to_totals(bucket["initial_totals"], interval)
+
+        by_milestone: dict[str, Any] = {}
+        for key, bucket in by_milestone_raw.items():
+            pass_totals = {
+                pass_key: _round_totals(pass_bucket)
+                for pass_key, pass_bucket in bucket["by_remediation_pass"].items()
+            }
+            by_milestone[key] = {
+                "initial_totals": _round_totals(bucket["initial_totals"]),
+                "remediation_totals": _round_totals(bucket["remediation_totals"]),
+                "total": _round_totals(bucket["total"]),
+                "by_remediation_pass": pass_totals,
+            }
+
+        remediation_cycle_starts_annotated: list[dict[str, Any]] = []
+        remediation_cycle_starts_by_milestone: dict[str, list[dict[str, Any]]] = {}
+        for interval in remediation_cycle_starts:
+            to_sha = interval.get("to_sha_short")
+            to_subject = interval.get("to_subject")
+            milestone: str | None = (
+                commit_milestones.get(to_sha) if isinstance(to_sha, str) else None
+            )
+            if milestone is None:
+                milestone = _single_milestone(to_subject)
+            pass_label: str | None = None
+            if milestone is not None and isinstance(to_subject, str):
+                passes = _remediation_passes_for_milestone(to_subject, milestone)
+                if len(passes) == 1:
+                    pass_label = next(iter(passes))
+                elif len(passes) > 1:
+                    pass_label = "multiple"
+            annotated = dict(interval)
+            annotated["milestone"] = milestone
+            annotated["remediation_pass"] = pass_label
+            remediation_cycle_starts_annotated.append(annotated)
+            bucket_key = milestone or "unassigned"
+            remediation_cycle_starts_by_milestone.setdefault(bucket_key, []).append(annotated)
 
         top_idle_intervals = sorted(
             commit_intervals_only, key=lambda row: row.get("idle_minutes", 0.0), reverse=True
@@ -521,7 +691,11 @@ def _session_timing(
             "commit_to_commit_totals": _totals(commit_intervals_only),
             "remediation_totals": _totals(remediation_intervals),
             "non_remediation_totals": _totals(non_remediation_intervals),
+            "milestone_assignment": milestone_assignment,
+            "by_milestone": by_milestone,
             "remediation_cycle_starts": remediation_cycle_starts,
+            "remediation_cycle_starts_annotated": remediation_cycle_starts_annotated,
+            "remediation_cycle_starts_by_milestone": remediation_cycle_starts_by_milestone,
             "top_idle_intervals": top_idle_intervals,
         }
 

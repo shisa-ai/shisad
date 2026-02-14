@@ -331,7 +331,7 @@ def test_release_stats_rollup_computes_git_commit_timing(tmp_path: Path) -> None
     file_path.write_text("first\n", encoding="utf-8")
     subprocess.run(["git", "add", "file.txt"], cwd=repo, check=True, env=env)
     subprocess.run(
-        ["git", "commit", "-m", "feat: first"],
+        ["git", "commit", "-m", "feat: start M1 initial"],
         cwd=repo,
         check=True,
         capture_output=True,
@@ -339,12 +339,25 @@ def test_release_stats_rollup_computes_git_commit_timing(tmp_path: Path) -> None
         env=env,
     )
 
-    env["GIT_AUTHOR_DATE"] = "2026-02-13T10:11:00+00:00"
-    env["GIT_COMMITTER_DATE"] = "2026-02-13T10:11:00+00:00"
+    env["GIT_AUTHOR_DATE"] = "2026-02-13T10:02:00+00:00"
+    env["GIT_COMMITTER_DATE"] = "2026-02-13T10:02:00+00:00"
+    file_path.write_text("third\n", encoding="utf-8")
+    subprocess.run(["git", "add", "file.txt"], cwd=repo, check=True, env=env)
+    subprocess.run(
+        ["git", "commit", "-m", "feat: continue M1 initial"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+
+    env["GIT_AUTHOR_DATE"] = "2026-02-13T10:12:00+00:00"
+    env["GIT_COMMITTER_DATE"] = "2026-02-13T10:12:00+00:00"
     file_path.write_text("second\n", encoding="utf-8")
     subprocess.run(["git", "add", "file.txt"], cwd=repo, check=True, env=env)
     subprocess.run(
-        ["git", "commit", "-m", "fix: second (remediation)"],
+        ["git", "commit", "-m", "fix: close M1.RR1.1 (remediation)"],
         cwd=repo,
         check=True,
         capture_output=True,
@@ -370,7 +383,9 @@ def test_release_stats_rollup_computes_git_commit_timing(tmp_path: Path) -> None
                         "payload": {
                             "type": "function_call",
                             "name": "exec_command",
-                            "arguments": json.dumps({"cmd": 'git commit -m "feat: first"'}),
+                            "arguments": json.dumps(
+                                {"cmd": 'git commit -m "feat: start M1 initial"'}
+                            ),
                         },
                     }
                 ),
@@ -381,7 +396,9 @@ def test_release_stats_rollup_computes_git_commit_timing(tmp_path: Path) -> None
                         "payload": {
                             "type": "function_call",
                             "name": "exec_command",
-                            "arguments": json.dumps({"cmd": "rg -n test src/"}),
+                            "arguments": json.dumps(
+                                {"cmd": 'git commit -m "feat: continue M1 initial"'}
+                            ),
                         },
                     }
                 ),
@@ -394,20 +411,31 @@ def test_release_stats_rollup_computes_git_commit_timing(tmp_path: Path) -> None
                 ),
                 json.dumps(
                     {
-                        "timestamp": "2026-02-13T10:11:00.000Z",
+                        "timestamp": "2026-02-13T10:04:00.000Z",
                         "type": "response_item",
                         "payload": {
                             "type": "function_call",
                             "name": "exec_command",
-                            "arguments": json.dumps(
-                                {"cmd": 'git commit -m "fix: second (remediation)"'}
-                            ),
+                            "arguments": json.dumps({"cmd": "rg -n test src/"}),
                         },
                     }
                 ),
                 json.dumps(
                     {
                         "timestamp": "2026-02-13T10:12:00.000Z",
+                        "type": "response_item",
+                        "payload": {
+                            "type": "function_call",
+                            "name": "exec_command",
+                            "arguments": json.dumps(
+                                {"cmd": 'git commit -m "fix: close M1.RR1.1 (remediation)"'}
+                            ),
+                        },
+                    }
+                ),
+                json.dumps(
+                    {
+                        "timestamp": "2026-02-13T10:13:00.000Z",
                         "type": "response_item",
                         "payload": {"type": "message", "role": "assistant"},
                     }
@@ -443,18 +471,31 @@ def test_release_stats_rollup_computes_git_commit_timing(tmp_path: Path) -> None
 
     timing = payload["session_timing"]["git_commit_timing"]
     commits = timing["commits_in_window"]
-    assert [row["subject"] for row in commits] == ["feat: first", "fix: second (remediation)"]
+    assert [row["subject"] for row in commits] == [
+        "feat: start M1 initial",
+        "feat: continue M1 initial",
+        "fix: close M1.RR1.1 (remediation)",
+    ]
     remediation_interval = next(
         interval
         for interval in timing["intervals"]
-        if interval["to_subject"] == "fix: second (remediation)"
+        if interval["to_subject"] == "fix: close M1.RR1.1 (remediation)"
     )
     assert remediation_interval["wall_minutes"] == 10.0
     assert remediation_interval["active_minutes"] == 2.0
     assert remediation_interval["idle_minutes"] == 8.0
 
     summary = payload["session_timing"]["commit_next_action"]
-    assert summary["commit_to_commit_totals"]["intervals"] == 1
+    assert summary["commit_to_commit_totals"]["intervals"] == 2
     assert summary["remediation_totals"]["intervals"] == 1
-    assert summary["non_remediation_totals"]["intervals"] == 0
-    assert summary["remediation_cycle_starts"][0]["to_subject"] == "fix: second (remediation)"
+    assert summary["non_remediation_totals"]["intervals"] == 1
+    assert summary["by_milestone"]["M1"]["initial_totals"]["intervals"] == 1
+    assert summary["by_milestone"]["M1"]["remediation_totals"]["intervals"] == 1
+    assert summary["by_milestone"]["M1"]["total"]["intervals"] == 2
+    assert summary["by_milestone"]["M1"]["by_remediation_pass"]["RR1"]["intervals"] == 1
+    assert summary["remediation_cycle_starts_annotated"][0]["milestone"] == "M1"
+    assert summary["remediation_cycle_starts_annotated"][0]["remediation_pass"] == "RR1"
+    assert (
+        summary["remediation_cycle_starts"][0]["to_subject"]
+        == "fix: close M1.RR1.1 (remediation)"
+    )
