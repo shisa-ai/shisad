@@ -145,10 +145,13 @@ def test_tui_render_rich_fallbacks_to_plain_without_rich(monkeypatch: pytest.Mon
 def test_tui_render_rich_uses_rich_modules_when_available(monkeypatch: pytest.MonkeyPatch) -> None:
     from shisad.ui import tui as tui_module
 
+    created_consoles: list[object] = []
+
     class _FakeConsole:
         def __init__(self, *, record: bool = False) -> None:
             self.record = record
             self.panels: list[object] = []
+            created_consoles.append(self)
 
         def print(self, panel: object) -> None:
             self.panels.append(panel)
@@ -163,6 +166,7 @@ def test_tui_render_rich_uses_rich_modules_when_available(monkeypatch: pytest.Mo
 
     class _FakeTable:
         def __init__(self, *args, **kwargs):  # type: ignore[no-untyped-def]
+            self.title = str(kwargs.get("title", ""))
             self.rows: list[tuple[str, ...]] = []
 
         def add_column(self, *_args: object, **_kwargs: object) -> None:
@@ -200,9 +204,69 @@ def test_tui_render_rich_uses_rich_modules_when_available(monkeypatch: pytest.Mo
             }
         ],
         alerts=[{"event_type": "AlertRaised", "acknowledged_reason": ""}],
-        audit_events=[],
+        audit_events=[
+            {
+                "timestamp": "2026-02-15T00:00:00+00:00",
+                "event_type": "AuditLogged",
+                "session_id": "s1",
+            }
+        ],
     )
-    assert tui_module.render_rich(snapshot) == "rich-output"
+    rendered = tui_module.render_rich(snapshot)
+    assert rendered == "rich-output"
+    assert len(created_consoles) == 1
+    panel_tables = [panel[1] for panel in created_consoles[0].panels if isinstance(panel, tuple)]
+    assert any(getattr(table, "title", "") == "Audit Events" for table in panel_tables)
+
+
+@pytest.mark.asyncio
+async def test_tui_fetch_snapshot_tolerates_partial_rpc_failures(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _FakeClient:
+        def __init__(self, socket_path: Path) -> None:
+            self.socket_path = socket_path
+            self.connected = False
+            self.closed = False
+
+        async def connect(self) -> None:
+            self.connected = True
+
+        async def call(
+            self, method: str, params: dict[str, object] | None = None
+        ) -> dict[str, object]:
+            _ = params
+            if method == "dashboard.audit_explorer":
+                raise RuntimeError("simulated failure")
+            mapping = {
+                "session.list": {"sessions": [{"id": "s1"}]},
+                "action.pending": {"actions": [{"confirmation_id": "c1", "status": "pending"}]},
+                "task.list": {"tasks": []},
+                "daemon.status": {"channels": {}},
+                "dashboard.alerts": {"alerts": [{"event_type": "AlertRaised"}]},
+            }
+            return mapping[method]
+
+        async def close(self) -> None:
+            self.closed = True
+
+    created: list[_FakeClient] = []
+
+    def _factory(socket_path: Path) -> _FakeClient:
+        client = _FakeClient(socket_path)
+        created.append(client)
+        return client
+
+    monkeypatch.setattr("shisad.ui.tui.ControlClient", _factory)
+    from shisad.ui.tui import fetch_snapshot
+
+    snapshot = await fetch_snapshot(Path("/tmp/control.sock"))
+    assert snapshot.sessions[0]["id"] == "s1"
+    assert snapshot.pending_actions[0]["confirmation_id"] == "c1"
+    assert snapshot.alerts[0]["event_type"] == "AlertRaised"
+    assert snapshot.audit_events == []
+    assert created[0].connected is True
+    assert created[0].closed is True
 
 
 @pytest.mark.asyncio

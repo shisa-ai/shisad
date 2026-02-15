@@ -3545,19 +3545,42 @@ class HandlerImplementation:
 
     async def do_doctor_check(self, params: Mapping[str, Any]) -> dict[str, Any]:
         component = str(params.get("component", "all")).strip().lower() or "all"
-        component_checks: dict[str, Any] = {
-            "dependencies": self._doctor_dependencies_status(),
-            "policy": self._doctor_policy_status(),
-            "channels": self._doctor_channels_status(),
-            "sandbox": self._doctor_sandbox_status(),
-            "realitycheck": self._realitycheck_toolkit.doctor_status(),
+        component_factories = {
+            "dependencies": self._doctor_dependencies_status,
+            "policy": self._doctor_policy_status,
+            "channels": self._doctor_channels_status,
+            "sandbox": self._doctor_sandbox_status,
+            "realitycheck": self._realitycheck_toolkit.doctor_status,
         }
+
+        def _run_component(name: str) -> dict[str, Any]:
+            factory = component_factories[name]
+            try:
+                payload = factory()
+            except Exception as exc:
+                logger.exception("doctor check component failed: %s", name)
+                return {
+                    "status": "error",
+                    "problems": [f"component_failed:{exc.__class__.__name__}"],
+                }
+            if not isinstance(payload, Mapping):
+                return {
+                    "status": "error",
+                    "problems": ["component_returned_non_mapping"],
+                }
+            normalized = dict(payload)
+            if "status" not in normalized:
+                normalized["status"] = "error"
+            if "problems" not in normalized:
+                normalized["problems"] = []
+            return normalized
+
         checks: dict[str, Any] = {}
         if component == "all":
             for key in _DOCTOR_COMPONENTS:
-                checks[key] = component_checks[key]
-        elif component in component_checks:
-            checks[component] = component_checks[component]
+                checks[key] = _run_component(key)
+        elif component in component_factories:
+            checks[component] = _run_component(component)
         else:
             return {
                 "status": "error",

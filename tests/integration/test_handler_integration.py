@@ -91,3 +91,53 @@ async def test_facade_routes_across_handler_groups(
             await client.call("daemon.shutdown")
         await client.close()
         await asyncio.wait_for(daemon_task, timeout=3)
+
+
+@pytest.mark.asyncio
+async def test_doctor_component_requests_are_isolated_from_other_component_failures(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SHISAD_MODEL_BASE_URL", "https://api.example.com/v1")
+    monkeypatch.setenv("SHISAD_MODEL_PLANNER_BASE_URL", "https://planner.example.com/v1")
+    monkeypatch.setenv("SHISAD_MODEL_EMBEDDINGS_BASE_URL", "https://embed.example.com/v1")
+    monkeypatch.setenv("SHISAD_MODEL_MONITOR_BASE_URL", "https://monitor.example.com/v1")
+
+    from shisad.daemon.handlers import _impl as impl_module
+
+    def _raise_policy_check(_self: object) -> dict[str, object]:
+        raise RuntimeError("simulated doctor failure")
+
+    monkeypatch.setattr(
+        impl_module.HandlerImplementation,
+        "_doctor_policy_status",
+        _raise_policy_check,
+    )
+
+    config = DaemonConfig(
+        data_dir=tmp_path / "data",
+        socket_path=tmp_path / "control.sock",
+        policy_path=tmp_path / "policy.yaml",
+        log_level="INFO",
+    )
+
+    daemon_task = asyncio.create_task(run_daemon(config))
+    client = ControlClient(config.socket_path)
+
+    try:
+        await _wait_for_socket(config.socket_path)
+        await client.connect()
+
+        reality_only = await client.call("doctor.check", {"component": "realitycheck"})
+        assert reality_only["status"] in {"ok", "degraded"}
+        assert set(reality_only["checks"].keys()) == {"realitycheck"}
+
+        policy_only = await client.call("doctor.check", {"component": "policy"})
+        assert policy_only["status"] == "degraded"
+        assert policy_only["checks"]["policy"]["status"] == "error"
+        assert "component_failed:RuntimeError" in policy_only["checks"]["policy"]["problems"]
+    finally:
+        with suppress(Exception):
+            await client.call("daemon.shutdown")
+        await client.close()
+        await asyncio.wait_for(daemon_task, timeout=3)

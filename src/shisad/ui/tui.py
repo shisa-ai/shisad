@@ -5,12 +5,15 @@ from __future__ import annotations
 import asyncio
 import importlib
 import json
+import logging
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from shisad.core.api.transport import ControlClient
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(slots=True)
@@ -70,21 +73,48 @@ def _safe_channel_rows(raw_channels: Mapping[str, Any]) -> list[dict[str, Any]]:
 async def fetch_snapshot(socket_path: Path) -> TuiSnapshot:
     """Fetch a multi-panel snapshot from daemon control API."""
     client = ControlClient(socket_path)
+
+    async def _safe_call(
+        method: str,
+        params: dict[str, object] | None = None,
+        *,
+        default: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        fallback = dict(default or {})
+        try:
+            payload = await client.call(method, params)
+        except Exception:
+            logger.exception("tui snapshot call failed: %s", method)
+            return fallback
+        if not isinstance(payload, Mapping):
+            logger.warning("tui snapshot call returned non-mapping payload: %s", method)
+            return fallback
+        return dict(payload)
+
     try:
         await client.connect()
-        sessions_result = await client.call("session.list")
-        pending_result = await client.call(
+        sessions_result = await _safe_call("session.list", default={"sessions": []})
+        pending_result = await _safe_call(
             "action.pending",
             {"status": "pending", "limit": 20},
+            default={"actions": []},
         )
-        tasks_result = await client.call("task.list")
-        status_result = await client.call("daemon.status")
-        alerts_result = await client.call("dashboard.alerts", {"limit": 20})
-        audit_result = await client.call("dashboard.audit_explorer", {"limit": 20})
+        tasks_result = await _safe_call("task.list", default={"tasks": []})
+        status_result = await _safe_call("daemon.status", default={"channels": {}})
+        alerts_result = await _safe_call("dashboard.alerts", {"limit": 20}, default={"alerts": []})
+        audit_result = await _safe_call(
+            "dashboard.audit_explorer",
+            {"limit": 20},
+            default={"events": []},
+        )
     finally:
         await client.close()
     return TuiSnapshot(
-        sessions=[dict(item) for item in sessions_result.get("sessions", [])],
+        sessions=[
+            dict(item)
+            for item in sessions_result.get("sessions", [])
+            if isinstance(item, Mapping)
+        ],
         pending_actions=[
             {
                 "confirmation_id": str(item.get("confirmation_id", "")),
@@ -101,8 +131,12 @@ async def fetch_snapshot(socket_path: Path) -> TuiSnapshot:
             if isinstance(status_result.get("channels", {}), Mapping)
             else {}
         ),
-        alerts=[dict(item) for item in alerts_result.get("alerts", [])],
-        audit_events=[dict(item) for item in audit_result.get("events", [])],
+        alerts=[
+            dict(item) for item in alerts_result.get("alerts", []) if isinstance(item, Mapping)
+        ],
+        audit_events=[
+            dict(item) for item in audit_result.get("events", []) if isinstance(item, Mapping)
+        ],
     )
 
 
@@ -253,11 +287,25 @@ def render_rich(snapshot: TuiSnapshot) -> str:
     if not snapshot.alerts:
         alerts.add_row("(none)", "")
 
+    audit = Table(title="Audit Events", show_lines=False)
+    audit.add_column("Timestamp")
+    audit.add_column("Event")
+    audit.add_column("Session")
+    for row in snapshot.audit_events:
+        audit.add_row(
+            str(row.get("timestamp", "")),
+            str(row.get("event_type", "")),
+            str(row.get("session_id", "")),
+        )
+    if not snapshot.audit_events:
+        audit.add_row("(none)", "", "")
+
     console.print(Panel.fit(sessions))
     console.print(Panel.fit(pending))
     console.print(Panel.fit(tasks))
     console.print(Panel.fit(channels))
     console.print(Panel.fit(alerts))
+    console.print(Panel.fit(audit))
     return str(console.export_text())
 
 
