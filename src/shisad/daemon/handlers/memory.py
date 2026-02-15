@@ -19,6 +19,24 @@ from shisad.core.api.schema import (
     MemoryVerifyResult,
     MemoryWriteParams,
     MemoryWriteResult,
+    NoteCreateParams,
+    NoteDeleteResult,
+    NoteEntryParams,
+    NoteExportParams,
+    NoteExportResult,
+    NoteGetResult,
+    NoteListParams,
+    NoteListResult,
+    NoteVerifyResult,
+    TodoCreateParams,
+    TodoDeleteResult,
+    TodoEntryParams,
+    TodoExportParams,
+    TodoExportResult,
+    TodoGetResult,
+    TodoListParams,
+    TodoListResult,
+    TodoVerifyResult,
 )
 from shisad.daemon.context import RequestContext
 from shisad.daemon.handlers._helpers import build_params_payload
@@ -139,3 +157,147 @@ class MemoryHandlers:
             internal_ingress_marker=self._internal_ingress_marker,
         )
         return MemoryRotateKeyResult.model_validate(await self._impl.do_memory_rotate_key(payload))
+
+    async def handle_note_create(
+        self,
+        params: NoteCreateParams,
+        ctx: RequestContext,
+    ) -> MemoryWriteResult:
+        payload = build_params_payload(
+            params,
+            ctx,
+            internal_ingress_marker=self._internal_ingress_marker,
+        )
+        return MemoryWriteResult.model_validate(await self._impl.do_note_create(payload))
+
+    async def handle_note_list(
+        self,
+        params: NoteListParams,
+        ctx: RequestContext,
+    ) -> NoteListResult:
+        payload = build_params_payload(
+            params,
+            ctx,
+            internal_ingress_marker=self._internal_ingress_marker,
+        )
+        return NoteListResult.model_validate(await self._impl.do_note_list(payload))
+
+    async def handle_note_get(
+        self,
+        params: NoteEntryParams,
+        ctx: RequestContext,
+    ) -> NoteGetResult:
+        payload = build_params_payload(
+            params,
+            ctx,
+            internal_ingress_marker=self._internal_ingress_marker,
+        )
+        return NoteGetResult.model_validate(await self._impl.do_note_get(payload))
+
+    async def handle_note_delete(
+        self,
+        params: NoteEntryParams,
+        ctx: RequestContext,
+    ) -> NoteDeleteResult:
+        payload = build_params_payload(
+            params,
+            ctx,
+            internal_ingress_marker=self._internal_ingress_marker,
+        )
+        return NoteDeleteResult.model_validate(await self._impl.do_note_delete(payload))
+
+    async def handle_note_verify(
+        self,
+        params: NoteEntryParams,
+        ctx: RequestContext,
+    ) -> NoteVerifyResult:
+        payload = build_params_payload(
+            params,
+            ctx,
+            internal_ingress_marker=self._internal_ingress_marker,
+        )
+        return NoteVerifyResult.model_validate(await self._impl.do_note_verify(payload))
+
+    async def handle_note_export(
+        self,
+        params: NoteExportParams,
+        ctx: RequestContext,
+    ) -> NoteExportResult:
+        payload = build_params_payload(
+            params,
+            ctx,
+            internal_ingress_marker=self._internal_ingress_marker,
+        )
+        return NoteExportResult.model_validate(await self._impl.do_note_export(payload))
+
+    async def handle_todo_create(
+        self,
+        params: TodoCreateParams,
+        ctx: RequestContext,
+    ) -> MemoryWriteResult:
+        payload = build_params_payload(
+            params,
+            ctx,
+            internal_ingress_marker=self._internal_ingress_marker,
+        )
+        return MemoryWriteResult.model_validate(await self._impl.do_todo_create(payload))
+
+    async def handle_todo_list(
+        self,
+        params: TodoListParams,
+        ctx: RequestContext,
+    ) -> TodoListResult:
+        payload = build_params_payload(
+            params,
+            ctx,
+            internal_ingress_marker=self._internal_ingress_marker,
+        )
+        return TodoListResult.model_validate(await self._impl.do_todo_list(payload))
+
+    async def handle_todo_get(
+        self,
+        params: TodoEntryParams,
+        ctx: RequestContext,
+    ) -> TodoGetResult:
+        payload = build_params_payload(
+            params,
+            ctx,
+            internal_ingress_marker=self._internal_ingress_marker,
+        )
+        return TodoGetResult.model_validate(await self._impl.do_todo_get(payload))
+
+    async def handle_todo_delete(
+        self,
+        params: TodoEntryParams,
+        ctx: RequestContext,
+    ) -> TodoDeleteResult:
+        payload = build_params_payload(
+            params,
+            ctx,
+            internal_ingress_marker=self._internal_ingress_marker,
+        )
+        return TodoDeleteResult.model_validate(await self._impl.do_todo_delete(payload))
+
+    async def handle_todo_verify(
+        self,
+        params: TodoEntryParams,
+        ctx: RequestContext,
+    ) -> TodoVerifyResult:
+        payload = build_params_payload(
+            params,
+            ctx,
+            internal_ingress_marker=self._internal_ingress_marker,
+        )
+        return TodoVerifyResult.model_validate(await self._impl.do_todo_verify(payload))
+
+    async def handle_todo_export(
+        self,
+        params: TodoExportParams,
+        ctx: RequestContext,
+    ) -> TodoExportResult:
+        payload = build_params_payload(
+            params,
+            ctx,
+            internal_ingress_marker=self._internal_ingress_marker,
+        )
+        return TodoExportResult.model_validate(await self._impl.do_todo_export(payload))

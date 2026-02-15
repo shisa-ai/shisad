@@ -107,6 +107,51 @@ def test_cli_commands_route_through_rpc_wrapper(
             "active_key_id": "k-1",
             "reencrypt_existing": True,
         },
+        "note.create": {"kind": "allow", "entry": {"id": "n-1"}},
+        "note.list": {
+            "entries": [{"id": "n-1", "entry_type": "note", "key": "meeting"}],
+            "count": 1,
+        },
+        "note.get": {"entry": {"id": "n-1", "entry_type": "note", "key": "meeting"}},
+        "note.delete": {"deleted": True, "entry_id": "n-1"},
+        "note.verify": {"verified": True, "entry_id": "n-1"},
+        "note.export": {"format": "json", "data": '[{"id":"n-1"}]'},
+        "todo.create": {"kind": "allow", "entry": {"id": "td-1"}},
+        "todo.list": {
+            "entries": [
+                {
+                    "id": "td-1",
+                    "entry_type": "todo",
+                    "value": {"title": "Ship M2", "status": "open"},
+                }
+            ],
+            "count": 1,
+        },
+        "todo.get": {
+            "entry": {"id": "td-1", "entry_type": "todo", "value": {"title": "Ship M2"}}
+        },
+        "todo.delete": {"deleted": True, "entry_id": "td-1"},
+        "todo.verify": {"verified": True, "entry_id": "td-1"},
+        "todo.export": {"format": "json", "data": '[{"id":"td-1"}]'},
+        "web.search": {
+            "ok": True,
+            "query": "shisad",
+            "backend": "https://search.example",
+            "results": [],
+        },
+        "web.fetch": {"ok": True, "url": "https://example.com", "content": "page"},
+        "fs.list": {"ok": True, "path": ".", "entries": [], "count": 0},
+        "fs.read": {"ok": True, "path": "README.md", "content": "hello"},
+        "fs.write": {
+            "ok": False,
+            "path": "README.md",
+            "written": False,
+            "confirmation_required": True,
+            "error": "explicit_confirmation_required",
+        },
+        "git.status": {"ok": True, "repo_path": ".", "output": "## main"},
+        "git.diff": {"ok": True, "repo_path": ".", "output": "", "truncated": False},
+        "git.log": {"ok": True, "repo_path": ".", "output": "abc init"},
         "task.list": {"tasks": [{"id": "t-1", "name": "backup", "enabled": True}]},
         "skill.list": {
             "skills": [
@@ -192,6 +237,40 @@ def test_cli_commands_route_through_rpc_wrapper(
         ],
     )
     _invoke_ok(runner, ["memory", "rotate-key"])
+    _invoke_ok(runner, ["note", "create", "--key", "meeting", "--content", "prep"])
+    assert "n-1 meeting" in _invoke_ok(runner, ["note", "list", "--limit", "5"]).output
+    _invoke_ok(runner, ["note", "get", "n-1"])
+    _invoke_ok(runner, ["note", "verify", "n-1"])
+    _invoke_ok(runner, ["note", "export", "--format", "json"])
+    _invoke_ok(runner, ["note", "delete", "n-1"])
+    _invoke_ok(
+        runner,
+        [
+            "todo",
+            "create",
+            "--title",
+            "Ship M2",
+            "--details",
+            "review ready",
+            "--status",
+            "open",
+            "--due-date",
+            "2026-02-16",
+        ],
+    )
+    assert "td-1 open Ship M2" in _invoke_ok(runner, ["todo", "list", "--limit", "5"]).output
+    _invoke_ok(runner, ["todo", "get", "td-1"])
+    _invoke_ok(runner, ["todo", "verify", "td-1"])
+    _invoke_ok(runner, ["todo", "export", "--format", "json"])
+    _invoke_ok(runner, ["todo", "delete", "td-1"])
+    _invoke_ok(runner, ["web", "search", "shisad", "--limit", "1"])
+    _invoke_ok(runner, ["web", "fetch", "https://example.com"])
+    _invoke_ok(runner, ["fs", "list", ".", "--limit", "1"])
+    _invoke_ok(runner, ["fs", "read", "README.md", "--max-bytes", "10"])
+    _invoke_ok(runner, ["fs", "write", "README.md", "--content", "x"])
+    _invoke_ok(runner, ["git", "status", "--repo", "."])
+    _invoke_ok(runner, ["git", "diff", "--repo", ".", "--ref", "HEAD~1", "--max-lines", "10"])
+    _invoke_ok(runner, ["git", "log", "--repo", ".", "--limit", "3"])
     assert "t-1 backup enabled=True" in _invoke_ok(runner, ["task", "list"]).output
     assert "demo@1.0.0" in _invoke_ok(runner, ["skill", "list"]).output
     _invoke_ok(runner, ["skill", "review", str(skill_path)])

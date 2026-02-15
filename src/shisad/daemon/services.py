@@ -649,6 +649,105 @@ def _build_tool_registry(event_bus: EventBus) -> tuple[ToolRegistry, AlarmTool]:
             require_confirmation=False,
         )
     )
+    registry.register(
+        ToolDefinition(
+            name=ToolName("web_search"),
+            description="Search via configured backend (SearxNG reference in v0.3).",
+            parameters=[
+                ToolParameter(name="query", type="string", required=True),
+                ToolParameter(name="limit", type="integer", required=False),
+            ],
+            capabilities_required=[Capability.HTTP_REQUEST],
+            require_confirmation=False,
+        )
+    )
+    registry.register(
+        ToolDefinition(
+            name=ToolName("web_fetch"),
+            description="Fetch URL with structured evidence payload.",
+            parameters=[
+                ToolParameter(name="url", type="string", required=True),
+                ToolParameter(name="snapshot", type="boolean", required=False),
+                ToolParameter(name="max_bytes", type="integer", required=False),
+            ],
+            capabilities_required=[Capability.HTTP_REQUEST],
+            require_confirmation=False,
+        )
+    )
+    registry.register(
+        ToolDefinition(
+            name=ToolName("fs.list"),
+            description="Read-first filesystem listing primitive.",
+            parameters=[
+                ToolParameter(name="path", type="string", required=False),
+                ToolParameter(name="recursive", type="boolean", required=False),
+                ToolParameter(name="limit", type="integer", required=False),
+            ],
+            capabilities_required=[Capability.FILE_READ],
+            require_confirmation=False,
+        )
+    )
+    registry.register(
+        ToolDefinition(
+            name=ToolName("fs.read"),
+            description="Read-first filesystem read primitive.",
+            parameters=[
+                ToolParameter(name="path", type="string", required=True),
+                ToolParameter(name="max_bytes", type="integer", required=False),
+            ],
+            capabilities_required=[Capability.FILE_READ],
+            require_confirmation=False,
+        )
+    )
+    registry.register(
+        ToolDefinition(
+            name=ToolName("fs.write"),
+            description="Filesystem write primitive requiring explicit confirmation.",
+            parameters=[
+                ToolParameter(name="path", type="string", required=True),
+                ToolParameter(name="content", type="string", required=True),
+                ToolParameter(name="confirm", type="boolean", required=False),
+            ],
+            capabilities_required=[Capability.FILE_WRITE],
+            require_confirmation=True,
+        )
+    )
+    registry.register(
+        ToolDefinition(
+            name=ToolName("git.status"),
+            description="Read-only git status primitive.",
+            parameters=[
+                ToolParameter(name="repo_path", type="string", required=False),
+            ],
+            capabilities_required=[Capability.FILE_READ],
+            require_confirmation=False,
+        )
+    )
+    registry.register(
+        ToolDefinition(
+            name=ToolName("git.diff"),
+            description="Read-only git diff primitive.",
+            parameters=[
+                ToolParameter(name="repo_path", type="string", required=False),
+                ToolParameter(name="ref", type="string", required=False),
+                ToolParameter(name="max_lines", type="integer", required=False),
+            ],
+            capabilities_required=[Capability.FILE_READ],
+            require_confirmation=False,
+        )
+    )
+    registry.register(
+        ToolDefinition(
+            name=ToolName("git.log"),
+            description="Read-only git log primitive.",
+            parameters=[
+                ToolParameter(name="repo_path", type="string", required=False),
+                ToolParameter(name="limit", type="integer", required=False),
+            ],
+            capabilities_required=[Capability.FILE_READ],
+            require_confirmation=False,
+        )
+    )
     alarm_tool = AlarmTool(event_bus)
     registry.register(alarm_tool.tool_definition())
     return registry, alarm_tool

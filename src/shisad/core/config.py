@@ -123,6 +123,43 @@ class DaemonConfig(BaseSettings):
         ),
     )
 
+    # Assistant primitives (M2)
+    web_search_enabled: bool = Field(
+        default=False,
+        description="Enable web search primitive.",
+    )
+    web_search_backend_url: str = Field(
+        default="",
+        description="Reference search backend URL (SearxNG for v0.3).",
+    )
+    web_fetch_enabled: bool = Field(
+        default=False,
+        description="Enable web fetch primitive.",
+    )
+    web_allowed_domains: list[str] = Field(
+        default_factory=list,
+        description="Allowlisted web domains for web search/fetch egress.",
+    )
+    web_timeout_seconds: float = Field(
+        default=10.0,
+        ge=0.1,
+        description="Timeout for web search/fetch HTTP calls.",
+    )
+    web_max_fetch_bytes: int = Field(
+        default=262144,
+        ge=1024,
+        description="Maximum bytes fetched for web page content.",
+    )
+    assistant_fs_roots: list[Path] = Field(
+        default_factory=list,
+        description="Allowlisted roots for fs/git assistant primitives.",
+    )
+    assistant_max_read_bytes: int = Field(
+        default=65536,
+        ge=1024,
+        description="Maximum bytes returned by fs.read.",
+    )
+
     @staticmethod
     def _parse_list_field(value: object, *, field_name: str) -> object:
         if isinstance(value, str):
@@ -147,6 +184,26 @@ class DaemonConfig(BaseSettings):
             if isinstance(parsed, dict):
                 return {str(key): str(item) for key, item in parsed.items()}
             raise ValueError(f"{field_name} JSON must be an object")
+        return value
+
+    @staticmethod
+    def _parse_path_list_field(value: object, *, field_name: str) -> object:
+        if isinstance(value, str):
+            stripped = value.strip()
+            if not stripped:
+                return []
+            if stripped.startswith("["):
+                parsed = json.loads(stripped)
+                if not isinstance(parsed, list):
+                    raise ValueError(f"{field_name} JSON must be a list")
+                return [Path(str(item)).expanduser() for item in parsed if str(item).strip()]
+            return [
+                Path(entry.strip()).expanduser()
+                for entry in stripped.split(",")
+                if entry.strip()
+            ]
+        if isinstance(value, list):
+            return [Path(str(item)).expanduser() for item in value if str(item).strip()]
         return value
 
     @field_validator("matrix_trusted_users", mode="before")
@@ -220,6 +277,16 @@ class DaemonConfig(BaseSettings):
                 return normalized
             raise ValueError("SHISAD_CHANNEL_IDENTITY_ALLOWLIST JSON must be an object")
         return value
+
+    @field_validator("web_allowed_domains", mode="before")
+    @classmethod
+    def _parse_web_allowed_domains(cls, value: object) -> object:
+        return cls._parse_list_field(value, field_name="SHISAD_WEB_ALLOWED_DOMAINS")
+
+    @field_validator("assistant_fs_roots", mode="before")
+    @classmethod
+    def _parse_assistant_fs_roots(cls, value: object) -> object:
+        return cls._parse_path_list_field(value, field_name="SHISAD_ASSISTANT_FS_ROOTS")
 
     @model_validator(mode="after")
     def _ensure_data_dir(self) -> Self:

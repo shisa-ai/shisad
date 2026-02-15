@@ -27,9 +27,20 @@ from shisad.core.api.schema import (
     DaemonStatusResult,
     DashboardMarkFalsePositiveResult,
     DashboardQueryResult,
+    FsListResult,
+    FsReadResult,
+    FsWriteResult,
+    GitDiffResult,
+    GitLogResult,
+    GitStatusResult,
     MemoryListResult,
     MemoryRotateKeyResult,
     MemoryWriteResult,
+    NoteDeleteResult,
+    NoteExportResult,
+    NoteGetResult,
+    NoteListResult,
+    NoteVerifyResult,
     PolicyExplainResult,
     SessionCreateResult,
     SessionListResult,
@@ -41,6 +52,13 @@ from shisad.core.api.schema import (
     SkillReviewResult,
     SkillRevokeResult,
     TaskListResult,
+    TodoDeleteResult,
+    TodoExportResult,
+    TodoGetResult,
+    TodoListResult,
+    TodoVerifyResult,
+    WebFetchResult,
+    WebSearchResult,
 )
 from shisad.core.config import DaemonConfig
 
@@ -676,6 +694,322 @@ def memory_rotate_key(no_reencrypt: bool) -> None:
         "memory.rotate_key",
         {"reencrypt_existing": not no_reencrypt},
         response_model=MemoryRotateKeyResult,
+    )
+    click.echo(_dump_model(result))
+
+
+@cli.group()
+def note() -> None:
+    """First-class note operations."""
+
+
+@note.command("create")
+@click.option("--key", required=True)
+@click.option("--content", required=True)
+@click.option("--origin", default="user", type=click.Choice(["user", "external", "inferred"]))
+@click.option("--source-id", default="cli")
+@click.option("--confirm", is_flag=True, help="Confirm external/suspicious writes")
+def note_create(key: str, content: str, origin: str, source_id: str, confirm: bool) -> None:
+    config = _get_config()
+    result = rpc_call(
+        config,
+        "note.create",
+        {
+            "key": key,
+            "content": content,
+            "origin": origin,
+            "source_id": source_id,
+            "user_confirmed": confirm,
+        },
+        response_model=MemoryWriteResult,
+    )
+    click.echo(_dump_model(result))
+
+
+@note.command("list")
+@click.option("--limit", default=100, help="Maximum entries")
+def note_list(limit: int) -> None:
+    config = _get_config()
+    result = rpc_call(config, "note.list", {"limit": limit}, response_model=NoteListResult)
+    for item in result.entries:
+        click.echo(f"{item.get('id', '')} {item.get('key', '')}")
+
+
+@note.command("get")
+@click.argument("entry_id")
+def note_get(entry_id: str) -> None:
+    config = _get_config()
+    result = rpc_call(config, "note.get", {"entry_id": entry_id}, response_model=NoteGetResult)
+    click.echo(_dump_model(result))
+
+
+@note.command("delete")
+@click.argument("entry_id")
+def note_delete(entry_id: str) -> None:
+    config = _get_config()
+    result = rpc_call(
+        config,
+        "note.delete",
+        {"entry_id": entry_id},
+        response_model=NoteDeleteResult,
+    )
+    click.echo(_dump_model(result))
+
+
+@note.command("verify")
+@click.argument("entry_id")
+def note_verify(entry_id: str) -> None:
+    config = _get_config()
+    result = rpc_call(
+        config,
+        "note.verify",
+        {"entry_id": entry_id},
+        response_model=NoteVerifyResult,
+    )
+    click.echo(_dump_model(result))
+
+
+@note.command("export")
+@click.option("--format", "fmt", default="json", type=click.Choice(["json", "csv"]))
+def note_export(fmt: str) -> None:
+    config = _get_config()
+    result = rpc_call(
+        config,
+        "note.export",
+        {"format": fmt},
+        response_model=NoteExportResult,
+    )
+    click.echo(str(result.data))
+
+
+@cli.group()
+def todo() -> None:
+    """First-class todo operations."""
+
+
+@todo.command("create")
+@click.option("--title", required=True)
+@click.option("--details", default="")
+@click.option("--status", default="open", type=click.Choice(["open", "in_progress", "done"]))
+@click.option("--due-date", default="", help="Optional due date string")
+@click.option("--origin", default="user", type=click.Choice(["user", "external", "inferred"]))
+@click.option("--source-id", default="cli")
+@click.option("--confirm", is_flag=True, help="Confirm external/suspicious writes")
+def todo_create(
+    title: str,
+    details: str,
+    status: str,
+    due_date: str,
+    origin: str,
+    source_id: str,
+    confirm: bool,
+) -> None:
+    config = _get_config()
+    result = rpc_call(
+        config,
+        "todo.create",
+        {
+            "title": title,
+            "details": details,
+            "status": status,
+            "due_date": due_date,
+            "origin": origin,
+            "source_id": source_id,
+            "user_confirmed": confirm,
+        },
+        response_model=MemoryWriteResult,
+    )
+    click.echo(_dump_model(result))
+
+
+@todo.command("list")
+@click.option("--limit", default=100, help="Maximum entries")
+def todo_list(limit: int) -> None:
+    config = _get_config()
+    result = rpc_call(config, "todo.list", {"limit": limit}, response_model=TodoListResult)
+    for item in result.entries:
+        value = item.get("value", {})
+        if isinstance(value, dict):
+            title = str(value.get("title", ""))
+            status = str(value.get("status", ""))
+        else:
+            title = ""
+            status = ""
+        click.echo(f"{item.get('id', '')} {status} {title}")
+
+
+@todo.command("get")
+@click.argument("entry_id")
+def todo_get(entry_id: str) -> None:
+    config = _get_config()
+    result = rpc_call(config, "todo.get", {"entry_id": entry_id}, response_model=TodoGetResult)
+    click.echo(_dump_model(result))
+
+
+@todo.command("delete")
+@click.argument("entry_id")
+def todo_delete(entry_id: str) -> None:
+    config = _get_config()
+    result = rpc_call(
+        config,
+        "todo.delete",
+        {"entry_id": entry_id},
+        response_model=TodoDeleteResult,
+    )
+    click.echo(_dump_model(result))
+
+
+@todo.command("verify")
+@click.argument("entry_id")
+def todo_verify(entry_id: str) -> None:
+    config = _get_config()
+    result = rpc_call(
+        config,
+        "todo.verify",
+        {"entry_id": entry_id},
+        response_model=TodoVerifyResult,
+    )
+    click.echo(_dump_model(result))
+
+
+@todo.command("export")
+@click.option("--format", "fmt", default="json", type=click.Choice(["json", "csv"]))
+def todo_export(fmt: str) -> None:
+    config = _get_config()
+    result = rpc_call(
+        config,
+        "todo.export",
+        {"format": fmt},
+        response_model=TodoExportResult,
+    )
+    click.echo(str(result.data))
+
+
+@cli.group()
+def web() -> None:
+    """Web search/fetch operations."""
+
+
+@web.command("search")
+@click.argument("query")
+@click.option("--limit", default=5, help="Maximum results")
+def web_search(query: str, limit: int) -> None:
+    config = _get_config()
+    result = rpc_call(
+        config,
+        "web.search",
+        {"query": query, "limit": limit},
+        response_model=WebSearchResult,
+    )
+    click.echo(_dump_model(result))
+
+
+@web.command("fetch")
+@click.argument("url")
+@click.option("--snapshot", is_flag=True, help="Persist a fetched-text snapshot under data_dir.")
+def web_fetch(url: str, snapshot: bool) -> None:
+    config = _get_config()
+    result = rpc_call(
+        config,
+        "web.fetch",
+        {"url": url, "snapshot": snapshot},
+        response_model=WebFetchResult,
+    )
+    click.echo(_dump_model(result))
+
+
+@cli.group("fs")
+def fs_group() -> None:
+    """Filesystem read-first operations."""
+
+
+@fs_group.command("list")
+@click.argument("path", required=False, default=".")
+@click.option("--recursive", is_flag=True)
+@click.option("--limit", default=200)
+def fs_list(path: str, recursive: bool, limit: int) -> None:
+    config = _get_config()
+    result = rpc_call(
+        config,
+        "fs.list",
+        {"path": path, "recursive": recursive, "limit": limit},
+        response_model=FsListResult,
+    )
+    click.echo(_dump_model(result))
+
+
+@fs_group.command("read")
+@click.argument("path")
+@click.option("--max-bytes", default=65536)
+def fs_read(path: str, max_bytes: int) -> None:
+    config = _get_config()
+    result = rpc_call(
+        config,
+        "fs.read",
+        {"path": path, "max_bytes": max_bytes},
+        response_model=FsReadResult,
+    )
+    click.echo(_dump_model(result))
+
+
+@fs_group.command("write")
+@click.argument("path")
+@click.option("--content", required=True)
+@click.option("--confirm", is_flag=True, help="Explicitly confirm write side effects.")
+def fs_write(path: str, content: str, confirm: bool) -> None:
+    config = _get_config()
+    result = rpc_call(
+        config,
+        "fs.write",
+        {"path": path, "content": content, "confirm": confirm},
+        response_model=FsWriteResult,
+    )
+    click.echo(_dump_model(result))
+
+
+@cli.group("git")
+def git_group() -> None:
+    """Git read-only workflow helpers."""
+
+
+@git_group.command("status")
+@click.option("--repo", "repo_path", default=".")
+def git_status(repo_path: str) -> None:
+    config = _get_config()
+    result = rpc_call(
+        config,
+        "git.status",
+        {"repo_path": repo_path},
+        response_model=GitStatusResult,
+    )
+    click.echo(_dump_model(result))
+
+
+@git_group.command("diff")
+@click.option("--repo", "repo_path", default=".")
+@click.option("--ref", default="")
+@click.option("--max-lines", default=400)
+def git_diff(repo_path: str, ref: str, max_lines: int) -> None:
+    config = _get_config()
+    result = rpc_call(
+        config,
+        "git.diff",
+        {"repo_path": repo_path, "ref": ref, "max_lines": max_lines},
+        response_model=GitDiffResult,
+    )
+    click.echo(_dump_model(result))
+
+
+@git_group.command("log")
+@click.option("--repo", "repo_path", default=".")
+@click.option("--limit", default=20)
+def git_log(repo_path: str, limit: int) -> None:
+    config = _get_config()
+    result = rpc_call(
+        config,
+        "git.log",
+        {"repo_path": repo_path, "limit": limit},
+        response_model=GitLogResult,
     )
     click.echo(_dump_model(result))
 

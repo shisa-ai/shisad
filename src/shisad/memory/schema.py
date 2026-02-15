@@ -20,10 +20,10 @@ class MemorySource(BaseModel):
 
 
 class MemoryEntry(BaseModel):
-    """Long-term memory record (facts/preferences/context only)."""
+    """Long-term memory record (facts/preferences/context/note/todo)."""
 
     id: str = Field(default_factory=lambda: uuid.uuid4().hex)
-    entry_type: Literal["fact", "preference", "context"]
+    entry_type: Literal["fact", "preference", "context", "note", "todo"]
     key: str
     value: Any
     source: MemorySource
@@ -40,4 +40,3 @@ class MemoryWriteDecision(BaseModel):
     kind: Literal["allow", "reject", "require_confirmation"]
     reason: str = ""
     entry: MemoryEntry | None = None
-

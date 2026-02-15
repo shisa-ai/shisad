@@ -18,6 +18,8 @@ from urllib.parse import urlparse
 
 from pydantic import ValidationError
 
+from shisad.assistant.fs_git import FsGitToolkit
+from shisad.assistant.web import WebToolkit
 from shisad.channels.base import ChannelMessage, DeliveryTarget
 from shisad.core.audit import AuditLog
 from shisad.core.events import (
@@ -99,6 +101,7 @@ from shisad.security.pep import PolicyContext
 from shisad.security.reputation import ReputationScorer
 from shisad.security.risk import RiskObservation
 from shisad.security.spotlight import render_spotlight_context
+from shisad.security.taint import label_tool_output
 from shisad.skills.manifest import parse_manifest
 from shisad.skills.sandbox import SkillExecutionRequest
 from shisad.ui.confirmation import (
@@ -189,6 +192,13 @@ class PendingAction:
     status_reason: str = ""
 
 
+@dataclass(slots=True)
+class ToolOutputRecord:
+    tool_name: str
+    content: str
+    taint_labels: set[TaintLabel] = field(default_factory=set)
+
+
 class HandlerImplementation:
     """Owns JSON-RPC control handlers for the daemon."""
 
@@ -246,6 +256,26 @@ class HandlerImplementation:
         self._dashboard = SecurityDashboard(
             audit_log=self._audit_log,
             marks_path=self._config.data_dir / "dashboard" / "false_positives.json",
+        )
+        web_allowed_domains = [item for item in self._config.web_allowed_domains if item.strip()]
+        if not web_allowed_domains:
+            web_allowed_domains = [
+                rule.host.strip()
+                for rule in self._policy_loader.policy.egress
+                if rule.host.strip()
+            ]
+        self._web_toolkit = WebToolkit(
+            data_dir=self._config.data_dir,
+            search_enabled=self._config.web_search_enabled,
+            search_backend_url=self._config.web_search_backend_url,
+            fetch_enabled=self._config.web_fetch_enabled,
+            allowed_domains=web_allowed_domains,
+            timeout_seconds=self._config.web_timeout_seconds,
+            max_fetch_bytes=self._config.web_max_fetch_bytes,
+        )
+        self._fs_git_toolkit = FsGitToolkit(
+            roots=list(self._config.assistant_fs_roots),
+            max_read_bytes=self._config.assistant_max_read_bytes,
         )
         self._load_pending_actions()
 
@@ -884,10 +914,10 @@ class HandlerImplementation:
         capabilities: set[Capability],
         approval_actor: str,
         execution_action: ControlPlaneAction | None = None,
-    ) -> tuple[bool, str | None]:
+    ) -> tuple[bool, str | None, ToolOutputRecord | None]:
         session = self._session_manager.get(sid)
         if session is None:
-            return False, None
+            return False, None, None
 
         origin = self._origin_for(
             session=session,
@@ -943,10 +973,18 @@ class HandlerImplementation:
                 )
             )
             self._control_plane.record_execution(action=executed_action, success=True)
-            return True, checkpoint_id
+            return (
+                True,
+                checkpoint_id,
+                ToolOutputRecord(
+                    tool_name=str(tool_name),
+                    content="Anomaly reported and lockdown evaluation triggered.",
+                    taint_labels=set(),
+                ),
+            )
 
         if tool_name == "retrieve_rag":
-            _ = self._ingestion.retrieve(
+            records = self._ingestion.retrieve(
                 query=str(arguments.get("query", "")),
                 limit=int(arguments.get("limit", 5)),
                 capabilities=capabilities,
@@ -960,7 +998,319 @@ class HandlerImplementation:
                 )
             )
             self._control_plane.record_execution(action=executed_action, success=True)
-            return True, checkpoint_id
+            preview_rows = [
+                {
+                    "chunk_id": item.chunk_id,
+                    "source_id": item.source_id,
+                    "collection": item.collection,
+                    "content": item.content_sanitized[:180],
+                }
+                for item in records
+            ]
+            return (
+                True,
+                checkpoint_id,
+                ToolOutputRecord(
+                    tool_name=str(tool_name),
+                    content=json.dumps(preview_rows, ensure_ascii=True),
+                    taint_labels=label_tool_output(str(tool_name)),
+                ),
+            )
+
+        if tool_name == "web_search":
+            search_payload = self._web_toolkit.search(
+                query=str(arguments.get("query", "")),
+                limit=int(arguments.get("limit", 5)),
+            )
+            success = bool(search_payload.get("ok", False))
+            if not success:
+                await self._event_bus.publish(
+                    ToolRejected(
+                        session_id=sid,
+                        actor="tool_runtime",
+                        tool_name=tool_name,
+                        reason=str(search_payload.get("error", "web_search_failed")),
+                    )
+                )
+            await self._event_bus.publish(
+                ToolExecuted(
+                    session_id=sid,
+                    actor="tool_runtime",
+                    tool_name=tool_name,
+                    success=success,
+                )
+            )
+            self._control_plane.record_execution(action=executed_action, success=success)
+            return (
+                success,
+                checkpoint_id,
+                ToolOutputRecord(
+                    tool_name=str(tool_name),
+                    content=self._sanitize_tool_output_text(
+                        json.dumps(search_payload, ensure_ascii=True)
+                    ),
+                    taint_labels=label_tool_output(str(tool_name)),
+                ),
+            )
+
+        if tool_name == "web_fetch":
+            raw_max_bytes = arguments.get("max_bytes")
+            max_bytes = int(raw_max_bytes) if raw_max_bytes is not None else None
+            fetch_payload = self._web_toolkit.fetch(
+                url=str(arguments.get("url", "")),
+                snapshot=bool(arguments.get("snapshot", False)),
+                max_bytes=max_bytes,
+            )
+            success = bool(fetch_payload.get("ok", False))
+            if not success:
+                await self._event_bus.publish(
+                    ToolRejected(
+                        session_id=sid,
+                        actor="tool_runtime",
+                        tool_name=tool_name,
+                        reason=str(fetch_payload.get("error", "web_fetch_failed")),
+                    )
+                )
+            await self._event_bus.publish(
+                ToolExecuted(
+                    session_id=sid,
+                    actor="tool_runtime",
+                    tool_name=tool_name,
+                    success=success,
+                )
+            )
+            self._control_plane.record_execution(action=executed_action, success=success)
+            return (
+                success,
+                checkpoint_id,
+                ToolOutputRecord(
+                    tool_name=str(tool_name),
+                    content=self._sanitize_tool_output_text(
+                        json.dumps(fetch_payload, ensure_ascii=True)
+                    ),
+                    taint_labels=label_tool_output(str(tool_name)),
+                ),
+            )
+
+        if tool_name == "fs.list":
+            fs_list_payload = self._fs_git_toolkit.list_dir(
+                path=str(arguments.get("path", ".")),
+                recursive=bool(arguments.get("recursive", False)),
+                limit=int(arguments.get("limit", 200)),
+            )
+            success = bool(fs_list_payload.get("ok", False))
+            if not success:
+                await self._event_bus.publish(
+                    ToolRejected(
+                        session_id=sid,
+                        actor="tool_runtime",
+                        tool_name=tool_name,
+                        reason=str(fs_list_payload.get("error", "fs_list_failed")),
+                    )
+                )
+            await self._event_bus.publish(
+                ToolExecuted(
+                    session_id=sid,
+                    actor="tool_runtime",
+                    tool_name=tool_name,
+                    success=success,
+                )
+            )
+            self._control_plane.record_execution(action=executed_action, success=success)
+            return (
+                success,
+                checkpoint_id,
+                ToolOutputRecord(
+                    tool_name=str(tool_name),
+                    content=self._sanitize_tool_output_text(
+                        json.dumps(fs_list_payload, ensure_ascii=True)
+                    ),
+                    taint_labels=label_tool_output(str(tool_name)),
+                ),
+            )
+
+        if tool_name == "fs.read":
+            raw_max_bytes = arguments.get("max_bytes")
+            max_bytes = int(raw_max_bytes) if raw_max_bytes is not None else None
+            fs_read_payload = self._fs_git_toolkit.read_file(
+                path=str(arguments.get("path", "")),
+                max_bytes=max_bytes,
+            )
+            success = bool(fs_read_payload.get("ok", False))
+            if not success:
+                await self._event_bus.publish(
+                    ToolRejected(
+                        session_id=sid,
+                        actor="tool_runtime",
+                        tool_name=tool_name,
+                        reason=str(fs_read_payload.get("error", "fs_read_failed")),
+                    )
+                )
+            await self._event_bus.publish(
+                ToolExecuted(
+                    session_id=sid,
+                    actor="tool_runtime",
+                    tool_name=tool_name,
+                    success=success,
+                )
+            )
+            self._control_plane.record_execution(action=executed_action, success=success)
+            return (
+                success,
+                checkpoint_id,
+                ToolOutputRecord(
+                    tool_name=str(tool_name),
+                    content=self._sanitize_tool_output_text(
+                        json.dumps(fs_read_payload, ensure_ascii=True)
+                    ),
+                    taint_labels=label_tool_output(str(tool_name)),
+                ),
+            )
+
+        if tool_name == "fs.write":
+            fs_write_payload = self._fs_git_toolkit.write_file(
+                path=str(arguments.get("path", "")),
+                content=str(arguments.get("content", "")),
+                confirm=bool(arguments.get("confirm", False)),
+            )
+            success = bool(fs_write_payload.get("ok", False))
+            if not success:
+                await self._event_bus.publish(
+                    ToolRejected(
+                        session_id=sid,
+                        actor="tool_runtime",
+                        tool_name=tool_name,
+                        reason=str(fs_write_payload.get("error", "fs_write_failed")),
+                    )
+                )
+            await self._event_bus.publish(
+                ToolExecuted(
+                    session_id=sid,
+                    actor="tool_runtime",
+                    tool_name=tool_name,
+                    success=success,
+                )
+            )
+            self._control_plane.record_execution(action=executed_action, success=success)
+            return (
+                success,
+                checkpoint_id,
+                ToolOutputRecord(
+                    tool_name=str(tool_name),
+                    content=self._sanitize_tool_output_text(
+                        json.dumps(fs_write_payload, ensure_ascii=True)
+                    ),
+                    taint_labels=label_tool_output(str(tool_name)),
+                ),
+            )
+
+        if tool_name == "git.status":
+            git_status_payload = self._fs_git_toolkit.git_status(
+                repo_path=str(arguments.get("repo_path", ".")),
+            )
+            success = bool(git_status_payload.get("ok", False))
+            if not success:
+                await self._event_bus.publish(
+                    ToolRejected(
+                        session_id=sid,
+                        actor="tool_runtime",
+                        tool_name=tool_name,
+                        reason=str(git_status_payload.get("error", "git_status_failed")),
+                    )
+                )
+            await self._event_bus.publish(
+                ToolExecuted(
+                    session_id=sid,
+                    actor="tool_runtime",
+                    tool_name=tool_name,
+                    success=success,
+                )
+            )
+            self._control_plane.record_execution(action=executed_action, success=success)
+            return (
+                success,
+                checkpoint_id,
+                ToolOutputRecord(
+                    tool_name=str(tool_name),
+                    content=self._sanitize_tool_output_text(
+                        json.dumps(git_status_payload, ensure_ascii=True)
+                    ),
+                    taint_labels=label_tool_output(str(tool_name)),
+                ),
+            )
+
+        if tool_name == "git.diff":
+            git_diff_payload = self._fs_git_toolkit.git_diff(
+                repo_path=str(arguments.get("repo_path", ".")),
+                ref=str(arguments.get("ref", "")),
+                max_lines=int(arguments.get("max_lines", 400)),
+            )
+            success = bool(git_diff_payload.get("ok", False))
+            if not success:
+                await self._event_bus.publish(
+                    ToolRejected(
+                        session_id=sid,
+                        actor="tool_runtime",
+                        tool_name=tool_name,
+                        reason=str(git_diff_payload.get("error", "git_diff_failed")),
+                    )
+                )
+            await self._event_bus.publish(
+                ToolExecuted(
+                    session_id=sid,
+                    actor="tool_runtime",
+                    tool_name=tool_name,
+                    success=success,
+                )
+            )
+            self._control_plane.record_execution(action=executed_action, success=success)
+            return (
+                success,
+                checkpoint_id,
+                ToolOutputRecord(
+                    tool_name=str(tool_name),
+                    content=self._sanitize_tool_output_text(
+                        json.dumps(git_diff_payload, ensure_ascii=True)
+                    ),
+                    taint_labels=label_tool_output(str(tool_name)),
+                ),
+            )
+
+        if tool_name == "git.log":
+            git_log_payload = self._fs_git_toolkit.git_log(
+                repo_path=str(arguments.get("repo_path", ".")),
+                limit=int(arguments.get("limit", 20)),
+            )
+            success = bool(git_log_payload.get("ok", False))
+            if not success:
+                await self._event_bus.publish(
+                    ToolRejected(
+                        session_id=sid,
+                        actor="tool_runtime",
+                        tool_name=tool_name,
+                        reason=str(git_log_payload.get("error", "git_log_failed")),
+                    )
+                )
+            await self._event_bus.publish(
+                ToolExecuted(
+                    session_id=sid,
+                    actor="tool_runtime",
+                    tool_name=tool_name,
+                    success=success,
+                )
+            )
+            self._control_plane.record_execution(action=executed_action, success=success)
+            return (
+                success,
+                checkpoint_id,
+                ToolOutputRecord(
+                    tool_name=str(tool_name),
+                    content=self._sanitize_tool_output_text(
+                        json.dumps(git_log_payload, ensure_ascii=True)
+                    ),
+                    taint_labels=label_tool_output(str(tool_name)),
+                ),
+            )
 
         if tool is None:
             await self._event_bus.publish(
@@ -972,7 +1322,7 @@ class HandlerImplementation:
                 )
             )
             self._control_plane.record_execution(action=executed_action, success=False)
-            return False, checkpoint_id
+            return False, checkpoint_id, None
 
         sandbox_result = await self._execute_via_sandbox(
             sid=sid,
@@ -1012,7 +1362,46 @@ class HandlerImplementation:
             )
         )
         self._control_plane.record_execution(action=executed_action, success=success)
-        return success, checkpoint_id
+        raw_output = "\n".join(
+            segment for segment in [sandbox_result.stdout, sandbox_result.stderr] if segment
+        ).strip()
+        return (
+            success,
+            checkpoint_id,
+            ToolOutputRecord(
+                tool_name=str(tool_name),
+                content=self._sanitize_tool_output_text(raw_output),
+                taint_labels=label_tool_output(str(tool_name)),
+            )
+            if raw_output
+            else None,
+        )
+
+    def _sanitize_tool_output_text(self, raw: str) -> str:
+        if not raw:
+            return ""
+        inspected = self._output_firewall.inspect(
+            raw,
+            context={"actor": "tool_output_boundary"},
+        )
+        cleaned = inspected.sanitized_text
+        return (
+            cleaned.replace("[[TOOL_OUTPUT_BEGIN", "[TOOL_OUTPUT_BEGIN")
+            .replace("[[TOOL_OUTPUT_END", "[TOOL_OUTPUT_END")
+            .replace("<<TOOL_OUTPUT_BEGIN", "<TOOL_OUTPUT_BEGIN")
+            .replace("<<TOOL_OUTPUT_END", "<TOOL_OUTPUT_END")
+            .strip()
+        )
+
+    @staticmethod
+    def _render_tool_output_boundary(records: list[ToolOutputRecord]) -> str:
+        lines = ["=== TOOL OUTPUTS (UNTRUSTED DATA) ==="]
+        for record in records:
+            taints = ",".join(sorted(label.value for label in record.taint_labels)) or "none"
+            lines.append(f"[[TOOL_OUTPUT_BEGIN tool={record.tool_name} taint={taints}]]")
+            lines.append(record.content)
+            lines.append("[[TOOL_OUTPUT_END]]")
+        return "\n".join(lines).strip()
 
     async def _execute_via_sandbox(
         self,
@@ -1337,6 +1726,7 @@ class HandlerImplementation:
         executed = 0
         checkpoint_ids: list[str] = []
         pending_confirmation_ids: list[str] = []
+        executed_tool_outputs: list[ToolOutputRecord] = []
 
         for evaluated in planner_result.evaluated:
             proposal = evaluated.proposal
@@ -1546,7 +1936,7 @@ class HandlerImplementation:
                     ))
                 continue
 
-            success, checkpoint_id = await self._execute_approved_action(
+            success, checkpoint_id, tool_output = await self._execute_approved_action(
                 sid=sid,
                 user_id=user_id,
                 tool_name=proposal.tool_name,
@@ -1559,6 +1949,8 @@ class HandlerImplementation:
                 checkpoint_ids.append(checkpoint_id)
             if success:
                 executed += 1
+            if success and tool_output is not None:
+                executed_tool_outputs.append(tool_output)
             if self._trace_recorder is not None:
                 trace_tool_calls.append(TraceToolCall(
                     tool_name=str(proposal.tool_name),
@@ -1572,6 +1964,9 @@ class HandlerImplementation:
                 ))
 
         response_text = planner_result.output.assistant_response
+        if executed_tool_outputs:
+            boundary = self._render_tool_output_boundary(executed_tool_outputs)
+            response_text = f"{response_text}\n\n{boundary}" if response_text.strip() else boundary
         output_result = self._output_firewall.inspect(
             response_text,
             context={"session_id": sid, "actor": "assistant"},
@@ -2467,6 +2862,207 @@ class HandlerImplementation:
             "reencrypt_existing": reencrypt_existing,
         }
 
+    async def do_note_create(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        source = MemorySource(
+            origin=str(params.get("origin", "user")),
+            source_id=str(params.get("source_id", "cli")),
+            extraction_method="note.create",
+        )
+        decision = self._memory_manager.write(
+            entry_type="note",
+            key=str(params.get("key", "")),
+            value=str(params.get("content", "")),
+            source=source,
+            confidence=float(params.get("confidence", 0.8)),
+            user_confirmed=bool(params.get("user_confirmed", False)),
+        )
+        return decision.model_dump(mode="json")
+
+    async def do_note_list(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        rows = self._memory_manager.list_entries(limit=int(params.get("limit", 1000)))
+        notes = [
+            entry.model_dump(mode="json")
+            for entry in rows
+            if str(entry.entry_type) == "note"
+        ]
+        limit = max(1, int(params.get("limit", 100)))
+        return {"entries": notes[:limit], "count": min(len(notes), limit)}
+
+    async def do_note_get(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        entry = self._memory_manager.get_entry(str(params.get("entry_id", "")))
+        if entry is None or str(entry.entry_type) != "note":
+            return {"entry": None}
+        return {"entry": entry.model_dump(mode="json")}
+
+    async def do_note_delete(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        entry_id = str(params.get("entry_id", ""))
+        deleted = self._memory_manager.delete(entry_id)
+        return {"deleted": deleted, "entry_id": entry_id}
+
+    async def do_note_verify(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        entry_id = str(params.get("entry_id", ""))
+        entry = self._memory_manager.get_entry(entry_id)
+        if entry is None or str(entry.entry_type) != "note":
+            return {"verified": False, "entry_id": entry_id}
+        verified = self._memory_manager.verify(entry_id)
+        return {"verified": verified, "entry_id": entry_id}
+
+    async def do_note_export(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        fmt = str(params.get("format", "json"))
+        rows = self._memory_manager.list_entries(include_deleted=True, limit=2000)
+        notes = [entry.model_dump(mode="json") for entry in rows if str(entry.entry_type) == "note"]
+        if fmt == "json":
+            return {"format": "json", "data": json.dumps(notes, indent=2)}
+        if fmt == "csv":
+            header = "id,key,value,created_at,user_verified,deleted_at"
+            body = [
+                ",".join(
+                    [
+                        str(item.get("id", "")),
+                        str(item.get("key", "")).replace(",", " "),
+                        str(item.get("value", "")).replace(",", " "),
+                        str(item.get("created_at", "")),
+                        str(item.get("user_verified", "")),
+                        str(item.get("deleted_at", "")),
+                    ]
+                )
+                for item in notes
+            ]
+            return {"format": "csv", "data": "\n".join([header, *body])}
+        raise ValueError(f"Unsupported export format: {fmt}")
+
+    async def do_todo_create(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        source = MemorySource(
+            origin=str(params.get("origin", "user")),
+            source_id=str(params.get("source_id", "cli")),
+            extraction_method="todo.create",
+        )
+        payload = {
+            "title": str(params.get("title", "")).strip(),
+            "details": str(params.get("details", "")).strip(),
+            "status": str(params.get("status", "open")).strip() or "open",
+            "due_date": str(params.get("due_date", "")).strip(),
+        }
+        if payload["status"] not in {"open", "in_progress", "done"}:
+            raise ValueError("status must be one of: open, in_progress, done")
+        decision = self._memory_manager.write(
+            entry_type="todo",
+            key=f"todo:{payload['title'][:64]}",
+            value=payload,
+            source=source,
+            confidence=float(params.get("confidence", 0.8)),
+            user_confirmed=bool(params.get("user_confirmed", False)),
+        )
+        return decision.model_dump(mode="json")
+
+    async def do_todo_list(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        rows = self._memory_manager.list_entries(limit=int(params.get("limit", 1000)))
+        todos = [
+            entry.model_dump(mode="json")
+            for entry in rows
+            if str(entry.entry_type) == "todo"
+        ]
+        limit = max(1, int(params.get("limit", 100)))
+        return {"entries": todos[:limit], "count": min(len(todos), limit)}
+
+    async def do_todo_get(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        entry = self._memory_manager.get_entry(str(params.get("entry_id", "")))
+        if entry is None or str(entry.entry_type) != "todo":
+            return {"entry": None}
+        return {"entry": entry.model_dump(mode="json")}
+
+    async def do_todo_delete(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        entry_id = str(params.get("entry_id", ""))
+        deleted = self._memory_manager.delete(entry_id)
+        return {"deleted": deleted, "entry_id": entry_id}
+
+    async def do_todo_verify(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        entry_id = str(params.get("entry_id", ""))
+        entry = self._memory_manager.get_entry(entry_id)
+        if entry is None or str(entry.entry_type) != "todo":
+            return {"verified": False, "entry_id": entry_id}
+        verified = self._memory_manager.verify(entry_id)
+        return {"verified": verified, "entry_id": entry_id}
+
+    async def do_todo_export(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        fmt = str(params.get("format", "json"))
+        rows = self._memory_manager.list_entries(include_deleted=True, limit=2000)
+        todos = [entry.model_dump(mode="json") for entry in rows if str(entry.entry_type) == "todo"]
+        if fmt == "json":
+            return {"format": "json", "data": json.dumps(todos, indent=2)}
+        if fmt == "csv":
+            header = "id,title,status,due_date,created_at,user_verified,deleted_at"
+            body = []
+            for item in todos:
+                value = item.get("value", {})
+                if not isinstance(value, dict):
+                    value = {}
+                body.append(
+                    ",".join(
+                        [
+                            str(item.get("id", "")),
+                            str(value.get("title", "")).replace(",", " "),
+                            str(value.get("status", "")).replace(",", " "),
+                            str(value.get("due_date", "")).replace(",", " "),
+                            str(item.get("created_at", "")),
+                            str(item.get("user_verified", "")),
+                            str(item.get("deleted_at", "")),
+                        ]
+                    )
+                )
+            return {"format": "csv", "data": "\n".join([header, *body])}
+        raise ValueError(f"Unsupported export format: {fmt}")
+
+    async def do_web_search(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        query = str(params.get("query", ""))
+        limit = int(params.get("limit", 5))
+        return self._web_toolkit.search(query=query, limit=limit)
+
+    async def do_web_fetch(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        url = str(params.get("url", ""))
+        snapshot = bool(params.get("snapshot", False))
+        raw_max_bytes = params.get("max_bytes")
+        max_bytes = int(raw_max_bytes) if raw_max_bytes is not None else None
+        return self._web_toolkit.fetch(url=url, snapshot=snapshot, max_bytes=max_bytes)
+
+    async def do_fs_list(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        return self._fs_git_toolkit.list_dir(
+            path=str(params.get("path", ".")),
+            recursive=bool(params.get("recursive", False)),
+            limit=int(params.get("limit", 200)),
+        )
+
+    async def do_fs_read(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        raw_max_bytes = params.get("max_bytes")
+        max_bytes = int(raw_max_bytes) if raw_max_bytes is not None else None
+        return self._fs_git_toolkit.read_file(
+            path=str(params.get("path", "")),
+            max_bytes=max_bytes,
+        )
+
+    async def do_fs_write(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        return self._fs_git_toolkit.write_file(
+            path=str(params.get("path", "")),
+            content=str(params.get("content", "")),
+            confirm=bool(params.get("confirm", False)),
+        )
+
+    async def do_git_status(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        return self._fs_git_toolkit.git_status(repo_path=str(params.get("repo_path", ".")))
+
+    async def do_git_diff(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        return self._fs_git_toolkit.git_diff(
+            repo_path=str(params.get("repo_path", ".")),
+            ref=str(params.get("ref", "")),
+            max_lines=int(params.get("max_lines", 400)),
+        )
+
+    async def do_git_log(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        return self._fs_git_toolkit.git_log(
+            repo_path=str(params.get("repo_path", ".")),
+            limit=int(params.get("limit", 20)),
+        )
+
     async def do_skill_list(self, params: Mapping[str, Any]) -> dict[str, Any]:
         _ = params
         skills = [item.model_dump(mode="json") for item in self._skill_manager.list_installed()]
@@ -2905,7 +3501,7 @@ class HandlerImplementation:
                 )
             )
 
-        success, checkpoint_id = await self._execute_approved_action(
+        success, checkpoint_id, _tool_output = await self._execute_approved_action(
             sid=pending.session_id,
             user_id=pending.user_id,
             tool_name=pending.tool_name,

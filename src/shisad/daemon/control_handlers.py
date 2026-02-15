@@ -24,6 +24,18 @@ from shisad.core.api.schema import (
     DashboardMarkFalsePositiveResult,
     DashboardQueryParams,
     DashboardQueryResult,
+    FsListParams,
+    FsListResult,
+    FsReadParams,
+    FsReadResult,
+    FsWriteParams,
+    FsWriteResult,
+    GitDiffParams,
+    GitDiffResult,
+    GitLogParams,
+    GitLogResult,
+    GitStatusParams,
+    GitStatusResult,
     LockdownSetParams,
     LockdownSetResult,
     MemoryDeleteResult,
@@ -43,6 +55,15 @@ from shisad.core.api.schema import (
     MemoryWriteParams,
     MemoryWriteResult,
     NoParams,
+    NoteCreateParams,
+    NoteDeleteResult,
+    NoteEntryParams,
+    NoteExportParams,
+    NoteExportResult,
+    NoteGetResult,
+    NoteListParams,
+    NoteListResult,
+    NoteVerifyResult,
     PolicyExplainParams,
     PolicyExplainResult,
     RiskCalibrateResult,
@@ -75,12 +96,26 @@ from shisad.core.api.schema import (
     TaskPendingConfirmationsResult,
     TaskTriggerEventParams,
     TaskTriggerEventResult,
+    TodoCreateParams,
+    TodoDeleteResult,
+    TodoEntryParams,
+    TodoExportParams,
+    TodoExportResult,
+    TodoGetResult,
+    TodoListParams,
+    TodoListResult,
+    TodoVerifyResult,
     ToolExecuteParams,
     ToolExecuteResult,
+    WebFetchParams,
+    WebFetchResult,
+    WebSearchParams,
+    WebSearchResult,
 )
 from shisad.daemon.context import RequestContext
 from shisad.daemon.handlers import (
     AdminHandlers,
+    AssistantHandlers,
     ConfirmationHandlers,
     DashboardHandlers,
     MemoryHandlers,
@@ -124,6 +159,10 @@ class DaemonControlHandlers:
             internal_ingress_marker=internal_ingress_marker,
         )
         self._dashboard = DashboardHandlers(
+            impl,
+            internal_ingress_marker=internal_ingress_marker,
+        )
+        self._assistant = AssistantHandlers(
             impl,
             internal_ingress_marker=internal_ingress_marker,
         )
@@ -257,6 +296,66 @@ class DaemonControlHandlers:
     ) -> MemoryRotateKeyResult:
         return await self._memory.handle_memory_rotate_key(params, ctx)
 
+    async def handle_note_create(
+        self, params: NoteCreateParams, ctx: RequestContext
+    ) -> MemoryWriteResult:
+        return await self._memory.handle_note_create(params, ctx)
+
+    async def handle_note_list(
+        self, params: NoteListParams, ctx: RequestContext
+    ) -> NoteListResult:
+        return await self._memory.handle_note_list(params, ctx)
+
+    async def handle_note_get(
+        self, params: NoteEntryParams, ctx: RequestContext
+    ) -> NoteGetResult:
+        return await self._memory.handle_note_get(params, ctx)
+
+    async def handle_note_delete(
+        self, params: NoteEntryParams, ctx: RequestContext
+    ) -> NoteDeleteResult:
+        return await self._memory.handle_note_delete(params, ctx)
+
+    async def handle_note_verify(
+        self, params: NoteEntryParams, ctx: RequestContext
+    ) -> NoteVerifyResult:
+        return await self._memory.handle_note_verify(params, ctx)
+
+    async def handle_note_export(
+        self, params: NoteExportParams, ctx: RequestContext
+    ) -> NoteExportResult:
+        return await self._memory.handle_note_export(params, ctx)
+
+    async def handle_todo_create(
+        self, params: TodoCreateParams, ctx: RequestContext
+    ) -> MemoryWriteResult:
+        return await self._memory.handle_todo_create(params, ctx)
+
+    async def handle_todo_list(
+        self, params: TodoListParams, ctx: RequestContext
+    ) -> TodoListResult:
+        return await self._memory.handle_todo_list(params, ctx)
+
+    async def handle_todo_get(
+        self, params: TodoEntryParams, ctx: RequestContext
+    ) -> TodoGetResult:
+        return await self._memory.handle_todo_get(params, ctx)
+
+    async def handle_todo_delete(
+        self, params: TodoEntryParams, ctx: RequestContext
+    ) -> TodoDeleteResult:
+        return await self._memory.handle_todo_delete(params, ctx)
+
+    async def handle_todo_verify(
+        self, params: TodoEntryParams, ctx: RequestContext
+    ) -> TodoVerifyResult:
+        return await self._memory.handle_todo_verify(params, ctx)
+
+    async def handle_todo_export(
+        self, params: TodoExportParams, ctx: RequestContext
+    ) -> TodoExportResult:
+        return await self._memory.handle_todo_export(params, ctx)
+
     async def handle_skill_list(self, params: NoParams, ctx: RequestContext) -> SkillListResult:
         return await self._skills.handle_skill_list(params, ctx)
 
@@ -304,6 +403,36 @@ class DaemonControlHandlers:
         ctx: RequestContext,
     ) -> TaskPendingConfirmationsResult:
         return await self._tasks.handle_task_pending_confirmations(params, ctx)
+
+    async def handle_web_search(
+        self, params: WebSearchParams, ctx: RequestContext
+    ) -> WebSearchResult:
+        return await self._assistant.handle_web_search(params, ctx)
+
+    async def handle_web_fetch(
+        self, params: WebFetchParams, ctx: RequestContext
+    ) -> WebFetchResult:
+        return await self._assistant.handle_web_fetch(params, ctx)
+
+    async def handle_fs_list(self, params: FsListParams, ctx: RequestContext) -> FsListResult:
+        return await self._assistant.handle_fs_list(params, ctx)
+
+    async def handle_fs_read(self, params: FsReadParams, ctx: RequestContext) -> FsReadResult:
+        return await self._assistant.handle_fs_read(params, ctx)
+
+    async def handle_fs_write(self, params: FsWriteParams, ctx: RequestContext) -> FsWriteResult:
+        return await self._assistant.handle_fs_write(params, ctx)
+
+    async def handle_git_status(
+        self, params: GitStatusParams, ctx: RequestContext
+    ) -> GitStatusResult:
+        return await self._assistant.handle_git_status(params, ctx)
+
+    async def handle_git_diff(self, params: GitDiffParams, ctx: RequestContext) -> GitDiffResult:
+        return await self._assistant.handle_git_diff(params, ctx)
+
+    async def handle_git_log(self, params: GitLogParams, ctx: RequestContext) -> GitLogResult:
+        return await self._assistant.handle_git_log(params, ctx)
 
     async def handle_action_pending(
         self, params: ActionPendingParams, ctx: RequestContext

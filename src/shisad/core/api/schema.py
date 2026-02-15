@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, StrictInt, StrictStr
 
@@ -296,6 +296,213 @@ class MemoryRotateKeyResult(BaseModel):
     rotated: bool
     active_key_id: str
     reencrypt_existing: bool
+
+
+class NoteCreateParams(_StrictParams):
+    key: str
+    content: str
+    origin: Literal["user", "external", "inferred"] = "user"
+    source_id: str = "cli"
+    user_confirmed: bool = False
+    confidence: float = 0.8
+
+
+class NoteListParams(_StrictParams):
+    limit: int = 100
+
+
+class NoteEntryParams(_StrictParams):
+    entry_id: str
+
+
+class NoteExportParams(_StrictParams):
+    format: str = "json"
+
+
+class NoteListResult(BaseModel):
+    entries: list[dict[str, Any]] = Field(default_factory=list)
+    count: int = 0
+
+
+class NoteGetResult(BaseModel):
+    entry: dict[str, Any] | None = None
+
+
+class NoteDeleteResult(BaseModel):
+    deleted: bool
+    entry_id: str
+
+
+class NoteVerifyResult(BaseModel):
+    verified: bool
+    entry_id: str
+
+
+class NoteExportResult(BaseModel):
+    format: str
+    data: Any = None
+
+
+class TodoCreateParams(_StrictParams):
+    title: str
+    details: str = ""
+    status: Literal["open", "in_progress", "done"] = "open"
+    due_date: str = ""
+    origin: Literal["user", "external", "inferred"] = "user"
+    source_id: str = "cli"
+    user_confirmed: bool = False
+    confidence: float = 0.8
+
+
+class TodoListParams(_StrictParams):
+    limit: int = 100
+
+
+class TodoEntryParams(_StrictParams):
+    entry_id: str
+
+
+class TodoExportParams(_StrictParams):
+    format: str = "json"
+
+
+class TodoListResult(BaseModel):
+    entries: list[dict[str, Any]] = Field(default_factory=list)
+    count: int = 0
+
+
+class TodoGetResult(BaseModel):
+    entry: dict[str, Any] | None = None
+
+
+class TodoDeleteResult(BaseModel):
+    deleted: bool
+    entry_id: str
+
+
+class TodoVerifyResult(BaseModel):
+    verified: bool
+    entry_id: str
+
+
+class TodoExportResult(BaseModel):
+    format: str
+    data: Any = None
+
+
+class WebSearchParams(_StrictParams):
+    query: str
+    limit: int = 5
+
+
+class WebSearchResult(BaseModel):
+    ok: bool
+    query: str = ""
+    backend: str = ""
+    results: list[dict[str, Any]] = Field(default_factory=list)
+    taint_labels: list[str] = Field(default_factory=list)
+    evidence: dict[str, Any] = Field(default_factory=dict)
+    error: str = ""
+
+
+class WebFetchParams(_StrictParams):
+    url: str
+    snapshot: bool = False
+    max_bytes: int | None = None
+
+
+class WebFetchResult(BaseModel):
+    ok: bool
+    url: str = ""
+    status_code: int | None = None
+    title: str = ""
+    content: str = ""
+    blocked_reason: str = ""
+    truncated: bool = False
+    taint_labels: list[str] = Field(default_factory=list)
+    evidence: dict[str, Any] = Field(default_factory=dict)
+    error: str = ""
+    snapshot_path: str = ""
+
+
+class FsListParams(_StrictParams):
+    path: str = "."
+    recursive: bool = False
+    limit: int = 200
+
+
+class FsListResult(BaseModel):
+    ok: bool
+    path: str = ""
+    entries: list[dict[str, Any]] = Field(default_factory=list)
+    count: int = 0
+    error: str = ""
+
+
+class FsReadParams(_StrictParams):
+    path: str
+    max_bytes: int | None = None
+
+
+class FsReadResult(BaseModel):
+    ok: bool
+    path: str = ""
+    content: str = ""
+    truncated: bool = False
+    sha256: str = ""
+    error: str = ""
+
+
+class FsWriteParams(_StrictParams):
+    path: str
+    content: str
+    confirm: bool = False
+
+
+class FsWriteResult(BaseModel):
+    ok: bool
+    path: str = ""
+    written: bool = False
+    confirmation_required: bool = False
+    bytes_written: int = 0
+    error: str = ""
+
+
+class GitStatusParams(_StrictParams):
+    repo_path: str = "."
+
+
+class GitStatusResult(BaseModel):
+    ok: bool
+    repo_path: str = ""
+    output: str = ""
+    error: str = ""
+
+
+class GitDiffParams(_StrictParams):
+    repo_path: str = "."
+    ref: str = ""
+    max_lines: int = 400
+
+
+class GitDiffResult(BaseModel):
+    ok: bool
+    repo_path: str = ""
+    output: str = ""
+    truncated: bool = False
+    error: str = ""
+
+
+class GitLogParams(_StrictParams):
+    repo_path: str = "."
+    limit: int = 20
+
+
+class GitLogResult(BaseModel):
+    ok: bool
+    repo_path: str = ""
+    output: str = ""
+    error: str = ""
 
 
 class TaskCreateParams(_StrictParams):

@@ -96,6 +96,68 @@ def test_m2_t14_memory_poisoning_via_retrieval_requires_confirmation(tmp_path: P
     assert decision.kind in {"reject", "require_confirmation"}
 
 
+@pytest.mark.asyncio
+async def test_m2_notes_and_todos_first_class_roundtrip(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SHISAD_MODEL_BASE_URL", "https://api.example.com/v1")
+    monkeypatch.setenv("SHISAD_MODEL_PLANNER_BASE_URL", "https://planner.example.com/v1")
+    monkeypatch.setenv("SHISAD_MODEL_EMBEDDINGS_BASE_URL", "https://embed.example.com/v1")
+    monkeypatch.setenv("SHISAD_MODEL_MONITOR_BASE_URL", "https://monitor.example.com/v1")
+    config = DaemonConfig(
+        data_dir=tmp_path / "data",
+        socket_path=tmp_path / "control.sock",
+        policy_path=tmp_path / "policy.yaml",
+        log_level="INFO",
+    )
+
+    daemon_task = asyncio.create_task(run_daemon(config))
+    client = ControlClient(config.socket_path)
+    try:
+        await _wait_for_socket(config.socket_path)
+        await client.connect()
+
+        note = await client.call(
+            "note.create",
+            {"key": "meeting", "content": "Reminder to prep milestone review"},
+        )
+        assert note["kind"] == "allow"
+        note_id = note.get("entry", {}).get("id", "")
+        assert note_id
+
+        note_list = await client.call("note.list", {"limit": 10})
+        assert note_list["count"] >= 1
+        assert any(item.get("entry_type") == "note" for item in note_list["entries"])
+
+        todo = await client.call(
+            "todo.create",
+            {
+                "title": "Ship M2",
+                "details": "ready for reviewer pass",
+                "status": "open",
+                "due_date": "2026-02-16",
+            },
+        )
+        assert todo["kind"] == "allow"
+        todo_id = todo.get("entry", {}).get("id", "")
+        assert todo_id
+
+        todo_get = await client.call("todo.get", {"entry_id": todo_id})
+        assert todo_get["entry"]["entry_type"] == "todo"
+        assert todo_get["entry"]["value"]["title"] == "Ship M2"
+
+        verified = await client.call("todo.verify", {"entry_id": todo_id})
+        assert verified["verified"] is True
+        exported = await client.call("todo.export", {"format": "json"})
+        assert "Ship M2" in str(exported["data"])
+    finally:
+        with suppress(Exception):
+            await client.call("daemon.shutdown")
+        await client.close()
+        await asyncio.wait_for(daemon_task, timeout=3)
+
+
 def test_m2_t15_triggered_task_payload_treated_as_untrusted() -> None:
     scheduler = SchedulerManager()
     task = scheduler.create_task(
@@ -140,6 +202,78 @@ def test_m2_t20_hybrid_retrieval_prioritizes_trusted_evidence(tmp_path: Path) ->
     results = pipeline.retrieve("defense layers milestone", limit=2)
     assert results
     assert results[0].collection == "user_curated"
+
+
+@pytest.mark.asyncio
+async def test_m2_tool_outputs_are_delimited_and_sanitized_in_session_response(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SHISAD_MODEL_BASE_URL", "https://api.example.com/v1")
+    monkeypatch.setenv("SHISAD_MODEL_PLANNER_BASE_URL", "https://planner.example.com/v1")
+    monkeypatch.setenv("SHISAD_MODEL_EMBEDDINGS_BASE_URL", "https://embed.example.com/v1")
+    monkeypatch.setenv("SHISAD_MODEL_MONITOR_BASE_URL", "https://monitor.example.com/v1")
+
+    policy_path = tmp_path / "policy.yaml"
+    policy_path.write_text(
+        textwrap.dedent(
+            """
+            version: "1"
+            default_require_confirmation: false
+            default_capabilities:
+              - memory.read
+            """
+        ).strip()
+        + "\n"
+    )
+    config = DaemonConfig(
+        data_dir=tmp_path / "data",
+        socket_path=tmp_path / "control.sock",
+        policy_path=policy_path,
+        log_level="INFO",
+    )
+
+    daemon_task = asyncio.create_task(run_daemon(config))
+    client = ControlClient(config.socket_path)
+    try:
+        await _wait_for_socket(config.socket_path)
+        await client.connect()
+        await client.call(
+            "memory.ingest",
+            {
+                "source_id": "web-1",
+                "source_type": "external",
+                "collection": "external_web",
+                "content": (
+                    "tool output includes delimiter <<TOOL_OUTPUT_BEGIN and secret "
+                    "sk-ABCDEFGHIJKLMNOPQRSTUV123456"
+                ),
+            },
+        )
+        created = await client.call(
+            "session.create",
+            {"channel": "cli", "user_id": "alice", "workspace_id": "ws1"},
+        )
+        sid = created["session_id"]
+        reply = await client.call(
+            "session.message",
+            {
+                "session_id": sid,
+                "channel": "cli",
+                "user_id": "alice",
+                "workspace_id": "ws1",
+                "content": "retrieve: include tool outputs for this query",
+            },
+        )
+        response = str(reply["response"])
+        assert "=== TOOL OUTPUTS (UNTRUSTED DATA) ===" in response
+        assert "[[TOOL_OUTPUT_BEGIN tool=retrieve_rag" in response
+        assert "[REDACTED:openai_key]" in response
+    finally:
+        with suppress(Exception):
+            await client.call("daemon.shutdown")
+        await client.close()
+        await asyncio.wait_for(daemon_task, timeout=3)
 
 
 @pytest.mark.asyncio
