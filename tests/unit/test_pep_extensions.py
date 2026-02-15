@@ -140,3 +140,38 @@ def test_m1_t14_tool_metadata_poisoning_cannot_alter_tool_schema() -> None:
 
     errors = registry.validate_call(ToolName("search"), {"query": "ok", "pwn": "x"})
     assert any("Unexpected argument" in error for error in errors)
+
+
+def test_m2_pep_enforces_egress_for_tools_with_static_destination_metadata() -> None:
+    registry = ToolRegistry()
+    registry.register(
+        ToolDefinition(
+            name=ToolName("web_search"),
+            description="Search via configured backend",
+            parameters=[ToolParameter(name="query", type="string", required=True)],
+            capabilities_required=[Capability.HTTP_REQUEST],
+            destinations=["search.example"],
+        )
+    )
+
+    blocked_policy = PolicyBundle(
+        default_require_confirmation=False,
+        egress=[EgressRule(host="api.good.com", protocols=["https"], ports=[443])],
+    )
+    blocked = PEP(blocked_policy, registry).evaluate(
+        ToolName("web_search"),
+        {"query": "roadmap"},
+        PolicyContext(capabilities={Capability.HTTP_REQUEST}),
+    )
+    assert blocked.kind == PEPDecisionKind.REJECT
+
+    allowed_policy = PolicyBundle(
+        default_require_confirmation=False,
+        egress=[EgressRule(host="search.example", protocols=["https"], ports=[443])],
+    )
+    allowed = PEP(allowed_policy, registry).evaluate(
+        ToolName("web_search"),
+        {"query": "roadmap"},
+        PolicyContext(capabilities={Capability.HTTP_REQUEST}),
+    )
+    assert allowed.kind in {PEPDecisionKind.ALLOW, PEPDecisionKind.REQUIRE_CONFIRMATION}

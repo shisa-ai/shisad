@@ -1012,7 +1012,9 @@ class HandlerImplementation:
                 checkpoint_id,
                 ToolOutputRecord(
                     tool_name=str(tool_name),
-                    content=json.dumps(preview_rows, ensure_ascii=True),
+                    content=self._sanitize_tool_output_text(
+                        json.dumps(preview_rows, ensure_ascii=True)
+                    ),
                     taint_labels=label_tool_output(str(tool_name)),
                 ),
             )
@@ -1386,10 +1388,8 @@ class HandlerImplementation:
         )
         cleaned = inspected.sanitized_text
         return (
-            cleaned.replace("[[TOOL_OUTPUT_BEGIN", "[TOOL_OUTPUT_BEGIN")
-            .replace("[[TOOL_OUTPUT_END", "[TOOL_OUTPUT_END")
-            .replace("<<TOOL_OUTPUT_BEGIN", "<TOOL_OUTPUT_BEGIN")
-            .replace("<<TOOL_OUTPUT_END", "<TOOL_OUTPUT_END")
+            cleaned.replace("TOOL_OUTPUT_BEGIN", "TOOL_OUTPUT_MARKER")
+            .replace("TOOL_OUTPUT_END", "TOOL_OUTPUT_MARKER")
             .strip()
         )
 
@@ -2896,6 +2896,9 @@ class HandlerImplementation:
 
     async def do_note_delete(self, params: Mapping[str, Any]) -> dict[str, Any]:
         entry_id = str(params.get("entry_id", ""))
+        entry = self._memory_manager.get_entry(entry_id)
+        if entry is None or str(entry.entry_type) != "note":
+            return {"deleted": False, "entry_id": entry_id}
         deleted = self._memory_manager.delete(entry_id)
         return {"deleted": deleted, "entry_id": entry_id}
 
@@ -2973,6 +2976,9 @@ class HandlerImplementation:
 
     async def do_todo_delete(self, params: Mapping[str, Any]) -> dict[str, Any]:
         entry_id = str(params.get("entry_id", ""))
+        entry = self._memory_manager.get_entry(entry_id)
+        if entry is None or str(entry.entry_type) != "todo":
+            return {"deleted": False, "entry_id": entry_id}
         deleted = self._memory_manager.delete(entry_id)
         return {"deleted": deleted, "entry_id": entry_id}
 

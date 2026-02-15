@@ -364,7 +364,13 @@ class DaemonServices:
             provenance_root = Path(__file__).resolve().parents[1] / "security" / "rules"
             provenance_status, _ = _load_provenance(provenance_manifest_path, provenance_root)
 
-            registry, alarm_tool = _build_tool_registry(event_bus)
+            search_backend_host = (
+                urlparse(config.web_search_backend_url.strip()).hostname or ""
+            ).lower()
+            registry, alarm_tool = _build_tool_registry(
+                event_bus,
+                web_search_destination=search_backend_host,
+            )
             pep = PEP(
                 policy_loader.policy,
                 registry,
@@ -582,7 +588,11 @@ async def _build_slack_channel(config: DaemonConfig) -> SlackChannel | None:
     return channel
 
 
-def _build_tool_registry(event_bus: EventBus) -> tuple[ToolRegistry, AlarmTool]:
+def _build_tool_registry(
+    event_bus: EventBus,
+    *,
+    web_search_destination: str = "",
+) -> tuple[ToolRegistry, AlarmTool]:
     registry = ToolRegistry()
     registry.register(RetrieveRagTool.tool_definition())
     registry.register(ShellExecTool.tool_definition())
@@ -658,6 +668,7 @@ def _build_tool_registry(event_bus: EventBus) -> tuple[ToolRegistry, AlarmTool]:
                 ToolParameter(name="limit", type="integer", required=False),
             ],
             capabilities_required=[Capability.HTTP_REQUEST],
+            destinations=[web_search_destination] if web_search_destination else [],
             require_confirmation=False,
         )
     )

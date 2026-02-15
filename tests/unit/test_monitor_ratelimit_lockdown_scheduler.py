@@ -269,6 +269,24 @@ def test_m2_scheduler_cron_due_runs_once_per_matching_minute() -> None:
     assert len(second) == 1
 
 
+def test_m2_scheduler_cron_step_respects_nonzero_field_minimum() -> None:
+    scheduler = SchedulerManager()
+    task = scheduler.create_task(
+        name="every-other-day",
+        goal="check alternating days",
+        schedule=Schedule(kind="cron", expression="0 0 */2 * *"),
+        capability_snapshot={Capability.MESSAGE_SEND},
+        policy_snapshot_ref="p1",
+        created_by=UserId("alice"),
+    )
+    day_01 = datetime(2026, 3, 1, 0, 0, 0, tzinfo=UTC)
+    task.created_at = day_01
+
+    assert len(scheduler.trigger_due(now=day_01)) == 1
+    assert scheduler.trigger_due(now=day_01 + timedelta(days=1)) == []
+    assert len(scheduler.trigger_due(now=day_01 + timedelta(days=2))) == 1
+
+
 def test_m2_t21_risk_policy_versioning_is_deterministic(tmp_path: Path) -> None:
     calibrator = RiskCalibrator(
         policy_path=tmp_path / "risk-policy.json",

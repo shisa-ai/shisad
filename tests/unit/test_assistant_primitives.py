@@ -5,6 +5,7 @@ from __future__ import annotations
 import io
 import subprocess
 from pathlib import Path
+from urllib.error import HTTPError
 
 import pytest
 
@@ -13,10 +14,18 @@ from shisad.assistant.web import WebToolkit
 
 
 class _FakeResponse:
-    def __init__(self, body: bytes, *, status: int = 200, headers: dict[str, str] | None = None):
+    def __init__(
+        self,
+        body: bytes,
+        *,
+        status: int = 200,
+        headers: dict[str, str] | None = None,
+        url: str = "https://search.example/search",
+    ):
         self._stream = io.BytesIO(body)
         self.status = status
         self.headers = headers or {}
+        self._url = url
 
     def read(self, size: int = -1) -> bytes:
         return self._stream.read(size)
@@ -26,6 +35,9 @@ class _FakeResponse:
 
     def __exit__(self, *_args: object) -> None:
         return
+
+    def geturl(self) -> str:
+        return self._url
 
 
 def test_web_search_fail_closed_when_disabled(tmp_path: Path) -> None:
@@ -58,7 +70,7 @@ def test_web_search_returns_structured_results(
         ]
     }
     monkeypatch.setattr(
-        "shisad.assistant.web.urlopen",
+        "shisad.assistant.web._open_no_redirect",
         lambda *_args, **_kwargs: _FakeResponse(
             body=str(payload).replace("'", '"').encode("utf-8"),
             status=200,
@@ -101,11 +113,12 @@ def test_web_fetch_detects_interstitial(
     tmp_path: Path,
 ) -> None:
     monkeypatch.setattr(
-        "shisad.assistant.web.urlopen",
+        "shisad.assistant.web._open_no_redirect",
         lambda *_args, **_kwargs: _FakeResponse(
             body=b"<html><title>Verify</title><body>Verify you are human</body></html>",
             status=200,
             headers={"Content-Type": "text/html"},
+            url="https://blocked.example/login",
         ),
     )
     toolkit = WebToolkit(
@@ -180,3 +193,122 @@ def test_fs_git_toolkit_git_status_and_log(tmp_path: Path) -> None:
     log = toolkit.git_log(repo_path=".", limit=5)
     assert log["ok"] is True
     assert "init" in log["output"]
+
+
+def test_web_fetch_redirect_blocks_unallowlisted_destination(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    def _redirect_then_block(*_args: object, **_kwargs: object) -> _FakeResponse:
+        raise HTTPError(
+            "https://allowed.example/start",
+            302,
+            "Found",
+            {"Location": "https://evil.example/pivot"},
+            None,
+        )
+
+    monkeypatch.setattr("shisad.assistant.web._open_no_redirect", _redirect_then_block)
+    toolkit = WebToolkit(
+        data_dir=tmp_path,
+        search_enabled=True,
+        search_backend_url="https://search.example",
+        fetch_enabled=True,
+        allowed_domains=["allowed.example"],
+        timeout_seconds=5.0,
+        max_fetch_bytes=65536,
+    )
+    result = toolkit.fetch(url="https://allowed.example/start")
+    assert result["ok"] is False
+    assert result["error"] == "destination_not_allowlisted"
+
+
+def test_web_search_redirect_blocks_unallowlisted_backend(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    def _redirect_then_block(*_args: object, **_kwargs: object) -> _FakeResponse:
+        raise HTTPError(
+            "https://search.example/search?q=roadmap",
+            302,
+            "Found",
+            {"Location": "https://evil.example/search?q=roadmap"},
+            None,
+        )
+
+    monkeypatch.setattr("shisad.assistant.web._open_no_redirect", _redirect_then_block)
+    toolkit = WebToolkit(
+        data_dir=tmp_path,
+        search_enabled=True,
+        search_backend_url="https://search.example",
+        fetch_enabled=True,
+        allowed_domains=["search.example"],
+        timeout_seconds=5.0,
+        max_fetch_bytes=65536,
+    )
+    result = toolkit.search(query="roadmap")
+    assert result["ok"] is False
+    assert result["error"] == "web_search_backend_not_allowlisted"
+
+
+def test_web_fetch_strips_script_and_style_content(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(
+        "shisad.assistant.web._open_no_redirect",
+        lambda *_args, **_kwargs: _FakeResponse(
+            body=(
+                b"<html><head><style>body{display:none}</style></head>"
+                b"<body><script>alert('x')</script><p>Hello world</p></body></html>"
+            ),
+            status=200,
+            headers={"Content-Type": "text/html"},
+            url="https://allowed.example/page",
+        ),
+    )
+    toolkit = WebToolkit(
+        data_dir=tmp_path,
+        search_enabled=True,
+        search_backend_url="https://search.example",
+        fetch_enabled=True,
+        allowed_domains=["allowed.example"],
+        timeout_seconds=5.0,
+        max_fetch_bytes=65536,
+    )
+    result = toolkit.fetch(url="https://allowed.example/page")
+    assert result["ok"] is True
+    assert "Hello world" in result["content"]
+    assert "alert('x')" not in result["content"]
+    assert "display:none" not in result["content"]
+
+
+def test_fs_git_toolkit_git_diff_rejects_flag_like_ref(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir(parents=True)
+    subprocess.run(["git", "-C", str(repo), "init"], check=True, capture_output=True, text=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "config", "user.email", "test@example.com"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(repo), "config", "user.name", "Test User"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    (repo / "README.md").write_text("hello\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo), "add", "README.md"], check=True, capture_output=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "commit", "-m", "init"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    toolkit = FsGitToolkit(roots=[repo], max_read_bytes=1024)
+    blocked = toolkit.git_diff(repo_path=".", ref="--output=/tmp/evil")
+    assert blocked["ok"] is False
+    assert blocked["error"] == "invalid_ref"

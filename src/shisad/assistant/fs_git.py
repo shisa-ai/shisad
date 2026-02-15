@@ -127,8 +127,11 @@ class FsGitToolkit:
 
     def git_diff(self, *, repo_path: str, ref: str = "", max_lines: int = 400) -> dict[str, Any]:
         args = ["diff"]
-        if ref.strip():
-            args.append(ref.strip())
+        normalized_ref = ref.strip()
+        if normalized_ref:
+            if normalized_ref.startswith("-"):
+                return self._error("invalid_ref", path=repo_path)
+            args.append(normalized_ref)
         result = self._run_git(repo_path=repo_path, args=args)
         if not result.get("ok"):
             return result

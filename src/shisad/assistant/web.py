@@ -10,12 +10,13 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlencode, urlparse
-from urllib.request import Request, urlopen
+from urllib.parse import urlencode, urljoin, urlparse
+from urllib.request import HTTPRedirectHandler, OpenerDirector, Request, build_opener
 
 _MAX_SEARCH_BYTES = 2 * 1024 * 1024
+_MAX_REDIRECT_HOPS = 5
 _TITLE_RE = re.compile(r"<title[^>]*>(.*?)</title>", re.IGNORECASE | re.DOTALL)
-_SCRIPT_STYLE_RE = re.compile(r"<(script|style)[^>]*>.*?</\\1>", re.IGNORECASE | re.DOTALL)
+_SCRIPT_STYLE_RE = re.compile(r"<(script|style)[^>]*>.*?</\1>", re.IGNORECASE | re.DOTALL)
 _TAG_RE = re.compile(r"<[^>]+>")
 _WS_RE = re.compile(r"\s+")
 _BLOCKED_PAGE_HINTS: tuple[str, ...] = (
@@ -27,6 +28,28 @@ _BLOCKED_PAGE_HINTS: tuple[str, ...] = (
     "cloudflare",
     "forbidden",
 )
+
+
+class _NoRedirectHandler(HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # type: ignore[no-untyped-def]
+        return None
+
+
+_NO_REDIRECT_OPENER: OpenerDirector = build_opener(_NoRedirectHandler())
+_REDIRECT_CODES = {301, 302, 303, 307, 308}
+
+
+@dataclass(slots=True, frozen=True)
+class _HttpResponsePayload:
+    body: bytes
+    status_code: int
+    content_type: str
+    final_url: str
+    truncated: bool
+
+
+def _open_no_redirect(request: Request, *, timeout: float) -> Any:
+    return _NO_REDIRECT_OPENER.open(request, timeout=timeout)
 
 
 def _host_matches(host: str, rule: str) -> bool:
@@ -122,31 +145,24 @@ class WebToolkit:
                 "Accept": "application/json",
             },
         )
-        try:
-            with urlopen(request, timeout=self.timeout_seconds) as response:
-                payload_bytes, truncated = _read_limited(response, limit=_MAX_SEARCH_BYTES)
-                status_code = int(getattr(response, "status", 200) or 200)
-        except HTTPError as exc:
-            return self._error_payload(
-                operation="web_search",
-                reason=f"http_error:{exc.code}",
-                query=normalized_query,
-                backend=backend,
-            )
-        except URLError as exc:
-            return self._error_payload(
-                operation="web_search",
-                reason=f"network_error:{exc.reason}",
-                query=normalized_query,
-                backend=backend,
-            )
-        except (OSError, TypeError, ValueError):
-            return self._error_payload(
-                operation="web_search",
-                reason="search_backend_request_failed",
-                query=normalized_query,
-                backend=backend,
-            )
+        fetched = self._fetch_with_redirect_policy(
+            operation="web_search",
+            request=request,
+            query=normalized_query,
+            backend=backend,
+            source_url=request_url,
+            read_limit=_MAX_SEARCH_BYTES,
+            host_disallowed_reason="web_search_backend_not_allowlisted",
+            invalid_scheme_reason="unsupported_backend_scheme",
+            redirect_limit_reason="search_backend_too_many_redirects",
+            missing_redirect_reason="search_backend_redirect_missing_location",
+            request_failed_reason="search_backend_request_failed",
+        )
+        if isinstance(fetched, dict):
+            return fetched
+        payload_bytes = fetched.body
+        truncated = fetched.truncated
+        status_code = fetched.status_code
 
         try:
             payload = json.loads(payload_bytes.decode("utf-8", errors="replace"))
@@ -198,6 +214,7 @@ class WebToolkit:
                 "status_code": status_code,
                 "truncated": truncated,
                 "result_count": len(results),
+                "final_url": fetched.final_url,
             },
             "error": "",
         }
@@ -248,29 +265,25 @@ class WebToolkit:
                 "Accept": "text/html,application/xhtml+xml,text/plain;q=0.9,*/*;q=0.8",
             },
         )
-        try:
-            with urlopen(request, timeout=self.timeout_seconds) as response:
-                payload_bytes, truncated = _read_limited(response, limit=fetch_limit)
-                status_code = int(getattr(response, "status", 200) or 200)
-                content_type = str(response.headers.get("Content-Type", ""))
-        except HTTPError as exc:
-            return self._error_payload(
-                operation="web_fetch",
-                reason=f"http_error:{exc.code}",
-                url=normalized_url,
-            )
-        except URLError as exc:
-            return self._error_payload(
-                operation="web_fetch",
-                reason=f"network_error:{exc.reason}",
-                url=normalized_url,
-            )
-        except (OSError, TypeError, ValueError):
-            return self._error_payload(
-                operation="web_fetch",
-                reason="web_fetch_request_failed",
-                url=normalized_url,
-            )
+        fetched = self._fetch_with_redirect_policy(
+            operation="web_fetch",
+            request=request,
+            query="",
+            backend="",
+            source_url=normalized_url,
+            read_limit=fetch_limit,
+            host_disallowed_reason="destination_not_allowlisted",
+            invalid_scheme_reason="unsupported_scheme",
+            redirect_limit_reason="too_many_redirects",
+            missing_redirect_reason="redirect_missing_location",
+            request_failed_reason="web_fetch_request_failed",
+        )
+        if isinstance(fetched, dict):
+            return fetched
+        payload_bytes = fetched.body
+        truncated = fetched.truncated
+        status_code = fetched.status_code
+        content_type = fetched.content_type
 
         decoded = payload_bytes.decode("utf-8", errors="replace")
         blocked_reason = self._blocked_page_reason(decoded)
@@ -288,6 +301,7 @@ class WebToolkit:
             "status_code": status_code,
             "content_type": content_type,
             "truncated": truncated,
+            "final_url": fetched.final_url,
         }
         if blocked_reason:
             return {
@@ -331,6 +345,126 @@ class WebToolkit:
 
     def _host_allowed(self, host: str) -> bool:
         return any(_host_matches(host, rule) for rule in self.allowed_domains)
+
+    def _fetch_with_redirect_policy(
+        self,
+        *,
+        operation: str,
+        request: Request,
+        query: str,
+        backend: str,
+        source_url: str,
+        read_limit: int,
+        host_disallowed_reason: str,
+        invalid_scheme_reason: str,
+        redirect_limit_reason: str,
+        missing_redirect_reason: str,
+        request_failed_reason: str,
+    ) -> _HttpResponsePayload | dict[str, Any]:
+        current_url = source_url
+        redirect_count = 0
+        headers = dict(request.header_items())
+        while True:
+            parsed = urlparse(current_url)
+            scheme = parsed.scheme.lower()
+            host = (parsed.hostname or "").lower()
+            if scheme not in {"http", "https"}:
+                return self._error_payload(
+                    operation=operation,
+                    reason=invalid_scheme_reason,
+                    query=query,
+                    url=source_url,
+                    backend=backend,
+                )
+            if not self._host_allowed(host):
+                return self._error_payload(
+                    operation=operation,
+                    reason=host_disallowed_reason,
+                    query=query,
+                    url=source_url,
+                    backend=backend,
+                )
+
+            active_request = Request(current_url, headers=headers)
+            try:
+                with _open_no_redirect(active_request, timeout=self.timeout_seconds) as response:
+                    payload_bytes, truncated = _read_limited(response, limit=read_limit)
+                    status_code = int(getattr(response, "status", 200) or 200)
+                    content_type = str(response.headers.get("Content-Type", ""))
+                    response_geturl = getattr(response, "geturl", None)
+                    final_url = (
+                        str(response_geturl()) if callable(response_geturl) else current_url
+                    )
+                    final_parsed = urlparse(final_url)
+                    final_scheme = final_parsed.scheme.lower()
+                    final_host = (final_parsed.hostname or "").lower()
+                    if final_scheme not in {"http", "https"}:
+                        return self._error_payload(
+                            operation=operation,
+                            reason=invalid_scheme_reason,
+                            query=query,
+                            url=source_url,
+                            backend=backend,
+                        )
+                    if not self._host_allowed(final_host):
+                        return self._error_payload(
+                            operation=operation,
+                            reason=host_disallowed_reason,
+                            query=query,
+                            url=source_url,
+                            backend=backend,
+                        )
+                    return _HttpResponsePayload(
+                        body=payload_bytes,
+                        status_code=status_code,
+                        content_type=content_type,
+                        final_url=final_url,
+                        truncated=truncated,
+                    )
+            except HTTPError as exc:
+                if exc.code not in _REDIRECT_CODES:
+                    return self._error_payload(
+                        operation=operation,
+                        reason=f"http_error:{exc.code}",
+                        query=query,
+                        url=source_url,
+                        backend=backend,
+                    )
+                location = str(exc.headers.get("Location", "")).strip()
+                if not location:
+                    return self._error_payload(
+                        operation=operation,
+                        reason=missing_redirect_reason,
+                        query=query,
+                        url=source_url,
+                        backend=backend,
+                    )
+                redirect_count += 1
+                if redirect_count > _MAX_REDIRECT_HOPS:
+                    return self._error_payload(
+                        operation=operation,
+                        reason=redirect_limit_reason,
+                        query=query,
+                        url=source_url,
+                        backend=backend,
+                    )
+                current_url = urljoin(current_url, location)
+            except URLError as exc:
+                return self._error_payload(
+                    operation=operation,
+                    reason=f"network_error:{exc.reason}",
+                    query=query,
+                    url=source_url,
+                    backend=backend,
+                )
+            except (OSError, TypeError, ValueError):
+                return self._error_payload(
+                    operation=operation,
+                    reason=request_failed_reason,
+                    query=query,
+                    url=source_url,
+                    backend=backend,
+                )
 
     @staticmethod
     def _blocked_page_reason(content: str) -> str:

@@ -159,3 +159,81 @@ async def test_reminder_delivery_pump_emits_anomaly_when_capability_check_fails(
     assert delivery.calls == []
     assert any(isinstance(event, TaskTriggered) for event in event_bus.events)
     assert any(isinstance(event, AnomalyReported) for event in event_bus.events)
+
+
+@pytest.mark.asyncio
+async def test_reminder_delivery_pump_blocks_when_recipient_not_allowlisted() -> None:
+    shutdown_event = asyncio.Event()
+    schedule = Schedule(kind="interval", expression="1s")
+    task = SimpleNamespace(
+        id="task-1",
+        schedule=schedule,
+        capability_snapshot={Capability.MESSAGE_SEND},
+        delivery_target={"channel": "discord", "recipient": "chan-1"},
+        allowed_recipients=["chan-2"],
+        goal="Reminder: standup",
+    )
+    run = TaskRunRequest(
+        task_id=task.id,
+        trigger_payload="scheduled",
+        payload_taint="trusted_scheduler",
+        plan_commitment="hash",
+    )
+    event_bus = _RecordingEventBus()
+    delivery = _RecordingDelivery(sent=True)
+    services = SimpleNamespace(
+        shutdown_event=shutdown_event,
+        scheduler=_SchedulerStub(
+            shutdown_event=shutdown_event,
+            run=run,
+            task=task,
+            can_execute=True,
+        ),
+        event_bus=event_bus,
+        delivery=delivery,
+        policy_loader=SimpleNamespace(policy=SimpleNamespace(default_capabilities=[Capability.MESSAGE_SEND])),
+    )
+
+    await _reminder_delivery_pump(services=services)
+
+    assert delivery.calls == []
+    assert any(isinstance(event, AnomalyReported) for event in event_bus.events)
+
+
+@pytest.mark.asyncio
+async def test_reminder_delivery_pump_blocks_when_domain_allowlist_does_not_match() -> None:
+    shutdown_event = asyncio.Event()
+    schedule = Schedule(kind="interval", expression="1s")
+    task = SimpleNamespace(
+        id="task-1",
+        schedule=schedule,
+        capability_snapshot={Capability.MESSAGE_SEND},
+        delivery_target={"channel": "discord", "recipient": "chan-1"},
+        allowed_domains=["example.com"],
+        goal="Reminder: standup",
+    )
+    run = TaskRunRequest(
+        task_id=task.id,
+        trigger_payload="scheduled",
+        payload_taint="trusted_scheduler",
+        plan_commitment="hash",
+    )
+    event_bus = _RecordingEventBus()
+    delivery = _RecordingDelivery(sent=True)
+    services = SimpleNamespace(
+        shutdown_event=shutdown_event,
+        scheduler=_SchedulerStub(
+            shutdown_event=shutdown_event,
+            run=run,
+            task=task,
+            can_execute=True,
+        ),
+        event_bus=event_bus,
+        delivery=delivery,
+        policy_loader=SimpleNamespace(policy=SimpleNamespace(default_capabilities=[Capability.MESSAGE_SEND])),
+    )
+
+    await _reminder_delivery_pump(services=services)
+
+    assert delivery.calls == []
+    assert any(isinstance(event, AnomalyReported) for event in event_bus.events)

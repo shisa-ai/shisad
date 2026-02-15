@@ -7,6 +7,7 @@ import contextlib
 import logging
 from datetime import UTC, datetime
 from typing import Any, cast
+from urllib.parse import urlparse
 
 from pydantic import BaseModel
 
@@ -72,6 +73,29 @@ from shisad.daemon.event_wiring import channel_receive_pump
 from shisad.daemon.services import DaemonServices
 
 logger = logging.getLogger(__name__)
+
+
+def _recipient_matches_rule(recipient: str, rule: str) -> bool:
+    normalized_recipient = recipient.strip().lower()
+    normalized_rule = rule.strip().lower()
+    if not normalized_recipient or not normalized_rule:
+        return False
+    if normalized_rule.startswith("*."):
+        return normalized_recipient.endswith(normalized_rule[1:])
+    return normalized_recipient == normalized_rule
+
+
+def _recipient_domain(recipient: str) -> str:
+    value = recipient.strip()
+    if not value:
+        return ""
+    parsed = urlparse(value)
+    if parsed.hostname:
+        return parsed.hostname.lower()
+    if "@" in value:
+        _, _, domain = value.rpartition("@")
+        return domain.lower().strip()
+    return ""
 
 
 def _validate_model_endpoints(model_config: ModelConfig, router: ModelRouter) -> None:
@@ -243,6 +267,50 @@ async def _reminder_delivery_pump(*, services: DaemonServices) -> None:
                     )
                 )
                 continue
+            recipient_allowlist = [
+                str(item).strip()
+                for item in getattr(task, "allowed_recipients", [])
+                if str(item).strip()
+            ]
+            if recipient_allowlist and not any(
+                _recipient_matches_rule(recipient, rule) for rule in recipient_allowlist
+            ):
+                await services.event_bus.publish(
+                    AnomalyReported(
+                        session_id=None,
+                        actor="scheduler",
+                        severity="warning",
+                        description=(
+                            "Scheduled reminder blocked by recipient allowlist "
+                            f"for task {task.id}"
+                        ),
+                        recommended_action="review_task_delivery_target",
+                    )
+                )
+                continue
+            domain_allowlist = [
+                str(item).strip()
+                for item in getattr(task, "allowed_domains", [])
+                if str(item).strip()
+            ]
+            if domain_allowlist:
+                destination_domain = _recipient_domain(recipient)
+                if not destination_domain or not any(
+                    _recipient_matches_rule(destination_domain, rule) for rule in domain_allowlist
+                ):
+                    await services.event_bus.publish(
+                        AnomalyReported(
+                            session_id=None,
+                            actor="scheduler",
+                            severity="warning",
+                            description=(
+                                "Scheduled reminder blocked by domain allowlist "
+                                f"for task {task.id}"
+                            ),
+                            recommended_action="review_task_allowed_domains",
+                        )
+                    )
+                    continue
             delivery_result = await services.delivery.send(
                 target=DeliveryTarget(
                     channel=channel,

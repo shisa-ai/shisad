@@ -186,6 +186,8 @@ class PEP:
 
         # 6. Egress allowlist enforcement
         destination = self._extract_destination(arguments)
+        if destination is None:
+            destination = self._infer_destination_from_tool(tool)
 
         # 6.5 Credential reference checks (host-scoped binding)
         credential_error = self._check_credential_refs(tool_name, tool, arguments, destination)
@@ -544,6 +546,16 @@ class PEP:
             return EgressDestination(host=host, protocol=protocol_value, port=port_value)
 
         return None
+
+    @staticmethod
+    def _infer_destination_from_tool(tool: Any) -> EgressDestination | None:
+        destinations = [str(item).strip().lower() for item in getattr(tool, "destinations", [])]
+        if len(destinations) != 1:
+            return None
+        destination = destinations[0]
+        if not destination or any(token in destination for token in ("*", "?", "[", "]")):
+            return None
+        return EgressDestination(host=destination, protocol="https", port=443)
 
     def _is_egress_allowed(self, destination: EgressDestination) -> bool:
         if not self._policy.egress:

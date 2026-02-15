@@ -300,7 +300,7 @@ class SchedulerManager:
                 return True
             if part.startswith("*/"):
                 step = int(part[2:])
-                if step > 0 and value % step == 0:
+                if step > 0 and (value - minimum) % step == 0:
                     return True
                 continue
             if "-" in part:
