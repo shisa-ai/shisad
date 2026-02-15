@@ -5,10 +5,12 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+from datetime import UTC, datetime
 from typing import Any, cast
 
 from pydantic import BaseModel
 
+from shisad.channels.base import DeliveryTarget
 from shisad.core.api.schema import (
     ActionDecisionParams,
     ActionPendingParams,
@@ -45,8 +47,10 @@ from shisad.core.api.schema import (
     ToolExecuteParams,
 )
 from shisad.core.config import DaemonConfig, ModelConfig
+from shisad.core.events import AnomalyReported, TaskTriggered
 from shisad.core.interfaces import TypedHandler
 from shisad.core.providers.routing import ModelRouter
+from shisad.core.types import Capability
 from shisad.daemon.control_handlers import DaemonControlHandlers
 from shisad.daemon.event_wiring import channel_receive_pump
 from shisad.daemon.services import DaemonServices
@@ -147,6 +151,90 @@ def _method_specs(
     ]
 
 
+async def _reminder_delivery_pump(*, services: DaemonServices) -> None:
+    """Poll scheduler due-runs and deliver reminder tasks over channel delivery."""
+    while not services.shutdown_event.is_set():
+        try:
+            due_runs = services.scheduler.trigger_due(now=datetime.now(UTC))
+        except Exception:
+            logger.exception("scheduler due-run evaluation failed")
+            due_runs = []
+        for run in due_runs:
+            task = services.scheduler.get_task(run.task_id)
+            if task is None:
+                continue
+            await services.event_bus.publish(
+                TaskTriggered(
+                    session_id=None,
+                    actor="scheduler",
+                    task_id=task.id,
+                    event_type=f"schedule.{task.schedule.kind.value}",
+                )
+            )
+            available_caps = set(services.policy_loader.policy.default_capabilities)
+            if not available_caps:
+                available_caps = set(task.capability_snapshot)
+            if not services.scheduler.can_execute_with_capabilities(
+                task.id,
+                {Capability.MESSAGE_SEND},
+                available_capabilities=available_caps,
+            ):
+                await services.event_bus.publish(
+                    AnomalyReported(
+                        session_id=None,
+                        actor="scheduler",
+                        severity="warning",
+                        description=(
+                            f"Scheduled reminder blocked by capability snapshot for task {task.id}"
+                        ),
+                        recommended_action="review_task_capability_snapshot",
+                    )
+                )
+                continue
+            channel = task.delivery_target.get("channel", "").strip()
+            recipient = task.delivery_target.get("recipient", "").strip()
+            if not channel or not recipient:
+                await services.event_bus.publish(
+                    AnomalyReported(
+                        session_id=None,
+                        actor="scheduler",
+                        severity="warning",
+                        description=(
+                            "Scheduled reminder missing delivery target "
+                            f"for task {task.id}"
+                        ),
+                        recommended_action="update_task_delivery_target",
+                    )
+                )
+                continue
+            delivery_result = await services.delivery.send(
+                target=DeliveryTarget(
+                    channel=channel,
+                    recipient=recipient,
+                    workspace_hint=task.delivery_target.get("workspace_hint", ""),
+                    thread_id=task.delivery_target.get("thread_id", ""),
+                ),
+                message=task.goal,
+            )
+            if not delivery_result.sent:
+                await services.event_bus.publish(
+                    AnomalyReported(
+                        session_id=None,
+                        actor="scheduler",
+                        severity="warning",
+                        description=(
+                            "Scheduled reminder delivery failed "
+                            f"for task {task.id} ({delivery_result.reason})"
+                        ),
+                        recommended_action="check_channel_connectivity",
+                    )
+                )
+        try:
+            await asyncio.wait_for(services.shutdown_event.wait(), timeout=1.0)
+        except TimeoutError:
+            continue
+
+
 async def run_daemon(config: DaemonConfig) -> None:
     """Run the shisad daemon."""
     logging.basicConfig(level=getattr(logging, config.log_level.upper(), logging.INFO))
@@ -164,6 +252,7 @@ async def run_daemon(config: DaemonConfig) -> None:
     await services.server.start()
     logger.info("shisad daemon started")
     channel_pump_tasks: list[asyncio.Task[None]] = []
+    reminder_pump_task = asyncio.create_task(_reminder_delivery_pump(services=services))
     for channel_name, channel in services.channels.items():
         channel_pump_tasks.append(
             asyncio.create_task(
@@ -182,8 +271,11 @@ async def run_daemon(config: DaemonConfig) -> None:
     finally:
         for task in channel_pump_tasks:
             task.cancel()
+        reminder_pump_task.cancel()
         for task in channel_pump_tasks:
             with contextlib.suppress(asyncio.CancelledError):
                 await task
+        with contextlib.suppress(asyncio.CancelledError):
+            await reminder_pump_task
         await services.shutdown()
         logger.info("shisad daemon stopped")

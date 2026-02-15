@@ -44,8 +44,10 @@ class ScheduledTask(BaseModel):
     policy_snapshot_ref: str
     allowed_recipients: list[str] = Field(default_factory=list)
     allowed_domains: list[str] = Field(default_factory=list)
+    delivery_target: dict[str, str] = Field(default_factory=dict)
     created_by: UserId
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    last_triggered_at: datetime | None = None
     enabled: bool = True
 
     def commitment_hash(self) -> str:
@@ -58,6 +60,7 @@ class ScheduledTask(BaseModel):
             "policy_snapshot_ref": self.policy_snapshot_ref,
             "allowed_recipients": sorted(self.allowed_recipients),
             "allowed_domains": sorted(self.allowed_domains),
+            "delivery_target": dict(self.delivery_target),
             "created_by": str(self.created_by),
             "created_at": self.created_at.isoformat(),
         }

@@ -307,6 +307,7 @@ class TaskCreateParams(_StrictParams):
     created_by: str
     allowed_recipients: list[str] = Field(default_factory=list)
     allowed_domains: list[str] = Field(default_factory=list)
+    delivery_target: dict[str, str] = Field(default_factory=dict)
 
 
 class TaskDisableParams(_StrictParams):
@@ -331,8 +332,10 @@ class TaskCreateResult(BaseModel):
     policy_snapshot_ref: str = ""
     allowed_recipients: list[str] = Field(default_factory=list)
     allowed_domains: list[str] = Field(default_factory=list)
+    delivery_target: dict[str, str] = Field(default_factory=dict)
     created_by: str = ""
     created_at: datetime | str | None = None
+    last_triggered_at: datetime | str | None = None
     enabled: bool = True
 
 

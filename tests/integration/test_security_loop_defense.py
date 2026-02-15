@@ -1087,6 +1087,63 @@ async def test_m2_task_trigger_runtime_checks_queue_confirmations(
 
 
 @pytest.mark.asyncio
+async def test_m2_interval_scheduler_pump_emits_task_trigger_and_anomaly(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SHISAD_MODEL_BASE_URL", "https://api.example.com/v1")
+    monkeypatch.setenv("SHISAD_MODEL_PLANNER_BASE_URL", "https://planner.example.com/v1")
+    monkeypatch.setenv("SHISAD_MODEL_EMBEDDINGS_BASE_URL", "https://embed.example.com/v1")
+    monkeypatch.setenv("SHISAD_MODEL_MONITOR_BASE_URL", "https://monitor.example.com/v1")
+    config = DaemonConfig(
+        data_dir=tmp_path / "data",
+        socket_path=tmp_path / "control.sock",
+        policy_path=tmp_path / "policy.yaml",
+        log_level="INFO",
+    )
+    daemon_task = asyncio.create_task(run_daemon(config))
+    client = ControlClient(config.socket_path)
+    try:
+        await _wait_for_socket(config.socket_path)
+        await client.connect()
+        await client.call(
+            "task.create",
+            {
+                "name": "interval-reminder",
+                "goal": "Reminder: check deployment status",
+                "schedule": {"kind": "interval", "expression": "1s"},
+                "capability_snapshot": ["message.send"],
+                "policy_snapshot_ref": "p1",
+                "created_by": "alice",
+            },
+        )
+
+        triggered_total = 0
+        anomaly_total = 0
+        for _ in range(15):
+            triggered = await client.call(
+                "audit.query",
+                {"event_type": "TaskTriggered", "actor": "scheduler", "limit": 25},
+            )
+            anomaly = await client.call(
+                "audit.query",
+                {"event_type": "AnomalyReported", "actor": "scheduler", "limit": 25},
+            )
+            triggered_total = triggered["total"]
+            anomaly_total = anomaly["total"]
+            if triggered_total >= 1 and anomaly_total >= 1:
+                break
+            await asyncio.sleep(0.2)
+        assert triggered_total >= 1
+        assert anomaly_total >= 1
+    finally:
+        with suppress(Exception):
+            await client.call("daemon.shutdown")
+        await client.close()
+        await asyncio.wait_for(daemon_task, timeout=3)
+
+
+@pytest.mark.asyncio
 async def test_m2_restart_hydrates_memory_retrieval_and_tasks(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

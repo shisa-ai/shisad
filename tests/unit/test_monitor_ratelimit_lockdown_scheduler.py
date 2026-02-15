@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -223,6 +223,50 @@ def test_m2_scheduler_skips_corrupt_utf8_persisted_files(tmp_path: Path) -> None
     restarted = SchedulerManager(storage_dir=storage)
     assert restarted.list_tasks() == []
     assert restarted.pending_confirmations("missing-task") == []
+
+
+def test_m2_scheduler_interval_due_runs_once_per_interval() -> None:
+    scheduler = SchedulerManager()
+    task = scheduler.create_task(
+        name="reminder",
+        goal="standup",
+        schedule=Schedule(kind="interval", expression="60s"),
+        capability_snapshot={Capability.MESSAGE_SEND},
+        policy_snapshot_ref="p1",
+        created_by=UserId("alice"),
+    )
+    base = datetime(2026, 2, 15, 10, 0, 0, tzinfo=UTC)
+    task.created_at = base
+
+    assert scheduler.trigger_due(now=base) == []
+    first = scheduler.trigger_due(now=base + timedelta(seconds=61))
+    assert len(first) == 1
+    assert first[0].task_id == task.id
+    assert first[0].payload_taint == "trusted_scheduler"
+    assert scheduler.trigger_due(now=base + timedelta(seconds=90)) == []
+    second = scheduler.trigger_due(now=base + timedelta(seconds=122))
+    assert len(second) == 1
+
+
+def test_m2_scheduler_cron_due_runs_once_per_matching_minute() -> None:
+    scheduler = SchedulerManager()
+    task = scheduler.create_task(
+        name="digest",
+        goal="daily digest",
+        schedule=Schedule(kind="cron", expression="*/5 * * * *"),
+        capability_snapshot={Capability.MESSAGE_SEND},
+        policy_snapshot_ref="p1",
+        created_by=UserId("alice"),
+    )
+    minute_00 = datetime(2026, 2, 15, 10, 0, 0, tzinfo=UTC)
+    task.created_at = minute_00
+
+    first = scheduler.trigger_due(now=minute_00)
+    assert len(first) == 1
+    assert scheduler.trigger_due(now=minute_00 + timedelta(seconds=30)) == []
+    assert scheduler.trigger_due(now=minute_00 + timedelta(minutes=4, seconds=59)) == []
+    second = scheduler.trigger_due(now=minute_00 + timedelta(minutes=5))
+    assert len(second) == 1
 
 
 def test_m2_t21_risk_policy_versioning_is_deterministic(tmp_path: Path) -> None:

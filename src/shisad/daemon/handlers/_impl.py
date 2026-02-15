@@ -2662,6 +2662,16 @@ class HandlerImplementation:
 
     async def do_task_create(self, params: Mapping[str, Any]) -> dict[str, Any]:
         schedule = Schedule.model_validate(params.get("schedule", {}))
+        raw_delivery_target = params.get("delivery_target", {})
+        delivery_target: dict[str, str]
+        if isinstance(raw_delivery_target, Mapping):
+            delivery_target = {
+                str(key): str(value)
+                for key, value in raw_delivery_target.items()
+                if str(key).strip() and str(value).strip()
+            }
+        else:
+            delivery_target = {}
         task = self._scheduler.create_task(
             name=str(params.get("name", "")),
             goal=str(params.get("goal", "")),
@@ -2671,6 +2681,7 @@ class HandlerImplementation:
             created_by=UserId(str(params.get("created_by", ""))),
             allowed_recipients=list(params.get("allowed_recipients", [])),
             allowed_domains=list(params.get("allowed_domains", [])),
+            delivery_target=delivery_target,
         )
         await self._event_bus.publish(
             TaskScheduled(
