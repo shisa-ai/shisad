@@ -47,15 +47,16 @@ class ChannelIdentityMap:
         workspace_id: WorkspaceId,
         trust_level: str | None = None,
     ) -> None:
+        normalized_external_user_id = external_user_id.strip()
         resolved_trust = trust_level or self.trust_for_channel(channel)
-        self._map[(channel, external_user_id)] = ChannelIdentity(
+        self._map[(channel, normalized_external_user_id)] = ChannelIdentity(
             user_id=user_id,
             workspace_id=workspace_id,
             trust_level=resolved_trust,
         )
 
     def resolve(self, *, channel: str, external_user_id: str) -> ChannelIdentity | None:
-        return self._map.get((channel, external_user_id))
+        return self._map.get((channel, external_user_id.strip()))
 
     def trust_for_channel(self, channel: str) -> str:
         return self._default_trust.get(channel, "untrusted")
@@ -75,7 +76,7 @@ class ChannelIdentityMap:
 
     def is_allowed(self, *, channel: str, external_user_id: str) -> bool:
         allowed = self._allowlists.get(channel, set())
-        return external_user_id in allowed
+        return external_user_id.strip() in allowed
 
     def record_pairing_request(
         self,
@@ -84,20 +85,21 @@ class ChannelIdentityMap:
         external_user_id: str,
         workspace_hint: str = "",
         reason: str = "identity_not_allowlisted",
-    ) -> ChannelPairingRequest:
-        key = (channel, external_user_id)
+    ) -> tuple[ChannelPairingRequest, bool]:
+        normalized_external_user_id = external_user_id.strip()
+        key = (channel, normalized_external_user_id)
         existing = self._pairing_requests.get(key)
         if existing is not None:
-            return existing
+            return existing, False
         request = ChannelPairingRequest(
             channel=channel,
-            external_user_id=external_user_id,
+            external_user_id=normalized_external_user_id,
             workspace_hint=workspace_hint,
             reason=reason,
             requested_at=datetime.now(UTC),
         )
         self._pairing_requests[key] = request
-        return request
+        return request, True
 
     def list_pairing_requests(self, *, limit: int = 100) -> list[ChannelPairingRequest]:
         items = list(self._pairing_requests.values())

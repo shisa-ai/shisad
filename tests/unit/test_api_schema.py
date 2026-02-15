@@ -250,6 +250,7 @@ class TestApiSchemaValidation:
         assert dashboard.events[0].session_id == "s1"
         assert dashboard_marked.marked is True
         assert daemon_status.status == "running"
+        assert daemon_status.delivery == {}
         assert daemon_shutdown.status == "shutting_down"
         assert policy_explain.tool_name == "shell_exec"
         assert lockdown.level == "caution"

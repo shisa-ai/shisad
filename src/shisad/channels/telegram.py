@@ -68,6 +68,8 @@ class TelegramChannel(InMemoryChannel):
             chat = getattr(update, "effective_chat", None)
             if message is None or user is None:
                 return
+            if bool(getattr(user, "is_bot", False)):
+                return
             text = str(getattr(message, "text", "") or "").strip()
             if not text:
                 return

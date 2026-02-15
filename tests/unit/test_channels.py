@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
+from types import SimpleNamespace
+
 import pytest
 
 from shisad.channels.base import DeliveryTarget, InMemoryChannel
@@ -47,16 +50,24 @@ def test_channel_identity_map_default_deny_allowlist_and_pairing_requests() -> N
     identity_map = ChannelIdentityMap(default_trust={"discord": "untrusted"})
     assert identity_map.is_allowed(channel="discord", external_user_id="123") is False
 
-    pairing = identity_map.record_pairing_request(
+    pairing, is_new = identity_map.record_pairing_request(
         channel="discord",
         external_user_id="123",
         workspace_hint="guild-1",
     )
+    assert is_new is True
     assert pairing.channel == "discord"
     assert pairing.external_user_id == "123"
+    repeated, is_new = identity_map.record_pairing_request(
+        channel="discord",
+        external_user_id="123",
+        workspace_hint="guild-1",
+    )
+    assert is_new is False
+    assert repeated == pairing
 
     identity_map.allow_identity(channel="discord", external_user_id="123")
-    assert identity_map.is_allowed(channel="discord", external_user_id="123")
+    assert identity_map.is_allowed(channel="discord", external_user_id="123 ")
 
 
 def test_channel_trust_level_influences_pep_risk_outcome() -> None:
@@ -132,6 +143,25 @@ async def test_channel_delivery_service_routes_to_targeted_channel() -> None:
     await channel.disconnect()
 
 
+@pytest.mark.asyncio
+async def test_channel_delivery_service_treats_dependency_unavailable_as_unsent() -> None:
+    class _UnavailableChannel(InMemoryChannel):
+        @property
+        def available(self) -> bool:
+            return False
+
+    channel = _UnavailableChannel(name="discord")
+    await channel.connect()
+    delivery = ChannelDeliveryService({"discord": channel})
+    result = await delivery.send(
+        target=DeliveryTarget(channel="discord", recipient="chan-1"),
+        message="hello world",
+    )
+    assert result.sent is False
+    assert result.reason == "channel_dependency_unavailable"
+    await channel.disconnect()
+
+
 def test_channel_state_store_persists_seen_message_ids(tmp_path) -> None:
     store = ChannelStateStore(tmp_path / "state")
     assert store.is_replay(channel="matrix", message_id="m1") is False
@@ -190,6 +220,218 @@ async def test_discord_telegram_slack_fallback_channels_support_inmemory_io(
         await channel.send("reply", target=DeliveryTarget(channel=msg.channel, recipient="r1"))
         assert await channel.pop_outgoing() == "reply"
         await channel.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_discord_channel_registers_dispatchable_on_message_handler(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from shisad.channels import discord as discord_module
+
+    class _FakeIntents:
+        def __init__(self) -> None:
+            self.message_content = False
+
+        @classmethod
+        def default(cls) -> _FakeIntents:
+            return cls()
+
+    class _FakeClient:
+        def __init__(self, *, intents: _FakeIntents) -> None:
+            self.intents = intents
+
+        def event(self, coro):
+            setattr(self, coro.__name__, coro)
+            return coro
+
+        async def start(self, _token: str) -> None:
+            return None
+
+        async def close(self) -> None:
+            return None
+
+        async def dispatch(self, message: object) -> None:
+            handler = getattr(self, "on_message", None)
+            if handler is not None:
+                await handler(message)
+
+    monkeypatch.setattr(
+        discord_module,
+        "discord",
+        SimpleNamespace(Intents=_FakeIntents, Client=_FakeClient),
+    )
+
+    channel = DiscordChannel(DiscordConfig(bot_token="token"))
+    await channel.connect()
+    assert channel._client is not None
+    message = SimpleNamespace(
+        author=SimpleNamespace(id="u-1", bot=False),
+        content="hello",
+        guild=SimpleNamespace(id="g-1"),
+        channel=SimpleNamespace(id="c-1"),
+        id="m-1",
+    )
+    await channel._client.dispatch(message)
+    received = await asyncio.wait_for(channel.receive(), timeout=0.2)
+    assert received.channel == "discord"
+    assert received.external_user_id == "u-1"
+    assert received.reply_target == "c-1"
+    await channel.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_slack_channel_handler_accepts_say_and_filters_bot_messages(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from shisad.channels import slack as slack_module
+
+    class _FakeApp:
+        def __init__(self, *, token: str) -> None:
+            self.token = token
+            self._callbacks: dict[str, object] = {}
+            self.client = SimpleNamespace(chat_postMessage=self._chat_post_message)
+
+        async def _chat_post_message(self, **_kwargs: object) -> None:
+            return None
+
+        def event(self, name: str):
+            def _decorator(callback):
+                self._callbacks[name] = callback
+                return callback
+
+            return _decorator
+
+        async def invoke_message(self, event: dict[str, object], body: dict[str, object]) -> None:
+            callback = self._callbacks["message"]
+            await callback(event=event, body=body, say=lambda *_args, **_kwargs: None)
+
+    class _FakeSocketHandler:
+        def __init__(self, app: _FakeApp, _token: str) -> None:
+            self.app = app
+
+        async def start_async(self) -> None:
+            return None
+
+        async def close_async(self) -> None:
+            return None
+
+    monkeypatch.setattr(slack_module, "AsyncApp", _FakeApp)
+    monkeypatch.setattr(slack_module, "AsyncSocketModeHandler", _FakeSocketHandler)
+
+    channel = SlackChannel(SlackConfig(bot_token="xoxb", app_token="xapp"))
+    await channel.connect()
+    assert channel._app is not None
+    await channel._app.invoke_message(
+        event={"user": "U1", "text": "bot echo", "channel": "C1", "bot_id": "B1"},
+        body={"team_id": "T1"},
+    )
+    with pytest.raises(asyncio.TimeoutError):
+        await asyncio.wait_for(channel.receive(), timeout=0.05)
+    await channel._app.invoke_message(
+        event={"user": "U1", "text": "hello", "channel": "C1", "ts": "1.23"},
+        body={"team_id": "T1"},
+    )
+    message = await asyncio.wait_for(channel.receive(), timeout=0.2)
+    assert message.channel == "slack"
+    assert message.external_user_id == "U1"
+    assert message.workspace_hint == "T1"
+    await channel.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_telegram_channel_ignores_bot_messages(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from shisad.channels import telegram as telegram_module
+
+    class _FakeFilter:
+        def __and__(self, _other: object) -> _FakeFilter:
+            return self
+
+        def __invert__(self) -> _FakeFilter:
+            return self
+
+    class _FakeMessageHandler:
+        def __init__(self, _filters: object, callback) -> None:
+            self.callback = callback
+
+    class _FakeUpdater:
+        async def start_polling(self) -> None:
+            return None
+
+        async def stop(self) -> None:
+            return None
+
+    class _FakeApplication:
+        def __init__(self) -> None:
+            self.handlers: list[_FakeMessageHandler] = []
+            self.updater = _FakeUpdater()
+            self.bot = SimpleNamespace(send_message=self._send_message)
+
+        async def _send_message(self, **_kwargs: object) -> None:
+            return None
+
+        def add_handler(self, handler: _FakeMessageHandler) -> None:
+            self.handlers.append(handler)
+
+        async def initialize(self) -> None:
+            return None
+
+        async def start(self) -> None:
+            return None
+
+        async def stop(self) -> None:
+            return None
+
+        async def shutdown(self) -> None:
+            return None
+
+    class _FakeApplicationBuilder:
+        def __init__(self) -> None:
+            self._token = ""
+
+        def token(self, token: str) -> _FakeApplicationBuilder:
+            self._token = token
+            return self
+
+        def build(self) -> _FakeApplication:
+            return _FakeApplication()
+
+    class _FakeApplicationFactory:
+        @staticmethod
+        def builder() -> _FakeApplicationBuilder:
+            return _FakeApplicationBuilder()
+
+    monkeypatch.setattr(telegram_module, "Application", _FakeApplicationFactory)
+    monkeypatch.setattr(telegram_module, "MessageHandler", _FakeMessageHandler)
+    monkeypatch.setattr(
+        telegram_module,
+        "filters",
+        SimpleNamespace(TEXT=_FakeFilter(), COMMAND=_FakeFilter()),
+    )
+
+    channel = TelegramChannel(TelegramConfig(bot_token="token"))
+    await channel.connect()
+    assert channel._application is not None
+    handler = channel._application.handlers[0]
+    bot_update = SimpleNamespace(
+        effective_message=SimpleNamespace(text="echo", message_id="m1", message_thread_id=""),
+        effective_user=SimpleNamespace(id="bot-user", is_bot=True),
+        effective_chat=SimpleNamespace(id="chat-1"),
+    )
+    await handler.callback(bot_update, None)
+    with pytest.raises(asyncio.TimeoutError):
+        await asyncio.wait_for(channel.receive(), timeout=0.05)
+    user_update = SimpleNamespace(
+        effective_message=SimpleNamespace(text="hello", message_id="m2", message_thread_id=""),
+        effective_user=SimpleNamespace(id="u-1", is_bot=False),
+        effective_chat=SimpleNamespace(id="chat-1"),
+    )
+    await handler.callback(user_update, None)
+    message = await asyncio.wait_for(channel.receive(), timeout=0.2)
+    assert message.channel == "telegram"
+    assert message.external_user_id == "u-1"
+    await channel.disconnect()
 
 
 @pytest.mark.asyncio

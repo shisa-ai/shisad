@@ -23,6 +23,7 @@ from shisad.core.audit import AuditLog
 from shisad.core.events import (
     AnomalyReported,
     BaseEvent,
+    ChannelDeliveryAttempted,
     ChannelPairingRequested,
     ConsensusEvaluated,
     ControlPlaneActionObserved,
@@ -3021,27 +3022,28 @@ class HandlerImplementation:
             channel=message.channel,
             external_user_id=message.external_user_id,
         ):
-            pairing = self._identity_map.record_pairing_request(
+            pairing, is_new = self._identity_map.record_pairing_request(
                 channel=message.channel,
                 external_user_id=message.external_user_id,
                 workspace_hint=message.workspace_hint,
                 reason="identity_not_allowlisted",
             )
-            self._record_pairing_request_artifact(
-                channel=pairing.channel,
-                external_user_id=pairing.external_user_id,
-                workspace_hint=pairing.workspace_hint,
-                reason=pairing.reason,
-            )
-            await self._event_bus.publish(
-                ChannelPairingRequested(
-                    actor="channel_ingest",
+            if is_new:
+                self._record_pairing_request_artifact(
                     channel=pairing.channel,
                     external_user_id=pairing.external_user_id,
                     workspace_hint=pairing.workspace_hint,
                     reason=pairing.reason,
                 )
-            )
+                await self._event_bus.publish(
+                    ChannelPairingRequested(
+                        actor="channel_ingest",
+                        channel=pairing.channel,
+                        external_user_id=pairing.external_user_id,
+                        workspace_hint=pairing.workspace_hint,
+                        reason=pairing.reason,
+                    )
+                )
             return {
                 "session_id": "",
                 "response": (
@@ -3156,6 +3158,18 @@ class HandlerImplementation:
             message=str(response.get("response", "")),
         )
         response["delivery"] = delivery_result.as_dict()
+        await self._event_bus.publish(
+            ChannelDeliveryAttempted(
+                session_id=sid,
+                actor="channel_delivery",
+                channel=delivery_target.channel,
+                recipient=delivery_target.recipient,
+                workspace_hint=delivery_target.workspace_hint,
+                thread_id=delivery_target.thread_id,
+                sent=delivery_result.sent,
+                reason=delivery_result.reason,
+            )
+        )
         if not delivery_result.sent:
             await self._event_bus.publish(
                 AnomalyReported(

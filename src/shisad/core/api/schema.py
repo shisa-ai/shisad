@@ -470,6 +470,7 @@ class DaemonStatusResult(BaseModel):
     risk_policy_version: str = ""
     risk_thresholds: dict[str, float] = Field(default_factory=dict)
     channels: dict[str, Any] = Field(default_factory=dict)
+    delivery: dict[str, Any] = Field(default_factory=dict)
     executors: dict[str, Any] = Field(default_factory=dict)
     provenance: dict[str, Any] = Field(default_factory=dict)
 

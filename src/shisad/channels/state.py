@@ -18,16 +18,29 @@ class ChannelStateStore:
         self._seen_ids: dict[str, deque[str]] = {}
         self._loaded_channels: set[str] = set()
 
-    def is_replay(self, *, channel: str, message_id: str) -> bool:
+    def has_seen(self, *, channel: str, message_id: str) -> bool:
         msg_id = message_id.strip()
         if not msg_id:
             return False
         self._ensure_loaded(channel)
         ids = self._seen_ids[channel]
+        return msg_id in ids
+
+    def mark_seen(self, *, channel: str, message_id: str) -> None:
+        msg_id = message_id.strip()
+        if not msg_id:
+            return
+        self._ensure_loaded(channel)
+        ids = self._seen_ids[channel]
         if msg_id in ids:
-            return True
+            return
         ids.append(msg_id)
         self._persist(channel)
+
+    def is_replay(self, *, channel: str, message_id: str) -> bool:
+        if self.has_seen(channel=channel, message_id=message_id):
+            return True
+        self.mark_seen(channel=channel, message_id=message_id)
         return False
 
     def snapshot(self, channel: str) -> dict[str, Any]:

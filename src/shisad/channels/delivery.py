@@ -44,9 +44,38 @@ class ChannelDeliveryService:
                 target=target,
             )
         try:
+            status = channel.health_status()
+        except Exception:
+            status = {}
+        available = status.get("available")
+        if available is None:
+            available = bool(getattr(channel, "available", True))
+        if available is False:
+            return DeliveryResult(
+                attempted=True,
+                sent=False,
+                reason="channel_dependency_unavailable",
+                target=target,
+            )
+        connected = status.get("connected")
+        if connected is None:
+            connected = bool(getattr(channel, "connected", True))
+        if connected is False:
+            return DeliveryResult(
+                attempted=True,
+                sent=False,
+                reason="channel_not_connected",
+                target=target,
+            )
+        try:
             await channel.send(message, target=target)
+            logger.info(
+                "Outbound channel delivery succeeded (channel=%s, recipient=%s)",
+                target.channel,
+                target.recipient,
+            )
             return DeliveryResult(attempted=True, sent=True, reason="sent", target=target)
-        except (OSError, RuntimeError, ValueError, TypeError):
+        except Exception:
             logger.exception(
                 "Outbound channel delivery failed (channel=%s, recipient=%s)",
                 target.channel,
@@ -64,7 +93,6 @@ class ChannelDeliveryService:
         for name, channel in self._channels.items():
             try:
                 status[name] = channel.health_status()
-            except (OSError, RuntimeError, ValueError, TypeError):
+            except Exception:
                 status[name] = {"connected": False, "error": "health_status_failed"}
         return status
-

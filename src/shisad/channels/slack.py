@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import importlib
 import logging
@@ -42,6 +43,7 @@ class SlackChannel(InMemoryChannel):
         self._config = config
         self._app: Any | None = None
         self._handler: Any | None = None
+        self._handler_task: asyncio.Task[None] | None = None
 
     @property
     def available(self) -> bool:
@@ -60,7 +62,14 @@ class SlackChannel(InMemoryChannel):
             return
         self._app = app_class(token=self._config.bot_token)
 
-        async def _on_message(event: dict[str, Any], body: dict[str, Any], _say: Any) -> None:
+        async def _on_message(
+            event: dict[str, Any],
+            body: dict[str, Any],
+            say: Any | None = None,
+        ) -> None:
+            _ = say
+            if event.get("bot_id") or event.get("subtype") == "bot_message":
+                return
             user_id = str(event.get("user", "")).strip()
             text = str(event.get("text", "")).strip()
             channel_id = str(event.get("channel", "")).strip()
@@ -88,9 +97,14 @@ class SlackChannel(InMemoryChannel):
         self._handler = socket_handler_class(self._app, self._config.app_token)
         start = getattr(self._handler, "start_async", None)
         if callable(start):
-            await start()
+            self._handler_task = asyncio.create_task(start())
 
     async def disconnect(self) -> None:
+        if self._handler_task is not None:
+            self._handler_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._handler_task
+            self._handler_task = None
         if self._handler is not None:
             close = getattr(self._handler, "close_async", None)
             if callable(close):
@@ -128,5 +142,13 @@ class SlackChannel(InMemoryChannel):
 
     def health_status(self) -> dict[str, Any]:
         status = super().health_status()
-        status.update({"available": self.available, "socket_mode": self._handler is not None})
+        status.update(
+            {
+                "available": self.available,
+                "socket_mode": self._handler is not None,
+                "socket_task_running": (
+                    self._handler_task is not None and not self._handler_task.done()
+                ),
+            }
+        )
         return status

@@ -120,6 +120,17 @@ class MatrixChannel(InMemoryChannel):
         trusted = self._config.trusted_users or set()
         return user_id in trusted
 
+    def health_status(self) -> dict[str, Any]:
+        status = super().health_status()
+        status.update(
+            {
+                "available": self.available,
+                "e2ee_enabled": self.e2ee_enabled,
+                "sync_task_running": self._sync_task is not None and not self._sync_task.done(),
+            }
+        )
+        return status
+
     async def _sync_loop(self) -> None:
         if self._client is None:
             return
@@ -130,7 +141,7 @@ class MatrixChannel(InMemoryChannel):
             await sync_forever(timeout=30_000, full_state=True)
         except asyncio.CancelledError:
             raise
-        except (OSError, RuntimeError, ValueError):
+        except Exception:
             return
 
     async def _on_room_message(self, room: Any, event: Any) -> None:

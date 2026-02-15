@@ -238,15 +238,20 @@ async def channel_receive_pump(
             continue
         except asyncio.CancelledError:
             raise
-        except (OSError, RuntimeError, ValueError, TypeError):
+        except Exception:
             logger.exception("%s receive loop error", channel_name)
             await asyncio.sleep(0.2)
             continue
 
+        message_id = str(getattr(message, "message_id", "")).strip()
         if (
             state_store is not None
-            and message.message_id
-            and state_store.is_replay(channel=channel_name, message_id=message.message_id)
+            and message_id
+            and _is_replay_message(
+                state_store=state_store,
+                channel_name=channel_name,
+                message_id=message_id,
+            )
         ):
             continue
 
@@ -258,12 +263,51 @@ async def channel_receive_pump(
                         "external_user_id": message.external_user_id,
                         "workspace_hint": message.workspace_hint,
                         "content": message.content,
-                        "message_id": message.message_id,
-                        "reply_target": message.reply_target,
-                        "thread_id": message.thread_id,
+                        "message_id": message_id,
+                        "reply_target": str(getattr(message, "reply_target", "")),
+                        "thread_id": str(getattr(message, "thread_id", "")),
                     }
                 ),
                 RequestContext(is_internal_ingress=True),
             )
-        except (OSError, RuntimeError, ValueError, TypeError):
+        except Exception:
             logger.exception("%s ingress processing failed", channel_name)
+            continue
+
+        if state_store is not None and message_id:
+            _mark_processed_message(
+                state_store=state_store,
+                channel_name=channel_name,
+                message_id=message_id,
+            )
+
+
+def _is_replay_message(
+    *,
+    state_store: ChannelStateStore,
+    channel_name: str,
+    message_id: str,
+) -> bool:
+    try:
+        return state_store.has_seen(channel=channel_name, message_id=message_id)
+    except Exception:
+        logger.exception(
+            "%s replay guard read failed; continuing without replay check",
+            channel_name,
+        )
+        return False
+
+
+def _mark_processed_message(
+    *,
+    state_store: ChannelStateStore,
+    channel_name: str,
+    message_id: str,
+) -> None:
+    try:
+        state_store.mark_seen(channel=channel_name, message_id=message_id)
+    except Exception:
+        logger.exception(
+            "%s replay guard persist failed after successful ingest",
+            channel_name,
+        )

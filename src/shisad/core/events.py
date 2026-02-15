@@ -68,6 +68,17 @@ class ChannelPairingRequested(BaseEvent):
     reason: str = "identity_not_allowlisted"
 
 
+class ChannelDeliveryAttempted(BaseEvent):
+    """Outbound channel delivery attempt for ingress response/audit trail."""
+
+    channel: str = ""
+    recipient: str = ""
+    workspace_hint: str = ""
+    thread_id: str = ""
+    sent: bool = False
+    reason: str = ""
+
+
 class SessionTerminated(BaseEvent):
     """A session was terminated."""
 
@@ -374,6 +385,7 @@ type AnyEvent = (
     | SessionMessageReceived
     | SessionMessageResponded
     | ChannelPairingRequested
+    | ChannelDeliveryAttempted
     | SessionTerminated
     | CapabilityGranted
     | ToolProposed
@@ -412,6 +424,7 @@ EVENT_TYPES: dict[str, type[BaseEvent]] = {
     "SessionMessageReceived": SessionMessageReceived,
     "SessionMessageResponded": SessionMessageResponded,
     "ChannelPairingRequested": ChannelPairingRequested,
+    "ChannelDeliveryAttempted": ChannelDeliveryAttempted,
     "SessionTerminated": SessionTerminated,
     "CapabilityGranted": CapabilityGranted,
     "ToolProposed": ToolProposed,

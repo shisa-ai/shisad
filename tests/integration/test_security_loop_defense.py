@@ -357,11 +357,81 @@ async def test_m1_channel_ingest_default_deny_records_pairing_request(
         )
         assert "not allowlisted" in str(result["response"])
         assert result["delivery"]["sent"] is False
+        repeated = await client.call(
+            "channel.ingest",
+            {
+                "message": {
+                    "channel": "discord",
+                    "external_user_id": "mallory",
+                    "workspace_hint": "guild-1",
+                    "content": "hello again",
+                    "message_id": "m-2",
+                    "reply_target": "chan-1",
+                }
+            },
+        )
+        assert "not allowlisted" in str(repeated["response"])
         events = await client.call(
             "audit.query",
             {"event_type": "ChannelPairingRequested", "actor": "channel_ingest", "limit": 10},
         )
+        assert events["total"] == 1
+        pairing_file = config.data_dir / "channels" / "pairing_requests.jsonl"
+        assert pairing_file.exists()
+        assert len(pairing_file.read_text(encoding="utf-8").splitlines()) == 1
+    finally:
+        with suppress(Exception):
+            await client.call("daemon.shutdown")
+        await client.close()
+        await asyncio.wait_for(daemon_task, timeout=3)
+
+
+@pytest.mark.asyncio
+async def test_m1_channel_ingest_emits_delivery_audit_event(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SHISAD_MODEL_BASE_URL", "https://api.example.com/v1")
+    monkeypatch.setenv("SHISAD_MODEL_PLANNER_BASE_URL", "https://planner.example.com/v1")
+    monkeypatch.setenv("SHISAD_MODEL_EMBEDDINGS_BASE_URL", "https://embed.example.com/v1")
+    monkeypatch.setenv("SHISAD_MODEL_MONITOR_BASE_URL", "https://monitor.example.com/v1")
+
+    config = DaemonConfig(
+        data_dir=tmp_path / "data",
+        socket_path=tmp_path / "control.sock",
+        policy_path=tmp_path / "policy.yaml",
+        log_level="INFO",
+        channel_identity_allowlist={"discord": ["mallory"]},
+    )
+    daemon_task = asyncio.create_task(run_daemon(config))
+    client = ControlClient(config.socket_path)
+    try:
+        await _wait_for_socket(config.socket_path)
+        await client.connect()
+        result = await client.call(
+            "channel.ingest",
+            {
+                "message": {
+                    "channel": "discord",
+                    "external_user_id": "mallory",
+                    "workspace_hint": "guild-1",
+                    "content": "hello there",
+                    "message_id": "m-1",
+                    "reply_target": "chan-1",
+                }
+            },
+        )
+        delivery = result["delivery"]
+        events = await client.call(
+            "audit.query",
+            {"event_type": "ChannelDeliveryAttempted", "actor": "channel_delivery", "limit": 10},
+        )
         assert events["total"] >= 1
+        latest = events["events"][0]["data"]
+        assert latest["channel"] == "discord"
+        assert latest["recipient"] == "chan-1"
+        assert latest["sent"] is delivery["sent"]
+        assert latest["reason"] == delivery["reason"]
     finally:
         with suppress(Exception):
             await client.call("daemon.shutdown")
@@ -437,6 +507,7 @@ async def test_m2_t22_daemon_status_exposes_classifier_mode(
         status = await client.call("daemon.status")
         assert status["classifier_mode"] in {"yara", "fallback_regex", "base_patterns"}
         assert "risk_policy_version" in status
+        assert "delivery" in status
     finally:
         with suppress(Exception):
             await client.call("daemon.shutdown")

@@ -56,7 +56,7 @@ class DiscordChannel(InMemoryChannel):
         self._client = client_ctor(intents=intents)
         event_decorator = getattr(self._client, "event", None)
         if callable(event_decorator):
-            async def _on_message(message: Any) -> None:
+            async def on_message(message: Any) -> None:
                 author = getattr(message, "author", None)
                 if author is None:
                     return
@@ -81,7 +81,7 @@ class DiscordChannel(InMemoryChannel):
                     )
                 )
 
-            event_decorator(_on_message)
+            event_decorator(on_message)
 
         start = getattr(self._client, "start", None)
         if callable(start):
