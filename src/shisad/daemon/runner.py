@@ -48,7 +48,7 @@ from shisad.core.config import DaemonConfig, ModelConfig
 from shisad.core.interfaces import TypedHandler
 from shisad.core.providers.routing import ModelRouter
 from shisad.daemon.control_handlers import DaemonControlHandlers
-from shisad.daemon.event_wiring import matrix_receive_pump
+from shisad.daemon.event_wiring import channel_receive_pump
 from shisad.daemon.services import DaemonServices
 
 logger = logging.getLogger(__name__)
@@ -163,22 +163,27 @@ async def run_daemon(config: DaemonConfig) -> None:
 
     await services.server.start()
     logger.info("shisad daemon started")
-    matrix_pump_task: asyncio.Task[None] | None = None
-    if services.matrix_channel is not None:
-        matrix_pump_task = asyncio.create_task(
-            matrix_receive_pump(
-                matrix_channel=services.matrix_channel,
-                shutdown_event=services.shutdown_event,
-                handlers=handlers,
+    channel_pump_tasks: list[asyncio.Task[None]] = []
+    for channel_name, channel in services.channels.items():
+        channel_pump_tasks.append(
+            asyncio.create_task(
+                channel_receive_pump(
+                    channel_name=channel_name,
+                    channel=channel,
+                    shutdown_event=services.shutdown_event,
+                    handlers=handlers,
+                    state_store=services.channel_state_store,
+                )
             )
         )
 
     try:
         await services.shutdown_event.wait()
     finally:
-        if matrix_pump_task is not None:
-            matrix_pump_task.cancel()
+        for task in channel_pump_tasks:
+            task.cancel()
+        for task in channel_pump_tasks:
             with contextlib.suppress(asyncio.CancelledError):
-                await matrix_pump_task
+                await task
         await services.shutdown()
         logger.info("shisad daemon stopped")

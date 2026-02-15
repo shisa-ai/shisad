@@ -11,7 +11,7 @@ import contextlib
 from dataclasses import dataclass
 from typing import Any
 
-from shisad.channels.base import ChannelMessage, InMemoryChannel
+from shisad.channels.base import ChannelMessage, DeliveryTarget, InMemoryChannel
 
 try:  # pragma: no cover - optional dependency.
     import nio  # type: ignore
@@ -97,17 +97,20 @@ class MatrixChannel(InMemoryChannel):
 
         await super().disconnect()
 
-    async def send(self, message: str) -> None:
+    async def send(self, message: str, *, target: DeliveryTarget | None = None) -> None:
         if self._client is not None:
             room_send = getattr(self._client, "room_send", None)
             if callable(room_send):
+                room_id = self._config.room_id
+                if target is not None and target.recipient.strip():
+                    room_id = target.recipient.strip()
                 await room_send(
-                    room_id=self._config.room_id,
+                    room_id=room_id,
                     message_type="m.room.message",
                     content={"msgtype": "m.text", "body": message},
                 )
                 return
-        await super().send(message)
+        await super().send(message, target=target)
 
     def workspace_for_room(self, room_id: str) -> str:
         mapping = self._config.room_workspace_map or {}
@@ -142,5 +145,8 @@ class MatrixChannel(InMemoryChannel):
                 external_user_id=sender,
                 workspace_hint=self.workspace_for_room(room_id),
                 content=body,
+                message_id=str(getattr(event, "event_id", "") or ""),
+                reply_target=room_id,
+                thread_id=str(getattr(event, "event_id", "") or ""),
             )
         )

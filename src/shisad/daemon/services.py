@@ -11,9 +11,15 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
+from shisad.channels.base import Channel
+from shisad.channels.delivery import ChannelDeliveryService
+from shisad.channels.discord import DiscordChannel, DiscordConfig
 from shisad.channels.identity import ChannelIdentityMap
 from shisad.channels.ingress import ChannelIngressProcessor
 from shisad.channels.matrix import MatrixChannel, MatrixConfig
+from shisad.channels.slack import SlackChannel, SlackConfig
+from shisad.channels.state import ChannelStateStore
+from shisad.channels.telegram import TelegramChannel, TelegramConfig
 from shisad.core.api.transport import ControlServer
 from shisad.core.audit import AuditLog
 from shisad.core.config import DaemonConfig, ModelConfig
@@ -60,6 +66,9 @@ logger = logging.getLogger(__name__)
 _CHANNEL_TRUST_DEFAULTS: dict[str, str] = {
     "cli": "trusted",
     "matrix": "untrusted",
+    "discord": "untrusted",
+    "telegram": "untrusted",
+    "slack": "untrusted",
 }
 
 
@@ -86,7 +95,13 @@ class DaemonServices:
     browser_sandbox: BrowserSandbox
     channel_ingress: ChannelIngressProcessor
     identity_map: ChannelIdentityMap
+    channels: dict[str, Channel]
+    delivery: ChannelDeliveryService
+    channel_state_store: ChannelStateStore
     matrix_channel: MatrixChannel | None
+    discord_channel: DiscordChannel | None
+    telegram_channel: TelegramChannel | None
+    slack_channel: SlackChannel | None
     provider: LocalPlannerProvider | RoutedOpenAIProvider
     monitor_provider: MonitorProviderAdapter | None
     embeddings_adapter: SyncEmbeddingsAdapter
@@ -148,7 +163,11 @@ class DaemonServices:
         event_wiring = DaemonEventWiring(event_bus=event_bus, server=server)
         event_bus.subscribe_all(event_wiring.forward_event_to_subscribers)
         internal_ingress_marker = object()
+        channels: dict[str, Channel] = {}
         matrix_channel: MatrixChannel | None = None
+        discord_channel: DiscordChannel | None = None
+        telegram_channel: TelegramChannel | None = None
+        slack_channel: SlackChannel | None = None
         embeddings_adapter: SyncEmbeddingsAdapter | None = None
         startup_complete = False
 
@@ -171,7 +190,54 @@ class DaemonServices:
             )
             channel_ingress = ChannelIngressProcessor(firewall)
             identity_map = ChannelIdentityMap(default_trust=_CHANNEL_TRUST_DEFAULTS)
+            for channel_name, entries in config.channel_identity_allowlist.items():
+                identity_map.configure_allowlist(
+                    channel=channel_name,
+                    external_user_ids={item for item in entries if item},
+                )
+
             matrix_channel = await _build_matrix_channel(config)
+            if matrix_channel is not None:
+                channels["matrix"] = matrix_channel
+                for user_id in config.matrix_trusted_users:
+                    if user_id.strip():
+                        identity_map.allow_identity(
+                            channel="matrix",
+                            external_user_id=user_id.strip(),
+                        )
+
+            discord_channel = await _build_discord_channel(config)
+            if discord_channel is not None:
+                channels["discord"] = discord_channel
+                for user_id in config.discord_trusted_users:
+                    if user_id.strip():
+                        identity_map.allow_identity(
+                            channel="discord",
+                            external_user_id=user_id.strip(),
+                        )
+
+            telegram_channel = await _build_telegram_channel(config)
+            if telegram_channel is not None:
+                channels["telegram"] = telegram_channel
+                for user_id in config.telegram_trusted_users:
+                    if user_id.strip():
+                        identity_map.allow_identity(
+                            channel="telegram",
+                            external_user_id=user_id.strip(),
+                        )
+
+            slack_channel = await _build_slack_channel(config)
+            if slack_channel is not None:
+                channels["slack"] = slack_channel
+                for user_id in config.slack_trusted_users:
+                    if user_id.strip():
+                        identity_map.allow_identity(
+                            channel="slack",
+                            external_user_id=user_id.strip(),
+                        )
+
+            delivery = ChannelDeliveryService(channels)
+            channel_state_store = ChannelStateStore(config.data_dir / "channels" / "state")
 
             api_key_candidate = model_config.api_key
             if api_key_candidate is None:
@@ -331,7 +397,13 @@ class DaemonServices:
                 browser_sandbox=browser_sandbox,
                 channel_ingress=channel_ingress,
                 identity_map=identity_map,
+                channels=channels,
+                delivery=delivery,
+                channel_state_store=channel_state_store,
                 matrix_channel=matrix_channel,
+                discord_channel=discord_channel,
+                telegram_channel=telegram_channel,
+                slack_channel=slack_channel,
                 provider=provider,
                 monitor_provider=monitor_provider,
                 embeddings_adapter=embeddings_adapter,
@@ -364,9 +436,9 @@ class DaemonServices:
                 if embeddings_adapter is not None:
                     with contextlib.suppress(OSError, RuntimeError):
                         embeddings_adapter.close(wait=False)
-                if matrix_channel is not None:
+                for channel in channels.values():
                     with contextlib.suppress(OSError, RuntimeError):
-                        await matrix_channel.disconnect()
+                        await channel.disconnect()
                 with contextlib.suppress(OSError, RuntimeError):
                     await server.stop()
 
@@ -376,11 +448,40 @@ class DaemonServices:
             self.embeddings_adapter.close(wait=True)
         except (OSError, RuntimeError):
             logger.exception("Error closing embeddings adapter")
-        if self.matrix_channel is not None:
+        disconnected_ids: set[int] = set()
+        channels = getattr(self, "channels", {})
+        if isinstance(channels, dict):
+            for channel in channels.values():
+                try:
+                    await channel.disconnect()
+                    disconnected_ids.add(id(channel))
+                except (OSError, RuntimeError):
+                    logger.exception("Error disconnecting channel")
+
+        matrix_channel = getattr(self, "matrix_channel", None)
+        if matrix_channel is not None and id(matrix_channel) not in disconnected_ids:
             try:
-                await self.matrix_channel.disconnect()
+                await matrix_channel.disconnect()
             except (OSError, RuntimeError):
                 logger.exception("Error disconnecting matrix channel")
+        discord_channel = getattr(self, "discord_channel", None)
+        if discord_channel is not None and id(discord_channel) not in disconnected_ids:
+            try:
+                await discord_channel.disconnect()
+            except (OSError, RuntimeError):
+                logger.exception("Error disconnecting discord channel")
+        telegram_channel = getattr(self, "telegram_channel", None)
+        if telegram_channel is not None and id(telegram_channel) not in disconnected_ids:
+            try:
+                await telegram_channel.disconnect()
+            except (OSError, RuntimeError):
+                logger.exception("Error disconnecting telegram channel")
+        slack_channel = getattr(self, "slack_channel", None)
+        if slack_channel is not None and id(slack_channel) not in disconnected_ids:
+            try:
+                await slack_channel.disconnect()
+            except (OSError, RuntimeError):
+                logger.exception("Error disconnecting slack channel")
         try:
             await self.server.stop()
         except (OSError, RuntimeError):
@@ -415,6 +516,70 @@ async def _build_matrix_channel(config: DaemonConfig) -> MatrixChannel | None:
     )
     await matrix_channel.connect()
     return matrix_channel
+
+
+async def _build_discord_channel(config: DaemonConfig) -> DiscordChannel | None:
+    if not config.discord_enabled:
+        return None
+    if not config.discord_bot_token:
+        raise ValueError(
+            "Discord channel is enabled but missing required config field: "
+            "discord_bot_token"
+        )
+    channel = DiscordChannel(
+        DiscordConfig(
+            bot_token=config.discord_bot_token,
+            default_channel_id=config.discord_default_channel_id,
+            guild_workspace_map=dict(config.discord_guild_workspace_map),
+            trusted_users=set(config.discord_trusted_users),
+        )
+    )
+    await channel.connect()
+    return channel
+
+
+async def _build_telegram_channel(config: DaemonConfig) -> TelegramChannel | None:
+    if not config.telegram_enabled:
+        return None
+    if not config.telegram_bot_token:
+        raise ValueError(
+            "Telegram channel is enabled but missing required config field: telegram_bot_token"
+        )
+    channel = TelegramChannel(
+        TelegramConfig(
+            bot_token=config.telegram_bot_token,
+            default_chat_id=config.telegram_default_chat_id,
+            chat_workspace_map=dict(config.telegram_chat_workspace_map),
+            trusted_users=set(config.telegram_trusted_users),
+        )
+    )
+    await channel.connect()
+    return channel
+
+
+async def _build_slack_channel(config: DaemonConfig) -> SlackChannel | None:
+    if not config.slack_enabled:
+        return None
+    missing: list[str] = []
+    if not config.slack_bot_token:
+        missing.append("slack_bot_token")
+    if not config.slack_app_token:
+        missing.append("slack_app_token")
+    if missing:
+        raise ValueError(
+            "Slack channel is enabled but missing required config fields: " + ", ".join(missing)
+        )
+    channel = SlackChannel(
+        SlackConfig(
+            bot_token=config.slack_bot_token,
+            app_token=config.slack_app_token,
+            default_channel_id=config.slack_default_channel_id,
+            team_workspace_map=dict(config.slack_team_workspace_map),
+            trusted_users=set(config.slack_trusted_users),
+        )
+    )
+    await channel.connect()
+    return channel
 
 
 def _build_tool_registry(event_bus: EventBus) -> tuple[ToolRegistry, AlarmTool]:

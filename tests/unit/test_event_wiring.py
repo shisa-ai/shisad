@@ -39,6 +39,9 @@ class _MatrixMessage:
     external_user_id: str
     workspace_hint: str
     content: str
+    message_id: str = ""
+    reply_target: str = ""
+    thread_id: str = ""
 
 
 class _MatrixChannelStub:

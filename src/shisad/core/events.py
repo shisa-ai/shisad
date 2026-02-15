@@ -59,6 +59,15 @@ class SessionMessageResponded(BaseEvent):
     executed_actions: int = 0
 
 
+class ChannelPairingRequested(BaseEvent):
+    """Unmapped external identity attempted ingress on a default-deny channel."""
+
+    channel: str = ""
+    external_user_id: str = ""
+    workspace_hint: str = ""
+    reason: str = "identity_not_allowlisted"
+
+
 class SessionTerminated(BaseEvent):
     """A session was terminated."""
 
@@ -364,6 +373,7 @@ type AnyEvent = (
     SessionCreated
     | SessionMessageReceived
     | SessionMessageResponded
+    | ChannelPairingRequested
     | SessionTerminated
     | CapabilityGranted
     | ToolProposed
@@ -401,6 +411,7 @@ EVENT_TYPES: dict[str, type[BaseEvent]] = {
     "SessionCreated": SessionCreated,
     "SessionMessageReceived": SessionMessageReceived,
     "SessionMessageResponded": SessionMessageResponded,
+    "ChannelPairingRequested": ChannelPairingRequested,
     "SessionTerminated": SessionTerminated,
     "CapabilityGranted": CapabilityGranted,
     "ToolProposed": ToolProposed,

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import uuid
 from collections import deque
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
@@ -11,11 +12,31 @@ from typing import Any, Protocol
 from pydantic import BaseModel, Field
 
 
+class DeliveryTarget(BaseModel):
+    """Opaque channel recipient coordinates for outbound delivery."""
+
+    channel: str
+    recipient: str
+    workspace_hint: str = ""
+    thread_id: str = ""
+
+
+class DeliveryEnvelope(BaseModel):
+    """Outbound payload queued or delivered on a channel."""
+
+    target: DeliveryTarget
+    content: str
+    sent_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
 class ChannelMessage(BaseModel):
     channel: str
     external_user_id: str
     workspace_hint: str = ""
     content: str
+    message_id: str = ""
+    reply_target: str = ""
+    thread_id: str = ""
     received_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
@@ -24,7 +45,7 @@ class Channel(Protocol):
 
     async def disconnect(self) -> None: ...
 
-    async def send(self, message: str) -> None: ...
+    async def send(self, message: str, *, target: DeliveryTarget | None = None) -> None: ...
 
     async def receive(self) -> ChannelMessage: ...
 
@@ -46,8 +67,8 @@ class InMemoryChannel:
     ) -> None:
         self._name = name
         self._incoming: asyncio.Queue[ChannelMessage] = asyncio.Queue(maxsize=max_buffer)
-        self._outgoing: asyncio.Queue[str] = asyncio.Queue(maxsize=max_buffer)
-        self._offline_outgoing: deque[str] = deque(maxlen=max_buffer)
+        self._outgoing: asyncio.Queue[DeliveryEnvelope] = asyncio.Queue(maxsize=max_buffer)
+        self._offline_outgoing: deque[DeliveryEnvelope] = deque(maxlen=max_buffer)
         self._connected = False
         self._last_heartbeat: datetime | None = None
         self._reconnect_backoff_base = reconnect_backoff_base
@@ -66,11 +87,19 @@ class InMemoryChannel:
     async def disconnect(self) -> None:
         self._connected = False
 
-    async def send(self, message: str) -> None:
+    async def send(self, message: str, *, target: DeliveryTarget | None = None) -> None:
+        envelope = DeliveryEnvelope(
+            target=target
+            or DeliveryTarget(
+                channel=self._name,
+                recipient="default",
+            ),
+            content=message,
+        )
         if not self._connected:
-            self._offline_outgoing.append(message)
+            self._offline_outgoing.append(envelope)
             return
-        await self._outgoing.put(message)
+        await self._outgoing.put(envelope)
 
     async def receive(self) -> ChannelMessage:
         if not self._connected:
@@ -126,14 +155,32 @@ class InMemoryChannel:
     async def pop_outgoing(self) -> str:
         if not self._connected:
             raise RuntimeError("channel not connected")
+        return (await self._outgoing.get()).content
+
+    async def pop_outgoing_delivery(self) -> DeliveryEnvelope:
+        if not self._connected:
+            raise RuntimeError("channel not connected")
         return await self._outgoing.get()
 
-    async def inject(self, external_user_id: str, content: str, workspace_hint: str = "") -> None:
+    async def inject(
+        self,
+        external_user_id: str,
+        content: str,
+        workspace_hint: str = "",
+        *,
+        message_id: str = "",
+        reply_target: str = "",
+        thread_id: str = "",
+    ) -> None:
+        resolved_message_id = message_id.strip() or uuid.uuid4().hex
         await self._incoming.put(
             ChannelMessage(
                 channel=self._name,
                 external_user_id=external_user_id,
                 workspace_hint=workspace_hint,
                 content=content,
+                message_id=resolved_message_id,
+                reply_target=reply_target,
+                thread_id=thread_id,
             )
         )

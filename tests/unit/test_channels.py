@@ -4,9 +4,14 @@ from __future__ import annotations
 
 import pytest
 
-from shisad.channels.base import InMemoryChannel
+from shisad.channels.base import DeliveryTarget, InMemoryChannel
+from shisad.channels.delivery import ChannelDeliveryService
+from shisad.channels.discord import DiscordChannel, DiscordConfig
 from shisad.channels.identity import ChannelIdentityMap
 from shisad.channels.matrix import MatrixChannel, MatrixConfig
+from shisad.channels.slack import SlackChannel, SlackConfig
+from shisad.channels.state import ChannelStateStore
+from shisad.channels.telegram import TelegramChannel, TelegramConfig
 from shisad.core.tools.registry import ToolRegistry
 from shisad.core.tools.schema import ToolDefinition, ToolParameter
 from shisad.core.types import Capability, PEPDecisionKind, ToolName, UserId, WorkspaceId
@@ -36,6 +41,22 @@ def test_channel_identity_map_applies_per_channel_default_trust() -> None:
     bob = identity_map.resolve(channel="matrix", external_user_id="@bob:example.org")
     assert bob is not None
     assert bob.trust_level == "untrusted"
+
+
+def test_channel_identity_map_default_deny_allowlist_and_pairing_requests() -> None:
+    identity_map = ChannelIdentityMap(default_trust={"discord": "untrusted"})
+    assert identity_map.is_allowed(channel="discord", external_user_id="123") is False
+
+    pairing = identity_map.record_pairing_request(
+        channel="discord",
+        external_user_id="123",
+        workspace_hint="guild-1",
+    )
+    assert pairing.channel == "discord"
+    assert pairing.external_user_id == "123"
+
+    identity_map.allow_identity(channel="discord", external_user_id="123")
+    assert identity_map.is_allowed(channel="discord", external_user_id="123")
 
 
 def test_channel_trust_level_influences_pep_risk_outcome() -> None:
@@ -96,6 +117,32 @@ async def test_inmemory_channel_offline_buffer_heartbeat_and_health() -> None:
 
 
 @pytest.mark.asyncio
+async def test_channel_delivery_service_routes_to_targeted_channel() -> None:
+    channel = InMemoryChannel(name="discord")
+    await channel.connect()
+    delivery = ChannelDeliveryService({"discord": channel})
+    result = await delivery.send(
+        target=DeliveryTarget(channel="discord", recipient="chan-1", workspace_hint="guild-1"),
+        message="hello world",
+    )
+    assert result.sent is True
+    envelope = await channel.pop_outgoing_delivery()
+    assert envelope.content == "hello world"
+    assert envelope.target.recipient == "chan-1"
+    await channel.disconnect()
+
+
+def test_channel_state_store_persists_seen_message_ids(tmp_path) -> None:
+    store = ChannelStateStore(tmp_path / "state")
+    assert store.is_replay(channel="matrix", message_id="m1") is False
+    assert store.is_replay(channel="matrix", message_id="m1") is True
+
+    reloaded = ChannelStateStore(tmp_path / "state")
+    assert reloaded.is_replay(channel="matrix", message_id="m1") is True
+    assert reloaded.is_replay(channel="matrix", message_id="m2") is False
+
+
+@pytest.mark.asyncio
 async def test_inmemory_channel_reconnect_exponential_backoff() -> None:
     channel = InMemoryChannel(
         name="test",
@@ -113,6 +160,36 @@ async def test_inmemory_channel_reconnect_exponential_backoff() -> None:
     result = await channel.run_with_reconnect(flaky_operation, attempts=4)
     assert result == "ok"
     assert attempts["count"] == 3
+
+
+@pytest.mark.asyncio
+async def test_discord_telegram_slack_fallback_channels_support_inmemory_io(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from shisad.channels import discord as discord_module
+    from shisad.channels import slack as slack_module
+    from shisad.channels import telegram as telegram_module
+
+    monkeypatch.setattr(discord_module, "discord", None)
+    monkeypatch.setattr(telegram_module, "Application", None)
+    monkeypatch.setattr(telegram_module, "MessageHandler", None)
+    monkeypatch.setattr(telegram_module, "filters", None)
+    monkeypatch.setattr(slack_module, "AsyncApp", None)
+    monkeypatch.setattr(slack_module, "AsyncSocketModeHandler", None)
+
+    discord_channel = DiscordChannel(DiscordConfig(bot_token="token"))
+    telegram_channel = TelegramChannel(TelegramConfig(bot_token="token"))
+    slack_channel = SlackChannel(SlackConfig(bot_token="xoxb", app_token="xapp"))
+    channels = [discord_channel, telegram_channel, slack_channel]
+
+    for channel in channels:
+        await channel.connect()
+        await channel.inject(external_user_id="u1", content="hello", workspace_hint="ws1")
+        msg = await channel.receive()
+        assert msg.content == "hello"
+        await channel.send("reply", target=DeliveryTarget(channel=msg.channel, recipient="r1"))
+        assert await channel.pop_outgoing() == "reply"
+        await channel.disconnect()
 
 
 @pytest.mark.asyncio

@@ -70,6 +70,42 @@ async def test_daemon_services_matrix_missing_config_raises(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_daemon_services_discord_missing_config_raises(tmp_path) -> None:
+    config = DaemonConfig(
+        data_dir=tmp_path / "data",
+        socket_path=tmp_path / "control.sock",
+        policy_path=tmp_path / "policy.yaml",
+        discord_enabled=True,
+    )
+    with pytest.raises(ValueError, match="Discord channel is enabled but missing required config"):
+        await DaemonServices.build(config)
+
+
+@pytest.mark.asyncio
+async def test_daemon_services_telegram_missing_config_raises(tmp_path) -> None:
+    config = DaemonConfig(
+        data_dir=tmp_path / "data",
+        socket_path=tmp_path / "control.sock",
+        policy_path=tmp_path / "policy.yaml",
+        telegram_enabled=True,
+    )
+    with pytest.raises(ValueError, match="Telegram channel is enabled but missing required config"):
+        await DaemonServices.build(config)
+
+
+@pytest.mark.asyncio
+async def test_daemon_services_slack_missing_config_raises(tmp_path) -> None:
+    config = DaemonConfig(
+        data_dir=tmp_path / "data",
+        socket_path=tmp_path / "control.sock",
+        policy_path=tmp_path / "policy.yaml",
+        slack_enabled=True,
+    )
+    with pytest.raises(ValueError, match="Slack channel is enabled but missing required config"):
+        await DaemonServices.build(config)
+
+
+@pytest.mark.asyncio
 async def test_daemon_services_build_rolls_back_connected_matrix_on_failure(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,

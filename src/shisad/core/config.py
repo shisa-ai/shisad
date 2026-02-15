@@ -66,9 +66,65 @@ class DaemonConfig(BaseSettings):
         description="Map Matrix room ids to workspace ids.",
     )
 
-    @field_validator("matrix_trusted_users", mode="before")
-    @classmethod
-    def _parse_matrix_trusted_users(cls, value: object) -> object:
+    # Optional Discord runtime channel
+    discord_enabled: bool = Field(default=False, description="Enable Discord channel runtime.")
+    discord_bot_token: str = Field(default="", description="Discord bot token.")
+    discord_default_channel_id: str = Field(
+        default="",
+        description="Default Discord channel id for outbound sends.",
+    )
+    discord_trusted_users: list[str] = Field(
+        default_factory=list,
+        description="Discord users considered verified/trusted for policy decisions.",
+    )
+    discord_guild_workspace_map: dict[str, str] = Field(
+        default_factory=dict,
+        description="Map Discord guild ids to workspace ids.",
+    )
+
+    # Optional Telegram runtime channel
+    telegram_enabled: bool = Field(default=False, description="Enable Telegram channel runtime.")
+    telegram_bot_token: str = Field(default="", description="Telegram bot token.")
+    telegram_default_chat_id: str = Field(
+        default="",
+        description="Default Telegram chat id for outbound sends.",
+    )
+    telegram_trusted_users: list[str] = Field(
+        default_factory=list,
+        description="Telegram users considered verified/trusted for policy decisions.",
+    )
+    telegram_chat_workspace_map: dict[str, str] = Field(
+        default_factory=dict,
+        description="Map Telegram chat ids to workspace ids.",
+    )
+
+    # Optional Slack runtime channel
+    slack_enabled: bool = Field(default=False, description="Enable Slack channel runtime.")
+    slack_bot_token: str = Field(default="", description="Slack bot token.")
+    slack_app_token: str = Field(default="", description="Slack Socket Mode app token.")
+    slack_default_channel_id: str = Field(
+        default="",
+        description="Default Slack channel id for outbound sends.",
+    )
+    slack_trusted_users: list[str] = Field(
+        default_factory=list,
+        description="Slack users considered verified/trusted for policy decisions.",
+    )
+    slack_team_workspace_map: dict[str, str] = Field(
+        default_factory=dict,
+        description="Map Slack team ids to workspace ids.",
+    )
+
+    # Default-deny channel pairing/allowlist configuration.
+    channel_identity_allowlist: dict[str, list[str]] = Field(
+        default_factory=dict,
+        description=(
+            "Map channel -> list of allowlisted external user ids for default-deny pairing."
+        ),
+    )
+
+    @staticmethod
+    def _parse_list_field(value: object, *, field_name: str) -> object:
         if isinstance(value, str):
             stripped = value.strip()
             if not stripped:
@@ -77,13 +133,12 @@ class DaemonConfig(BaseSettings):
                 parsed = json.loads(stripped)
                 if isinstance(parsed, list):
                     return [str(item) for item in parsed]
-                raise ValueError("SHISAD_MATRIX_TRUSTED_USERS JSON must be a list")
+                raise ValueError(f"{field_name} JSON must be a list")
             return [entry.strip() for entry in stripped.split(",") if entry.strip()]
         return value
 
-    @field_validator("matrix_room_workspace_map", mode="before")
-    @classmethod
-    def _parse_matrix_room_workspace_map(cls, value: object) -> object:
+    @staticmethod
+    def _parse_map_field(value: object, *, field_name: str) -> object:
         if isinstance(value, str):
             stripped = value.strip()
             if not stripped:
@@ -91,7 +146,79 @@ class DaemonConfig(BaseSettings):
             parsed = json.loads(stripped)
             if isinstance(parsed, dict):
                 return {str(key): str(item) for key, item in parsed.items()}
-            raise ValueError("SHISAD_MATRIX_ROOM_WORKSPACE_MAP JSON must be an object")
+            raise ValueError(f"{field_name} JSON must be an object")
+        return value
+
+    @field_validator("matrix_trusted_users", mode="before")
+    @classmethod
+    def _parse_matrix_trusted_users(cls, value: object) -> object:
+        return cls._parse_list_field(value, field_name="SHISAD_MATRIX_TRUSTED_USERS")
+
+    @field_validator("matrix_room_workspace_map", mode="before")
+    @classmethod
+    def _parse_matrix_room_workspace_map(cls, value: object) -> object:
+        return cls._parse_map_field(value, field_name="SHISAD_MATRIX_ROOM_WORKSPACE_MAP")
+
+    @field_validator("discord_trusted_users", mode="before")
+    @classmethod
+    def _parse_discord_trusted_users(cls, value: object) -> object:
+        return cls._parse_list_field(value, field_name="SHISAD_DISCORD_TRUSTED_USERS")
+
+    @field_validator("discord_guild_workspace_map", mode="before")
+    @classmethod
+    def _parse_discord_guild_workspace_map(cls, value: object) -> object:
+        return cls._parse_map_field(value, field_name="SHISAD_DISCORD_GUILD_WORKSPACE_MAP")
+
+    @field_validator("telegram_trusted_users", mode="before")
+    @classmethod
+    def _parse_telegram_trusted_users(cls, value: object) -> object:
+        return cls._parse_list_field(value, field_name="SHISAD_TELEGRAM_TRUSTED_USERS")
+
+    @field_validator("telegram_chat_workspace_map", mode="before")
+    @classmethod
+    def _parse_telegram_chat_workspace_map(cls, value: object) -> object:
+        return cls._parse_map_field(value, field_name="SHISAD_TELEGRAM_CHAT_WORKSPACE_MAP")
+
+    @field_validator("slack_trusted_users", mode="before")
+    @classmethod
+    def _parse_slack_trusted_users(cls, value: object) -> object:
+        return cls._parse_list_field(value, field_name="SHISAD_SLACK_TRUSTED_USERS")
+
+    @field_validator("slack_team_workspace_map", mode="before")
+    @classmethod
+    def _parse_slack_team_workspace_map(cls, value: object) -> object:
+        return cls._parse_map_field(value, field_name="SHISAD_SLACK_TEAM_WORKSPACE_MAP")
+
+    @field_validator("channel_identity_allowlist", mode="before")
+    @classmethod
+    def _parse_channel_identity_allowlist(cls, value: object) -> object:
+        if isinstance(value, str):
+            stripped = value.strip()
+            if not stripped:
+                return {}
+            parsed = json.loads(stripped)
+            if isinstance(parsed, dict):
+                normalized: dict[str, list[str]] = {}
+                for channel, entries in parsed.items():
+                    channel_key = str(channel).strip()
+                    if not channel_key:
+                        continue
+                    if isinstance(entries, list):
+                        normalized[channel_key] = [
+                            str(item).strip() for item in entries if str(item).strip()
+                        ]
+                        continue
+                    if isinstance(entries, str):
+                        normalized[channel_key] = [
+                            piece.strip() for piece in entries.split(",") if piece.strip()
+                        ]
+                        continue
+                    raise ValueError(
+                        "SHISAD_CHANNEL_IDENTITY_ALLOWLIST values must be list[str] "
+                        "or comma-separated string"
+                    )
+                return normalized
+            raise ValueError("SHISAD_CHANNEL_IDENTITY_ALLOWLIST JSON must be an object")
         return value
 
     @model_validator(mode="after")

@@ -59,4 +59,8 @@ coverage = [
 ]
 channels-runtime = [
     "matrix-nio[e2e]>=0.25,<0.26",
+    "discord.py>=2.4,<3",
+    "python-telegram-bot>=21.6,<22",
+    "slack-bolt>=1.21,<2",
+    "slack-sdk>=3.33,<4",
 ]

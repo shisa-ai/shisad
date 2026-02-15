@@ -18,11 +18,12 @@ from urllib.parse import urlparse
 
 from pydantic import ValidationError
 
-from shisad.channels.base import ChannelMessage
+from shisad.channels.base import ChannelMessage, DeliveryTarget
 from shisad.core.audit import AuditLog
 from shisad.core.events import (
     AnomalyReported,
     BaseEvent,
+    ChannelPairingRequested,
     ConsensusEvaluated,
     ControlPlaneActionObserved,
     ControlPlaneNetworkObserved,
@@ -207,7 +208,12 @@ class HandlerImplementation:
         self._output_firewall = services.output_firewall
         self._channel_ingress = services.channel_ingress
         self._identity_map = services.identity_map
+        self._delivery = services.delivery
+        self._channels = services.channels
         self._matrix_channel = services.matrix_channel
+        self._discord_channel = services.discord_channel
+        self._telegram_channel = services.telegram_channel
+        self._slack_channel = services.slack_channel
         self._lockdown_manager = services.lockdown_manager
         self._rate_limiter = services.rate_limiter
         self._monitor = services.monitor
@@ -225,6 +231,7 @@ class HandlerImplementation:
         self._planner_model_id = services.planner_model_id
         self._classifier_mode = services.firewall.classifier_mode
         self._internal_ingress_marker = services.internal_ingress_marker
+        self._pairing_requests_file = self._config.data_dir / "channels" / "pairing_requests.jsonl"
         self._pending_actions_file = self._config.data_dir / "pending_actions.json"
         self._pending_actions: dict[str, PendingAction] = {}
         self._pending_by_session: dict[SessionId, list[str]] = {}
@@ -795,6 +802,36 @@ class HandlerImplementation:
                 [],
             ).append(pending.confirmation_id)
 
+    def _is_verified_channel_identity(self, *, channel: str, external_user_id: str) -> bool:
+        if channel == "matrix" and self._matrix_channel is not None:
+            return self._matrix_channel.is_user_verified(external_user_id)
+        if channel == "discord" and self._discord_channel is not None:
+            return self._discord_channel.is_user_verified(external_user_id)
+        if channel == "telegram" and self._telegram_channel is not None:
+            return self._telegram_channel.is_user_verified(external_user_id)
+        if channel == "slack" and self._slack_channel is not None:
+            return self._slack_channel.is_user_verified(external_user_id)
+        return False
+
+    def _record_pairing_request_artifact(
+        self,
+        *,
+        channel: str,
+        external_user_id: str,
+        workspace_hint: str,
+        reason: str,
+    ) -> None:
+        payload = {
+            "channel": channel,
+            "external_user_id": external_user_id,
+            "workspace_hint": workspace_hint,
+            "reason": reason,
+            "requested_at": datetime.now(UTC).isoformat(),
+        }
+        self._pairing_requests_file.parent.mkdir(parents=True, exist_ok=True)
+        with self._pairing_requests_file.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(payload) + "\n")
+
     async def _record_monitor_reject(self, sid: SessionId, reason: str) -> None:
         count = self._monitor_reject_counts.get(sid, 0) + 1
         self._monitor_reject_counts[sid] = count
@@ -1138,6 +1175,14 @@ class HandlerImplementation:
             override = str(params.get("trust_level", "")).strip()
             if override:
                 trust_level = override
+            delivery_target_payload = params.get("_delivery_target")
+            if isinstance(delivery_target_payload, dict):
+                try:
+                    target = DeliveryTarget.model_validate(delivery_target_payload)
+                except ValidationError:
+                    target = None
+                if target is not None:
+                    metadata["delivery_target"] = target.model_dump(mode="json")
         metadata["trust_level"] = trust_level
         default_capabilities = set(self._policy_loader.policy.default_capabilities)
 
@@ -1188,15 +1233,33 @@ class HandlerImplementation:
         is_internal_ingress = (
             params.get("_internal_ingress_marker") is self._internal_ingress_marker
         )
+        delivery_target: DeliveryTarget | None = None
+        channel_message_id = ""
+        if is_internal_ingress:
+            raw_delivery_target = params.get("_delivery_target")
+            if isinstance(raw_delivery_target, dict):
+                try:
+                    delivery_target = DeliveryTarget.model_validate(raw_delivery_target)
+                except ValidationError:
+                    delivery_target = None
+            channel_message_id = str(params.get("_channel_message_id", "")).strip()
         if is_internal_ingress and isinstance(firewall_result_payload, dict):
             firewall_result = FirewallResult.model_validate(firewall_result_payload)
         else:
             firewall_result = self._firewall.inspect(content)
+        user_transcript_metadata: dict[str, Any] = {}
+        if channel_message_id:
+            user_transcript_metadata["channel_message_id"] = channel_message_id
+        if delivery_target is not None:
+            serialized_target = delivery_target.model_dump(mode="json")
+            session.metadata["delivery_target"] = serialized_target
+            user_transcript_metadata["delivery_target"] = serialized_target
         self._transcript_store.append(
             sid,
             role="user",
             content=firewall_result.sanitized_text,
             taint_labels=set(firewall_result.taint_labels),
+            metadata=user_transcript_metadata,
         )
 
         raw_allowlist = session.metadata.get("tool_allowlist")
@@ -1528,6 +1591,11 @@ class HandlerImplementation:
             role="assistant",
             content=response_text,
             taint_labels=set(),
+            metadata=(
+                {"delivery_target": delivery_target.model_dump(mode="json")}
+                if delivery_target is not None
+                else {}
+            ),
         )
 
         # --- trace: record full turn ---
@@ -2162,8 +2230,32 @@ class HandlerImplementation:
                     "e2ee_enabled": (
                         self._matrix_channel.e2ee_enabled if self._matrix_channel else False
                     ),
-                }
+                },
+                "discord": {
+                    "enabled": self._config.discord_enabled,
+                    "available": (
+                        self._discord_channel.available if self._discord_channel else False
+                    ),
+                    "connected": (
+                        self._discord_channel.connected if self._discord_channel else False
+                    ),
+                },
+                "telegram": {
+                    "enabled": self._config.telegram_enabled,
+                    "available": (
+                        self._telegram_channel.available if self._telegram_channel else False
+                    ),
+                    "connected": (
+                        self._telegram_channel.connected if self._telegram_channel else False
+                    ),
+                },
+                "slack": {
+                    "enabled": self._config.slack_enabled,
+                    "available": self._slack_channel.available if self._slack_channel else False,
+                    "connected": self._slack_channel.connected if self._slack_channel else False,
+                },
             },
+            "delivery": self._delivery.health_status(),
             "executors": {
                 "sandbox_backends": [item.value for item in SandboxType],
                 "connect_path": self._sandbox.connect_path_status(),
@@ -2909,15 +3001,83 @@ class HandlerImplementation:
             message = message.model_copy(
                 update={"workspace_hint": self._matrix_channel.workspace_for_room(room_hint)}
             )
+        elif self._discord_channel is not None and message.channel == "discord":
+            discord_workspace = self._discord_channel.workspace_for_guild(message.workspace_hint)
+            message = message.model_copy(
+                update={"workspace_hint": discord_workspace}
+            )
+        elif self._telegram_channel is not None and message.channel == "telegram":
+            telegram_workspace = self._telegram_channel.workspace_for_chat(message.workspace_hint)
+            message = message.model_copy(
+                update={"workspace_hint": telegram_workspace}
+            )
+        elif self._slack_channel is not None and message.channel == "slack":
+            slack_workspace = self._slack_channel.workspace_for_team(message.workspace_hint)
+            message = message.model_copy(
+                update={"workspace_hint": slack_workspace}
+            )
+
+        if not self._identity_map.is_allowed(
+            channel=message.channel,
+            external_user_id=message.external_user_id,
+        ):
+            pairing = self._identity_map.record_pairing_request(
+                channel=message.channel,
+                external_user_id=message.external_user_id,
+                workspace_hint=message.workspace_hint,
+                reason="identity_not_allowlisted",
+            )
+            self._record_pairing_request_artifact(
+                channel=pairing.channel,
+                external_user_id=pairing.external_user_id,
+                workspace_hint=pairing.workspace_hint,
+                reason=pairing.reason,
+            )
+            await self._event_bus.publish(
+                ChannelPairingRequested(
+                    actor="channel_ingest",
+                    channel=pairing.channel,
+                    external_user_id=pairing.external_user_id,
+                    workspace_hint=pairing.workspace_hint,
+                    reason=pairing.reason,
+                )
+            )
+            return {
+                "session_id": "",
+                "response": (
+                    "Identity is not allowlisted for this channel. "
+                    "Pairing request recorded for trusted admin review."
+                ),
+                "plan_hash": None,
+                "risk_score": 0.0,
+                "blocked_actions": 0,
+                "confirmation_required_actions": 0,
+                "executed_actions": 0,
+                "checkpoint_ids": [],
+                "checkpoints_created": 0,
+                "transcript_root": str(self._transcript_root),
+                "lockdown_level": "normal",
+                "trust_level": "untrusted",
+                "pending_confirmation_ids": [],
+                "output_policy": {},
+                "ingress_risk": 0.0,
+                "delivery": {
+                    "attempted": False,
+                    "sent": False,
+                    "reason": "identity_not_allowlisted",
+                    "target": {},
+                },
+            }
+
         declared_trust = self._identity_map.trust_for_channel(message.channel)
-        if (
-            self._matrix_channel is not None
-            and message.channel == "matrix"
-            and self._matrix_channel.is_user_verified(message.external_user_id)
+        if self._is_verified_channel_identity(
+            channel=message.channel,
+            external_user_id=message.external_user_id,
         ):
             declared_trust = "trusted"
         if not declared_trust:
-            declared_trust = self._identity_map.trust_for_channel(message.channel)
+            declared_trust = "untrusted"
+
         identity = self._identity_map.resolve(
             channel=message.channel,
             external_user_id=message.external_user_id,
@@ -2950,6 +3110,12 @@ class HandlerImplementation:
             raise ValueError("failed to resolve channel identity")
 
         _sanitized, result = self._channel_ingress.process(message)
+        delivery_target = DeliveryTarget(
+            channel=message.channel,
+            recipient=message.reply_target or message.external_user_id,
+            workspace_hint=message.workspace_hint,
+            thread_id=message.thread_id,
+        )
         sid = SessionId(str(params.get("session_id", "")))
         if not sid or self._session_manager.get(sid) is None:
             existing = self._session_manager.find_by_binding(
@@ -2967,6 +3133,7 @@ class HandlerImplementation:
                     "workspace_id": identity.workspace_id,
                     "trust_level": identity.trust_level,
                     "_internal_ingress_marker": self._internal_ingress_marker,
+                    "_delivery_target": delivery_target.model_dump(mode="json"),
                 }
             )
             sid = SessionId(created["session_id"])
@@ -2980,7 +3147,27 @@ class HandlerImplementation:
                 "trust_level": identity.trust_level,
                 "_internal_ingress_marker": self._internal_ingress_marker,
                 "_firewall_result": result.model_dump(mode="json"),
+                "_delivery_target": delivery_target.model_dump(mode="json"),
+                "_channel_message_id": message.message_id,
             }
         )
+        delivery_result = await self._delivery.send(
+            target=delivery_target,
+            message=str(response.get("response", "")),
+        )
+        response["delivery"] = delivery_result.as_dict()
+        if not delivery_result.sent:
+            await self._event_bus.publish(
+                AnomalyReported(
+                    session_id=sid,
+                    actor="channel_delivery",
+                    severity="warning",
+                    description=(
+                        f"Failed to deliver channel response via {message.channel} "
+                        f"({delivery_result.reason})"
+                    ),
+                    recommended_action="check_channel_connectivity",
+                )
+            )
         response["ingress_risk"] = result.risk_score
         return response

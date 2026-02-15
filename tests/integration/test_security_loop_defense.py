@@ -322,6 +322,54 @@ async def test_m2_t16_channel_trust_spoofing_rejected_by_schema(
 
 
 @pytest.mark.asyncio
+async def test_m1_channel_ingest_default_deny_records_pairing_request(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SHISAD_MODEL_BASE_URL", "https://api.example.com/v1")
+    monkeypatch.setenv("SHISAD_MODEL_PLANNER_BASE_URL", "https://planner.example.com/v1")
+    monkeypatch.setenv("SHISAD_MODEL_EMBEDDINGS_BASE_URL", "https://embed.example.com/v1")
+    monkeypatch.setenv("SHISAD_MODEL_MONITOR_BASE_URL", "https://monitor.example.com/v1")
+
+    config = DaemonConfig(
+        data_dir=tmp_path / "data",
+        socket_path=tmp_path / "control.sock",
+        policy_path=tmp_path / "policy.yaml",
+        log_level="INFO",
+    )
+    daemon_task = asyncio.create_task(run_daemon(config))
+    client = ControlClient(config.socket_path)
+    try:
+        await _wait_for_socket(config.socket_path)
+        await client.connect()
+        result = await client.call(
+            "channel.ingest",
+            {
+                "message": {
+                    "channel": "discord",
+                    "external_user_id": "mallory",
+                    "workspace_hint": "guild-1",
+                    "content": "hello there",
+                    "message_id": "m-1",
+                    "reply_target": "chan-1",
+                }
+            },
+        )
+        assert "not allowlisted" in str(result["response"])
+        assert result["delivery"]["sent"] is False
+        events = await client.call(
+            "audit.query",
+            {"event_type": "ChannelPairingRequested", "actor": "channel_ingest", "limit": 10},
+        )
+        assert events["total"] >= 1
+    finally:
+        with suppress(Exception):
+            await client.call("daemon.shutdown")
+        await client.close()
+        await asyncio.wait_for(daemon_task, timeout=3)
+
+
+@pytest.mark.asyncio
 async def test_m2_t16_session_message_trust_override_rejected_by_schema(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -415,6 +463,7 @@ async def test_m2_t22_daemon_status_exposes_matrix_runtime_fields(
         matrix_user_id="@bot:example.org",
         matrix_access_token="token",
         matrix_room_id="!room:example.org",
+        channel_identity_allowlist={"matrix": ["@alice:example.org"]},
     )
     daemon_task = asyncio.create_task(run_daemon(config))
     client = ControlClient(config.socket_path)
@@ -1083,6 +1132,7 @@ async def test_m2_matrix_receive_pump_ingests_inbound_messages(
         matrix_user_id="@bot:example.org",
         matrix_access_token="token",
         matrix_room_id="!room:example.org",
+        channel_identity_allowlist={"matrix": ["@alice:example.org"]},
     )
     daemon_task = asyncio.create_task(run_daemon(config))
     client = ControlClient(config.socket_path)

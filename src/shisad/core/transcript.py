@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -24,6 +25,7 @@ class TranscriptEntry(BaseModel):
     timestamp: datetime = Field(default_factory=lambda: datetime.now(UTC))
     blob_ref: str | None = None
     content_preview: str = ""
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class TranscriptStore:
@@ -44,6 +46,7 @@ class TranscriptStore:
         role: str,
         content: str,
         taint_labels: set[TaintLabel] | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> TranscriptEntry:
         """Append a transcript entry for a session."""
         raw = content.encode("utf-8")
@@ -64,6 +67,7 @@ class TranscriptStore:
             taint_labels=sorted(taint_labels or set()),
             blob_ref=blob_ref,
             content_preview=preview,
+            metadata=metadata or {},
         )
 
         transcript_path = self._transcript_dir / f"{session_id}.jsonl"

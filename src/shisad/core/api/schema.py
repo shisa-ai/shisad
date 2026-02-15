@@ -104,6 +104,7 @@ class SessionMessageResult(BaseModel):
     trust_level: str | None = None
     pending_confirmation_ids: list[str] = Field(default_factory=list)
     output_policy: dict[str, Any] = Field(default_factory=dict)
+    delivery: dict[str, Any] = Field(default_factory=dict)
 
 
 class SessionListEntry(BaseModel):
@@ -369,6 +370,9 @@ class ChannelMessageParams(_StrictParams):
     external_user_id: str
     workspace_hint: str = ""
     content: str
+    message_id: str = ""
+    reply_target: str = ""
+    thread_id: str = ""
 
 
 class ChannelIngestParams(_StrictParams):

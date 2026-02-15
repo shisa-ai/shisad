@@ -6,7 +6,9 @@ import asyncio
 import logging
 from typing import Any, Protocol
 
+from shisad.channels.base import Channel
 from shisad.channels.matrix import MatrixChannel
+from shisad.channels.state import ChannelStateStore
 from shisad.core.api.schema import ChannelIngestParams
 from shisad.core.api.transport import ControlServer
 from shisad.core.events import (
@@ -209,18 +211,43 @@ async def matrix_receive_pump(
     matrix_channel: MatrixChannel,
     shutdown_event: asyncio.Event,
     handlers: _ChannelIngestHandler,
+    state_store: ChannelStateStore | None = None,
 ) -> None:
-    """Continuously ingest Matrix messages until shutdown is requested."""
+    await channel_receive_pump(
+        channel_name="matrix",
+        channel=matrix_channel,
+        shutdown_event=shutdown_event,
+        handlers=handlers,
+        state_store=state_store,
+    )
+
+
+async def channel_receive_pump(
+    *,
+    channel_name: str,
+    channel: Channel,
+    shutdown_event: asyncio.Event,
+    handlers: _ChannelIngestHandler,
+    state_store: ChannelStateStore | None = None,
+) -> None:
+    """Continuously ingest channel messages until shutdown is requested."""
     while not shutdown_event.is_set():
         try:
-            message = await asyncio.wait_for(matrix_channel.receive(), timeout=0.5)
+            message = await asyncio.wait_for(channel.receive(), timeout=0.5)
         except TimeoutError:
             continue
         except asyncio.CancelledError:
             raise
         except (OSError, RuntimeError, ValueError, TypeError):
-            logger.exception("Matrix receive loop error")
+            logger.exception("%s receive loop error", channel_name)
             await asyncio.sleep(0.2)
+            continue
+
+        if (
+            state_store is not None
+            and message.message_id
+            and state_store.is_replay(channel=channel_name, message_id=message.message_id)
+        ):
             continue
 
         try:
@@ -231,9 +258,12 @@ async def matrix_receive_pump(
                         "external_user_id": message.external_user_id,
                         "workspace_hint": message.workspace_hint,
                         "content": message.content,
+                        "message_id": message.message_id,
+                        "reply_target": message.reply_target,
+                        "thread_id": message.thread_id,
                     }
                 ),
                 RequestContext(is_internal_ingress=True),
             )
         except (OSError, RuntimeError, ValueError, TypeError):
-            logger.exception("Matrix ingress processing failed")
+            logger.exception("%s ingress processing failed", channel_name)
