@@ -325,3 +325,31 @@ async def test_m3_daemon_services_enable_realitycheck_surface_when_config_valid(
         assert services.registry.get_tool(ToolName("realitycheck.read")) is not None
     finally:
         await services.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_m3_daemon_services_fail_closed_on_invalid_endpoint_port(tmp_path) -> None:
+    repo_root = tmp_path / "realitycheck"
+    data_root = tmp_path / "realitycheck-data"
+    repo_root.mkdir(parents=True)
+    data_root.mkdir(parents=True)
+
+    config = DaemonConfig(
+        data_dir=tmp_path / "data",
+        socket_path=tmp_path / "control.sock",
+        policy_path=tmp_path / "policy.yaml",
+        realitycheck_enabled=True,
+        realitycheck_repo_root=repo_root,
+        realitycheck_data_roots=[data_root],
+        realitycheck_endpoint_enabled=True,
+        realitycheck_endpoint_url="https://allowed.example:abc/search",
+        realitycheck_allowed_domains=["allowed.example"],
+    )
+    services = await DaemonServices.build(config)
+    try:
+        assert services.realitycheck_status["status"] == "misconfigured"
+        assert "endpoint_port_invalid" in services.realitycheck_status["problems"]
+        assert services.registry.get_tool(ToolName("realitycheck.search")) is None
+        assert services.registry.get_tool(ToolName("realitycheck.read")) is None
+    finally:
+        await services.shutdown()

@@ -88,31 +88,60 @@ class RealityCheckToolkit:
     max_read_bytes: int
 
     def doctor_status(self) -> dict[str, Any]:
-        resolved_repo = self.repo_root.expanduser().resolve(strict=False)
-        configured_roots = [
-            item.expanduser().resolve(strict=False)
-            for item in self.data_roots
-            if str(item).strip()
-        ]
-        existing_roots = [item for item in configured_roots if item.exists() and item.is_dir()]
+        problems: list[str] = []
+        resolved_repo: Path | None = None
+        try:
+            resolved_repo = self.repo_root.expanduser().resolve(strict=False)
+        except (OSError, RuntimeError, ValueError):
+            if self.enabled:
+                problems.append("repo_root_invalid")
+
+        configured_roots: list[Path] = []
+        for item in self.data_roots:
+            if not str(item).strip():
+                continue
+            try:
+                configured_roots.append(item.expanduser().resolve(strict=False))
+            except (OSError, RuntimeError, ValueError):
+                if self.enabled:
+                    problems.append("data_root_invalid")
+
+        existing_roots: list[Path] = []
+        for item in configured_roots:
+            try:
+                if item.exists() and item.is_dir():
+                    existing_roots.append(item)
+            except (OSError, ValueError):
+                continue
 
         endpoint = self.endpoint_url.strip()
         parsed_endpoint = urlparse(endpoint) if endpoint else None
         endpoint_host = (parsed_endpoint.hostname or "").lower() if parsed_endpoint else ""
         endpoint_scheme = (parsed_endpoint.scheme or "").lower() if parsed_endpoint else ""
-        endpoint_port = parsed_endpoint.port if parsed_endpoint else None
-        if endpoint_port is None and endpoint_scheme in {"http", "https"}:
+        endpoint_port: int | None = None
+        endpoint_port_invalid = False
+        if parsed_endpoint:
+            try:
+                endpoint_port = parsed_endpoint.port
+            except ValueError:
+                endpoint_port_invalid = True
+        if (
+            endpoint_port is None
+            and endpoint_scheme in {"http", "https"}
+            and not endpoint_port_invalid
+        ):
             endpoint_port = 80 if endpoint_scheme == "http" else 443
 
-        problems: list[str] = []
         if self.enabled:
-            if not resolved_repo.exists() or not resolved_repo.is_dir():
+            if resolved_repo is None or not resolved_repo.exists() or not resolved_repo.is_dir():
                 problems.append("repo_root_missing")
             if not existing_roots:
                 problems.append("data_roots_missing")
             if self.endpoint_enabled:
                 if not endpoint:
                     problems.append("endpoint_url_missing")
+                if endpoint_port_invalid:
+                    problems.append("endpoint_port_invalid")
                 if endpoint_scheme != "https":
                     problems.append("endpoint_scheme_must_be_https")
                 if endpoint_port != 443:
@@ -130,8 +159,10 @@ class RealityCheckToolkit:
             "status": status,
             "enabled": self.enabled,
             "surface_enabled": status == "ok",
-            "repo_root": str(resolved_repo),
-            "repo_exists": resolved_repo.exists() and resolved_repo.is_dir(),
+            "repo_root": str(resolved_repo) if resolved_repo is not None else "",
+            "repo_exists": bool(
+                resolved_repo is not None and resolved_repo.exists() and resolved_repo.is_dir()
+            ),
             "data_roots": [str(item) for item in configured_roots],
             "data_roots_existing": [str(item) for item in existing_roots],
             "endpoint_enabled": self.endpoint_enabled,
@@ -405,20 +436,32 @@ class RealityCheckToolkit:
         if not raw:
             return self._read_error(reason="path_required", path=path)
 
-        candidate = Path(raw).expanduser()
+        try:
+            candidate = Path(raw).expanduser()
+        except (TypeError, ValueError):
+            return self._read_error(reason="invalid_path", path=raw)
         if candidate.is_absolute():
-            resolved = candidate.resolve(strict=False)
+            try:
+                resolved = candidate.resolve(strict=False)
+            except (OSError, RuntimeError, ValueError):
+                return self._read_error(reason="invalid_path", path=raw)
             if not any(_is_within(resolved, root) for root in roots):
                 return self._read_error(reason="path_not_allowlisted", path=str(resolved))
             return resolved
 
         fallback: Path | None = None
         for root in roots:
-            resolved = (root / candidate).resolve(strict=False)
+            try:
+                resolved = (root / candidate).resolve(strict=False)
+            except (OSError, RuntimeError, ValueError):
+                return self._read_error(reason="invalid_path", path=raw)
             if not _is_within(resolved, root):
                 return self._read_error(reason="path_not_allowlisted", path=str(resolved))
-            if resolved.exists():
-                return resolved
+            try:
+                if resolved.exists():
+                    return resolved
+            except (OSError, ValueError):
+                return self._read_error(reason="invalid_path", path=str(resolved))
             if fallback is None:
                 fallback = resolved
         if fallback is None:
@@ -426,11 +469,20 @@ class RealityCheckToolkit:
         return fallback
 
     def _active_data_roots(self) -> list[Path]:
-        return [
-            item.expanduser().resolve(strict=False)
-            for item in self.data_roots
-            if str(item).strip() and item.expanduser().resolve(strict=False).exists()
-        ]
+        roots: list[Path] = []
+        for item in self.data_roots:
+            if not str(item).strip():
+                continue
+            try:
+                resolved = item.expanduser().resolve(strict=False)
+            except (OSError, RuntimeError, ValueError):
+                continue
+            try:
+                if resolved.exists():
+                    roots.append(resolved)
+            except (OSError, ValueError):
+                continue
+        return roots
 
     def _host_allowed(self, host: str) -> bool:
         return any(_host_matches(host, rule) for rule in self.allowed_domains)

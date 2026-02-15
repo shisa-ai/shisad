@@ -130,3 +130,36 @@ def test_m3_realitycheck_endpoint_host_must_be_allowlisted(tmp_path: Path) -> No
     assert "endpoint_not_allowlisted" in health["problems"]
     assert result["ok"] is False
     assert result["error"] == "realitycheck_misconfigured"
+
+
+def test_m3_realitycheck_doctor_handles_invalid_endpoint_port_without_crashing(
+    tmp_path: Path,
+) -> None:
+    repo_root = tmp_path / "realitycheck"
+    data_root = tmp_path / "realitycheck-data"
+    repo_root.mkdir(parents=True)
+    data_root.mkdir(parents=True)
+
+    toolkit = _toolkit(
+        repo_root=repo_root,
+        data_roots=[data_root],
+        enabled=True,
+        endpoint_enabled=True,
+        endpoint_url="https://allowed.example:abc/search",
+        allowed_domains=["allowed.example"],
+    )
+    health = toolkit.doctor_status()
+    assert health["status"] == "misconfigured"
+    assert "endpoint_port_invalid" in health["problems"]
+
+
+def test_m3_realitycheck_read_rejects_invalid_path_bytes(tmp_path: Path) -> None:
+    repo_root = tmp_path / "realitycheck"
+    data_root = tmp_path / "realitycheck-data"
+    repo_root.mkdir(parents=True)
+    data_root.mkdir(parents=True)
+
+    toolkit = _toolkit(repo_root=repo_root, data_roots=[data_root], enabled=True)
+    result = toolkit.read_source(path="bad\x00path")
+    assert result["ok"] is False
+    assert result["error"] == "invalid_path"
