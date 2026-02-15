@@ -12,8 +12,11 @@ import pytest
 from click.testing import CliRunner
 
 from shisad.channels.base import ChannelMessage, InMemoryChannel
+from shisad.channels.discord import DiscordChannel
 from shisad.channels.ingress import ChannelIngressProcessor
 from shisad.channels.matrix import MatrixChannel
+from shisad.channels.slack import SlackChannel
+from shisad.channels.telegram import TelegramChannel
 from shisad.cli.main import cli
 from shisad.core.api.transport import ControlClient
 from shisad.core.config import DaemonConfig
@@ -1436,3 +1439,174 @@ async def test_m2_matrix_receive_pump_ingests_inbound_messages(
             await client.call("daemon.shutdown")
         await client.close()
         await asyncio.wait_for(daemon_task, timeout=3)
+
+
+async def _assert_channel_pump_ingest(
+    *,
+    socket_path: Path,
+    daemon_task: asyncio.Task[None],
+    channel_name: str,
+    external_user_id: str,
+) -> None:
+    client = ControlClient(socket_path)
+    try:
+        await _wait_for_socket(socket_path)
+        await client.connect()
+        matched_sessions: list[dict[str, object]] = []
+        received_count = 0
+        for _ in range(60):
+            sessions = await client.call("session.list")
+            matched_sessions = [
+                item
+                for item in sessions["sessions"]
+                if item["channel"] == channel_name and item["user_id"] == external_user_id
+            ]
+            received = await client.call(
+                "audit.query",
+                {
+                    "event_type": "SessionMessageReceived",
+                    "actor": external_user_id,
+                    "limit": 20,
+                },
+            )
+            received_count = int(received["total"])
+            if matched_sessions and received_count >= 2:
+                break
+            await asyncio.sleep(0.05)
+        assert received_count >= 2
+        assert len(matched_sessions) == 1
+    finally:
+        with suppress(Exception):
+            await client.call("daemon.shutdown")
+        await client.close()
+        await asyncio.wait_for(daemon_task, timeout=3)
+
+
+@pytest.mark.asyncio
+async def test_m5_discord_receive_pump_ingests_inbound_messages(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SHISAD_MODEL_BASE_URL", "https://api.example.com/v1")
+    monkeypatch.setenv("SHISAD_MODEL_PLANNER_BASE_URL", "https://planner.example.com/v1")
+    monkeypatch.setenv("SHISAD_MODEL_EMBEDDINGS_BASE_URL", "https://embed.example.com/v1")
+    monkeypatch.setenv("SHISAD_MODEL_MONITOR_BASE_URL", "https://monitor.example.com/v1")
+
+    async def _fake_connect(self: DiscordChannel) -> None:
+        await InMemoryChannel.connect(self)
+        await self.inject(
+            "discord-user",
+            "hello from discord ingestion pump",
+            "guild-1",
+        )
+        await self.inject(
+            "discord-user",
+            "second discord message",
+            "guild-1",
+        )
+
+    monkeypatch.setattr(DiscordChannel, "connect", _fake_connect)
+
+    config = DaemonConfig(
+        data_dir=tmp_path / "data",
+        socket_path=tmp_path / "control.sock",
+        policy_path=tmp_path / "policy.yaml",
+        log_level="INFO",
+        discord_enabled=True,
+        discord_bot_token="token",
+        channel_identity_allowlist={"discord": ["discord-user"]},
+    )
+    daemon_task = asyncio.create_task(run_daemon(config))
+    await _assert_channel_pump_ingest(
+        socket_path=config.socket_path,
+        daemon_task=daemon_task,
+        channel_name="discord",
+        external_user_id="discord-user",
+    )
+
+
+@pytest.mark.asyncio
+async def test_m5_telegram_receive_pump_ingests_inbound_messages(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SHISAD_MODEL_BASE_URL", "https://api.example.com/v1")
+    monkeypatch.setenv("SHISAD_MODEL_PLANNER_BASE_URL", "https://planner.example.com/v1")
+    monkeypatch.setenv("SHISAD_MODEL_EMBEDDINGS_BASE_URL", "https://embed.example.com/v1")
+    monkeypatch.setenv("SHISAD_MODEL_MONITOR_BASE_URL", "https://monitor.example.com/v1")
+
+    async def _fake_connect(self: TelegramChannel) -> None:
+        await InMemoryChannel.connect(self)
+        await self.inject(
+            "telegram-user",
+            "hello from telegram ingestion pump",
+            "chat-1",
+        )
+        await self.inject(
+            "telegram-user",
+            "second telegram message",
+            "chat-1",
+        )
+
+    monkeypatch.setattr(TelegramChannel, "connect", _fake_connect)
+
+    config = DaemonConfig(
+        data_dir=tmp_path / "data",
+        socket_path=tmp_path / "control.sock",
+        policy_path=tmp_path / "policy.yaml",
+        log_level="INFO",
+        telegram_enabled=True,
+        telegram_bot_token="token",
+        channel_identity_allowlist={"telegram": ["telegram-user"]},
+    )
+    daemon_task = asyncio.create_task(run_daemon(config))
+    await _assert_channel_pump_ingest(
+        socket_path=config.socket_path,
+        daemon_task=daemon_task,
+        channel_name="telegram",
+        external_user_id="telegram-user",
+    )
+
+
+@pytest.mark.asyncio
+async def test_m5_slack_receive_pump_ingests_inbound_messages(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SHISAD_MODEL_BASE_URL", "https://api.example.com/v1")
+    monkeypatch.setenv("SHISAD_MODEL_PLANNER_BASE_URL", "https://planner.example.com/v1")
+    monkeypatch.setenv("SHISAD_MODEL_EMBEDDINGS_BASE_URL", "https://embed.example.com/v1")
+    monkeypatch.setenv("SHISAD_MODEL_MONITOR_BASE_URL", "https://monitor.example.com/v1")
+
+    async def _fake_connect(self: SlackChannel) -> None:
+        await InMemoryChannel.connect(self)
+        await self.inject(
+            "slack-user",
+            "hello from slack ingestion pump",
+            "team-1",
+        )
+        await self.inject(
+            "slack-user",
+            "second slack message",
+            "team-1",
+        )
+
+    monkeypatch.setattr(SlackChannel, "connect", _fake_connect)
+
+    config = DaemonConfig(
+        data_dir=tmp_path / "data",
+        socket_path=tmp_path / "control.sock",
+        policy_path=tmp_path / "policy.yaml",
+        log_level="INFO",
+        slack_enabled=True,
+        slack_bot_token="xoxb-token",
+        slack_app_token="xapp-token",
+        channel_identity_allowlist={"slack": ["slack-user"]},
+    )
+    daemon_task = asyncio.create_task(run_daemon(config))
+    await _assert_channel_pump_ingest(
+        socket_path=config.socket_path,
+        daemon_task=daemon_task,
+        channel_name="slack",
+        external_user_id="slack-user",
+    )

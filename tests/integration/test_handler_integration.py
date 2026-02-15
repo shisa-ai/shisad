@@ -54,6 +54,22 @@ async def test_facade_routes_across_handler_groups(
 
         status = await client.call("daemon.status")
         assert status["status"] == "running"
+        doctor_all = await client.call("doctor.check", {"component": "all"})
+        assert doctor_all["status"] in {"ok", "degraded"}
+        checks = doctor_all.get("checks", {})
+        assert "dependencies" in checks
+        assert "policy" in checks
+        assert "channels" in checks
+        assert "sandbox" in checks
+        assert "realitycheck" in checks
+        assert checks["dependencies"]["status"] in {"ok", "misconfigured"}
+        assert checks["policy"]["status"] in {"ok", "degraded", "misconfigured"}
+        assert checks["channels"]["status"] in {"ok", "degraded", "misconfigured", "disabled"}
+        assert checks["sandbox"]["status"] in {"ok", "degraded", "misconfigured"}
+
+        unsupported = await client.call("doctor.check", {"component": "not-a-component"})
+        assert unsupported["status"] == "error"
+        assert unsupported["error"] == "unsupported_component"
 
         memory = await client.call("memory.list", {"limit": 10})
         assert "entries" in memory

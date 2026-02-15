@@ -149,6 +149,13 @@ _CLEANROOM_UNTRUSTED_TOOL_NAMES: set[str] = {
     "realitycheck.search",
     "realitycheck.read",
 }
+_DOCTOR_COMPONENTS: tuple[str, ...] = (
+    "dependencies",
+    "policy",
+    "channels",
+    "sandbox",
+    "realitycheck",
+)
 
 
 class _EventPublisher:
@@ -569,6 +576,134 @@ class HandlerImplementation:
 
     def _session_has_tainted_history(self, session_id: SessionId) -> bool:
         return any(entry.taint_labels for entry in self._transcript_store.list_entries(session_id))
+
+    def _doctor_dependencies_status(self) -> dict[str, Any]:
+        channel_rows: dict[str, dict[str, Any]] = {}
+        problems: list[str] = []
+        for name, enabled, channel in (
+            ("matrix", self._config.matrix_enabled, self._matrix_channel),
+            ("discord", self._config.discord_enabled, self._discord_channel),
+            ("telegram", self._config.telegram_enabled, self._telegram_channel),
+            ("slack", self._config.slack_enabled, self._slack_channel),
+        ):
+            available = bool(channel.available) if channel is not None else False
+            row = {
+                "enabled": bool(enabled),
+                "available": available,
+                "dependency_missing": bool(enabled and not available),
+            }
+            channel_rows[name] = row
+            if row["dependency_missing"]:
+                problems.append(f"{name}_dependency_missing")
+        provider = type(getattr(self._planner, "_provider", object())).__name__
+        return {
+            "status": "misconfigured" if problems else "ok",
+            "problems": sorted(set(problems)),
+            "provider": provider,
+            "classifier_mode": self._classifier_mode,
+            "channels": channel_rows,
+        }
+
+    def _doctor_policy_status(self) -> dict[str, Any]:
+        problems: list[str] = []
+        if not self._config.policy_path.exists():
+            problems.append("policy_file_missing")
+        try:
+            integrity_ok = self._policy_loader.verify_integrity()
+        except OSError:
+            integrity_ok = False
+            problems.append("policy_integrity_check_failed")
+        if not integrity_ok:
+            problems.append("policy_hash_mismatch")
+        using_defaults = self._policy_loader.file_hash == ""
+        if using_defaults and "policy_file_missing" in problems:
+            problems = [item for item in problems if item != "policy_hash_mismatch"]
+        if using_defaults:
+            problems.append("policy_defaults_active")
+        if not self._policy_loader.policy.default_deny:
+            problems.append("default_deny_disabled")
+        status = "ok"
+        if "policy_hash_mismatch" in problems or "policy_integrity_check_failed" in problems:
+            status = "misconfigured"
+        elif problems:
+            status = "degraded"
+        return {
+            "status": status,
+            "problems": sorted(set(problems)),
+            "path": str(self._config.policy_path),
+            "hash_prefix": (
+                self._policy_loader.file_hash[:12] if self._policy_loader.file_hash else ""
+            ),
+            "default_deny": bool(self._policy_loader.policy.default_deny),
+        }
+
+    def _doctor_channels_status(self) -> dict[str, Any]:
+        rows: dict[str, dict[str, Any]] = {}
+        problems: list[str] = []
+        active_statuses: list[str] = []
+        for name, enabled, channel in (
+            ("matrix", self._config.matrix_enabled, self._matrix_channel),
+            ("discord", self._config.discord_enabled, self._discord_channel),
+            ("telegram", self._config.telegram_enabled, self._telegram_channel),
+            ("slack", self._config.slack_enabled, self._slack_channel),
+        ):
+            available = bool(channel.available) if channel is not None else False
+            connected = bool(channel.connected) if channel is not None else False
+            status = "disabled"
+            if enabled and not available:
+                status = "misconfigured"
+                problems.append(f"{name}_dependency_unavailable")
+            elif enabled and not connected:
+                status = "degraded"
+                problems.append(f"{name}_not_connected")
+            elif enabled:
+                status = "ok"
+            rows[name] = {
+                "status": status,
+                "enabled": bool(enabled),
+                "available": available,
+                "connected": connected,
+            }
+            if enabled:
+                active_statuses.append(status)
+        overall = "disabled"
+        if any(item == "misconfigured" for item in active_statuses):
+            overall = "misconfigured"
+        elif any(item == "degraded" for item in active_statuses):
+            overall = "degraded"
+        elif any(item == "ok" for item in active_statuses):
+            overall = "ok"
+        return {
+            "status": overall,
+            "problems": sorted(set(problems)),
+            "channels": rows,
+            "delivery": self._delivery.health_status(),
+        }
+
+    def _doctor_sandbox_status(self) -> dict[str, Any]:
+        problems: list[str] = []
+        connect_path = self._sandbox.connect_path_status()
+        if not bool(connect_path.get("available", False)):
+            problems.append("connect_path_unavailable")
+        if not bool(self._policy_loader.policy.sandbox.fail_closed_security_critical):
+            problems.append("fail_closed_security_critical_disabled")
+        status = "ok"
+        if "fail_closed_security_critical_disabled" in problems:
+            status = "misconfigured"
+        elif problems:
+            status = "degraded"
+        return {
+            "status": status,
+            "problems": sorted(set(problems)),
+            "connect_path": connect_path,
+            "sandbox_policy": {
+                "default_backend": self._policy_loader.policy.sandbox.default_backend,
+                "network_backend": self._policy_loader.policy.sandbox.network_backend,
+                "fail_closed_security_critical": bool(
+                    self._policy_loader.policy.sandbox.fail_closed_security_critical
+                ),
+            },
+        }
 
     @staticmethod
     def _normalized_pairing_request_entry(raw: Mapping[str, Any]) -> dict[str, str] | None:
@@ -3410,10 +3545,20 @@ class HandlerImplementation:
 
     async def do_doctor_check(self, params: Mapping[str, Any]) -> dict[str, Any]:
         component = str(params.get("component", "all")).strip().lower() or "all"
+        component_checks: dict[str, Any] = {
+            "dependencies": self._doctor_dependencies_status(),
+            "policy": self._doctor_policy_status(),
+            "channels": self._doctor_channels_status(),
+            "sandbox": self._doctor_sandbox_status(),
+            "realitycheck": self._realitycheck_toolkit.doctor_status(),
+        }
         checks: dict[str, Any] = {}
-        if component in {"all", "realitycheck"}:
-            checks["realitycheck"] = self._realitycheck_toolkit.doctor_status()
-        if component not in {"all", "realitycheck"}:
+        if component == "all":
+            for key in _DOCTOR_COMPONENTS:
+                checks[key] = component_checks[key]
+        elif component in component_checks:
+            checks[component] = component_checks[component]
+        else:
             return {
                 "status": "error",
                 "component": component,
@@ -3426,7 +3571,7 @@ class HandlerImplementation:
             if isinstance(item, Mapping)
         ]
         overall = "ok"
-        if any(state == "misconfigured" for state in check_states):
+        if any(state in {"misconfigured", "degraded", "error"} for state in check_states):
             overall = "degraded"
         return {
             "status": overall,

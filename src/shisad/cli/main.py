@@ -228,7 +228,11 @@ def doctor() -> None:
 
 
 @doctor.command("check")
-@click.option("--component", default="all", help="Component to check (e.g. all, realitycheck)")
+@click.option(
+    "--component",
+    default="all",
+    help="Component to check (all, dependencies, policy, channels, sandbox, realitycheck)",
+)
 def doctor_check(component: str) -> None:
     config = _get_config()
     result = rpc_call(

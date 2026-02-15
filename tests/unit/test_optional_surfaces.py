@@ -19,7 +19,23 @@ def test_tui_plain_renderer_includes_confirmation_panel() -> None:
             {
                 "confirmation_id": "c1",
                 "tool_name": "http_request",
-                "reason": "requires_confirmation",
+                "status": "pending",
+            }
+        ],
+        tasks=[
+            {
+                "id": "t1",
+                "enabled": True,
+                "schedule_kind": "interval",
+                "delivery_channel": "discord",
+            }
+        ],
+        channel_health=[
+            {
+                "channel": "discord",
+                "enabled": True,
+                "available": True,
+                "connected": True,
             }
         ],
         alerts=[{"event_type": "AnomalyReported", "acknowledged_reason": ""}],
@@ -27,7 +43,9 @@ def test_tui_plain_renderer_includes_confirmation_panel() -> None:
     )
     rendered = render_plain(snapshot)
     assert "PENDING CONFIRMATIONS" in rendered
-    assert "c1 tool=http_request" in rendered
+    assert "c1 tool=http_request status=pending" in rendered
+    assert "TASKS:" in rendered
+    assert "CHANNEL HEALTH:" in rendered
 
 
 def test_web_snapshot_renderer_includes_key_sections() -> None:
@@ -62,7 +80,22 @@ async def test_tui_fetch_snapshot_uses_control_client(monkeypatch: pytest.Monkey
             self.calls.append((method, params))
             mapping = {
                 "session.list": {"sessions": [{"id": "s1"}]},
-                "action.pending": {"actions": [{"confirmation_id": "c1"}]},
+                "action.pending": {"actions": [{"confirmation_id": "c1", "status": "pending"}]},
+                "task.list": {
+                    "tasks": [
+                        {
+                            "id": "t1",
+                            "enabled": True,
+                            "schedule": {"kind": "interval"},
+                            "delivery_target": {"channel": "discord"},
+                        }
+                    ]
+                },
+                "daemon.status": {
+                    "channels": {
+                        "discord": {"enabled": True, "available": True, "connected": True}
+                    }
+                },
                 "dashboard.alerts": {"alerts": [{"event_type": "AlertRaised"}]},
                 "dashboard.audit_explorer": {"events": [{"event_type": "AuditLogged"}]},
             }
@@ -84,6 +117,11 @@ async def test_tui_fetch_snapshot_uses_control_client(monkeypatch: pytest.Monkey
     snapshot = await fetch_snapshot(Path("/tmp/control.sock"))
     assert snapshot.sessions[0]["id"] == "s1"
     assert snapshot.pending_actions[0]["confirmation_id"] == "c1"
+    assert snapshot.pending_actions[0]["status"] == "pending"
+    assert snapshot.tasks[0]["id"] == "t1"
+    assert snapshot.tasks[0]["schedule_kind"] == "interval"
+    assert snapshot.channel_health[0]["channel"] == "discord"
+    assert snapshot.channel_health[0]["connected"] is True
     assert snapshot.alerts[0]["event_type"] == "AlertRaised"
     assert snapshot.audit_events[0]["event_type"] == "AuditLogged"
     assert created[0].connected is True
@@ -93,7 +131,7 @@ async def test_tui_fetch_snapshot_uses_control_client(monkeypatch: pytest.Monkey
 def test_tui_render_rich_fallbacks_to_plain_without_rich(monkeypatch: pytest.MonkeyPatch) -> None:
     from shisad.ui import tui as tui_module
 
-    snapshot = TuiSnapshot(sessions=[], pending_actions=[], alerts=[], audit_events=[])
+    snapshot = TuiSnapshot()
 
     def _raise_import(name: str):  # type: ignore[no-untyped-def]
         _ = name
@@ -142,7 +180,25 @@ def test_tui_render_rich_uses_rich_modules_when_available(monkeypatch: pytest.Mo
     monkeypatch.setattr(tui_module.importlib, "import_module", lambda name: modules[name])
     snapshot = TuiSnapshot(
         sessions=[{"id": "s1", "user_id": "u1", "lockdown_level": "normal"}],
-        pending_actions=[{"confirmation_id": "c1", "tool_name": "http_request", "reason": "risk"}],
+        pending_actions=[
+            {"confirmation_id": "c1", "tool_name": "http_request", "status": "pending"}
+        ],
+        tasks=[
+            {
+                "id": "t1",
+                "enabled": True,
+                "schedule_kind": "interval",
+                "delivery_channel": "discord",
+            }
+        ],
+        channel_health=[
+            {
+                "channel": "discord",
+                "enabled": True,
+                "available": True,
+                "connected": True,
+            }
+        ],
         alerts=[{"event_type": "AlertRaised", "acknowledged_reason": ""}],
         audit_events=[],
     )
@@ -154,7 +210,7 @@ async def test_tui_run_once_respects_rich_output_toggle(monkeypatch: pytest.Monk
     from shisad.ui import tui as tui_module
 
     async def _fake_fetch_snapshot(_socket_path: Path) -> TuiSnapshot:
-        return TuiSnapshot(sessions=[], pending_actions=[], alerts=[], audit_events=[])
+        return TuiSnapshot()
 
     monkeypatch.setattr(tui_module, "fetch_snapshot", _fake_fetch_snapshot)
     monkeypatch.setattr(tui_module, "render_rich", lambda snapshot: "RICH")
@@ -168,7 +224,7 @@ async def test_tui_interactive_command_routing(monkeypatch: pytest.MonkeyPatch) 
     from shisad.ui import tui as tui_module
 
     async def _fake_fetch_snapshot(_socket_path: Path) -> TuiSnapshot:
-        return TuiSnapshot(sessions=[], pending_actions=[], alerts=[], audit_events=[])
+        return TuiSnapshot()
 
     decisions: list[tuple[str, str]] = []
 

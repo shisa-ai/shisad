@@ -5,7 +5,8 @@ from __future__ import annotations
 import asyncio
 import importlib
 import json
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -14,10 +15,56 @@ from shisad.core.api.transport import ControlClient
 
 @dataclass(slots=True)
 class TuiSnapshot:
-    sessions: list[dict[str, Any]]
-    pending_actions: list[dict[str, Any]]
-    alerts: list[dict[str, Any]]
-    audit_events: list[dict[str, Any]]
+    sessions: list[dict[str, Any]] = field(default_factory=list)
+    pending_actions: list[dict[str, Any]] = field(default_factory=list)
+    tasks: list[dict[str, Any]] = field(default_factory=list)
+    channel_health: list[dict[str, Any]] = field(default_factory=list)
+    alerts: list[dict[str, Any]] = field(default_factory=list)
+    audit_events: list[dict[str, Any]] = field(default_factory=list)
+
+
+def _safe_task_rows(raw_tasks: list[Any]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for raw in raw_tasks:
+        if not isinstance(raw, Mapping):
+            continue
+        schedule = raw.get("schedule", {})
+        delivery = raw.get("delivery_target", {})
+        schedule_kind = ""
+        if isinstance(schedule, Mapping):
+            schedule_kind = str(schedule.get("kind", "")).strip()
+        delivery_channel = ""
+        if isinstance(delivery, Mapping):
+            delivery_channel = str(delivery.get("channel", "")).strip()
+        rows.append(
+            {
+                "id": str(raw.get("id", "")),
+                "enabled": bool(raw.get("enabled", False)),
+                "schedule_kind": schedule_kind,
+                "last_triggered_at": str(raw.get("last_triggered_at", "")),
+                "delivery_channel": delivery_channel,
+            }
+        )
+    return rows
+
+
+def _safe_channel_rows(raw_channels: Mapping[str, Any]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for raw_name, raw in raw_channels.items():
+        name = str(raw_name).strip().lower()
+        if not isinstance(raw, Mapping):
+            raw = {}
+        rows.append(
+            {
+                "channel": name,
+                "enabled": bool(raw.get("enabled", False)),
+                "available": bool(raw.get("available", False)),
+                "connected": bool(raw.get("connected", False)),
+                "status": str(raw.get("status", "")).strip(),
+            }
+        )
+    rows.sort(key=lambda row: str(row.get("channel", "")))
+    return rows
 
 
 async def fetch_snapshot(socket_path: Path) -> TuiSnapshot:
@@ -30,13 +77,30 @@ async def fetch_snapshot(socket_path: Path) -> TuiSnapshot:
             "action.pending",
             {"status": "pending", "limit": 20},
         )
+        tasks_result = await client.call("task.list")
+        status_result = await client.call("daemon.status")
         alerts_result = await client.call("dashboard.alerts", {"limit": 20})
         audit_result = await client.call("dashboard.audit_explorer", {"limit": 20})
     finally:
         await client.close()
     return TuiSnapshot(
         sessions=[dict(item) for item in sessions_result.get("sessions", [])],
-        pending_actions=[dict(item) for item in pending_result.get("actions", [])],
+        pending_actions=[
+            {
+                "confirmation_id": str(item.get("confirmation_id", "")),
+                "tool_name": str(item.get("tool_name", "")),
+                "status": str(item.get("status", "")),
+                "created_at": str(item.get("created_at", "")),
+            }
+            for item in pending_result.get("actions", [])
+            if isinstance(item, Mapping)
+        ],
+        tasks=_safe_task_rows([item for item in tasks_result.get("tasks", [])]),
+        channel_health=_safe_channel_rows(
+            status_result.get("channels", {})
+            if isinstance(status_result.get("channels", {}), Mapping)
+            else {}
+        ),
         alerts=[dict(item) for item in alerts_result.get("alerts", [])],
         audit_events=[dict(item) for item in audit_result.get("events", [])],
     )
@@ -63,7 +127,29 @@ def render_plain(snapshot: TuiSnapshot) -> str:
             "  "
             f"{row.get('confirmation_id','')} "
             f"tool={row.get('tool_name','')} "
-            f"reason={row.get('reason','')}"
+            f"status={row.get('status','')}"
+        )
+    lines.append("TASKS:")
+    if not snapshot.tasks:
+        lines.append("  (none)")
+    for row in snapshot.tasks:
+        lines.append(
+            "  "
+            f"{row.get('id','')} "
+            f"enabled={row.get('enabled', False)} "
+            f"schedule={row.get('schedule_kind','')} "
+            f"delivery={row.get('delivery_channel','')}"
+        )
+    lines.append("CHANNEL HEALTH:")
+    if not snapshot.channel_health:
+        lines.append("  (none)")
+    for row in snapshot.channel_health:
+        lines.append(
+            "  "
+            f"{row.get('channel','')} "
+            f"enabled={row.get('enabled', False)} "
+            f"available={row.get('available', False)} "
+            f"connected={row.get('connected', False)}"
         )
     lines.append("ALERTS:")
     if not snapshot.alerts:
@@ -116,15 +202,45 @@ def render_rich(snapshot: TuiSnapshot) -> str:
     pending = Table(title="Pending Confirmations", show_lines=False)
     pending.add_column("Confirmation")
     pending.add_column("Tool")
-    pending.add_column("Reason")
+    pending.add_column("Status")
     for row in snapshot.pending_actions:
         pending.add_row(
             str(row.get("confirmation_id", "")),
             str(row.get("tool_name", "")),
-            str(row.get("reason", "")),
+            str(row.get("status", "")),
         )
     if not snapshot.pending_actions:
         pending.add_row("(none)", "", "")
+
+    tasks = Table(title="Tasks", show_lines=False)
+    tasks.add_column("Task")
+    tasks.add_column("Enabled")
+    tasks.add_column("Schedule")
+    tasks.add_column("Delivery")
+    for row in snapshot.tasks:
+        tasks.add_row(
+            str(row.get("id", "")),
+            str(row.get("enabled", False)),
+            str(row.get("schedule_kind", "")),
+            str(row.get("delivery_channel", "")),
+        )
+    if not snapshot.tasks:
+        tasks.add_row("(none)", "", "", "")
+
+    channels = Table(title="Channel Health", show_lines=False)
+    channels.add_column("Channel")
+    channels.add_column("Enabled")
+    channels.add_column("Available")
+    channels.add_column("Connected")
+    for row in snapshot.channel_health:
+        channels.add_row(
+            str(row.get("channel", "")),
+            str(row.get("enabled", False)),
+            str(row.get("available", False)),
+            str(row.get("connected", False)),
+        )
+    if not snapshot.channel_health:
+        channels.add_row("(none)", "", "", "")
 
     alerts = Table(title="Alerts", show_lines=False)
     alerts.add_column("Event")
@@ -139,6 +255,8 @@ def render_rich(snapshot: TuiSnapshot) -> str:
 
     console.print(Panel.fit(sessions))
     console.print(Panel.fit(pending))
+    console.print(Panel.fit(tasks))
+    console.print(Panel.fit(channels))
     console.print(Panel.fit(alerts))
     return str(console.export_text())
 
