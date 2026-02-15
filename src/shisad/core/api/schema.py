@@ -69,12 +69,14 @@ class SessionCreateParams(_StrictParams):
     channel: str = "cli"
     user_id: str = ""
     workspace_id: str = ""
+    mode: Literal["default", "admin_cleanroom"] = "default"
 
 
 class SessionCreateResult(BaseModel):
     """Result for session.create."""
 
     session_id: str
+    mode: str = "default"
 
 
 class SessionMessageParams(_StrictParams):
@@ -102,6 +104,10 @@ class SessionMessageResult(BaseModel):
     transcript_root: str | None = None
     lockdown_level: str | None = None
     trust_level: str | None = None
+    session_mode: str = "default"
+    proposal_only: bool = False
+    proposals: list[dict[str, Any]] = Field(default_factory=list)
+    cleanroom_block_reasons: list[str] = Field(default_factory=list)
     pending_confirmation_ids: list[str] = Field(default_factory=list)
     output_policy: dict[str, Any] = Field(default_factory=dict)
     delivery: dict[str, Any] = Field(default_factory=dict)
@@ -115,6 +121,7 @@ class SessionListEntry(BaseModel):
     user_id: str = ""
     workspace_id: str = ""
     channel: str = ""
+    mode: str = "default"
     capabilities: list[str] = Field(default_factory=list)
     trust_level: str = ""
     session_key: str | None = None
@@ -174,6 +181,22 @@ class SessionGrantCapabilitiesResult(BaseModel):
     session_id: str
     granted: bool
     capabilities: list[str] = Field(default_factory=list)
+
+
+class SessionSetModeParams(_StrictParams):
+    """Parameters for session.set_mode."""
+
+    session_id: str
+    mode: Literal["default", "admin_cleanroom"] = "default"
+
+
+class SessionSetModeResult(BaseModel):
+    """Result for session.set_mode."""
+
+    session_id: str
+    mode: str = "default"
+    changed: bool = False
+    reason: str = ""
 
 
 class AuditQueryParams(_StrictParams):
@@ -624,6 +647,23 @@ class ChannelIngestParams(_StrictParams):
 
 class ChannelIngestResult(SessionMessageResult):
     ingress_risk: float
+
+
+class ChannelPairingProposalParams(_StrictParams):
+    channel: str | None = None
+    workspace_hint: str | None = None
+    limit: int = 100
+
+
+class ChannelPairingProposalResult(BaseModel):
+    proposal_id: str = ""
+    proposal_path: str = ""
+    generated_at: str = ""
+    entries: list[dict[str, Any]] = Field(default_factory=list)
+    invalid_entries: list[dict[str, Any]] = Field(default_factory=list)
+    count: int = 0
+    config_patch: dict[str, list[str]] = Field(default_factory=dict)
+    applied: bool = False
 
 
 class ActionPendingParams(_StrictParams):

@@ -16,6 +16,8 @@ from shisad.core.api.schema import (
     BrowserScreenshotParams,
     ChannelIngestParams,
     ChannelIngestResult,
+    ChannelPairingProposalParams,
+    ChannelPairingProposalResult,
     ConfirmationMetricsParams,
     ConfirmationMetricsResult,
     DaemonShutdownResult,
@@ -84,6 +86,8 @@ from shisad.core.api.schema import (
     SessionRestoreResult,
     SessionRollbackParams,
     SessionRollbackResult,
+    SessionSetModeParams,
+    SessionSetModeResult,
     SkillInstallParams,
     SkillInstallResult,
     SkillListResult,
@@ -204,6 +208,11 @@ class DaemonControlHandlers:
         self, params: SessionGrantCapabilitiesParams, ctx: RequestContext
     ) -> SessionGrantCapabilitiesResult:
         return await self._session.handle_session_grant_capabilities(params, ctx)
+
+    async def handle_session_set_mode(
+        self, params: SessionSetModeParams, ctx: RequestContext
+    ) -> SessionSetModeResult:
+        return await self._session.handle_session_set_mode(params, ctx)
 
     async def handle_daemon_status(
         self, params: NoParams, ctx: RequestContext
@@ -484,6 +493,11 @@ class DaemonControlHandlers:
         self, params: ChannelIngestParams, ctx: RequestContext
     ) -> ChannelIngestResult:
         return await self._admin.handle_channel_ingest(params, ctx)
+
+    async def handle_channel_pairing_propose(
+        self, params: ChannelPairingProposalParams, ctx: RequestContext
+    ) -> ChannelPairingProposalResult:
+        return await self._admin.handle_channel_pairing_propose(params, ctx)
 
     async def handle_tool_execute(
         self, params: ToolExecuteParams, ctx: RequestContext

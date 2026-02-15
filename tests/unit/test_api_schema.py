@@ -10,6 +10,7 @@ from shisad.core.api.schema import (
     ActionPendingResult,
     ActionRejectResult,
     ChannelIngestResult,
+    ChannelPairingProposalResult,
     ConfirmationMetricsResult,
     DaemonShutdownResult,
     DaemonStatusResult,
@@ -35,6 +36,7 @@ from shisad.core.api.schema import (
     SessionListResult,
     SessionMessageParams,
     SessionRollbackResult,
+    SessionSetModeResult,
     SkillInstallResult,
     SkillListResult,
     SkillProfileResult,
@@ -250,6 +252,20 @@ class TestApiSchemaValidation:
         ingest = ChannelIngestResult.model_validate(
             {"session_id": "s1", "response": "ok", "ingress_risk": 0.1}
         )
+        set_mode = SessionSetModeResult.model_validate(
+            {"session_id": "s1", "mode": "admin_cleanroom", "changed": True}
+        )
+        pairing = ChannelPairingProposalResult.model_validate(
+            {
+                "proposal_id": "p1",
+                "proposal_path": "/tmp/p1.json",
+                "generated_at": "2026-02-15T00:00:00+00:00",
+                "entries": [],
+                "count": 0,
+                "config_patch": {},
+                "applied": False,
+            }
+        )
         assert memory_ingest.chunk_id == "m1"
         assert memory_retrieve.count == 1
         assert memory_write.kind == "allow"
@@ -286,6 +302,8 @@ class TestApiSchemaValidation:
         assert lockdown.level == "caution"
         assert risk.allowed is True
         assert ingest.ingress_risk == 0.1
+        assert set_mode.mode == "admin_cleanroom"
+        assert pairing.proposal_id == "p1"
 
     def test_m4_list_entry_models_preserve_additional_payload_fields(self) -> None:
         memory_list = MemoryListResult.model_validate(

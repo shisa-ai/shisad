@@ -16,7 +16,14 @@ from typing import Any
 
 from pydantic import BaseModel, Field, ValidationError
 
-from shisad.core.types import Capability, SessionId, SessionState, UserId, WorkspaceId
+from shisad.core.types import (
+    Capability,
+    SessionId,
+    SessionMode,
+    SessionState,
+    UserId,
+    WorkspaceId,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +38,7 @@ class Session(BaseModel):
     session_key: str = ""
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     state: SessionState = SessionState.ACTIVE
+    mode: SessionMode = SessionMode.DEFAULT
     capabilities: set[Capability] = Field(default_factory=set)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
@@ -56,6 +64,7 @@ class SessionManager:
         channel: str = "cli",
         user_id: UserId | None = None,
         workspace_id: WorkspaceId | None = None,
+        mode: SessionMode = SessionMode.DEFAULT,
         capabilities: set[Capability] | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> Session:
@@ -68,6 +77,7 @@ class SessionManager:
             channel=channel,
             user_id=user,
             workspace_id=workspace,
+            mode=mode,
             session_key=session_key,
             capabilities=capabilities or set(),
             metadata=metadata or {},
@@ -151,6 +161,15 @@ class SessionManager:
             and session.user_id == user_id
             and session.workspace_id == workspace_id
         )
+
+    def set_mode(self, session_id: SessionId, mode: SessionMode) -> bool:
+        """Set session mode."""
+        session = self._sessions.get(session_id)
+        if session is None:
+            return False
+        session.mode = mode
+        session.metadata["session_mode"] = mode.value
+        return True
 
     def grant_capabilities(
         self,

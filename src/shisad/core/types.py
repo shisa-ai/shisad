@@ -116,3 +116,10 @@ class SessionState(StrEnum):
     ACTIVE = "active"
     SUSPENDED = "suspended"
     TERMINATED = "terminated"
+
+
+class SessionMode(StrEnum):
+    """Session execution mode."""
+
+    DEFAULT = "default"
+    ADMIN_CLEANROOM = "admin_cleanroom"

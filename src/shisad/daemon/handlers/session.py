@@ -15,6 +15,8 @@ from shisad.core.api.schema import (
     SessionRestoreResult,
     SessionRollbackParams,
     SessionRollbackResult,
+    SessionSetModeParams,
+    SessionSetModeResult,
 )
 from shisad.daemon.context import RequestContext
 from shisad.daemon.handlers._helpers import build_params_payload
@@ -97,3 +99,15 @@ class SessionHandlers:
         return SessionGrantCapabilitiesResult.model_validate(
             await self._impl.do_session_grant_capabilities(payload)
         )
+
+    async def handle_session_set_mode(
+        self,
+        params: SessionSetModeParams,
+        ctx: RequestContext,
+    ) -> SessionSetModeResult:
+        payload = build_params_payload(
+            params,
+            ctx,
+            internal_ingress_marker=self._internal_ingress_marker,
+        )
+        return SessionSetModeResult.model_validate(await self._impl.do_session_set_mode(payload))

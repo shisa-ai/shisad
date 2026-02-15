@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from shisad.core.api.schema import NoParams, SessionCreateParams
+from shisad.core.api.schema import NoParams, SessionCreateParams, SessionSetModeParams
 from shisad.daemon.context import RequestContext
 from shisad.daemon.handlers.session import SessionHandlers
 
@@ -20,6 +20,14 @@ class _StubImpl:
     async def do_session_list(self, payload: dict[str, object]) -> dict[str, object]:
         self.payloads.append(("list", payload))
         return {"sessions": []}
+
+    async def do_session_set_mode(self, payload: dict[str, object]) -> dict[str, object]:
+        self.payloads.append(("set_mode", payload))
+        return {
+            "session_id": str(payload.get("session_id", "")),
+            "mode": "admin_cleanroom",
+            "changed": True,
+        }
 
 
 @pytest.mark.asyncio
@@ -54,3 +62,21 @@ async def test_session_list_passes_empty_payload() -> None:
 
     assert result.sessions == []
     assert impl.payloads == [("list", {})]
+
+
+@pytest.mark.asyncio
+async def test_session_set_mode_uses_request_context_payload() -> None:
+    marker = object()
+    impl = _StubImpl()
+    handlers = SessionHandlers(impl, internal_ingress_marker=marker)  # type: ignore[arg-type]
+
+    result = await handlers.handle_session_set_mode(
+        SessionSetModeParams(session_id="sess-1", mode="admin_cleanroom"),
+        RequestContext(rpc_peer={"uid": 1000, "gid": 1000, "pid": 1}),
+    )
+
+    assert result.changed is True
+    payload = impl.payloads[-1][1]
+    assert payload["session_id"] == "sess-1"
+    assert payload["mode"] == "admin_cleanroom"
+    assert payload["_rpc_peer"] == {"uid": 1000, "gid": 1000, "pid": 1}

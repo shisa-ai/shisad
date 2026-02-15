@@ -45,6 +45,14 @@ class SessionCreated(BaseEvent):
     workspace_id: str = ""
 
 
+class SessionModeChanged(BaseEvent):
+    """Session mode transition recorded."""
+
+    mode: str = "default"
+    changed: bool = False
+    reason: str = ""
+
+
 class SessionMessageReceived(BaseEvent):
     """A session received a user message."""
 
@@ -66,6 +74,14 @@ class ChannelPairingRequested(BaseEvent):
     external_user_id: str = ""
     workspace_hint: str = ""
     reason: str = "identity_not_allowlisted"
+
+
+class ChannelPairingProposalGenerated(BaseEvent):
+    """Proposal artifact generated from pairing request evidence."""
+
+    proposal_id: str = ""
+    proposal_path: str = ""
+    entries_count: int = 0
 
 
 class ChannelDeliveryAttempted(BaseEvent):
@@ -382,9 +398,11 @@ class SandboxExecutionCompleted(BaseEvent):
 # Union of all event types for type-safe handling
 type AnyEvent = (
     SessionCreated
+    | SessionModeChanged
     | SessionMessageReceived
     | SessionMessageResponded
     | ChannelPairingRequested
+    | ChannelPairingProposalGenerated
     | ChannelDeliveryAttempted
     | SessionTerminated
     | CapabilityGranted
@@ -421,9 +439,11 @@ type AnyEvent = (
 
 EVENT_TYPES: dict[str, type[BaseEvent]] = {
     "SessionCreated": SessionCreated,
+    "SessionModeChanged": SessionModeChanged,
     "SessionMessageReceived": SessionMessageReceived,
     "SessionMessageResponded": SessionMessageResponded,
     "ChannelPairingRequested": ChannelPairingRequested,
+    "ChannelPairingProposalGenerated": ChannelPairingProposalGenerated,
     "ChannelDeliveryAttempted": ChannelDeliveryAttempted,
     "SessionTerminated": SessionTerminated,
     "CapabilityGranted": CapabilityGranted,

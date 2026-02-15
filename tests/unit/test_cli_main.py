@@ -49,6 +49,12 @@ def test_cli_commands_route_through_rpc_wrapper(
         },
         "session.create": {"session_id": "s-1"},
         "session.message": {"session_id": "s-1", "response": "hello"},
+        "session.set_mode": {
+            "session_id": "s-1",
+            "mode": "admin_cleanroom",
+            "changed": True,
+            "reason": "",
+        },
         "session.list": {"sessions": [{"id": "s-1", "state": "active", "user_id": "alice"}]},
         "session.restore": {"restored": True, "session_id": "s-1", "checkpoint_id": "cp-1"},
         "session.rollback": {"rolled_back": True, "session_id": "s-1", "checkpoint_id": "cp-1"},
@@ -66,6 +72,16 @@ def test_cli_commands_route_through_rpc_wrapper(
         },
         "action.confirm": {"confirmed": True, "confirmation_id": "c-1"},
         "action.reject": {"rejected": True, "confirmation_id": "c-1"},
+        "channel.pairing_propose": {
+            "proposal_id": "proposal-1",
+            "proposal_path": "/tmp/proposal-1.json",
+            "generated_at": "2026-02-15T00:00:00+00:00",
+            "entries": [],
+            "invalid_entries": [],
+            "count": 0,
+            "config_patch": {},
+            "applied": False,
+        },
         "dashboard.audit_explorer": {
             "events": [
                 {
@@ -220,6 +236,7 @@ def test_cli_commands_route_through_rpc_wrapper(
         ["session", "create", "--user", "alice", "--workspace", "ws-1"],
     ).output
     assert "hello" in _invoke_ok(runner, ["session", "message", "s-1", "hi"]).output
+    _invoke_ok(runner, ["session", "mode", "s-1", "--mode", "admin_cleanroom"])
     assert "state=active" in _invoke_ok(runner, ["session", "list"]).output
     assert "Restored session s-1" in _invoke_ok(runner, ["session", "restore", "cp-1"]).output
     assert "Rolled back session s-1" in _invoke_ok(runner, ["session", "rollback", "cp-1"]).output
@@ -229,6 +246,7 @@ def test_cli_commands_route_through_rpc_wrapper(
     ).output
     _invoke_ok(runner, ["action", "confirm", "c-1", "--nonce", "n-1", "--reason", "ok"])
     _invoke_ok(runner, ["action", "reject", "c-1", "--reason", "deny"])
+    _invoke_ok(runner, ["channel", "pairing-propose", "--limit", "5"])
     assert "hash_chain valid=True checked=1" in _invoke_ok(
         runner,
         ["dashboard", "audit", "--limit", "1"],
@@ -309,7 +327,10 @@ def test_cli_commands_route_through_rpc_wrapper(
         ["policy", "explain", "--session", "s-1", "--action", "run", "--tool", "shell_exec"],
     )
 
-    assert ("session.create", {"user_id": "alice", "workspace_id": "ws-1"}) in calls
+    assert (
+        "session.create",
+        {"user_id": "alice", "workspace_id": "ws-1", "mode": "default"},
+    ) in calls
     assert ("memory.rotate_key", {"reencrypt_existing": True}) in calls
     assert ("doctor.check", {"component": "realitycheck"}) in calls
     assert ("realitycheck.read", {"path": "sources/a.md", "max_bytes": 64}) in calls

@@ -7,6 +7,7 @@ import binascii
 import hashlib
 import json
 import logging
+import os
 import time
 import uuid
 from collections.abc import Mapping
@@ -26,6 +27,7 @@ from shisad.core.events import (
     AnomalyReported,
     BaseEvent,
     ChannelDeliveryAttempted,
+    ChannelPairingProposalGenerated,
     ChannelPairingRequested,
     ConsensusEvaluated,
     ControlPlaneActionObserved,
@@ -47,6 +49,7 @@ from shisad.core.events import (
     SessionCreated,
     SessionMessageReceived,
     SessionMessageResponded,
+    SessionModeChanged,
     SessionRolledBack,
     SkillInstalled,
     SkillProfiled,
@@ -63,7 +66,15 @@ from shisad.core.session import Session
 from shisad.core.tools.builtin.alarm import AnomalyReportInput
 from shisad.core.tools.schema import ToolDefinition
 from shisad.core.trace import TraceMessage, TraceToolCall, TraceTurn
-from shisad.core.types import Capability, SessionId, TaintLabel, ToolName, UserId, WorkspaceId
+from shisad.core.types import (
+    Capability,
+    SessionId,
+    SessionMode,
+    TaintLabel,
+    ToolName,
+    UserId,
+    WorkspaceId,
+)
 from shisad.daemon.handlers._helpers import publish_event
 from shisad.executors.mounts import FilesystemPolicy
 from shisad.executors.proxy import NetworkPolicy
@@ -130,6 +141,14 @@ _SIDE_EFFECT_TOOL_NAMES: set[str] = {"report_anomaly"}
 _MONITOR_REJECT_THRESHOLD = 3
 _HIGH_RISK_CONFIRM_TOKENS: tuple[str, ...] = ("send", "share", "delete")
 _CONFIRMATION_ALERT_COOLDOWN_SECONDS = 600
+_CLEANROOM_CHANNELS: set[str] = {"cli"}
+_CLEANROOM_UNTRUSTED_TOOL_NAMES: set[str] = {
+    "retrieve_rag",
+    "web_search",
+    "web_fetch",
+    "realitycheck.search",
+    "realitycheck.read",
+}
 
 
 class _EventPublisher:
@@ -527,6 +546,85 @@ class HandlerImplementation:
         }
         encoded = json.dumps(payload, sort_keys=True).encode("utf-8")
         return hashlib.sha256(encoded).hexdigest()
+
+    @staticmethod
+    def _is_admin_rpc_peer(params: Mapping[str, Any]) -> bool:
+        peer = params.get("_rpc_peer", {})
+        if not isinstance(peer, Mapping):
+            return False
+        uid = peer.get("uid")
+        if not isinstance(uid, int):
+            return False
+        return uid in {0, os.getuid()}
+
+    @staticmethod
+    def _session_mode(session: Session) -> SessionMode:
+        raw_mode = str(session.metadata.get("session_mode", "")).strip()
+        if raw_mode:
+            try:
+                return SessionMode(raw_mode)
+            except ValueError:
+                return SessionMode.DEFAULT
+        return session.mode
+
+    def _session_has_tainted_history(self, session_id: SessionId) -> bool:
+        return any(entry.taint_labels for entry in self._transcript_store.list_entries(session_id))
+
+    @staticmethod
+    def _normalized_pairing_request_entry(raw: Mapping[str, Any]) -> dict[str, str] | None:
+        channel = str(raw.get("channel", "")).strip().lower()
+        external_user_id = str(raw.get("external_user_id", "")).strip()
+        workspace_hint = str(raw.get("workspace_hint", "")).strip()
+        reason = (
+            str(raw.get("reason", "identity_not_allowlisted")).strip()
+            or "identity_not_allowlisted"
+        )
+        if not channel or not external_user_id:
+            return None
+        if len(channel) > 64 or len(external_user_id) > 256:
+            return None
+        if any(char.isspace() for char in channel):
+            return None
+        return {
+            "channel": channel,
+            "external_user_id": external_user_id,
+            "workspace_hint": workspace_hint,
+            "reason": reason,
+        }
+
+    def _load_pairing_request_artifacts(
+        self,
+        *,
+        limit: int,
+    ) -> tuple[list[dict[str, str]], list[dict[str, Any]]]:
+        rows: list[dict[str, str]] = []
+        invalid: list[dict[str, Any]] = []
+        if not self._pairing_requests_file.exists():
+            return rows, invalid
+        try:
+            lines = self._pairing_requests_file.read_text(encoding="utf-8").splitlines()
+        except OSError as exc:
+            invalid.append({"error": f"artifact_read_failed:{exc.__class__.__name__}"})
+            return rows, invalid
+        for index, line in enumerate(lines, start=1):
+            if not line.strip():
+                continue
+            try:
+                payload = json.loads(line)
+            except json.JSONDecodeError:
+                invalid.append({"line": index, "error": "invalid_json"})
+                continue
+            if not isinstance(payload, Mapping):
+                invalid.append({"line": index, "error": "invalid_shape"})
+                continue
+            normalized = self._normalized_pairing_request_entry(payload)
+            if normalized is None:
+                invalid.append({"line": index, "error": "missing_required_fields"})
+                continue
+            rows.append(normalized)
+            if len(rows) >= limit:
+                break
+        return rows, invalid
 
     async def _execute_sandbox_config(
         self,
@@ -1626,6 +1724,11 @@ class HandlerImplementation:
 
     async def do_session_create(self, params: Mapping[str, Any]) -> dict[str, Any]:
         channel = str(params.get("channel", "cli"))
+        requested_mode = str(params.get("mode", SessionMode.DEFAULT.value)).strip().lower()
+        try:
+            session_mode = SessionMode(requested_mode or SessionMode.DEFAULT.value)
+        except ValueError as exc:
+            raise ValueError(f"Unsupported session mode: {requested_mode}") from exc
         default_allowlist = self._policy_loader.policy.session_tool_allowlist or list(
             self._policy_loader.policy.tools.keys()
         )
@@ -1649,13 +1752,22 @@ class HandlerImplementation:
                     target = None
                 if target is not None:
                     metadata["delivery_target"] = target.model_dump(mode="json")
+        if session_mode == SessionMode.ADMIN_CLEANROOM:
+            if is_internal_ingress:
+                raise ValueError("admin_cleanroom mode is not available for channel ingress")
+            if not self._is_admin_rpc_peer(params):
+                raise ValueError("admin_cleanroom mode requires trusted admin ingress")
+            if channel not in _CLEANROOM_CHANNELS:
+                raise ValueError("admin_cleanroom mode is supported only for cli channel")
         metadata["trust_level"] = trust_level
+        metadata["session_mode"] = session_mode.value
         default_capabilities = set(self._policy_loader.policy.default_capabilities)
 
         session = self._session_manager.create(
             channel=channel,
             user_id=UserId(params.get("user_id", "")),
             workspace_id=WorkspaceId(params.get("workspace_id", "")),
+            mode=session_mode,
             capabilities=default_capabilities,
             metadata=metadata,
         )
@@ -1667,7 +1779,7 @@ class HandlerImplementation:
                 actor="control_api",
             )
         )
-        return {"session_id": session.id}
+        return {"session_id": session.id, "mode": session_mode.value}
 
     async def do_session_message(self, params: Mapping[str, Any]) -> dict[str, Any]:
         sid = SessionId(params.get("session_id", ""))
@@ -1675,6 +1787,8 @@ class HandlerImplementation:
         session = self._session_manager.get(sid)
         if session is None:
             raise ValueError(f"Unknown session: {sid}")
+        session_mode = self._session_mode(session)
+        is_admin_rpc_peer = self._is_admin_rpc_peer(params)
 
         channel = params.get("channel", "cli")
         user_id = UserId(params.get("user_id", session.user_id))
@@ -1699,6 +1813,39 @@ class HandlerImplementation:
         is_internal_ingress = (
             params.get("_internal_ingress_marker") is self._internal_ingress_marker
         )
+        if session_mode == SessionMode.ADMIN_CLEANROOM:
+            block_reason = ""
+            if is_internal_ingress:
+                block_reason = "cleanroom_requires_trusted_admin_ingress"
+            elif not is_admin_rpc_peer:
+                block_reason = "cleanroom_requires_admin_peer"
+            elif channel not in _CLEANROOM_CHANNELS:
+                block_reason = "cleanroom_channel_not_allowed"
+            elif self._session_has_tainted_history(sid):
+                block_reason = "cleanroom_tainted_transcript_history"
+            if block_reason:
+                return {
+                    "session_id": sid,
+                    "response": (
+                        "Admin clean-room rejected request due to tainted or untrusted context."
+                    ),
+                    "plan_hash": None,
+                    "risk_score": 0.0,
+                    "blocked_actions": 0,
+                    "confirmation_required_actions": 0,
+                    "executed_actions": 0,
+                    "checkpoint_ids": [],
+                    "checkpoints_created": 0,
+                    "transcript_root": str(self._transcript_root),
+                    "lockdown_level": self._lockdown_manager.state_for(sid).level.value,
+                    "trust_level": str(session.metadata.get("trust_level", "untrusted")),
+                    "session_mode": session_mode.value,
+                    "proposal_only": True,
+                    "proposals": [],
+                    "cleanroom_block_reasons": [block_reason],
+                    "pending_confirmation_ids": [],
+                    "output_policy": {},
+                }
         delivery_target: DeliveryTarget | None = None
         channel_message_id = ""
         if is_internal_ingress:
@@ -1713,6 +1860,33 @@ class HandlerImplementation:
             firewall_result = FirewallResult.model_validate(firewall_result_payload)
         else:
             firewall_result = self._firewall.inspect(content)
+        incoming_taint_labels = set(firewall_result.taint_labels)
+        if session_mode == SessionMode.ADMIN_CLEANROOM:
+            incoming_taint_labels.discard(TaintLabel.UNTRUSTED)
+            blocked_payload_taints = sorted(label.value for label in incoming_taint_labels)
+            if blocked_payload_taints:
+                return {
+                    "session_id": sid,
+                    "response": "Admin clean-room rejected tainted input payload.",
+                    "plan_hash": None,
+                    "risk_score": firewall_result.risk_score,
+                    "blocked_actions": 0,
+                    "confirmation_required_actions": 0,
+                    "executed_actions": 0,
+                    "checkpoint_ids": [],
+                    "checkpoints_created": 0,
+                    "transcript_root": str(self._transcript_root),
+                    "lockdown_level": self._lockdown_manager.state_for(sid).level.value,
+                    "trust_level": str(session.metadata.get("trust_level", "untrusted")),
+                    "session_mode": session_mode.value,
+                    "proposal_only": True,
+                    "proposals": [],
+                    "cleanroom_block_reasons": [
+                        f"cleanroom_tainted_payload:{','.join(blocked_payload_taints)}"
+                    ],
+                    "pending_confirmation_ids": [],
+                    "output_policy": {},
+                }
         user_transcript_metadata: dict[str, Any] = {}
         if channel_message_id:
             user_transcript_metadata["channel_message_id"] = channel_message_id
@@ -1720,11 +1894,12 @@ class HandlerImplementation:
             serialized_target = delivery_target.model_dump(mode="json")
             session.metadata["delivery_target"] = serialized_target
             user_transcript_metadata["delivery_target"] = serialized_target
+        user_transcript_metadata["session_mode"] = session_mode.value
         self._transcript_store.append(
             sid,
             role="user",
             content=firewall_result.sanitized_text,
-            taint_labels=set(firewall_result.taint_labels),
+            taint_labels=incoming_taint_labels,
             metadata=user_transcript_metadata,
         )
 
@@ -1744,7 +1919,7 @@ class HandlerImplementation:
         )
         context = PolicyContext(
             capabilities=effective_caps,
-            taint_labels=set(firewall_result.taint_labels),
+            taint_labels=set(incoming_taint_labels),
             workspace_id=session.workspace_id,
             user_id=session.user_id,
             tool_allowlist=tool_allowlist,
@@ -1803,6 +1978,8 @@ class HandlerImplementation:
         checkpoint_ids: list[str] = []
         pending_confirmation_ids: list[str] = []
         executed_tool_outputs: list[ToolOutputRecord] = []
+        cleanroom_proposals: list[dict[str, Any]] = []
+        cleanroom_block_reasons: list[str] = []
 
         for evaluated in planner_result.evaluated:
             proposal = evaluated.proposal
@@ -1938,6 +2115,46 @@ class HandlerImplementation:
                 )
             )
 
+            if session_mode == SessionMode.ADMIN_CLEANROOM:
+                proposal_reason = final_reason or "proposal_only_cleanroom"
+                if str(proposal.tool_name) in _CLEANROOM_UNTRUSTED_TOOL_NAMES:
+                    final_kind = "reject"
+                    proposal_reason = "cleanroom_untrusted_context_source"
+                    cleanroom_block_reasons.append(
+                        f"{proposal.tool_name!s}:untrusted_context_source"
+                    )
+                    rejected += 1
+                cleanroom_proposals.append(
+                    {
+                        "tool_name": str(proposal.tool_name),
+                        "arguments": dict(proposal.arguments),
+                        "decision": final_kind,
+                        "reason": proposal_reason,
+                    }
+                )
+                await self._event_bus.publish(
+                    ToolRejected(
+                        session_id=sid,
+                        actor="clean_room",
+                        tool_name=proposal.tool_name,
+                        reason=proposal_reason,
+                    )
+                )
+                if self._trace_recorder is not None:
+                    trace_tool_calls.append(
+                        TraceToolCall(
+                            tool_name=str(proposal.tool_name),
+                            arguments=dict(proposal.arguments),
+                            pep_decision=evaluated.decision.kind.value,
+                            monitor_decision=monitor_decision.kind.value,
+                            control_plane_decision=cp_eval.decision.value,
+                            final_decision=final_kind,
+                            executed=False,
+                            execution_success=None,
+                        )
+                    )
+                continue
+
             if final_kind == "reject":
                 rejected += 1
                 await self._event_bus.publish(
@@ -2043,6 +2260,15 @@ class HandlerImplementation:
         if executed_tool_outputs:
             boundary = self._render_tool_output_boundary(executed_tool_outputs)
             response_text = f"{response_text}\n\n{boundary}" if response_text.strip() else boundary
+        if session_mode == SessionMode.ADMIN_CLEANROOM and cleanroom_proposals:
+            proposal_payload = json.dumps(cleanroom_proposals, ensure_ascii=True, indent=2)
+            proposal_note = (
+                "Clean-room proposal mode active. No actions were auto-executed.\n"
+                f"{proposal_payload}"
+            )
+            response_text = (
+                f"{response_text}\n\n{proposal_note}" if response_text.strip() else proposal_note
+            )
         output_result = self._output_firewall.inspect(
             response_text,
             context={"session_id": sid, "actor": "assistant"},
@@ -2124,6 +2350,10 @@ class HandlerImplementation:
             "transcript_root": str(self._transcript_root),
             "lockdown_level": self._lockdown_manager.state_for(sid).level.value,
             "trust_level": trust_level,
+            "session_mode": session_mode.value,
+            "proposal_only": session_mode == SessionMode.ADMIN_CLEANROOM,
+            "proposals": cleanroom_proposals if session_mode == SessionMode.ADMIN_CLEANROOM else [],
+            "cleanroom_block_reasons": sorted(set(cleanroom_block_reasons)),
             "pending_confirmation_ids": pending_confirmation_ids,
             "output_policy": output_result.model_dump(mode="json"),
         }
@@ -2139,6 +2369,7 @@ class HandlerImplementation:
                     "user_id": s.user_id,
                     "workspace_id": s.workspace_id,
                     "channel": s.channel,
+                    "mode": self._session_mode(s).value,
                     "capabilities": sorted(cap.value for cap in s.capabilities),
                     "trust_level": str(s.metadata.get("trust_level", "untrusted")),
                     "session_key": s.session_key,
@@ -2675,6 +2906,63 @@ class HandlerImplementation:
             reason=reason,
         )
         return {"session_id": sid, "granted": granted, "capabilities": sorted(raw_caps)}
+
+    async def do_session_set_mode(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        sid = SessionId(str(params.get("session_id", "")))
+        if not sid:
+            raise ValueError("session_id is required")
+        session = self._session_manager.get(sid)
+        if session is None:
+            raise ValueError(f"Unknown session: {sid}")
+        requested_mode = str(params.get("mode", SessionMode.DEFAULT.value)).strip().lower()
+        try:
+            mode = SessionMode(requested_mode or SessionMode.DEFAULT.value)
+        except ValueError as exc:
+            raise ValueError(f"Unsupported session mode: {requested_mode}") from exc
+
+        if mode == SessionMode.ADMIN_CLEANROOM:
+            if not self._is_admin_rpc_peer(params):
+                raise ValueError("admin_cleanroom mode requires trusted admin ingress")
+            if session.channel not in _CLEANROOM_CHANNELS:
+                return {
+                    "session_id": sid,
+                    "mode": SessionMode.DEFAULT.value,
+                    "changed": False,
+                    "reason": "unsupported_channel",
+                }
+            trust_level = str(session.metadata.get("trust_level", "")).strip().lower()
+            if trust_level not in {"trusted", "verified", "internal"}:
+                return {
+                    "session_id": sid,
+                    "mode": SessionMode.DEFAULT.value,
+                    "changed": False,
+                    "reason": "untrusted_session",
+                }
+            if self._session_has_tainted_history(sid):
+                return {
+                    "session_id": sid,
+                    "mode": SessionMode.DEFAULT.value,
+                    "changed": False,
+                    "reason": "tainted_transcript_history",
+                }
+
+        changed = session.mode != mode
+        self._session_manager.set_mode(sid, mode)
+        await self._event_bus.publish(
+            SessionModeChanged(
+                session_id=sid,
+                actor="control_api",
+                mode=mode.value,
+                changed=changed,
+                reason="" if changed else "unchanged",
+            )
+        )
+        return {
+            "session_id": sid,
+            "mode": mode.value,
+            "changed": changed,
+            "reason": "" if changed else "unchanged",
+        }
 
     async def do_daemon_status(self, params: Mapping[str, Any]) -> dict[str, Any]:
         _ = params
@@ -3723,6 +4011,87 @@ class HandlerImplementation:
         )
         self._policy_loader.policy.risk_policy.block_threshold = updated.thresholds.block_threshold
         return updated.model_dump(mode="json")
+
+    async def do_channel_pairing_propose(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        limit = max(1, int(params.get("limit", 100)))
+        channel_filter = str(params.get("channel") or "").strip().lower()
+        workspace_filter = str(params.get("workspace_hint") or "").strip()
+        rows, invalid_entries = self._load_pairing_request_artifacts(limit=max(limit * 5, limit))
+        deduped: list[dict[str, str]] = []
+        seen: set[tuple[str, str]] = set()
+        for row in rows:
+            channel = str(row.get("channel", "")).strip().lower()
+            external_user_id = str(row.get("external_user_id", "")).strip()
+            workspace_hint = str(row.get("workspace_hint", "")).strip()
+            if channel_filter and channel != channel_filter:
+                continue
+            if workspace_filter and workspace_hint != workspace_filter:
+                continue
+            key = (channel, external_user_id)
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(
+                {
+                    "channel": channel,
+                    "external_user_id": external_user_id,
+                    "workspace_hint": workspace_hint,
+                    "reason": str(row.get("reason", "identity_not_allowlisted")),
+                }
+            )
+            if len(deduped) >= limit:
+                break
+
+        config_patch: dict[str, list[str]] = {}
+        for item in deduped:
+            channel = item["channel"]
+            config_patch.setdefault(channel, [])
+            config_patch[channel].append(item["external_user_id"])
+        for channel, external_user_ids in list(config_patch.items()):
+            config_patch[channel] = sorted({value for value in external_user_ids if value.strip()})
+
+        proposal_id = uuid.uuid4().hex
+        generated_at = datetime.now(UTC).isoformat()
+        proposal_dir = self._config.data_dir / "proposals" / "channel_pairing"
+        proposal_dir.mkdir(parents=True, exist_ok=True)
+        proposal_path = proposal_dir / f"{proposal_id}.json"
+        proposal_payload = {
+            "proposal_id": proposal_id,
+            "generated_at": generated_at,
+            "source": "pairing_requests_artifact",
+            "filters": {
+                "channel": channel_filter,
+                "workspace_hint": workspace_filter,
+                "limit": limit,
+            },
+            "entries": deduped,
+            "invalid_entries": invalid_entries,
+            "config_patch": {"channel_identity_allowlist": config_patch},
+            "applied": False,
+        }
+        proposal_path.write_text(
+            json.dumps(proposal_payload, ensure_ascii=True, indent=2),
+            encoding="utf-8",
+        )
+        await self._event_bus.publish(
+            ChannelPairingProposalGenerated(
+                session_id=None,
+                actor="control_api",
+                proposal_id=proposal_id,
+                proposal_path=str(proposal_path),
+                entries_count=len(deduped),
+            )
+        )
+        return {
+            "proposal_id": proposal_id,
+            "proposal_path": str(proposal_path),
+            "generated_at": generated_at,
+            "entries": deduped,
+            "invalid_entries": invalid_entries,
+            "count": len(deduped),
+            "config_patch": config_patch,
+            "applied": False,
+        }
 
     async def do_channel_ingest(self, params: Mapping[str, Any]) -> dict[str, Any]:
         message = ChannelMessage.model_validate(params.get("message", {}))

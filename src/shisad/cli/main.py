@@ -22,6 +22,7 @@ from shisad.core.api.schema import (
     ActionConfirmResult,
     ActionPendingResult,
     ActionRejectResult,
+    ChannelPairingProposalResult,
     ConfirmationMetricsResult,
     DaemonShutdownResult,
     DaemonStatusResult,
@@ -50,6 +51,7 @@ from shisad.core.api.schema import (
     SessionMessageResult,
     SessionRestoreResult,
     SessionRollbackResult,
+    SessionSetModeResult,
     SkillInstallResult,
     SkillListResult,
     SkillReviewResult,
@@ -249,17 +251,23 @@ def session() -> None:
 @session.command("create")
 @click.option("--user", "-u", default="", help="User ID")
 @click.option("--workspace", "-w", default="", help="Workspace ID")
-def session_create(user: str, workspace: str) -> None:
+@click.option(
+    "--mode",
+    default="default",
+    type=click.Choice(["default", "admin_cleanroom"]),
+    help="Session mode.",
+)
+def session_create(user: str, workspace: str, mode: str) -> None:
     """Create a new session."""
     config = _get_config()
 
     result = rpc_call(
         config,
         "session.create",
-        {"user_id": user, "workspace_id": workspace},
+        {"user_id": user, "workspace_id": workspace, "mode": mode},
         response_model=SessionCreateResult,
     )
-    click.echo(f"Session created: {result.session_id}")
+    click.echo(f"Session created: {result.session_id} mode={result.mode}")
 
 
 @session.command("message")
@@ -288,7 +296,29 @@ def session_list() -> None:
         click.echo("No active sessions")
         return
     for item in result.sessions:
-        click.echo(f"  {item.id}  state={item.state}  user={item.user_id}")
+        click.echo(
+            f"  {item.id}  state={item.state}  mode={item.mode}  user={item.user_id}"
+        )
+
+
+@session.command("mode")
+@click.argument("session_id")
+@click.option(
+    "--mode",
+    required=True,
+    type=click.Choice(["default", "admin_cleanroom"]),
+    help="Target session mode.",
+)
+def session_mode(session_id: str, mode: str) -> None:
+    """Set session execution mode."""
+    config = _get_config()
+    result = rpc_call(
+        config,
+        "session.set_mode",
+        {"session_id": session_id, "mode": mode},
+        response_model=SessionSetModeResult,
+    )
+    click.echo(_dump_model(result))
 
 
 @session.command("restore")
@@ -516,6 +546,31 @@ def action_reject(confirmation_id: str, reason: str) -> None:
         "action.reject",
         {"confirmation_id": confirmation_id, "reason": reason},
         response_model=ActionRejectResult,
+    )
+    click.echo(_dump_model(result))
+
+
+@cli.group()
+def channel() -> None:
+    """Channel admin workflows."""
+
+
+@channel.command("pairing-propose")
+@click.option("--channel", "channel_name", default="", help="Optional channel filter")
+@click.option("--workspace", "workspace_hint", default="", help="Optional workspace hint filter")
+@click.option("--limit", default=100, help="Maximum proposal entries")
+def channel_pairing_propose(channel_name: str, workspace_hint: str, limit: int) -> None:
+    """Generate proposal-only channel allowlist patch from pairing artifacts."""
+    config = _get_config()
+    result = rpc_call(
+        config,
+        "channel.pairing_propose",
+        {
+            "channel": channel_name or None,
+            "workspace_hint": workspace_hint or None,
+            "limit": limit,
+        },
+        response_model=ChannelPairingProposalResult,
     )
     click.echo(_dump_model(result))
 

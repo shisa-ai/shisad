@@ -6,6 +6,7 @@ import pytest
 
 from shisad.core.api.schema import (
     ChannelIngestParams,
+    ChannelPairingProposalParams,
     DoctorCheckParams,
     LockdownSetParams,
     NoParams,
@@ -48,6 +49,18 @@ class _StubImpl:
     async def do_channel_ingest(self, _payload: dict[str, object]) -> dict[str, object]:
         return {"session_id": "s1", "response": "ok", "ingress_risk": 0.1}
 
+    async def do_channel_pairing_propose(self, _payload: dict[str, object]) -> dict[str, object]:
+        return {
+            "proposal_id": "p1",
+            "proposal_path": "/tmp/p1.json",
+            "generated_at": "2026-02-15T00:00:00+00:00",
+            "entries": [],
+            "invalid_entries": [],
+            "count": 0,
+            "config_patch": {},
+            "applied": False,
+        }
+
 
 @pytest.mark.asyncio
 async def test_admin_status_and_lockdown_wrappers() -> None:
@@ -81,3 +94,13 @@ async def test_channel_ingest_wrapper() -> None:
         RequestContext(),
     )
     assert result.ingress_risk == 0.1
+
+
+@pytest.mark.asyncio
+async def test_channel_pairing_proposal_wrapper() -> None:
+    handlers = AdminHandlers(_StubImpl(), internal_ingress_marker=object())  # type: ignore[arg-type]
+    result = await handlers.handle_channel_pairing_propose(
+        ChannelPairingProposalParams(limit=5),
+        RequestContext(),
+    )
+    assert result.proposal_id == "p1"

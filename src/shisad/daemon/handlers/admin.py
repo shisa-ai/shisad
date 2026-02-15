@@ -5,6 +5,8 @@ from __future__ import annotations
 from shisad.core.api.schema import (
     ChannelIngestParams,
     ChannelIngestResult,
+    ChannelPairingProposalParams,
+    ChannelPairingProposalResult,
     DaemonShutdownResult,
     DaemonStatusResult,
     DoctorCheckParams,
@@ -99,3 +101,17 @@ class AdminHandlers:
             internal_ingress_marker=self._internal_ingress_marker,
         )
         return ChannelIngestResult.model_validate(await self._impl.do_channel_ingest(payload))
+
+    async def handle_channel_pairing_propose(
+        self,
+        params: ChannelPairingProposalParams,
+        ctx: RequestContext,
+    ) -> ChannelPairingProposalResult:
+        payload = build_params_payload(
+            params,
+            ctx,
+            internal_ingress_marker=self._internal_ingress_marker,
+        )
+        return ChannelPairingProposalResult.model_validate(
+            await self._impl.do_channel_pairing_propose(payload)
+        )
