@@ -58,7 +58,14 @@ def label_retrieval(collection: str) -> set[TaintLabel]:
 
 def label_tool_output(tool_name: str) -> set[TaintLabel]:
     """Label tool output by trust characteristics."""
-    external_tools = {"http_request", "web_search", "web_fetch", "retrieve_rag"}
+    external_tools = {
+        "http_request",
+        "web_search",
+        "web_fetch",
+        "retrieve_rag",
+        "realitycheck.search",
+        "realitycheck.read",
+    }
     if tool_name in external_tools:
         return {TaintLabel.UNTRUSTED}
     return set()

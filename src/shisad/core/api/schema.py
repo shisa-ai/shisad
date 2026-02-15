@@ -425,6 +425,38 @@ class WebFetchResult(BaseModel):
     snapshot_path: str = ""
 
 
+class RealityCheckSearchParams(_StrictParams):
+    query: str
+    limit: int = 5
+    mode: Literal["auto", "local", "remote"] = "auto"
+
+
+class RealityCheckSearchResult(BaseModel):
+    ok: bool
+    query: str = ""
+    mode: str = "auto"
+    results: list[dict[str, Any]] = Field(default_factory=list)
+    taint_labels: list[str] = Field(default_factory=list)
+    evidence: dict[str, Any] = Field(default_factory=dict)
+    error: str = ""
+
+
+class RealityCheckReadParams(_StrictParams):
+    path: str
+    max_bytes: int | None = None
+
+
+class RealityCheckReadResult(BaseModel):
+    ok: bool
+    path: str = ""
+    content: str = ""
+    truncated: bool = False
+    sha256: str = ""
+    taint_labels: list[str] = Field(default_factory=list)
+    evidence: dict[str, Any] = Field(default_factory=dict)
+    error: str = ""
+
+
 class FsListParams(_StrictParams):
     path: str = "."
     recursive: bool = False
@@ -682,7 +714,19 @@ class DaemonStatusResult(BaseModel):
     channels: dict[str, Any] = Field(default_factory=dict)
     delivery: dict[str, Any] = Field(default_factory=dict)
     executors: dict[str, Any] = Field(default_factory=dict)
+    realitycheck: dict[str, Any] = Field(default_factory=dict)
     provenance: dict[str, Any] = Field(default_factory=dict)
+
+
+class DoctorCheckParams(_StrictParams):
+    component: str = "all"
+
+
+class DoctorCheckResult(BaseModel):
+    status: str
+    component: str = "all"
+    checks: dict[str, Any] = Field(default_factory=dict)
+    error: str = ""
 
 
 class DaemonShutdownResult(BaseModel):

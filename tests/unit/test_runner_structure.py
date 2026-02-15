@@ -5,6 +5,13 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
+from shisad.core.api.schema import (
+    DoctorCheckParams,
+    RealityCheckReadParams,
+    RealityCheckSearchParams,
+)
+from shisad.daemon.runner import _method_specs
+
 
 def test_run_daemon_is_orchestration_only() -> None:
     tree = ast.parse(Path("src/shisad/daemon/runner.py").read_text(encoding="utf-8"))
@@ -33,3 +40,18 @@ def test_runner_has_no_private_provider_classes() -> None:
         if isinstance(node, ast.ClassDef) and node.name.startswith("_")
     ]
     assert private_classes == []
+
+
+def test_runner_registers_m3_realitycheck_and_doctor_methods() -> None:
+    class _HandlerStub:
+        def __getattr__(self, _name: str):  # type: ignore[no-untyped-def]
+            async def _handler(*_args: object, **_kwargs: object) -> dict[str, object]:
+                return {}
+
+            return _handler
+
+    specs = _method_specs(_HandlerStub())
+    mapping = {name: params_model for name, _handler, _admin_only, params_model in specs}
+    assert mapping["doctor.check"] is DoctorCheckParams
+    assert mapping["realitycheck.search"] is RealityCheckSearchParams
+    assert mapping["realitycheck.read"] is RealityCheckReadParams

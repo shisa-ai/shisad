@@ -5,9 +5,15 @@ from __future__ import annotations
 import pytest
 
 from shisad.core.config import DaemonConfig
+from shisad.core.events import EventBus
 from shisad.core.providers.local_planner import LocalPlannerProvider
 from shisad.core.providers.routed_openai import RoutedOpenAIProvider
-from shisad.daemon.services import DaemonServices
+from shisad.core.types import Capability, ToolName
+from shisad.daemon.services import (
+    DaemonServices,
+    _build_tool_registry,
+    _normalize_tool_destination,
+)
 
 
 @pytest.mark.asyncio
@@ -242,3 +248,80 @@ async def test_daemon_services_shutdown_continues_after_disconnect_error() -> No
     assert calls[0] == "embed:True"
     assert "matrix" in calls
     assert calls[-1] == "server"
+
+
+def test_m3_normalize_tool_destination_preserves_scheme_and_port() -> None:
+    assert _normalize_tool_destination("https://search.example") == "https://search.example:443"
+    assert (
+        _normalize_tool_destination("http://search.example:8080/api?q=1")
+        == "http://search.example:8080"
+    )
+    assert _normalize_tool_destination("search.example") == "search.example"
+
+
+def test_m3_tool_registry_omits_realitycheck_tools_when_surface_disabled() -> None:
+    registry, _alarm = _build_tool_registry(
+        EventBus(),
+        realitycheck_surface_enabled=False,
+    )
+    names = {str(item.name) for item in registry.list_tools()}
+    assert "realitycheck.search" not in names
+    assert "realitycheck.read" not in names
+
+
+def test_m3_tool_registry_registers_realitycheck_tools_with_endpoint_caps() -> None:
+    registry, _alarm = _build_tool_registry(
+        EventBus(),
+        realitycheck_surface_enabled=True,
+        realitycheck_endpoint_enabled=True,
+        realitycheck_endpoint_host="realitycheck.example",
+    )
+    search_tool = registry.get_tool(ToolName("realitycheck.search"))
+    read_tool = registry.get_tool(ToolName("realitycheck.read"))
+    assert search_tool is not None
+    assert read_tool is not None
+    assert set(search_tool.capabilities_required) == {Capability.FILE_READ, Capability.HTTP_REQUEST}
+    assert search_tool.destinations == ["realitycheck.example"]
+    assert set(read_tool.capabilities_required) == {Capability.FILE_READ}
+
+
+@pytest.mark.asyncio
+async def test_m3_daemon_services_fail_closed_when_realitycheck_disabled(tmp_path) -> None:
+    config = DaemonConfig(
+        data_dir=tmp_path / "data",
+        socket_path=tmp_path / "control.sock",
+        policy_path=tmp_path / "policy.yaml",
+        realitycheck_enabled=False,
+    )
+    services = await DaemonServices.build(config)
+    try:
+        assert services.realitycheck_status["status"] == "disabled"
+        assert services.registry.get_tool(ToolName("realitycheck.search")) is None
+        assert services.registry.get_tool(ToolName("realitycheck.read")) is None
+    finally:
+        await services.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_m3_daemon_services_enable_realitycheck_surface_when_config_valid(tmp_path) -> None:
+    repo_root = tmp_path / "realitycheck"
+    data_root = tmp_path / "realitycheck-data"
+    repo_root.mkdir(parents=True)
+    data_root.mkdir(parents=True)
+
+    config = DaemonConfig(
+        data_dir=tmp_path / "data",
+        socket_path=tmp_path / "control.sock",
+        policy_path=tmp_path / "policy.yaml",
+        realitycheck_enabled=True,
+        realitycheck_repo_root=repo_root,
+        realitycheck_data_roots=[data_root],
+        realitycheck_endpoint_enabled=False,
+    )
+    services = await DaemonServices.build(config)
+    try:
+        assert services.realitycheck_status["status"] == "ok"
+        assert services.registry.get_tool(ToolName("realitycheck.search")) is not None
+        assert services.registry.get_tool(ToolName("realitycheck.read")) is not None
+    finally:
+        await services.shutdown()

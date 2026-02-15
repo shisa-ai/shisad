@@ -469,7 +469,14 @@ class PEP:
                     ),
                 )
 
-            if not any(fnmatch.fnmatch(destination.host, pattern) for pattern in tool.destinations):
+            declared_destination_hosts = [
+                self._destination_host_pattern(str(pattern))
+                for pattern in tool.destinations
+            ]
+            if not any(
+                pattern and fnmatch.fnmatch(destination.host, pattern)
+                for pattern in declared_destination_hosts
+            ):
                 self._record_credential_attempt(
                     CredentialUseAttempt(
                         tool_name=tool_name,
@@ -555,7 +562,25 @@ class PEP:
         destination = destinations[0]
         if not destination or any(token in destination for token in ("*", "?", "[", "]")):
             return None
+        if "://" in destination:
+            parsed = urlparse(destination)
+            host = (parsed.hostname or "").lower()
+            if not host:
+                return None
+            protocol = (parsed.scheme or "").lower() or None
+            port = parsed.port
+            if port is None and protocol in {"http", "https"}:
+                port = 80 if protocol == "http" else 443
+            return EgressDestination(host=host, protocol=protocol, port=port)
         return EgressDestination(host=destination, protocol="https", port=443)
+
+    @staticmethod
+    def _destination_host_pattern(destination: str) -> str:
+        value = destination.strip().lower()
+        if "://" not in value:
+            return value
+        parsed = urlparse(value)
+        return (parsed.hostname or "").lower()
 
     def _is_egress_allowed(self, destination: EgressDestination) -> bool:
         if not self._policy.egress:

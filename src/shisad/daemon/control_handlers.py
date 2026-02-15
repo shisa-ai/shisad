@@ -20,6 +20,8 @@ from shisad.core.api.schema import (
     ConfirmationMetricsResult,
     DaemonShutdownResult,
     DaemonStatusResult,
+    DoctorCheckParams,
+    DoctorCheckResult,
     DashboardMarkFalsePositiveParams,
     DashboardMarkFalsePositiveResult,
     DashboardQueryParams,
@@ -66,6 +68,10 @@ from shisad.core.api.schema import (
     NoteVerifyResult,
     PolicyExplainParams,
     PolicyExplainResult,
+    RealityCheckReadParams,
+    RealityCheckReadResult,
+    RealityCheckSearchParams,
+    RealityCheckSearchResult,
     RiskCalibrateResult,
     SessionCreateParams,
     SessionCreateResult,
@@ -213,6 +219,11 @@ class DaemonControlHandlers:
         self, params: NoParams, ctx: RequestContext
     ) -> DaemonShutdownResult:
         return await self._admin.handle_daemon_shutdown(params, ctx)
+
+    async def handle_doctor_check(
+        self, params: DoctorCheckParams, ctx: RequestContext
+    ) -> DoctorCheckResult:
+        return await self._admin.handle_doctor_check(params, ctx)
 
     async def handle_audit_query(
         self, params: AuditQueryParams, ctx: RequestContext
@@ -413,6 +424,16 @@ class DaemonControlHandlers:
         self, params: WebFetchParams, ctx: RequestContext
     ) -> WebFetchResult:
         return await self._assistant.handle_web_fetch(params, ctx)
+
+    async def handle_realitycheck_search(
+        self, params: RealityCheckSearchParams, ctx: RequestContext
+    ) -> RealityCheckSearchResult:
+        return await self._assistant.handle_realitycheck_search(params, ctx)
+
+    async def handle_realitycheck_read(
+        self, params: RealityCheckReadParams, ctx: RequestContext
+    ) -> RealityCheckReadResult:
+        return await self._assistant.handle_realitycheck_read(params, ctx)
 
     async def handle_fs_list(self, params: FsListParams, ctx: RequestContext) -> FsListResult:
         return await self._assistant.handle_fs_list(params, ctx)

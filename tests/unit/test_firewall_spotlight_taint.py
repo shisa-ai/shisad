@@ -92,6 +92,8 @@ def test_m6_taint_label_tool_output_marks_external_tools_only() -> None:
     assert label_tool_output("web_search") == {TaintLabel.UNTRUSTED}
     assert label_tool_output("web_fetch") == {TaintLabel.UNTRUSTED}
     assert label_tool_output("retrieve_rag") == {TaintLabel.UNTRUSTED}
+    assert label_tool_output("realitycheck.search") == {TaintLabel.UNTRUSTED}
+    assert label_tool_output("realitycheck.read") == {TaintLabel.UNTRUSTED}
     assert label_tool_output("file.read") == set()
 
 

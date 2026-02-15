@@ -27,6 +27,7 @@ from shisad.core.api.schema import (
     DaemonStatusResult,
     DashboardMarkFalsePositiveResult,
     DashboardQueryResult,
+    DoctorCheckResult,
     FsListResult,
     FsReadResult,
     FsWriteResult,
@@ -42,6 +43,8 @@ from shisad.core.api.schema import (
     NoteListResult,
     NoteVerifyResult,
     PolicyExplainResult,
+    RealityCheckReadResult,
+    RealityCheckSearchResult,
     SessionCreateResult,
     SessionListResult,
     SessionMessageResult,
@@ -214,6 +217,24 @@ def status() -> None:
         sys.exit(1)
 
     _echo("Status: running", fg="green")
+    click.echo(_dump_model(result))
+
+
+@cli.group()
+def doctor() -> None:
+    """Runtime diagnostic checks."""
+
+
+@doctor.command("check")
+@click.option("--component", default="all", help="Component to check (e.g. all, realitycheck)")
+def doctor_check(component: str) -> None:
+    config = _get_config()
+    result = rpc_call(
+        config,
+        "doctor.check",
+        {"component": component},
+        response_model=DoctorCheckResult,
+    )
     click.echo(_dump_model(result))
 
 
@@ -914,6 +935,40 @@ def web_fetch(url: str, snapshot: bool) -> None:
         "web.fetch",
         {"url": url, "snapshot": snapshot},
         response_model=WebFetchResult,
+    )
+    click.echo(_dump_model(result))
+
+
+@cli.group("realitycheck")
+def realitycheck_group() -> None:
+    """Reality Check scoped search/read operations."""
+
+
+@realitycheck_group.command("search")
+@click.argument("query")
+@click.option("--limit", default=5, help="Maximum results")
+@click.option("--mode", default="auto", type=click.Choice(["auto", "local", "remote"]))
+def realitycheck_search(query: str, limit: int, mode: str) -> None:
+    config = _get_config()
+    result = rpc_call(
+        config,
+        "realitycheck.search",
+        {"query": query, "limit": limit, "mode": mode},
+        response_model=RealityCheckSearchResult,
+    )
+    click.echo(_dump_model(result))
+
+
+@realitycheck_group.command("read")
+@click.argument("path")
+@click.option("--max-bytes", default=131072)
+def realitycheck_read(path: str, max_bytes: int) -> None:
+    config = _get_config()
+    result = rpc_call(
+        config,
+        "realitycheck.read",
+        {"path": path, "max_bytes": max_bytes},
+        response_model=RealityCheckReadResult,
     )
     click.echo(_dump_model(result))
 

@@ -175,3 +175,38 @@ def test_m2_pep_enforces_egress_for_tools_with_static_destination_metadata() -> 
         PolicyContext(capabilities={Capability.HTTP_REQUEST}),
     )
     assert allowed.kind in {PEPDecisionKind.ALLOW, PEPDecisionKind.REQUIRE_CONFIRMATION}
+
+
+def test_m3_pep_static_destination_metadata_preserves_protocol_and_port() -> None:
+    registry = ToolRegistry()
+    registry.register(
+        ToolDefinition(
+            name=ToolName("web_search"),
+            description="Search via configured backend",
+            parameters=[ToolParameter(name="query", type="string", required=True)],
+            capabilities_required=[Capability.HTTP_REQUEST],
+            destinations=["http://search.example:8080"],
+        )
+    )
+
+    blocked_policy = PolicyBundle(
+        default_require_confirmation=False,
+        egress=[EgressRule(host="search.example", protocols=["https"], ports=[443])],
+    )
+    blocked = PEP(blocked_policy, registry).evaluate(
+        ToolName("web_search"),
+        {"query": "roadmap"},
+        PolicyContext(capabilities={Capability.HTTP_REQUEST}),
+    )
+    assert blocked.kind == PEPDecisionKind.REJECT
+
+    allowed_policy = PolicyBundle(
+        default_require_confirmation=False,
+        egress=[EgressRule(host="search.example", protocols=["http"], ports=[8080])],
+    )
+    allowed = PEP(allowed_policy, registry).evaluate(
+        ToolName("web_search"),
+        {"query": "roadmap"},
+        PolicyContext(capabilities={Capability.HTTP_REQUEST}),
+    )
+    assert allowed.kind in {PEPDecisionKind.ALLOW, PEPDecisionKind.REQUIRE_CONFIRMATION}

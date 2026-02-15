@@ -7,6 +7,8 @@ from shisad.core.api.schema import (
     ChannelIngestResult,
     DaemonShutdownResult,
     DaemonStatusResult,
+    DoctorCheckParams,
+    DoctorCheckResult,
     LockdownSetParams,
     LockdownSetResult,
     NoParams,
@@ -53,6 +55,18 @@ class AdminHandlers:
     ) -> DaemonShutdownResult:
         _ = params, ctx
         return DaemonShutdownResult.model_validate(await self._impl.do_daemon_shutdown({}))
+
+    async def handle_doctor_check(
+        self,
+        params: DoctorCheckParams,
+        ctx: RequestContext,
+    ) -> DoctorCheckResult:
+        payload = build_params_payload(
+            params,
+            ctx,
+            internal_ingress_marker=self._internal_ingress_marker,
+        )
+        return DoctorCheckResult.model_validate(await self._impl.do_doctor_check(payload))
 
     async def handle_lockdown_set(
         self,

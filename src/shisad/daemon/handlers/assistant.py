@@ -15,6 +15,10 @@ from shisad.core.api.schema import (
     GitLogResult,
     GitStatusParams,
     GitStatusResult,
+    RealityCheckReadParams,
+    RealityCheckReadResult,
+    RealityCheckSearchParams,
+    RealityCheckSearchResult,
     WebFetchParams,
     WebFetchResult,
     WebSearchParams,
@@ -55,6 +59,32 @@ class AssistantHandlers:
             internal_ingress_marker=self._internal_ingress_marker,
         )
         return WebFetchResult.model_validate(await self._impl.do_web_fetch(payload))
+
+    async def handle_realitycheck_search(
+        self,
+        params: RealityCheckSearchParams,
+        ctx: RequestContext,
+    ) -> RealityCheckSearchResult:
+        payload = build_params_payload(
+            params,
+            ctx,
+            internal_ingress_marker=self._internal_ingress_marker,
+        )
+        return RealityCheckSearchResult.model_validate(
+            await self._impl.do_realitycheck_search(payload)
+        )
+
+    async def handle_realitycheck_read(
+        self,
+        params: RealityCheckReadParams,
+        ctx: RequestContext,
+    ) -> RealityCheckReadResult:
+        payload = build_params_payload(
+            params,
+            ctx,
+            internal_ingress_marker=self._internal_ingress_marker,
+        )
+        return RealityCheckReadResult.model_validate(await self._impl.do_realitycheck_read(payload))
 
     async def handle_fs_list(self, params: FsListParams, ctx: RequestContext) -> FsListResult:
         payload = build_params_payload(

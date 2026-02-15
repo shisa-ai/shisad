@@ -159,6 +159,40 @@ class DaemonConfig(BaseSettings):
         ge=1024,
         description="Maximum bytes returned by fs.read.",
     )
+    realitycheck_enabled: bool = Field(
+        default=False,
+        description="Enable Reality Check integration surface.",
+    )
+    realitycheck_repo_root: Path = Field(
+        default=Path.home() / "github" / "lhl" / "realitycheck",
+        description="Path to Reality Check repository root.",
+    )
+    realitycheck_data_roots: list[Path] = Field(
+        default_factory=lambda: [Path.home() / "github" / "lhl" / "realitycheck-data"],
+        description="Allowlisted data roots for Reality Check local reads.",
+    )
+    realitycheck_endpoint_enabled: bool = Field(
+        default=False,
+        description="Enable optional Reality Check endpoint usage.",
+    )
+    realitycheck_endpoint_url: str = Field(
+        default="",
+        description="Optional Reality Check endpoint URL used when endpoint mode is enabled.",
+    )
+    realitycheck_allowed_domains: list[str] = Field(
+        default_factory=list,
+        description="Allowlisted domains for optional Reality Check endpoint egress.",
+    )
+    realitycheck_timeout_seconds: float = Field(
+        default=10.0,
+        ge=0.1,
+        description="Timeout for Reality Check endpoint requests.",
+    )
+    realitycheck_max_read_bytes: int = Field(
+        default=131072,
+        ge=1024,
+        description="Maximum bytes returned by Reality Check local read operations.",
+    )
 
     @staticmethod
     def _parse_list_field(value: object, *, field_name: str) -> object:
@@ -287,6 +321,28 @@ class DaemonConfig(BaseSettings):
     @classmethod
     def _parse_assistant_fs_roots(cls, value: object) -> object:
         return cls._parse_path_list_field(value, field_name="SHISAD_ASSISTANT_FS_ROOTS")
+
+    @field_validator("realitycheck_repo_root", mode="before")
+    @classmethod
+    def _parse_realitycheck_repo_root(cls, value: object) -> object:
+        if isinstance(value, str):
+            stripped = value.strip()
+            if not stripped:
+                return Path()
+            return Path(stripped).expanduser()
+        if isinstance(value, Path):
+            return value.expanduser()
+        return value
+
+    @field_validator("realitycheck_data_roots", mode="before")
+    @classmethod
+    def _parse_realitycheck_data_roots(cls, value: object) -> object:
+        return cls._parse_path_list_field(value, field_name="SHISAD_REALITYCHECK_DATA_ROOTS")
+
+    @field_validator("realitycheck_allowed_domains", mode="before")
+    @classmethod
+    def _parse_realitycheck_allowed_domains(cls, value: object) -> object:
+        return cls._parse_list_field(value, field_name="SHISAD_REALITYCHECK_ALLOWED_DOMAINS")
 
     @model_validator(mode="after")
     def _ensure_data_dir(self) -> Self:

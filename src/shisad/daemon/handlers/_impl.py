@@ -233,6 +233,7 @@ class HandlerImplementation:
         self._memory_manager = services.memory_manager
         self._scheduler = services.scheduler
         self._skill_manager = services.skill_manager
+        self._realitycheck_toolkit = services.realitycheck_toolkit
         self._sandbox = services.sandbox
         self._control_plane = services.control_plane
         self._browser_sandbox = services.browser_sandbox
@@ -1089,6 +1090,81 @@ class HandlerImplementation:
                     tool_name=str(tool_name),
                     content=self._sanitize_tool_output_text(
                         json.dumps(fetch_payload, ensure_ascii=True)
+                    ),
+                    taint_labels=label_tool_output(str(tool_name)),
+                ),
+            )
+
+        if tool_name == "realitycheck.search":
+            realitycheck_payload = self._realitycheck_toolkit.search(
+                query=str(arguments.get("query", "")),
+                limit=int(arguments.get("limit", 5)),
+                mode=str(arguments.get("mode", "auto")),
+            )
+            success = bool(realitycheck_payload.get("ok", False))
+            if not success:
+                await self._event_bus.publish(
+                    ToolRejected(
+                        session_id=sid,
+                        actor="tool_runtime",
+                        tool_name=tool_name,
+                        reason=str(realitycheck_payload.get("error", "realitycheck_search_failed")),
+                    )
+                )
+            await self._event_bus.publish(
+                ToolExecuted(
+                    session_id=sid,
+                    actor="tool_runtime",
+                    tool_name=tool_name,
+                    success=success,
+                )
+            )
+            self._control_plane.record_execution(action=executed_action, success=success)
+            return (
+                success,
+                checkpoint_id,
+                ToolOutputRecord(
+                    tool_name=str(tool_name),
+                    content=self._sanitize_tool_output_text(
+                        json.dumps(realitycheck_payload, ensure_ascii=True)
+                    ),
+                    taint_labels=label_tool_output(str(tool_name)),
+                ),
+            )
+
+        if tool_name == "realitycheck.read":
+            raw_max_bytes = arguments.get("max_bytes")
+            max_bytes = int(raw_max_bytes) if raw_max_bytes is not None else None
+            realitycheck_payload = self._realitycheck_toolkit.read_source(
+                path=str(arguments.get("path", "")),
+                max_bytes=max_bytes,
+            )
+            success = bool(realitycheck_payload.get("ok", False))
+            if not success:
+                await self._event_bus.publish(
+                    ToolRejected(
+                        session_id=sid,
+                        actor="tool_runtime",
+                        tool_name=tool_name,
+                        reason=str(realitycheck_payload.get("error", "realitycheck_read_failed")),
+                    )
+                )
+            await self._event_bus.publish(
+                ToolExecuted(
+                    session_id=sid,
+                    actor="tool_runtime",
+                    tool_name=tool_name,
+                    success=success,
+                )
+            )
+            self._control_plane.record_execution(action=executed_action, success=success)
+            return (
+                success,
+                checkpoint_id,
+                ToolOutputRecord(
+                    tool_name=str(tool_name),
+                    content=self._sanitize_tool_output_text(
+                        json.dumps(realitycheck_payload, ensure_ascii=True)
                     ),
                     taint_labels=label_tool_output(str(tool_name)),
                 ),
@@ -2657,6 +2733,7 @@ class HandlerImplementation:
                 "connect_path": self._sandbox.connect_path_status(),
                 "browser": self._browser_sandbox.policy.model_dump(mode="json"),
             },
+            "realitycheck": self._realitycheck_toolkit.doctor_status(),
             "provenance": self._provenance_status,
         }
 
@@ -3030,6 +3107,45 @@ class HandlerImplementation:
         raw_max_bytes = params.get("max_bytes")
         max_bytes = int(raw_max_bytes) if raw_max_bytes is not None else None
         return self._web_toolkit.fetch(url=url, snapshot=snapshot, max_bytes=max_bytes)
+
+    async def do_realitycheck_search(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        query = str(params.get("query", ""))
+        limit = int(params.get("limit", 5))
+        mode = str(params.get("mode", "auto"))
+        return self._realitycheck_toolkit.search(query=query, limit=limit, mode=mode)
+
+    async def do_realitycheck_read(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        path = str(params.get("path", ""))
+        raw_max_bytes = params.get("max_bytes")
+        max_bytes = int(raw_max_bytes) if raw_max_bytes is not None else None
+        return self._realitycheck_toolkit.read_source(path=path, max_bytes=max_bytes)
+
+    async def do_doctor_check(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        component = str(params.get("component", "all")).strip().lower() or "all"
+        checks: dict[str, Any] = {}
+        if component in {"all", "realitycheck"}:
+            checks["realitycheck"] = self._realitycheck_toolkit.doctor_status()
+        if component not in {"all", "realitycheck"}:
+            return {
+                "status": "error",
+                "component": component,
+                "checks": {},
+                "error": "unsupported_component",
+            }
+        check_states = [
+            str(item.get("status", "error"))
+            for item in checks.values()
+            if isinstance(item, Mapping)
+        ]
+        overall = "ok"
+        if any(state == "misconfigured" for state in check_states):
+            overall = "degraded"
+        return {
+            "status": overall,
+            "component": component,
+            "checks": checks,
+            "error": "",
+        }
 
     async def do_fs_list(self, params: Mapping[str, Any]) -> dict[str, Any]:
         return self._fs_git_toolkit.list_dir(

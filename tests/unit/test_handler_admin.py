@@ -4,7 +4,12 @@ from __future__ import annotations
 
 import pytest
 
-from shisad.core.api.schema import ChannelIngestParams, LockdownSetParams, NoParams
+from shisad.core.api.schema import (
+    ChannelIngestParams,
+    DoctorCheckParams,
+    LockdownSetParams,
+    NoParams,
+)
 from shisad.daemon.context import RequestContext
 from shisad.daemon.handlers.admin import AdminHandlers
 
@@ -26,6 +31,14 @@ class _StubImpl:
     async def do_daemon_shutdown(self, _payload: dict[str, object]) -> dict[str, object]:
         return {"status": "shutting_down"}
 
+    async def do_doctor_check(self, payload: dict[str, object]) -> dict[str, object]:
+        return {
+            "status": "ok",
+            "component": str(payload.get("component", "all")),
+            "checks": {"realitycheck": {"status": "disabled"}},
+            "error": "",
+        }
+
     async def do_lockdown_set(self, payload: dict[str, object]) -> dict[str, object]:
         return {"session_id": str(payload["session_id"]), "level": "caution", "reason": "manual"}
 
@@ -40,11 +53,16 @@ class _StubImpl:
 async def test_admin_status_and_lockdown_wrappers() -> None:
     handlers = AdminHandlers(_StubImpl(), internal_ingress_marker=object())  # type: ignore[arg-type]
     status = await handlers.handle_daemon_status(NoParams(), RequestContext())
+    doctor = await handlers.handle_doctor_check(
+        DoctorCheckParams(component="realitycheck"),
+        RequestContext(),
+    )
     lockdown = await handlers.handle_lockdown_set(
         LockdownSetParams(session_id="s1"),
         RequestContext(),
     )
     assert status.status == "running"
+    assert doctor.component == "realitycheck"
     assert lockdown.session_id == "s1"
 
 

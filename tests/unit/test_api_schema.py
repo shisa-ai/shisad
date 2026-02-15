@@ -15,6 +15,7 @@ from shisad.core.api.schema import (
     DaemonStatusResult,
     DashboardMarkFalsePositiveResult,
     DashboardQueryResult,
+    DoctorCheckResult,
     JsonRpcRequest,
     LockdownSetResult,
     MemoryDeleteResult,
@@ -27,6 +28,8 @@ from shisad.core.api.schema import (
     MemoryVerifyResult,
     MemoryWriteResult,
     PolicyExplainResult,
+    RealityCheckReadResult,
+    RealityCheckSearchResult,
     SessionCreateParams,
     SessionGrantCapabilitiesResult,
     SessionListResult,
@@ -204,6 +207,29 @@ class TestApiSchemaValidation:
             {"marked": True, "event_id": "evt", "reason": "manual"}
         )
         daemon_status = DaemonStatusResult.model_validate({"status": "running"})
+        realitycheck_search = RealityCheckSearchResult.model_validate(
+            {
+                "ok": True,
+                "query": "roadmap",
+                "mode": "local",
+                "results": [],
+            }
+        )
+        realitycheck_read = RealityCheckReadResult.model_validate(
+            {
+                "ok": True,
+                "path": "/tmp/source.md",
+                "content": "hello",
+                "sha256": "abc123",
+            }
+        )
+        doctor = DoctorCheckResult.model_validate(
+            {
+                "status": "ok",
+                "component": "realitycheck",
+                "checks": {"realitycheck": {"status": "ok"}},
+            }
+        )
         daemon_shutdown = DaemonShutdownResult.model_validate({"status": "shutting_down"})
         policy_explain = PolicyExplainResult.model_validate(
             {
@@ -251,6 +277,10 @@ class TestApiSchemaValidation:
         assert dashboard_marked.marked is True
         assert daemon_status.status == "running"
         assert daemon_status.delivery == {}
+        assert daemon_status.realitycheck == {}
+        assert realitycheck_search.mode == "local"
+        assert realitycheck_read.path == "/tmp/source.md"
+        assert doctor.component == "realitycheck"
         assert daemon_shutdown.status == "shutting_down"
         assert policy_explain.tool_name == "shell_exec"
         assert lockdown.level == "caution"

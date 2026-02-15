@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
+from shisad.assistant.realitycheck import RealityCheckToolkit
 from shisad.channels.base import Channel
 from shisad.channels.delivery import ChannelDeliveryService
 from shisad.channels.discord import DiscordChannel, DiscordConfig
@@ -72,6 +73,27 @@ _CHANNEL_TRUST_DEFAULTS: dict[str, str] = {
 }
 
 
+def _normalize_tool_destination(destination: str) -> str:
+    raw = destination.strip()
+    if not raw:
+        return ""
+    parsed = urlparse(raw)
+    # Accept host-only metadata for backward compatibility.
+    if not parsed.hostname and not parsed.scheme:
+        fallback = urlparse(f"https://{raw}")
+        return (fallback.hostname or "").lower()
+    host = (parsed.hostname or "").lower()
+    if not host:
+        return ""
+    protocol = (parsed.scheme or "").lower()
+    port = parsed.port
+    if port is None and protocol in {"http", "https"}:
+        port = 80 if protocol == "http" else 443
+    if protocol and port is not None:
+        return f"{protocol}://{host}:{port}"
+    return host
+
+
 @dataclass(slots=True)
 class DaemonServices:
     """Container for initialized daemon subsystems."""
@@ -113,6 +135,8 @@ class DaemonServices:
     memory_manager: MemoryManager
     scheduler: SchedulerManager
     skill_manager: SkillManager
+    realitycheck_toolkit: RealityCheckToolkit
+    realitycheck_status: dict[str, Any]
     lockdown_manager: LockdownManager
     rate_limiter: RateLimiter
     monitor: ActionMonitor
@@ -307,6 +331,28 @@ class DaemonServices:
                 storage_dir=config.data_dir / "skills",
                 policy=policy_loader.policy.skills,
             )
+            realitycheck_domains = [
+                item
+                for item in config.realitycheck_allowed_domains
+                if item.strip()
+            ]
+            if not realitycheck_domains:
+                realitycheck_domains = [
+                    rule.host.strip()
+                    for rule in policy_loader.policy.egress
+                    if rule.host.strip()
+                ]
+            realitycheck_toolkit = RealityCheckToolkit(
+                enabled=config.realitycheck_enabled,
+                repo_root=config.realitycheck_repo_root,
+                data_roots=list(config.realitycheck_data_roots),
+                endpoint_enabled=config.realitycheck_endpoint_enabled,
+                endpoint_url=config.realitycheck_endpoint_url,
+                allowed_domains=realitycheck_domains,
+                timeout_seconds=config.realitycheck_timeout_seconds,
+                max_read_bytes=config.realitycheck_max_read_bytes,
+            )
+            realitycheck_status = realitycheck_toolkit.doctor_status()
             lockdown_manager = LockdownManager(notification_hook=event_wiring.lockdown_notify)
             event_wiring.bind_lockdown_manager(lockdown_manager)
             rate_limiter = RateLimiter(
@@ -364,12 +410,21 @@ class DaemonServices:
             provenance_root = Path(__file__).resolve().parents[1] / "security" / "rules"
             provenance_status, _ = _load_provenance(provenance_manifest_path, provenance_root)
 
-            search_backend_host = (
-                urlparse(config.web_search_backend_url.strip()).hostname or ""
-            ).lower()
+            search_backend_destination = _normalize_tool_destination(
+                config.web_search_backend_url
+            )
             registry, alarm_tool = _build_tool_registry(
                 event_bus,
-                web_search_destination=search_backend_host,
+                web_search_destination=search_backend_destination,
+                realitycheck_surface_enabled=bool(
+                    realitycheck_status.get("surface_enabled", False)
+                ),
+                realitycheck_endpoint_enabled=bool(
+                    realitycheck_status.get("endpoint_enabled", False)
+                ),
+                realitycheck_endpoint_host=str(
+                    realitycheck_status.get("endpoint_host", "")
+                ).strip(),
             )
             pep = PEP(
                 policy_loader.policy,
@@ -421,6 +476,8 @@ class DaemonServices:
                 memory_manager=memory_manager,
                 scheduler=scheduler,
                 skill_manager=skill_manager,
+                realitycheck_toolkit=realitycheck_toolkit,
+                realitycheck_status=realitycheck_status,
                 lockdown_manager=lockdown_manager,
                 rate_limiter=rate_limiter,
                 monitor=monitor,
@@ -592,6 +649,9 @@ def _build_tool_registry(
     event_bus: EventBus,
     *,
     web_search_destination: str = "",
+    realitycheck_surface_enabled: bool = False,
+    realitycheck_endpoint_enabled: bool = False,
+    realitycheck_endpoint_host: str = "",
 ) -> tuple[ToolRegistry, AlarmTool]:
     registry = ToolRegistry()
     registry.register(RetrieveRagTool.tool_definition())
@@ -759,6 +819,39 @@ def _build_tool_registry(
             require_confirmation=False,
         )
     )
+    if realitycheck_surface_enabled:
+        realitycheck_caps: list[Capability] = [Capability.FILE_READ]
+        realitycheck_destinations: list[str] = []
+        if realitycheck_endpoint_enabled:
+            realitycheck_caps.append(Capability.HTTP_REQUEST)
+            if realitycheck_endpoint_host:
+                realitycheck_destinations = [realitycheck_endpoint_host]
+        registry.register(
+            ToolDefinition(
+                name=ToolName("realitycheck.search"),
+                description="Reality Check scoped search with provenance/taint output.",
+                parameters=[
+                    ToolParameter(name="query", type="string", required=True),
+                    ToolParameter(name="limit", type="integer", required=False),
+                    ToolParameter(name="mode", type="string", required=False),
+                ],
+                capabilities_required=realitycheck_caps,
+                destinations=realitycheck_destinations,
+                require_confirmation=False,
+            )
+        )
+        registry.register(
+            ToolDefinition(
+                name=ToolName("realitycheck.read"),
+                description="Reality Check scoped source read primitive.",
+                parameters=[
+                    ToolParameter(name="path", type="string", required=True),
+                    ToolParameter(name="max_bytes", type="integer", required=False),
+                ],
+                capabilities_required=[Capability.FILE_READ],
+                require_confirmation=False,
+            )
+        )
     alarm_tool = AlarmTool(event_bus)
     registry.register(alarm_tool.tool_definition())
     return registry, alarm_tool

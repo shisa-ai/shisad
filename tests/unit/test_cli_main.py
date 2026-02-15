@@ -41,6 +41,12 @@ def test_cli_commands_route_through_rpc_wrapper(
     payloads: dict[str, dict[str, object]] = {
         "daemon.shutdown": {"status": "shutting_down"},
         "daemon.status": {"status": "running"},
+        "doctor.check": {
+            "status": "ok",
+            "component": "realitycheck",
+            "checks": {"realitycheck": {"status": "disabled"}},
+            "error": "",
+        },
         "session.create": {"session_id": "s-1"},
         "session.message": {"session_id": "s-1", "response": "hello"},
         "session.list": {"sessions": [{"id": "s-1", "state": "active", "user_id": "alice"}]},
@@ -140,6 +146,25 @@ def test_cli_commands_route_through_rpc_wrapper(
             "results": [],
         },
         "web.fetch": {"ok": True, "url": "https://example.com", "content": "page"},
+        "realitycheck.search": {
+            "ok": True,
+            "query": "roadmap",
+            "mode": "local",
+            "results": [],
+            "taint_labels": ["untrusted"],
+            "evidence": {"operation": "realitycheck.search"},
+            "error": "",
+        },
+        "realitycheck.read": {
+            "ok": True,
+            "path": "/tmp/source.md",
+            "content": "hello",
+            "truncated": False,
+            "sha256": "abc123",
+            "taint_labels": ["untrusted"],
+            "evidence": {"operation": "realitycheck.read"},
+            "error": "",
+        },
         "fs.list": {"ok": True, "path": ".", "entries": [], "count": 0},
         "fs.read": {"ok": True, "path": "README.md", "content": "hello"},
         "fs.write": {
@@ -189,6 +214,7 @@ def test_cli_commands_route_through_rpc_wrapper(
 
     assert "Shutdown signal sent" in _invoke_ok(runner, ["stop"]).output
     assert "Status: running" in _invoke_ok(runner, ["status"]).output
+    _invoke_ok(runner, ["doctor", "check", "--component", "realitycheck"])
     assert "Session created: s-1" in _invoke_ok(
         runner,
         ["session", "create", "--user", "alice", "--workspace", "ws-1"],
@@ -265,6 +291,8 @@ def test_cli_commands_route_through_rpc_wrapper(
     _invoke_ok(runner, ["todo", "delete", "td-1"])
     _invoke_ok(runner, ["web", "search", "shisad", "--limit", "1"])
     _invoke_ok(runner, ["web", "fetch", "https://example.com"])
+    _invoke_ok(runner, ["realitycheck", "search", "roadmap", "--limit", "1", "--mode", "local"])
+    _invoke_ok(runner, ["realitycheck", "read", "sources/a.md", "--max-bytes", "64"])
     _invoke_ok(runner, ["fs", "list", ".", "--limit", "1"])
     _invoke_ok(runner, ["fs", "read", "README.md", "--max-bytes", "10"])
     _invoke_ok(runner, ["fs", "write", "README.md", "--content", "x"])
@@ -283,6 +311,8 @@ def test_cli_commands_route_through_rpc_wrapper(
 
     assert ("session.create", {"user_id": "alice", "workspace_id": "ws-1"}) in calls
     assert ("memory.rotate_key", {"reencrypt_existing": True}) in calls
+    assert ("doctor.check", {"component": "realitycheck"}) in calls
+    assert ("realitycheck.read", {"path": "sources/a.md", "max_bytes": 64}) in calls
     assert ("dashboard.alerts", {"limit": 1}) in calls
 
 
