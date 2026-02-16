@@ -468,6 +468,132 @@ async def test_discord_channel_accepts_raw_mentions_when_mentions_are_unresolved
 
 
 @pytest.mark.asyncio
+async def test_discord_channel_accepts_plain_name_prefix_without_mentions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Guild messages can use @botname prefix even if mentions are unresolved."""
+    from shisad.channels import discord as discord_module
+
+    class _FakeIntents:
+        def __init__(self) -> None:
+            self.message_content = False
+
+        @classmethod
+        def default(cls) -> _FakeIntents:
+            return cls()
+
+    class _FakeClient:
+        def __init__(self, *, intents: _FakeIntents) -> None:
+            self.intents = intents
+            self.user = SimpleNamespace(
+                id="bot-999",
+                name="shisad",
+                display_name="Shisad",
+                global_name="SHISAD",
+            )
+
+        def event(self, coro):
+            setattr(self, coro.__name__, coro)
+            return coro
+
+        async def start(self, _token: str) -> None:
+            return None
+
+        async def close(self) -> None:
+            return None
+
+        async def dispatch(self, message: object) -> None:
+            handler = getattr(self, "on_message", None)
+            if handler is not None:
+                await handler(message)
+
+    monkeypatch.setattr(
+        discord_module,
+        "discord",
+        SimpleNamespace(Intents=_FakeIntents, Client=_FakeClient),
+    )
+
+    channel = DiscordChannel(DiscordConfig(bot_token="token"))
+    await channel.connect()
+    assert channel._client is not None
+    message = SimpleNamespace(
+        author=SimpleNamespace(id="u-4", bot=False),
+        content="@shisad trace six xyz123",
+        guild=SimpleNamespace(id="g-1"),
+        channel=SimpleNamespace(id="c-1"),
+        id="m-5",
+        mentions=[],
+        raw_mentions=[],
+    )
+    await channel._client.dispatch(message)
+    received = await asyncio.wait_for(channel.receive(), timeout=0.2)
+    assert received.channel == "discord"
+    assert received.external_user_id == "u-4"
+    assert received.reply_target == "c-1"
+    assert received.content == "trace six xyz123"
+    await channel.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_discord_channel_ignores_plain_name_when_not_prefix(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Plain @botname text should only trigger when used as a prefix."""
+    from shisad.channels import discord as discord_module
+
+    class _FakeIntents:
+        def __init__(self) -> None:
+            self.message_content = False
+
+        @classmethod
+        def default(cls) -> _FakeIntents:
+            return cls()
+
+    class _FakeClient:
+        def __init__(self, *, intents: _FakeIntents) -> None:
+            self.intents = intents
+            self.user = SimpleNamespace(id="bot-999", name="shisad")
+
+        def event(self, coro):
+            setattr(self, coro.__name__, coro)
+            return coro
+
+        async def start(self, _token: str) -> None:
+            return None
+
+        async def close(self) -> None:
+            return None
+
+        async def dispatch(self, message: object) -> None:
+            handler = getattr(self, "on_message", None)
+            if handler is not None:
+                await handler(message)
+
+    monkeypatch.setattr(
+        discord_module,
+        "discord",
+        SimpleNamespace(Intents=_FakeIntents, Client=_FakeClient),
+    )
+
+    channel = DiscordChannel(DiscordConfig(bot_token="token"))
+    await channel.connect()
+    assert channel._client is not None
+    message = SimpleNamespace(
+        author=SimpleNamespace(id="u-5", bot=False),
+        content="can @shisad see this",
+        guild=SimpleNamespace(id="g-1"),
+        channel=SimpleNamespace(id="c-1"),
+        id="m-6",
+        mentions=[],
+        raw_mentions=[],
+    )
+    await channel._client.dispatch(message)
+    with pytest.raises(TimeoutError):
+        await asyncio.wait_for(channel.receive(), timeout=0.1)
+    await channel.disconnect()
+
+
+@pytest.mark.asyncio
 async def test_slack_channel_handler_accepts_say_and_filters_bot_messages(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

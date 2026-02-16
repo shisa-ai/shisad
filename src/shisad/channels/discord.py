@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import logging
 import re
 from dataclasses import dataclass
@@ -61,24 +62,91 @@ class DiscordChannel(InMemoryChannel):
         event_decorator = getattr(self._client, "event", None)
         if callable(event_decorator):
             async def on_message(message: Any) -> None:
+                message_id = str(getattr(message, "id", ""))
+                guild = getattr(message, "guild", None)
+                guild_id = str(getattr(guild, "id", "")) if guild is not None else ""
+                channel_obj = getattr(message, "channel", None)
+                channel_id = str(getattr(channel_obj, "id", "")) if channel_obj is not None else ""
                 author = getattr(message, "author", None)
                 if author is None:
+                    logger.debug(
+                        "Discord ingress dropped "
+                        "(reason=missing_author message_id=%s guild_id=%s channel_id=%s)",
+                        message_id,
+                        guild_id,
+                        channel_id,
+                    )
                     return
+                author_id = str(getattr(author, "id", ""))
                 if bool(getattr(author, "bot", False)):
+                    logger.debug(
+                        "Discord ingress dropped "
+                        "(reason=author_is_bot message_id=%s guild_id=%s "
+                        "channel_id=%s author_id=%s)",
+                        message_id,
+                        guild_id,
+                        channel_id,
+                        author_id,
+                    )
                     return
-                guild = getattr(message, "guild", None)
                 content = str(getattr(message, "content", "")).strip()
+                logger.debug(
+                    "Discord ingress received "
+                    "(message_id=%s guild_id=%s channel_id=%s author_id=%s "
+                    "content_len=%d content_hash=%s)",
+                    message_id,
+                    guild_id,
+                    channel_id,
+                    author_id,
+                    len(content),
+                    self._content_fingerprint(content),
+                )
                 # In guild channels, only respond when the bot is @mentioned.
                 # DMs (guild is None) are always processed.
+                addressed_by_resolved = False
+                addressed_by_content_tag = False
+                addressed_by_name_prefix = False
                 if guild is not None and self._client is not None:
                     bot_user = getattr(self._client, "user", None)
                     if bot_user is not None:
                         bot_id = str(getattr(bot_user, "id", "")).strip()
                         mention_ids = self._message_mention_ids(message)
-                        has_content_mention = self._content_mentions_bot(
+                        addressed_by_resolved = bot_id in mention_ids
+                        addressed_by_content_tag = self._content_mentions_bot(
                             content, bot_id
                         )
-                        if bot_id not in mention_ids and not has_content_mention:
+                        name_aliases = self._bot_name_aliases(bot_user)
+                        addressed_by_name_prefix = self._content_mentions_bot_name_prefix(
+                            content, name_aliases
+                        )
+                        if (
+                            not addressed_by_resolved
+                            and not addressed_by_content_tag
+                            and not addressed_by_name_prefix
+                        ):
+                            raw_mentions = tuple(
+                                mention_id
+                                for mention_id in (
+                                    str(raw_mention).strip()
+                                    for raw_mention in (
+                                        getattr(message, "raw_mentions", []) or []
+                                    )
+                                )
+                                if mention_id
+                            )
+                            logger.debug(
+                                "Discord ingress dropped "
+                                "(reason=not_addressed message_id=%s guild_id=%s channel_id=%s "
+                                "author_id=%s bot_id=%s mention_ids=%s raw_mentions=%s aliases=%s)",
+                                message_id,
+                                guild_id,
+                                channel_id,
+                                author_id,
+                                bot_id,
+                                sorted(mention_ids),
+                                list(raw_mentions),
+                                list(name_aliases),
+                            )
                             return
                 # Strip the bot mention tag from content so the planner
                 # receives clean text (e.g. "<@123456> hello" → "hello").
@@ -90,17 +158,42 @@ class DiscordChannel(InMemoryChannel):
                             content = re.sub(
                                 rf"<@!?{re.escape(bot_id)}>\s*", "", content
                             ).strip()
+                        content = self._strip_plain_name_prefix(
+                            content, self._bot_name_aliases(bot_user)
+                        )
                 if not content:
+                    logger.debug(
+                        "Discord ingress dropped "
+                        "(reason=empty_after_strip message_id=%s guild_id=%s "
+                        "channel_id=%s author_id=%s)",
+                        message_id,
+                        guild_id,
+                        channel_id,
+                        author_id,
+                    )
                     return
-                guild_id = str(getattr(guild, "id", "")) if guild is not None else ""
-                channel_obj = getattr(message, "channel", None)
-                channel_id = str(getattr(channel_obj, "id", "")) if channel_obj is not None else ""
-                message_id = str(getattr(message, "id", "")) if message is not None else ""
+                workspace_hint = self.workspace_for_guild(guild_id)
+                logger.debug(
+                    "Discord ingress accepted "
+                    "(message_id=%s guild_id=%s channel_id=%s author_id=%s workspace_hint=%s "
+                    "addressed_by_resolved=%s addressed_by_content_tag=%s "
+                    "addressed_by_name_prefix=%s content_len=%d content_hash=%s)",
+                    message_id,
+                    guild_id,
+                    channel_id,
+                    author_id,
+                    workspace_hint,
+                    addressed_by_resolved,
+                    addressed_by_content_tag,
+                    addressed_by_name_prefix,
+                    len(content),
+                    self._content_fingerprint(content),
+                )
                 await self._incoming.put(
                     ChannelMessage(
                         channel="discord",
-                        external_user_id=str(getattr(author, "id", "")),
-                        workspace_hint=self.workspace_for_guild(guild_id),
+                        external_user_id=author_id,
+                        workspace_hint=workspace_hint,
                         content=content,
                         message_id=message_id,
                         reply_target=channel_id,
@@ -179,6 +272,52 @@ class DiscordChannel(InMemoryChannel):
         if not content or not bot_id:
             return False
         return re.search(rf"<@!?{re.escape(bot_id)}>", content) is not None
+
+    @staticmethod
+    def _bot_name_aliases(bot_user: Any) -> tuple[str, ...]:
+        aliases = {
+            str(getattr(bot_user, field, "")).strip()
+            for field in ("name", "display_name", "global_name")
+        }
+        aliases.discard("")
+        return tuple(sorted(aliases, key=len, reverse=True))
+
+    @staticmethod
+    def _content_mentions_bot_name_prefix(
+        content: str, aliases: tuple[str, ...]
+    ) -> bool:
+        if not content:
+            return False
+        for alias in aliases:
+            if re.match(
+                rf"^\s*@{re.escape(alias)}(?=$|[\s,:-])",
+                content,
+                flags=re.IGNORECASE,
+            ):
+                return True
+        return False
+
+    @staticmethod
+    def _strip_plain_name_prefix(content: str, aliases: tuple[str, ...]) -> str:
+        if not content:
+            return content
+        for alias in aliases:
+            stripped = re.sub(
+                rf"^\s*@{re.escape(alias)}(?=$|[\s,:-])[\s,:-]*",
+                "",
+                content,
+                count=1,
+                flags=re.IGNORECASE,
+            )
+            if stripped != content:
+                return stripped.strip()
+        return content.strip()
+
+    @staticmethod
+    def _content_fingerprint(content: str) -> str:
+        if not content:
+            return ""
+        return hashlib.blake2s(content.encode("utf-8"), digest_size=8).hexdigest()
 
     def is_user_verified(self, user_id: str) -> bool:
         trusted = self._config.trusted_users or set()
