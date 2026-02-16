@@ -122,6 +122,26 @@ async def test_m1_t2_planner_normalizes_noncanonical_report_anomaly_payload() ->
 
 
 @pytest.mark.asyncio
+async def test_m1_t2_planner_normalizes_assistant_response_object_payload() -> None:
+    registry = _make_registry()
+    pep = PEP(PolicyBundle(default_require_confirmation=False), registry)
+    payload = json.dumps(
+        {
+            "assistant_response": {"type": "error", "message": "Hello there"},
+            "actions": [],
+        }
+    )
+    planner = Planner(StaticProvider([payload]), pep, max_retries=0)
+
+    result = await planner.propose(
+        "hello",
+        PolicyContext(capabilities={Capability.FILE_READ}),
+    )
+    assert result.output.assistant_response == "Hello there"
+    assert result.output.actions == []
+
+
+@pytest.mark.asyncio
 async def test_m1_t3_tool_proposals_always_go_through_pep() -> None:
     registry = _make_registry()
     base_pep = PEP(PolicyBundle(default_require_confirmation=False), registry)
