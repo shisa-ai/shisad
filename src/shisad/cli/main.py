@@ -149,6 +149,29 @@ def tui(interactive: bool, plain: bool) -> None:
     click.echo(rendered)
 
 
+@cli.command("chat")
+@click.option("--session", "session_id", default="", help="Attach to existing session ID.")
+@click.option("--user", "-u", default="ops", help="User ID for new session.")
+@click.option("--workspace", "-w", default="default", help="Workspace ID for new session.")
+def chat(session_id: str, user: str, workspace: str) -> None:
+    """Interactive chat with the shisad daemon."""
+    try:
+        from shisad.ui.chat import ChatApp
+    except ImportError as exc:
+        raise click.ClickException(
+            "textual is required for chat TUI. Install with: uv sync --dev"
+        ) from exc
+
+    config = _get_config()
+    app = ChatApp(
+        socket_path=config.socket_path,
+        user_id=user,
+        workspace_id=workspace,
+        session_id=session_id or None,
+    )
+    app.run()
+
+
 @cli.command("web-ui")
 @click.option(
     "--output",

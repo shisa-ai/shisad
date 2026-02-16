@@ -51,6 +51,7 @@ dev = [
     "ruff>=0.9,<1",
     "mypy>=1.14,<2",
     "types-pyyaml>=6.0.12.20250915",
+    "textual>=0.89,<1",
 ]
 security-runtime = [
     "yara-python>=4.5,<5",
