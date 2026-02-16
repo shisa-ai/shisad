@@ -20,18 +20,20 @@ from textual.widgets import Footer, Header, Input, RichLog
 def format_user_message(content: str) -> str:
     """Format a user message for display in the chat log."""
     text = content.strip()
-    return f"[bold cyan]you:[/bold cyan] {text}"
+    return f"[bold dodger_blue1]you:[/bold dodger_blue1] {text}"
 
 
 def format_assistant_message(content: str) -> str:
     """Format an assistant message for display in the chat log."""
     text = content.strip()
-    return f"[bold green]shisad:[/bold green] {text}" if text else "[dim](no response)[/dim]"
+    if not text:
+        return "[dim](no response)[/dim]"
+    return f"[bold chartreuse3]shisad:[/bold chartreuse3] {text}"
 
 
 def _format_error(content: str) -> str:
     """Format an error message for display in the chat log."""
-    return f"[bold red]error:[/bold red] {content}"
+    return f"[bold dark_orange]notice:[/bold dark_orange] {content}"
 
 
 class ChatApp(App[None]):
@@ -42,12 +44,11 @@ class ChatApp(App[None]):
     CSS = """
     #chat-log {
         height: 1fr;
-        border: solid $accent;
         padding: 0 1;
+        scrollbar-size: 1 1;
     }
     #chat-input {
         dock: bottom;
-        margin: 0 0;
     }
     """
 
@@ -93,6 +94,7 @@ class ChatApp(App[None]):
         except (OSError, RuntimeError) as exc:
             log.write(_format_error(f"Could not connect to daemon: {exc}"))
             log.write("[dim]Is the daemon running? Try: shisad start --foreground[/dim]")
+        self.query_one("#chat-input", Input).focus()
 
     async def on_input_submitted(self, event: Input.Submitted) -> None:
         content = event.value.strip()
