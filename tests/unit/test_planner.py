@@ -77,7 +77,8 @@ async def test_m1_t1_planner_rejects_non_json_output() -> None:
 
 
 @pytest.mark.asyncio
-async def test_m1_t2_planner_rejects_schema_violating_json() -> None:
+async def test_m1_t2_planner_drops_schema_violating_actions() -> None:
+    """Actions missing required fields are dropped, not raised as errors."""
     registry = _make_registry()
     pep = PEP(PolicyBundle(default_require_confirmation=False), registry)
     invalid_payload = json.dumps(
@@ -86,18 +87,20 @@ async def test_m1_t2_planner_rejects_schema_violating_json() -> None:
                 {
                     "action_id": "a1",
                     "tool_name": "echo",
-                    # missing arguments/reasoning/data_sources
+                    # missing reasoning — invalid ActionProposal
                 }
             ]
         }
     )
     planner = Planner(StaticProvider([invalid_payload]), pep, max_retries=0)
 
-    with pytest.raises(PlannerOutputError):
-        await planner.propose(
-            "hello",
-            PolicyContext(capabilities={Capability.FILE_READ}),
-        )
+    result = await planner.propose(
+        "hello",
+        PolicyContext(capabilities={Capability.FILE_READ}),
+    )
+    # Invalid action dropped, fallback assistant_response generated.
+    assert result.output.actions == []
+    assert len(result.output.assistant_response) > 0
 
 
 @pytest.mark.asyncio
@@ -139,6 +142,62 @@ async def test_m1_t2_planner_normalizes_assistant_response_object_payload() -> N
     )
     assert result.output.assistant_response == "Hello there"
     assert result.output.actions == []
+
+
+@pytest.mark.asyncio
+async def test_planner_drops_malformed_actions_keeps_response() -> None:
+    """Actions missing required fields should be silently dropped."""
+    registry = _make_registry()
+    pep = PEP(PolicyBundle(default_require_confirmation=False), registry)
+    payload = json.dumps(
+        {
+            "assistant_response": "SHISAD can help you with many tasks.",
+            "actions": [
+                {
+                    "action": "provide_overview",
+                    "arguments": {"tool_name": "SHISAD"},
+                },
+            ],
+        }
+    )
+    planner = Planner(StaticProvider([payload]), pep, max_retries=0)
+
+    result = await planner.propose(
+        "what can you do?",
+        PolicyContext(capabilities={Capability.FILE_READ}),
+    )
+    assert result.output.assistant_response == "SHISAD can help you with many tasks."
+    assert result.output.actions == []
+
+
+@pytest.mark.asyncio
+async def test_planner_keeps_valid_actions_drops_invalid() -> None:
+    """Mix of valid and invalid actions: valid ones pass through."""
+    registry = _make_registry()
+    pep = PEP(PolicyBundle(default_require_confirmation=False), registry)
+    payload = json.dumps(
+        {
+            "assistant_response": "Running echo.",
+            "actions": [
+                {"action": "made_up", "foo": "bar"},
+                {
+                    "action_id": "a1",
+                    "tool_name": "echo",
+                    "arguments": {"text": "hello"},
+                    "reasoning": "user asked for echo",
+                },
+            ],
+        }
+    )
+    planner = Planner(StaticProvider([payload]), pep, max_retries=0)
+
+    result = await planner.propose(
+        "echo hello",
+        PolicyContext(capabilities={Capability.FILE_READ}),
+    )
+    assert result.output.assistant_response == "Running echo."
+    assert len(result.output.actions) == 1
+    assert result.output.actions[0].tool_name == ToolName("echo")
 
 
 @pytest.mark.asyncio

@@ -167,7 +167,20 @@ class Planner:
         actions: list[dict[str, Any]] = []
         raw_actions = parsed.get("actions")
         if isinstance(raw_actions, list):
-            actions = [item for item in raw_actions if isinstance(item, dict)]
+            for item in raw_actions:
+                if not isinstance(item, dict):
+                    continue
+                # Validate each action individually; drop malformed ones
+                # rather than failing the entire response.
+                try:
+                    ActionProposal.model_validate(item)
+                    actions.append(item)
+                except ValidationError:
+                    logger.debug(
+                        "Dropping malformed action from planner output: %s",
+                        json.dumps(item, default=str)[:200],
+                    )
+                    continue
         else:
             action_name = str(parsed.get("action", "")).strip()
             if action_name == "report_anomaly":
