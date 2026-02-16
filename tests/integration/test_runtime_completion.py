@@ -419,6 +419,8 @@ async def test_v0_3_1_session_message_passes_tool_manifest_and_tools_payload(
         planner_input = str(captured.get("user_content", ""))
         assert "TRUSTED RUNTIME CONTEXT" in planner_input
         assert "Enabled tools:" in planner_input
+        assert "Never invent tool names." in planner_input
+        assert "If asked which tools are available" in planner_input
         tools_payload = captured.get("tools")
         assert isinstance(tools_payload, list)
         assert any(

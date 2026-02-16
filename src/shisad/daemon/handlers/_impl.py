@@ -235,6 +235,8 @@ def _build_planner_tool_context(
     capability_list = sorted(cap.value for cap in capabilities)
     lines: list[str] = [
         "Use only tools from the trusted runtime manifest below.",
+        "Never invent tool names.",
+        "If asked which tools are available, list only enabled tools from this manifest.",
         (
             "Session capabilities: " + ", ".join(capability_list)
             if capability_list

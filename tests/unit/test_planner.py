@@ -323,6 +323,43 @@ async def test_planner_trusted_context_rewrites_internal_format_apology() -> Non
 
 
 @pytest.mark.asyncio
+async def test_planner_trusted_context_rewrites_planner_mechanics_response() -> None:
+    registry = _make_registry()
+    pep = PEP(PolicyBundle(default_require_confirmation=False), registry)
+    provider = StaticProvider(
+        [
+            json.dumps(
+                {
+                    "assistant_response": (
+                        "I am a planning component and cannot directly call tools. "
+                        "Please provide structured JSON."
+                    ),
+                    "actions": [],
+                }
+            ),
+            json.dumps(
+                {
+                    "assistant_response": "Available tools include echo for simple text responses.",
+                    "actions": [],
+                }
+            ),
+        ]
+    )
+    planner = Planner(provider, pep, max_retries=1)
+
+    result = await planner.propose(
+        "what tools are available?",
+        PolicyContext(capabilities={Capability.FILE_READ}),
+    )
+
+    assert provider.calls == 2
+    lowered = result.output.assistant_response.lower()
+    assert "planning component" not in lowered
+    assert "structured json" not in lowered
+    assert "available tools" in lowered
+
+
+@pytest.mark.asyncio
 async def test_planner_passes_tool_payload_to_provider() -> None:
     registry = _make_registry()
     pep = PEP(PolicyBundle(default_require_confirmation=False), registry)
