@@ -436,3 +436,111 @@ def test_status_progress_reports_failure_instead_of_done(
     assert result.exit_code == 1
     assert "Querying daemon status failed" in result.output
     assert "Querying daemon status done" not in result.output
+
+
+def test_start_debug_routes_to_autoreload_with_debug_log_level(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _config(tmp_path)
+    monkeypatch.setattr(cli_main, "_get_config", lambda: config)
+
+    captured: dict[str, DaemonConfig] = {}
+
+    def _fake_debug_start(effective_config: DaemonConfig) -> None:
+        captured["config"] = effective_config
+
+    def _fake_foreground_start(_: DaemonConfig) -> None:
+        raise AssertionError("foreground start path should not be used in --debug mode")
+
+    monkeypatch.setattr(cli_main, "_run_daemon_with_autoreload_sync", _fake_debug_start)
+    monkeypatch.setattr(cli_main, "_run_daemon_foreground", _fake_foreground_start)
+
+    runner = CliRunner()
+    result = runner.invoke(cli_main.cli, ["start", "--debug"])
+    assert result.exit_code == 0, result.output
+    assert captured["config"].log_level == "DEBUG"
+    assert "only supported mode" not in result.output
+
+
+def test_start_default_routes_to_foreground_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _config(tmp_path)
+    monkeypatch.setattr(cli_main, "_get_config", lambda: config)
+
+    captured: dict[str, DaemonConfig] = {}
+
+    def _fake_foreground_start(effective_config: DaemonConfig) -> None:
+        captured["config"] = effective_config
+
+    def _fake_debug_start(_: DaemonConfig) -> None:
+        raise AssertionError("debug/autoreload path should not be used without --debug")
+
+    monkeypatch.setattr(cli_main, "_run_daemon_foreground", _fake_foreground_start)
+    monkeypatch.setattr(cli_main, "_run_daemon_with_autoreload_sync", _fake_debug_start)
+
+    runner = CliRunner()
+    result = runner.invoke(cli_main.cli, ["start"])
+    assert result.exit_code == 0, result.output
+    assert captured["config"].log_level == config.log_level
+    assert "only supported mode" in result.output
+
+
+async def test_run_daemon_with_autoreload_restarts_when_source_changes(tmp_path: Path) -> None:
+    watched_file = tmp_path / "watched.py"
+    watched_file.write_text("value = 1\n", encoding="utf-8")
+    config = _config(tmp_path)
+
+    starts: list[int] = []
+    first_started = asyncio.Event()
+    first_cancelled = asyncio.Event()
+
+    async def _fake_daemon(_config: DaemonConfig) -> None:
+        starts.append(len(starts) + 1)
+        if len(starts) == 1:
+            first_started.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                first_cancelled.set()
+                raise
+
+    task = asyncio.create_task(
+        cli_main._run_daemon_with_autoreload(
+            config=config,
+            watch_roots=(tmp_path,),
+            poll_interval=0.01,
+            daemon_runner=_fake_daemon,
+        )
+    )
+
+    await asyncio.wait_for(first_started.wait(), timeout=1.0)
+    watched_file.write_text("value = 2\n", encoding="utf-8")
+    await asyncio.wait_for(first_cancelled.wait(), timeout=1.0)
+    await asyncio.wait_for(task, timeout=1.0)
+
+    assert starts == [1, 2]
+
+
+async def test_run_daemon_with_autoreload_exits_without_restart_when_daemon_stops(
+    tmp_path: Path,
+) -> None:
+    watched_file = tmp_path / "watched.py"
+    watched_file.write_text("value = 1\n", encoding="utf-8")
+    config = _config(tmp_path)
+
+    starts: list[int] = []
+
+    async def _fake_daemon(_config: DaemonConfig) -> None:
+        starts.append(len(starts) + 1)
+
+    await cli_main._run_daemon_with_autoreload(
+        config=config,
+        watch_roots=(tmp_path,),
+        poll_interval=0.01,
+        daemon_runner=_fake_daemon,
+    )
+
+    assert starts == [1]

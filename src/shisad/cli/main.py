@@ -5,10 +5,12 @@ Click-based CLI that connects to the daemon via the control API (Unix socket).
 
 from __future__ import annotations
 
+import asyncio
 import json
 import sys
 import time
-from contextlib import contextmanager
+from collections.abc import Callable, Coroutine
+from contextlib import contextmanager, suppress
 from pathlib import Path
 from typing import Any
 
@@ -166,24 +168,142 @@ def web_ui(output: Path) -> None:
 # --- Daemon lifecycle ---
 
 
+def _default_autoreload_roots() -> tuple[Path, ...]:
+    package_src = Path(__file__).resolve().parents[1]
+    repo_src = Path(__file__).resolve().parents[3] / "src" / "shisad"
+    if repo_src.exists():
+        return (repo_src,)
+    return (package_src,)
+
+
+def _snapshot_autoreload_files(watch_roots: tuple[Path, ...]) -> dict[Path, int]:
+    snapshot: dict[Path, int] = {}
+    for root in watch_roots:
+        if root.is_file():
+            if root.suffix == ".py":
+                try:
+                    snapshot[root] = root.stat().st_mtime_ns
+                except FileNotFoundError:
+                    continue
+            continue
+        if not root.exists():
+            continue
+        for path in root.rglob("*.py"):
+            if not path.is_file():
+                continue
+            try:
+                snapshot[path] = path.stat().st_mtime_ns
+            except FileNotFoundError:
+                continue
+    return snapshot
+
+
+async def _wait_for_autoreload_change(
+    *,
+    watch_roots: tuple[Path, ...],
+    baseline: dict[Path, int],
+    poll_interval: float,
+) -> dict[Path, int]:
+    effective_interval = max(0.01, poll_interval)
+    while True:
+        await asyncio.sleep(effective_interval)
+        current = _snapshot_autoreload_files(watch_roots)
+        if current != baseline:
+            return current
+
+
+async def _run_daemon_with_autoreload(
+    *,
+    config: DaemonConfig,
+    watch_roots: tuple[Path, ...] | None = None,
+    poll_interval: float = 0.5,
+    daemon_runner: Callable[[DaemonConfig], Coroutine[Any, Any, None]] | None = None,
+) -> None:
+    runner = daemon_runner
+    if runner is None:
+        from shisad.daemon.runner import run_daemon
+
+        runner = run_daemon
+
+    roots = watch_roots or _default_autoreload_roots()
+    snapshot = _snapshot_autoreload_files(roots)
+    _echo(f"Debug autoreload watching {len(snapshot)} Python files", fg="cyan")
+
+    while True:
+        daemon_task: asyncio.Task[None] = asyncio.create_task(runner(config))
+        change_task: asyncio.Task[dict[Path, int]] = asyncio.create_task(
+            _wait_for_autoreload_change(
+                watch_roots=roots,
+                baseline=snapshot,
+                poll_interval=poll_interval,
+            )
+        )
+        try:
+            done, _ = await asyncio.wait(
+                {daemon_task, change_task},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+        except asyncio.CancelledError:
+            daemon_task.cancel()
+            change_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await daemon_task
+            with suppress(asyncio.CancelledError):
+                await change_task
+            raise
+
+        if daemon_task in done:
+            change_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await change_task
+            await daemon_task
+            return
+
+        snapshot = change_task.result()
+        _echo("Autoreload detected local source changes; restarting daemon", fg="yellow")
+        daemon_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await daemon_task
+
+
+def _run_daemon_with_autoreload_sync(config: DaemonConfig) -> None:
+    run_async(_run_daemon_with_autoreload(config=config))
+
+
+def _run_daemon_foreground(config: DaemonConfig) -> None:
+    from shisad.daemon.runner import run_daemon
+
+    run_async(run_daemon(config))
+
+
 @cli.command()
 @click.option("--foreground", "-f", is_flag=True, help="Run in foreground (don't daemonize)")
-def start(foreground: bool) -> None:
+@click.option(
+    "--debug",
+    is_flag=True,
+    help="Run in foreground with DEBUG logging and local autoreload.",
+)
+def start(foreground: bool, debug: bool) -> None:
     """Start the shisad daemon."""
     config = _get_config()
+    effective_foreground = foreground or debug
+    effective_config = config.model_copy(update={"log_level": "DEBUG"}) if debug else config
 
-    if not foreground:
+    if not effective_foreground:
         _echo(f"Starting shisad daemon (socket: {config.socket_path})", fg="cyan")
         # Full daemonization is a future enhancement; for now, run in foreground
         _echo("Note: --foreground is currently the only supported mode", fg="yellow")
+    if debug:
+        _echo("Debug mode enabled: foreground + DEBUG logs + autoreload", fg="yellow")
 
-    _echo(f"Data directory: {config.data_dir}")
-    _echo(f"Control socket: {config.socket_path}")
-
-    from shisad.daemon.runner import run_daemon
+    _echo(f"Data directory: {effective_config.data_dir}")
+    _echo(f"Control socket: {effective_config.socket_path}")
 
     try:
-        run_async(run_daemon(config))
+        if debug:
+            _run_daemon_with_autoreload_sync(effective_config)
+        else:
+            _run_daemon_foreground(effective_config)
     except KeyboardInterrupt:
         _echo("\nShutting down...", fg="yellow")
 
