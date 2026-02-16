@@ -68,6 +68,24 @@ def render_spotlight_context(
     )
 
 
+def render_trusted_context(
+    *,
+    trusted_context: str,
+    user_goal: str,
+) -> str:
+    """Render trusted-only planner context when no untrusted payload exists."""
+    delimiters = generate_delimiters()
+    return (
+        "=== TRUSTED RUNTIME CONTEXT ===\n"
+        f"{delimiters.system_start}\n"
+        f"{trusted_context}\n\n"
+        "=== USER GOAL ===\n"
+        f"{delimiters.user_goal}\n"
+        f"{user_goal}\n\n"
+        "=== END CONTEXT ==="
+    )
+
+
 def build_planner_input(
     *,
     trusted_instructions: str,
@@ -75,12 +93,18 @@ def build_planner_input(
     untrusted_content: str,
     marker: str = "^",
     encode_untrusted: bool = False,
+    trusted_context: str = "",
 ) -> str:
     """Build planner input with spotlighting only when untrusted content exists.
 
     Trusted-only turns should not be framed as if external untrusted data exists.
     """
     if not untrusted_content.strip():
+        if trusted_context.strip():
+            return render_trusted_context(
+                trusted_context=trusted_context,
+                user_goal=user_goal,
+            )
         return user_goal
     return render_spotlight_context(
         trusted_instructions=trusted_instructions,

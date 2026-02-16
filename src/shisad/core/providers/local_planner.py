@@ -24,7 +24,7 @@ class LocalPlannerProvider:
         normalized_content = user_content.replace("^", "")
         goal_text = normalized_content
         goal_match = re.search(
-            r"=== USER GOAL ===\n.*?\n(.*?)\n\n=== EXTERNAL CONTENT",
+            r"=== USER GOAL ===\n.*?\n(.*?)\n\n=== (?:EXTERNAL CONTENT[^\n]*|END CONTEXT)",
             normalized_content,
             flags=re.DOTALL,
         )

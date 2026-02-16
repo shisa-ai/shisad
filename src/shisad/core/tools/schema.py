@@ -81,3 +81,20 @@ class ToolDefinition(BaseModel):
             "required": required_fields,
             "additionalProperties": False,
         }
+
+
+def tool_definitions_to_openai(tools: list[ToolDefinition]) -> list[dict[str, Any]]:
+    """Convert tool definitions to OpenAI-compatible `tools` payload format."""
+    payload: list[dict[str, Any]] = []
+    for tool in tools:
+        payload.append(
+            {
+                "type": "function",
+                "function": {
+                    "name": str(tool.name),
+                    "description": tool.description,
+                    "parameters": tool.json_schema(),
+                },
+            }
+        )
+    return payload

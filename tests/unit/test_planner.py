@@ -21,6 +21,7 @@ class StaticProvider:
         self._responses = responses
         self.calls = 0
         self.messages: list[list[Message]] = []
+        self.tools: list[list[dict[str, Any]] | None] = []
 
     async def complete(
         self,
@@ -28,6 +29,7 @@ class StaticProvider:
         tools: list[dict[str, Any]] | None = None,
     ) -> ProviderResponse:
         self.messages.append(list(messages))
+        self.tools.append(tools)
         index = min(self.calls, len(self._responses) - 1)
         self.calls += 1
         return ProviderResponse(
@@ -318,3 +320,39 @@ async def test_planner_trusted_context_rewrites_internal_format_apology() -> Non
     assert provider.calls == 2
     assert "formatting error" not in result.output.assistant_response.lower()
     assert "shisad can help" in result.output.assistant_response.lower()
+
+
+@pytest.mark.asyncio
+async def test_planner_passes_tool_payload_to_provider() -> None:
+    registry = _make_registry()
+    pep = PEP(PolicyBundle(default_require_confirmation=False), registry)
+    provider = StaticProvider(
+        [
+            json.dumps(
+                {
+                    "assistant_response": "ok",
+                    "actions": [],
+                }
+            )
+        ]
+    )
+    planner = Planner(provider, pep, max_retries=0)
+    tools_payload = [
+        {
+            "type": "function",
+            "function": {
+                "name": "echo",
+                "description": "Echo tool",
+                "parameters": {"type": "object", "properties": {}, "required": []},
+            },
+        }
+    ]
+
+    result = await planner.propose(
+        "hello",
+        PolicyContext(capabilities={Capability.FILE_READ}),
+        tools=tools_payload,
+    )
+
+    assert result.output.assistant_response == "ok"
+    assert provider.tools == [tools_payload]
