@@ -11,10 +11,13 @@ from typing import Any
 
 from shisad.channels.base import ChannelMessage, DeliveryTarget, InMemoryChannel
 
+_discord: Any | None
 try:  # pragma: no cover - optional dependency.
-    import discord  # type: ignore
+    import discord as _discord
 except ImportError:  # pragma: no cover - optional dependency.
-    discord = None
+    _discord = None
+
+discord: Any | None = _discord
 
 logger = logging.getLogger(__name__)
 
@@ -64,19 +67,19 @@ class DiscordChannel(InMemoryChannel):
                 if bool(getattr(author, "bot", False)):
                     return
                 guild = getattr(message, "guild", None)
+                content = str(getattr(message, "content", "")).strip()
                 # In guild channels, only respond when the bot is @mentioned.
                 # DMs (guild is None) are always processed.
                 if guild is not None and self._client is not None:
                     bot_user = getattr(self._client, "user", None)
                     if bot_user is not None:
-                        bot_id = str(getattr(bot_user, "id", ""))
-                        mentions = getattr(message, "mentions", []) or []
-                        mention_ids = {
-                            str(getattr(m, "id", "")) for m in mentions
-                        }
-                        if bot_id not in mention_ids:
+                        bot_id = str(getattr(bot_user, "id", "")).strip()
+                        mention_ids = self._message_mention_ids(message)
+                        has_content_mention = self._content_mentions_bot(
+                            content, bot_id
+                        )
+                        if bot_id not in mention_ids and not has_content_mention:
                             return
-                content = str(getattr(message, "content", "")).strip()
                 # Strip the bot mention tag from content so the planner
                 # receives clean text (e.g. "<@123456> hello" → "hello").
                 if self._client is not None:
@@ -157,6 +160,25 @@ class DiscordChannel(InMemoryChannel):
         if guild_id:
             return mapping.get(guild_id, guild_id)
         return "discord"
+
+    @staticmethod
+    def _message_mention_ids(message: Any) -> set[str]:
+        mention_ids = {
+            str(getattr(member, "id", "")).strip()
+            for member in (getattr(message, "mentions", []) or [])
+        }
+        mention_ids.discard("")
+        for raw_mention in (getattr(message, "raw_mentions", []) or []):
+            mention_id = str(raw_mention).strip()
+            if mention_id:
+                mention_ids.add(mention_id)
+        return mention_ids
+
+    @staticmethod
+    def _content_mentions_bot(content: str, bot_id: str) -> bool:
+        if not content or not bot_id:
+            return False
+        return re.search(rf"<@!?{re.escape(bot_id)}>", content) is not None
 
     def is_user_verified(self, user_id: str) -> bool:
         trusted = self._config.trusted_users or set()

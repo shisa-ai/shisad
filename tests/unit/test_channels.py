@@ -406,6 +406,68 @@ async def test_discord_channel_processes_dm_without_mention(
 
 
 @pytest.mark.asyncio
+async def test_discord_channel_accepts_raw_mentions_when_mentions_are_unresolved(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Guild mentions should still route when only raw mention ids are populated."""
+    from shisad.channels import discord as discord_module
+
+    class _FakeIntents:
+        def __init__(self) -> None:
+            self.message_content = False
+
+        @classmethod
+        def default(cls) -> _FakeIntents:
+            return cls()
+
+    class _FakeClient:
+        def __init__(self, *, intents: _FakeIntents) -> None:
+            self.intents = intents
+            self.user = SimpleNamespace(id="bot-999")
+
+        def event(self, coro):
+            setattr(self, coro.__name__, coro)
+            return coro
+
+        async def start(self, _token: str) -> None:
+            return None
+
+        async def close(self) -> None:
+            return None
+
+        async def dispatch(self, message: object) -> None:
+            handler = getattr(self, "on_message", None)
+            if handler is not None:
+                await handler(message)
+
+    monkeypatch.setattr(
+        discord_module,
+        "discord",
+        SimpleNamespace(Intents=_FakeIntents, Client=_FakeClient),
+    )
+
+    channel = DiscordChannel(DiscordConfig(bot_token="token"))
+    await channel.connect()
+    assert channel._client is not None
+    message = SimpleNamespace(
+        author=SimpleNamespace(id="u-3", bot=False),
+        content="<@bot-999> trace five",
+        guild=SimpleNamespace(id="g-1"),
+        channel=SimpleNamespace(id="c-1"),
+        id="m-4",
+        mentions=[],
+        raw_mentions=["bot-999"],
+    )
+    await channel._client.dispatch(message)
+    received = await asyncio.wait_for(channel.receive(), timeout=0.2)
+    assert received.channel == "discord"
+    assert received.external_user_id == "u-3"
+    assert received.reply_target == "c-1"
+    assert received.content == "trace five"
+    await channel.disconnect()
+
+
+@pytest.mark.asyncio
 async def test_slack_channel_handler_accepts_say_and_filters_bot_messages(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
