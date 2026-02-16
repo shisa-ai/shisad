@@ -71,6 +71,7 @@ from shisad.core.api.schema import (
 from shisad.core.config import DaemonConfig, ModelConfig
 from shisad.core.events import AnomalyReported, TaskTriggered
 from shisad.core.interfaces import TypedHandler
+from shisad.core.log import setup_logging
 from shisad.core.providers.routing import ModelRouter
 from shisad.core.types import Capability
 from shisad.daemon.control_handlers import DaemonControlHandlers
@@ -361,7 +362,7 @@ async def _reminder_delivery_pump(*, services: DaemonServices) -> None:
 
 async def run_daemon(config: DaemonConfig) -> None:
     """Run the shisad daemon."""
-    logging.basicConfig(level=getattr(logging, config.log_level.upper(), logging.INFO))
+    setup_logging(level=config.log_level)
     services = await DaemonServices.build(config)
     handlers = DaemonControlHandlers(services=services)
 
