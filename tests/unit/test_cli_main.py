@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import builtins
+import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import click
 import pytest
@@ -544,3 +547,98 @@ async def test_run_daemon_with_autoreload_exits_without_restart_when_daemon_stop
     )
 
     assert starts == [1]
+
+
+def test_chat_command_runs_textual_app(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _config(tmp_path)
+    monkeypatch.setattr(cli_main, "_get_config", lambda: config)
+    captured: dict[str, object] = {}
+
+    class _FakeApp:
+        def __init__(
+            self,
+            *,
+            socket_path: Path,
+            user_id: str,
+            workspace_id: str,
+            session_id: str | None,
+        ) -> None:
+            captured["socket_path"] = socket_path
+            captured["user_id"] = user_id
+            captured["workspace_id"] = workspace_id
+            captured["session_id"] = session_id
+
+        def run(self) -> None:
+            captured["ran"] = True
+
+    monkeypatch.setitem(sys.modules, "shisad.ui.chat", SimpleNamespace(ChatApp=_FakeApp))
+    runner = CliRunner()
+
+    result = runner.invoke(
+        cli_main.cli,
+        ["chat", "--session", "sess-123", "--user", "alice", "--workspace", "ws-a"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert captured["socket_path"] == config.socket_path
+    assert captured["user_id"] == "alice"
+    assert captured["workspace_id"] == "ws-a"
+    assert captured["session_id"] == "sess-123"
+    assert captured["ran"] is True
+
+
+def test_chat_command_reports_missing_textual_dependency(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _config(tmp_path)
+    monkeypatch.setattr(cli_main, "_get_config", lambda: config)
+    real_import = builtins.__import__
+
+    def _fake_import(
+        name: str,
+        globals_obj: dict[str, object] | None = None,
+        locals_obj: dict[str, object] | None = None,
+        fromlist: tuple[str, ...] = (),
+        level: int = 0,
+    ) -> object:
+        if name == "shisad.ui.chat":
+            raise ModuleNotFoundError("No module named 'textual'", name="textual")
+        return real_import(name, globals_obj, locals_obj, fromlist, level)
+
+    monkeypatch.setattr(builtins, "__import__", _fake_import)
+    runner = CliRunner()
+
+    result = runner.invoke(cli_main.cli, ["chat"])
+    assert result.exit_code == 1
+    assert "textual is required for chat TUI" in result.output
+
+
+def test_chat_command_surfaces_non_textual_import_failures(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _config(tmp_path)
+    monkeypatch.setattr(cli_main, "_get_config", lambda: config)
+    real_import = builtins.__import__
+
+    def _fake_import(
+        name: str,
+        globals_obj: dict[str, object] | None = None,
+        locals_obj: dict[str, object] | None = None,
+        fromlist: tuple[str, ...] = (),
+        level: int = 0,
+    ) -> object:
+        if name == "shisad.ui.chat":
+            raise ImportError("boom: broken chat module")
+        return real_import(name, globals_obj, locals_obj, fromlist, level)
+
+    monkeypatch.setattr(builtins, "__import__", _fake_import)
+    runner = CliRunner()
+
+    result = runner.invoke(cli_main.cli, ["chat"])
+    assert result.exit_code == 1
+    assert "chat TUI import failed" in result.output

@@ -157,10 +157,15 @@ def chat(session_id: str, user: str, workspace: str) -> None:
     """Interactive chat with the shisad daemon."""
     try:
         from shisad.ui.chat import ChatApp
+    except ModuleNotFoundError as exc:
+        missing = (exc.name or "").split(".", maxsplit=1)[0]
+        if missing == "textual":
+            raise click.ClickException(
+                "textual is required for chat TUI. Install with: uv sync --dev"
+            ) from exc
+        raise click.ClickException(f"chat TUI import failed: missing module '{exc.name}'") from exc
     except ImportError as exc:
-        raise click.ClickException(
-            "textual is required for chat TUI. Install with: uv sync --dev"
-        ) from exc
+        raise click.ClickException(f"chat TUI import failed: {exc}") from exc
 
     config = _get_config()
     app = ChatApp(

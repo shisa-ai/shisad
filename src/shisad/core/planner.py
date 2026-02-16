@@ -14,7 +14,7 @@ from typing import Any
 from pydantic import BaseModel, Field, ValidationError
 
 from shisad.core.providers.base import Message, ModelProvider, ProviderResponse
-from shisad.core.types import PEPDecision, ToolName
+from shisad.core.types import PEPDecision, TaintLabel, ToolName
 from shisad.security.pep import PEP, PolicyContext
 
 logger = logging.getLogger(__name__)
@@ -32,6 +32,20 @@ BASE_SYSTEM_PROMPT = (
 REPAIR_PROMPT = (
     "Your prior response was invalid. Return only JSON matching the required schema. "
     "No prose, no markdown fences."
+)
+
+TRUSTED_REPAIR_PROMPT_PREFIX = (
+    "Repair the response using this exact schema: "
+    '{"assistant_response":"<string>","actions":[{"action_id":"<id>","tool_name":"<tool>",'
+    '"arguments":{},"reasoning":"<why>","data_sources":[]}]} '
+    "For normal conversation without tool use, set actions to [] and provide a direct answer. "
+    "Do not apologize about JSON formatting."
+)
+
+TRUSTED_CONVERSATION_REWRITE_PROMPT = (
+    "Your assistant_response discussed formatting/JSON instead of answering the user. "
+    "Return valid JSON and answer the user's request directly. "
+    "If no tool is needed, keep actions as []."
 )
 
 
@@ -99,6 +113,7 @@ class Planner:
         tools: list[dict[str, Any]] | None = None,
     ) -> PlannerResult:
         """Generate structured action proposals and evaluate all via PEP."""
+        tainted_context = TaintLabel.UNTRUSTED in context.taint_labels
         messages: list[Message] = [
             Message(role="system", content=self._system_prompt),
             Message(role="user", content=user_content),
@@ -108,6 +123,16 @@ class Planner:
             response = await self._provider.complete(messages, tools)
             try:
                 output = self._parse_output(response.message.content)
+                if (
+                    not tainted_context
+                    and attempt < self._max_retries
+                    and self._needs_trusted_conversation_repair(output)
+                ):
+                    messages.append(Message(role="assistant", content=response.message.content))
+                    messages.append(
+                        Message(role="user", content=TRUSTED_CONVERSATION_REWRITE_PROMPT)
+                    )
+                    continue
                 evaluated = [
                     EvaluatedProposal(
                         proposal=proposal,
@@ -128,12 +153,40 @@ class Planner:
                 )
             except PlannerOutputError as exc:
                 logger.warning("Planner returned invalid JSON output: %s", exc)
+                if tainted_context:
+                    raise PlannerOutputError("Planner output invalid in tainted context") from exc
                 if attempt >= self._max_retries:
                     raise
                 messages.append(Message(role="assistant", content=response.message.content))
-                messages.append(Message(role="user", content=REPAIR_PROMPT))
+                messages.append(Message(role="user", content=self._repair_prompt(str(exc))))
 
         raise PlannerOutputError("Planner output exhausted retries")
+
+    @staticmethod
+    def _repair_prompt(validation_feedback: str) -> str:
+        trimmed_feedback = validation_feedback.strip().replace("\n", " ")
+        if len(trimmed_feedback) > 400:
+            trimmed_feedback = f"{trimmed_feedback[:400]}..."
+        return (
+            f"{REPAIR_PROMPT} {TRUSTED_REPAIR_PROMPT_PREFIX} "
+            f"Validation feedback: {trimmed_feedback}"
+        )
+
+    @staticmethod
+    def _needs_trusted_conversation_repair(output: PlannerOutput) -> bool:
+        if output.actions:
+            return False
+        normalized = output.assistant_response.lower()
+        return any(
+            marker in normalized
+            for marker in (
+                "formatting error",
+                "json",
+                "schema",
+                "invalid format",
+                "could not parse",
+            )
+        )
 
     @staticmethod
     def _parse_output(raw: str) -> PlannerOutput:

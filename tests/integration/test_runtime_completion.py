@@ -13,6 +13,7 @@ import pytest
 from shisad.core.api.transport import ControlClient
 from shisad.core.audit import AuditLog
 from shisad.core.config import DaemonConfig
+from shisad.core.planner import Planner, PlannerOutputError
 from shisad.daemon.runner import run_daemon
 
 
@@ -182,6 +183,157 @@ async def test_v0_3_1_trusted_cli_ingress_not_marked_untrusted_in_trace(
         turn = json.loads(lines[-1])
         assert turn.get("trust_level") == "trusted"
         assert "untrusted" not in (turn.get("taint_labels") or [])
+    finally:
+        with suppress(Exception):
+            await client.call("daemon.shutdown")
+        await client.close()
+        await asyncio.wait_for(daemon_task, timeout=3)
+
+
+@pytest.mark.asyncio
+async def test_v0_3_1_session_message_returns_official_planner_error_in_trusted_context(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SHISAD_MODEL_BASE_URL", "https://api.example.com/v1")
+    monkeypatch.setenv("SHISAD_MODEL_PLANNER_BASE_URL", "https://planner.example.com/v1")
+    monkeypatch.setenv("SHISAD_MODEL_EMBEDDINGS_BASE_URL", "https://embed.example.com/v1")
+    monkeypatch.setenv("SHISAD_MODEL_MONITOR_BASE_URL", "https://monitor.example.com/v1")
+
+    async def _broken_propose(
+        self: Planner,
+        user_content: str,
+        context: object,
+        *,
+        tools: list[dict[str, object]] | None = None,
+    ) -> object:
+        _ = (self, user_content, context, tools)
+        raise PlannerOutputError(
+            "Planner output schema violation: actions.0.action_id Field required"
+        )
+
+    monkeypatch.setattr(Planner, "propose", _broken_propose)
+
+    policy_path = tmp_path / "policy.yaml"
+    policy_path.write_text(
+        textwrap.dedent(
+            """
+            version: "1"
+            default_require_confirmation: false
+            """
+        ).strip()
+        + "\n"
+    )
+
+    config = DaemonConfig(
+        data_dir=tmp_path / "data",
+        socket_path=tmp_path / "control.sock",
+        policy_path=policy_path,
+        log_level="INFO",
+    )
+
+    daemon_task = asyncio.create_task(run_daemon(config))
+    client = ControlClient(config.socket_path)
+
+    try:
+        await _wait_for_socket(config.socket_path)
+        await client.connect()
+
+        created = await client.call(
+            "session.create",
+            {"channel": "cli", "user_id": "alice", "workspace_id": "ws1"},
+        )
+        sid = created["session_id"]
+        reply = await client.call(
+            "session.message",
+            {
+                "session_id": sid,
+                "channel": "cli",
+                "user_id": "alice",
+                "workspace_id": "ws1",
+                "content": "hello",
+            },
+        )
+        response_text = str(reply["response"])
+        assert "planner_output_invalid" in response_text
+        assert "actions.0" not in response_text
+        assert reply.get("trust_level") == "trusted"
+    finally:
+        with suppress(Exception):
+            await client.call("daemon.shutdown")
+        await client.close()
+        await asyncio.wait_for(daemon_task, timeout=3)
+
+
+@pytest.mark.asyncio
+async def test_v0_3_1_session_message_limits_error_detail_in_untrusted_context(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SHISAD_MODEL_BASE_URL", "https://api.example.com/v1")
+    monkeypatch.setenv("SHISAD_MODEL_PLANNER_BASE_URL", "https://planner.example.com/v1")
+    monkeypatch.setenv("SHISAD_MODEL_EMBEDDINGS_BASE_URL", "https://embed.example.com/v1")
+    monkeypatch.setenv("SHISAD_MODEL_MONITOR_BASE_URL", "https://monitor.example.com/v1")
+
+    async def _broken_propose(
+        self: Planner,
+        user_content: str,
+        context: object,
+        *,
+        tools: list[dict[str, object]] | None = None,
+    ) -> object:
+        _ = (self, user_content, context, tools)
+        raise PlannerOutputError(
+            "Planner output schema violation: actions.0.action_id Field required"
+        )
+
+    monkeypatch.setattr(Planner, "propose", _broken_propose)
+
+    policy_path = tmp_path / "policy.yaml"
+    policy_path.write_text(
+        textwrap.dedent(
+            """
+            version: "1"
+            default_require_confirmation: false
+            """
+        ).strip()
+        + "\n"
+    )
+
+    config = DaemonConfig(
+        data_dir=tmp_path / "data",
+        socket_path=tmp_path / "control.sock",
+        policy_path=policy_path,
+        log_level="INFO",
+    )
+
+    daemon_task = asyncio.create_task(run_daemon(config))
+    client = ControlClient(config.socket_path)
+
+    try:
+        await _wait_for_socket(config.socket_path)
+        await client.connect()
+
+        created = await client.call(
+            "session.create",
+            {"channel": "matrix", "user_id": "alice", "workspace_id": "ws1"},
+        )
+        sid = created["session_id"]
+        reply = await client.call(
+            "session.message",
+            {
+                "session_id": sid,
+                "channel": "matrix",
+                "user_id": "alice",
+                "workspace_id": "ws1",
+                "content": "hello",
+            },
+        )
+        response_text = str(reply["response"]).lower()
+        assert "could not safely complete this request" in response_text
+        assert "actions.0" not in response_text
+        assert "schema violation" not in response_text
+        assert reply.get("trust_level") == "untrusted"
     finally:
         with suppress(Exception):
             await client.call("daemon.shutdown")

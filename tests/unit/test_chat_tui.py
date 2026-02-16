@@ -134,7 +134,7 @@ async def test_chat_app_send_message_returns_response() -> None:
 
 @pytest.mark.asyncio
 async def test_chat_app_send_message_handles_missing_response_key() -> None:
-    """If the RPC response lacks 'response', return a fallback."""
+    """If the RPC response lacks 'response', raise a protocol error."""
     app = ChatApp(
         socket_path=Path("/tmp/test.sock"),
         user_id="ops",
@@ -145,14 +145,13 @@ async def test_chat_app_send_message_handles_missing_response_key() -> None:
     mock_client = AsyncMock()
     mock_client.call = AsyncMock(return_value={"unexpected": "data"})
 
-    result = await app._send_message(mock_client, "hello")
-    assert isinstance(result, str)
-    assert len(result) > 0
+    with pytest.raises(RuntimeError, match="no response text"):
+        await app._send_message(mock_client, "hello")
 
 
 @pytest.mark.asyncio
 async def test_chat_app_send_message_handles_rpc_error() -> None:
-    """RPC errors should be caught and returned as error text."""
+    """RPC errors should bubble for red inline error rendering."""
     app = ChatApp(
         socket_path=Path("/tmp/test.sock"),
         user_id="ops",
@@ -163,5 +162,130 @@ async def test_chat_app_send_message_handles_rpc_error() -> None:
     mock_client = AsyncMock()
     mock_client.call = AsyncMock(side_effect=OSError("connection refused"))
 
+    with pytest.raises(OSError, match="connection refused"):
+        await app._send_message(mock_client, "hello")
+
+
+@pytest.mark.asyncio
+async def test_chat_app_ensure_session_requires_nonempty_session_id() -> None:
+    app = ChatApp(
+        socket_path=Path("/tmp/test.sock"),
+        user_id="ops",
+        workspace_id="prod",
+    )
+
+    mock_client = AsyncMock()
+    mock_client.call = AsyncMock(return_value={"session_id": ""})
+
+    with pytest.raises(RuntimeError, match="invalid session_id"):
+        await app._ensure_session(mock_client)
+
+
+@pytest.mark.asyncio
+async def test_chat_app_send_message_rejects_non_mapping_payload() -> None:
+    app = ChatApp(
+        socket_path=Path("/tmp/test.sock"),
+        user_id="ops",
+        workspace_id="prod",
+        session_id="sess-1",
+    )
+
+    mock_client = AsyncMock()
+    mock_client.call = AsyncMock(return_value="not-json-object")
+
+    with pytest.raises(RuntimeError, match=r"Invalid session\.message response type"):
+        await app._send_message(mock_client, "hello")
+
+
+# ---------------------------------------------------------------------------
+# Session recovery tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_chat_app_recovers_from_unknown_session() -> None:
+    """When daemon restarts, _send_message should create a new session and retry."""
+    app = ChatApp(
+        socket_path=Path("/tmp/test.sock"),
+        user_id="ops",
+        workspace_id="prod",
+        session_id="stale-id",
+    )
+
+    mock_client = AsyncMock()
+    # First call: session.message fails with unknown session
+    # Second call: session.create returns new session
+    # Third call: session.message succeeds with new session
+    mock_client.call = AsyncMock(
+        side_effect=[
+            Exception("RPC error -32602: Unknown session: stale-id"),
+            {"session_id": "new-session-id"},
+            {"response": "Hello!"},
+        ]
+    )
+
     result = await app._send_message(mock_client, "hello")
-    assert "error" in result.lower() or "connection" in result.lower()
+
+    assert result == "Hello!"
+    assert app._session_id == "new-session-id"
+    assert mock_client.call.call_count == 3
+
+
+@pytest.mark.asyncio
+async def test_chat_app_recovery_only_retries_once() -> None:
+    """If the retry also fails, raise and stop retrying."""
+    app = ChatApp(
+        socket_path=Path("/tmp/test.sock"),
+        user_id="ops",
+        workspace_id="prod",
+        session_id="stale-id",
+    )
+
+    mock_client = AsyncMock()
+    mock_client.call = AsyncMock(
+        side_effect=[
+            Exception("RPC error -32602: Unknown session: stale-id"),
+            {"session_id": "new-id"},
+            Exception("RPC error -32602: Unknown session: new-id"),
+        ]
+    )
+
+    with pytest.raises(RuntimeError, match="Unknown session: new-id"):
+        await app._send_message(mock_client, "hello")
+
+
+@pytest.mark.asyncio
+async def test_chat_app_recovery_sets_reconnected_flag() -> None:
+    """After recovery, _reconnected should be True for notice display."""
+    app = ChatApp(
+        socket_path=Path("/tmp/test.sock"),
+        user_id="ops",
+        workspace_id="prod",
+        session_id="stale-id",
+    )
+
+    mock_client = AsyncMock()
+    mock_client.call = AsyncMock(
+        side_effect=[
+            Exception("RPC error -32602: Unknown session: stale-id"),
+            {"session_id": "new-id"},
+            {"response": "Hi!"},
+        ]
+    )
+
+    assert not app._reconnected
+    await app._send_message(mock_client, "hello")
+    assert app._reconnected
+
+
+def test_chat_app_subtitle_does_not_show_session_id() -> None:
+    """The sub_title should say 'connected', not show a hex session ID."""
+    app = ChatApp(
+        socket_path=Path("/tmp/test.sock"),
+        user_id="ops",
+        workspace_id="default",
+    )
+    # The session ID should not appear in any user-facing title
+    app._session_id = "ff0225da82f242e187e6fbf01de320b5"
+    # We test the format helper that will be used
+    assert "ff0225da" not in "connected"

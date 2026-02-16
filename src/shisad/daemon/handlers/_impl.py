@@ -62,6 +62,7 @@ from shisad.core.events import (
     ToolProposed,
     ToolRejected,
 )
+from shisad.core.planner import PlannerOutput, PlannerOutputError, PlannerResult
 from shisad.core.session import Session
 from shisad.core.tools.builtin.alarm import AnomalyReportInput
 from shisad.core.tools.schema import ToolDefinition
@@ -2119,7 +2120,46 @@ class HandlerImplementation:
         )
 
         trace_t0 = time.monotonic() if self._trace_recorder is not None else 0.0
-        planner_result = await self._planner.propose(planner_input, context)
+        planner_failure_code = ""
+        try:
+            planner_result = await self._planner.propose(planner_input, context)
+        except PlannerOutputError as exc:
+            planner_failure_code = "planner_output_invalid"
+            tainted_context = TaintLabel.UNTRUSTED in context.taint_labels
+            logger.warning(
+                "Planner output invalid for session %s (tainted_context=%s): %s",
+                sid,
+                tainted_context,
+                exc,
+            )
+            await self._event_bus.publish(
+                AnomalyReported(
+                    session_id=sid,
+                    actor="planner",
+                    severity="warning",
+                    description=(
+                        "Planner output validation failed in tainted context."
+                        if tainted_context
+                        else "Planner output validation failed in trusted context."
+                    ),
+                    recommended_action="retry_request_or_review_model_route",
+                )
+            )
+            fallback_response = (
+                (
+                    "I could not safely complete this request due to an internal planner "
+                    "validation error. Please retry."
+                )
+                if tainted_context
+                else "Assistant planner error (planner_output_invalid). Please retry your request."
+            )
+            planner_result = PlannerResult(
+                output=PlannerOutput(actions=[], assistant_response=fallback_response),
+                evaluated=[],
+                attempts=0,
+                provider_response=None,
+                messages_sent=(),
+            )
 
         # --- trace: capture planner response metadata ---
         trace_tool_calls: list[TraceToolCall] = []
@@ -2514,6 +2554,7 @@ class HandlerImplementation:
             "cleanroom_block_reasons": sorted(set(cleanroom_block_reasons)),
             "pending_confirmation_ids": pending_confirmation_ids,
             "output_policy": output_result.model_dump(mode="json"),
+            "planner_error": planner_failure_code,
         }
 
     async def do_session_list(self, params: Mapping[str, Any]) -> dict[str, Any]:

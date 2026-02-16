@@ -11,7 +11,7 @@ from shisad.core.planner import Planner, PlannerOutputError
 from shisad.core.providers.base import Message, ProviderResponse
 from shisad.core.tools.registry import ToolRegistry
 from shisad.core.tools.schema import ToolDefinition, ToolParameter
-from shisad.core.types import Capability, PEPDecision, ToolName
+from shisad.core.types import Capability, PEPDecision, TaintLabel, ToolName
 from shisad.security.pep import PEP, PolicyContext
 from shisad.security.policy import PolicyBundle
 
@@ -20,12 +20,14 @@ class StaticProvider:
     def __init__(self, responses: list[str]) -> None:
         self._responses = responses
         self.calls = 0
+        self.messages: list[list[Message]] = []
 
     async def complete(
         self,
         messages: list[Message],
         tools: list[dict[str, Any]] | None = None,
     ) -> ProviderResponse:
+        self.messages.append(list(messages))
         index = min(self.calls, len(self._responses) - 1)
         self.calls += 1
         return ProviderResponse(
@@ -230,3 +232,89 @@ async def test_m1_t3_tool_proposals_always_go_through_pep() -> None:
     assert result.output.assistant_response == "ok"
     assert len(pep.calls) == 1
     assert pep.calls[0][0] == ToolName("echo")
+
+
+@pytest.mark.asyncio
+async def test_planner_trusted_context_applies_guided_repair_prompt() -> None:
+    registry = _make_registry()
+    pep = PEP(PolicyBundle(default_require_confirmation=False), registry)
+    provider = StaticProvider(
+        [
+            "not-json",
+            json.dumps(
+                {
+                    "assistant_response": "Hello from repaired response.",
+                    "actions": [],
+                }
+            ),
+        ]
+    )
+    planner = Planner(provider, pep, max_retries=1)
+
+    result = await planner.propose(
+        "hello",
+        PolicyContext(capabilities={Capability.FILE_READ}),
+    )
+
+    assert provider.calls == 2
+    assert result.output.assistant_response == "Hello from repaired response."
+    assert result.output.actions == []
+    assert len(provider.messages[-1]) >= 4
+    assert "Validation feedback" in provider.messages[-1][-1].content
+
+
+@pytest.mark.asyncio
+async def test_planner_tainted_context_does_not_retry_invalid_output() -> None:
+    registry = _make_registry()
+    pep = PEP(PolicyBundle(default_require_confirmation=False), registry)
+    provider = StaticProvider(
+        [
+            "not-json",
+            json.dumps({"assistant_response": "would have passed", "actions": []}),
+        ]
+    )
+    planner = Planner(provider, pep, max_retries=2)
+
+    with pytest.raises(PlannerOutputError):
+        await planner.propose(
+            "hello",
+            PolicyContext(
+                capabilities={Capability.FILE_READ},
+                taint_labels={TaintLabel.UNTRUSTED},
+            ),
+        )
+    assert provider.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_planner_trusted_context_rewrites_internal_format_apology() -> None:
+    registry = _make_registry()
+    pep = PEP(PolicyBundle(default_require_confirmation=False), registry)
+    provider = StaticProvider(
+        [
+            json.dumps(
+                {
+                    "assistant_response": "I apologize for the formatting error.",
+                    "actions": [],
+                }
+            ),
+            json.dumps(
+                {
+                    "assistant_response": (
+                        "shisad can help with planning, memory, and controlled tool execution."
+                    ),
+                    "actions": [],
+                }
+            ),
+        ]
+    )
+    planner = Planner(provider, pep, max_retries=1)
+
+    result = await planner.propose(
+        "what can you do?",
+        PolicyContext(capabilities={Capability.FILE_READ}),
+    )
+
+    assert provider.calls == 2
+    assert "formatting error" not in result.output.assistant_response.lower()
+    assert "shisad can help" in result.output.assistant_response.lower()
