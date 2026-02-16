@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -62,10 +63,32 @@ class DiscordChannel(InMemoryChannel):
                     return
                 if bool(getattr(author, "bot", False)):
                     return
+                guild = getattr(message, "guild", None)
+                # In guild channels, only respond when the bot is @mentioned.
+                # DMs (guild is None) are always processed.
+                if guild is not None and self._client is not None:
+                    bot_user = getattr(self._client, "user", None)
+                    if bot_user is not None:
+                        bot_id = str(getattr(bot_user, "id", ""))
+                        mentions = getattr(message, "mentions", []) or []
+                        mention_ids = {
+                            str(getattr(m, "id", "")) for m in mentions
+                        }
+                        if bot_id not in mention_ids:
+                            return
                 content = str(getattr(message, "content", "")).strip()
+                # Strip the bot mention tag from content so the planner
+                # receives clean text (e.g. "<@123456> hello" → "hello").
+                if self._client is not None:
+                    bot_user = getattr(self._client, "user", None)
+                    if bot_user is not None:
+                        bot_id = str(getattr(bot_user, "id", ""))
+                        if bot_id:
+                            content = re.sub(
+                                rf"<@!?{re.escape(bot_id)}>\s*", "", content
+                            ).strip()
                 if not content:
                     return
-                guild = getattr(message, "guild", None)
                 guild_id = str(getattr(guild, "id", "")) if guild is not None else ""
                 channel_obj = getattr(message, "channel", None)
                 channel_id = str(getattr(channel_obj, "id", "")) if channel_obj is not None else ""

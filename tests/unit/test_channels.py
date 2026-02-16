@@ -239,6 +239,7 @@ async def test_discord_channel_registers_dispatchable_on_message_handler(
     class _FakeClient:
         def __init__(self, *, intents: _FakeIntents) -> None:
             self.intents = intents
+            self.user = SimpleNamespace(id="bot-999")
 
         def event(self, coro):
             setattr(self, coro.__name__, coro)
@@ -264,18 +265,143 @@ async def test_discord_channel_registers_dispatchable_on_message_handler(
     channel = DiscordChannel(DiscordConfig(bot_token="token"))
     await channel.connect()
     assert channel._client is not None
+    bot_user = SimpleNamespace(id="bot-999")
+    # Guild message with bot mention — should be processed.
     message = SimpleNamespace(
         author=SimpleNamespace(id="u-1", bot=False),
-        content="hello",
+        content="<@bot-999> hello",
         guild=SimpleNamespace(id="g-1"),
         channel=SimpleNamespace(id="c-1"),
         id="m-1",
+        mentions=[bot_user],
     )
     await channel._client.dispatch(message)
     received = await asyncio.wait_for(channel.receive(), timeout=0.2)
     assert received.channel == "discord"
     assert received.external_user_id == "u-1"
     assert received.reply_target == "c-1"
+    # Bot mention tag should be stripped from content.
+    assert received.content == "hello"
+    await channel.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_discord_channel_ignores_guild_messages_without_mention(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Guild messages that don't @mention the bot should be silently dropped."""
+    from shisad.channels import discord as discord_module
+
+    class _FakeIntents:
+        def __init__(self) -> None:
+            self.message_content = False
+
+        @classmethod
+        def default(cls) -> _FakeIntents:
+            return cls()
+
+    class _FakeClient:
+        def __init__(self, *, intents: _FakeIntents) -> None:
+            self.intents = intents
+            self.user = SimpleNamespace(id="bot-999")
+
+        def event(self, coro):
+            setattr(self, coro.__name__, coro)
+            return coro
+
+        async def start(self, _token: str) -> None:
+            return None
+
+        async def close(self) -> None:
+            return None
+
+        async def dispatch(self, message: object) -> None:
+            handler = getattr(self, "on_message", None)
+            if handler is not None:
+                await handler(message)
+
+    monkeypatch.setattr(
+        discord_module,
+        "discord",
+        SimpleNamespace(Intents=_FakeIntents, Client=_FakeClient),
+    )
+
+    channel = DiscordChannel(DiscordConfig(bot_token="token"))
+    await channel.connect()
+    assert channel._client is not None
+    # Guild message WITHOUT bot mention — should be ignored.
+    message = SimpleNamespace(
+        author=SimpleNamespace(id="u-1", bot=False),
+        content="la la la",
+        guild=SimpleNamespace(id="g-1"),
+        channel=SimpleNamespace(id="c-1"),
+        id="m-2",
+        mentions=[],
+    )
+    await channel._client.dispatch(message)
+    with pytest.raises(TimeoutError):
+        await asyncio.wait_for(channel.receive(), timeout=0.1)
+    await channel.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_discord_channel_processes_dm_without_mention(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """DMs (guild=None) should always be processed, no mention required."""
+    from shisad.channels import discord as discord_module
+
+    class _FakeIntents:
+        def __init__(self) -> None:
+            self.message_content = False
+
+        @classmethod
+        def default(cls) -> _FakeIntents:
+            return cls()
+
+    class _FakeClient:
+        def __init__(self, *, intents: _FakeIntents) -> None:
+            self.intents = intents
+            self.user = SimpleNamespace(id="bot-999")
+
+        def event(self, coro):
+            setattr(self, coro.__name__, coro)
+            return coro
+
+        async def start(self, _token: str) -> None:
+            return None
+
+        async def close(self) -> None:
+            return None
+
+        async def dispatch(self, message: object) -> None:
+            handler = getattr(self, "on_message", None)
+            if handler is not None:
+                await handler(message)
+
+    monkeypatch.setattr(
+        discord_module,
+        "discord",
+        SimpleNamespace(Intents=_FakeIntents, Client=_FakeClient),
+    )
+
+    channel = DiscordChannel(DiscordConfig(bot_token="token"))
+    await channel.connect()
+    assert channel._client is not None
+    # DM — no guild, no mention required.
+    message = SimpleNamespace(
+        author=SimpleNamespace(id="u-2", bot=False),
+        content="hey there",
+        guild=None,
+        channel=SimpleNamespace(id="dm-1"),
+        id="m-3",
+        mentions=[],
+    )
+    await channel._client.dispatch(message)
+    received = await asyncio.wait_for(channel.receive(), timeout=0.2)
+    assert received.channel == "discord"
+    assert received.external_user_id == "u-2"
+    assert received.content == "hey there"
     await channel.disconnect()
 
 
