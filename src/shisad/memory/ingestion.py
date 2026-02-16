@@ -20,7 +20,7 @@ from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 from pydantic import BaseModel, Field, ValidationError
 
 from shisad.core.tools.schema import ToolDefinition, ToolParameter
-from shisad.core.types import Capability, ToolName
+from shisad.core.types import Capability, TaintLabel, ToolName
 from shisad.security.firewall import ContentFirewall, SanitizationMode
 
 RetrievalCollection = Literal["user_curated", "project_docs", "external_web", "tool_outputs"]
@@ -59,6 +59,7 @@ class RetrievalResult(BaseModel):
     extracted_facts: list[Fact] = Field(default_factory=list)
     risk_score: float
     original_hash: str
+    taint_labels: list[TaintLabel] = Field(default_factory=list)
     quarantined: bool = False
     lexical_score: float = 0.0
     semantic_score: float = 0.0
@@ -146,9 +147,14 @@ class IngestionPipeline:
         collection: RetrievalCollection | None = None,
     ) -> RetrievalResult:
         """Process content through firewall and store retrieval record."""
-        inspection = self._firewall.inspect(content, mode=SanitizationMode.EXTRACT_FACTS)
         chunk_id = uuid.uuid4().hex
         resolved_collection = collection or self._default_collection(source_type)
+        trusted_input = resolved_collection == "user_curated"
+        inspection = self._firewall.inspect(
+            content,
+            mode=SanitizationMode.EXTRACT_FACTS,
+            trusted_input=trusted_input,
+        )
         quarantined = inspection.risk_score >= self._quarantine_threshold
 
         result = RetrievalResult(
@@ -163,6 +169,7 @@ class IngestionPipeline:
             ],
             risk_score=inspection.risk_score,
             original_hash=inspection.original_hash,
+            taint_labels=list(inspection.taint_labels),
             quarantined=quarantined,
         )
 

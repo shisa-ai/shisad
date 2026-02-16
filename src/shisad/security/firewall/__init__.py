@@ -50,6 +50,7 @@ class ContentFirewall:
         text: str,
         *,
         mode: SanitizationMode = SanitizationMode.REWRITE,
+        trusted_input: bool = False,
     ) -> FirewallResult:
         """Process untrusted input and return sanitized content + metadata."""
         original_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()
@@ -69,7 +70,7 @@ class ContentFirewall:
         else:
             extracted_facts = self._extract_facts(redacted)
 
-        taints: set[TaintLabel] = {TaintLabel.UNTRUSTED}
+        taints: set[TaintLabel] = set() if trusted_input else {TaintLabel.UNTRUSTED}
         if secret_findings:
             taints.add(TaintLabel.USER_CREDENTIALS)
 

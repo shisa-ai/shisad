@@ -73,6 +73,26 @@ def test_m1_t18_firewall_detects_and_redacts_ingress_credentials() -> None:
     assert TaintLabel.USER_CREDENTIALS in result.taint_labels
 
 
+def test_m6_firewall_trusted_input_does_not_mark_untrusted() -> None:
+    firewall = ContentFirewall()
+    result = firewall.inspect("hello", trusted_input=True)
+    assert TaintLabel.UNTRUSTED not in result.taint_labels
+
+
+def test_m6_channel_ingress_trusted_input_does_not_mark_untrusted() -> None:
+    from shisad.channels.base import ChannelMessage
+    from shisad.channels.ingress import ChannelIngressProcessor
+
+    processor = ChannelIngressProcessor(ContentFirewall())
+    message = ChannelMessage(
+        channel="matrix",
+        external_user_id="@alice:example.org",
+        content="hello",
+    )
+    _sanitized, firewall_result = processor.process(message, trusted_input=True)
+    assert TaintLabel.UNTRUSTED not in firewall_result.taint_labels
+
+
 def test_m6_taint_label_ingress_marks_untrusted_and_credentials_when_present() -> None:
     labels = label_ingress("token sk-abc123def456ghi789")
     assert TaintLabel.UNTRUSTED in labels

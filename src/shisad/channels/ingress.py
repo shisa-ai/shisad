@@ -14,8 +14,12 @@ class ChannelIngressProcessor:
 
     firewall: ContentFirewall
 
-    def process(self, message: ChannelMessage) -> tuple[ChannelMessage, FirewallResult]:
-        result = self.firewall.inspect(message.content)
+    def process(
+        self,
+        message: ChannelMessage,
+        *,
+        trusted_input: bool = False,
+    ) -> tuple[ChannelMessage, FirewallResult]:
+        result = self.firewall.inspect(message.content, trusted_input=trusted_input)
         sanitized = message.model_copy(update={"content": result.sanitized_text})
         return sanitized, result
-

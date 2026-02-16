@@ -57,6 +57,12 @@ class SessionMessageReceived(BaseEvent):
     """A session received a user message."""
 
     content_hash: str = ""
+    channel: str = ""
+    user_id: str = ""
+    workspace_id: str = ""
+    trust_level: str = ""
+    taint_labels: list[str] = Field(default_factory=list)
+    risk_score: float = 0.0
 
 
 class SessionMessageResponded(BaseEvent):
@@ -65,6 +71,9 @@ class SessionMessageResponded(BaseEvent):
     response_hash: str = ""
     blocked_actions: int = 0
     executed_actions: int = 0
+    trust_level: str = ""
+    taint_labels: list[str] = Field(default_factory=list)
+    risk_score: float = 0.0
 
 
 class ChannelPairingRequested(BaseEvent):

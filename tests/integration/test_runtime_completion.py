@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import textwrap
 from contextlib import suppress
 from pathlib import Path
@@ -113,6 +114,74 @@ async def test_m0_roundtrip_audit_logging_and_checkpoint_restore(
         is_valid, count, error = audit.verify_chain()
         assert is_valid, error
         assert count > 0
+    finally:
+        with suppress(Exception):
+            await client.call("daemon.shutdown")
+        await client.close()
+        await asyncio.wait_for(daemon_task, timeout=3)
+
+
+@pytest.mark.asyncio
+async def test_v0_3_1_trusted_cli_ingress_not_marked_untrusted_in_trace(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SHISAD_MODEL_BASE_URL", "https://api.example.com/v1")
+    monkeypatch.setenv("SHISAD_MODEL_PLANNER_BASE_URL", "https://planner.example.com/v1")
+    monkeypatch.setenv("SHISAD_MODEL_EMBEDDINGS_BASE_URL", "https://embed.example.com/v1")
+    monkeypatch.setenv("SHISAD_MODEL_MONITOR_BASE_URL", "https://monitor.example.com/v1")
+
+    policy_path = tmp_path / "policy.yaml"
+    policy_path.write_text(
+        textwrap.dedent(
+            """
+            version: "1"
+            default_require_confirmation: false
+            """
+        ).strip()
+        + "\n"
+    )
+
+    config = DaemonConfig(
+        data_dir=tmp_path / "data",
+        socket_path=tmp_path / "control.sock",
+        policy_path=policy_path,
+        log_level="INFO",
+        trace_enabled=True,
+    )
+
+    daemon_task = asyncio.create_task(run_daemon(config))
+    client = ControlClient(config.socket_path)
+
+    try:
+        await _wait_for_socket(config.socket_path)
+        await client.connect()
+
+        created = await client.call(
+            "session.create",
+            {"channel": "cli", "user_id": "alice", "workspace_id": "ws1"},
+        )
+        sid = created["session_id"]
+
+        reply = await client.call(
+            "session.message",
+            {
+                "session_id": sid,
+                "channel": "cli",
+                "user_id": "alice",
+                "workspace_id": "ws1",
+                "content": "hello",
+            },
+        )
+        assert reply["session_id"] == sid
+
+        trace_path = config.data_dir / "traces" / f"{sid}.jsonl"
+        assert trace_path.exists()
+        lines = trace_path.read_text(encoding="utf-8").splitlines()
+        assert lines
+        turn = json.loads(lines[-1])
+        assert turn.get("trust_level") == "trusted"
+        assert "untrusted" not in (turn.get("taint_labels") or [])
     finally:
         with suppress(Exception):
             await client.call("daemon.shutdown")

@@ -13,6 +13,7 @@ from typing import Any, ClassVar
 
 from pydantic import ValidationError
 
+from shisad.core.types import TaintLabel
 from shisad.memory.schema import MemoryEntry, MemorySource, MemoryWriteDecision
 from shisad.security.firewall.pii import PIIDetector
 
@@ -95,6 +96,10 @@ class MemoryManager:
         if source.origin != "user":
             expires_at = datetime.now(UTC) + timedelta(days=self._default_ttl_days)
 
+        taint_labels = []
+        if source.origin != "user":
+            taint_labels = [TaintLabel.UNTRUSTED]
+
         entry = MemoryEntry(
             entry_type=entry_type,
             key=key,
@@ -102,6 +107,7 @@ class MemoryManager:
             source=source,
             confidence=confidence,
             expires_at=expires_at,
+            taint_labels=taint_labels,
         )
         self._entries[entry.id] = entry
         self._persist_entry(entry)
