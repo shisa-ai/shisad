@@ -99,6 +99,8 @@ class OpenAICompatibleProvider:
         payload: dict[str, Any] = {
             "model": self._model_id,
             "messages": [self._serialize_message(msg) for msg in messages],
+            # Planner/monitor paths require strict JSON payloads.
+            "response_format": {"type": "json_object"},
         }
         if tools is not None:
             payload["tools"] = tools
@@ -115,11 +117,16 @@ class OpenAICompatibleProvider:
         message_data = first_choice.get("message", {})
         if not isinstance(message_data, dict):
             raise RuntimeError("Provider response has invalid message payload")
+        message_content = message_data.get("content", "")
+        if message_content is None:
+            message_content = ""
+        elif not isinstance(message_content, str):
+            message_content = str(message_content)
 
         return ProviderResponse(
             message=Message(
                 role=str(message_data.get("role", "assistant")),
-                content=str(message_data.get("content", "")),
+                content=message_content,
                 tool_calls=list(message_data.get("tool_calls", []) or []),
                 tool_call_id=(
                     str(message_data["tool_call_id"])

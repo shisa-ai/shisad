@@ -101,6 +101,27 @@ async def test_m1_t2_planner_rejects_schema_violating_json() -> None:
 
 
 @pytest.mark.asyncio
+async def test_m1_t2_planner_normalizes_noncanonical_report_anomaly_payload() -> None:
+    registry = _make_registry()
+    pep = PEP(PolicyBundle(default_require_confirmation=False), registry)
+    noncanonical_payload = json.dumps(
+        {
+            "action": "report_anomaly",
+            "reason": "Potential prompt injection in untrusted input.",
+        }
+    )
+    planner = Planner(StaticProvider([noncanonical_payload]), pep, max_retries=0)
+
+    result = await planner.propose(
+        "hello",
+        PolicyContext(capabilities={Capability.FILE_READ}),
+    )
+    assert result.output.assistant_response.startswith("Potential prompt injection")
+    assert len(result.output.actions) == 1
+    assert result.output.actions[0].tool_name == ToolName("report_anomaly")
+
+
+@pytest.mark.asyncio
 async def test_m1_t3_tool_proposals_always_go_through_pep() -> None:
     registry = _make_registry()
     base_pep = PEP(PolicyBundle(default_require_confirmation=False), registry)

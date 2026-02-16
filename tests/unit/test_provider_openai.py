@@ -60,6 +60,7 @@ async def test_openai_compatible_complete_uses_base_url_headers_and_model(
     assert captured["url"] == "https://api.example.com/v1/chat/completions"
     assert captured["payload"]["model"] == "gpt-test"
     assert captured["payload"]["messages"] == [{"role": "user", "content": "Hi"}]
+    assert captured["payload"]["response_format"] == {"type": "json_object"}
     assert captured["headers"]["Authorization"] == "Bearer test-token"
     assert captured["headers"]["X-custom"] == "yes"
     assert captured["timeout"] == 12.0
@@ -96,3 +97,30 @@ async def test_openai_compatible_embeddings_maps_openai_response(
     assert response.vectors == [[0.1, 0.2], [0.3, 0.4]]
     assert response.model == "text-embedding-3-small"
     assert response.usage["total_tokens"] == 4
+
+
+@pytest.mark.asyncio
+async def test_openai_compatible_complete_normalizes_null_content(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_urlopen(request: Any, timeout: float = 0.0) -> _FakeHttpResponse:
+        _ = (request, timeout)
+        return _FakeHttpResponse(
+            {
+                "choices": [
+                    {
+                        "message": {"role": "assistant", "content": None},
+                        "finish_reason": "stop",
+                    }
+                ],
+            }
+        )
+
+    monkeypatch.setattr("shisad.core.providers.base.request.urlopen", fake_urlopen)
+
+    provider = OpenAICompatibleProvider(
+        base_url="https://api.example.com/v1",
+        model_id="gpt-test",
+    )
+    response = await provider.complete([Message(role="user", content="Hi")])
+    assert response.message.content == ""

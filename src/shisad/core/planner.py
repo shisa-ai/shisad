@@ -45,8 +45,8 @@ class ActionProposal(BaseModel):
 class PlannerOutput(BaseModel):
     """Validated planner response payload."""
 
-    actions: list[ActionProposal] = Field(default_factory=list)
-    assistant_response: str = ""
+    actions: list[ActionProposal]
+    assistant_response: str
 
 
 class PlannerOutputError(ValueError):
@@ -143,7 +143,70 @@ class Planner:
         if not isinstance(parsed, dict):
             raise PlannerOutputError("Planner output must be a JSON object")
 
+        parsed = Planner._normalize_output_payload(parsed)
+
         try:
             return PlannerOutput.model_validate(parsed)
         except ValidationError as exc:
             raise PlannerOutputError(f"Planner output schema violation: {exc}") from exc
+
+    @staticmethod
+    def _normalize_output_payload(parsed: dict[str, Any]) -> dict[str, Any]:
+        """Normalize provider-specific planner payload variants to canonical schema.
+
+        Safety posture:
+        - Accept canonical payloads directly.
+        - Preserve explicit `actions` only when provided as a list.
+        - Coerce common non-canonical `action=report_anomaly` payloads into
+          a single safe anomaly report proposal.
+        - Ignore unknown non-canonical action shapes.
+        """
+        if "assistant_response" in parsed and "actions" in parsed:
+            return parsed
+
+        actions: list[dict[str, Any]] = []
+        raw_actions = parsed.get("actions")
+        if isinstance(raw_actions, list):
+            actions = [item for item in raw_actions if isinstance(item, dict)]
+        else:
+            action_name = str(parsed.get("action", "")).strip()
+            if action_name == "report_anomaly":
+                anomaly_detail = (
+                    str(parsed.get("anomaly_reason", "")).strip()
+                    or str(parsed.get("error_message", "")).strip()
+                    or str(parsed.get("reason", "")).strip()
+                    or "Planner returned non-canonical anomaly payload."
+                )
+                actions = [
+                    {
+                        "action_id": "normalized-anomaly-1",
+                        "tool_name": "report_anomaly",
+                        "arguments": {
+                            "anomaly_type": "planner_output_schema_mismatch",
+                            "description": anomaly_detail[:400],
+                            "recommended_action": "review",
+                            "confidence": 0.8,
+                        },
+                        "reasoning": "Normalize non-canonical planner anomaly payload",
+                        "data_sources": ["planner_output_normalizer"],
+                    }
+                ]
+
+        assistant_response = str(parsed.get("assistant_response", "")).strip()
+        if not assistant_response:
+            for key in ("response", "message", "error_message", "reason", "anomaly_reason"):
+                candidate = str(parsed.get(key, "")).strip()
+                if candidate:
+                    assistant_response = candidate
+                    break
+
+        if not assistant_response:
+            assistant_response = (
+                "I could not produce a fully structured planner response. "
+                "Please rephrase and retry."
+            )
+
+        return {
+            "assistant_response": assistant_response,
+            "actions": actions,
+        }
