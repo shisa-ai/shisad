@@ -66,3 +66,26 @@ def render_spotlight_context(
         f"{delimiters.evidence_end}\n\n"
         "=== END CONTEXT ==="
     )
+
+
+def build_planner_input(
+    *,
+    trusted_instructions: str,
+    user_goal: str,
+    untrusted_content: str,
+    marker: str = "^",
+    encode_untrusted: bool = False,
+) -> str:
+    """Build planner input with spotlighting only when untrusted content exists.
+
+    Trusted-only turns should not be framed as if external untrusted data exists.
+    """
+    if not untrusted_content.strip():
+        return user_goal
+    return render_spotlight_context(
+        trusted_instructions=trusted_instructions,
+        user_goal=user_goal,
+        untrusted_content=untrusted_content,
+        marker=marker,
+        encode_untrusted=encode_untrusted,
+    )
