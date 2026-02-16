@@ -13,26 +13,26 @@ from typing import Any
 
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.widgets import Footer, Header, Input, RichLog
+from textual.widgets import Footer, Header, Input, TextArea
 
 
 def format_user_message(content: str) -> str:
     """Format a user message for display in the chat log."""
     text = content.strip()
-    return f"[bold dodger_blue1]you:[/bold dodger_blue1] {text}"
+    return f"you: {text}"
 
 
 def format_assistant_message(content: str) -> str:
     """Format an assistant message for display in the chat log."""
     text = content.strip()
     if not text:
-        return "[dim](no response)[/dim]"
-    return f"[bold chartreuse3]shisad:[/bold chartreuse3] {text}"
+        return "(no response)"
+    return f"shisad: {text}"
 
 
 def _format_error(content: str) -> str:
     """Format an error message for display in the chat log."""
-    return f"[bold red]error:[/bold red] {content}"
+    return f"error: {content}"
 
 
 class ChatApp(App[None]):
@@ -46,19 +46,28 @@ class ChatApp(App[None]):
     }
     #chat-log {
         height: 1fr;
-        border: round $accent;
+        border: solid $panel;
         padding: 0 1;
-        scrollbar-size: 1 1;
     }
     #chat-input {
         height: 3;
         margin: 0 0;
+        border: solid $panel;
+        padding: 0 1;
+    }
+    #chat-log:focus {
+        border: heavy $accent;
+    }
+    #chat-input:focus {
+        border: heavy $accent;
     }
     """
 
     BINDINGS = [  # noqa: RUF012
         Binding("ctrl+c", "quit", "Quit", show=True),
         Binding("ctrl+d", "quit", "Quit", show=False),
+        Binding("tab", "focus_next_pane", show=False),
+        Binding("shift+tab", "focus_prev_pane", show=False),
     ]
 
     def __init__(
@@ -78,26 +87,25 @@ class ChatApp(App[None]):
 
     def compose(self) -> ComposeResult:
         yield Header()
-        yield RichLog(id="chat-log", wrap=True, highlight=True, markup=True)
+        yield TextArea(id="chat-log", read_only=True, soft_wrap=True)
         yield Input(id="chat-input", placeholder="Type a message...")
         yield Footer()
 
     async def on_mount(self) -> None:
-        log = self.query_one("#chat-log", RichLog)
-        log.write("[dim]Connecting to daemon...[/dim]")
+        self._append_history("Connecting to daemon...")
         try:
             client = await self._connect()
             try:
                 await self._ensure_session(client)
             finally:
                 await client.close()
-            log.write("[dim]Connected.[/dim]")
-            log.write("[dim]Type a message and press Enter. Ctrl-C to quit.[/dim]")
-            log.write("")
+            self._append_history("Connected.")
+            self._append_history("Type a message and press Enter. Ctrl-C to quit.")
+            self._append_history("")
             self.sub_title = "connected"
         except (OSError, RuntimeError, TypeError, ValueError) as exc:
-            log.write(_format_error(f"Could not connect to daemon: {exc}"))
-            log.write("[dim]Is the daemon running? Try: shisad start --foreground[/dim]")
+            self._append_history(_format_error(f"Could not connect to daemon: {exc}"))
+            self._append_history("Is the daemon running? Try: shisad start --foreground")
         self.query_one("#chat-input", Input).focus()
 
     async def on_input_submitted(self, event: Input.Submitted) -> None:
@@ -108,8 +116,7 @@ class ChatApp(App[None]):
         input_widget = self.query_one("#chat-input", Input)
         input_widget.value = ""
 
-        log = self.query_one("#chat-log", RichLog)
-        log.write(format_user_message(content))
+        self._append_history(format_user_message(content))
 
         try:
             client = await self._connect()
@@ -117,17 +124,17 @@ class ChatApp(App[None]):
                 prev_reconnected = self._reconnected
                 response = await self._send_message(client, content)
                 if self._reconnected and not prev_reconnected:
-                    log.write(
+                    self._append_history(
                         _format_error(
-                            "Daemon restarted — started a new conversation."
+                            "Daemon restarted - started a new conversation."
                         )
                     )
             finally:
                 await client.close()
-            log.write(format_assistant_message(response))
+            self._append_history(format_assistant_message(response))
         except (OSError, RuntimeError, TypeError, ValueError) as exc:
-            log.write(_format_error(str(exc)))
-        log.write("")
+            self._append_history(_format_error(str(exc)))
+        self._append_history("")
 
     async def _connect(self) -> Any:
         """Connect to the daemon control socket."""
@@ -202,3 +209,25 @@ class ChatApp(App[None]):
         raise RuntimeError(
             "session.message returned no response text"
         )
+
+    def _append_history(self, line: str) -> None:
+        """Append a single line to the history pane."""
+        history = self.query_one("#chat-log", TextArea)
+        history.move_cursor(history.document.end)
+        if history.text:
+            history.insert("\n")
+        history.insert(line)
+        history.move_cursor(history.document.end)
+        history.scroll_end(animate=False)
+
+    def action_focus_next_pane(self) -> None:
+        """Move focus between history and input panes."""
+        focused = self.focused
+        if focused is not None and focused.id == "chat-input":
+            self.query_one("#chat-log", TextArea).focus()
+            return
+        self.query_one("#chat-input", Input).focus()
+
+    def action_focus_prev_pane(self) -> None:
+        """Move focus between history and input panes."""
+        self.action_focus_next_pane()
