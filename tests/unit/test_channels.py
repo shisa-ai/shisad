@@ -535,6 +535,80 @@ async def test_discord_channel_accepts_plain_name_prefix_without_mentions(
 
 
 @pytest.mark.asyncio
+async def test_discord_channel_accepts_role_mentions_for_bot_roles(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Guild messages should route when the bot is addressed via role mention chip."""
+    from shisad.channels import discord as discord_module
+
+    class _FakeIntents:
+        def __init__(self) -> None:
+            self.message_content = False
+
+        @classmethod
+        def default(cls) -> _FakeIntents:
+            return cls()
+
+    class _FakeClient:
+        def __init__(self, *, intents: _FakeIntents) -> None:
+            self.intents = intents
+            self.user = SimpleNamespace(id="999", name="shisad")
+
+        def event(self, coro):
+            setattr(self, coro.__name__, coro)
+            return coro
+
+        async def start(self, _token: str) -> None:
+            return None
+
+        async def close(self) -> None:
+            return None
+
+        async def dispatch(self, message: object) -> None:
+            handler = getattr(self, "on_message", None)
+            if handler is not None:
+                await handler(message)
+
+    monkeypatch.setattr(
+        discord_module,
+        "discord",
+        SimpleNamespace(Intents=_FakeIntents, Client=_FakeClient),
+    )
+
+    channel = DiscordChannel(DiscordConfig(bot_token="token"))
+    await channel.connect()
+    assert channel._client is not None
+
+    class _FakeGuild:
+        id = "g-1"
+
+        @staticmethod
+        def get_member(member_id: int) -> SimpleNamespace | None:
+            if member_id != 999:
+                return None
+            return SimpleNamespace(roles=[SimpleNamespace(id="role-42")])
+
+    message = SimpleNamespace(
+        author=SimpleNamespace(id="u-6", bot=False),
+        content="<@&role-42> trace role mention",
+        guild=_FakeGuild(),
+        channel=SimpleNamespace(id="c-1"),
+        id="m-7",
+        mentions=[],
+        raw_mentions=[],
+        role_mentions=[SimpleNamespace(id="role-42")],
+        raw_role_mentions=["role-42"],
+    )
+    await channel._client.dispatch(message)
+    received = await asyncio.wait_for(channel.receive(), timeout=0.2)
+    assert received.channel == "discord"
+    assert received.external_user_id == "u-6"
+    assert received.reply_target == "c-1"
+    assert received.content == "trace role mention"
+    await channel.disconnect()
+
+
+@pytest.mark.asyncio
 async def test_discord_channel_ignores_plain_name_when_not_prefix(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

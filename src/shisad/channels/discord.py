@@ -106,6 +106,7 @@ class DiscordChannel(InMemoryChannel):
                 addressed_by_resolved = False
                 addressed_by_content_tag = False
                 addressed_by_name_prefix = False
+                addressed_by_role_mention = False
                 if guild is not None and self._client is not None:
                     bot_user = getattr(self._client, "user", None)
                     if bot_user is not None:
@@ -119,10 +120,16 @@ class DiscordChannel(InMemoryChannel):
                         addressed_by_name_prefix = self._content_mentions_bot_name_prefix(
                             content, name_aliases
                         )
+                        role_mention_ids = self._message_role_mention_ids(message)
+                        bot_role_ids = self._bot_role_ids(guild, bot_id)
+                        addressed_by_role_mention = bool(
+                            role_mention_ids.intersection(bot_role_ids)
+                        )
                         if (
                             not addressed_by_resolved
                             and not addressed_by_content_tag
                             and not addressed_by_name_prefix
+                            and not addressed_by_role_mention
                         ):
                             raw_mentions = tuple(
                                 mention_id
@@ -137,7 +144,8 @@ class DiscordChannel(InMemoryChannel):
                             logger.debug(
                                 "Discord ingress dropped "
                                 "(reason=not_addressed message_id=%s guild_id=%s channel_id=%s "
-                                "author_id=%s bot_id=%s mention_ids=%s raw_mentions=%s aliases=%s)",
+                                "author_id=%s bot_id=%s mention_ids=%s raw_mentions=%s "
+                                "role_mentions=%s bot_role_ids=%s aliases=%s)",
                                 message_id,
                                 guild_id,
                                 channel_id,
@@ -145,6 +153,8 @@ class DiscordChannel(InMemoryChannel):
                                 bot_id,
                                 sorted(mention_ids),
                                 list(raw_mentions),
+                                sorted(role_mention_ids),
+                                sorted(bot_role_ids),
                                 list(name_aliases),
                             )
                             return
@@ -160,6 +170,10 @@ class DiscordChannel(InMemoryChannel):
                             ).strip()
                         content = self._strip_plain_name_prefix(
                             content, self._bot_name_aliases(bot_user)
+                        )
+                        content = self._strip_role_mention_tags(
+                            content,
+                            self._bot_role_ids(guild, bot_id),
                         )
                 if not content:
                     logger.debug(
@@ -177,7 +191,8 @@ class DiscordChannel(InMemoryChannel):
                     "Discord ingress accepted "
                     "(message_id=%s guild_id=%s channel_id=%s author_id=%s workspace_hint=%s "
                     "addressed_by_resolved=%s addressed_by_content_tag=%s "
-                    "addressed_by_name_prefix=%s content_len=%d content_hash=%s)",
+                    "addressed_by_name_prefix=%s addressed_by_role_mention=%s "
+                    "content_len=%d content_hash=%s)",
                     message_id,
                     guild_id,
                     channel_id,
@@ -186,6 +201,7 @@ class DiscordChannel(InMemoryChannel):
                     addressed_by_resolved,
                     addressed_by_content_tag,
                     addressed_by_name_prefix,
+                    addressed_by_role_mention,
                     len(content),
                     self._content_fingerprint(content),
                 )
@@ -274,6 +290,37 @@ class DiscordChannel(InMemoryChannel):
         return re.search(rf"<@!?{re.escape(bot_id)}>", content) is not None
 
     @staticmethod
+    def _message_role_mention_ids(message: Any) -> set[str]:
+        role_ids = {
+            str(getattr(role, "id", "")).strip()
+            for role in (getattr(message, "role_mentions", []) or [])
+        }
+        role_ids.discard("")
+        for raw_role in (getattr(message, "raw_role_mentions", []) or []):
+            role_id = str(raw_role).strip()
+            if role_id:
+                role_ids.add(role_id)
+        return role_ids
+
+    @staticmethod
+    def _bot_role_ids(guild: Any, bot_id: str) -> set[str]:
+        if guild is None or not bot_id:
+            return set()
+        bot_member = None
+        get_member = getattr(guild, "get_member", None)
+        if callable(get_member):
+            with contextlib.suppress(TypeError, ValueError):
+                bot_member = get_member(int(bot_id))
+        if bot_member is None:
+            return set()
+        role_ids = {
+            str(getattr(role, "id", "")).strip()
+            for role in (getattr(bot_member, "roles", []) or [])
+        }
+        role_ids.discard("")
+        return role_ids
+
+    @staticmethod
     def _bot_name_aliases(bot_user: Any) -> tuple[str, ...]:
         aliases = {
             str(getattr(bot_user, field, "")).strip()
@@ -311,6 +358,19 @@ class DiscordChannel(InMemoryChannel):
             )
             if stripped != content:
                 return stripped.strip()
+        return content.strip()
+
+    @staticmethod
+    def _strip_role_mention_tags(content: str, role_ids: set[str]) -> str:
+        if not content or not role_ids:
+            return content.strip()
+        for role_id in role_ids:
+            content = re.sub(
+                rf"<@&{re.escape(role_id)}>\s*",
+                "",
+                content,
+                count=1,
+            )
         return content.strip()
 
     @staticmethod
