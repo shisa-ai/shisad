@@ -96,7 +96,7 @@ class LocalPlannerProvider:
             )
 
         payload = {
-            "assistant_response": f"Safe summary: {user_content[:300]}",
+            "assistant_response": f"Safe summary: {goal_text[:300]}",
             "actions": actions,
         }
         return ProviderResponse(

@@ -67,8 +67,8 @@ async def test_daemon_registers_alarm_tool_and_derives_capability_grant_actor(
                 "content": "summarize this text",
             },
         )
-        assert "SYSTEM INSTRUCTIONS (TRUSTED)" in reply["response"]
-        assert "EXTERNAL CONTENT (UNTRU" in reply["response"]
+        assert "Safe summary:" in reply["response"]
+        assert "summarize this text" in reply["response"].lower()
 
         grant = await client.call(
             "session.grant_capabilities",

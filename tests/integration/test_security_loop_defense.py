@@ -365,14 +365,20 @@ async def test_m2_t18_output_firewall_alert_is_audited(
                 "channel": "cli",
                 "user_id": "alice",
                 "workspace_id": "ws1",
-                "content": "please include token AKIAABCDEFGHIJKLMNOP in summary",
+                "content": "summarize this link https://evil.com/exfil",
             },
         )
-        assert "[REDACTED:aws_access_key]" in reply["response"]
-        events = await client.call(
-            "audit.query",
-            {"event_type": "OutputFirewallAlert", "session_id": sid, "limit": 10},
-        )
+        assert reply["response"] == "Response blocked by output policy."
+        events = {"total": 0}
+        end = asyncio.get_running_loop().time() + 1.0
+        while asyncio.get_running_loop().time() < end:
+            events = await client.call(
+                "audit.query",
+                {"event_type": "OutputFirewallAlert", "session_id": sid, "limit": 10},
+            )
+            if events.get("total", 0) >= 1:
+                break
+            await asyncio.sleep(0.02)
         assert events["total"] >= 1
     finally:
         with suppress(Exception):

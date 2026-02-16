@@ -66,7 +66,7 @@ async def test_m4_cleanroom_mode_transition_rejects_tainted_history(
         sid = created["session_id"]
         _ = await client.call(
             "session.message",
-            {"session_id": sid, "content": "hello from a normal session"},
+            {"session_id": sid, "content": "api key sk-ABCDEFGHIJKLMNOPQRSTUV123456"},
         )
         mode_update = await client.call(
             "session.set_mode",
