@@ -13,7 +13,6 @@ from typing import Any
 
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Container
 from textual.widgets import Footer, Header, Input, RichLog
 
 
@@ -42,13 +41,18 @@ class ChatApp(App[None]):
     TITLE = "shisad chat"
 
     CSS = """
+    Screen {
+        layout: vertical;
+    }
     #chat-log {
         height: 1fr;
+        border: round $accent;
         padding: 0 1;
         scrollbar-size: 1 1;
     }
     #chat-input {
-        dock: bottom;
+        height: 3;
+        margin: 0 0;
     }
     """
 
@@ -73,8 +77,7 @@ class ChatApp(App[None]):
 
     def compose(self) -> ComposeResult:
         yield Header()
-        with Container():
-            yield RichLog(id="chat-log", wrap=True, highlight=True, markup=True)
+        yield RichLog(id="chat-log", wrap=True, highlight=True, markup=True)
         yield Input(id="chat-input", placeholder="Type a message...")
         yield Footer()
 
