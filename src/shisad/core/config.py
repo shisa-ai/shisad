@@ -193,6 +193,11 @@ class DaemonConfig(BaseSettings):
         ge=1024,
         description="Maximum bytes returned by Reality Check local read operations.",
     )
+    realitycheck_search_max_files: int = Field(
+        default=10000,
+        ge=1,
+        description="Maximum number of local Reality Check files scanned per search.",
+    )
 
     @staticmethod
     def _parse_list_field(value: object, *, field_name: str) -> object:

@@ -354,6 +354,7 @@ class DaemonServices:
                 allowed_domains=realitycheck_domains,
                 timeout_seconds=config.realitycheck_timeout_seconds,
                 max_read_bytes=config.realitycheck_max_read_bytes,
+                max_search_files=config.realitycheck_search_max_files,
             )
             realitycheck_status = realitycheck_toolkit.doctor_status()
             lockdown_manager = LockdownManager(notification_hook=event_wiring.lockdown_notify)

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -170,6 +172,67 @@ def test_channel_state_store_persists_seen_message_ids(tmp_path) -> None:
     reloaded = ChannelStateStore(tmp_path / "state")
     assert reloaded.is_replay(channel="matrix", message_id="m1") is True
     assert reloaded.is_replay(channel="matrix", message_id="m2") is False
+
+
+def test_m4_channel_state_store_persists_journal_before_compaction(tmp_path) -> None:
+    store = ChannelStateStore(
+        tmp_path / "state",
+        max_seen_ids=32,
+        journal_compact_every=64,
+    )
+
+    store.mark_seen(channel="discord", message_id="m1")
+
+    journal = tmp_path / "state" / "discord.state.journal"
+    assert journal.exists()
+    assert "m1" in journal.read_text(encoding="utf-8")
+
+    reloaded = ChannelStateStore(
+        tmp_path / "state",
+        max_seen_ids=32,
+        journal_compact_every=64,
+    )
+    assert reloaded.has_seen(channel="discord", message_id="m1") is True
+
+
+def test_m4_channel_state_store_compacts_journal_and_keeps_bounded_snapshot(tmp_path) -> None:
+    store = ChannelStateStore(
+        tmp_path / "state",
+        max_seen_ids=32,
+        journal_compact_every=2,
+    )
+
+    for index in range(34):
+        store.mark_seen(channel="slack", message_id=f"m{index:02d}")
+
+    state_file = tmp_path / "state" / "slack.state.json"
+    payload = json.loads(state_file.read_text(encoding="utf-8"))
+    assert payload["seen_message_ids"] == [f"m{index:02d}" for index in range(2, 34)]
+
+    journal = tmp_path / "state" / "slack.state.journal"
+    if journal.exists():
+        assert journal.read_text(encoding="utf-8").strip() == ""
+
+    reloaded = ChannelStateStore(
+        tmp_path / "state",
+        max_seen_ids=32,
+        journal_compact_every=2,
+    )
+    assert reloaded.has_seen(channel="slack", message_id="m00") is False
+    assert reloaded.has_seen(channel="slack", message_id="m33") is True
+
+
+def test_m4_channel_state_store_has_seen_is_bounded_for_full_window(tmp_path) -> None:
+    store = ChannelStateStore(tmp_path / "state", max_seen_ids=2048)
+    for index in range(2048):
+        store.mark_seen(channel="telegram", message_id=f"msg-{index}")
+
+    started = time.perf_counter()
+    for _ in range(25_000):
+        assert store.has_seen(channel="telegram", message_id="msg-2047") is True
+    elapsed = time.perf_counter() - started
+
+    assert elapsed < 0.35
 
 
 @pytest.mark.asyncio

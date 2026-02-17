@@ -53,6 +53,7 @@ class RealityCheckToolkit:
     allowed_domains: list[str]
     timeout_seconds: float
     max_read_bytes: int
+    max_search_files: int = 10_000
 
     def doctor_status(self) -> dict[str, Any]:
         problems: list[str] = []
@@ -242,8 +243,10 @@ class RealityCheckToolkit:
     def _search_local(self, *, query: str, limit: int) -> dict[str, Any]:
         normalized_query = query.lower()
         max_items = max(1, min(limit, 20))
+        search_file_cap = max(1, int(self.max_search_files))
         roots = self._active_data_roots()
         searched_files = 0
+        scan_capped = False
         results: list[dict[str, Any]] = []
         for root in roots:
             for candidate in root.rglob("*"):
@@ -256,6 +259,9 @@ class RealityCheckToolkit:
                 resolved = candidate.expanduser().resolve(strict=False)
                 if not _is_within(resolved, root):
                     continue
+                if searched_files >= search_file_cap:
+                    scan_capped = True
+                    break
                 searched_files += 1
                 try:
                     with resolved.open("rb") as handle:
@@ -283,6 +289,8 @@ class RealityCheckToolkit:
                 )
             if len(results) >= max_items:
                 break
+            if scan_capped:
+                break
 
         return {
             "ok": True,
@@ -296,6 +304,8 @@ class RealityCheckToolkit:
                 "repo_root": str(self.repo_root.expanduser().resolve(strict=False)),
                 "data_roots": [str(item) for item in roots],
                 "searched_files": searched_files,
+                "search_file_cap": search_file_cap,
+                "scan_capped": scan_capped,
                 "result_count": len(results),
                 "query_hash": hashlib.sha256(query.encode("utf-8")).hexdigest(),
                 "fetched_at": datetime.now(UTC).isoformat(),

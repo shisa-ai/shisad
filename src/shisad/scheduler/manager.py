@@ -242,10 +242,15 @@ class SchedulerManager:
         for part in parts:
             if part == "*":
                 continue
-            if part.startswith("*/"):
-                step = part[2:]
-                if not step.isdigit() or int(step) <= 0:
+            if "/" in part:
+                base, step_raw = part.split("/", 1)
+                if not step_raw.isdigit() or int(step_raw) <= 0:
                     raise ValueError("cron step must be positive integer")
+                SchedulerManager._validate_cron_step_base(
+                    base,
+                    minimum=minimum,
+                    maximum=maximum,
+                )
                 continue
             if "-" in part:
                 start_raw, end_raw = part.split("-", 1)
@@ -263,6 +268,28 @@ class SchedulerManager:
             value = int(part)
             if value < minimum or value > maximum:
                 raise ValueError("cron field value out of bounds")
+
+    @staticmethod
+    def _validate_cron_step_base(base: str, *, minimum: int, maximum: int) -> None:
+        token = base.strip()
+        if token == "*":
+            return
+        if "-" in token:
+            start_raw, end_raw = token.split("-", 1)
+            if not start_raw.isdigit() or not end_raw.isdigit():
+                raise ValueError("cron range must be numeric")
+            start = int(start_raw)
+            end = int(end_raw)
+            if start > end:
+                raise ValueError("cron range start must be <= end")
+            if start < minimum or end > maximum:
+                raise ValueError("cron range out of bounds")
+            return
+        if not token.isdigit():
+            raise ValueError("cron step base must be wildcard, range, or numeric")
+        value = int(token)
+        if value < minimum or value > maximum:
+            raise ValueError("cron field value out of bounds")
 
     @staticmethod
     def _cron_matches(expression: str, moment: datetime) -> bool:
@@ -298,9 +325,13 @@ class SchedulerManager:
         for part in [item.strip() for item in field.split(",") if item.strip()]:
             if part == "*":
                 return True
-            if part.startswith("*/"):
-                step = int(part[2:])
-                if step > 0 and (value - minimum) % step == 0:
+            if "/" in part:
+                if SchedulerManager._cron_step_part_matches(
+                    part,
+                    value=value,
+                    minimum=minimum,
+                    maximum=maximum,
+                ):
                     return True
                 continue
             if "-" in part:
@@ -318,6 +349,69 @@ class SchedulerManager:
             if literal == value:
                 return True
         return False
+
+    @staticmethod
+    def _cron_step_part_matches(
+        part: str,
+        *,
+        value: int,
+        minimum: int,
+        maximum: int,
+    ) -> bool:
+        try:
+            base, step_raw = part.split("/", 1)
+        except ValueError:
+            return False
+        if not step_raw.isdigit():
+            return False
+        step = int(step_raw)
+        if step <= 0:
+            return False
+        bounds = SchedulerManager._cron_step_bounds(
+            base,
+            minimum=minimum,
+            maximum=maximum,
+        )
+        if bounds is None:
+            return False
+        start, end = bounds
+        for offset, raw_candidate in enumerate(range(start, end + 1)):
+            if offset % step != 0:
+                continue
+            candidate = raw_candidate
+            if maximum == 7 and candidate == 7:
+                candidate = 0
+            if candidate == value:
+                return True
+        return False
+
+    @staticmethod
+    def _cron_step_bounds(
+        base: str,
+        *,
+        minimum: int,
+        maximum: int,
+    ) -> tuple[int, int] | None:
+        token = base.strip()
+        if token == "*":
+            return (minimum, maximum)
+        if "-" in token:
+            start_raw, end_raw = token.split("-", 1)
+            if not start_raw.isdigit() or not end_raw.isdigit():
+                return None
+            start = int(start_raw)
+            end = int(end_raw)
+            if start > end:
+                return None
+            if start < minimum or end > maximum:
+                return None
+            return (start, end)
+        if not token.isdigit():
+            return None
+        literal = int(token)
+        if literal < minimum or literal > maximum:
+            return None
+        return (literal, maximum)
 
     def _audit(self, action: str, payload: dict[str, Any]) -> None:
         if self._audit_hook is not None:
