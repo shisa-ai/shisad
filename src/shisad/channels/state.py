@@ -128,12 +128,19 @@ class ChannelStateStore:
             token = line.strip()
             if not token:
                 continue
-            candidate: object = token
-            try:
-                candidate = json.loads(token)
-            except json.JSONDecodeError:
+            # M4+ writes JSON-encoded strings per line. Keep compatibility with
+            # pre-M4 raw journals where ids were written as plain text.
+            candidate: str | None = None
+            if token.startswith('"'):
+                try:
+                    parsed = json.loads(token)
+                except json.JSONDecodeError:
+                    parsed = None
+                if isinstance(parsed, str):
+                    candidate = parsed
+            else:
                 candidate = token
-            if not isinstance(candidate, str):
+            if candidate is None:
                 continue
             value = self._normalize_message_id(candidate)
             if value is not None:
@@ -214,7 +221,7 @@ class ChannelStateStore:
         return self._root_dir / f"{self._channel_file_stem(channel)}.state.journal"
 
     def _channel_file_stem(self, channel: str) -> str:
-        raw = channel.strip() or "unknown"
+        raw = channel if channel else "unknown"
         legacy = self._legacy_channel_file_stem(raw)
         # Preserve legacy filenames for already-safe channel names.
         if raw == legacy:

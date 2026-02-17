@@ -254,8 +254,11 @@ def test_m5_channel_state_store_isolates_channels_with_sanitized_name_collision(
     store.mark_seen(channel="matrix", message_id="m1")
 
     assert store.has_seen(channel="ma$trix", message_id="m1") is False
+    assert store.has_seen(channel=" matrix ", message_id="m1") is False
     store.mark_seen(channel="ma$trix", message_id="m2")
     assert store.has_seen(channel="matrix", message_id="m2") is False
+    store.mark_seen(channel=" matrix ", message_id="m3")
+    assert store.has_seen(channel="matrix", message_id="m3") is False
 
 
 def test_m5_channel_state_store_loads_legacy_filename_state(tmp_path) -> None:
@@ -272,6 +275,16 @@ def test_m5_channel_state_store_loads_legacy_filename_state(tmp_path) -> None:
     store = ChannelStateStore(root, max_seen_ids=64)
     assert store.has_seen(channel="matrix", message_id="legacy-1") is True
     assert store.has_seen(channel="matrix", message_id="legacy-2") is True
+
+
+def test_m5_channel_state_store_loads_legacy_raw_numeric_journal_ids(tmp_path) -> None:
+    root = tmp_path / "state"
+    root.mkdir(parents=True, exist_ok=True)
+    legacy_journal = root / "discord.state.journal"
+    legacy_journal.write_text("1234567890\n", encoding="utf-8")
+
+    store = ChannelStateStore(root, max_seen_ids=64)
+    assert store.has_seen(channel="discord", message_id="1234567890") is True
 
 
 @pytest.mark.asyncio
