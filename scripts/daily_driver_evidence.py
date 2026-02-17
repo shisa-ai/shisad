@@ -20,6 +20,7 @@ import asyncio
 import json
 from contextlib import suppress
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -42,6 +43,41 @@ def _event_total(response: dict[str, Any]) -> int:
         return int(response.get("total", 0))
     except (TypeError, ValueError):
         return 0
+
+
+def _task_triggered_for_task(response: dict[str, Any], task_id: str) -> bool:
+    if not task_id:
+        return False
+    events = response.get("events", [])
+    if not isinstance(events, list):
+        return False
+    for event in events:
+        if not isinstance(event, dict):
+            continue
+        data = event.get("data", {})
+        if not isinstance(data, dict):
+            continue
+        if str(data.get("task_id", "")) == task_id:
+            return True
+    return False
+
+
+def _task_trigger_count_for_task(response: dict[str, Any], task_id: str) -> int:
+    if not task_id:
+        return 0
+    events = response.get("events", [])
+    if not isinstance(events, list):
+        return 0
+    count = 0
+    for event in events:
+        if not isinstance(event, dict):
+            continue
+        data = event.get("data", {})
+        if not isinstance(data, dict):
+            continue
+        if str(data.get("task_id", "")) == task_id:
+            count += 1
+    return count
 
 
 @dataclass(slots=True)
@@ -120,13 +156,24 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--reminder-channel",
-        default="discord",
-        help="Delivery channel for reminder task check.",
+        default="noop",
+        help=(
+            "Delivery channel for reminder task check (default: noop). "
+            "Use --allow-live-channels to opt in to live channel delivery."
+        ),
     )
     parser.add_argument(
         "--reminder-recipient",
         default="daily-driver-room",
         help="Delivery recipient for reminder task check.",
+    )
+    parser.add_argument(
+        "--allow-live-channels",
+        action="store_true",
+        help=(
+            "Allow runtime channel clients (Matrix/Discord/Telegram/Slack). "
+            "Default behavior is fail-safe with channel runtimes disabled."
+        ),
     )
     parser.add_argument(
         "--json",
@@ -137,6 +184,8 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 async def _run(args: argparse.Namespace) -> EvidenceSummary:
+    run_started = datetime.now(UTC)
+    run_since = run_started.isoformat()
     data_dir = args.data_dir.resolve()
     data_dir.mkdir(parents=True, exist_ok=True)
     socket_path = (
@@ -152,12 +201,22 @@ async def _run(args: argparse.Namespace) -> EvidenceSummary:
     with suppress(FileNotFoundError):
         socket_path.unlink()
 
-    config = DaemonConfig(
-        data_dir=data_dir,
-        socket_path=socket_path,
-        policy_path=policy_path,
-        log_level="INFO",
-    )
+    config_kwargs: dict[str, Any] = {
+        "data_dir": data_dir,
+        "socket_path": socket_path,
+        "policy_path": policy_path,
+        "log_level": "INFO",
+    }
+    if not bool(args.allow_live_channels):
+        config_kwargs.update(
+            {
+                "matrix_enabled": False,
+                "discord_enabled": False,
+                "telegram_enabled": False,
+                "slack_enabled": False,
+            }
+        )
+    config = DaemonConfig(**config_kwargs)
     daemon_task = asyncio.create_task(run_daemon(config))
     client = ControlClient(socket_path)
 
@@ -233,13 +292,23 @@ async def _run(args: argparse.Namespace) -> EvidenceSummary:
         for _ in range(max(1, int(float(args.timeout) * 2))):
             triggered = await client.call(
                 "audit.query",
-                {"event_type": "TaskTriggered", "actor": "scheduler", "limit": 50},
+                {
+                    "event_type": "TaskTriggered",
+                    "actor": "scheduler",
+                    "since": run_since,
+                    "limit": 200,
+                },
             )
             anomalies = await client.call(
                 "audit.query",
-                {"event_type": "AnomalyReported", "actor": "scheduler", "limit": 50},
+                {
+                    "event_type": "AnomalyReported",
+                    "actor": "scheduler",
+                    "since": run_since,
+                    "limit": 200,
+                },
             )
-            task_trigger_total = _event_total(triggered)
+            task_trigger_total = _task_trigger_count_for_task(triggered, task_id)
             scheduler_anomaly_total = _event_total(anomalies)
 
             anomaly_events = anomalies.get("events", [])
@@ -256,7 +325,7 @@ async def _run(args: argparse.Namespace) -> EvidenceSummary:
                         delivery_failure_seen = True
                         break
 
-            if task_trigger_total >= 1:
+            if _task_triggered_for_task(triggered, task_id):
                 if delivery_failure_seen:
                     reminder_status = "triggered_fail_safe_anomaly"
                     break

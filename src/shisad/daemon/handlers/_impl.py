@@ -801,6 +801,10 @@ class HandlerImplementation(
             return None
         if len(channel) > 64 or len(external_user_id) > 256:
             return None
+        if any(ord(char) < 0x20 for char in channel):
+            return None
+        if any(ord(char) < 0x20 for char in external_user_id):
+            return None
         if any(char.isspace() for char in channel):
             return None
         return {

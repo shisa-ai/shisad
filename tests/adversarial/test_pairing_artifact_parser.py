@@ -122,3 +122,49 @@ async def test_m3_pairing_artifact_parser_rejects_oversized_identifiers(
             await client.call("daemon.shutdown")
         await client.close()
         await asyncio.wait_for(daemon_task, timeout=3)
+
+
+@pytest.mark.asyncio
+async def test_m3_pairing_artifact_parser_rejects_json_escaped_control_chars(
+    model_env: None,
+    tmp_path: Path,
+) -> None:
+    data_dir = tmp_path / "data"
+    artifact_file = data_dir / "channels" / "pairing_requests.jsonl"
+    artifact_file.parent.mkdir(parents=True, exist_ok=True)
+    artifact_file.write_text(
+        (
+            '{"channel":"discord","external_user_id":"safe-user","workspace_hint":"guild-1"}\n'
+            '{"channel":"discord","external_user_id":"null-\\u0000-user","workspace_hint":"guild-1"}\n'
+            '{"channel":"disc\\u0001ord","external_user_id":"control-channel","workspace_hint":"guild-1"}\n'
+        ),
+        encoding="utf-8",
+    )
+
+    config = DaemonConfig(
+        data_dir=data_dir,
+        socket_path=tmp_path / "control.sock",
+        policy_path=tmp_path / "policy.yaml",
+        log_level="INFO",
+    )
+    daemon_task = asyncio.create_task(run_daemon(config))
+    client = ControlClient(config.socket_path)
+    try:
+        await _wait_for_socket(config.socket_path)
+        await client.connect()
+        proposal = await client.call(
+            "channel.pairing_propose",
+            {"channel": "discord", "limit": 25},
+        )
+
+        assert proposal["count"] == 1
+        assert proposal["entries"][0]["external_user_id"] == "safe-user"
+        assert any(
+            item.get("error") == "missing_required_fields"
+            for item in proposal["invalid_entries"]
+        )
+    finally:
+        with suppress(Exception):
+            await client.call("daemon.shutdown")
+        await client.close()
+        await asyncio.wait_for(daemon_task, timeout=3)
