@@ -2,11 +2,8 @@
 
 from __future__ import annotations
 
-import base64
-import binascii
 import logging
 from collections.abc import Mapping
-from pathlib import Path
 from typing import Any, cast
 from urllib.parse import urlparse
 
@@ -425,41 +422,6 @@ class ToolExecutionImplMixin(HandlerMixinBase):
         success = bool(result.allowed and not result.timed_out and (result.exit_code or 0) == 0)
         self._control_plane.record_execution(action=cp_eval.action, success=success)
         return cast(dict[str, Any], result.model_dump(mode="json"))
-
-    @staticmethod
-    def _restore_filesystem_from_checkpoint(
-        state: dict[str, Any],
-    ) -> tuple[int, int, list[str]]:
-        snapshots = state.get("filesystem_snapshot", [])
-        if not isinstance(snapshots, list):
-            return 0, 0, []
-        restored = 0
-        deleted = 0
-        errors: list[str] = []
-        for item in snapshots:
-            if not isinstance(item, dict):
-                continue
-            path = str(item.get("path", "")).strip()
-            if not path:
-                continue
-            candidate = Path(path).expanduser()
-            existed = bool(item.get("existed", False))
-            try:
-                if existed:
-                    encoded = item.get("content_b64")
-                    if not isinstance(encoded, str):
-                        continue
-                    data = base64.b64decode(encoded.encode("utf-8"), validate=True)
-                    candidate.parent.mkdir(parents=True, exist_ok=True)
-                    candidate.write_bytes(data)
-                    restored += 1
-                    continue
-                if candidate.exists() and candidate.is_file():
-                    candidate.unlink()
-                    deleted += 1
-            except (OSError, TypeError, ValueError, binascii.Error) as exc:  # pragma: no cover
-                errors.append(f"{path}:{exc.__class__.__name__}")
-        return restored, deleted, errors
 
     async def do_browser_paste(self, params: Mapping[str, Any]) -> dict[str, Any]:
         sid = SessionId(str(params.get("session_id", "")))

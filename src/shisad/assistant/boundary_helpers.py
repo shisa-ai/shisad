@@ -6,6 +6,8 @@ from pathlib import Path
 from typing import Any
 from urllib.request import HTTPRedirectHandler
 
+from shisad.core.host_matching import host_matches
+
 
 class _NoRedirectHandler(HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):  # type: ignore[no-untyped-def]
@@ -18,15 +20,7 @@ def _host_matches(host: str, rule: str) -> bool:
     Callers are expected to pass a hostname (for example from `urlparse(...).hostname`)
     rather than a raw `host:port` header value.
     """
-    candidate = rule.strip().lower()
-    if not candidate:
-        return False
-    value = host.strip().lower()
-    if not value:
-        return False
-    if candidate.startswith("*."):
-        return value.endswith(candidate[1:])
-    return value == candidate
+    return host_matches(host, rule)
 
 
 def _is_within(path: Path, root: Path) -> bool:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -79,10 +80,9 @@ class ChannelStateStore:
         ids: deque[str] = deque()
         id_set: set[str] = set()
 
+        journal_lines = 0
         for item in self._load_snapshot_ids(state_path):
             self._record_seen_id(ids, id_set, item)
-
-        journal_lines = 0
         for item in self._load_journal_ids(journal_path):
             journal_lines += 1
             self._record_seen_id(ids, id_set, item)
@@ -158,12 +158,12 @@ class ChannelStateStore:
             handle.flush()
             os.fsync(handle.fileno())
 
-    def _attempt_compaction(self, channel: str, *, trigger: str) -> None:
+    def _attempt_compaction(self, channel: str, *, trigger: str) -> bool:
         try:
             self._compact_channel(channel)
         except OSError as exc:
             if channel in self._compaction_warning_logged:
-                return
+                return False
             logger.warning(
                 "Channel replay-state compaction failed; deferring snapshot update "
                 "(channel=%s, trigger=%s, error=%s)",
@@ -172,8 +172,10 @@ class ChannelStateStore:
                 exc.__class__.__name__,
             )
             self._compaction_warning_logged.add(channel)
+            return False
         else:
             self._compaction_warning_logged.discard(channel)
+            return True
 
     def _compact_channel(self, channel: str) -> None:
         self._persist_snapshot(channel)
@@ -206,16 +208,25 @@ class ChannelStateStore:
             os.fsync(handle.fileno())
 
     def _state_path(self, channel: str) -> Path:
-        safe = "".join(ch for ch in channel if ch.isalnum() or ch in {"-", "_"}).strip("_-")
-        if not safe:
-            safe = "unknown"
-        return self._root_dir / f"{safe}.state.json"
+        return self._root_dir / f"{self._channel_file_stem(channel)}.state.json"
 
     def _journal_path(self, channel: str) -> Path:
+        return self._root_dir / f"{self._channel_file_stem(channel)}.state.journal"
+
+    def _channel_file_stem(self, channel: str) -> str:
+        raw = channel.strip() or "unknown"
+        legacy = self._legacy_channel_file_stem(raw)
+        # Preserve legacy filenames for already-safe channel names.
+        if raw == legacy:
+            return legacy
+        digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
+        return f"{legacy}-{digest}"
+
+    def _legacy_channel_file_stem(self, channel: str) -> str:
         safe = "".join(ch for ch in channel if ch.isalnum() or ch in {"-", "_"}).strip("_-")
         if not safe:
             safe = "unknown"
-        return self._root_dir / f"{safe}.state.journal"
+        return safe
 
     @staticmethod
     def _normalize_message_id(value: str) -> str | None:

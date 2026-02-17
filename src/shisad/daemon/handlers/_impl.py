@@ -113,21 +113,6 @@ _SIDE_EFFECT_TOOL_NAMES: set[str] = {"report_anomaly"}
 _MONITOR_REJECT_THRESHOLD = 3
 _HIGH_RISK_CONFIRM_TOKENS: tuple[str, ...] = ("send", "share", "delete")
 _CONFIRMATION_ALERT_COOLDOWN_SECONDS = 600
-_CLEANROOM_CHANNELS: set[str] = {"cli"}
-_CLEANROOM_UNTRUSTED_TOOL_NAMES: set[str] = {
-    "retrieve_rag",
-    "web_search",
-    "web_fetch",
-    "realitycheck.search",
-    "realitycheck.read",
-}
-_DOCTOR_COMPONENTS: tuple[str, ...] = (
-    "dependencies",
-    "policy",
-    "channels",
-    "sandbox",
-    "realitycheck",
-)
 
 
 class _EventPublisher:
@@ -145,103 +130,6 @@ def _is_side_effect_tool(tool: ToolDefinition) -> bool:
     return bool(required & _SIDE_EFFECT_CAPABILITIES)
 
 
-def _tool_available_in_session(
-    *,
-    tool: ToolDefinition,
-    capabilities: set[Capability],
-    tool_allowlist: set[ToolName] | None,
-) -> tuple[bool, list[str]]:
-    if tool_allowlist is not None and tool.name not in tool_allowlist:
-        return False, ["not_allowlisted"]
-    required = {cap.value for cap in tool.capabilities_required}
-    missing = sorted(required - {cap.value for cap in capabilities})
-    return (len(missing) == 0), missing
-
-
-def _planner_enabled_tools(
-    *,
-    registry_tools: list[ToolDefinition],
-    capabilities: set[Capability],
-    tool_allowlist: set[ToolName] | None,
-) -> list[ToolDefinition]:
-    enabled: list[ToolDefinition] = []
-    for tool in registry_tools:
-        is_available, _missing = _tool_available_in_session(
-            tool=tool,
-            capabilities=capabilities,
-            tool_allowlist=tool_allowlist,
-        )
-        if is_available:
-            enabled.append(tool)
-    return sorted(enabled, key=lambda item: str(item.name))
-
-
-def _build_planner_tool_context(
-    *,
-    registry_tools: list[ToolDefinition],
-    capabilities: set[Capability],
-    tool_allowlist: set[ToolName] | None,
-    trust_level: str,
-) -> str:
-    visible_tools = [
-        tool
-        for tool in registry_tools
-        if tool_allowlist is None or tool.name in tool_allowlist
-    ]
-    visible_tools.sort(key=lambda item: str(item.name))
-    enabled_tools = _planner_enabled_tools(
-        registry_tools=visible_tools,
-        capabilities=capabilities,
-        tool_allowlist=tool_allowlist,
-    )
-    disabled_tools: list[tuple[ToolDefinition, list[str]]] = []
-    for tool in visible_tools:
-        is_available, missing = _tool_available_in_session(
-            tool=tool,
-            capabilities=capabilities,
-            tool_allowlist=tool_allowlist,
-        )
-        if not is_available and missing:
-            disabled_tools.append((tool, missing))
-    capability_list = sorted(cap.value for cap in capabilities)
-    lines: list[str] = [
-        "Use only tools from the trusted runtime manifest below.",
-        "Never invent tool names.",
-        "If asked which tools are available, list only enabled tools from this manifest.",
-        (
-            "Session capabilities: " + ", ".join(capability_list)
-            if capability_list
-            else "Session capabilities: none"
-        ),
-        f"Runtime tool catalog entries: {len(visible_tools)}",
-    ]
-    if not enabled_tools:
-        lines.append("Enabled tools: none")
-        if _is_trusted_level(trust_level) and disabled_tools:
-            lines.append("Unavailable tools in this session:")
-            for tool, missing in disabled_tools:
-                lines.append(f"- {tool.name}: blocked (missing: {', '.join(missing)})")
-        lines.append("If no tool is needed, respond conversationally with actions=[].")
-        return "\n".join(lines)
-
-    if _is_trusted_level(trust_level):
-        lines.append("Enabled tools:")
-        for tool in enabled_tools:
-            caps = sorted(cap.value for cap in tool.capabilities_required)
-            cap_suffix = f" (requires: {', '.join(caps)})" if caps else ""
-            lines.append(f"- {tool.name}: {tool.description}{cap_suffix}")
-        if disabled_tools:
-            lines.append("Unavailable tools in this session:")
-            for tool, missing in disabled_tools:
-                lines.append(f"- {tool.name}: blocked (missing: {', '.join(missing)})")
-    else:
-        lines.append(
-            "Enabled tools: " + ", ".join(str(tool.name) for tool in enabled_tools)
-        )
-    lines.append("If no tool is needed, respond conversationally with actions=[].")
-    return "\n".join(lines)
-
-
 def _should_checkpoint(trigger: str, tool: ToolDefinition | None) -> bool:
     if trigger == "never":
         return False
@@ -250,25 +138,6 @@ def _should_checkpoint(trigger: str, tool: ToolDefinition | None) -> bool:
     if trigger == "before_side_effects":
         return tool is not None and _is_side_effect_tool(tool)
     return False
-
-
-def _short_hash(value: str) -> str:
-    return hashlib.sha256(value.encode("utf-8")).hexdigest()[:16]
-
-
-def _is_trusted_level(trust_level: str) -> bool:
-    return trust_level.strip().lower() in {"trusted", "verified", "internal"}
-
-
-def _risk_tier_from_score(score: float) -> RiskTier:
-    if score >= 0.9:
-        return RiskTier.CRITICAL
-    if score >= 0.75:
-        return RiskTier.HIGH
-    if score >= 0.45:
-        return RiskTier.MEDIUM
-    return RiskTier.LOW
-
 
 @dataclass(slots=True)
 class PendingAction:

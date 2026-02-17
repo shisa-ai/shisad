@@ -85,3 +85,11 @@ def test_m2_output_firewall_url_adversarial_matrix() -> None:
         assert any(
             item.reason == case["expected_reason"] for item in result.url_findings
         ), case["id"]
+
+
+def test_m5_output_firewall_host_matching_normalizes_allowlist_rules() -> None:
+    firewall = OutputFirewall(safe_domains=["  *.Example.com  "])
+    result = firewall.inspect("visit https://docs.example.com/guide")
+    assert result.blocked is False
+    assert result.require_confirmation is False
+    assert result.url_findings[0].allowed is True

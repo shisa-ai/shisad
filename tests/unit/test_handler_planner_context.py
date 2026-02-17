@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from shisad.core.tools.schema import ToolDefinition, ToolParameter
 from shisad.core.types import Capability, ToolName
-from shisad.daemon.handlers._impl import _build_planner_tool_context
+from shisad.daemon.handlers._impl_session import _build_planner_tool_context
 
 
 def test_m6_planner_tool_context_normalizes_trust_level_casing() -> None:

@@ -247,6 +247,33 @@ def test_m4_channel_state_store_journal_roundtrip_preserves_multiline_ids(tmp_pa
     assert reloaded.has_seen(channel="discord", message_id="sub-id") is False
 
 
+def test_m5_channel_state_store_isolates_channels_with_sanitized_name_collision(
+    tmp_path,
+) -> None:
+    store = ChannelStateStore(tmp_path / "state", max_seen_ids=64)
+    store.mark_seen(channel="matrix", message_id="m1")
+
+    assert store.has_seen(channel="ma$trix", message_id="m1") is False
+    store.mark_seen(channel="ma$trix", message_id="m2")
+    assert store.has_seen(channel="matrix", message_id="m2") is False
+
+
+def test_m5_channel_state_store_loads_legacy_filename_state(tmp_path) -> None:
+    root = tmp_path / "state"
+    root.mkdir(parents=True, exist_ok=True)
+    legacy_state = root / "matrix.state.json"
+    legacy_state.write_text(
+        json.dumps({"channel": "matrix", "seen_message_ids": ["legacy-1"]}),
+        encoding="utf-8",
+    )
+    legacy_journal = root / "matrix.state.journal"
+    legacy_journal.write_text('"legacy-2"\n', encoding="utf-8")
+
+    store = ChannelStateStore(root, max_seen_ids=64)
+    assert store.has_seen(channel="matrix", message_id="legacy-1") is True
+    assert store.has_seen(channel="matrix", message_id="legacy-2") is True
+
+
 @pytest.mark.asyncio
 async def test_inmemory_channel_reconnect_exponential_backoff() -> None:
     channel = InMemoryChannel(

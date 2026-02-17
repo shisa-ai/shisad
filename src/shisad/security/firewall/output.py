@@ -12,6 +12,7 @@ from urllib.parse import unquote, urlparse
 
 from pydantic import BaseModel, Field
 
+from shisad.core.host_matching import host_matches
 from shisad.security.firewall.normalize import normalize_text
 from shisad.security.firewall.pii import PIIDetector
 
@@ -168,7 +169,7 @@ class OutputFirewall:
         for matched in _URL_RE.findall(text):
             parsed = urlparse(matched)
             host = (parsed.hostname or "").lower()
-            allowed = any(self._host_matches(host, domain) for domain in self.safe_domains)
+            allowed = any(host_matches(host, domain) for domain in self.safe_domains)
             suspicious_reason = self._suspicious_reason(parsed, host=host, allowed=allowed)
             suspicious = bool(suspicious_reason)
             reason = suspicious_reason or ("not_allowlisted" if not allowed else "")
@@ -192,15 +193,6 @@ class OutputFirewall:
                 )
             )
         return findings
-
-    @staticmethod
-    def _host_matches(host: str, domain: str) -> bool:
-        value = domain.lower().strip()
-        if not value:
-            return False
-        if value.startswith("*."):
-            return host.endswith(value[1:])
-        return host == value
 
     @staticmethod
     def _toxicity_score(text: str) -> float:
