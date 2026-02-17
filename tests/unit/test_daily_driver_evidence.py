@@ -26,6 +26,7 @@ def test_daily_driver_parser_defaults_are_fail_safe() -> None:
 
     assert args.allow_live_channels is False
     assert args.reminder_channel == "noop"
+    assert args.tool_name == "shell_exec"
 
 
 def test_daily_driver_task_trigger_detection_matches_task_id() -> None:

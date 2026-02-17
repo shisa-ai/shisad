@@ -255,6 +255,7 @@ class HandlerImplementation(
         self._fs_git_toolkit = FsGitToolkit(
             roots=list(self._config.assistant_fs_roots),
             max_read_bytes=self._config.assistant_max_read_bytes,
+            git_timeout_seconds=self._config.assistant_git_timeout_seconds,
         )
         self._load_pending_actions()
 

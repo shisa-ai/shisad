@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from shisad.assistant.boundary_helpers import _is_within
+from shisad.assistant.boundary_helpers import _is_within, _read_limited
 
 
 @dataclass(slots=True)
@@ -17,6 +17,7 @@ class FsGitToolkit:
 
     roots: list[Path]
     max_read_bytes: int
+    git_timeout_seconds: float = 10.0
 
     def list_dir(self, *, path: str, recursive: bool = False, limit: int = 200) -> dict[str, Any]:
         resolved = self._resolve_path(path)
@@ -64,13 +65,10 @@ class FsGitToolkit:
         byte_limit = self.max_read_bytes if max_bytes is None else int(max_bytes)
         byte_limit = max(1024, min(byte_limit, 2 * 1024 * 1024))
         try:
-            payload = resolved.read_bytes()
+            with resolved.open("rb") as handle:
+                payload, truncated = _read_limited(handle, limit=byte_limit)
         except OSError:
             return self._error("read_failed", path=str(resolved))
-        truncated = False
-        if len(payload) > byte_limit:
-            payload = payload[:byte_limit]
-            truncated = True
         text = payload.decode("utf-8", errors="replace")
         return {
             "ok": True,
@@ -158,7 +156,10 @@ class FsGitToolkit:
                 check=False,
                 capture_output=True,
                 text=True,
+                timeout=max(0.1, float(self.git_timeout_seconds)),
             )
+        except subprocess.TimeoutExpired:
+            return self._error("git_execution_timeout", path=str(resolved))
         except (OSError, ValueError):
             return self._error("git_execution_failed", path=str(resolved))
         if completed.returncode != 0:

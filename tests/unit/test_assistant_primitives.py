@@ -312,3 +312,43 @@ def test_fs_git_toolkit_git_diff_rejects_flag_like_ref(tmp_path: Path) -> None:
     blocked = toolkit.git_diff(repo_path=".", ref="--output=/tmp/evil")
     assert blocked["ok"] is False
     assert blocked["error"] == "invalid_ref"
+
+
+def test_m6_fs_git_toolkit_read_file_uses_bounded_stream_reads(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "workspace"
+    root.mkdir(parents=True)
+    target = root / "large.txt"
+    target.write_text("a" * 4096, encoding="utf-8")
+    toolkit = FsGitToolkit(roots=[root], max_read_bytes=1024)
+
+    def _read_bytes_guard(self: Path) -> bytes:  # pragma: no cover - regression guard
+        raise AssertionError("read_file regressed to Path.read_bytes full-file read")
+
+    monkeypatch.setattr(Path, "read_bytes", _read_bytes_guard)
+    read = toolkit.read_file(path="large.txt")
+    assert read["ok"] is True
+    assert read["truncated"] is True
+    assert len(str(read["content"])) == 1024
+
+
+def test_m6_fs_git_toolkit_git_status_fails_closed_on_timeout(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = tmp_path / "repo"
+    (repo / ".git").mkdir(parents=True)
+    toolkit = FsGitToolkit(roots=[repo], max_read_bytes=1024)
+
+    def _timeout(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
+        raise subprocess.TimeoutExpired(
+            cmd=args[0] if args else "git",
+            timeout=float(kwargs.get("timeout", 0)),
+        )
+
+    monkeypatch.setattr(subprocess, "run", _timeout)
+    status = toolkit.git_status(repo_path=".")
+    assert status["ok"] is False
+    assert status["error"] == "git_execution_timeout"

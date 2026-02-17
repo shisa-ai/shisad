@@ -210,3 +210,28 @@ def test_m3_pep_static_destination_metadata_preserves_protocol_and_port() -> Non
         PolicyContext(capabilities={Capability.HTTP_REQUEST}),
     )
     assert allowed.kind in {PEPDecisionKind.ALLOW, PEPDecisionKind.REQUIRE_CONFIRMATION}
+
+
+def test_m6_pep_rejects_malformed_url_port_without_raising() -> None:
+    registry = ToolRegistry()
+    registry.register(
+        ToolDefinition(
+            name=ToolName("http_request"),
+            description="HTTP call",
+            parameters=[ToolParameter(name="url", type="string", required=True)],
+            capabilities_required=[Capability.HTTP_REQUEST],
+        )
+    )
+    policy = PolicyBundle(
+        default_require_confirmation=False,
+        egress=[EgressRule(host="api.good.com", protocols=["https"], ports=[443])],
+    )
+    pep = PEP(policy, registry)
+
+    decision = pep.evaluate(
+        ToolName("http_request"),
+        {"url": "https://api.good.com:99999/path"},
+        PolicyContext(capabilities={Capability.HTTP_REQUEST}),
+    )
+    assert decision.kind == PEPDecisionKind.REJECT
+    assert "malformed" in decision.reason.lower()

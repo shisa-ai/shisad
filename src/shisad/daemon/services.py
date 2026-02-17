@@ -86,7 +86,10 @@ def _normalize_tool_destination(destination: str) -> str:
     if not host:
         return ""
     protocol = (parsed.scheme or "").lower()
-    port = parsed.port
+    try:
+        port = parsed.port
+    except ValueError:
+        return ""
     if port is None and protocol in {"http", "https"}:
         port = 80 if protocol == "http" else 443
     if protocol and port is not None:

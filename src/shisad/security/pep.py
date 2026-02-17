@@ -185,9 +185,18 @@ class PEP:
             )
 
         # 6. Egress allowlist enforcement
-        destination = self._extract_destination(arguments)
-        if destination is None:
-            destination = self._infer_destination_from_tool(tool)
+        try:
+            destination = self._extract_destination(arguments)
+            if destination is None:
+                destination = self._infer_destination_from_tool(tool)
+        except ValueError:
+            return self._reject(
+                tool_name,
+                (
+                    "Egress blocked: malformed destination URL. "
+                    "Fix the destination and retry with a valid host/port."
+                ),
+            )
 
         # 6.5 Credential reference checks (host-scoped binding)
         credential_error = self._check_credential_refs(tool_name, tool, arguments, destination)
@@ -539,7 +548,7 @@ class PEP:
             parsed = urlparse(value)
             if parsed.hostname:
                 protocol = parsed.scheme.lower() if parsed.scheme else None
-                port = parsed.port
+                port = self._safe_url_port(parsed)
                 if port is None and protocol in {"http", "https"}:
                     port = 80 if protocol == "http" else 443
                 return EgressDestination(host=parsed.hostname, protocol=protocol, port=port)
@@ -568,11 +577,23 @@ class PEP:
             if not host:
                 return None
             protocol = (parsed.scheme or "").lower() or None
-            port = parsed.port
+            port = PEP._safe_url_port(parsed)
             if port is None and protocol in {"http", "https"}:
                 port = 80 if protocol == "http" else 443
             return EgressDestination(host=host, protocol=protocol, port=port)
         return EgressDestination(host=destination, protocol="https", port=443)
+
+    @staticmethod
+    def _safe_url_port(parsed: Any) -> int | None:
+        try:
+            port = parsed.port
+        except ValueError as exc:
+            raise ValueError("invalid_destination_port") from exc
+        if port is None:
+            return None
+        if isinstance(port, int):
+            return port
+        return None
 
     @staticmethod
     def _destination_host_pattern(destination: str) -> str:

@@ -86,8 +86,21 @@ class EgressProxy:
     ) -> ProxyDecision:
         """Authorize a request and inject credentials if allowed."""
         parsed = urlparse(url)
-        host = (parsed.hostname or "").lower()
-        port = parsed.port
+        protocol = (parsed.scheme or "").lower()
+        try:
+            host = (parsed.hostname or "").lower()
+            port = parsed.port
+        except ValueError:
+            decision = ProxyDecision(
+                allowed=False,
+                reason="malformed_destination",
+                destination_host="",
+                destination_port=None,
+                protocol=protocol,
+                request_size=len(body.encode("utf-8")),
+            )
+            self._audit(tool_name=tool_name, url=url, decision=decision, body=body)
+            return decision
         if port is None:
             port = 443 if parsed.scheme == "https" else 80
 
@@ -96,7 +109,7 @@ class EgressProxy:
             reason="",
             destination_host=host,
             destination_port=port,
-            protocol=(parsed.scheme or "").lower(),
+            protocol=protocol,
             request_size=len(body.encode("utf-8")),
         )
 

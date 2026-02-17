@@ -24,7 +24,7 @@ from shisad.daemon.handlers._impl import HandlerImplementation
 
 
 class SessionHandlers:
-    """Session API handlers backed by the legacy implementation."""
+    """Session API handlers backed by the shared handler facade."""
 
     def __init__(self, impl: HandlerImplementation, *, internal_ingress_marker: object) -> None:
         self._impl = impl

@@ -145,7 +145,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--tool-name",
-        default="shell.exec",
+        default="shell_exec",
         help="Tool name used for tool.execute validation.",
     )
     parser.add_argument(

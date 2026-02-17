@@ -259,6 +259,10 @@ def test_m3_normalize_tool_destination_preserves_scheme_and_port() -> None:
     assert _normalize_tool_destination("search.example") == "search.example"
 
 
+def test_m6_normalize_tool_destination_rejects_invalid_port() -> None:
+    assert _normalize_tool_destination("https://search.example:99999") == ""
+
+
 def test_m3_tool_registry_omits_realitycheck_tools_when_surface_disabled() -> None:
     registry, _alarm = _build_tool_registry(
         EventBus(),

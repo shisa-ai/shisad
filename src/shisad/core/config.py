@@ -159,6 +159,11 @@ class DaemonConfig(BaseSettings):
         ge=1024,
         description="Maximum bytes returned by fs.read.",
     )
+    assistant_git_timeout_seconds: float = Field(
+        default=10.0,
+        ge=0.1,
+        description="Timeout in seconds for git.* helper subprocess calls.",
+    )
     realitycheck_enabled: bool = Field(
         default=False,
         description="Enable Reality Check integration surface.",

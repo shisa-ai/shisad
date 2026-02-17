@@ -193,3 +193,14 @@ def test_m3_proxy_fails_closed_on_empty_dns_resolution() -> None:
     )
     assert decision.allowed is False
     assert decision.reason == "dns_resolution_failed"
+
+
+def test_m6_proxy_rejects_malformed_url_port_without_raising() -> None:
+    proxy = EgressProxy(resolver=_public_resolver)
+    decision = proxy.authorize_request(
+        tool_name="http_request",
+        url="https://api.good.com:99999/v1/send",
+        policy=NetworkPolicy(allow_network=True, allowed_domains=["api.good.com"]),
+    )
+    assert decision.allowed is False
+    assert decision.reason == "malformed_destination"
