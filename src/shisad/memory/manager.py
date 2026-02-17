@@ -125,13 +125,17 @@ class MemoryManager:
     def list_entries(
         self,
         *,
+        entry_type: str | None = None,
         include_deleted: bool = False,
         include_quarantined: bool = False,
         limit: int = 100,
     ) -> list[MemoryEntry]:
         self.purge_expired()
+        selected_type = (entry_type or "").strip().lower()
         rows = []
         for entry in self._entries.values():
+            if selected_type and str(entry.entry_type).lower() != selected_type:
+                continue
             if entry.deleted_at is not None and not include_deleted:
                 continue
             if entry.quarantined and not include_quarantined:

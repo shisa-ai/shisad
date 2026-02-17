@@ -94,6 +94,69 @@ async def test_facade_routes_across_handler_groups(
 
 
 @pytest.mark.asyncio
+async def test_note_and_todo_list_limits_are_type_aware(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SHISAD_MODEL_BASE_URL", "https://api.example.com/v1")
+    monkeypatch.setenv("SHISAD_MODEL_PLANNER_BASE_URL", "https://planner.example.com/v1")
+    monkeypatch.setenv("SHISAD_MODEL_EMBEDDINGS_BASE_URL", "https://embed.example.com/v1")
+    monkeypatch.setenv("SHISAD_MODEL_MONITOR_BASE_URL", "https://monitor.example.com/v1")
+
+    config = DaemonConfig(
+        data_dir=tmp_path / "data",
+        socket_path=tmp_path / "control.sock",
+        policy_path=tmp_path / "policy.yaml",
+        log_level="INFO",
+    )
+
+    daemon_task = asyncio.create_task(run_daemon(config))
+    client = ControlClient(config.socket_path)
+
+    try:
+        await _wait_for_socket(config.socket_path)
+        await client.connect()
+
+        created = await client.call(
+            "session.create",
+            {"channel": "cli", "user_id": "alice", "workspace_id": "ws1"},
+        )
+        sid = created["session_id"]
+
+        await client.call(
+            "note.create",
+            {"key": "n1", "content": "note-one", "source_id": sid, "user_confirmed": True},
+        )
+        await client.call(
+            "todo.create",
+            {"title": "todo-one", "source_id": sid, "user_confirmed": True},
+        )
+        await client.call(
+            "note.create",
+            {"key": "n2", "content": "note-two", "source_id": sid, "user_confirmed": True},
+        )
+        await client.call(
+            "todo.create",
+            {"title": "todo-two", "source_id": sid, "user_confirmed": True},
+        )
+
+        notes = await client.call("note.list", {"limit": 2})
+        todos = await client.call("todo.list", {"limit": 2})
+
+        assert notes["count"] == 2
+        assert len(notes["entries"]) == 2
+        assert all(item.get("entry_type") == "note" for item in notes["entries"])
+        assert todos["count"] == 2
+        assert len(todos["entries"]) == 2
+        assert all(item.get("entry_type") == "todo" for item in todos["entries"])
+    finally:
+        with suppress(Exception):
+            await client.call("daemon.shutdown")
+        await client.close()
+        await asyncio.wait_for(daemon_task, timeout=3)
+
+
+@pytest.mark.asyncio
 async def test_doctor_component_requests_are_isolated_from_other_component_failures(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

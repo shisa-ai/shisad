@@ -144,6 +144,26 @@ def test_m2_memory_manager_skips_corrupt_utf8_entry_files(tmp_path: Path) -> Non
     assert restarted.list_entries(limit=10) == []
 
 
+def test_m2_memory_manager_list_entries_applies_type_filter_before_limit(tmp_path: Path) -> None:
+    manager = MemoryManager(tmp_path / "memory")
+    for idx in range(3):
+        manager.write(
+            entry_type="note" if idx % 2 == 0 else "todo",
+            key=f"k{idx}",
+            value=f"value-{idx}",
+            source=MemorySource(origin="user", source_id=f"msg-{idx}", extraction_method="manual"),
+            user_confirmed=True,
+        )
+
+    notes = manager.list_entries(limit=2, entry_type="note")
+    todos = manager.list_entries(limit=2, entry_type="todo")
+
+    assert len(notes) == 2
+    assert all(entry.entry_type == "note" for entry in notes)
+    assert len(todos) == 1
+    assert all(entry.entry_type == "todo" for entry in todos)
+
+
 def test_m2_ingestion_pipeline_hydrates_records_after_restart(tmp_path: Path) -> None:
     storage = tmp_path / "ingestion"
     first = IngestionPipeline(storage)
