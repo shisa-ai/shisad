@@ -8,13 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-
-def _is_within(path: Path, root: Path) -> bool:
-    try:
-        path.relative_to(root)
-        return True
-    except ValueError:
-        return False
+from shisad.assistant.boundary_helpers import _is_within
 
 
 @dataclass(slots=True)

@@ -76,7 +76,9 @@ from shisad.core.types import (
     UserId,
     WorkspaceId,
 )
+from shisad.daemon.handlers._csv import render_csv_row
 from shisad.daemon.handlers._helpers import publish_event
+from shisad.daemon.handlers._tool_exec_helpers import execute_structured_tool
 from shisad.executors.mounts import FilesystemPolicy
 from shisad.executors.proxy import NetworkPolicy
 from shisad.executors.sandbox import (
@@ -1358,41 +1360,44 @@ class HandlerImplementation:
                 ),
             )
 
+        def _record_execution(success: bool) -> None:
+            self._control_plane.record_execution(action=executed_action, success=success)
+
+        async def _execute_structured_payload_tool(
+            payload: Mapping[str, Any],
+            *,
+            default_error: str,
+        ) -> tuple[bool, ToolOutputRecord]:
+            result = await execute_structured_tool(
+                session_id=sid,
+                tool_name=tool_name,
+                payload=payload,
+                default_error=default_error,
+                actor="tool_runtime",
+                emit_event=self._event_bus.publish,
+                record_execution=_record_execution,
+                sanitize_output=self._sanitize_tool_output_text,
+                taint_labels=label_tool_output(str(tool_name)),
+            )
+            return (
+                result.success,
+                ToolOutputRecord(
+                    tool_name=str(tool_name),
+                    content=result.content,
+                    taint_labels=result.taint_labels,
+                ),
+            )
+
         if tool_name == "web_search":
             search_payload = self._web_toolkit.search(
                 query=str(arguments.get("query", "")),
                 limit=int(arguments.get("limit", 5)),
             )
-            success = bool(search_payload.get("ok", False))
-            if not success:
-                await self._event_bus.publish(
-                    ToolRejected(
-                        session_id=sid,
-                        actor="tool_runtime",
-                        tool_name=tool_name,
-                        reason=str(search_payload.get("error", "web_search_failed")),
-                    )
-                )
-            await self._event_bus.publish(
-                ToolExecuted(
-                    session_id=sid,
-                    actor="tool_runtime",
-                    tool_name=tool_name,
-                    success=success,
-                )
+            success, output = await _execute_structured_payload_tool(
+                search_payload,
+                default_error="web_search_failed",
             )
-            self._control_plane.record_execution(action=executed_action, success=success)
-            return (
-                success,
-                checkpoint_id,
-                ToolOutputRecord(
-                    tool_name=str(tool_name),
-                    content=self._sanitize_tool_output_text(
-                        json.dumps(search_payload, ensure_ascii=True)
-                    ),
-                    taint_labels=label_tool_output(str(tool_name)),
-                ),
-            )
+            return success, checkpoint_id, output
 
         if tool_name == "web_fetch":
             raw_max_bytes = arguments.get("max_bytes")
@@ -1402,36 +1407,11 @@ class HandlerImplementation:
                 snapshot=bool(arguments.get("snapshot", False)),
                 max_bytes=max_bytes,
             )
-            success = bool(fetch_payload.get("ok", False))
-            if not success:
-                await self._event_bus.publish(
-                    ToolRejected(
-                        session_id=sid,
-                        actor="tool_runtime",
-                        tool_name=tool_name,
-                        reason=str(fetch_payload.get("error", "web_fetch_failed")),
-                    )
-                )
-            await self._event_bus.publish(
-                ToolExecuted(
-                    session_id=sid,
-                    actor="tool_runtime",
-                    tool_name=tool_name,
-                    success=success,
-                )
+            success, output = await _execute_structured_payload_tool(
+                fetch_payload,
+                default_error="web_fetch_failed",
             )
-            self._control_plane.record_execution(action=executed_action, success=success)
-            return (
-                success,
-                checkpoint_id,
-                ToolOutputRecord(
-                    tool_name=str(tool_name),
-                    content=self._sanitize_tool_output_text(
-                        json.dumps(fetch_payload, ensure_ascii=True)
-                    ),
-                    taint_labels=label_tool_output(str(tool_name)),
-                ),
-            )
+            return success, checkpoint_id, output
 
         if tool_name == "realitycheck.search":
             realitycheck_payload = self._realitycheck_toolkit.search(
@@ -1439,36 +1419,11 @@ class HandlerImplementation:
                 limit=int(arguments.get("limit", 5)),
                 mode=str(arguments.get("mode", "auto")),
             )
-            success = bool(realitycheck_payload.get("ok", False))
-            if not success:
-                await self._event_bus.publish(
-                    ToolRejected(
-                        session_id=sid,
-                        actor="tool_runtime",
-                        tool_name=tool_name,
-                        reason=str(realitycheck_payload.get("error", "realitycheck_search_failed")),
-                    )
-                )
-            await self._event_bus.publish(
-                ToolExecuted(
-                    session_id=sid,
-                    actor="tool_runtime",
-                    tool_name=tool_name,
-                    success=success,
-                )
+            success, output = await _execute_structured_payload_tool(
+                realitycheck_payload,
+                default_error="realitycheck_search_failed",
             )
-            self._control_plane.record_execution(action=executed_action, success=success)
-            return (
-                success,
-                checkpoint_id,
-                ToolOutputRecord(
-                    tool_name=str(tool_name),
-                    content=self._sanitize_tool_output_text(
-                        json.dumps(realitycheck_payload, ensure_ascii=True)
-                    ),
-                    taint_labels=label_tool_output(str(tool_name)),
-                ),
-            )
+            return success, checkpoint_id, output
 
         if tool_name == "realitycheck.read":
             raw_max_bytes = arguments.get("max_bytes")
@@ -1477,36 +1432,11 @@ class HandlerImplementation:
                 path=str(arguments.get("path", "")),
                 max_bytes=max_bytes,
             )
-            success = bool(realitycheck_payload.get("ok", False))
-            if not success:
-                await self._event_bus.publish(
-                    ToolRejected(
-                        session_id=sid,
-                        actor="tool_runtime",
-                        tool_name=tool_name,
-                        reason=str(realitycheck_payload.get("error", "realitycheck_read_failed")),
-                    )
-                )
-            await self._event_bus.publish(
-                ToolExecuted(
-                    session_id=sid,
-                    actor="tool_runtime",
-                    tool_name=tool_name,
-                    success=success,
-                )
+            success, output = await _execute_structured_payload_tool(
+                realitycheck_payload,
+                default_error="realitycheck_read_failed",
             )
-            self._control_plane.record_execution(action=executed_action, success=success)
-            return (
-                success,
-                checkpoint_id,
-                ToolOutputRecord(
-                    tool_name=str(tool_name),
-                    content=self._sanitize_tool_output_text(
-                        json.dumps(realitycheck_payload, ensure_ascii=True)
-                    ),
-                    taint_labels=label_tool_output(str(tool_name)),
-                ),
-            )
+            return success, checkpoint_id, output
 
         if tool_name == "fs.list":
             fs_list_payload = self._fs_git_toolkit.list_dir(
@@ -1514,36 +1444,11 @@ class HandlerImplementation:
                 recursive=bool(arguments.get("recursive", False)),
                 limit=int(arguments.get("limit", 200)),
             )
-            success = bool(fs_list_payload.get("ok", False))
-            if not success:
-                await self._event_bus.publish(
-                    ToolRejected(
-                        session_id=sid,
-                        actor="tool_runtime",
-                        tool_name=tool_name,
-                        reason=str(fs_list_payload.get("error", "fs_list_failed")),
-                    )
-                )
-            await self._event_bus.publish(
-                ToolExecuted(
-                    session_id=sid,
-                    actor="tool_runtime",
-                    tool_name=tool_name,
-                    success=success,
-                )
+            success, output = await _execute_structured_payload_tool(
+                fs_list_payload,
+                default_error="fs_list_failed",
             )
-            self._control_plane.record_execution(action=executed_action, success=success)
-            return (
-                success,
-                checkpoint_id,
-                ToolOutputRecord(
-                    tool_name=str(tool_name),
-                    content=self._sanitize_tool_output_text(
-                        json.dumps(fs_list_payload, ensure_ascii=True)
-                    ),
-                    taint_labels=label_tool_output(str(tool_name)),
-                ),
-            )
+            return success, checkpoint_id, output
 
         if tool_name == "fs.read":
             raw_max_bytes = arguments.get("max_bytes")
@@ -1552,36 +1457,11 @@ class HandlerImplementation:
                 path=str(arguments.get("path", "")),
                 max_bytes=max_bytes,
             )
-            success = bool(fs_read_payload.get("ok", False))
-            if not success:
-                await self._event_bus.publish(
-                    ToolRejected(
-                        session_id=sid,
-                        actor="tool_runtime",
-                        tool_name=tool_name,
-                        reason=str(fs_read_payload.get("error", "fs_read_failed")),
-                    )
-                )
-            await self._event_bus.publish(
-                ToolExecuted(
-                    session_id=sid,
-                    actor="tool_runtime",
-                    tool_name=tool_name,
-                    success=success,
-                )
+            success, output = await _execute_structured_payload_tool(
+                fs_read_payload,
+                default_error="fs_read_failed",
             )
-            self._control_plane.record_execution(action=executed_action, success=success)
-            return (
-                success,
-                checkpoint_id,
-                ToolOutputRecord(
-                    tool_name=str(tool_name),
-                    content=self._sanitize_tool_output_text(
-                        json.dumps(fs_read_payload, ensure_ascii=True)
-                    ),
-                    taint_labels=label_tool_output(str(tool_name)),
-                ),
-            )
+            return success, checkpoint_id, output
 
         if tool_name == "fs.write":
             fs_write_payload = self._fs_git_toolkit.write_file(
@@ -1589,71 +1469,21 @@ class HandlerImplementation:
                 content=str(arguments.get("content", "")),
                 confirm=bool(arguments.get("confirm", False)),
             )
-            success = bool(fs_write_payload.get("ok", False))
-            if not success:
-                await self._event_bus.publish(
-                    ToolRejected(
-                        session_id=sid,
-                        actor="tool_runtime",
-                        tool_name=tool_name,
-                        reason=str(fs_write_payload.get("error", "fs_write_failed")),
-                    )
-                )
-            await self._event_bus.publish(
-                ToolExecuted(
-                    session_id=sid,
-                    actor="tool_runtime",
-                    tool_name=tool_name,
-                    success=success,
-                )
+            success, output = await _execute_structured_payload_tool(
+                fs_write_payload,
+                default_error="fs_write_failed",
             )
-            self._control_plane.record_execution(action=executed_action, success=success)
-            return (
-                success,
-                checkpoint_id,
-                ToolOutputRecord(
-                    tool_name=str(tool_name),
-                    content=self._sanitize_tool_output_text(
-                        json.dumps(fs_write_payload, ensure_ascii=True)
-                    ),
-                    taint_labels=label_tool_output(str(tool_name)),
-                ),
-            )
+            return success, checkpoint_id, output
 
         if tool_name == "git.status":
             git_status_payload = self._fs_git_toolkit.git_status(
                 repo_path=str(arguments.get("repo_path", ".")),
             )
-            success = bool(git_status_payload.get("ok", False))
-            if not success:
-                await self._event_bus.publish(
-                    ToolRejected(
-                        session_id=sid,
-                        actor="tool_runtime",
-                        tool_name=tool_name,
-                        reason=str(git_status_payload.get("error", "git_status_failed")),
-                    )
-                )
-            await self._event_bus.publish(
-                ToolExecuted(
-                    session_id=sid,
-                    actor="tool_runtime",
-                    tool_name=tool_name,
-                    success=success,
-                )
+            success, output = await _execute_structured_payload_tool(
+                git_status_payload,
+                default_error="git_status_failed",
             )
-            self._control_plane.record_execution(action=executed_action, success=success)
-            return (
-                success,
-                checkpoint_id,
-                ToolOutputRecord(
-                    tool_name=str(tool_name),
-                    content=self._sanitize_tool_output_text(
-                        json.dumps(git_status_payload, ensure_ascii=True)
-                    ),
-                    taint_labels=label_tool_output(str(tool_name)),
-                ),
-            )
+            return success, checkpoint_id, output
 
         if tool_name == "git.diff":
             git_diff_payload = self._fs_git_toolkit.git_diff(
@@ -1661,72 +1491,22 @@ class HandlerImplementation:
                 ref=str(arguments.get("ref", "")),
                 max_lines=int(arguments.get("max_lines", 400)),
             )
-            success = bool(git_diff_payload.get("ok", False))
-            if not success:
-                await self._event_bus.publish(
-                    ToolRejected(
-                        session_id=sid,
-                        actor="tool_runtime",
-                        tool_name=tool_name,
-                        reason=str(git_diff_payload.get("error", "git_diff_failed")),
-                    )
-                )
-            await self._event_bus.publish(
-                ToolExecuted(
-                    session_id=sid,
-                    actor="tool_runtime",
-                    tool_name=tool_name,
-                    success=success,
-                )
+            success, output = await _execute_structured_payload_tool(
+                git_diff_payload,
+                default_error="git_diff_failed",
             )
-            self._control_plane.record_execution(action=executed_action, success=success)
-            return (
-                success,
-                checkpoint_id,
-                ToolOutputRecord(
-                    tool_name=str(tool_name),
-                    content=self._sanitize_tool_output_text(
-                        json.dumps(git_diff_payload, ensure_ascii=True)
-                    ),
-                    taint_labels=label_tool_output(str(tool_name)),
-                ),
-            )
+            return success, checkpoint_id, output
 
         if tool_name == "git.log":
             git_log_payload = self._fs_git_toolkit.git_log(
                 repo_path=str(arguments.get("repo_path", ".")),
                 limit=int(arguments.get("limit", 20)),
             )
-            success = bool(git_log_payload.get("ok", False))
-            if not success:
-                await self._event_bus.publish(
-                    ToolRejected(
-                        session_id=sid,
-                        actor="tool_runtime",
-                        tool_name=tool_name,
-                        reason=str(git_log_payload.get("error", "git_log_failed")),
-                    )
-                )
-            await self._event_bus.publish(
-                ToolExecuted(
-                    session_id=sid,
-                    actor="tool_runtime",
-                    tool_name=tool_name,
-                    success=success,
-                )
+            success, output = await _execute_structured_payload_tool(
+                git_log_payload,
+                default_error="git_log_failed",
             )
-            self._control_plane.record_execution(action=executed_action, success=success)
-            return (
-                success,
-                checkpoint_id,
-                ToolOutputRecord(
-                    tool_name=str(tool_name),
-                    content=self._sanitize_tool_output_text(
-                        json.dumps(git_log_payload, ensure_ascii=True)
-                    ),
-                    taint_labels=label_tool_output(str(tool_name)),
-                ),
-            )
+            return success, checkpoint_id, output
 
         if tool is None:
             await self._event_bus.publish(
@@ -3610,14 +3390,14 @@ class HandlerImplementation:
         if fmt == "csv":
             header = "id,key,value,created_at,user_verified,deleted_at"
             body = [
-                ",".join(
+                render_csv_row(
                     [
-                        str(item.get("id", "")),
-                        str(item.get("key", "")).replace(",", " "),
-                        str(item.get("value", "")).replace(",", " "),
-                        str(item.get("created_at", "")),
-                        str(item.get("user_verified", "")),
-                        str(item.get("deleted_at", "")),
+                        item.get("id", ""),
+                        item.get("key", ""),
+                        item.get("value", ""),
+                        item.get("created_at", ""),
+                        item.get("user_verified", ""),
+                        item.get("deleted_at", ""),
                     ]
                 )
                 for item in notes
@@ -3695,15 +3475,15 @@ class HandlerImplementation:
                 if not isinstance(value, dict):
                     value = {}
                 body.append(
-                    ",".join(
+                    render_csv_row(
                         [
-                            str(item.get("id", "")),
-                            str(value.get("title", "")).replace(",", " "),
-                            str(value.get("status", "")).replace(",", " "),
-                            str(value.get("due_date", "")).replace(",", " "),
-                            str(item.get("created_at", "")),
-                            str(item.get("user_verified", "")),
-                            str(item.get("deleted_at", "")),
+                            item.get("id", ""),
+                            value.get("title", ""),
+                            value.get("status", ""),
+                            value.get("due_date", ""),
+                            item.get("created_at", ""),
+                            item.get("user_verified", ""),
+                            item.get("deleted_at", ""),
                         ]
                     )
                 )

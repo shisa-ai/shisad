@@ -11,7 +11,9 @@ from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode, urljoin, urlparse
-from urllib.request import HTTPRedirectHandler, OpenerDirector, Request, build_opener
+from urllib.request import OpenerDirector, Request, build_opener
+
+from shisad.assistant.boundary_helpers import _host_matches, _NoRedirectHandler, _read_limited
 
 _MAX_SEARCH_BYTES = 2 * 1024 * 1024
 _MAX_REDIRECT_HOPS = 5
@@ -30,11 +32,6 @@ _BLOCKED_PAGE_HINTS: tuple[str, ...] = (
 )
 
 
-class _NoRedirectHandler(HTTPRedirectHandler):
-    def redirect_request(self, req, fp, code, msg, headers, newurl):  # type: ignore[no-untyped-def]
-        return None
-
-
 _NO_REDIRECT_OPENER: OpenerDirector = build_opener(_NoRedirectHandler())
 _REDIRECT_CODES = {301, 302, 303, 307, 308}
 
@@ -50,33 +47,6 @@ class _HttpResponsePayload:
 
 def _open_no_redirect(request: Request, *, timeout: float) -> Any:
     return _NO_REDIRECT_OPENER.open(request, timeout=timeout)
-
-
-def _host_matches(host: str, rule: str) -> bool:
-    candidate = rule.strip().lower()
-    if not candidate:
-        return False
-    value = host.strip().lower()
-    if not value:
-        return False
-    if candidate.startswith("*."):
-        return value.endswith(candidate[1:])
-    return value == candidate
-
-
-def _read_limited(payload: Any, *, limit: int) -> tuple[bytes, bool]:
-    chunks: list[bytes] = []
-    remaining = max(1, limit)
-    truncated = False
-    while remaining > 0:
-        chunk = payload.read(min(16384, remaining))
-        if not chunk:
-            break
-        chunks.append(chunk)
-        remaining -= len(chunk)
-    if payload.read(1):
-        truncated = True
-    return b"".join(chunks), truncated
 
 
 @dataclass(slots=True)
