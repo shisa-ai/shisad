@@ -127,7 +127,11 @@ class MemoryImplMixin(HandlerMixinBase):
 
     async def do_note_export(self, params: Mapping[str, Any]) -> dict[str, Any]:
         fmt = str(params.get("format", "json"))
-        rows = self._memory_manager.list_entries(include_deleted=True, limit=2000)
+        rows = self._memory_manager.list_entries(
+            entry_type="note",
+            include_deleted=True,
+            limit=2000,
+        )
         notes = [entry.model_dump(mode="json") for entry in rows if str(entry.entry_type) == "note"]
         if fmt == "json":
             return {"format": "json", "data": json.dumps(notes, indent=2)}
@@ -203,7 +207,11 @@ class MemoryImplMixin(HandlerMixinBase):
 
     async def do_todo_export(self, params: Mapping[str, Any]) -> dict[str, Any]:
         fmt = str(params.get("format", "json"))
-        rows = self._memory_manager.list_entries(include_deleted=True, limit=2000)
+        rows = self._memory_manager.list_entries(
+            entry_type="todo",
+            include_deleted=True,
+            limit=2000,
+        )
         todos = [entry.model_dump(mode="json") for entry in rows if str(entry.entry_type) == "todo"]
         if fmt == "json":
             return {"format": "json", "data": json.dumps(todos, indent=2)}
