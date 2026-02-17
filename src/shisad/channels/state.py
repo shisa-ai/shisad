@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 from collections import deque
-from contextlib import suppress
 from pathlib import Path
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 
 class ChannelStateStore:
@@ -27,18 +29,19 @@ class ChannelStateStore:
         self._seen_ids: dict[str, deque[str]] = {}
         self._seen_id_sets: dict[str, set[str]] = {}
         self._journal_appends_since_compaction: dict[str, int] = {}
+        self._compaction_warning_logged: set[str] = set()
         self._loaded_channels: set[str] = set()
 
     def has_seen(self, *, channel: str, message_id: str) -> bool:
-        msg_id = message_id.strip()
-        if not msg_id:
+        msg_id = self._normalize_message_id(message_id)
+        if msg_id is None:
             return False
         self._ensure_loaded(channel)
         return msg_id in self._seen_id_sets[channel]
 
     def mark_seen(self, *, channel: str, message_id: str) -> None:
-        msg_id = message_id.strip()
-        if not msg_id:
+        msg_id = self._normalize_message_id(message_id)
+        if msg_id is None:
             return
         self._ensure_loaded(channel)
         id_set = self._seen_id_sets[channel]
@@ -50,8 +53,7 @@ class ChannelStateStore:
         appended = self._journal_appends_since_compaction.get(channel, 0) + 1
         self._journal_appends_since_compaction[channel] = appended
         if appended >= self._journal_compact_every:
-            with suppress(OSError):
-                self._compact_channel(channel)
+            self._attempt_compaction(channel, trigger="mark_seen")
 
     def is_replay(self, *, channel: str, message_id: str) -> bool:
         if self.has_seen(channel=channel, message_id=message_id):
@@ -91,8 +93,7 @@ class ChannelStateStore:
         self._loaded_channels.add(channel)
 
         if journal_lines >= self._journal_compact_every:
-            with suppress(OSError):
-                self._compact_channel(channel)
+            self._attempt_compaction(channel, trigger="load")
 
     def _load_snapshot_ids(self, path: Path) -> list[str]:
         if not path.exists():
@@ -106,7 +107,14 @@ class ChannelStateStore:
         raw = payload.get("seen_message_ids", [])
         if not isinstance(raw, list):
             return []
-        return [item.strip() for item in raw if isinstance(item, str) and item.strip()]
+        normalized: list[str] = []
+        for item in raw:
+            if not isinstance(item, str):
+                continue
+            value = self._normalize_message_id(item)
+            if value is not None:
+                normalized.append(value)
+        return normalized
 
     def _load_journal_ids(self, path: Path) -> list[str]:
         if not path.exists():
@@ -115,7 +123,22 @@ class ChannelStateStore:
             lines = path.read_text(encoding="utf-8").splitlines()
         except (OSError, UnicodeError):
             return []
-        return [line.strip() for line in lines if line.strip()]
+        ids: list[str] = []
+        for line in lines:
+            token = line.strip()
+            if not token:
+                continue
+            candidate: object = token
+            try:
+                candidate = json.loads(token)
+            except json.JSONDecodeError:
+                candidate = token
+            if not isinstance(candidate, str):
+                continue
+            value = self._normalize_message_id(candidate)
+            if value is not None:
+                ids.append(value)
+        return ids
 
     def _record_seen_id(self, ids: deque[str], id_set: set[str], message_id: str) -> None:
         msg_id = message_id.strip()
@@ -129,10 +152,28 @@ class ChannelStateStore:
 
     def _append_journal_entry(self, channel: str, message_id: str) -> None:
         path = self._journal_path(channel)
+        encoded = json.dumps(message_id, ensure_ascii=True)
         with path.open("a", encoding="utf-8") as handle:
-            handle.write(f"{message_id}\n")
+            handle.write(f"{encoded}\n")
             handle.flush()
             os.fsync(handle.fileno())
+
+    def _attempt_compaction(self, channel: str, *, trigger: str) -> None:
+        try:
+            self._compact_channel(channel)
+        except OSError as exc:
+            if channel in self._compaction_warning_logged:
+                return
+            logger.warning(
+                "Channel replay-state compaction failed; deferring snapshot update "
+                "(channel=%s, trigger=%s, error=%s)",
+                channel,
+                trigger,
+                exc.__class__.__name__,
+            )
+            self._compaction_warning_logged.add(channel)
+        else:
+            self._compaction_warning_logged.discard(channel)
 
     def _compact_channel(self, channel: str) -> None:
         self._persist_snapshot(channel)
@@ -175,3 +216,10 @@ class ChannelStateStore:
         if not safe:
             safe = "unknown"
         return self._root_dir / f"{safe}.state.journal"
+
+    @staticmethod
+    def _normalize_message_id(value: str) -> str | None:
+        message_id = value.strip()
+        if not message_id:
+            return None
+        return message_id

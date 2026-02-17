@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-import time
+from collections import deque
 from types import SimpleNamespace
 
 import pytest
@@ -185,7 +185,7 @@ def test_m4_channel_state_store_persists_journal_before_compaction(tmp_path) -> 
 
     journal = tmp_path / "state" / "discord.state.journal"
     assert journal.exists()
-    assert "m1" in journal.read_text(encoding="utf-8")
+    assert '"m1"' in journal.read_text(encoding="utf-8")
 
     reloaded = ChannelStateStore(
         tmp_path / "state",
@@ -227,12 +227,24 @@ def test_m4_channel_state_store_has_seen_is_bounded_for_full_window(tmp_path) ->
     for index in range(2048):
         store.mark_seen(channel="telegram", message_id=f"msg-{index}")
 
-    started = time.perf_counter()
+    class _ExplodingContainsDeque(deque[str]):
+        def __contains__(self, _value: object) -> bool:  # pragma: no cover - guard path
+            raise AssertionError("has_seen regressed to linear deque membership")
+
+    store._seen_ids["telegram"] = _ExplodingContainsDeque(store._seen_ids["telegram"])
     for _ in range(25_000):
         assert store.has_seen(channel="telegram", message_id="msg-2047") is True
-    elapsed = time.perf_counter() - started
+    assert store.has_seen(channel="telegram", message_id="msg-missing") is False
 
-    assert elapsed < 0.35
+
+def test_m4_channel_state_store_journal_roundtrip_preserves_multiline_ids(tmp_path) -> None:
+    store = ChannelStateStore(tmp_path / "state", max_seen_ids=64, journal_compact_every=64)
+    message_id = "id\nsub-id"
+    store.mark_seen(channel="discord", message_id=message_id)
+
+    reloaded = ChannelStateStore(tmp_path / "state", max_seen_ids=64, journal_compact_every=64)
+    assert reloaded.has_seen(channel="discord", message_id=message_id) is True
+    assert reloaded.has_seen(channel="discord", message_id="sub-id") is False
 
 
 @pytest.mark.asyncio
