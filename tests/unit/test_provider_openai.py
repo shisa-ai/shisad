@@ -4,10 +4,15 @@ from __future__ import annotations
 
 import json
 from typing import Any
+from urllib.error import HTTPError
 
 import pytest
 
-from shisad.core.providers.base import Message, OpenAICompatibleProvider
+from shisad.core.providers.base import (
+    Message,
+    OpenAICompatibleProvider,
+    _validate_runtime_endpoint_url,
+)
 
 
 class _FakeHttpResponse:
@@ -30,7 +35,7 @@ async def test_openai_compatible_complete_uses_base_url_headers_and_model(
 ) -> None:
     captured: dict[str, Any] = {}
 
-    def fake_urlopen(request: Any, timeout: float = 0.0) -> _FakeHttpResponse:
+    def fake_open(request: Any, timeout: float = 0.0) -> _FakeHttpResponse:
         captured["url"] = request.full_url
         captured["headers"] = dict(request.header_items())
         captured["payload"] = json.loads(request.data.decode("utf-8"))
@@ -47,7 +52,7 @@ async def test_openai_compatible_complete_uses_base_url_headers_and_model(
             }
         )
 
-    monkeypatch.setattr("shisad.core.providers.base.request.urlopen", fake_urlopen)
+    monkeypatch.setattr("shisad.core.providers.base._open_no_redirect", fake_open)
 
     provider = OpenAICompatibleProvider(
         base_url="https://api.example.com/v1",
@@ -73,7 +78,7 @@ async def test_openai_compatible_complete_uses_base_url_headers_and_model(
 async def test_openai_compatible_embeddings_maps_openai_response(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    def fake_urlopen(request: Any, timeout: float = 0.0) -> _FakeHttpResponse:
+    def fake_open(request: Any, timeout: float = 0.0) -> _FakeHttpResponse:
         _ = (request, timeout)
         return _FakeHttpResponse(
             {
@@ -86,7 +91,7 @@ async def test_openai_compatible_embeddings_maps_openai_response(
             }
         )
 
-    monkeypatch.setattr("shisad.core.providers.base.request.urlopen", fake_urlopen)
+    monkeypatch.setattr("shisad.core.providers.base._open_no_redirect", fake_open)
 
     provider = OpenAICompatibleProvider(
         base_url="https://api.example.com/v1",
@@ -103,7 +108,7 @@ async def test_openai_compatible_embeddings_maps_openai_response(
 async def test_openai_compatible_complete_normalizes_null_content(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    def fake_urlopen(request: Any, timeout: float = 0.0) -> _FakeHttpResponse:
+    def fake_open(request: Any, timeout: float = 0.0) -> _FakeHttpResponse:
         _ = (request, timeout)
         return _FakeHttpResponse(
             {
@@ -116,7 +121,7 @@ async def test_openai_compatible_complete_normalizes_null_content(
             }
         )
 
-    monkeypatch.setattr("shisad.core.providers.base.request.urlopen", fake_urlopen)
+    monkeypatch.setattr("shisad.core.providers.base._open_no_redirect", fake_open)
 
     provider = OpenAICompatibleProvider(
         base_url="https://api.example.com/v1",
@@ -124,3 +129,93 @@ async def test_openai_compatible_complete_normalizes_null_content(
     )
     response = await provider.complete([Message(role="user", content="Hi")])
     assert response.message.content == ""
+
+
+@pytest.mark.asyncio
+async def test_openai_compatible_complete_validates_redirect_hops(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+
+    def fake_open(request: Any, timeout: float = 0.0) -> _FakeHttpResponse:
+        _ = timeout
+        calls.append(str(request.full_url))
+        if len(calls) == 1:
+            raise HTTPError(
+                url=str(request.full_url),
+                code=307,
+                msg="Temporary Redirect",
+                hdrs={"Location": "https://api.example.com/v1/chat/completions?region=us"},
+                fp=None,
+            )
+        return _FakeHttpResponse(
+            {
+                "choices": [
+                    {
+                        "message": {"role": "assistant", "content": "redirect-ok"},
+                        "finish_reason": "stop",
+                    }
+                ],
+                "usage": {"total_tokens": 1},
+            }
+        )
+
+    validations: list[str] = []
+    monkeypatch.setattr("shisad.core.providers.base._open_no_redirect", fake_open)
+    monkeypatch.setattr(
+        "shisad.core.providers.base._validate_runtime_endpoint_url",
+        lambda url, **kwargs: validations.append(str(url)) or [],
+    )
+
+    provider = OpenAICompatibleProvider(
+        base_url="https://api.example.com/v1",
+        model_id="gpt-test",
+    )
+    response = await provider.complete([Message(role="user", content="Hi")])
+    assert response.message.content == "redirect-ok"
+    assert calls[0].endswith("/chat/completions")
+    assert calls[1].startswith("https://api.example.com/v1/chat/completions")
+    assert validations[0].endswith("/chat/completions")
+    assert validations[1].startswith("https://api.example.com/v1/chat/completions")
+
+
+@pytest.mark.asyncio
+async def test_openai_compatible_complete_blocks_redirect_to_private_range(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_open(request: Any, timeout: float = 0.0) -> _FakeHttpResponse:
+        _ = timeout
+        raise HTTPError(
+            url=str(request.full_url),
+            code=302,
+            msg="Found",
+            hdrs={"Location": "http://169.254.169.254/latest/meta-data"},
+            fp=None,
+        )
+
+    monkeypatch.setattr("shisad.core.providers.base._open_no_redirect", fake_open)
+    monkeypatch.setattr(
+        "shisad.core.providers.base._validate_runtime_endpoint_url",
+        lambda url, **kwargs: (  # type: ignore[no-any-return]
+            ["Endpoint in private range"] if "169.254.169.254" in str(url) else []
+        ),
+    )
+    provider = OpenAICompatibleProvider(
+        base_url="https://api.example.com/v1",
+        model_id="gpt-test",
+    )
+    with pytest.raises(RuntimeError, match="Provider redirect blocked"):
+        await provider.complete([Message(role="user", content="Hi")])
+
+
+def test_runtime_endpoint_validation_blocks_private_resolved_hostname(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "shisad.core.providers.base.socket.getaddrinfo",
+        lambda *args, **kwargs: [  # type: ignore[no-any-return]
+            (0, 0, 0, "", ("10.0.0.5", 443)),
+        ],
+    )
+    errors = _validate_runtime_endpoint_url("https://planner.example.com/v1")
+    assert any("private range" in error.lower() for error in errors)

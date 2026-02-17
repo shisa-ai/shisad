@@ -184,8 +184,6 @@ class Planner:
             marker in normalized
             for marker in (
                 "formatting error",
-                "json",
-                "schema",
                 "invalid format",
                 "could not parse",
                 "planning component",

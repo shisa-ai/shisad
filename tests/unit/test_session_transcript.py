@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+import stat
 from pathlib import Path
 
 import pytest
@@ -86,6 +88,23 @@ def test_m1_transcript_store_uses_blob_reference_for_large_content(tmp_path: Pat
 
     assert entry.blob_ref is not None
     assert store.read_blob(entry.blob_ref) == payload
+
+
+def test_m6_transcript_store_writes_secure_permissions(tmp_path: Path) -> None:
+    store = TranscriptStore(tmp_path / "sessions", blob_threshold_bytes=16)
+    entry = store.append(
+        SessionId("s1"),
+        role="assistant",
+        content="x" * 64,
+        taint_labels=set(),
+    )
+    transcript_path = tmp_path / "sessions" / "transcripts" / "s1.jsonl"
+    blob_path = tmp_path / "sessions" / "blobs" / f"{entry.blob_ref}.txt"
+
+    transcript_mode = stat.S_IMODE(os.stat(transcript_path).st_mode)
+    blob_mode = stat.S_IMODE(os.stat(blob_path).st_mode)
+    assert transcript_mode == 0o600
+    assert blob_mode == 0o600
 
 
 @pytest.mark.asyncio

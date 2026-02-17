@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from unittest.mock import AsyncMock
 
@@ -278,14 +279,46 @@ async def test_chat_app_recovery_sets_reconnected_flag() -> None:
     assert app._reconnected
 
 
-def test_chat_app_subtitle_does_not_show_session_id() -> None:
-    """The sub_title should say 'connected', not show a hex session ID."""
+@pytest.mark.asyncio
+async def test_chat_app_recovers_from_session_expired_variant() -> None:
+    """Recovery should match RPC shape/code, not a single literal phrase."""
+    app = ChatApp(
+        socket_path=Path("/tmp/test.sock"),
+        user_id="ops",
+        workspace_id="prod",
+        session_id="stale-id",
+    )
+
+    mock_client = AsyncMock()
+    mock_client.call = AsyncMock(
+        side_effect=[
+            RuntimeError("RPC error -32602: Session no longer exists: stale-id"),
+            {"session_id": "new-id"},
+            {"response": "Recovered"},
+        ]
+    )
+
+    result = await app._send_message(mock_client, "hello")
+    assert result == "Recovered"
+    assert app._session_id == "new-id"
+    assert app._reconnected is True
+
+
+@pytest.mark.asyncio
+async def test_chat_app_subtitle_shows_connected_after_mount() -> None:
+    """Mounted app should set a stable non-session-id subtitle."""
     app = ChatApp(
         socket_path=Path("/tmp/test.sock"),
         user_id="ops",
         workspace_id="default",
     )
-    # The session ID should not appear in any user-facing title
-    app._session_id = "ff0225da82f242e187e6fbf01de320b5"
-    # We test the format helper that will be used
-    assert "ff0225da" not in "connected"
+    fake_client = AsyncMock()
+    app._connect = AsyncMock(return_value=fake_client)  # type: ignore[method-assign]
+    app._ensure_session = AsyncMock()  # type: ignore[method-assign]
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await asyncio.sleep(0)
+
+    assert app.sub_title == "connected"
+    assert "ff0225da" not in app.sub_title

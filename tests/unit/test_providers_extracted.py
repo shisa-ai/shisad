@@ -56,8 +56,17 @@ async def test_routed_openai_provider_uses_component_routes(
     created: list[tuple[str, str]] = []
 
     class _FakeOpenAIProvider:
-        def __init__(self, *, base_url: str, model_id: str, headers: dict[str, str]) -> None:
-            _ = headers
+        def __init__(
+            self,
+            *,
+            base_url: str,
+            model_id: str,
+            headers: dict[str, str],
+            allow_http_localhost: bool = True,
+            block_private_ranges: bool = True,
+            endpoint_allowlist: list[str] | None = None,
+        ) -> None:
+            _ = (headers, allow_http_localhost, block_private_ranges, endpoint_allowlist)
             self._base_url = base_url
             self._model_id = model_id
             created.append((base_url, model_id))
@@ -217,8 +226,24 @@ async def test_routed_openai_provider_fallbacks(monkeypatch: pytest.MonkeyPatch)
     monkeypatch.setenv("SHISAD_MODEL_MONITOR_BASE_URL", "https://monitor.example.com/v1")
 
     class _ExplodingOpenAIProvider:
-        def __init__(self, *, base_url: str, model_id: str, headers: dict[str, str]) -> None:
-            _ = (base_url, model_id, headers)
+        def __init__(
+            self,
+            *,
+            base_url: str,
+            model_id: str,
+            headers: dict[str, str],
+            allow_http_localhost: bool = True,
+            block_private_ranges: bool = True,
+            endpoint_allowlist: list[str] | None = None,
+        ) -> None:
+            _ = (
+                base_url,
+                model_id,
+                headers,
+                allow_http_localhost,
+                block_private_ranges,
+                endpoint_allowlist,
+            )
 
         async def complete(
             self,

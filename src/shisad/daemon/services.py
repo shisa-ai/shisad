@@ -283,6 +283,9 @@ class DaemonServices:
                     router=router,
                     api_key=shisa_api_key,
                     fallback=local_fallback,
+                    allow_http_localhost=model_config.allow_http_localhost,
+                    block_private_ranges=model_config.block_private_ranges,
+                    endpoint_allowlist=model_config.endpoint_allowlist or None,
                 )
             if isinstance(provider, RoutedOpenAIProvider):
                 monitor_provider = MonitorProviderAdapter(provider)

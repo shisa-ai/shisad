@@ -246,14 +246,14 @@ def _build_planner_tool_context(
     ]
     if not enabled_tools:
         lines.append("Enabled tools: none")
-        if trust_level in {"trusted", "verified", "internal"} and disabled_tools:
+        if _is_trusted_level(trust_level) and disabled_tools:
             lines.append("Unavailable tools in this session:")
             for tool, missing in disabled_tools:
                 lines.append(f"- {tool.name}: blocked (missing: {', '.join(missing)})")
         lines.append("If no tool is needed, respond conversationally with actions=[].")
         return "\n".join(lines)
 
-    if trust_level in {"trusted", "verified", "internal"}:
+    if _is_trusted_level(trust_level):
         lines.append("Enabled tools:")
         for tool in enabled_tools:
             caps = sorted(cap.value for cap in tool.capabilities_required)
@@ -283,6 +283,10 @@ def _should_checkpoint(trigger: str, tool: ToolDefinition | None) -> bool:
 
 def _short_hash(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()[:16]
+
+
+def _is_trusted_level(trust_level: str) -> bool:
+    return trust_level.strip().lower() in {"trusted", "verified", "internal"}
 
 
 def _risk_tier_from_score(score: float) -> RiskTier:
@@ -1988,6 +1992,7 @@ class HandlerImplementation:
                     target = None
                 if target is not None:
                     metadata["delivery_target"] = target.model_dump(mode="json")
+        trust_level = trust_level.strip().lower() or "untrusted"
         if session_mode == SessionMode.ADMIN_CLEANROOM:
             if is_internal_ingress:
                 raise ValueError("admin_cleanroom mode is not available for channel ingress")
@@ -2046,7 +2051,8 @@ class HandlerImplementation:
             override = str(params.get("trust_level", trust_level)).strip()
             if override:
                 trust_level = override
-        trusted_input = trust_level.lower().strip() in {"trusted", "verified", "internal"}
+        trust_level = trust_level.strip().lower() or "untrusted"
+        trusted_input = _is_trusted_level(trust_level)
 
         if is_internal_ingress and isinstance(firewall_result_payload, dict):
             firewall_result = FirewallResult.model_validate(firewall_result_payload)
@@ -2595,11 +2601,16 @@ class HandlerImplementation:
         if lockdown_notice:
             response_text = f"{response_text}\n\n[LOCKDOWN NOTICE] {lockdown_notice}"
 
+        response_taint_labels = set(context.taint_labels)
+        for tool_output in executed_tool_outputs:
+            response_taint_labels.update(tool_output.taint_labels)
+        context.taint_labels = response_taint_labels
+
         self._transcript_store.append(
             sid,
             role="assistant",
             content=response_text,
-            taint_labels=set(),
+            taint_labels=response_taint_labels,
             metadata=(
                 {"delivery_target": delivery_target.model_dump(mode="json")}
                 if delivery_target is not None
@@ -2631,7 +2642,7 @@ class HandlerImplementation:
                     model_id=model_id,
                     risk_score=firewall_result.risk_score,
                     trust_level=trust_level,
-                    taint_labels=[label.value for label in context.taint_labels],
+                    taint_labels=[label.value for label in response_taint_labels],
                     duration_ms=(time.monotonic() - trace_t0) * 1000.0,
                 ))
             except (OSError, RuntimeError, TypeError, ValueError):
@@ -2646,7 +2657,7 @@ class HandlerImplementation:
                 blocked_actions=rejected + pending_confirmation,
                 executed_actions=executed,
                 trust_level=trust_level,
-                taint_labels=sorted(label.value for label in context.taint_labels),
+                taint_labels=sorted(label.value for label in response_taint_labels),
                 risk_score=firewall_result.risk_score,
             )
         )

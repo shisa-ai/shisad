@@ -8,18 +8,22 @@ configurable prompt logging policy.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import fnmatch
 import hashlib
 import ipaddress
 import json
 import logging
+import socket
 from typing import Any, Protocol
 from urllib import error, request
-from urllib.parse import urlparse, urlunparse
+from urllib.parse import urljoin, urlparse, urlunparse
 
 from pydantic import BaseModel, Field
 
 logger = logging.getLogger(__name__)
+_PROVIDER_REDIRECT_CODES: set[int] = {301, 302, 303, 307, 308}
+_PROVIDER_MAX_REDIRECTS = 5
 
 
 # --- Provider protocol ---
@@ -85,11 +89,17 @@ class OpenAICompatibleProvider:
         model_id: str,
         headers: dict[str, str] | None = None,
         timeout_seconds: float = 30.0,
+        allow_http_localhost: bool = True,
+        block_private_ranges: bool = True,
+        endpoint_allowlist: list[str] | None = None,
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._model_id = model_id
         self._headers = headers or {}
         self._timeout_seconds = timeout_seconds
+        self._allow_http_localhost = allow_http_localhost
+        self._block_private_ranges = block_private_ranges
+        self._endpoint_allowlist = list(endpoint_allowlist or [])
 
     async def complete(
         self,
@@ -214,26 +224,68 @@ class OpenAICompatibleProvider:
             "Accept": "application/json",
             **self._headers,
         }
-        req = request.Request(url=url, data=body, headers=headers, method="POST")
-
-        try:
-            with request.urlopen(req, timeout=self._timeout_seconds) as response:
-                raw = response.read().decode("utf-8")
-        except error.HTTPError as exc:
-            details = exc.read().decode("utf-8", errors="replace")
-            raise RuntimeError(
-                f"Provider HTTP error {exc.code} for {url}: {details[:300]}"
-            ) from exc
-        except error.URLError as exc:
-            raise RuntimeError(f"Provider request failed for {url}: {exc.reason}") from exc
+        active_url = url
+        redirect_count = 0
+        while True:
+            validation_errors = _validate_runtime_endpoint_url(
+                active_url,
+                allow_http_localhost=self._allow_http_localhost,
+                block_private_ranges=self._block_private_ranges,
+                endpoint_allowlist=self._endpoint_allowlist or None,
+            )
+            if validation_errors:
+                raise RuntimeError(
+                    f"Provider endpoint blocked for {active_url}: {validation_errors[0]}"
+                )
+            req = request.Request(url=active_url, data=body, headers=headers, method="POST")
+            try:
+                with _open_no_redirect(req, timeout=self._timeout_seconds) as response:
+                    raw = response.read().decode("utf-8")
+                break
+            except error.HTTPError as exc:
+                if exc.code in _PROVIDER_REDIRECT_CODES:
+                    location = ""
+                    if exc.headers is not None:
+                        location = str(exc.headers.get("Location", "")).strip()
+                    if not location:
+                        raise RuntimeError(
+                            f"Provider redirect blocked for {active_url}: missing Location header"
+                        ) from exc
+                    redirect_count += 1
+                    if redirect_count > _PROVIDER_MAX_REDIRECTS:
+                        raise RuntimeError(
+                            f"Provider redirect blocked for {active_url}: too many redirects"
+                        ) from exc
+                    redirected_url = urljoin(active_url, location)
+                    redirect_errors = _validate_runtime_endpoint_url(
+                        redirected_url,
+                        allow_http_localhost=self._allow_http_localhost,
+                        block_private_ranges=self._block_private_ranges,
+                        endpoint_allowlist=self._endpoint_allowlist or None,
+                    )
+                    if redirect_errors:
+                        raise RuntimeError(
+                            f"Provider redirect blocked for {redirected_url}: "
+                            f"{redirect_errors[0]}"
+                        ) from exc
+                    active_url = redirected_url
+                    continue
+                details = _read_http_error_details(exc)
+                raise RuntimeError(
+                    f"Provider HTTP error {exc.code} for {active_url}: {details[:300]}"
+                ) from exc
+            except error.URLError as exc:
+                raise RuntimeError(
+                    f"Provider request failed for {active_url}: {exc.reason}"
+                ) from exc
 
         try:
             parsed = json.loads(raw)
         except json.JSONDecodeError as exc:
-            raise RuntimeError(f"Provider returned non-JSON response for {url}") from exc
+            raise RuntimeError(f"Provider returned non-JSON response for {active_url}") from exc
 
         if not isinstance(parsed, dict):
-            raise RuntimeError(f"Provider response for {url} must be a JSON object")
+            raise RuntimeError(f"Provider response for {active_url} must be a JSON object")
         return parsed
 
 
@@ -281,7 +333,7 @@ def validate_endpoint(
         if not is_localhost or not allow_http_localhost:
             errors.append(f"HTTP not allowed for non-localhost endpoint: {hostname}")
 
-    # Private range check (SSRF protection)
+    # Private range check for IP literals (hostname checks happen at runtime request time).
     if block_private_ranges and hostname not in ("localhost",):
         try:
             addr = ipaddress.ip_address(hostname)
@@ -290,7 +342,7 @@ def validate_endpoint(
                     errors.append(f"Endpoint in private range: {hostname} ({network})")
                     break
         except ValueError:
-            pass  # Not an IP literal, hostname will be resolved later
+            pass
 
     # Explicit endpoint allowlist (trusted config)
     if endpoint_allowlist and not _matches_endpoint_allowlist(parsed, endpoint_allowlist):
@@ -361,3 +413,86 @@ def log_prompt_metadata(
         ).hexdigest()[:16]
 
     return metadata
+
+
+class _NoRedirectHandler(request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # type: ignore[no-untyped-def]
+        return None
+
+
+_NO_REDIRECT_OPENER = request.build_opener(_NoRedirectHandler)
+
+
+def _open_no_redirect(req: request.Request, *, timeout: float) -> Any:
+    return _NO_REDIRECT_OPENER.open(req, timeout=timeout)
+
+
+def _read_http_error_details(exc: error.HTTPError) -> str:
+    with contextlib.suppress(OSError, ValueError, TypeError):
+        body = exc.read().decode("utf-8", errors="replace")
+        if body:
+            return body
+    return ""
+
+
+def _validate_runtime_endpoint_url(
+    url: str,
+    *,
+    allow_http_localhost: bool = True,
+    block_private_ranges: bool = True,
+    endpoint_allowlist: list[str] | None = None,
+) -> list[str]:
+    errors = validate_endpoint(
+        url,
+        allow_http_localhost=allow_http_localhost,
+        block_private_ranges=block_private_ranges,
+        endpoint_allowlist=endpoint_allowlist,
+    )
+    parsed = urlparse(url)
+    hostname = (parsed.hostname or "").strip()
+    if (
+        not block_private_ranges
+        or not hostname
+        or hostname in {"localhost"}
+    ):
+        return errors
+
+    if _is_ip_literal(hostname):
+        return errors
+
+    try:
+        records = socket.getaddrinfo(hostname, parsed.port or 443, type=socket.SOCK_STREAM)
+    except (OSError, socket.gaierror) as exc:
+        logger.debug("Endpoint hostname resolution skipped for %s: %s", hostname, exc)
+        return errors
+
+    seen_addresses: set[str] = set()
+    for record in records:
+        sockaddr = record[4]
+        if not isinstance(sockaddr, tuple) or not sockaddr:
+            continue
+        address = str(sockaddr[0])
+        if address in seen_addresses:
+            continue
+        seen_addresses.add(address)
+        if _address_in_private_ranges(address):
+            errors.append(
+                f"Endpoint resolves to private range: {hostname} ({address})"
+            )
+            break
+    return errors
+
+
+def _is_ip_literal(hostname: str) -> bool:
+    with contextlib.suppress(ValueError):
+        ipaddress.ip_address(hostname)
+        return True
+    return False
+
+
+def _address_in_private_ranges(address: str) -> bool:
+    try:
+        ip_addr = ipaddress.ip_address(address)
+    except ValueError:
+        return False
+    return any(ip_addr in network for network in _PRIVATE_NETWORKS)

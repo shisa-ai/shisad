@@ -10,6 +10,14 @@ import pytest
 
 from shisad.core.api.transport import ControlClient
 from shisad.core.config import DaemonConfig
+from shisad.core.planner import (
+    ActionProposal,
+    EvaluatedProposal,
+    Planner,
+    PlannerOutput,
+    PlannerResult,
+)
+from shisad.core.types import PEPDecision, PEPDecisionKind, ToolName
 from shisad.daemon.runner import run_daemon
 
 
@@ -34,13 +42,14 @@ async def _start_daemon(
     tmp_path: Path,
     **kwargs: object,
 ) -> tuple[asyncio.Task[None], ControlClient, DaemonConfig]:
-    config = DaemonConfig(
-        data_dir=tmp_path / "data",
-        socket_path=tmp_path / "control.sock",
-        policy_path=tmp_path / "policy.yaml",
-        log_level="INFO",
-        **kwargs,
-    )
+    config_kwargs: dict[str, object] = {
+        "data_dir": tmp_path / "data",
+        "socket_path": tmp_path / "control.sock",
+        "policy_path": tmp_path / "policy.yaml",
+        "log_level": "INFO",
+    }
+    config_kwargs.update(kwargs)
+    config = DaemonConfig(**config_kwargs)
     daemon_task = asyncio.create_task(run_daemon(config))
     client = ControlClient(config.socket_path)
     await _wait_for_socket(config.socket_path)
@@ -60,14 +69,85 @@ async def test_m4_cleanroom_mode_transition_rejects_tainted_history(
     model_env: None,
     tmp_path: Path,
 ) -> None:
-    daemon_task, client, _config = await _start_daemon(tmp_path)
+    daemon_task, client, config = await _start_daemon(tmp_path)
     try:
+        # Integration harness must stay hermetic even if operator channel env is set.
+        assert config.discord_enabled is False
+        assert config.telegram_enabled is False
         created = await client.call("session.create", {"channel": "cli", "user_id": "alice"})
         sid = created["session_id"]
         _ = await client.call(
             "session.message",
             {"session_id": sid, "content": "api key sk-ABCDEFGHIJKLMNOPQRSTUV123456"},
         )
+        mode_update = await client.call(
+            "session.set_mode",
+            {"session_id": sid, "mode": "admin_cleanroom"},
+        )
+        assert mode_update["changed"] is False
+        assert mode_update["reason"] == "tainted_transcript_history"
+    finally:
+        await _shutdown(daemon_task, client)
+
+
+@pytest.mark.asyncio
+async def test_m6_cleanroom_transition_rejects_tool_output_tainted_history(
+    model_env: None,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _propose_web_fetch(
+        self: Planner,
+        user_content: str,
+        context: object,
+        *,
+        tools: list[dict[str, object]] | None = None,
+    ) -> PlannerResult:
+        _ = (self, user_content, context, tools)
+        proposal = ActionProposal(
+            action_id="a1",
+            tool_name=ToolName("retrieve_rag"),
+            arguments={"query": "evidence", "limit": 1},
+            reasoning="Retrieve evidence from memory index.",
+            data_sources=[],
+        )
+        return PlannerResult(
+            output=PlannerOutput(assistant_response="Fetched.", actions=[proposal]),
+            evaluated=[
+                EvaluatedProposal(
+                    proposal=proposal,
+                    decision=PEPDecision(
+                        kind=PEPDecisionKind.ALLOW,
+                        reason="test-allow",
+                        tool_name=ToolName("retrieve_rag"),
+                        risk_score=0.1,
+                    ),
+                )
+            ],
+            attempts=1,
+            provider_response=None,
+            messages_sent=(),
+        )
+
+    monkeypatch.setattr(Planner, "propose", _propose_web_fetch)
+    daemon_task, client, _config = await _start_daemon(tmp_path)
+    try:
+        created = await client.call("session.create", {"channel": "cli", "user_id": "alice"})
+        sid = created["session_id"]
+        _ = await client.call(
+            "memory.ingest",
+            {
+                "source_id": "evidence-1",
+                "source_type": "external",
+                "collection": "external_web",
+                "content": "evidence payload from external source",
+            },
+        )
+        reply = await client.call(
+            "session.message",
+            {"session_id": sid, "content": "fetch the source"},
+        )
+        assert "TOOL OUTPUTS" in str(reply.get("response", ""))
         mode_update = await client.call(
             "session.set_mode",
             {"session_id": sid, "mode": "admin_cleanroom"},

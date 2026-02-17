@@ -27,6 +27,9 @@ class RoutedOpenAIProvider:
         router: ModelRouter,
         api_key: str,
         fallback: LocalPlannerProvider | None = None,
+        allow_http_localhost: bool = True,
+        block_private_ranges: bool = True,
+        endpoint_allowlist: list[str] | None = None,
     ) -> None:
         headers = {"Authorization": f"Bearer {api_key}"}
         planner_route = router.route_for(ModelComponent.PLANNER)
@@ -36,16 +39,25 @@ class RoutedOpenAIProvider:
             base_url=planner_route.base_url,
             model_id=planner_route.model_id,
             headers=headers,
+            allow_http_localhost=allow_http_localhost,
+            block_private_ranges=block_private_ranges,
+            endpoint_allowlist=endpoint_allowlist,
         )
         self._embeddings_provider = OpenAICompatibleProvider(
             base_url=embeddings_route.base_url,
             model_id=embeddings_route.model_id,
             headers=headers,
+            allow_http_localhost=allow_http_localhost,
+            block_private_ranges=block_private_ranges,
+            endpoint_allowlist=endpoint_allowlist,
         )
         self._monitor_provider = OpenAICompatibleProvider(
             base_url=monitor_route.base_url,
             model_id=monitor_route.model_id,
             headers=headers,
+            allow_http_localhost=allow_http_localhost,
+            block_private_ranges=block_private_ranges,
+            endpoint_allowlist=endpoint_allowlist,
         )
         self._embeddings_model_id = embeddings_route.model_id
         self._fallback = fallback

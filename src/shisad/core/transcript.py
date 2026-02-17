@@ -6,7 +6,9 @@ separately and referenced by hash from transcript entries.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
+import os
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -38,6 +40,8 @@ class TranscriptStore:
         self._blob_dir = root_dir / "blobs"
         self._transcript_dir.mkdir(parents=True, exist_ok=True)
         self._blob_dir.mkdir(parents=True, exist_ok=True)
+        self._ensure_dir_permissions(self._transcript_dir)
+        self._ensure_dir_permissions(self._blob_dir)
 
     def append(
         self,
@@ -60,6 +64,7 @@ class TranscriptStore:
             blob_path = self._blob_dir / f"{content_hash}.txt"
             if not blob_path.exists():
                 blob_path.write_text(content)
+            self._ensure_file_permissions(blob_path)
 
         entry = TranscriptEntry(
             role=role,
@@ -73,6 +78,7 @@ class TranscriptStore:
         transcript_path = self._transcript_dir / f"{session_id}.jsonl"
         with transcript_path.open("a", encoding="utf-8") as handle:
             handle.write(entry.model_dump_json() + "\n")
+        self._ensure_file_permissions(transcript_path)
 
         return entry
 
@@ -95,3 +101,13 @@ class TranscriptStore:
         if not path.exists():
             return None
         return path.read_text(encoding="utf-8")
+
+    @staticmethod
+    def _ensure_dir_permissions(path: Path) -> None:
+        with contextlib.suppress(OSError):
+            os.chmod(path, 0o700)
+
+    @staticmethod
+    def _ensure_file_permissions(path: Path) -> None:
+        with contextlib.suppress(OSError):
+            os.chmod(path, 0o600)

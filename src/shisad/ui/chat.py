@@ -7,6 +7,8 @@ daemon-side channel — it runs as a separate CLI process.
 
 from __future__ import annotations
 
+import contextlib
+import re
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -33,6 +35,33 @@ def format_assistant_message(content: str) -> str:
 def _format_error(content: str) -> str:
     """Format an error message for display in the chat log."""
     return f"error: {content}"
+
+
+def _rpc_error_code(message: str) -> int | None:
+    match = re.match(r"^\s*RPC error\s+(-?\d+):", message, flags=re.IGNORECASE)
+    if match is None:
+        return None
+    with contextlib.suppress(ValueError):
+        return int(match.group(1))
+    return None
+
+
+def _is_unknown_session_error(exc: Exception) -> bool:
+    message = str(exc).strip()
+    code = getattr(exc, "code", None)
+    rpc_code = code if isinstance(code, int) else _rpc_error_code(message)
+    if rpc_code != -32602:
+        return False
+    lowered = message.lower()
+    return any(
+        marker in lowered
+        for marker in (
+            "unknown session",
+            "session no longer exists",
+            "session not found",
+            "invalid session",
+        )
+    )
 
 
 class ChatApp(App[None]):
@@ -170,7 +199,7 @@ class ChatApp(App[None]):
         try:
             result = await self._do_session_message(client, content)
         except Exception as exc:
-            if "unknown session" not in str(exc).lower():
+            if not _is_unknown_session_error(exc):
                 raise
             # Session is stale — daemon likely restarted. Recover.
             old_session_id = self._session_id

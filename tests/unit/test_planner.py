@@ -360,6 +360,41 @@ async def test_planner_trusted_context_rewrites_planner_mechanics_response() -> 
 
 
 @pytest.mark.asyncio
+async def test_planner_trusted_context_keeps_legitimate_json_help_response() -> None:
+    registry = _make_registry()
+    pep = PEP(PolicyBundle(default_require_confirmation=False), registry)
+    provider = StaticProvider(
+        [
+            json.dumps(
+                {
+                    "assistant_response": (
+                        "JSON is JavaScript Object Notation. "
+                        "Use double quotes for keys and string values."
+                    ),
+                    "actions": [],
+                }
+            ),
+            json.dumps(
+                {
+                    "assistant_response": "unexpected rewrite",
+                    "actions": [],
+                }
+            ),
+        ]
+    )
+    planner = Planner(provider, pep, max_retries=1)
+
+    result = await planner.propose(
+        "Explain what JSON is.",
+        PolicyContext(capabilities={Capability.FILE_READ}),
+    )
+
+    assert provider.calls == 1
+    assert "javascript object notation" in result.output.assistant_response.lower()
+    assert result.output.actions == []
+
+
+@pytest.mark.asyncio
 async def test_planner_passes_tool_payload_to_provider() -> None:
     registry = _make_registry()
     pep = PEP(PolicyBundle(default_require_confirmation=False), registry)
