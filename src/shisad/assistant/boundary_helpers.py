@@ -13,6 +13,11 @@ class _NoRedirectHandler(HTTPRedirectHandler):
 
 
 def _host_matches(host: str, rule: str) -> bool:
+    """Return whether a normalized host matches an allowlist rule.
+
+    Callers are expected to pass a hostname (for example from `urlparse(...).hostname`)
+    rather than a raw `host:port` header value.
+    """
     candidate = rule.strip().lower()
     if not candidate:
         return False

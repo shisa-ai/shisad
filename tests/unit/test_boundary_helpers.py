@@ -38,6 +38,22 @@ def test_read_limited_returns_truncation_signal() -> None:
     assert truncated is True
 
 
+def test_read_limited_exact_limit_is_not_truncated() -> None:
+    payload = io.BytesIO(b"abcd")
+    data, truncated = _read_limited(payload, limit=4)
+
+    assert data == b"abcd"
+    assert truncated is False
+
+
+def test_read_limited_under_limit_is_not_truncated() -> None:
+    payload = io.BytesIO(b"ab")
+    data, truncated = _read_limited(payload, limit=4)
+
+    assert data == b"ab"
+    assert truncated is False
+
+
 def test_no_redirect_handler_always_blocks_redirects() -> None:
     handler = _NoRedirectHandler()
 

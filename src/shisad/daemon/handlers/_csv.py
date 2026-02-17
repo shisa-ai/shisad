@@ -6,11 +6,15 @@ from collections.abc import Sequence
 from typing import Any
 
 _FORMULA_PREFIXES: tuple[str, ...] = ("=", "+", "-", "@")
+_FORMULA_CHECK_STRIP_CHARS = "".join(chr(code) for code in range(0x00, 0x21))
 
 
 def escape_csv_field(value: Any) -> str:
     text = "" if value is None else str(value)
-    if text and text[0] in _FORMULA_PREFIXES:
+    # Some spreadsheet importers drop NUL bytes during parsing; remove them up front.
+    text = text.replace("\x00", "")
+    normalized = text.lstrip(_FORMULA_CHECK_STRIP_CHARS)
+    if normalized.startswith(_FORMULA_PREFIXES):
         text = "'" + text
     if any(char in text for char in (",", '"', "\n", "\r")):
         return '"' + text.replace('"', '""') + '"'

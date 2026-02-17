@@ -26,6 +26,26 @@ def test_escape_csv_field_defuses_formula_prefixes(value: str) -> None:
     assert escaped.startswith("'")
 
 
+@pytest.mark.parametrize(
+    "value",
+    [
+        " =1+1",
+        "\t=1+1",
+        "\r=1+1",
+        "\n=1+1",
+        "\x01=1+1",
+    ],
+)
+def test_escape_csv_field_defuses_formula_prefixes_after_leading_controls(value: str) -> None:
+    escaped = escape_csv_field(value)
+    assert escaped.startswith("'") or escaped.startswith("\"'")
+
+
+def test_escape_csv_field_removes_nul_bytes_before_formula_check() -> None:
+    assert escape_csv_field("\x00=1+1") == "'=1+1"
+    assert escape_csv_field("a\x00b") == "ab"
+
+
 def test_escape_csv_field_defuses_then_quotes_when_needed() -> None:
     assert escape_csv_field("=SUM(A1,A2)") == '"\'=SUM(A1,A2)"'
 
