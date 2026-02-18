@@ -70,6 +70,7 @@ class SessionCreateParams(_StrictParams):
     user_id: str = ""
     workspace_id: str = ""
     mode: Literal["default", "admin_cleanroom"] = "default"
+    tone: Literal["strict", "neutral", "friendly"] | None = None
 
 
 class SessionCreateResult(BaseModel):

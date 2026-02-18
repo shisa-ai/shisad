@@ -7,7 +7,7 @@ import json
 import logging
 import time
 from collections.abc import Mapping
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import ValidationError
 
@@ -55,6 +55,8 @@ from shisad.security.spotlight import build_planner_input
 
 logger = logging.getLogger(__name__)
 
+AssistantTone = Literal["strict", "neutral", "friendly"]
+
 _CLEANROOM_CHANNELS: set[str] = {"cli"}
 _CLEANROOM_UNTRUSTED_TOOL_NAMES: set[str] = {
     "retrieve_rag",
@@ -98,6 +100,19 @@ def _planner_enabled_tools(
 
 def _is_trusted_level(trust_level: str) -> bool:
     return trust_level.strip().lower() in {"trusted", "verified", "internal"}
+
+
+def _normalize_assistant_tone(raw_tone: Any) -> AssistantTone | None:
+    if raw_tone is None:
+        return None
+    normalized = str(raw_tone).strip().lower()
+    if normalized == "strict":
+        return "strict"
+    if normalized == "neutral":
+        return "neutral"
+    if normalized == "friendly":
+        return "friendly"
+    return None
 
 
 def _build_planner_tool_context(
@@ -198,6 +213,14 @@ class SessionImplMixin(HandlerMixinBase):
         metadata: dict[str, Any] = {}
         if default_allowlist:
             metadata["tool_allowlist"] = [str(tool) for tool in default_allowlist]
+        requested_tone_raw = params.get("tone")
+        requested_tone = _normalize_assistant_tone(requested_tone_raw)
+        if requested_tone_raw is not None:
+            if requested_tone is None:
+                raise ValueError(f"Unsupported session tone: {requested_tone_raw}")
+            if not self._is_admin_rpc_peer(params):
+                raise ValueError("session tone override requires trusted admin control API")
+            metadata["assistant_tone"] = requested_tone
 
         trust_level = self._identity_map.trust_for_channel(channel)
         is_internal_ingress = (
@@ -459,15 +482,26 @@ class SessionImplMixin(HandlerMixinBase):
             encode_untrusted=bool(untrusted_blob) and firewall_result.risk_score >= 0.7,
             trusted_context=planner_trusted_context,
         )
+        assistant_tone_override = _normalize_assistant_tone(
+            session.metadata.get("assistant_tone")
+        )
 
         trace_t0 = time.monotonic() if self._trace_recorder is not None else 0.0
         planner_failure_code = ""
         try:
-            planner_result = await self._planner.propose(
-                planner_input,
-                context,
-                tools=planner_tools_payload,
-            )
+            if assistant_tone_override is None:
+                planner_result = await self._planner.propose(
+                    planner_input,
+                    context,
+                    tools=planner_tools_payload,
+                )
+            else:
+                planner_result = await self._planner.propose(
+                    planner_input,
+                    context,
+                    tools=planner_tools_payload,
+                    persona_tone_override=assistant_tone_override,
+                )
         except PlannerOutputError as exc:
             planner_failure_code = "planner_output_invalid"
             tainted_context = TaintLabel.UNTRUSTED in context.taint_labels

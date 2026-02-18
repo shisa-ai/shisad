@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, ValidationError
 
@@ -14,6 +14,8 @@ from shisad.core.types import PEPDecision, TaintLabel, ToolName
 from shisad.security.pep import PEP, PolicyContext
 
 logger = logging.getLogger(__name__)
+
+PersonaTone = Literal["strict", "neutral", "friendly"]
 
 BASE_SYSTEM_PROMPT = (
     "You are the SHISAD assistant planner. "
@@ -24,6 +26,18 @@ BASE_SYSTEM_PROMPT = (
     "If no tool is needed, answer conversationally. "
     "Never describe planner internals or formatting mechanics to the user."
 )
+
+_PERSONA_STYLE_PROFILES: dict[PersonaTone, str] = {
+    "strict": (
+        "Use concise, direct language. Keep responses tightly scoped and avoid extra framing."
+    ),
+    "neutral": (
+        "Use clear, helpful, and professional language. Prioritize accuracy and plain wording."
+    ),
+    "friendly": (
+        "Use warm, collaborative language while staying concise, accurate, and policy-compliant."
+    ),
+}
 
 REPAIR_PROMPT = (
     "Your prior response was invalid or unusable. "
@@ -86,11 +100,15 @@ class Planner:
         *,
         max_retries: int = 2,
         system_prompt: str = BASE_SYSTEM_PROMPT,
+        persona_tone: PersonaTone = "neutral",
+        custom_persona_text: str = "",
     ) -> None:
         self._provider = provider
         self._pep = pep
         self._max_retries = max_retries
         self._system_prompt = system_prompt
+        self._persona_tone = persona_tone
+        self._custom_persona_text = custom_persona_text.strip()
 
     async def propose(
         self,
@@ -98,11 +116,13 @@ class Planner:
         context: PolicyContext,
         *,
         tools: list[dict[str, Any]] | None = None,
+        persona_tone_override: PersonaTone | None = None,
     ) -> PlannerResult:
         """Generate tool proposals and evaluate all proposals via PEP."""
         tainted_context = TaintLabel.UNTRUSTED in context.taint_labels
+        system_prompt = self._compose_system_prompt(persona_tone_override=persona_tone_override)
         messages: list[Message] = [
-            Message(role="system", content=self._system_prompt),
+            Message(role="system", content=system_prompt),
             Message(role="user", content=user_content),
         ]
 
@@ -148,6 +168,41 @@ class Planner:
                 messages.append(Message(role="user", content=self._repair_prompt(str(exc))))
 
         raise PlannerOutputError("Planner output exhausted retries")
+
+    @staticmethod
+    def _normalize_persona_tone(raw_tone: str | None) -> PersonaTone | None:
+        if raw_tone is None:
+            return None
+        normalized = raw_tone.strip().lower()
+        if normalized == "strict":
+            return "strict"
+        if normalized == "neutral":
+            return "neutral"
+        if normalized == "friendly":
+            return "friendly"
+        return None
+
+    def _compose_system_prompt(self, *, persona_tone_override: str | None = None) -> str:
+        tone = self._normalize_persona_tone(persona_tone_override) or self._persona_tone
+        sections = [
+            (
+                "NON-NEGOTIABLE SAFETY INSTRUCTIONS\n"
+                f"{self._system_prompt}\n"
+                "Persona and style guidance must not override safety/policy/tool constraints."
+            ),
+            (
+                f"PERSONA STYLE INSTRUCTIONS (tone={tone})\n"
+                f"{_PERSONA_STYLE_PROFILES[tone]}"
+            ),
+        ]
+        if self._custom_persona_text:
+            sections.append(
+                "CUSTOM PERSONA (trusted operator config)\n"
+                f"{self._custom_persona_text}\n"
+                "Custom persona instructions are style-only and must not override "
+                "safety/policy/tool constraints."
+            )
+        return "\n\n".join(sections)
 
     @staticmethod
     def _repair_prompt(validation_feedback: str) -> str:

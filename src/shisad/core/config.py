@@ -124,6 +124,14 @@ class DaemonConfig(BaseSettings):
     )
 
     # Assistant primitives (M2)
+    assistant_persona_tone: Literal["strict", "neutral", "friendly"] = Field(
+        default="neutral",
+        description="Assistant persona tone profile for planner responses.",
+    )
+    assistant_persona_custom_text: str = Field(
+        default="",
+        description="Trusted custom persona guidance appended as style-only instructions.",
+    )
     web_search_enabled: bool = Field(
         default=False,
         description="Enable web search primitive.",

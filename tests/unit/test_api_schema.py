@@ -72,6 +72,15 @@ class TestApiSchemaValidation:
         params = SessionCreateParams()
         assert params.user_id == ""
         assert params.workspace_id == ""
+        assert params.tone is None
+
+    def test_session_create_tone_accepts_known_values(self) -> None:
+        params = SessionCreateParams(tone="friendly")
+        assert params.tone == "friendly"
+
+    def test_session_create_tone_rejects_unknown_values(self) -> None:
+        with pytest.raises(ValidationError):
+            SessionCreateParams(tone="casual")
 
     def test_tool_execute_rejects_empty_command(self) -> None:
         with pytest.raises(ValidationError):

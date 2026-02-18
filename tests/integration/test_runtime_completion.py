@@ -435,3 +435,89 @@ async def test_v0_3_1_session_message_passes_tool_manifest_and_tools_payload(
             await client.call("daemon.shutdown")
         await client.close()
         await asyncio.wait_for(daemon_task, timeout=3)
+
+
+@pytest.mark.asyncio
+async def test_v0_3_3_session_message_passes_trusted_tone_override_to_planner(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SHISAD_MODEL_BASE_URL", "https://api.example.com/v1")
+    monkeypatch.setenv("SHISAD_MODEL_PLANNER_BASE_URL", "https://planner.example.com/v1")
+    monkeypatch.setenv("SHISAD_MODEL_EMBEDDINGS_BASE_URL", "https://embed.example.com/v1")
+    monkeypatch.setenv("SHISAD_MODEL_MONITOR_BASE_URL", "https://monitor.example.com/v1")
+
+    captured: dict[str, object] = {}
+
+    async def _capture_propose(
+        self: Planner,
+        user_content: str,
+        context: object,
+        *,
+        tools: list[dict[str, object]] | None = None,
+        persona_tone_override: str | None = None,
+    ) -> PlannerResult:
+        _ = (self, user_content, context, tools)
+        captured["persona_tone_override"] = persona_tone_override
+        return PlannerResult(
+            output=PlannerOutput(actions=[], assistant_response="ok"),
+            evaluated=[],
+            attempts=1,
+            provider_response=None,
+            messages_sent=(),
+        )
+
+    monkeypatch.setattr(Planner, "propose", _capture_propose)
+
+    policy_path = tmp_path / "policy.yaml"
+    policy_path.write_text(
+        textwrap.dedent(
+            """
+            version: "1"
+            default_require_confirmation: false
+            """
+        ).strip()
+        + "\n"
+    )
+
+    config = DaemonConfig(
+        data_dir=tmp_path / "data",
+        socket_path=tmp_path / "control.sock",
+        policy_path=policy_path,
+        log_level="INFO",
+    )
+
+    daemon_task = asyncio.create_task(run_daemon(config))
+    client = ControlClient(config.socket_path)
+
+    try:
+        await _wait_for_socket(config.socket_path)
+        await client.connect()
+
+        created = await client.call(
+            "session.create",
+            {
+                "channel": "cli",
+                "user_id": "alice",
+                "workspace_id": "ws1",
+                "tone": "friendly",
+            },
+        )
+        sid = created["session_id"]
+        reply = await client.call(
+            "session.message",
+            {
+                "session_id": sid,
+                "channel": "cli",
+                "user_id": "alice",
+                "workspace_id": "ws1",
+                "content": "hello",
+            },
+        )
+        assert str(reply["response"]).strip().lower() == "ok"
+        assert captured.get("persona_tone_override") == "friendly"
+    finally:
+        with suppress(Exception):
+            await client.call("daemon.shutdown")
+        await client.close()
+        await asyncio.wait_for(daemon_task, timeout=3)
