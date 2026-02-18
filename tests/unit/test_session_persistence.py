@@ -78,3 +78,35 @@ def test_m3_session_manager_persist_supports_external_metadata_updates(
     restored = reloaded.get(session.id)
     assert restored is not None
     assert restored.metadata.get("delivery_target") == {"channel": "cli", "recipient": "ops"}
+
+
+def test_m3_session_manager_skips_non_utf8_persisted_state_files(tmp_path: Path) -> None:
+    state_dir = tmp_path / "sessions" / "state"
+    manager = SessionManager(state_dir=state_dir)
+    session = manager.create(
+        channel="cli",
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws1"),
+    )
+    (state_dir / "corrupt.json").write_bytes(b"\xff\xfe\xfd")
+
+    reloaded = SessionManager(state_dir=state_dir)
+    restored = reloaded.get(session.id)
+    assert restored is not None
+    assert restored.user_id == UserId("alice")
+
+
+def test_m3_session_manager_persist_returns_false_for_unserializable_metadata(
+    tmp_path: Path,
+) -> None:
+    state_dir = tmp_path / "sessions" / "state"
+    manager = SessionManager(state_dir=state_dir)
+    session = manager.create(channel="cli")
+    session.metadata["unserializable"] = object()
+
+    assert not manager.persist(session.id)
+
+    reloaded = SessionManager(state_dir=state_dir)
+    restored = reloaded.get(session.id)
+    assert restored is not None
+    assert "unserializable" not in restored.metadata

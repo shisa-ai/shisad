@@ -259,28 +259,29 @@ class SessionManager:
         session = self._sessions.get(session_id)
         if session is None:
             return False
-        self._persist_session(session)
-        return True
+        return self._persist_session(session)
 
     def _session_state_path(self, session_id: SessionId) -> Path | None:
         if self._state_dir is None:
             return None
         return self._state_dir / f"{session_id}.json"
 
-    def _persist_session(self, session: Session) -> None:
+    def _persist_session(self, session: Session) -> bool:
         path = self._session_state_path(session.id)
         if path is None:
-            return
+            return True
         tmp_path = path.with_suffix(".tmp")
-        payload = session.model_dump_json(indent=2)
         try:
+            payload = session.model_dump_json(indent=2)
             tmp_path.write_text(payload, encoding="utf-8")
             tmp_path.chmod(0o600)
             tmp_path.replace(path)
-        except OSError:
+        except (OSError, TypeError, ValueError):
             logger.warning("Failed to persist session state for %s", session.id, exc_info=True)
             with contextlib.suppress(OSError):
                 tmp_path.unlink()
+            return False
+        return True
 
     def _delete_persisted_session(self, session_id: SessionId) -> None:
         path = self._session_state_path(session_id)
@@ -295,7 +296,7 @@ class SessionManager:
         for path in sorted(self._state_dir.glob("*.json")):
             try:
                 loaded = Session.model_validate_json(path.read_text(encoding="utf-8"))
-            except (OSError, ValidationError, TypeError, json.JSONDecodeError):
+            except (OSError, ValidationError, TypeError, ValueError):
                 logger.warning("Skipping invalid persisted session file: %s", path)
                 continue
             if loaded.state != SessionState.ACTIVE:
