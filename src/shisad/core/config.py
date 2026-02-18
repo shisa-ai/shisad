@@ -136,8 +136,24 @@ class DaemonConfig(BaseSettings):
         default=20,
         ge=1,
         description=(
-            "Number of prior transcript turns included in planner context before "
-            "older turns are compacted into a summary prefix."
+            "Number of prior transcript entries included in planner context before "
+            "older entries are compacted into a summary prefix."
+        ),
+    )
+    summarize_interval: int = Field(
+        default=10,
+        ge=1,
+        description=(
+            "Number of new transcript entries required before running conversation "
+            "summarization to durable memory."
+        ),
+    )
+    planner_memory_top_k: int = Field(
+        default=5,
+        ge=1,
+        description=(
+            "Maximum number of retrieved memory snippets injected into planner "
+            "context per turn."
         ),
     )
     web_search_enabled: bool = Field(

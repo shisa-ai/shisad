@@ -77,6 +77,7 @@ from shisad.governance.merge import (
     ToolExecutionPolicy,
     normalize_patch,
 )
+from shisad.memory.summarizer import ConversationSummarizer
 from shisad.security.control_plane.schema import (
     ActionKind,
     ControlPlaneAction,
@@ -193,6 +194,7 @@ class HandlerImplementation(
         self._risk_calibrator = services.risk_calibrator
         self._ingestion = services.ingestion
         self._memory_manager = services.memory_manager
+        self._conversation_summarizer = ConversationSummarizer(provider=services.provider)
         self._scheduler = services.scheduler
         self._skill_manager = services.skill_manager
         self._realitycheck_toolkit = services.realitycheck_toolkit
