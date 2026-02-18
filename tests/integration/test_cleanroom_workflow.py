@@ -139,7 +139,7 @@ async def test_m6_cleanroom_transition_rejects_tool_output_tainted_history(
             {
                 "source_id": "evidence-1",
                 "source_type": "external",
-                "collection": "external_web",
+                "collection": "project_docs",
                 "content": "evidence payload from external source",
             },
         )

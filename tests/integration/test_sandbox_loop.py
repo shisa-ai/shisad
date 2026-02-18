@@ -250,6 +250,20 @@ async def test_m3_t6_checkpoint_before_destructive_and_t7_rollback_restores_sess
     model_env: None,
     tmp_path: Path,
 ) -> None:
+    (tmp_path / "policy.yaml").write_text(
+        "\n".join(
+            [
+                'version: "1"',
+                "default_deny: false",
+                "default_require_confirmation: false",
+                "default_capabilities:",
+                "  - file.read",
+                "  - file.write",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
     daemon_task, client, _ = await _start_daemon(tmp_path)
     try:
         target = tmp_path / "danger.txt"

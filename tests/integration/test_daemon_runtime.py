@@ -31,6 +31,19 @@ async def test_daemon_registers_alarm_tool_and_derives_capability_grant_actor(
     monkeypatch.setenv("SHISAD_MODEL_PLANNER_BASE_URL", "https://planner.example.com/v1")
     monkeypatch.setenv("SHISAD_MODEL_EMBEDDINGS_BASE_URL", "https://embed.example.com/v1")
     monkeypatch.setenv("SHISAD_MODEL_MONITOR_BASE_URL", "https://monitor.example.com/v1")
+    (tmp_path / "policy.yaml").write_text(
+        "\n".join(
+            [
+                'version: "1"',
+                "default_deny: false",
+                "default_require_confirmation: false",
+                "default_capabilities:",
+                "  - file.read",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
 
     config = DaemonConfig(
         data_dir=tmp_path / "data",

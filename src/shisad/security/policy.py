@@ -225,13 +225,13 @@ class PolicyBundle(BaseModel):
 
     # Defaults
     default_deny: bool = Field(
-        default=True,
+        default=False,
         description=(
             "When true, policy.tools acts as the default tool allowlist fallback "
             "if session/context allowlists are absent."
         ),
     )
-    default_require_confirmation: bool = True
+    default_require_confirmation: bool = False
 
     # Tool permissions
     tools: dict[ToolName, ToolPolicy] = Field(default_factory=dict)
@@ -243,7 +243,7 @@ class PolicyBundle(BaseModel):
     filesystem: list[FilesystemRule] = Field(default_factory=list)
 
     # Session capabilities (default grants)
-    default_capabilities: list[Capability] = Field(default_factory=list)
+    default_capabilities: list[Capability] = Field(default_factory=lambda: list(Capability))
     session_tool_allowlist: list[ToolName] = Field(
         default_factory=list,
         description="Optional per-session default tool allowlist.",

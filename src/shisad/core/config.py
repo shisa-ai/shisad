@@ -141,7 +141,7 @@ class DaemonConfig(BaseSettings):
         description="Reference search backend URL (SearxNG for v0.3).",
     )
     web_fetch_enabled: bool = Field(
-        default=False,
+        default=True,
         description="Enable web fetch primitive.",
     )
     web_allowed_domains: list[str] = Field(
@@ -375,7 +375,7 @@ class SecurityConfig(BaseSettings):
 
     # PEP defaults
     default_deny: bool = Field(
-        default=True,
+        default=False,
         description="Default-deny for unknown tools",
     )
     require_confirmation_for_writes: bool = Field(

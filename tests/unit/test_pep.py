@@ -138,6 +138,7 @@ class TestPepAllowedArgsPolicy:
             )
         )
         policy = PolicyBundle(
+            default_deny=True,
             default_require_confirmation=False,
             tools={
                 ToolName("other_tool"): ToolPolicy(
