@@ -88,6 +88,7 @@ class OpenAICompatibleProvider:
         base_url: str,
         model_id: str,
         headers: dict[str, str] | None = None,
+        force_json_response: bool = False,
         timeout_seconds: float = 30.0,
         allow_http_localhost: bool = True,
         block_private_ranges: bool = True,
@@ -96,6 +97,7 @@ class OpenAICompatibleProvider:
         self._base_url = base_url.rstrip("/")
         self._model_id = model_id
         self._headers = headers or {}
+        self._force_json_response = force_json_response
         self._timeout_seconds = timeout_seconds
         self._allow_http_localhost = allow_http_localhost
         self._block_private_ranges = block_private_ranges
@@ -109,9 +111,9 @@ class OpenAICompatibleProvider:
         payload: dict[str, Any] = {
             "model": self._model_id,
             "messages": [self._serialize_message(msg) for msg in messages],
-            # Planner/monitor paths require strict JSON payloads.
-            "response_format": {"type": "json_object"},
         }
+        if self._force_json_response:
+            payload["response_format"] = {"type": "json_object"}
         if tools is not None:
             payload["tools"] = tools
 

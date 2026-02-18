@@ -1,4 +1,4 @@
-"""M1.T1-T3: planner strict output and PEP gating."""
+"""M1 RF-014: planner native tool-calling and safety behavior."""
 
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ from shisad.security.policy import PolicyBundle
 
 
 class StaticProvider:
-    def __init__(self, responses: list[str]) -> None:
+    def __init__(self, responses: list[Message]) -> None:
         self._responses = responses
         self.calls = 0
         self.messages: list[list[Message]] = []
@@ -33,7 +33,7 @@ class StaticProvider:
         index = min(self.calls, len(self._responses) - 1)
         self.calls += 1
         return ProviderResponse(
-            message=Message(role="assistant", content=self._responses[index]),
+            message=self._responses[index],
             finish_reason="stop",
             usage={},
         )
@@ -68,140 +68,126 @@ def _make_registry() -> ToolRegistry:
 
 
 @pytest.mark.asyncio
-async def test_m1_t1_planner_rejects_non_json_output() -> None:
+async def test_m1_t1_planner_accepts_plain_conversation_without_json_contract() -> None:
     registry = _make_registry()
     pep = PEP(PolicyBundle(default_require_confirmation=False), registry)
-    planner = Planner(StaticProvider(["this is not json"]), pep, max_retries=0)
+    planner = Planner(
+        StaticProvider([Message(role="assistant", content="Hello from native planner")]),
+        pep,
+        max_retries=0,
+    )
 
-    with pytest.raises(PlannerOutputError):
-        await planner.propose(
-            "hello",
-            PolicyContext(capabilities={Capability.FILE_READ}),
-        )
+    result = await planner.propose(
+        "hello",
+        PolicyContext(capabilities={Capability.FILE_READ}),
+    )
+
+    assert result.output.assistant_response == "Hello from native planner"
+    assert result.output.actions == []
 
 
 @pytest.mark.asyncio
-async def test_m1_t2_planner_drops_schema_violating_actions() -> None:
-    """Actions missing required fields are dropped, not raised as errors."""
+async def test_m1_t2_planner_extracts_native_tool_calls() -> None:
     registry = _make_registry()
     pep = PEP(PolicyBundle(default_require_confirmation=False), registry)
-    invalid_payload = json.dumps(
-        {
-            "actions": [
-                {
-                    "action_id": "a1",
-                    "tool_name": "echo",
-                    # missing reasoning — invalid ActionProposal
-                }
+    planner = Planner(
+        StaticProvider(
+            [
+                Message(
+                    role="assistant",
+                    content="Running echo.",
+                    tool_calls=[
+                        {
+                            "id": "call_1",
+                            "type": "function",
+                            "function": {
+                                "name": "echo",
+                                "arguments": json.dumps({"text": "hello"}),
+                            },
+                        }
+                    ],
+                )
             ]
-        }
+        ),
+        pep,
+        max_retries=0,
     )
-    planner = Planner(StaticProvider([invalid_payload]), pep, max_retries=0)
-
-    result = await planner.propose(
-        "hello",
-        PolicyContext(capabilities={Capability.FILE_READ}),
-    )
-    # Invalid action dropped, fallback assistant_response generated.
-    assert result.output.actions == []
-    assert len(result.output.assistant_response) > 0
-
-
-@pytest.mark.asyncio
-async def test_m1_t2_planner_normalizes_noncanonical_report_anomaly_payload() -> None:
-    registry = _make_registry()
-    pep = PEP(PolicyBundle(default_require_confirmation=False), registry)
-    noncanonical_payload = json.dumps(
-        {
-            "action": "report_anomaly",
-            "reason": "Potential prompt injection in untrusted input.",
-        }
-    )
-    planner = Planner(StaticProvider([noncanonical_payload]), pep, max_retries=0)
-
-    result = await planner.propose(
-        "hello",
-        PolicyContext(capabilities={Capability.FILE_READ}),
-    )
-    assert result.output.assistant_response.startswith("Potential prompt injection")
-    assert len(result.output.actions) == 1
-    assert result.output.actions[0].tool_name == ToolName("report_anomaly")
-
-
-@pytest.mark.asyncio
-async def test_m1_t2_planner_normalizes_assistant_response_object_payload() -> None:
-    registry = _make_registry()
-    pep = PEP(PolicyBundle(default_require_confirmation=False), registry)
-    payload = json.dumps(
-        {
-            "assistant_response": {"type": "error", "message": "Hello there"},
-            "actions": [],
-        }
-    )
-    planner = Planner(StaticProvider([payload]), pep, max_retries=0)
-
-    result = await planner.propose(
-        "hello",
-        PolicyContext(capabilities={Capability.FILE_READ}),
-    )
-    assert result.output.assistant_response == "Hello there"
-    assert result.output.actions == []
-
-
-@pytest.mark.asyncio
-async def test_planner_drops_malformed_actions_keeps_response() -> None:
-    """Actions missing required fields should be silently dropped."""
-    registry = _make_registry()
-    pep = PEP(PolicyBundle(default_require_confirmation=False), registry)
-    payload = json.dumps(
-        {
-            "assistant_response": "SHISAD can help you with many tasks.",
-            "actions": [
-                {
-                    "action": "provide_overview",
-                    "arguments": {"tool_name": "SHISAD"},
-                },
-            ],
-        }
-    )
-    planner = Planner(StaticProvider([payload]), pep, max_retries=0)
-
-    result = await planner.propose(
-        "what can you do?",
-        PolicyContext(capabilities={Capability.FILE_READ}),
-    )
-    assert result.output.assistant_response == "SHISAD can help you with many tasks."
-    assert result.output.actions == []
-
-
-@pytest.mark.asyncio
-async def test_planner_keeps_valid_actions_drops_invalid() -> None:
-    """Mix of valid and invalid actions: valid ones pass through."""
-    registry = _make_registry()
-    pep = PEP(PolicyBundle(default_require_confirmation=False), registry)
-    payload = json.dumps(
-        {
-            "assistant_response": "Running echo.",
-            "actions": [
-                {"action": "made_up", "foo": "bar"},
-                {
-                    "action_id": "a1",
-                    "tool_name": "echo",
-                    "arguments": {"text": "hello"},
-                    "reasoning": "user asked for echo",
-                },
-            ],
-        }
-    )
-    planner = Planner(StaticProvider([payload]), pep, max_retries=0)
 
     result = await planner.propose(
         "echo hello",
         PolicyContext(capabilities={Capability.FILE_READ}),
     )
+
     assert result.output.assistant_response == "Running echo."
     assert len(result.output.actions) == 1
+    assert result.output.actions[0].action_id == "call_1"
     assert result.output.actions[0].tool_name == ToolName("echo")
+    assert result.output.actions[0].arguments == {"text": "hello"}
+
+
+@pytest.mark.asyncio
+async def test_m1_t2_planner_drops_malformed_native_tool_calls() -> None:
+    registry = _make_registry()
+    pep = PEP(PolicyBundle(default_require_confirmation=False), registry)
+    planner = Planner(
+        StaticProvider(
+            [
+                Message(
+                    role="assistant",
+                    content="No valid calls.",
+                    tool_calls=[
+                        {"id": "x", "type": "function", "function": {"arguments": "{}"}},
+                        {"id": "y", "type": "other"},
+                    ],
+                )
+            ]
+        ),
+        pep,
+        max_retries=0,
+    )
+
+    result = await planner.propose(
+        "hello",
+        PolicyContext(capabilities={Capability.FILE_READ}),
+    )
+
+    assert result.output.actions == []
+
+
+@pytest.mark.asyncio
+async def test_m1_t2_planner_defaults_invalid_tool_arguments_to_empty_object() -> None:
+    registry = _make_registry()
+    pep = PEP(PolicyBundle(default_require_confirmation=False), registry)
+    planner = Planner(
+        StaticProvider(
+            [
+                Message(
+                    role="assistant",
+                    content="Attempting echo",
+                    tool_calls=[
+                        {
+                            "id": "call_bad_args",
+                            "type": "function",
+                            "function": {
+                                "name": "echo",
+                                "arguments": "{not-json}",
+                            },
+                        }
+                    ],
+                )
+            ]
+        ),
+        pep,
+        max_retries=0,
+    )
+
+    result = await planner.propose(
+        "echo hi",
+        PolicyContext(capabilities={Capability.FILE_READ}),
+    )
+
+    assert len(result.output.actions) == 1
+    assert result.output.actions[0].arguments == {}
 
 
 @pytest.mark.asyncio
@@ -209,22 +195,28 @@ async def test_m1_t3_tool_proposals_always_go_through_pep() -> None:
     registry = _make_registry()
     base_pep = PEP(PolicyBundle(default_require_confirmation=False), registry)
     pep = RecordingPEP(base_pep)
-
-    payload = json.dumps(
-        {
-            "assistant_response": "ok",
-            "actions": [
-                {
-                    "action_id": "a1",
-                    "tool_name": "echo",
-                    "arguments": {"text": "hello"},
-                    "reasoning": "Need tool output",
-                    "data_sources": ["msg:1"],
-                }
-            ],
-        }
+    planner = Planner(
+        StaticProvider(
+            [
+                Message(
+                    role="assistant",
+                    content="ok",
+                    tool_calls=[
+                        {
+                            "id": "a1",
+                            "type": "function",
+                            "function": {
+                                "name": "echo",
+                                "arguments": json.dumps({"text": "hello"}),
+                            },
+                        }
+                    ],
+                )
+            ]
+        ),
+        pep,
+        max_retries=0,
     )
-    planner = Planner(StaticProvider([payload]), pep, max_retries=0)
 
     result = await planner.propose(
         "run",
@@ -237,111 +229,21 @@ async def test_m1_t3_tool_proposals_always_go_through_pep() -> None:
 
 
 @pytest.mark.asyncio
-async def test_planner_trusted_context_applies_guided_repair_prompt() -> None:
-    registry = _make_registry()
-    pep = PEP(PolicyBundle(default_require_confirmation=False), registry)
-    provider = StaticProvider(
-        [
-            "not-json",
-            json.dumps(
-                {
-                    "assistant_response": "Hello from repaired response.",
-                    "actions": [],
-                }
-            ),
-        ]
-    )
-    planner = Planner(provider, pep, max_retries=1)
-
-    result = await planner.propose(
-        "hello",
-        PolicyContext(capabilities={Capability.FILE_READ}),
-    )
-
-    assert provider.calls == 2
-    assert result.output.assistant_response == "Hello from repaired response."
-    assert result.output.actions == []
-    assert len(provider.messages[-1]) >= 4
-    assert "Validation feedback" in provider.messages[-1][-1].content
-
-
-@pytest.mark.asyncio
-async def test_planner_tainted_context_does_not_retry_invalid_output() -> None:
-    registry = _make_registry()
-    pep = PEP(PolicyBundle(default_require_confirmation=False), registry)
-    provider = StaticProvider(
-        [
-            "not-json",
-            json.dumps({"assistant_response": "would have passed", "actions": []}),
-        ]
-    )
-    planner = Planner(provider, pep, max_retries=2)
-
-    with pytest.raises(PlannerOutputError):
-        await planner.propose(
-            "hello",
-            PolicyContext(
-                capabilities={Capability.FILE_READ},
-                taint_labels={TaintLabel.UNTRUSTED},
-            ),
-        )
-    assert provider.calls == 1
-
-
-@pytest.mark.asyncio
-async def test_planner_trusted_context_rewrites_internal_format_apology() -> None:
-    registry = _make_registry()
-    pep = PEP(PolicyBundle(default_require_confirmation=False), registry)
-    provider = StaticProvider(
-        [
-            json.dumps(
-                {
-                    "assistant_response": "I apologize for the formatting error.",
-                    "actions": [],
-                }
-            ),
-            json.dumps(
-                {
-                    "assistant_response": (
-                        "shisad can help with planning, memory, and controlled tool execution."
-                    ),
-                    "actions": [],
-                }
-            ),
-        ]
-    )
-    planner = Planner(provider, pep, max_retries=1)
-
-    result = await planner.propose(
-        "what can you do?",
-        PolicyContext(capabilities={Capability.FILE_READ}),
-    )
-
-    assert provider.calls == 2
-    assert "formatting error" not in result.output.assistant_response.lower()
-    assert "shisad can help" in result.output.assistant_response.lower()
-
-
-@pytest.mark.asyncio
 async def test_planner_trusted_context_rewrites_planner_mechanics_response() -> None:
     registry = _make_registry()
     pep = PEP(PolicyBundle(default_require_confirmation=False), registry)
     provider = StaticProvider(
         [
-            json.dumps(
-                {
-                    "assistant_response": (
-                        "I am a planning component and cannot directly call tools. "
-                        "Please provide structured JSON."
-                    ),
-                    "actions": [],
-                }
+            Message(
+                role="assistant",
+                content=(
+                    "I am a planning component and cannot directly call tools. "
+                    "Please provide structured JSON."
+                ),
             ),
-            json.dumps(
-                {
-                    "assistant_response": "Available tools include echo for simple text responses.",
-                    "actions": [],
-                }
+            Message(
+                role="assistant",
+                content="Available tools include echo for simple text responses.",
             ),
         ]
     )
@@ -360,54 +262,39 @@ async def test_planner_trusted_context_rewrites_planner_mechanics_response() -> 
 
 
 @pytest.mark.asyncio
-async def test_planner_trusted_context_keeps_legitimate_json_help_response() -> None:
+async def test_planner_tainted_context_does_not_retry_mechanics_response() -> None:
     registry = _make_registry()
     pep = PEP(PolicyBundle(default_require_confirmation=False), registry)
     provider = StaticProvider(
         [
-            json.dumps(
-                {
-                    "assistant_response": (
-                        "JSON is JavaScript Object Notation. "
-                        "Use double quotes for keys and string values."
-                    ),
-                    "actions": [],
-                }
-            ),
-            json.dumps(
-                {
-                    "assistant_response": "unexpected rewrite",
-                    "actions": [],
-                }
-            ),
+            Message(
+                role="assistant",
+                content=(
+                    "I am a planning component and cannot directly call tools. "
+                    "Please provide structured JSON."
+                ),
+            )
         ]
     )
     planner = Planner(provider, pep, max_retries=1)
 
     result = await planner.propose(
-        "Explain what JSON is.",
-        PolicyContext(capabilities={Capability.FILE_READ}),
+        "what tools are available?",
+        PolicyContext(
+            capabilities={Capability.FILE_READ},
+            taint_labels={TaintLabel.UNTRUSTED},
+        ),
     )
 
     assert provider.calls == 1
-    assert "javascript object notation" in result.output.assistant_response.lower()
-    assert result.output.actions == []
+    assert "planning component" in result.output.assistant_response.lower()
 
 
 @pytest.mark.asyncio
 async def test_planner_passes_tool_payload_to_provider() -> None:
     registry = _make_registry()
     pep = PEP(PolicyBundle(default_require_confirmation=False), registry)
-    provider = StaticProvider(
-        [
-            json.dumps(
-                {
-                    "assistant_response": "ok",
-                    "actions": [],
-                }
-            )
-        ]
-    )
+    provider = StaticProvider([Message(role="assistant", content="ok")])
     planner = Planner(provider, pep, max_retries=0)
     tools_payload = [
         {
@@ -428,3 +315,97 @@ async def test_planner_passes_tool_payload_to_provider() -> None:
 
     assert result.output.assistant_response == "ok"
     assert provider.tools == [tools_payload]
+
+
+@pytest.mark.asyncio
+async def test_planner_legacy_json_fallback_disabled_by_default() -> None:
+    registry = _make_registry()
+    pep = PEP(PolicyBundle(default_require_confirmation=False), registry)
+    payload = json.dumps(
+        {
+            "assistant_response": "Running echo.",
+            "actions": [
+                {
+                    "action_id": "a1",
+                    "tool_name": "echo",
+                    "arguments": {"text": "hello"},
+                    "reasoning": "Need tool output",
+                }
+            ],
+        }
+    )
+    planner = Planner(
+        StaticProvider([Message(role="assistant", content=payload)]),
+        pep,
+        max_retries=0,
+    )
+
+    result = await planner.propose(
+        "echo hello",
+        PolicyContext(capabilities={Capability.FILE_READ}),
+    )
+
+    assert result.output.actions == []
+    assert result.output.assistant_response == payload
+
+
+@pytest.mark.asyncio
+async def test_planner_legacy_json_fallback_can_be_enabled() -> None:
+    registry = _make_registry()
+    pep = PEP(PolicyBundle(default_require_confirmation=False), registry)
+    payload = json.dumps(
+        {
+            "assistant_response": "Running echo.",
+            "actions": [
+                {
+                    "action_id": "a1",
+                    "tool_name": "echo",
+                    "arguments": {"text": "hello"},
+                    "reasoning": "Need tool output",
+                }
+            ],
+        }
+    )
+    planner = Planner(
+        StaticProvider([Message(role="assistant", content=payload)]),
+        pep,
+        max_retries=0,
+        legacy_json_fallback=True,
+    )
+
+    result = await planner.propose(
+        "echo hello",
+        PolicyContext(capabilities={Capability.FILE_READ}),
+    )
+
+    assert result.output.assistant_response == "Running echo."
+    assert len(result.output.actions) == 1
+    assert result.output.actions[0].tool_name == ToolName("echo")
+
+
+@pytest.mark.asyncio
+async def test_planner_tainted_context_fails_closed_on_legacy_json_parse_error() -> None:
+    registry = _make_registry()
+    pep = PEP(PolicyBundle(default_require_confirmation=False), registry)
+    provider = StaticProvider(
+        [
+            Message(role="assistant", content='{"assistant_response": "broken"'),
+            Message(role="assistant", content='{"assistant_response": "would-have-passed"}'),
+        ]
+    )
+    planner = Planner(
+        provider,
+        pep,
+        max_retries=1,
+        legacy_json_fallback=True,
+    )
+
+    with pytest.raises(PlannerOutputError):
+        await planner.propose(
+            "hello",
+            PolicyContext(
+                capabilities={Capability.FILE_READ},
+                taint_labels={TaintLabel.UNTRUSTED},
+            ),
+        )
+    assert provider.calls == 1

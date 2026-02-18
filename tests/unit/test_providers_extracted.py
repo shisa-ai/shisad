@@ -39,8 +39,11 @@ async def test_local_planner_provider_handles_retrieve_run_and_anomaly_paths() -
             )
         ]
     )
-    payload = json.loads(response.message.content)
-    tool_names = {action.get("tool_name") for action in payload.get("actions", [])}
+    tool_names = {
+        str(item.get("function", {}).get("name", ""))
+        for item in response.message.tool_calls
+        if isinstance(item, dict)
+    }
     assert {"retrieve_rag", "shell_exec", "report_anomaly"} <= tool_names
 
 
@@ -53,7 +56,7 @@ async def test_routed_openai_provider_uses_component_routes(
     monkeypatch.setenv("SHISAD_MODEL_EMBEDDINGS_BASE_URL", "https://embed.example.com/v1")
     monkeypatch.setenv("SHISAD_MODEL_MONITOR_BASE_URL", "https://monitor.example.com/v1")
 
-    created: list[tuple[str, str]] = []
+    created: list[tuple[str, str, bool]] = []
 
     class _FakeOpenAIProvider:
         def __init__(
@@ -62,14 +65,21 @@ async def test_routed_openai_provider_uses_component_routes(
             base_url: str,
             model_id: str,
             headers: dict[str, str],
+            force_json_response: bool = False,
             allow_http_localhost: bool = True,
             block_private_ranges: bool = True,
             endpoint_allowlist: list[str] | None = None,
         ) -> None:
-            _ = (headers, allow_http_localhost, block_private_ranges, endpoint_allowlist)
+            _ = (
+                headers,
+                force_json_response,
+                allow_http_localhost,
+                block_private_ranges,
+                endpoint_allowlist,
+            )
             self._base_url = base_url
             self._model_id = model_id
-            created.append((base_url, model_id))
+            created.append((base_url, model_id, force_json_response))
 
         async def complete(
             self,
@@ -101,12 +111,16 @@ async def test_routed_openai_provider_uses_component_routes(
     await provider.embeddings(["hello"])
     await provider.monitor_complete([Message(role="user", content="monitor")])
 
-    base_urls = {base for base, _model in created}
+    base_urls = {base for base, _model, _force_json in created}
     assert base_urls == {
         "https://planner.example.com/v1",
         "https://embed.example.com/v1",
         "https://monitor.example.com/v1",
     }
+    route_flags = {base: force_json for base, _model, force_json in created}
+    assert route_flags["https://planner.example.com/v1"] is False
+    assert route_flags["https://embed.example.com/v1"] is False
+    assert route_flags["https://monitor.example.com/v1"] is True
 
 
 @pytest.mark.asyncio
@@ -232,6 +246,7 @@ async def test_routed_openai_provider_fallbacks(monkeypatch: pytest.MonkeyPatch)
             base_url: str,
             model_id: str,
             headers: dict[str, str],
+            force_json_response: bool = False,
             allow_http_localhost: bool = True,
             block_private_ranges: bool = True,
             endpoint_allowlist: list[str] | None = None,
@@ -240,6 +255,7 @@ async def test_routed_openai_provider_fallbacks(monkeypatch: pytest.MonkeyPatch)
                 base_url,
                 model_id,
                 headers,
+                force_json_response,
                 allow_http_localhost,
                 block_private_ranges,
                 endpoint_allowlist,

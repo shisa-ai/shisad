@@ -95,12 +95,33 @@ class LocalPlannerProvider:
                 }
             )
 
-        payload = {
-            "assistant_response": f"Safe summary: {goal_text[:300]}",
-            "actions": actions,
-        }
+        tool_calls: list[dict[str, Any]] = []
+        for action in actions:
+            tool_name = str(action.get("tool_name", "")).strip()
+            if not tool_name:
+                continue
+            action_id = str(action.get("action_id", "")).strip() or (
+                f"local-call-{len(tool_calls) + 1}"
+            )
+            arguments = action.get("arguments", {})
+            if not isinstance(arguments, dict):
+                arguments = {}
+            tool_calls.append(
+                {
+                    "id": action_id,
+                    "type": "function",
+                    "function": {
+                        "name": tool_name,
+                        "arguments": json.dumps(arguments, sort_keys=True),
+                    },
+                }
+            )
         return ProviderResponse(
-            message=Message(role="assistant", content=json.dumps(payload)),
+            message=Message(
+                role="assistant",
+                content=f"Safe summary: {goal_text[:300]}",
+                tool_calls=tool_calls,
+            ),
             model="local-fallback",
             finish_reason="stop",
             usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},

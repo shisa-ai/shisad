@@ -65,13 +65,45 @@ async def test_openai_compatible_complete_uses_base_url_headers_and_model(
     assert captured["url"] == "https://api.example.com/v1/chat/completions"
     assert captured["payload"]["model"] == "gpt-test"
     assert captured["payload"]["messages"] == [{"role": "user", "content": "Hi"}]
-    assert captured["payload"]["response_format"] == {"type": "json_object"}
+    assert "response_format" not in captured["payload"]
     assert captured["headers"]["Authorization"] == "Bearer test-token"
     assert captured["headers"]["X-custom"] == "yes"
     assert captured["timeout"] == 12.0
     assert response.message.content == "hello"
     assert response.finish_reason == "stop"
     assert response.usage["total_tokens"] == 3
+
+
+@pytest.mark.asyncio
+async def test_openai_compatible_complete_forces_json_mode_when_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, Any] = {}
+
+    def fake_open(request: Any, timeout: float = 0.0) -> _FakeHttpResponse:
+        captured["payload"] = json.loads(request.data.decode("utf-8"))
+        _ = timeout
+        return _FakeHttpResponse(
+            {
+                "choices": [
+                    {
+                        "message": {"role": "assistant", "content": "{\"ok\":true}"},
+                        "finish_reason": "stop",
+                    }
+                ],
+            }
+        )
+
+    monkeypatch.setattr("shisad.core.providers.base._open_no_redirect", fake_open)
+
+    provider = OpenAICompatibleProvider(
+        base_url="https://api.example.com/v1",
+        model_id="gpt-test",
+        force_json_response=True,
+    )
+    await provider.complete([Message(role="user", content="Hi")])
+
+    assert captured["payload"]["response_format"] == {"type": "json_object"}
 
 
 @pytest.mark.asyncio

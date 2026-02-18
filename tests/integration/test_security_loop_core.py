@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from typing import Any
 
@@ -84,14 +83,7 @@ async def test_m1_t17_summarize_untrusted_blob_completes_without_side_effects() 
     pep = PEP(PolicyBundle(default_require_confirmation=False), registry)
 
     planner = Planner(
-        StaticProvider(
-            json.dumps(
-                {
-                    "assistant_response": "Summary complete",
-                    "actions": [],
-                }
-            )
-        ),
+        StaticProvider("Summary complete"),
         pep,
         max_retries=0,
     )

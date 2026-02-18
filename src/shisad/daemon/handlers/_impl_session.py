@@ -145,7 +145,7 @@ def _build_planner_tool_context(
             lines.append("Unavailable tools in this session:")
             for tool, missing in disabled_tools:
                 lines.append(f"- {tool.name}: blocked (missing: {', '.join(missing)})")
-        lines.append("If no tool is needed, respond conversationally with actions=[].")
+        lines.append("If no tool is needed, respond conversationally without calling tools.")
         return "\n".join(lines)
 
     if _is_trusted_level(trust_level):
@@ -162,7 +162,7 @@ def _build_planner_tool_context(
         lines.append(
             "Enabled tools: " + ", ".join(str(tool.name) for tool in enabled_tools)
         )
-    lines.append("If no tool is needed, respond conversationally with actions=[].")
+    lines.append("If no tool is needed, respond conversationally without calling tools.")
     return "\n".join(lines)
 
 

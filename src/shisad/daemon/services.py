@@ -438,7 +438,11 @@ class DaemonServices:
                 registry,
                 credential_audit_hook=event_wiring.audit_credential_use,
             )
-            planner = Planner(provider, pep)
+            planner = Planner(
+                provider,
+                pep,
+                legacy_json_fallback=config.planner_legacy_json_fallback,
+            )
             shutdown_event = asyncio.Event()
             planner_model_id = router.route_for(ModelComponent.PLANNER).model_id
             model_routes = {
