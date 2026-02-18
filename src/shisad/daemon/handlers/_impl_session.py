@@ -63,6 +63,8 @@ _CLEANROOM_UNTRUSTED_TOOL_NAMES: set[str] = {
     "realitycheck.search",
     "realitycheck.read",
 }
+
+
 def _tool_available_in_session(
     *,
     tool: ToolDefinition,
@@ -186,9 +188,13 @@ class SessionImplMixin(HandlerMixinBase):
             session_mode = SessionMode(requested_mode or SessionMode.DEFAULT.value)
         except ValueError as exc:
             raise ValueError(f"Unsupported session mode: {requested_mode}") from exc
-        default_allowlist = self._policy_loader.policy.session_tool_allowlist or list(
-            self._policy_loader.policy.tools.keys()
-        )
+        default_allowlist = list(self._policy_loader.policy.session_tool_allowlist)
+        if (
+            not default_allowlist
+            and self._policy_loader.policy.default_deny
+            and self._policy_loader.policy.tools
+        ):
+            default_allowlist = list(self._policy_loader.policy.tools.keys())
         metadata: dict[str, Any] = {}
         if default_allowlist:
             metadata["tool_allowlist"] = [str(tool) for tool in default_allowlist]

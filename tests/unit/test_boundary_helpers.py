@@ -16,6 +16,7 @@ from shisad.assistant.boundary_helpers import (
 def test_host_matches_supports_exact_and_wildcard_rules() -> None:
     assert _host_matches("docs.example.com", "*.example.com") is True
     assert _host_matches("docs.example.com", "docs.example.com") is True
+    assert _host_matches("docs.example.com", "*") is True
     assert _host_matches("EXAMPLE.com", "example.com") is True
     assert _host_matches("example.com", "*.example.com") is False
     assert _host_matches("docs.example.com", "") is False
