@@ -94,3 +94,74 @@ async def test_daemon_registers_alarm_tool_and_derives_capability_grant_actor(
             await client.call("daemon.shutdown")
         await client.close()
         await asyncio.wait_for(daemon_task, timeout=3)
+
+
+@pytest.mark.asyncio
+async def test_m3_session_persists_across_daemon_restart(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SHISAD_MODEL_BASE_URL", "https://api.example.com/v1")
+    monkeypatch.setenv("SHISAD_MODEL_PLANNER_BASE_URL", "https://planner.example.com/v1")
+    monkeypatch.setenv("SHISAD_MODEL_EMBEDDINGS_BASE_URL", "https://embed.example.com/v1")
+    monkeypatch.setenv("SHISAD_MODEL_MONITOR_BASE_URL", "https://monitor.example.com/v1")
+
+    config = DaemonConfig(
+        data_dir=tmp_path / "data",
+        socket_path=tmp_path / "control.sock",
+        policy_path=tmp_path / "policy.yaml",
+        log_level="INFO",
+    )
+
+    daemon_task_1 = asyncio.create_task(run_daemon(config))
+    client_1 = ControlClient(config.socket_path)
+    sid = ""
+    try:
+        await _wait_for_socket(config.socket_path)
+        await client_1.connect()
+        created = await client_1.call(
+            "session.create",
+            {"channel": "cli", "user_id": "alice", "workspace_id": "ws1"},
+        )
+        sid = str(created["session_id"])
+        assert sid
+        _ = await client_1.call(
+            "session.message",
+            {
+                "session_id": sid,
+                "channel": "cli",
+                "user_id": "alice",
+                "workspace_id": "ws1",
+                "content": "first turn",
+            },
+        )
+    finally:
+        with suppress(Exception):
+            await client_1.call("daemon.shutdown")
+        await client_1.close()
+        await asyncio.wait_for(daemon_task_1, timeout=3)
+
+    daemon_task_2 = asyncio.create_task(run_daemon(config))
+    client_2 = ControlClient(config.socket_path)
+    try:
+        await _wait_for_socket(config.socket_path)
+        await client_2.connect()
+        listed = await client_2.call("session.list")
+        sessions = listed.get("sessions", [])
+        assert any(str(row.get("id", "")) == sid for row in sessions)
+        response = await client_2.call(
+            "session.message",
+            {
+                "session_id": sid,
+                "channel": "cli",
+                "user_id": "alice",
+                "workspace_id": "ws1",
+                "content": "second turn",
+            },
+        )
+        assert "safe summary:" in str(response["response"]).lower()
+    finally:
+        with suppress(Exception):
+            await client_2.call("daemon.shutdown")
+        await client_2.close()
+        await asyncio.wait_for(daemon_task_2, timeout=3)

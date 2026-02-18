@@ -199,7 +199,10 @@ class DaemonServices:
         startup_complete = False
 
         try:
-            session_manager = SessionManager(audit_hook=event_wiring.audit_capability_event)
+            session_manager = SessionManager(
+                audit_hook=event_wiring.audit_capability_event,
+                state_dir=config.data_dir / "sessions" / "state",
+            )
             firewall = ContentFirewall()
             if policy_loader.policy.yara_required and firewall.classifier_mode != "yara":
                 raise ValueError(

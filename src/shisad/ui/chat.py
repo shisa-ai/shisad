@@ -177,6 +177,10 @@ class ChatApp(App[None]):
         """Create a session if one wasn't provided."""
         if self._session_id:
             return
+        existing_session_id = await self._find_bound_session(client)
+        if existing_session_id:
+            self._session_id = existing_session_id
+            return
         result = await client.call(
             "session.create",
             params={"user_id": self._user_id, "workspace_id": self._workspace_id},
@@ -189,6 +193,33 @@ class ChatApp(App[None]):
         if not sid:
             raise RuntimeError("session.create returned invalid session_id")
         self._session_id = sid
+
+    async def _find_bound_session(self, client: Any) -> str:
+        """Resolve an existing active CLI session by user/workspace binding."""
+        try:
+            result = await client.call("session.list", params={})
+        except Exception:
+            return ""
+        if not isinstance(result, Mapping):
+            return ""
+        sessions = result.get("sessions", [])
+        if not isinstance(sessions, list):
+            return ""
+        for item in sessions:
+            if not isinstance(item, Mapping):
+                continue
+            if str(item.get("state", "")).strip().lower() != "active":
+                continue
+            if str(item.get("channel", "")).strip().lower() != "cli":
+                continue
+            if str(item.get("user_id", "")) != self._user_id:
+                continue
+            if str(item.get("workspace_id", "")) != self._workspace_id:
+                continue
+            sid = str(item.get("id", "")).strip()
+            if sid:
+                return sid
+        return ""
 
     async def _send_message(self, client: Any, content: str) -> str:
         """Send a message and return the assistant response.

@@ -395,6 +395,7 @@ class SessionImplMixin(HandlerMixinBase):
         if delivery_target is not None:
             serialized_target = delivery_target.model_dump(mode="json")
             session.metadata["delivery_target"] = serialized_target
+            self._session_manager.persist(sid)
             user_transcript_metadata["delivery_target"] = serialized_target
         user_transcript_metadata["session_mode"] = session_mode.value
         self._transcript_store.append(

@@ -83,14 +83,22 @@ async def test_chat_app_creates_session_on_connect() -> None:
     )
 
     mock_client = AsyncMock()
-    mock_client.call = AsyncMock(return_value={"session_id": "new-session-id"})
+    mock_client.call = AsyncMock(
+        side_effect=[
+            {"sessions": []},
+            {"session_id": "new-session-id"},
+        ]
+    )
 
     await app._ensure_session(mock_client)
 
-    mock_client.call.assert_called_once_with(
-        "session.create",
-        params={"user_id": "ops", "workspace_id": "prod"},
-    )
+    assert mock_client.call.await_count == 2
+    first = mock_client.call.await_args_list[0]
+    second = mock_client.call.await_args_list[1]
+    assert first.args == ("session.list",)
+    assert first.kwargs == {"params": {}}
+    assert second.args == ("session.create",)
+    assert second.kwargs == {"params": {"user_id": "ops", "workspace_id": "prod"}}
     assert app._session_id == "new-session-id"
 
 
@@ -109,6 +117,34 @@ async def test_chat_app_skips_create_when_session_exists() -> None:
 
     mock_client.call.assert_not_called()
     assert app._session_id == "existing-id"
+
+
+@pytest.mark.asyncio
+async def test_chat_app_reuses_existing_session_by_user_workspace_binding() -> None:
+    app = ChatApp(
+        socket_path=Path("/tmp/test.sock"),
+        user_id="ops",
+        workspace_id="prod",
+    )
+    mock_client = AsyncMock()
+    mock_client.call = AsyncMock(
+        return_value={
+            "sessions": [
+                {
+                    "id": "active-sid",
+                    "state": "active",
+                    "channel": "cli",
+                    "user_id": "ops",
+                    "workspace_id": "prod",
+                }
+            ]
+        }
+    )
+
+    await app._ensure_session(mock_client)
+
+    mock_client.call.assert_awaited_once_with("session.list", params={})
+    assert app._session_id == "active-sid"
 
 
 @pytest.mark.asyncio
@@ -215,11 +251,13 @@ async def test_chat_app_recovers_from_unknown_session() -> None:
 
     mock_client = AsyncMock()
     # First call: session.message fails with unknown session
-    # Second call: session.create returns new session
-    # Third call: session.message succeeds with new session
+    # Second call: session.list reports no reusable binding
+    # Third call: session.create returns new session
+    # Fourth call: session.message succeeds with new session
     mock_client.call = AsyncMock(
         side_effect=[
             Exception("RPC error -32602: Unknown session: stale-id"),
+            {"sessions": []},
             {"session_id": "new-session-id"},
             {"response": "Hello!"},
         ]
@@ -229,7 +267,7 @@ async def test_chat_app_recovers_from_unknown_session() -> None:
 
     assert result == "Hello!"
     assert app._session_id == "new-session-id"
-    assert mock_client.call.call_count == 3
+    assert mock_client.call.call_count == 4
 
 
 @pytest.mark.asyncio
@@ -246,6 +284,7 @@ async def test_chat_app_recovery_only_retries_once() -> None:
     mock_client.call = AsyncMock(
         side_effect=[
             Exception("RPC error -32602: Unknown session: stale-id"),
+            {"sessions": []},
             {"session_id": "new-id"},
             Exception("RPC error -32602: Unknown session: new-id"),
         ]
@@ -269,6 +308,7 @@ async def test_chat_app_recovery_sets_reconnected_flag() -> None:
     mock_client.call = AsyncMock(
         side_effect=[
             Exception("RPC error -32602: Unknown session: stale-id"),
+            {"sessions": []},
             {"session_id": "new-id"},
             {"response": "Hi!"},
         ]
@@ -293,6 +333,7 @@ async def test_chat_app_recovers_from_session_expired_variant() -> None:
     mock_client.call = AsyncMock(
         side_effect=[
             RuntimeError("RPC error -32602: Session no longer exists: stale-id"),
+            {"sessions": []},
             {"session_id": "new-id"},
             {"response": "Recovered"},
         ]

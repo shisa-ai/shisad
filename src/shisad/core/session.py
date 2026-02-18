@@ -6,6 +6,7 @@ recovery and session state snapshots.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import uuid
@@ -55,9 +56,14 @@ class SessionManager:
         self,
         *,
         audit_hook: Callable[[str, dict[str, Any]], None] | None = None,
+        state_dir: Path | None = None,
     ) -> None:
         self._sessions: dict[SessionId, Session] = {}
         self._audit_hook = audit_hook
+        self._state_dir = state_dir
+        if self._state_dir is not None:
+            self._state_dir.mkdir(parents=True, exist_ok=True)
+            self._load_persisted_active_sessions()
 
     def create(
         self,
@@ -83,6 +89,7 @@ class SessionManager:
             metadata=metadata or {},
         )
         self._sessions[session.id] = session
+        self._persist_session(session)
         logger.info(
             "Session created: %s (channel=%s, user=%s, workspace=%s)",
             session.id,
@@ -125,6 +132,7 @@ class SessionManager:
         if session is None:
             return False
         session.state = SessionState.TERMINATED
+        self._delete_persisted_session(session_id)
         logger.info("Session terminated: %s (reason: %s)", session_id, reason)
         return True
 
@@ -134,6 +142,7 @@ class SessionManager:
         if session is None:
             return False
         session.state = SessionState.SUSPENDED
+        self._persist_session(session)
         return True
 
     def resume(self, session_id: SessionId) -> bool:
@@ -142,6 +151,7 @@ class SessionManager:
         if session is None or session.state != SessionState.SUSPENDED:
             return False
         session.state = SessionState.ACTIVE
+        self._persist_session(session)
         return True
 
     def validate_identity_binding(
@@ -169,6 +179,7 @@ class SessionManager:
             return False
         session.mode = mode
         session.metadata["session_mode"] = mode.value
+        self._persist_session(session)
         return True
 
     def grant_capabilities(
@@ -214,6 +225,8 @@ class SessionManager:
                     "reason": reason,
                 },
             )
+        if granted:
+            self._persist_session(session)
         return True
 
     def restore_from_checkpoint(self, checkpoint: Checkpoint) -> Session:
@@ -233,12 +246,61 @@ class SessionManager:
             restored.metadata["checkpoint_state"] = {"raw": state}
         restored.state = SessionState.ACTIVE
         self._sessions[restored.id] = restored
+        self._persist_session(restored)
         logger.info(
             "Session restored from checkpoint: %s (session=%s)",
             checkpoint.checkpoint_id,
             restored.id,
         )
         return restored
+
+    def persist(self, session_id: SessionId) -> bool:
+        """Persist a session after external metadata updates."""
+        session = self._sessions.get(session_id)
+        if session is None:
+            return False
+        self._persist_session(session)
+        return True
+
+    def _session_state_path(self, session_id: SessionId) -> Path | None:
+        if self._state_dir is None:
+            return None
+        return self._state_dir / f"{session_id}.json"
+
+    def _persist_session(self, session: Session) -> None:
+        path = self._session_state_path(session.id)
+        if path is None:
+            return
+        tmp_path = path.with_suffix(".tmp")
+        payload = session.model_dump_json(indent=2)
+        try:
+            tmp_path.write_text(payload, encoding="utf-8")
+            tmp_path.chmod(0o600)
+            tmp_path.replace(path)
+        except OSError:
+            logger.warning("Failed to persist session state for %s", session.id, exc_info=True)
+            with contextlib.suppress(OSError):
+                tmp_path.unlink()
+
+    def _delete_persisted_session(self, session_id: SessionId) -> None:
+        path = self._session_state_path(session_id)
+        if path is None or not path.exists():
+            return
+        with contextlib.suppress(OSError):
+            path.unlink()
+
+    def _load_persisted_active_sessions(self) -> None:
+        if self._state_dir is None or not self._state_dir.exists():
+            return
+        for path in sorted(self._state_dir.glob("*.json")):
+            try:
+                loaded = Session.model_validate_json(path.read_text(encoding="utf-8"))
+            except (OSError, ValidationError, TypeError, json.JSONDecodeError):
+                logger.warning("Skipping invalid persisted session file: %s", path)
+                continue
+            if loaded.state != SessionState.ACTIVE:
+                continue
+            self._sessions[loaded.id] = loaded
 
 
 # --- Checkpoint system ---
