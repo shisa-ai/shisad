@@ -132,6 +132,14 @@ class DaemonConfig(BaseSettings):
         default="",
         description="Trusted custom persona guidance appended as style-only instructions.",
     )
+    context_window: int = Field(
+        default=20,
+        ge=1,
+        description=(
+            "Number of prior transcript turns included in planner context before "
+            "older turns are compacted into a summary prefix."
+        ),
+    )
     web_search_enabled: bool = Field(
         default=False,
         description="Enable web search primitive.",
