@@ -374,9 +374,11 @@ class SecurityConfig(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="SHISAD_SECURITY_")
 
     # PEP defaults
+    # Legacy compatibility knob retained for env/schema stability.
+    # Runtime enforcement posture is sourced from PolicyBundle.default_deny.
     default_deny: bool = Field(
         default=False,
-        description="Default-deny for unknown tools",
+        description="Legacy default-deny setting (runtime uses policy bundle defaults).",
     )
     require_confirmation_for_writes: bool = Field(
         default=True,

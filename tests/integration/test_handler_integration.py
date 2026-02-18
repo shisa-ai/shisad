@@ -204,3 +204,53 @@ async def test_doctor_component_requests_are_isolated_from_other_component_failu
             await client.call("daemon.shutdown")
         await client.close()
         await asyncio.wait_for(daemon_task, timeout=3)
+
+
+@pytest.mark.asyncio
+async def test_doctor_policy_reports_permissive_posture_without_false_degraded_status(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SHISAD_MODEL_BASE_URL", "https://api.example.com/v1")
+    monkeypatch.setenv("SHISAD_MODEL_PLANNER_BASE_URL", "https://planner.example.com/v1")
+    monkeypatch.setenv("SHISAD_MODEL_EMBEDDINGS_BASE_URL", "https://embed.example.com/v1")
+    monkeypatch.setenv("SHISAD_MODEL_MONITOR_BASE_URL", "https://monitor.example.com/v1")
+
+    policy_path = tmp_path / "policy.yaml"
+    policy_path.write_text(
+        "\n".join(
+            [
+                'version: "1"',
+                "default_deny: false",
+                "default_require_confirmation: false",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    config = DaemonConfig(
+        data_dir=tmp_path / "data",
+        socket_path=tmp_path / "control.sock",
+        policy_path=policy_path,
+        log_level="INFO",
+    )
+
+    daemon_task = asyncio.create_task(run_daemon(config))
+    client = ControlClient(config.socket_path)
+
+    try:
+        await _wait_for_socket(config.socket_path)
+        await client.connect()
+
+        policy_only = await client.call("doctor.check", {"component": "policy"})
+        payload = policy_only["checks"]["policy"]
+        assert payload["status"] == "ok"
+        assert "default_deny_disabled" not in payload.get("problems", [])
+        assert payload.get("posture") == "permissive"
+        assert "default_deny_disabled" in payload.get("posture_notes", [])
+    finally:
+        with suppress(Exception):
+            await client.call("daemon.shutdown")
+        await client.close()
+        await asyncio.wait_for(daemon_task, timeout=3)

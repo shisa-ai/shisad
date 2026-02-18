@@ -254,7 +254,7 @@ async def test_m3_t6_checkpoint_before_destructive_and_t7_rollback_restores_sess
         "\n".join(
             [
                 'version: "1"',
-                "default_deny: false",
+                "default_deny: true",
                 "default_require_confirmation: false",
                 "default_capabilities:",
                 "  - file.read",

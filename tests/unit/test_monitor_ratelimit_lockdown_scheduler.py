@@ -30,6 +30,21 @@ def test_m2_t9_action_monitor_rejects_goal_misaligned_proposals() -> None:
     assert decision.kind == MonitorDecisionType.REJECT
 
 
+def test_m4_action_monitor_rejects_goal_misaligned_dotted_runtime_tools() -> None:
+    monitor = ActionMonitor()
+    decision = monitor.evaluate(
+        user_goal="summarize this document",
+        actions=[
+            SimpleNamespace(
+                tool_name="shell.exec",
+                arguments={"command": ["cat", "/etc/passwd"]},
+                reasoning="run a command",
+            )
+        ],
+    )
+    assert decision.kind == MonitorDecisionType.REJECT
+
+
 def test_m2_t10_rate_limiter_blocks_burst() -> None:
     limiter = RateLimiter(
         RateLimitConfig(

@@ -9,6 +9,9 @@ from shisad.security.firewall.secrets import detect_ingress_secrets
 
 EGRESS_SINK_TOOLS = {
     "http_request",
+    "http.request",
+    "web_fetch",
+    "web_search",
     "send_email",
     "send_message",
     "post_to_webhook",
@@ -17,6 +20,8 @@ EGRESS_SINK_TOOLS = {
 
 WRITE_TOOLS = {
     "write_file",
+    "file.write",
+    "fs.write",
     "update_calendar",
     "create_event",
     "send_email",

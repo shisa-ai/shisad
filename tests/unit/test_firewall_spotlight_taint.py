@@ -175,6 +175,15 @@ def test_m6_taint_sink_decision_handles_credential_and_write_paths() -> None:
     assert write.require_confirmation is True
     assert write.reason == "untrusted_data_to_write_sink"
 
+    dotted_write = sink_decision_for_tool("file.write", {TaintLabel.UNTRUSTED})
+    assert dotted_write.block is False
+    assert dotted_write.require_confirmation is True
+    assert dotted_write.reason == "untrusted_data_to_write_sink"
+
+    web_egress = sink_decision_for_tool("web_fetch", {TaintLabel.SENSITIVE_FILE})
+    assert web_egress.block is True
+    assert web_egress.reason == "sensitive_data_to_egress"
+
     safe = sink_decision_for_tool("file.read", set())
     assert safe.block is False
     assert safe.require_confirmation is False

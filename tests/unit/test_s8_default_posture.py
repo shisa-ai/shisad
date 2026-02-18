@@ -127,18 +127,18 @@ def test_s8_pep_still_requires_confirmation_for_confirmed_tools() -> None:
 
 def test_s8_pep_still_requires_confirmation_for_taint_write_sink() -> None:
     registry = ToolRegistry()
-    _register_tool(registry, name="write_file", capabilities=[Capability.FILE_WRITE])
+    _register_tool(registry, name="file.write", capabilities=[Capability.FILE_WRITE])
     pep = PEP(PolicyBundle(), registry)
 
     clean = pep.evaluate(
-        ToolName("write_file"),
+        ToolName("file.write"),
         {},
         PolicyContext(capabilities={Capability.FILE_WRITE}, trust_level="trusted"),
     )
     assert clean.kind == PEPDecisionKind.ALLOW
 
     tainted = pep.evaluate(
-        ToolName("write_file"),
+        ToolName("file.write"),
         {},
         PolicyContext(
             capabilities={Capability.FILE_WRITE},
@@ -147,6 +147,26 @@ def test_s8_pep_still_requires_confirmation_for_taint_write_sink() -> None:
         ),
     )
     assert tainted.kind == PEPDecisionKind.REQUIRE_CONFIRMATION
+
+
+def test_s8_pep_high_risk_runtime_aliases_require_confirmation() -> None:
+    registry = ToolRegistry()
+    _register_tool(registry, name="shell.exec", capabilities=[Capability.SHELL_EXEC])
+    _register_tool(registry, name="file.write", capabilities=[Capability.FILE_WRITE])
+    pep = PEP(PolicyBundle(), registry)
+
+    shell = pep.evaluate(
+        ToolName("shell.exec"),
+        {},
+        PolicyContext(capabilities={Capability.SHELL_EXEC}),
+    )
+    file_write = pep.evaluate(
+        ToolName("file.write"),
+        {},
+        PolicyContext(capabilities={Capability.FILE_WRITE}),
+    )
+    assert shell.kind == PEPDecisionKind.REQUIRE_CONFIRMATION
+    assert file_write.kind == PEPDecisionKind.REQUIRE_CONFIRMATION
 
 
 def test_s8_pep_still_requires_confirmation_for_risk_threshold() -> None:

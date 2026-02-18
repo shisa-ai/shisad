@@ -651,10 +651,14 @@ class PEP:
         score = 0.0
 
         high_risk_tools = {
+            # Legacy + dotted runtime aliases must stay in sync.
             "send_email": 0.4,
             "http_request": 0.45,
+            "http.request": 0.45,
             "shell_exec": 0.55,
-            "write_file": 0.35,
+            "shell.exec": 0.55,
+            "write_file": 0.45,
+            "file.write": 0.45,
         }
         score += high_risk_tools.get(str(tool_name), 0.1)
 

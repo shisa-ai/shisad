@@ -543,6 +543,7 @@ class HandlerImplementation(
 
     def _doctor_policy_status(self) -> dict[str, Any]:
         problems: list[str] = []
+        posture_notes: list[str] = []
         if not self._config.policy_path.exists():
             problems.append("policy_file_missing")
         try:
@@ -558,12 +559,13 @@ class HandlerImplementation(
         if using_defaults:
             problems.append("policy_defaults_active")
         if not self._policy_loader.policy.default_deny:
-            problems.append("default_deny_disabled")
+            posture_notes.append("default_deny_disabled")
         status = "ok"
         if "policy_hash_mismatch" in problems or "policy_integrity_check_failed" in problems:
             status = "misconfigured"
         elif problems:
             status = "degraded"
+        posture = "restrictive" if self._policy_loader.policy.default_deny else "permissive"
         return {
             "status": status,
             "problems": sorted(set(problems)),
@@ -572,6 +574,8 @@ class HandlerImplementation(
                 self._policy_loader.file_hash[:12] if self._policy_loader.file_hash else ""
             ),
             "default_deny": bool(self._policy_loader.policy.default_deny),
+            "posture": posture,
+            "posture_notes": sorted(set(posture_notes)),
         }
 
     def _doctor_channels_status(self) -> dict[str, Any]:

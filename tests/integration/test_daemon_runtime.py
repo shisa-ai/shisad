@@ -35,7 +35,7 @@ async def test_daemon_registers_alarm_tool_and_derives_capability_grant_actor(
         "\n".join(
             [
                 'version: "1"',
-                "default_deny: false",
+                "default_deny: true",
                 "default_require_confirmation: false",
                 "default_capabilities:",
                 "  - file.read",

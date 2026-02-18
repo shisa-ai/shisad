@@ -25,10 +25,14 @@ class ActionMonitor:
     """Deterministic M2 monitor with clean-room constraints."""
 
     _HIGH_RISK_TOOLS: ClassVar[set[str]] = {
+        # Keep underscore + dotted runtime aliases aligned.
         "http_request",
+        "http.request",
         "send_email",
         "write_file",
+        "file.write",
         "shell_exec",
+        "shell.exec",
     }
     _SUSPICIOUS_ARG_TOKENS: ClassVar[set[str]] = {
         "evil.com",

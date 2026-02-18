@@ -139,6 +139,9 @@ async def test_m6_cleanroom_transition_rejects_tool_output_tainted_history(
             {
                 "source_id": "evidence-1",
                 "source_type": "external",
+                # Under S8 defaults, sessions have side-effect capabilities and
+                # retrieve_rag excludes external_web by policy. Use project_docs
+                # to keep retrieval taint propagation deterministic in this test.
                 "collection": "project_docs",
                 "content": "evidence payload from external source",
             },
