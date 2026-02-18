@@ -91,6 +91,7 @@ def build_planner_input(
     trusted_instructions: str,
     user_goal: str,
     untrusted_content: str,
+    untrusted_context: str = "",
     marker: str = "^",
     encode_untrusted: bool = False,
     trusted_context: str = "",
@@ -99,17 +100,27 @@ def build_planner_input(
 
     Trusted-only turns should not be framed as if external untrusted data exists.
     """
-    if not untrusted_content.strip():
+    untrusted_sections: list[str] = []
+    if untrusted_content.strip():
+        untrusted_sections.append(
+            "CURRENT TURN CONTENT (UNTRUSTED DATA):\n" + untrusted_content.strip()
+        )
+    if untrusted_context.strip():
+        untrusted_sections.append(
+            "TRANSCRIPT HISTORY (UNTRUSTED DATA):\n" + untrusted_context.strip()
+        )
+    if not untrusted_sections:
         if trusted_context.strip():
             return render_trusted_context(
                 trusted_context=trusted_context,
                 user_goal=user_goal,
             )
         return user_goal
+    combined_untrusted = "\n\n".join(untrusted_sections)
     return render_spotlight_context(
         trusted_instructions=trusted_instructions,
         user_goal=user_goal,
-        untrusted_content=untrusted_content,
+        untrusted_content=combined_untrusted,
         marker=marker,
         encode_untrusted=encode_untrusted,
     )
