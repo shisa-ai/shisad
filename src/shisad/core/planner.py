@@ -10,6 +10,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field, ValidationError
 
 from shisad.core.providers.base import Message, ModelProvider, ProviderResponse
+from shisad.core.tools.names import canonical_tool_name
 from shisad.core.types import PEPDecision, TaintLabel, ToolName
 from shisad.security.pep import PEP, PolicyContext
 
@@ -271,6 +272,9 @@ class Planner:
             name_raw = function.get("name")
             if not isinstance(name_raw, str) or not name_raw.strip():
                 continue
+            canonical_name = canonical_tool_name(name_raw)
+            if not canonical_name:
+                continue
             parsed_arguments = cls._parse_tool_arguments(function.get("arguments"))
             if parsed_arguments is None:
                 logger.debug("Dropping native tool call with invalid arguments payload")
@@ -281,7 +285,7 @@ class Planner:
                 action_id = f"native-call-{index + 1}"
             payload = {
                 "action_id": action_id,
-                "tool_name": name_raw.strip(),
+                "tool_name": canonical_name,
                 "arguments": parsed_arguments,
                 "reasoning": "Native tool call proposed by planner",
                 "data_sources": [],

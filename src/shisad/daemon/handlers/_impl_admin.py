@@ -17,7 +17,8 @@ from shisad.core.events import (
     ChannelPairingRequested,
     LockdownChanged,
 )
-from shisad.core.types import SessionId, ToolName, UserId, WorkspaceId
+from shisad.core.tools.names import canonical_tool_name_typed
+from shisad.core.types import SessionId, UserId, WorkspaceId
 from shisad.daemon.handlers._mixin_typing import HandlerMixinBase
 from shisad.executors.sandbox import SandboxType
 from shisad.governance.scopes import ScopedPolicy, ScopedPolicyCompiler, ScopeLevel
@@ -103,7 +104,7 @@ class AdminImplMixin(HandlerMixinBase):
         if not tool_name_raw and action.startswith("tool:"):
             tool_name_raw = action.split(":", 1)[1].strip()
 
-        tool_name = ToolName(tool_name_raw or "shell_exec")
+        tool_name = canonical_tool_name_typed(tool_name_raw or "shell.exec")
         tool_def = self._registry.get_tool(tool_name)
         floor = self._compute_tool_policy_floor(tool_name=tool_name, tool_definition=tool_def)
         compiled = ScopedPolicyCompiler.compile_chain(

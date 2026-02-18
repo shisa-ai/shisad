@@ -17,6 +17,7 @@ from typing import Any
 import yaml
 from pydantic import BaseModel, Field, ValidationError, model_validator
 
+from shisad.core.tools.names import canonical_tool_name
 from shisad.core.types import Capability, ToolName
 
 logger = logging.getLogger(__name__)
@@ -194,15 +195,18 @@ class SandboxPolicy(BaseModel):
             return value
         migrated: dict[str, Any] = {}
         for key, item in overrides.items():
+            canonical_key = canonical_tool_name(str(key))
+            if not canonical_key:
+                continue
             if isinstance(item, str):
                 logger.warning(
                     "Deprecated sandbox.tool_overrides scalar for tool '%s'; "
                     "interpreting as sandbox_type override",
                     key,
                 )
-                migrated[str(key)] = {"sandbox_type": item}
+                migrated[canonical_key] = {"sandbox_type": item}
             else:
-                migrated[str(key)] = item
+                migrated[canonical_key] = item
         value["tool_overrides"] = migrated
         return value
 
@@ -257,6 +261,30 @@ class PolicyBundle(BaseModel):
     skills: SkillPolicy = Field(default_factory=SkillPolicy)
     yara_required: bool = False
     safe_output_domains: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _canonicalize_tool_names(cls, value: Any) -> Any:
+        if not isinstance(value, dict):
+            return value
+        tools = value.get("tools")
+        if isinstance(tools, dict):
+            canonical_tools: dict[str, Any] = {}
+            for key, item in tools.items():
+                canonical_key = canonical_tool_name(str(key))
+                if not canonical_key:
+                    continue
+                canonical_tools[canonical_key] = item
+            value["tools"] = canonical_tools
+        allowlist = value.get("session_tool_allowlist")
+        if isinstance(allowlist, list):
+            canonical_allowlist: list[str] = []
+            for item in allowlist:
+                canonical_name = canonical_tool_name(str(item))
+                if canonical_name:
+                    canonical_allowlist.append(canonical_name)
+            value["session_tool_allowlist"] = canonical_allowlist
+        return value
 
 
 # --- Policy loader ---

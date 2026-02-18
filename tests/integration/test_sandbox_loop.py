@@ -425,7 +425,7 @@ async def test_m3_rr2_planner_shell_exec_stage1_requires_upgrade(
         stage2_reasons = [
             str(event.get("data", {}).get("reason", ""))
             for event in rejected["events"]
-            if str(event.get("data", {}).get("tool_name", "")) == "shell_exec"
+            if str(event.get("data", {}).get("tool_name", "")) == "shell.exec"
         ]
         assert any("trace:stage2_upgrade_required" in reason for reason in stage2_reasons)
 
@@ -436,7 +436,7 @@ async def test_m3_rr2_planner_shell_exec_stage1_requires_upgrade(
         matching = [
             event
             for event in executed["events"]
-            if event["data"].get("tool_name") == "shell_exec"
+            if event["data"].get("tool_name") == "shell.exec"
         ]
         assert not matching
     finally:

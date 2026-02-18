@@ -7,6 +7,8 @@ from typing import Any, ClassVar
 
 from pydantic import BaseModel, Field
 
+from shisad.core.tools.names import canonical_tool_name
+
 
 class MonitorDecisionType(StrEnum):
     APPROVE = "approve"
@@ -25,13 +27,9 @@ class ActionMonitor:
     """Deterministic M2 monitor with clean-room constraints."""
 
     _HIGH_RISK_TOOLS: ClassVar[set[str]] = {
-        # Keep underscore + dotted runtime aliases aligned.
-        "http_request",
         "http.request",
         "send_email",
-        "write_file",
         "file.write",
-        "shell_exec",
         "shell.exec",
     }
     _SUSPICIOUS_ARG_TOKENS: ClassVar[set[str]] = {
@@ -52,7 +50,7 @@ class ActionMonitor:
         suspicious_flags: list[str] = []
 
         for action in actions:
-            tool = str(getattr(action, "tool_name", ""))
+            tool = canonical_tool_name(str(getattr(action, "tool_name", "")))
             argument_text = self._flatten_arguments(getattr(action, "arguments", {}))
             if any(token in argument_text for token in self._SUSPICIOUS_ARG_TOKENS):
                 reject_flags.append(f"{tool}:suspicious_argument_content")

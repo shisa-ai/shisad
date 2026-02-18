@@ -512,6 +512,10 @@ def test_m5_t15_action_normalization_maps_aliases_to_canonical_kind() -> None:
     ) == ActionKind.EGRESS
 
 
+def test_s9_infer_action_kind_treats_web_search_as_egress() -> None:
+    assert infer_action_kind("web.search", {"query": "security updates"}) == ActionKind.EGRESS
+
+
 def test_m5_rt9_command_filename_token_is_not_misclassified_as_egress() -> None:
     kind = infer_action_kind(
         "shell.exec",

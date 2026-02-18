@@ -173,7 +173,7 @@ def test_s8_pep_still_requires_confirmation_for_risk_threshold() -> None:
     registry = ToolRegistry()
     _register_tool(
         registry,
-        name="http_request",
+        name="http.request",
         capabilities=[Capability.HTTP_REQUEST],
         parameters=[ToolParameter(name="url", type="string", required=True)],
     )
@@ -184,7 +184,7 @@ def test_s8_pep_still_requires_confirmation_for_risk_threshold() -> None:
         registry,
     )
     decision = pep.evaluate(
-        ToolName("http_request"),
+        ToolName("http.request"),
         {"url": "https://api.good.com/path"},
         PolicyContext(capabilities={Capability.HTTP_REQUEST}),
     )
@@ -195,13 +195,13 @@ def test_s8_pep_still_blocks_egress_without_allowlist_entries() -> None:
     registry = ToolRegistry()
     _register_tool(
         registry,
-        name="http_request",
+        name="http.request",
         capabilities=[Capability.HTTP_REQUEST],
         parameters=[ToolParameter(name="url", type="string", required=True)],
     )
     pep = PEP(PolicyBundle(), registry)
     decision = pep.evaluate(
-        ToolName("http_request"),
+        ToolName("http.request"),
         {"url": "https://api.good.com/path"},
         PolicyContext(capabilities={Capability.HTTP_REQUEST}),
     )

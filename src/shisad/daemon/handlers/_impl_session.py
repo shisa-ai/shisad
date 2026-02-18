@@ -30,6 +30,7 @@ from shisad.core.events import (
     ToolRejected,
 )
 from shisad.core.planner import PlannerOutput, PlannerOutputError, PlannerResult
+from shisad.core.tools.names import canonical_tool_name, canonical_tool_name_typed
 from shisad.core.tools.schema import ToolDefinition, tool_definitions_to_openai
 from shisad.core.trace import TraceMessage, TraceToolCall, TraceTurn
 from shisad.core.types import (
@@ -60,8 +61,8 @@ AssistantTone = Literal["strict", "neutral", "friendly"]
 _CLEANROOM_CHANNELS: set[str] = {"cli"}
 _CLEANROOM_UNTRUSTED_TOOL_NAMES: set[str] = {
     "retrieve_rag",
-    "web_search",
-    "web_fetch",
+    "web.search",
+    "web.fetch",
     "realitycheck.search",
     "realitycheck.read",
 }
@@ -203,13 +204,18 @@ class SessionImplMixin(HandlerMixinBase):
             session_mode = SessionMode(requested_mode or SessionMode.DEFAULT.value)
         except ValueError as exc:
             raise ValueError(f"Unsupported session mode: {requested_mode}") from exc
-        default_allowlist = list(self._policy_loader.policy.session_tool_allowlist)
+        default_allowlist = [
+            canonical_tool_name_typed(tool)
+            for tool in self._policy_loader.policy.session_tool_allowlist
+        ]
         if (
             not default_allowlist
             and self._policy_loader.policy.default_deny
             and self._policy_loader.policy.tools
         ):
-            default_allowlist = list(self._policy_loader.policy.tools.keys())
+            default_allowlist = [
+                canonical_tool_name_typed(tool) for tool in self._policy_loader.policy.tools
+            ]
         metadata: dict[str, Any] = {}
         if default_allowlist:
             metadata["tool_allowlist"] = [str(tool) for tool in default_allowlist]
@@ -409,7 +415,13 @@ class SessionImplMixin(HandlerMixinBase):
         raw_allowlist = session.metadata.get("tool_allowlist")
         tool_allowlist: set[ToolName] | None = None
         if isinstance(raw_allowlist, list) and raw_allowlist:
-            tool_allowlist = {ToolName(str(item)) for item in raw_allowlist}
+            canonical_allowlist = {
+                ToolName(canonical_tool_name(str(item)))
+                for item in raw_allowlist
+                if canonical_tool_name(str(item))
+            }
+            if canonical_allowlist:
+                tool_allowlist = canonical_allowlist
 
         effective_caps = self._lockdown_manager.apply_capability_restrictions(
             sid,

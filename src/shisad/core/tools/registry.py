@@ -13,6 +13,7 @@ from typing import Any
 
 import yaml
 
+from shisad.core.tools.names import canonical_tool_name_typed
 from shisad.core.tools.schema import ToolDefinition
 from shisad.core.types import ToolName
 
@@ -42,21 +43,25 @@ class ToolRegistry:
         Raises:
             ValueError: If the hash doesn't match (tampering detected).
         """
+        canonical_name = canonical_tool_name_typed(tool.name)
+        canonical_tool = tool.model_copy(update={"name": canonical_name}, deep=True)
+
         if expected_hash is not None:
-            actual_hash = tool.schema_hash()
+            actual_hash = canonical_tool.schema_hash()
             if actual_hash != expected_hash:
                 raise ValueError(
-                    f"Tool '{tool.name}' schema hash mismatch: "
+                    f"Tool '{canonical_name}' schema hash mismatch: "
                     f"expected {expected_hash[:12]}…, got {actual_hash[:12]}…"
                 )
-            self._expected_hashes[tool.name] = expected_hash
+            self._expected_hashes[canonical_name] = expected_hash
 
-        self._tools[tool.name] = tool.model_copy(deep=True)
-        logger.debug("Registered tool: %s", tool.name)
+        self._tools[canonical_name] = canonical_tool
+        logger.debug("Registered tool: %s", canonical_name)
 
     def get_tool(self, name: ToolName) -> ToolDefinition | None:
         """Get a tool definition by name."""
-        tool = self._tools.get(name)
+        canonical_name = canonical_tool_name_typed(name)
+        tool = self._tools.get(canonical_name)
         if tool is None:
             return None
         return tool.model_copy(deep=True)
@@ -67,16 +72,17 @@ class ToolRegistry:
 
     def has_tool(self, name: ToolName) -> bool:
         """Check if a tool is registered."""
-        return name in self._tools
+        return canonical_tool_name_typed(name) in self._tools
 
     def validate_call(self, name: ToolName, arguments: dict[str, Any]) -> list[str]:
         """Validate a tool call's arguments against the tool's schema.
 
         Returns a list of validation errors (empty = valid).
         """
-        tool = self._tools.get(name)
+        canonical_name = canonical_tool_name_typed(name)
+        tool = self._tools.get(canonical_name)
         if tool is None:
-            return [f"Unknown tool: {name}"]
+            return [f"Unknown tool: {canonical_name}"]
 
         errors: list[str] = []
         schema = tool.json_schema()

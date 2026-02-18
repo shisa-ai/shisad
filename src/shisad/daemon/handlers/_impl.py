@@ -1229,7 +1229,7 @@ class HandlerImplementation(
                 ),
             )
 
-        if tool_name == "web_search":
+        if tool_name == "web.search":
             search_payload = self._web_toolkit.search(
                 query=str(arguments.get("query", "")),
                 limit=int(arguments.get("limit", 5)),
@@ -1240,7 +1240,7 @@ class HandlerImplementation(
             )
             return success, checkpoint_id, output
 
-        if tool_name == "web_fetch":
+        if tool_name == "web.fetch":
             raw_max_bytes = arguments.get("max_bytes")
             max_bytes = int(raw_max_bytes) if raw_max_bytes is not None else None
             fetch_payload = self._web_toolkit.fetch(

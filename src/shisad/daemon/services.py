@@ -673,29 +673,7 @@ def _build_tool_registry(
     registry.register(ShellExecTool.tool_definition())
     registry.register(
         ToolDefinition(
-            name=ToolName("shell.exec"),
-            description="Legacy shell execution alias routed via sandbox runtime.",
-            parameters=[
-                ToolParameter(
-                    name="command",
-                    type="array",
-                    description="Command token list to execute",
-                    required=True,
-                ),
-                ToolParameter(name="read_paths", type="array", required=False),
-                ToolParameter(name="write_paths", type="array", required=False),
-                ToolParameter(name="network_urls", type="array", required=False),
-                ToolParameter(name="env", type="object", required=False),
-                ToolParameter(name="cwd", type="string", required=False),
-            ],
-            capabilities_required=[Capability.SHELL_EXEC],
-            sandbox_type="nsjail",
-            require_confirmation=False,
-        )
-    )
-    registry.register(
-        ToolDefinition(
-            name=ToolName("http_request"),
+            name=ToolName("http.request"),
             description="HTTP request runtime tool for sandbox egress policy testing.",
             parameters=[
                 ToolParameter(name="command", type="array", required=True),
@@ -736,7 +714,7 @@ def _build_tool_registry(
     )
     registry.register(
         ToolDefinition(
-            name=ToolName("web_search"),
+            name=ToolName("web.search"),
             description="Search via configured backend (SearxNG reference in v0.3).",
             parameters=[
                 ToolParameter(name="query", type="string", required=True),
@@ -749,7 +727,7 @@ def _build_tool_registry(
     )
     registry.register(
         ToolDefinition(
-            name=ToolName("web_fetch"),
+            name=ToolName("web.fetch"),
             description="Fetch URL with structured evidence payload.",
             parameters=[
                 ToolParameter(name="url", type="string", required=True),

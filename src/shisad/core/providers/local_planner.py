@@ -70,7 +70,7 @@ class LocalPlannerProvider:
                 actions.append(
                     {
                         "action_id": "local-shell-1",
-                        "tool_name": "shell_exec",
+                        "tool_name": "shell.exec",
                         "arguments": {
                             "command": command_tokens,
                         },

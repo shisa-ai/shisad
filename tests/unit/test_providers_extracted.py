@@ -44,7 +44,7 @@ async def test_local_planner_provider_handles_retrieve_run_and_anomaly_paths() -
         for item in response.message.tool_calls
         if isinstance(item, dict)
     }
-    assert {"retrieve_rag", "shell_exec", "report_anomaly"} <= tool_names
+    assert {"retrieve_rag", "shell.exec", "report_anomaly"} <= tool_names
 
 
 @pytest.mark.asyncio

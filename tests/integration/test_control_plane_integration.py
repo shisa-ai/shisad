@@ -238,7 +238,7 @@ async def test_m5_t21_tool_execute_has_declared_threat_model_path_and_no_bypass(
                 "tool.execute",
                 {
                     "session_id": sid,
-                    "tool_name": "shell_exec",
+                    "tool_name": "shell.exec",
                     "command": [sys.executable, "-c", "print('ok')"],
                     "approved_by_pep": True,
                 },
@@ -248,7 +248,7 @@ async def test_m5_t21_tool_execute_has_declared_threat_model_path_and_no_bypass(
             "tool.execute",
             {
                 "session_id": sid,
-                "tool_name": "shell_exec",
+                "tool_name": "shell.exec",
                 "command": [sys.executable, "-c", "print('ok')"],
                 "degraded_mode": "fail_open",
                 "security_critical": False,
@@ -259,7 +259,7 @@ async def test_m5_t21_tool_execute_has_declared_threat_model_path_and_no_bypass(
             {"event_type": "ConsensusEvaluated", "session_id": sid, "limit": 50},
         )
         assert any(
-            event.get("data", {}).get("tool_name") == "shell_exec"
+            event.get("data", {}).get("tool_name") == "shell.exec"
             for event in consensus["events"]
         )
     finally:
@@ -329,7 +329,7 @@ async def test_m5_rt2_policy_explain_includes_control_plane_section(
         sid = created["session_id"]
         explained = await client.call(
             "policy.explain",
-            {"session_id": sid, "action": "tool:shell_exec"},
+            {"session_id": sid, "action": "tool:shell.exec"},
         )
         control_plane = explained.get("control_plane")
         assert isinstance(control_plane, dict)

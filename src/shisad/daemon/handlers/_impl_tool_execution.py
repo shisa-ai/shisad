@@ -17,6 +17,7 @@ from shisad.core.events import (
     ToolExecuted,
     ToolRejected,
 )
+from shisad.core.tools.names import canonical_tool_name
 from shisad.core.types import Capability, SessionId, TaintLabel, ToolName
 from shisad.daemon.handlers._mixin_typing import HandlerMixinBase
 from shisad.executors.sandbox import DegradedModePolicy, SandboxConfig, SandboxResult
@@ -38,7 +39,9 @@ class ToolExecutionImplMixin(HandlerMixinBase):
         if session is None:
             raise ValueError(f"Unknown session: {sid}")
 
-        tool_name_value = str(params.get("tool_name", ""))
+        tool_name_value = canonical_tool_name(str(params.get("tool_name", "")))
+        if not tool_name_value:
+            raise ValueError("tool_name is required")
         tool_name = ToolName(tool_name_value)
         tool_def = self._registry.get_tool(tool_name)
         if tool_def is None:

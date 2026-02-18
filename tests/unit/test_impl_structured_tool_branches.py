@@ -111,7 +111,7 @@ async def test_m7_impl_web_search_branch_records_success_with_structured_helper(
         harness,  # type: ignore[arg-type]
         sid=harness.session_id,
         user_id=UserId("user-1"),
-        tool_name=ToolName("web_search"),
+        tool_name=ToolName("web.search"),
         arguments={"query": "roadmap", "limit": 2},
         capabilities=set(),
         approval_actor="control_api",
@@ -120,7 +120,7 @@ async def test_m7_impl_web_search_branch_records_success_with_structured_helper(
     assert success is True
     assert checkpoint_id is None
     assert output is not None
-    assert output.tool_name == "web_search"
+    assert output.tool_name == "web.search"
     assert output.taint_labels == {TaintLabel.UNTRUSTED}
     assert harness._web_toolkit.calls == [("roadmap", 2)]
     assert harness._control_plane.results == [True]

@@ -109,7 +109,7 @@ def test_m1_t9_taint_propagation_sensitive_and_untrusted() -> None:
 
 
 def test_m1_t10_taint_blocks_sensitive_to_egress_sink() -> None:
-    decision = sink_decision_for_tool("http_request", {TaintLabel.SENSITIVE_FILE})
+    decision = sink_decision_for_tool("http.request", {TaintLabel.SENSITIVE_FILE})
     assert decision.block
     assert decision.reason == "sensitive_data_to_egress"
 
@@ -156,9 +156,9 @@ def test_m6_taint_label_retrieval_defaults_to_untrusted_for_unknown_collection()
 
 
 def test_m6_taint_label_tool_output_marks_external_tools_only() -> None:
-    assert label_tool_output("http_request") == {TaintLabel.UNTRUSTED}
-    assert label_tool_output("web_search") == {TaintLabel.UNTRUSTED}
-    assert label_tool_output("web_fetch") == {TaintLabel.UNTRUSTED}
+    assert label_tool_output("http.request") == {TaintLabel.UNTRUSTED}
+    assert label_tool_output("web.search") == {TaintLabel.UNTRUSTED}
+    assert label_tool_output("web.fetch") == {TaintLabel.UNTRUSTED}
     assert label_tool_output("retrieve_rag") == {TaintLabel.UNTRUSTED}
     assert label_tool_output("realitycheck.search") == {TaintLabel.UNTRUSTED}
     assert label_tool_output("realitycheck.read") == {TaintLabel.UNTRUSTED}
@@ -170,17 +170,12 @@ def test_m6_taint_sink_decision_handles_credential_and_write_paths() -> None:
     assert credential.block is True
     assert credential.reason == "credential_taint"
 
-    write = sink_decision_for_tool("write_file", {TaintLabel.UNTRUSTED})
+    write = sink_decision_for_tool("file.write", {TaintLabel.UNTRUSTED})
     assert write.block is False
     assert write.require_confirmation is True
     assert write.reason == "untrusted_data_to_write_sink"
 
-    dotted_write = sink_decision_for_tool("file.write", {TaintLabel.UNTRUSTED})
-    assert dotted_write.block is False
-    assert dotted_write.require_confirmation is True
-    assert dotted_write.reason == "untrusted_data_to_write_sink"
-
-    web_egress = sink_decision_for_tool("web_fetch", {TaintLabel.SENSITIVE_FILE})
+    web_egress = sink_decision_for_tool("web.fetch", {TaintLabel.SENSITIVE_FILE})
     assert web_egress.block is True
     assert web_egress.reason == "sensitive_data_to_egress"
 

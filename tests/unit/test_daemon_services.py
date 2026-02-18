@@ -273,6 +273,19 @@ def test_m3_tool_registry_omits_realitycheck_tools_when_surface_disabled() -> No
     assert "realitycheck.read" not in names
 
 
+def test_s9_tool_registry_uses_dotted_canonical_runtime_ids_only() -> None:
+    registry, _alarm = _build_tool_registry(
+        EventBus(),
+        realitycheck_surface_enabled=False,
+    )
+    names = {str(item.name) for item in registry.list_tools()}
+    assert {"shell.exec", "http.request", "web.search", "web.fetch"} <= names
+    assert "shell_exec" not in names
+    assert "http_request" not in names
+    assert "web_search" not in names
+    assert "web_fetch" not in names
+
+
 def test_m3_tool_registry_registers_realitycheck_tools_with_endpoint_caps() -> None:
     registry, _alarm = _build_tool_registry(
         EventBus(),

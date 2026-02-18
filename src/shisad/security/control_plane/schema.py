@@ -11,6 +11,8 @@ from urllib.parse import urlparse
 
 from pydantic import BaseModel, Field
 
+from shisad.core.tools.names import canonical_tool_name
+
 
 class ActionKind(StrEnum):
     """Canonical action taxonomy for metadata-only control-plane decisions."""
@@ -67,24 +69,16 @@ class ControlPlaneAction(BaseModel, frozen=True):
     network_hosts: list[str] = Field(default_factory=list)
 
 
-_ALIAS_TOOL_MAP: dict[str, str] = {
-    "shell.exec": "shell_exec",
-    "shell_exec": "shell_exec",
-    "shell-exec": "shell_exec",
-    "file.read": "file.read",
-    "file_read": "file.read",
-    "file.write": "file.write",
-    "file_write": "file.write",
-}
-
 _TOOL_KIND_MAP: dict[str, ActionKind] = {
     "retrieve_rag": ActionKind.MEMORY_READ,
     "memory.retrieve": ActionKind.MEMORY_READ,
     "memory.write": ActionKind.MEMORY_WRITE,
     "file.read": ActionKind.FS_READ,
     "file.write": ActionKind.FS_WRITE,
-    "shell_exec": ActionKind.SHELL_EXEC,
-    "http_request": ActionKind.EGRESS,
+    "shell.exec": ActionKind.SHELL_EXEC,
+    "http.request": ActionKind.EGRESS,
+    "web.search": ActionKind.EGRESS,
+    "web.fetch": ActionKind.EGRESS,
     "send_email": ActionKind.MESSAGE_SEND,
     "session.message": ActionKind.MESSAGE_READ,
 }
@@ -235,15 +229,14 @@ def build_action(
 
 
 def _canonical_tool_name(tool_name: str) -> str:
-    lowered = tool_name.strip().lower()
-    return _ALIAS_TOOL_MAP.get(lowered, lowered)
+    return canonical_tool_name(tool_name)
 
 
 def infer_action_kind(tool_name: str, arguments: dict[str, Any]) -> ActionKind:
     tool_name = _canonical_tool_name(tool_name)
     kind = _TOOL_KIND_MAP.get(tool_name)
     if kind is not None:
-        if tool_name == "shell_exec" and extract_network_hosts(arguments):
+        if tool_name == "shell.exec" and extract_network_hosts(arguments):
             return ActionKind.EGRESS
         return kind
 

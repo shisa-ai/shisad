@@ -4,14 +4,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from shisad.core.tools.names import canonical_tool_name
 from shisad.core.types import TaintLabel
 from shisad.security.firewall.secrets import detect_ingress_secrets
 
 EGRESS_SINK_TOOLS = {
-    "http_request",
     "http.request",
-    "web_fetch",
-    "web_search",
+    "web.fetch",
+    "web.search",
     "send_email",
     "send_message",
     "post_to_webhook",
@@ -19,7 +19,6 @@ EGRESS_SINK_TOOLS = {
 }
 
 WRITE_TOOLS = {
-    "write_file",
     "file.write",
     "fs.write",
     "update_calendar",
@@ -63,15 +62,16 @@ def label_retrieval(collection: str) -> set[TaintLabel]:
 
 def label_tool_output(tool_name: str) -> set[TaintLabel]:
     """Label tool output by trust characteristics."""
+    canonical_name = canonical_tool_name(tool_name)
     external_tools = {
-        "http_request",
-        "web_search",
-        "web_fetch",
+        "http.request",
+        "web.search",
+        "web.fetch",
         "retrieve_rag",
         "realitycheck.search",
         "realitycheck.read",
     }
-    if tool_name in external_tools:
+    if canonical_name in external_tools:
         return {TaintLabel.UNTRUSTED}
     return set()
 
@@ -86,17 +86,18 @@ def propagate_taint(*label_sets: set[TaintLabel]) -> set[TaintLabel]:
 
 def sink_decision_for_tool(tool_name: str, labels: set[TaintLabel]) -> TaintSinkDecision:
     """Evaluate taint labels against sink rules for a proposed tool call."""
+    canonical_name = canonical_tool_name(tool_name)
     if TaintLabel.USER_CREDENTIALS in labels:
         return TaintSinkDecision(block=True, require_confirmation=False, reason="credential_taint")
 
-    if tool_name in EGRESS_SINK_TOOLS and SENSITIVE_LABELS.intersection(labels):
+    if canonical_name in EGRESS_SINK_TOOLS and SENSITIVE_LABELS.intersection(labels):
         return TaintSinkDecision(
             block=True,
             require_confirmation=False,
             reason="sensitive_data_to_egress",
         )
 
-    if tool_name in WRITE_TOOLS and TaintLabel.UNTRUSTED in labels:
+    if canonical_name in WRITE_TOOLS and TaintLabel.UNTRUSTED in labels:
         return TaintSinkDecision(
             block=False,
             require_confirmation=True,

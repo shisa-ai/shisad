@@ -12,7 +12,7 @@ class ShellExecTool:
     @staticmethod
     def tool_definition() -> ToolDefinition:
         return ToolDefinition(
-            name=ToolName("shell_exec"),
+            name=ToolName("shell.exec"),
             description="Execute a shell command via sandboxed executor runtime.",
             parameters=[
                 ToolParameter(

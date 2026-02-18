@@ -14,6 +14,7 @@ from typing import Any, ClassVar
 from urllib.parse import urlparse
 
 from shisad.core.host_matching import host_matches
+from shisad.core.tools.names import canonical_tool_name_typed
 from shisad.core.tools.registry import ToolRegistry
 from shisad.core.types import (
     Capability,
@@ -132,6 +133,7 @@ class PEP:
         context: PolicyContext,
     ) -> PEPDecision:
         """Evaluate a tool call proposal."""
+        tool_name = canonical_tool_name_typed(tool_name)
         # 1. Tool allowlist check (default-deny)
         if not self._tool_registry.has_tool(tool_name):
             return self._reject(tool_name, f"Unknown tool: {tool_name}")
@@ -303,11 +305,11 @@ class PEP:
         context: PolicyContext,
     ) -> set[ToolName] | None:
         if context.tool_allowlist is not None:
-            return set(context.tool_allowlist)
+            return {canonical_tool_name_typed(item) for item in context.tool_allowlist}
         if self._policy.session_tool_allowlist:
-            return set(self._policy.session_tool_allowlist)
+            return {canonical_tool_name_typed(item) for item in self._policy.session_tool_allowlist}
         if self._policy.default_deny and self._policy.tools:
-            return set(self._policy.tools.keys())
+            return {canonical_tool_name_typed(item) for item in self._policy.tools}
         return None
 
     def _check_allowed_args(
@@ -651,13 +653,9 @@ class PEP:
         score = 0.0
 
         high_risk_tools = {
-            # Legacy + dotted runtime aliases must stay in sync.
             "send_email": 0.4,
-            "http_request": 0.45,
             "http.request": 0.45,
-            "shell_exec": 0.55,
             "shell.exec": 0.55,
-            "write_file": 0.45,
             "file.write": 0.45,
         }
         score += high_risk_tools.get(str(tool_name), 0.1)
