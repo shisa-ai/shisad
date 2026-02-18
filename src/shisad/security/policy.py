@@ -224,7 +224,13 @@ class PolicyBundle(BaseModel):
     version: str = "1"
 
     # Defaults
-    default_deny: bool = True
+    default_deny: bool = Field(
+        default=True,
+        description=(
+            "When true, policy.tools acts as the default tool allowlist fallback "
+            "if session/context allowlists are absent."
+        ),
+    )
     default_require_confirmation: bool = True
 
     # Tool permissions

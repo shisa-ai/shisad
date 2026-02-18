@@ -106,6 +106,21 @@ async def _shutdown(daemon_task: asyncio.Task[None], client: ControlClient) -> N
     await asyncio.wait_for(daemon_task, timeout=3)
 
 
+async def _confirm_tool_execute(
+    client: ControlClient,
+    result: dict[str, Any],
+    *,
+    reason: str = "approved for test",
+) -> dict[str, Any]:
+    assert result.get("confirmation_required") is True
+    confirmation_id = str(result.get("confirmation_id", ""))
+    assert confirmation_id
+    return await client.call(
+        "action.confirm",
+        {"confirmation_id": confirmation_id, "reason": reason},
+    )
+
+
 @pytest.mark.asyncio
 async def test_m4_t10_skill_with_undeclared_capability_blocked_at_runtime(
     model_env: None,
@@ -263,7 +278,19 @@ async def test_m4_rr10_default_tool_execute_omission_uses_fail_closed_posture(
             },
         )
         assert result["allowed"] is False
-        assert result["reason"] == "degraded_enforcement"
+        confirmed = await _confirm_tool_execute(client, result)
+        assert confirmed["confirmed"] is False
+
+        rejected = await client.call(
+            "audit.query",
+            {"event_type": "ToolRejected", "session_id": sid, "limit": 20},
+        )
+        reasons = [
+            str(item.get("data", {}).get("reason", ""))
+            for item in rejected["events"]
+            if str(item.get("data", {}).get("actor", "")) == "tool_runtime"
+        ]
+        assert "degraded_enforcement" in reasons
     finally:
         await _shutdown(daemon_task, client)
 
@@ -446,7 +473,19 @@ async def test_m4_t27_audit_durable_prelaunch_failure_blocks_execution(
             },
         )
         assert result["allowed"] is False
-        assert result["reason"] == "audit_unavailable_prelaunch"
+        confirmed = await _confirm_tool_execute(client, result)
+        assert confirmed["confirmed"] is False
+
+        rejected = await client.call(
+            "audit.query",
+            {"event_type": "ToolRejected", "session_id": sid, "limit": 20},
+        )
+        reasons = [
+            str(item.get("data", {}).get("reason", ""))
+            for item in rejected["events"]
+            if str(item.get("data", {}).get("actor", "")) == "tool_runtime"
+        ]
+        assert "audit_unavailable_prelaunch" in reasons
     finally:
         await _shutdown(daemon_task, client)
 
@@ -576,7 +615,9 @@ async def test_m4_t34_write_ahead_audit_envelope_pairs_action_hash(
                 "security_critical": False,
             },
         )
-        assert result["action_hash"]
+        assert result["allowed"] is False
+        confirmed = await _confirm_tool_execute(client, result)
+        assert confirmed["confirmed"] is True
 
         intents = await client.call(
             "audit.query",
@@ -596,8 +637,8 @@ async def test_m4_t34_write_ahead_audit_envelope_pairs_action_hash(
             for item in completions["events"]
             if "data" in item and "action_hash" in item["data"]
         }
-        assert result["action_hash"] in intent_hashes
-        assert result["action_hash"] in completion_hashes
+        assert intent_hashes
+        assert completion_hashes
         assert intent_hashes & completion_hashes
     finally:
         await _shutdown(daemon_task, client)

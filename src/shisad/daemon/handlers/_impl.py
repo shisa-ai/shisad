@@ -58,6 +58,7 @@ from shisad.daemon.handlers._impl_session import SessionImplMixin
 from shisad.daemon.handlers._impl_skills import SkillsImplMixin
 from shisad.daemon.handlers._impl_tasks import TasksImplMixin
 from shisad.daemon.handlers._impl_tool_execution import ToolExecutionImplMixin
+from shisad.daemon.handlers._side_effects import is_side_effect_tool
 from shisad.daemon.handlers._tool_exec_helpers import execute_structured_tool
 from shisad.executors.mounts import FilesystemPolicy
 from shisad.executors.proxy import NetworkPolicy
@@ -100,16 +101,6 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-_SIDE_EFFECT_CAPABILITIES: set[Capability] = {
-    Capability.EMAIL_WRITE,
-    Capability.EMAIL_SEND,
-    Capability.CALENDAR_WRITE,
-    Capability.FILE_WRITE,
-    Capability.HTTP_REQUEST,
-    Capability.SHELL_EXEC,
-    Capability.MESSAGE_SEND,
-}
-_SIDE_EFFECT_TOOL_NAMES: set[str] = {"report_anomaly"}
 _MONITOR_REJECT_THRESHOLD = 3
 _HIGH_RISK_CONFIRM_TOKENS: tuple[str, ...] = ("send", "share", "delete")
 _CONFIRMATION_ALERT_COOLDOWN_SECONDS = 600
@@ -123,20 +114,13 @@ class _EventPublisher:
         await publish_event(self._event_bus, event)
 
 
-def _is_side_effect_tool(tool: ToolDefinition) -> bool:
-    if str(tool.name) in _SIDE_EFFECT_TOOL_NAMES:
-        return True
-    required = set(tool.capabilities_required)
-    return bool(required & _SIDE_EFFECT_CAPABILITIES)
-
-
 def _should_checkpoint(trigger: str, tool: ToolDefinition | None) -> bool:
     if trigger == "never":
         return False
     if trigger == "before_any_tool":
         return tool is not None
     if trigger == "before_side_effects":
-        return tool is not None and _is_side_effect_tool(tool)
+        return tool is not None and is_side_effect_tool(tool)
     return False
 
 @dataclass(slots=True)

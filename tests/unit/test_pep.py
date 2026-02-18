@@ -151,3 +151,28 @@ class TestPepAllowedArgsPolicy:
         decision = pep.evaluate(ToolName("test_tool"), {"query": "hello"}, ctx)
         assert decision.kind == PEPDecisionKind.REJECT
         assert "allowlist" in decision.reason.lower()
+
+    def test_default_deny_false_allows_unlisted_tool_when_no_session_allowlist(self) -> None:
+        registry = ToolRegistry()
+        registry.register(
+            ToolDefinition(
+                name=ToolName("test_tool"),
+                description="A test tool",
+                parameters=[ToolParameter(name="query", type="string", required=True)],
+                capabilities_required=[Capability.HTTP_REQUEST],
+            )
+        )
+        policy = PolicyBundle(
+            default_deny=False,
+            default_require_confirmation=False,
+            tools={
+                ToolName("other_tool"): ToolPolicy(
+                    capabilities_required=[],
+                    require_confirmation=False,
+                )
+            },
+        )
+        pep = PEP(policy, registry)
+        ctx = PolicyContext(capabilities={Capability.HTTP_REQUEST})
+        decision = pep.evaluate(ToolName("test_tool"), {"query": "hello"}, ctx)
+        assert decision.kind == PEPDecisionKind.ALLOW

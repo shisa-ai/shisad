@@ -138,6 +138,7 @@ class ExecutionTraceVerifier:
                 ActionKind.FS_WRITE,
                 ActionKind.MEMORY_WRITE,
                 ActionKind.MESSAGE_SEND,
+                ActionKind.SHELL_EXEC,
             }:
                 return PlanVerificationResult(
                     allowed=False,
@@ -265,7 +266,6 @@ class ExecutionTraceVerifier:
             ActionKind.FS_READ,
             ActionKind.FS_LIST,
             ActionKind.MEMORY_READ,
-            ActionKind.SHELL_EXEC,
         }
 
     def _stage1_allowed_actions(self, goal: str) -> set[ActionKind]:

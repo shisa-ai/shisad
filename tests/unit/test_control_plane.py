@@ -306,6 +306,24 @@ def test_m5_t8_trace_rejects_action_not_in_plan() -> None:
     assert result.reason_code == "trace:action_not_committed"
 
 
+def test_m7_trace_stage1_shell_exec_requires_stage2_upgrade() -> None:
+    verifier = ExecutionTraceVerifier()
+    origin = _origin("s-shell-upgrade")
+    verifier.begin_precontent_plan(
+        session_id=origin.session_id,
+        goal="inspect local repo",
+        origin=origin,
+    )
+    action = build_action(
+        tool_name="shell_exec",
+        arguments={"command": ["python", "-c", "print('ok')"]},
+        origin=origin,
+    )
+    result = verifier.verify_action(session_id=origin.session_id, action=action)
+    assert result.allowed is False
+    assert result.reason_code == "trace:stage2_upgrade_required"
+
+
 def test_m5_t9_trace_rejects_forbidden_action() -> None:
     verifier = ExecutionTraceVerifier()
     origin = _origin("s-forbidden")

@@ -44,6 +44,17 @@ def test_m3_proxy_blocks_host_not_in_allowlist() -> None:
     assert decision.reason == "host_not_allowlisted"
 
 
+def test_m7_proxy_rejects_fnmatch_style_domain_rules() -> None:
+    proxy = EgressProxy(resolver=_public_resolver)
+    decision = proxy.authorize_request(
+        tool_name="http_request",
+        url="https://api.good.com/v1/send",
+        policy=NetworkPolicy(allow_network=True, allowed_domains=["api.*"]),
+    )
+    assert decision.allowed is False
+    assert decision.reason == "host_not_allowlisted"
+
+
 def test_m3_proxy_blocks_credential_injection_for_non_allowed_host() -> None:
     store = InMemoryCredentialStore()
     store.register(

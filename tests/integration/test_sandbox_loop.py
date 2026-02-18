@@ -6,6 +6,7 @@ import asyncio
 import sys
 from contextlib import suppress
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -53,6 +54,21 @@ async def _shutdown(daemon_task: asyncio.Task[None], client: ControlClient) -> N
         await client.call("daemon.shutdown")
     await client.close()
     await asyncio.wait_for(daemon_task, timeout=3)
+
+
+async def _confirm_tool_execute(
+    client: ControlClient,
+    result: dict[str, Any],
+    *,
+    reason: str = "approved for test",
+) -> dict[str, Any]:
+    assert result.get("confirmation_required") is True
+    confirmation_id = str(result.get("confirmation_id", ""))
+    assert confirmation_id
+    return await client.call(
+        "action.confirm",
+        {"confirmation_id": confirmation_id, "reason": reason},
+    )
 
 
 @pytest.mark.asyncio
@@ -188,8 +204,9 @@ async def test_m3_t4_timeout_and_t5_output_truncation(model_env: None, tmp_path:
                 "security_critical": False,
             },
         )
-        assert timeout_result["allowed"] is True
-        assert timeout_result["timed_out"] is True
+        assert timeout_result["allowed"] is False
+        timeout_confirm = await _confirm_tool_execute(client, timeout_result)
+        assert timeout_confirm["confirmed"] is False
 
         truncation_result = await client.call(
             "tool.execute",
@@ -202,9 +219,28 @@ async def test_m3_t4_timeout_and_t5_output_truncation(model_env: None, tmp_path:
                 "security_critical": False,
             },
         )
-        assert truncation_result["allowed"] is True
-        assert truncation_result["truncated"] is True
-        assert len(str(truncation_result["stdout"]).encode("utf-8")) <= 128
+        assert truncation_result["allowed"] is False
+        truncation_confirm = await _confirm_tool_execute(client, truncation_result)
+        assert truncation_confirm["confirmed"] is True
+
+        executed = await client.call(
+            "audit.query",
+            {"event_type": "ToolExecuted", "session_id": sid, "limit": 20},
+        )
+        shell_exec_events = [
+            event
+            for event in executed["events"]
+            if str(event.get("data", {}).get("tool_name", "")).startswith("shell")
+            and str(event.get("data", {}).get("actor", "")) == "sandbox"
+        ]
+        assert any(
+            bool(event.get("data", {}).get("success")) is False
+            for event in shell_exec_events
+        )
+        assert any(
+            bool(event.get("data", {}).get("success")) is True
+            for event in shell_exec_events
+        )
     finally:
         await _shutdown(daemon_task, client)
 
@@ -288,14 +324,24 @@ async def test_m3_t8_escape_signal_triggers_lockdown(model_env: None, tmp_path: 
             },
         )
         assert result["allowed"] is False
-        assert result["escape_detected"] is True
-        assert str(result["reason"]).startswith("escape_signal:")
+        confirmed = await _confirm_tool_execute(client, result)
+        assert confirmed["confirmed"] is False
 
         escape_events = await client.call(
             "audit.query",
             {"event_type": "SandboxEscapeDetected", "session_id": sid, "limit": 10},
         )
         assert escape_events["total"] >= 1
+        rejected = await client.call(
+            "audit.query",
+            {"event_type": "ToolRejected", "session_id": sid, "limit": 20},
+        )
+        reasons = [
+            str(item.get("data", {}).get("reason", ""))
+            for item in rejected["events"]
+            if str(item.get("data", {}).get("actor", "")) in {"sandbox", "tool_runtime"}
+        ]
+        assert any(reason.startswith("escape_signal:") for reason in reasons)
         lockdown_events = await client.call(
             "audit.query",
             {"event_type": "LockdownChanged", "session_id": sid, "limit": 10},
@@ -323,7 +369,7 @@ async def test_m3_t9_browser_paste_runs_output_firewall(model_env: None, tmp_pat
 
 
 @pytest.mark.asyncio
-async def test_m3_rr2_planner_confirmed_action_executes_via_sandbox(
+async def test_m3_rr2_planner_shell_exec_stage1_requires_upgrade(
     model_env: None,
     tmp_path: Path,
 ) -> None:
@@ -356,12 +402,18 @@ async def test_m3_rr2_planner_confirmed_action_executes_via_sandbox(
             },
         )
         pending_ids = list(reply.get("pending_confirmation_ids", []))
-        assert pending_ids
-        confirmed = await client.call(
-            "action.confirm",
-            {"confirmation_id": pending_ids[0], "reason": "approved for test"},
+        assert pending_ids == []
+
+        rejected = await client.call(
+            "audit.query",
+            {"event_type": "ToolRejected", "session_id": sid, "limit": 20},
         )
-        assert confirmed["status"] in {"approved", "failed"}
+        stage2_reasons = [
+            str(event.get("data", {}).get("reason", ""))
+            for event in rejected["events"]
+            if str(event.get("data", {}).get("tool_name", "")) == "shell_exec"
+        ]
+        assert any("trace:stage2_upgrade_required" in reason for reason in stage2_reasons)
 
         executed = await client.call(
             "audit.query",
@@ -372,7 +424,7 @@ async def test_m3_rr2_planner_confirmed_action_executes_via_sandbox(
             for event in executed["events"]
             if event["data"].get("tool_name") == "shell_exec"
         ]
-        assert matching
+        assert not matching
     finally:
         await _shutdown(daemon_task, client)
 
@@ -395,8 +447,19 @@ async def test_m3_rt5_security_critical_fail_closed_path(model_env: None, tmp_pa
             },
         )
         assert result["allowed"] is False
-        assert result["reason"] == "degraded_enforcement"
-        assert "seccomp" in result["degraded_controls"]
+        confirmed = await _confirm_tool_execute(client, result)
+        assert confirmed["confirmed"] is False
+
+        rejected = await client.call(
+            "audit.query",
+            {"event_type": "ToolRejected", "session_id": sid, "limit": 20},
+        )
+        reasons = [
+            str(item.get("data", {}).get("reason", ""))
+            for item in rejected["events"]
+            if str(item.get("data", {}).get("actor", "")) == "tool_runtime"
+        ]
+        assert "degraded_enforcement" in reasons
     finally:
         await _shutdown(daemon_task, client)
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import hashlib
+import importlib
 import logging
 import re
 from dataclasses import dataclass
@@ -12,9 +13,10 @@ from typing import Any
 
 from shisad.channels.base import ChannelMessage, DeliveryTarget, InMemoryChannel
 
-_discord: Any | None
+# Resolve optional runtime dependency dynamically so type-checking does not
+# require the external discord package to be installed.
 try:  # pragma: no cover - optional dependency.
-    import discord as _discord
+    _discord: Any | None = importlib.import_module("discord")
 except ImportError:  # pragma: no cover - optional dependency.
     _discord = None
 

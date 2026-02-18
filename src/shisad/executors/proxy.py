@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import fnmatch
 import ipaddress
 import math
 import re
@@ -13,6 +12,7 @@ from urllib.parse import urlparse
 
 from pydantic import BaseModel, Field
 
+from shisad.core.host_matching import host_matches
 from shisad.security.credentials import CredentialStore, is_placeholder
 
 _PLACEHOLDER_RE = re.compile(r"SHISAD_SECRET_PLACEHOLDER_[A-Fa-f0-9]{32}")
@@ -227,13 +227,7 @@ class EgressProxy:
     def _host_allowed(host: str, allowed_domains: list[str]) -> bool:
         if not allowed_domains:
             return False
-        for raw in allowed_domains:
-            value = raw.strip().lower()
-            if not value:
-                continue
-            if fnmatch.fnmatch(host, value):
-                return True
-        return False
+        return any(host_matches(host, raw) for raw in allowed_domains)
 
     @staticmethod
     def _is_ip_literal(host: str) -> bool:

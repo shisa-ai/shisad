@@ -72,6 +72,30 @@ def test_m1_t13_egress_allowlist_blocks_non_allowlisted_domains() -> None:
     assert "allowlisted" in decision.reason.lower()
 
 
+def test_m7_pep_egress_allowlist_rejects_fnmatch_style_domain_rules() -> None:
+    registry = ToolRegistry()
+    registry.register(
+        ToolDefinition(
+            name=ToolName("http_request"),
+            description="HTTP call",
+            parameters=[ToolParameter(name="url", type="string", required=True)],
+            capabilities_required=[Capability.HTTP_REQUEST],
+        )
+    )
+    policy = PolicyBundle(
+        default_require_confirmation=False,
+        egress=[EgressRule(host="api.*")],
+    )
+    pep = PEP(policy, registry)
+    decision = pep.evaluate(
+        ToolName("http_request"),
+        {"url": "https://api.good.com/path"},
+        PolicyContext(capabilities={Capability.HTTP_REQUEST}),
+    )
+    assert decision.kind == PEPDecisionKind.REJECT
+    assert "allowlisted" in decision.reason.lower()
+
+
 def test_m1_egress_allowlist_enforces_protocol() -> None:
     registry = ToolRegistry()
     registry.register(

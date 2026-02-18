@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from typing import Any, ClassVar
 from urllib.parse import urlparse
 
+from shisad.core.host_matching import host_matches
 from shisad.core.tools.registry import ToolRegistry
 from shisad.core.types import (
     Capability,
@@ -305,7 +306,7 @@ class PEP:
             return set(context.tool_allowlist)
         if self._policy.session_tool_allowlist:
             return set(self._policy.session_tool_allowlist)
-        if self._policy.tools:
+        if self._policy.default_deny and self._policy.tools:
             return set(self._policy.tools.keys())
         return None
 
@@ -608,7 +609,7 @@ class PEP:
             return False
 
         for rule in self._policy.egress:
-            if not fnmatch.fnmatch(destination.host, rule.host):
+            if not host_matches(destination.host, rule.host):
                 continue
 
             if destination.protocol is None:

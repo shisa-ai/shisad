@@ -55,16 +55,6 @@ from shisad.security.spotlight import build_planner_input
 
 logger = logging.getLogger(__name__)
 
-_SIDE_EFFECT_CAPABILITIES: set[Capability] = {
-    Capability.EMAIL_WRITE,
-    Capability.EMAIL_SEND,
-    Capability.CALENDAR_WRITE,
-    Capability.FILE_WRITE,
-    Capability.HTTP_REQUEST,
-    Capability.SHELL_EXEC,
-    Capability.MESSAGE_SEND,
-}
-_SIDE_EFFECT_TOOL_NAMES: set[str] = {"report_anomaly"}
 _CLEANROOM_CHANNELS: set[str] = {"cli"}
 _CLEANROOM_UNTRUSTED_TOOL_NAMES: set[str] = {
     "retrieve_rag",
@@ -73,15 +63,6 @@ _CLEANROOM_UNTRUSTED_TOOL_NAMES: set[str] = {
     "realitycheck.search",
     "realitycheck.read",
 }
-
-
-def _is_side_effect_tool(tool: ToolDefinition) -> bool:
-    if str(tool.name) in _SIDE_EFFECT_TOOL_NAMES:
-        return True
-    required = set(tool.capabilities_required)
-    return bool(required & _SIDE_EFFECT_CAPABILITIES)
-
-
 def _tool_available_in_session(
     *,
     tool: ToolDefinition,
