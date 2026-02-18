@@ -148,11 +148,11 @@ class ToolExecutionImplMixin(HandlerMixinBase):
                         session_id=sid,
                         actor="control_api",
                         tool_name=tool_name,
-                        reason="http_request_allowlist_required",
+                        reason="http.request_allowlist_required",
                     )
                 )
                 raise ValueError(
-                    "http_request requires explicit network.allowed_domains "
+                    "http.request requires explicit network.allowed_domains "
                     "(policy override or per-call narrowing)"
                 )
             if "*" in domains:
@@ -161,11 +161,11 @@ class ToolExecutionImplMixin(HandlerMixinBase):
                         session_id=sid,
                         actor="control_api",
                         tool_name=tool_name,
-                        reason="http_request_wildcard_disallowed",
+                        reason="http.request_wildcard_disallowed",
                     )
                 )
                 raise ValueError(
-                    "http_request wildcard domains are not allowed; provide explicit domains"
+                    "http.request wildcard domains are not allowed; provide explicit domains"
                 )
 
         rollout_phase = (

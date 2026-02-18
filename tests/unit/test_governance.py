@@ -27,7 +27,7 @@ from shisad.governance.scopes import (
     ScopedPolicyCompiler,
     ScopeLevel,
 )
-from shisad.security.policy import SandboxPolicy
+from shisad.security.policy import PolicyBundle, SandboxPolicy
 
 
 def _floor_policy(
@@ -215,6 +215,23 @@ def test_m4_t32_structured_tool_override_migration_warns(caplog: pytest.LogCaptu
     )
     assert policy.tool_overrides["shell.exec"].sandbox_type == "container"
     assert any("Deprecated sandbox.tool_overrides scalar" in rec.message for rec in caplog.records)
+
+
+def test_s9_policy_bundle_canonicalizes_legacy_tools_and_session_allowlist() -> None:
+    policy = PolicyBundle.model_validate(
+        {
+            "tools": {
+                "shell_exec": {"require_confirmation": True},
+                "http_request": {"require_confirmation": False},
+            },
+            "session_tool_allowlist": ["shell_exec", "http_request"],
+        }
+    )
+    assert set(str(name) for name in policy.tools) == {"shell.exec", "http.request"}
+    assert [str(name) for name in policy.session_tool_allowlist] == [
+        "shell.exec",
+        "http.request",
+    ]
 
 
 def test_m4_rr1_policy_merge_limits_respects_explicit_zero_values() -> None:

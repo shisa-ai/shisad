@@ -306,7 +306,7 @@ async def test_m4_rr11_http_request_requires_explicit_non_wildcard_allowlist(
         sid = created["session_id"]
         with pytest.raises(
             RuntimeError,
-            match=r"http_request wildcard domains are not allowed",
+            match=r"http\.request wildcard domains are not allowed",
         ):
             await client.call(
                 "tool.execute",
@@ -319,7 +319,7 @@ async def test_m4_rr11_http_request_requires_explicit_non_wildcard_allowlist(
                     "security_critical": False,
                 },
             )
-        with pytest.raises(RuntimeError, match=r"http_request wildcard domains are not allowed"):
+        with pytest.raises(RuntimeError, match=r"http\.request wildcard domains are not allowed"):
             await client.call(
                 "tool.execute",
                 {
