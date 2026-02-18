@@ -34,14 +34,6 @@ TRUSTED_CONVERSATION_REWRITE_PROMPT = (
     "the user's request. Answer directly and naturally. Use only runtime-provided tools."
 )
 
-_LEGACY_JSON_HINTS: tuple[str, ...] = (
-    '"assistant_response"',
-    '"actions"',
-    '"action"',
-    '"error_message"',
-    '"anomaly_reason"',
-)
-
 
 class ActionProposal(BaseModel):
     """A proposed tool action from the planner."""
@@ -93,13 +85,11 @@ class Planner:
         *,
         max_retries: int = 2,
         system_prompt: str = BASE_SYSTEM_PROMPT,
-        legacy_json_fallback: bool = False,
     ) -> None:
         self._provider = provider
         self._pep = pep
         self._max_retries = max_retries
         self._system_prompt = system_prompt
-        self._legacy_json_fallback = legacy_json_fallback
 
     async def propose(
         self,
@@ -190,8 +180,6 @@ class Planner:
         actions = self._extract_tool_calls(message.tool_calls)
         if actions:
             return PlannerOutput(assistant_response=assistant_response, actions=actions)
-        if self._legacy_json_fallback and self._is_legacy_json_candidate(assistant_response):
-            return self._parse_legacy_json_output(assistant_response)
         if assistant_response:
             return PlannerOutput(assistant_response=assistant_response, actions=[])
         if message.tool_calls:
@@ -244,113 +232,3 @@ class Planner:
                     json.dumps(payload, sort_keys=True)[:200],
                 )
         return actions
-
-    @staticmethod
-    def _is_legacy_json_candidate(content: str) -> bool:
-        normalized = content.strip()
-        if not normalized.startswith("{"):
-            return False
-        return any(marker in normalized for marker in _LEGACY_JSON_HINTS)
-
-    @staticmethod
-    def _parse_legacy_json_output(raw: str) -> PlannerOutput:
-        try:
-            parsed = json.loads(raw)
-        except json.JSONDecodeError as exc:
-            raise PlannerOutputError(f"Legacy planner JSON parse error: {exc}") from exc
-
-        if not isinstance(parsed, dict):
-            raise PlannerOutputError("Legacy planner output must be a JSON object")
-
-        normalized_payload = Planner._normalize_output_payload(parsed)
-        try:
-            return PlannerOutput.model_validate(normalized_payload)
-        except ValidationError as exc:
-            raise PlannerOutputError(f"Legacy planner schema violation: {exc}") from exc
-
-    @staticmethod
-    def _normalize_output_payload(parsed: dict[str, Any]) -> dict[str, Any]:
-        """Normalize legacy planner JSON payload variants to canonical schema."""
-        actions: list[dict[str, Any]] = []
-        raw_actions = parsed.get("actions")
-        if isinstance(raw_actions, list):
-            for item in raw_actions:
-                if not isinstance(item, dict):
-                    continue
-                try:
-                    ActionProposal.model_validate(item)
-                    actions.append(item)
-                except ValidationError:
-                    logger.debug(
-                        "Dropping malformed legacy action from planner output: %s",
-                        json.dumps(item, default=str)[:200],
-                    )
-                    continue
-        else:
-            action_name = str(parsed.get("action", "")).strip()
-            if action_name == "report_anomaly":
-                anomaly_detail = (
-                    str(parsed.get("anomaly_reason", "")).strip()
-                    or str(parsed.get("error_message", "")).strip()
-                    or str(parsed.get("reason", "")).strip()
-                    or "Planner returned non-canonical anomaly payload."
-                )
-                actions = [
-                    {
-                        "action_id": "normalized-anomaly-1",
-                        "tool_name": "report_anomaly",
-                        "arguments": {
-                            "anomaly_type": "planner_output_schema_mismatch",
-                            "description": anomaly_detail[:400],
-                            "recommended_action": "review",
-                            "confidence": 0.8,
-                        },
-                        "reasoning": "Normalize non-canonical planner anomaly payload",
-                        "data_sources": ["planner_output_normalizer"],
-                    }
-                ]
-
-        assistant_response = ""
-        raw_assistant = parsed.get("assistant_response")
-        if isinstance(raw_assistant, str):
-            assistant_response = raw_assistant.strip()
-        elif isinstance(raw_assistant, dict):
-            nested_message = raw_assistant.get("message")
-            if isinstance(nested_message, str) and nested_message.strip():
-                assistant_response = nested_message.strip()
-            elif raw_assistant:
-                assistant_response = json.dumps(raw_assistant, sort_keys=True, ensure_ascii=True)
-        elif raw_assistant is not None:
-            assistant_response = str(raw_assistant).strip()
-
-        if not assistant_response:
-            for key in ("response", "message", "error_message", "reason", "anomaly_reason"):
-                raw_candidate = parsed.get(key, "")
-                if isinstance(raw_candidate, str):
-                    candidate = raw_candidate.strip()
-                elif isinstance(raw_candidate, dict):
-                    nested = raw_candidate.get("message")
-                    if isinstance(nested, str) and nested.strip():
-                        candidate = nested.strip()
-                    elif raw_candidate:
-                        candidate = json.dumps(raw_candidate, sort_keys=True, ensure_ascii=True)
-                    else:
-                        candidate = ""
-                elif raw_candidate is None:
-                    candidate = ""
-                else:
-                    candidate = str(raw_candidate).strip()
-                if candidate:
-                    assistant_response = candidate
-                    break
-
-        if not assistant_response:
-            assistant_response = (
-                "I could not produce a usable planner response. "
-                "Please rephrase and retry."
-            )
-
-        return {
-            "assistant_response": assistant_response,
-            "actions": actions,
-        }

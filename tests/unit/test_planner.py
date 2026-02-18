@@ -7,7 +7,7 @@ from typing import Any
 
 import pytest
 
-from shisad.core.planner import Planner, PlannerOutputError
+from shisad.core.planner import Planner
 from shisad.core.providers.base import Message, ProviderResponse
 from shisad.core.tools.registry import ToolRegistry
 from shisad.core.tools.schema import ToolDefinition, ToolParameter
@@ -318,7 +318,7 @@ async def test_planner_passes_tool_payload_to_provider() -> None:
 
 
 @pytest.mark.asyncio
-async def test_planner_legacy_json_fallback_disabled_by_default() -> None:
+async def test_planner_does_not_parse_legacy_json_content_as_actions() -> None:
     registry = _make_registry()
     pep = PEP(PolicyBundle(default_require_confirmation=False), registry)
     payload = json.dumps(
@@ -347,65 +347,3 @@ async def test_planner_legacy_json_fallback_disabled_by_default() -> None:
 
     assert result.output.actions == []
     assert result.output.assistant_response == payload
-
-
-@pytest.mark.asyncio
-async def test_planner_legacy_json_fallback_can_be_enabled() -> None:
-    registry = _make_registry()
-    pep = PEP(PolicyBundle(default_require_confirmation=False), registry)
-    payload = json.dumps(
-        {
-            "assistant_response": "Running echo.",
-            "actions": [
-                {
-                    "action_id": "a1",
-                    "tool_name": "echo",
-                    "arguments": {"text": "hello"},
-                    "reasoning": "Need tool output",
-                }
-            ],
-        }
-    )
-    planner = Planner(
-        StaticProvider([Message(role="assistant", content=payload)]),
-        pep,
-        max_retries=0,
-        legacy_json_fallback=True,
-    )
-
-    result = await planner.propose(
-        "echo hello",
-        PolicyContext(capabilities={Capability.FILE_READ}),
-    )
-
-    assert result.output.assistant_response == "Running echo."
-    assert len(result.output.actions) == 1
-    assert result.output.actions[0].tool_name == ToolName("echo")
-
-
-@pytest.mark.asyncio
-async def test_planner_tainted_context_fails_closed_on_legacy_json_parse_error() -> None:
-    registry = _make_registry()
-    pep = PEP(PolicyBundle(default_require_confirmation=False), registry)
-    provider = StaticProvider(
-        [
-            Message(role="assistant", content='{"assistant_response": "broken"'),
-            Message(role="assistant", content='{"assistant_response": "would-have-passed"}'),
-        ]
-    )
-    planner = Planner(
-        provider,
-        pep,
-        max_retries=1,
-        legacy_json_fallback=True,
-    )
-
-    with pytest.raises(PlannerOutputError):
-        await planner.propose(
-            "hello",
-            PolicyContext(
-                capabilities={Capability.FILE_READ},
-                taint_labels={TaintLabel.UNTRUSTED},
-            ),
-        )
-    assert provider.calls == 1

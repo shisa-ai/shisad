@@ -164,13 +164,6 @@ class DaemonConfig(BaseSettings):
         ge=0.1,
         description="Timeout in seconds for git.* helper subprocess calls.",
     )
-    planner_legacy_json_fallback: bool = Field(
-        default=False,
-        description=(
-            "Enable legacy planner JSON-in-content fallback for incompatible model providers. "
-            "Native tool-calling remains the default path."
-        ),
-    )
     realitycheck_enabled: bool = Field(
         default=False,
         description="Enable Reality Check integration surface.",
