@@ -155,7 +155,7 @@ async def test_m1_t2_planner_drops_malformed_native_tool_calls() -> None:
 
 
 @pytest.mark.asyncio
-async def test_m1_t2_planner_defaults_invalid_tool_arguments_to_empty_object() -> None:
+async def test_m1_t2_planner_drops_tool_call_with_invalid_json_arguments() -> None:
     registry = _make_registry()
     pep = PEP(PolicyBundle(default_require_confirmation=False), registry)
     planner = Planner(
@@ -186,8 +186,42 @@ async def test_m1_t2_planner_defaults_invalid_tool_arguments_to_empty_object() -
         PolicyContext(capabilities={Capability.FILE_READ}),
     )
 
-    assert len(result.output.actions) == 1
-    assert result.output.actions[0].arguments == {}
+    assert result.output.actions == []
+
+
+@pytest.mark.asyncio
+async def test_m1_t2_planner_drops_non_function_tool_call_envelope() -> None:
+    registry = _make_registry()
+    pep = PEP(PolicyBundle(default_require_confirmation=False), registry)
+    planner = Planner(
+        StaticProvider(
+            [
+                Message(
+                    role="assistant",
+                    content="No executable calls.",
+                    tool_calls=[
+                        {
+                            "id": "meta_1",
+                            "type": "metadata",
+                            "function": {
+                                "name": "echo",
+                                "arguments": json.dumps({"text": "hello"}),
+                            },
+                        }
+                    ],
+                )
+            ]
+        ),
+        pep,
+        max_retries=0,
+    )
+
+    result = await planner.propose(
+        "echo hi",
+        PolicyContext(capabilities={Capability.FILE_READ}),
+    )
+
+    assert result.output.actions == []
 
 
 @pytest.mark.asyncio
