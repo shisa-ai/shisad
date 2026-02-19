@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
+
+import pytest
 
 from shisad.core.session import Session, SessionManager
 from shisad.core.types import Capability, SessionId, SessionMode, SessionState, UserId, WorkspaceId
@@ -192,3 +195,115 @@ def test_m6_session_manager_syncs_policy_default_marked_sessions_to_current_defa
     assert restored is not None
     assert restored.capabilities == {Capability.HTTP_REQUEST}
     assert restored.metadata.get("capability_sync_mode") == "policy_default"
+
+
+def test_m6_session_manager_syncs_policy_default_sessions_to_empty_defaults(
+    tmp_path: Path,
+) -> None:
+    state_dir = tmp_path / "sessions" / "state"
+    state_dir.mkdir(parents=True, exist_ok=True)
+    session = Session(
+        id=SessionId("policy-default-empty-target"),
+        channel="cli",
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws1"),
+        capabilities={Capability.FILE_READ, Capability.HTTP_REQUEST},
+        metadata={"capability_sync_mode": "policy_default"},
+    )
+    _session_state_path(state_dir, str(session.id)).write_text(
+        session.model_dump_json(indent=2),
+        encoding="utf-8",
+    )
+
+    restored_manager = SessionManager(
+        state_dir=state_dir,
+        default_capabilities=set(),
+    )
+    restored = restored_manager.get(session.id)
+    assert restored is not None
+    assert restored.capabilities == set()
+    assert restored.metadata.get("capability_sync_mode") == "policy_default"
+
+
+def test_m6_session_manager_legacy_empty_sessions_mark_policy_default_when_defaults_empty(
+    tmp_path: Path,
+) -> None:
+    state_dir = tmp_path / "sessions" / "state"
+    state_dir.mkdir(parents=True, exist_ok=True)
+    legacy = Session(
+        id=SessionId("legacy-empty-defaults-empty"),
+        channel="cli",
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws1"),
+        capabilities=set(),
+        metadata={"trust_level": "trusted"},
+    )
+    _session_state_path(state_dir, str(legacy.id)).write_text(
+        legacy.model_dump_json(indent=2),
+        encoding="utf-8",
+    )
+
+    restored_manager = SessionManager(
+        state_dir=state_dir,
+        default_capabilities=set(),
+    )
+    restored = restored_manager.get(legacy.id)
+    assert restored is not None
+    assert restored.capabilities == set()
+    assert restored.metadata.get("capability_sync_mode") == "policy_default"
+
+
+def test_m6_session_manager_logs_restore_migration_updates_and_skips(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    state_dir = tmp_path / "sessions" / "state"
+    state_dir.mkdir(parents=True, exist_ok=True)
+    legacy = Session(
+        id=SessionId("legacy-log"),
+        channel="cli",
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws1"),
+        capabilities=set(),
+        metadata={"trust_level": "trusted"},
+    )
+    manual = Session(
+        id=SessionId("manual-log"),
+        channel="cli",
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws1"),
+        capabilities={Capability.FILE_READ},
+        metadata={"capability_sync_mode": "manual_override"},
+    )
+    _session_state_path(state_dir, str(legacy.id)).write_text(
+        legacy.model_dump_json(indent=2),
+        encoding="utf-8",
+    )
+    _session_state_path(state_dir, str(manual.id)).write_text(
+        manual.model_dump_json(indent=2),
+        encoding="utf-8",
+    )
+
+    with caplog.at_level(logging.DEBUG, logger="shisad.core.session"):
+        _ = SessionManager(
+            state_dir=state_dir,
+            default_capabilities={Capability.HTTP_REQUEST},
+        )
+
+    info_messages = [
+        record.getMessage() for record in caplog.records if record.levelno == logging.INFO
+    ]
+    debug_messages = [
+        record.getMessage() for record in caplog.records if record.levelno == logging.DEBUG
+    ]
+    assert any(
+        "Session restore migration updated legacy-log" in message for message in info_messages
+    )
+    assert any(
+        "Session restore migration decision for legacy-log" in message
+        for message in debug_messages
+    )
+    assert any(
+        "Session restore migration decision for manual-log" in message
+        for message in debug_messages
+    )

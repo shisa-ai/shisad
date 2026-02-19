@@ -11,6 +11,7 @@ import json
 import logging
 import uuid
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -27,6 +28,16 @@ from shisad.core.types import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class _SessionMigrationOutcome:
+    changed: bool
+    reason: str
+    sync_mode_before: str
+    sync_mode_after: str
+    capabilities_before: frozenset[Capability]
+    capabilities_after: frozenset[Capability]
 
 
 class Session(BaseModel):
@@ -62,7 +73,9 @@ class SessionManager:
         self._sessions: dict[SessionId, Session] = {}
         self._audit_hook = audit_hook
         self._state_dir = state_dir
-        self._default_capabilities = set(default_capabilities or set())
+        self._default_capabilities = (
+            None if default_capabilities is None else set(default_capabilities)
+        )
         if self._state_dir is not None:
             self._state_dir.mkdir(parents=True, exist_ok=True)
             self._load_persisted_active_sessions()
@@ -307,35 +320,94 @@ class SessionManager:
                 continue
             if loaded.state != SessionState.ACTIVE:
                 continue
-            if self._migrate_loaded_session(loaded):
-                self._persist_session(loaded)
+            outcome = self._migrate_loaded_session(loaded)
+            if outcome.changed:
+                persisted = self._persist_session(loaded)
+                added = set(outcome.capabilities_after).difference(outcome.capabilities_before)
+                removed = set(outcome.capabilities_before).difference(outcome.capabilities_after)
+                logger.info(
+                    "Session restore migration updated %s (reason=%s, sync_mode=%s->%s, "
+                    "capabilities_added=%s, capabilities_removed=%s, persisted=%s)",
+                    loaded.id,
+                    outcome.reason,
+                    outcome.sync_mode_before,
+                    outcome.sync_mode_after,
+                    sorted(cap.value for cap in added),
+                    sorted(cap.value for cap in removed),
+                    persisted,
+                )
+            logger.debug(
+                "Session restore migration decision for %s: changed=%s, reason=%s, "
+                "sync_mode_before=%s, sync_mode_after=%s, default_capabilities=%s, "
+                "capabilities_before=%s, capabilities_after=%s",
+                loaded.id,
+                outcome.changed,
+                outcome.reason,
+                outcome.sync_mode_before,
+                outcome.sync_mode_after,
+                (
+                    None
+                    if self._default_capabilities is None
+                    else sorted(cap.value for cap in self._default_capabilities)
+                ),
+                sorted(cap.value for cap in outcome.capabilities_before),
+                sorted(cap.value for cap in outcome.capabilities_after),
+            )
             self._sessions[loaded.id] = loaded
 
-    def _migrate_loaded_session(self, session: Session) -> bool:
-        changed = False
-        sync_mode = str(session.metadata.get("capability_sync_mode", "")).strip().lower()
-        if sync_mode == "manual_override":
-            return False
+    def _migrate_loaded_session(self, session: Session) -> _SessionMigrationOutcome:
+        before_caps = set(session.capabilities)
+        raw_mode = str(session.metadata.get("capability_sync_mode", "")).strip().lower()
+        sync_mode_before = (
+            raw_mode if raw_mode in {"policy_default", "manual_override"} else "legacy"
+        )
+        reason = "no_op"
 
-        if sync_mode == "policy_default":
-            if (
-                self._default_capabilities
-                and set(session.capabilities) != self._default_capabilities
-            ):
-                session.capabilities = set(self._default_capabilities)
-                changed = True
-            return changed
+        if raw_mode == "manual_override":
+            sync_mode_after = "manual_override"
+            reason = "manual_override_skip"
+        elif raw_mode == "policy_default":
+            sync_mode_after = "policy_default"
+            if self._default_capabilities is None:
+                reason = "policy_default_no_defaults_configured"
+            else:
+                target_caps = set(self._default_capabilities)
+                if set(session.capabilities) != target_caps:
+                    session.capabilities = target_caps
+                    reason = "policy_default_sync"
+                else:
+                    reason = "policy_default_already_synced"
+        else:
+            if session.capabilities:
+                session.metadata["capability_sync_mode"] = "manual_override"
+                sync_mode_after = "manual_override"
+                reason = "legacy_nonempty_mark_manual_override"
+            else:
+                session.metadata["capability_sync_mode"] = "policy_default"
+                sync_mode_after = "policy_default"
+                if self._default_capabilities is None:
+                    reason = "legacy_empty_mark_policy_default"
+                else:
+                    target_caps = set(self._default_capabilities)
+                    if set(session.capabilities) != target_caps:
+                        session.capabilities = target_caps
+                        reason = "legacy_empty_backfill_policy_defaults"
+                    else:
+                        reason = "legacy_empty_mark_policy_default"
 
-        # Legacy sessions without explicit sync mode:
-        # - empty capability sets are treated as stale defaults and backfilled.
-        # - non-empty sets are preserved as manual overrides to avoid clobbering intent.
-        if self._default_capabilities and not session.capabilities:
-            session.capabilities = set(self._default_capabilities)
-            session.metadata["capability_sync_mode"] = "policy_default"
-            return True
-
-        session.metadata["capability_sync_mode"] = "manual_override"
-        return True
+        after_caps = set(session.capabilities)
+        changed = (
+            before_caps != after_caps
+            or sync_mode_before != sync_mode_after
+        )
+        return _SessionMigrationOutcome(
+            changed=changed,
+            reason=reason,
+            sync_mode_before=sync_mode_before,
+            sync_mode_after=sync_mode_after,
+            capabilities_before=frozenset(before_caps),
+            capabilities_after=frozenset(after_caps),
+        )
 
 
 # --- Checkpoint system ---
