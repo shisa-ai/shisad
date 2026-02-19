@@ -10,6 +10,8 @@ import pytest
 
 from shisad.core.api.transport import ControlClient
 from shisad.core.config import DaemonConfig
+from shisad.core.session import Session
+from shisad.core.types import Capability, SessionId, UserId, WorkspaceId
 from shisad.daemon.runner import run_daemon
 
 
@@ -178,3 +180,72 @@ async def test_m3_session_persists_across_daemon_restart(
             await client_2.call("daemon.shutdown")
         await client_2.close()
         await asyncio.wait_for(daemon_task_2, timeout=3)
+
+
+@pytest.mark.asyncio
+async def test_m6_restored_legacy_session_backfills_current_policy_capabilities(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SHISAD_MODEL_BASE_URL", "https://api.example.com/v1")
+    monkeypatch.setenv("SHISAD_MODEL_PLANNER_BASE_URL", "https://planner.example.com/v1")
+    monkeypatch.setenv("SHISAD_MODEL_EMBEDDINGS_BASE_URL", "https://embed.example.com/v1")
+    monkeypatch.setenv("SHISAD_MODEL_MONITOR_BASE_URL", "https://monitor.example.com/v1")
+
+    policy_path = tmp_path / "policy.yaml"
+    policy_path.write_text(
+        "\n".join(
+            [
+                'version: "1"',
+                "default_require_confirmation: false",
+                "default_capabilities:",
+                "  - memory.read",
+                "  - file.read",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    state_dir = tmp_path / "data" / "sessions" / "state"
+    state_dir.mkdir(parents=True, exist_ok=True)
+    legacy = Session(
+        id=SessionId("legacy-empty-integration"),
+        channel="cli",
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws1"),
+        capabilities=set(),
+        metadata={"trust_level": "trusted"},
+    )
+    (state_dir / f"{legacy.id}.json").write_text(
+        legacy.model_dump_json(indent=2),
+        encoding="utf-8",
+    )
+
+    config = DaemonConfig(
+        data_dir=tmp_path / "data",
+        socket_path=tmp_path / "control.sock",
+        policy_path=policy_path,
+        log_level="INFO",
+    )
+
+    daemon_task = asyncio.create_task(run_daemon(config))
+    client = ControlClient(config.socket_path)
+
+    try:
+        await _wait_for_socket(config.socket_path)
+        await client.connect()
+        listed = await client.call("session.list")
+        sessions = listed.get("sessions", [])
+        row = next(
+            (item for item in sessions if str(item.get("id", "")) == str(legacy.id)),
+            None,
+        )
+        assert row is not None
+        capabilities = set(row.get("capabilities", []))
+        assert Capability.MEMORY_READ.value in capabilities
+        assert Capability.FILE_READ.value in capabilities
+    finally:
+        with suppress(Exception):
+            await client.call("daemon.shutdown")
+        await client.close()
+        await asyncio.wait_for(daemon_task, timeout=3)

@@ -57,10 +57,12 @@ class SessionManager:
         *,
         audit_hook: Callable[[str, dict[str, Any]], None] | None = None,
         state_dir: Path | None = None,
+        default_capabilities: set[Capability] | None = None,
     ) -> None:
         self._sessions: dict[SessionId, Session] = {}
         self._audit_hook = audit_hook
         self._state_dir = state_dir
+        self._default_capabilities = set(default_capabilities or set())
         if self._state_dir is not None:
             self._state_dir.mkdir(parents=True, exist_ok=True)
             self._load_persisted_active_sessions()
@@ -88,6 +90,9 @@ class SessionManager:
             capabilities=capabilities or set(),
             metadata=metadata or {},
         )
+        sync_mode = str(session.metadata.get("capability_sync_mode", "")).strip().lower()
+        if sync_mode not in {"policy_default", "manual_override"}:
+            session.metadata["capability_sync_mode"] = "policy_default"
         self._sessions[session.id] = session
         self._persist_session(session)
         logger.info(
@@ -226,6 +231,7 @@ class SessionManager:
                 },
             )
         if granted:
+            session.metadata["capability_sync_mode"] = "manual_override"
             self._persist_session(session)
         return True
 
@@ -301,7 +307,35 @@ class SessionManager:
                 continue
             if loaded.state != SessionState.ACTIVE:
                 continue
+            if self._migrate_loaded_session(loaded):
+                self._persist_session(loaded)
             self._sessions[loaded.id] = loaded
+
+    def _migrate_loaded_session(self, session: Session) -> bool:
+        changed = False
+        sync_mode = str(session.metadata.get("capability_sync_mode", "")).strip().lower()
+        if sync_mode == "manual_override":
+            return False
+
+        if sync_mode == "policy_default":
+            if (
+                self._default_capabilities
+                and set(session.capabilities) != self._default_capabilities
+            ):
+                session.capabilities = set(self._default_capabilities)
+                changed = True
+            return changed
+
+        # Legacy sessions without explicit sync mode:
+        # - empty capability sets are treated as stale defaults and backfilled.
+        # - non-empty sets are preserved as manual overrides to avoid clobbering intent.
+        if self._default_capabilities and not session.capabilities:
+            session.capabilities = set(self._default_capabilities)
+            session.metadata["capability_sync_mode"] = "policy_default"
+            return True
+
+        session.metadata["capability_sync_mode"] = "manual_override"
+        return True
 
 
 # --- Checkpoint system ---

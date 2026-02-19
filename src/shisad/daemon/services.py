@@ -202,6 +202,7 @@ class DaemonServices:
             session_manager = SessionManager(
                 audit_hook=event_wiring.audit_capability_event,
                 state_dir=config.data_dir / "sessions" / "state",
+                default_capabilities=set(policy_loader.policy.default_capabilities),
             )
             firewall = ContentFirewall()
             if policy_loader.policy.yara_required and firewall.classifier_mode != "yara":

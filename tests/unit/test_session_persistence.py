@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from shisad.core.session import SessionManager
-from shisad.core.types import Capability, SessionMode, SessionState, UserId, WorkspaceId
+from shisad.core.session import Session, SessionManager
+from shisad.core.types import Capability, SessionId, SessionMode, SessionState, UserId, WorkspaceId
 
 
 def _session_state_path(root: Path, session_id: str) -> Path:
@@ -110,3 +110,85 @@ def test_m3_session_manager_persist_returns_false_for_unserializable_metadata(
     restored = reloaded.get(session.id)
     assert restored is not None
     assert "unserializable" not in restored.metadata
+
+
+def test_m6_session_manager_backfills_legacy_empty_capabilities_on_restore(tmp_path: Path) -> None:
+    state_dir = tmp_path / "sessions" / "state"
+    state_dir.mkdir(parents=True, exist_ok=True)
+    legacy = Session(
+        id=SessionId("legacy-empty"),
+        channel="cli",
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws1"),
+        capabilities=set(),
+        metadata={"trust_level": "trusted"},
+    )
+    _session_state_path(state_dir, str(legacy.id)).write_text(
+        legacy.model_dump_json(indent=2),
+        encoding="utf-8",
+    )
+
+    restored_manager = SessionManager(
+        state_dir=state_dir,
+        default_capabilities={Capability.FILE_READ, Capability.HTTP_REQUEST},
+    )
+    restored = restored_manager.get(legacy.id)
+    assert restored is not None
+    assert restored.capabilities == {Capability.FILE_READ, Capability.HTTP_REQUEST}
+    assert restored.metadata.get("capability_sync_mode") == "policy_default"
+
+
+def test_m6_session_manager_preserves_legacy_nonempty_capabilities_as_manual_override(
+    tmp_path: Path,
+) -> None:
+    state_dir = tmp_path / "sessions" / "state"
+    state_dir.mkdir(parents=True, exist_ok=True)
+    legacy = Session(
+        id=SessionId("legacy-nonempty"),
+        channel="cli",
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws1"),
+        capabilities={Capability.FILE_READ},
+        metadata={"trust_level": "trusted"},
+    )
+    _session_state_path(state_dir, str(legacy.id)).write_text(
+        legacy.model_dump_json(indent=2),
+        encoding="utf-8",
+    )
+
+    restored_manager = SessionManager(
+        state_dir=state_dir,
+        default_capabilities={Capability.HTTP_REQUEST},
+    )
+    restored = restored_manager.get(legacy.id)
+    assert restored is not None
+    assert restored.capabilities == {Capability.FILE_READ}
+    assert restored.metadata.get("capability_sync_mode") == "manual_override"
+
+
+def test_m6_session_manager_syncs_policy_default_marked_sessions_to_current_defaults(
+    tmp_path: Path,
+) -> None:
+    state_dir = tmp_path / "sessions" / "state"
+    state_dir.mkdir(parents=True, exist_ok=True)
+    session = Session(
+        id=SessionId("policy-default-sync"),
+        channel="cli",
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws1"),
+        capabilities={Capability.FILE_READ},
+        metadata={"capability_sync_mode": "policy_default"},
+    )
+    _session_state_path(state_dir, str(session.id)).write_text(
+        session.model_dump_json(indent=2),
+        encoding="utf-8",
+    )
+
+    restored_manager = SessionManager(
+        state_dir=state_dir,
+        default_capabilities={Capability.HTTP_REQUEST},
+    )
+    restored = restored_manager.get(session.id)
+    assert restored is not None
+    assert restored.capabilities == {Capability.HTTP_REQUEST}
+    assert restored.metadata.get("capability_sync_mode") == "policy_default"
