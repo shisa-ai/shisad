@@ -167,30 +167,31 @@ class ConversationSummarizer:
                         )
                     )
 
-            for pref_match in _RE_PREFERENCE.finditer(text):
-                preference = cls._clean_phrase(pref_match.group(1))
-                if preference:
-                    proposals.append(
-                        MemorySummaryProposal(
-                            entry_type="preference",
-                            key="user.preference.communication",
-                            value=preference,
-                            confidence=0.7,
+            if role == "user":
+                for pref_match in _RE_PREFERENCE.finditer(text):
+                    preference = cls._clean_phrase(pref_match.group(1))
+                    if preference:
+                        proposals.append(
+                            MemorySummaryProposal(
+                                entry_type="preference",
+                                key="user.preference.communication",
+                                value=preference,
+                                confidence=0.7,
+                            )
                         )
-                    )
 
-            name_match = _RE_NAME.search(text)
-            if name_match:
-                name = cls._clean_phrase(name_match.group(1))
-                if name:
-                    proposals.append(
-                        MemorySummaryProposal(
-                            entry_type="fact",
-                            key="profile.name",
-                            value=name,
-                            confidence=0.75,
+                name_match = _RE_NAME.search(text)
+                if name_match:
+                    name = cls._clean_phrase(name_match.group(1))
+                    if name:
+                        proposals.append(
+                            MemorySummaryProposal(
+                                entry_type="fact",
+                                key="profile.name",
+                                value=name,
+                                confidence=0.75,
+                            )
                         )
-                    )
 
             remember_match = _RE_REMEMBER.search(text)
             if remember_match:

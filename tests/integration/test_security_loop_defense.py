@@ -238,6 +238,7 @@ async def test_m2_tool_outputs_are_delimited_and_sanitized_in_session_response(
         data_dir=tmp_path / "data",
         socket_path=tmp_path / "control.sock",
         policy_path=policy_path,
+        planner_memory_top_k=1,
         log_level="INFO",
     )
 
@@ -246,6 +247,18 @@ async def test_m2_tool_outputs_are_delimited_and_sanitized_in_session_response(
     try:
         await _wait_for_socket(config.socket_path)
         await client.connect()
+        await client.call(
+            "memory.ingest",
+            {
+                "source_id": "doc-safe",
+                "source_type": "external",
+                "collection": "external_web",
+                "content": (
+                    "retrieve include tool outputs for this query "
+                    "retrieve include tool outputs for this query"
+                ),
+            },
+        )
         await client.call(
             "memory.ingest",
             {

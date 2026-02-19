@@ -330,9 +330,6 @@ def _build_planner_memory_context(
     taints: set[TaintLabel] = set()
     for index, item in enumerate(results, start=1):
         item_taints = set(item.taint_labels or label_retrieval(item.collection))
-        # Retrieval results are already sanitized; keep conservative untrusted flow
-        # without carrying credential taint that would block all subsequent tools.
-        item_taints.discard(TaintLabel.USER_CREDENTIALS)
         if not item_taints:
             item_taints.add(TaintLabel.UNTRUSTED)
         taints.update(item_taints)

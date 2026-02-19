@@ -72,3 +72,17 @@ async def test_m5_s5_summarizer_prefers_model_json_when_valid() -> None:
     assert proposals[0].entry_type == "context"
     assert proposals[0].key == "project.owner"
     assert proposals[0].value == "alice"
+
+
+@pytest.mark.asyncio
+async def test_m5_rr3_summarizer_ignores_assistant_user_profile_phrases() -> None:
+    summarizer = ConversationSummarizer(provider=None)
+    entries = [
+        _entry("assistant", "I prefer terse updates and my name is HelperBot."),
+        _entry("assistant", "Remember that project codename is Nebula."),
+    ]
+    proposals = await summarizer.summarize_entries(entries)
+
+    keys = {item.key for item in proposals}
+    assert "user.preference.communication" not in keys
+    assert "profile.name" not in keys

@@ -1224,3 +1224,95 @@ async def test_m5_s7_memory_context_taint_propagates_into_policy_context(
             await client.call("daemon.shutdown")
         await client.close()
         await asyncio.wait_for(daemon_task, timeout=3)
+
+
+@pytest.mark.asyncio
+async def test_m5_rr3_memory_context_credential_taint_reaches_policy_context(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SHISAD_MODEL_BASE_URL", "https://api.example.com/v1")
+    monkeypatch.setenv("SHISAD_MODEL_PLANNER_BASE_URL", "https://planner.example.com/v1")
+    monkeypatch.setenv("SHISAD_MODEL_EMBEDDINGS_BASE_URL", "https://embed.example.com/v1")
+    monkeypatch.setenv("SHISAD_MODEL_MONITOR_BASE_URL", "https://monitor.example.com/v1")
+
+    observed_taints: list[set[TaintLabel]] = []
+
+    async def _capture_propose(
+        self: Planner,
+        user_content: str,
+        context: object,
+        *,
+        tools: list[dict[str, object]] | None = None,
+    ) -> PlannerResult:
+        _ = (self, user_content, tools)
+        assert hasattr(context, "taint_labels")
+        observed_taints.append(set(context.taint_labels))  # type: ignore[attr-defined]
+        return PlannerResult(
+            output=PlannerOutput(actions=[], assistant_response="ok"),
+            evaluated=[],
+            attempts=1,
+            provider_response=None,
+            messages_sent=(),
+        )
+
+    monkeypatch.setattr(Planner, "propose", _capture_propose)
+
+    policy_path = tmp_path / "policy.yaml"
+    policy_path.write_text(
+        textwrap.dedent(
+            """
+            version: "1"
+            default_require_confirmation: false
+            default_capabilities:
+              - memory.read
+            """
+        ).strip()
+        + "\n"
+    )
+
+    config = DaemonConfig(
+        data_dir=tmp_path / "data",
+        socket_path=tmp_path / "control.sock",
+        policy_path=policy_path,
+        log_level="INFO",
+    )
+
+    daemon_task = asyncio.create_task(run_daemon(config))
+    client = ControlClient(config.socket_path)
+
+    try:
+        await _wait_for_socket(config.socket_path)
+        await client.connect()
+        await client.call(
+            "memory.ingest",
+            {
+                "source_id": "doc-cred",
+                "source_type": "external",
+                "collection": "project_docs",
+                "content": "Credential sample sk-ABCDEFGHIJKLMNOPQRSTUV123456 appears here.",
+            },
+        )
+        created = await client.call(
+            "session.create",
+            {"channel": "cli", "user_id": "alice", "workspace_id": "ws1"},
+        )
+        sid = created["session_id"]
+        await client.call(
+            "session.message",
+            {
+                "session_id": sid,
+                "channel": "cli",
+                "user_id": "alice",
+                "workspace_id": "ws1",
+                "content": "Summarize credential risk posture.",
+            },
+        )
+
+        assert observed_taints
+        assert TaintLabel.USER_CREDENTIALS in observed_taints[-1]
+    finally:
+        with suppress(Exception):
+            await client.call("daemon.shutdown")
+        await client.close()
+        await asyncio.wait_for(daemon_task, timeout=3)
