@@ -21,6 +21,8 @@ from shisad.core.planner import (
     PlannerOutputError,
     PlannerResult,
 )
+from shisad.core.providers.base import Message, ProviderResponse
+from shisad.core.providers.local_planner import LocalPlannerProvider
 from shisad.core.types import TaintLabel, ToolName
 from shisad.daemon.runner import run_daemon
 from shisad.security.firewall import ContentFirewall, FirewallResult
@@ -193,6 +195,94 @@ async def test_v0_3_1_trusted_cli_ingress_not_marked_untrusted_in_trace(
         turn = json.loads(lines[-1])
         assert turn.get("trust_level") == "trusted"
         assert "untrusted" not in (turn.get("taint_labels") or [])
+    finally:
+        with suppress(Exception):
+            await client.call("daemon.shutdown")
+        await client.close()
+        await asyncio.wait_for(daemon_task, timeout=3)
+
+
+@pytest.mark.asyncio
+async def test_m2_rr2_content_tool_payload_not_exposed_in_session_response(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SHISAD_MODEL_BASE_URL", "https://api.example.com/v1")
+    monkeypatch.setenv("SHISAD_MODEL_PLANNER_BASE_URL", "https://planner.example.com/v1")
+    monkeypatch.setenv("SHISAD_MODEL_EMBEDDINGS_BASE_URL", "https://embed.example.com/v1")
+    monkeypatch.setenv("SHISAD_MODEL_MONITOR_BASE_URL", "https://monitor.example.com/v1")
+    monkeypatch.setenv(
+        "SHISAD_MODEL_PLANNER_CAPABILITIES",
+        '{"supports_tool_calls": false, "supports_content_tool_calls": true}',
+    )
+
+    async def _content_tool_complete(
+        self: LocalPlannerProvider,
+        messages: list[Message],
+        tools: list[dict[str, object]] | None = None,
+    ) -> ProviderResponse:
+        _ = (self, messages, tools)
+        return ProviderResponse(
+            message=Message(
+                role="assistant",
+                content=(
+                    "I will do that now. "
+                    '<tool_call>{"name":"file.read","arguments":{"command":["cat","README.md"]}}</tool_call>'
+                ),
+            ),
+            model="local-fallback",
+            finish_reason="stop",
+            usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+        )
+
+    monkeypatch.setattr(LocalPlannerProvider, "complete", _content_tool_complete)
+
+    policy_path = tmp_path / "policy.yaml"
+    policy_path.write_text(
+        textwrap.dedent(
+            """
+            version: "1"
+            default_require_confirmation: false
+            """
+        ).strip()
+        + "\n"
+    )
+
+    config = DaemonConfig(
+        data_dir=tmp_path / "data",
+        socket_path=tmp_path / "control.sock",
+        policy_path=policy_path,
+        log_level="INFO",
+    )
+
+    daemon_task = asyncio.create_task(run_daemon(config))
+    client = ControlClient(config.socket_path)
+
+    try:
+        await _wait_for_socket(config.socket_path)
+        await client.connect()
+
+        created = await client.call(
+            "session.create",
+            {"channel": "cli", "user_id": "alice", "workspace_id": "ws1"},
+        )
+        sid = created["session_id"]
+
+        reply = await client.call(
+            "session.message",
+            {
+                "session_id": sid,
+                "channel": "cli",
+                "user_id": "alice",
+                "workspace_id": "ws1",
+                "content": "read the readme",
+            },
+        )
+        response_text = str(reply["response"])
+        assert "I will do that now." in response_text
+        assert "<tool_call>" not in response_text
+        assert "</tool_call>" not in response_text
+        assert '"name":"file.read"' not in response_text
     finally:
         with suppress(Exception):
             await client.call("daemon.shutdown")
