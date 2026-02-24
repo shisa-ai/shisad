@@ -126,6 +126,114 @@ async def test_routed_openai_provider_uses_component_routes(
 
 
 @pytest.mark.asyncio
+async def test_s0_routed_provider_supports_mixed_mode_and_route_local_auth(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SHISAD_MODEL_REMOTE_ENABLED", "true")
+    monkeypatch.setenv("SHISAD_MODEL_BASE_URL", "https://api.example.com/v1")
+    monkeypatch.setenv("SHISAD_MODEL_PLANNER_BASE_URL", "https://planner.example.com/v1")
+    monkeypatch.setenv("SHISAD_MODEL_EMBEDDINGS_PROVIDER_PRESET", "vllm_local_default")
+    monkeypatch.setenv("SHISAD_MODEL_EMBEDDINGS_BASE_URL", "http://127.0.0.1:8000/v1")
+    monkeypatch.setenv("SHISAD_MODEL_MONITOR_BASE_URL", "https://monitor.example.com/v1")
+    monkeypatch.setenv("SHISAD_MODEL_MONITOR_REMOTE_ENABLED", "false")
+
+    monkeypatch.setenv("SHISAD_MODEL_PLANNER_AUTH_MODE", "header")
+    monkeypatch.setenv("SHISAD_MODEL_PLANNER_AUTH_HEADER_NAME", "X-Api-Key")
+    monkeypatch.setenv("SHISAD_MODEL_PLANNER_API_KEY", "planner-key")
+    monkeypatch.setenv("SHISAD_MODEL_PLANNER_EXTRA_HEADERS", '{"X-Title":"planner-route"}')
+
+    monkeypatch.setenv("SHISAD_MODEL_EMBEDDINGS_AUTH_MODE", "none")
+    monkeypatch.setenv("SHISAD_MODEL_EMBEDDINGS_REMOTE_ENABLED", "true")
+
+    captured_headers: dict[str, dict[str, str]] = {}
+
+    class _FakeOpenAIProvider:
+        def __init__(
+            self,
+            *,
+            base_url: str,
+            model_id: str,
+            headers: dict[str, str],
+            force_json_response: bool = False,
+            request_parameters: Any | None = None,
+            allow_http_localhost: bool = True,
+            block_private_ranges: bool = True,
+            endpoint_allowlist: list[str] | None = None,
+        ) -> None:
+            _ = (
+                model_id,
+                force_json_response,
+                request_parameters,
+                allow_http_localhost,
+                block_private_ranges,
+                endpoint_allowlist,
+            )
+            captured_headers[base_url] = dict(headers)
+            self._base_url = base_url
+
+        async def complete(
+            self,
+            messages: list[Message],
+            tools: list[dict[str, Any]] | None = None,
+        ) -> ProviderResponse:
+            _ = tools
+            return ProviderResponse(
+                message=Message(
+                    role="assistant",
+                    content=f"remote:{self._base_url}:{len(messages)}",
+                ),
+                model="remote-model",
+            )
+
+        async def embeddings(
+            self,
+            input_texts: list[str],
+            *,
+            model_id: str | None = None,
+        ) -> EmbeddingResponse:
+            _ = (input_texts, model_id)
+            return EmbeddingResponse(vectors=[[2.0]], model="embed-model")
+
+    monkeypatch.setattr(
+        "shisad.core.providers.routed_openai.OpenAICompatibleProvider",
+        _FakeOpenAIProvider,
+    )
+
+    class _Fallback(LocalPlannerProvider):
+        async def complete(
+            self,
+            messages: list[Message],
+            tools: list[dict[str, Any]] | None = None,
+        ) -> ProviderResponse:
+            _ = (messages, tools)
+            return ProviderResponse(message=Message(role="assistant", content="fallback"))
+
+    provider = RoutedOpenAIProvider(
+        router=ModelRouter(ModelConfig()),
+        fallback=_Fallback(),
+    )
+
+    planner_resp = await provider.complete([Message(role="user", content="hello")])
+    embeddings_resp = await provider.embeddings(["hello"])
+    monitor_resp = await provider.monitor_complete([Message(role="user", content="monitor")])
+
+    assert planner_resp.message.content.startswith("remote:https://planner.example.com/v1")
+    assert embeddings_resp.vectors == [[2.0]]
+    monitor_payload = json.loads(monitor_resp.message.content)
+    assert monitor_payload["decision"] == "FLAG"
+
+    planner_headers = {
+        key.lower(): value for key, value in captured_headers["https://planner.example.com/v1"].items()
+    }
+    assert planner_headers["x-api-key"] == "planner-key"
+    assert planner_headers["x-title"] == "planner-route"
+    embeddings_headers = {
+        key.lower(): value for key, value in captured_headers["http://127.0.0.1:8000/v1"].items()
+    }
+    assert "authorization" not in embeddings_headers
+
+
+@pytest.mark.asyncio
 async def test_monitor_provider_adapter_delegates_to_monitor_route() -> None:
     class _StubProvider:
         async def monitor_complete(

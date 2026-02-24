@@ -341,7 +341,7 @@ def validate_endpoint(
             errors.append(f"HTTP not allowed for non-localhost endpoint: {hostname}")
 
     # Private range check for IP literals (hostname checks happen at runtime request time).
-    if block_private_ranges and hostname not in ("localhost",):
+    if block_private_ranges and hostname not in ("localhost", "127.0.0.1", "::1"):
         try:
             addr = ipaddress.ip_address(hostname)
             for network in _PRIVATE_NETWORKS:
@@ -460,7 +460,7 @@ def _validate_runtime_endpoint_url(
     if (
         not block_private_ranges
         or not hostname
-        or hostname in {"localhost"}
+        or hostname in {"localhost", "127.0.0.1", "::1"}
     ):
         return errors
 

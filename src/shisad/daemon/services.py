@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import logging
 import os
 from dataclasses import dataclass
@@ -27,6 +28,7 @@ from shisad.core.config import DaemonConfig, ModelConfig
 from shisad.core.events import EventBus
 from shisad.core.planner import Planner
 from shisad.core.providers.base import validate_endpoint
+from shisad.core.providers.capabilities import AuthMode
 from shisad.core.providers.embeddings_adapter import SyncEmbeddingsAdapter
 from shisad.core.providers.local_planner import LocalPlannerProvider
 from shisad.core.providers.monitor_adapter import MonitorProviderAdapter
@@ -152,6 +154,7 @@ class DaemonServices:
     shutdown_event: asyncio.Event
     planner_model_id: str
     model_routes: dict[str, str]
+    provider_diagnostics: dict[str, Any]
     internal_ingress_marker: object
 
     @classmethod
@@ -270,31 +273,20 @@ class DaemonServices:
             delivery = ChannelDeliveryService(channels)
             channel_state_store = ChannelStateStore(config.data_dir / "channels" / "state")
 
-            api_key_candidate = model_config.api_key
-            if api_key_candidate is None:
-                api_key_candidate = os.getenv("SHISA_API_KEY", "")
-            shisa_api_key = api_key_candidate.strip()
             local_fallback = LocalPlannerProvider()
             provider: LocalPlannerProvider | RoutedOpenAIProvider = local_fallback
             monitor_provider: MonitorProviderAdapter | None = None
-            remote_enabled = os.getenv("SHISAD_MODEL_REMOTE_ENABLED", "").strip().lower() in {
-                "1",
-                "true",
-                "yes",
-            }
-            planner_url = router.route_for(ModelComponent.PLANNER).base_url
-            planner_host = (urlparse(planner_url).hostname or "").lower()
-            use_shisa_default_host = planner_host == "api.shisa.ai"
-            if shisa_api_key and (remote_enabled or use_shisa_default_host):
+            provider_diagnostics = _build_provider_diagnostics(router)
+            _log_provider_route_summary(router)
+            if any(route.remote_enabled for route in router.all_routes().values()):
                 provider = RoutedOpenAIProvider(
                     router=router,
-                    api_key=shisa_api_key,
                     fallback=local_fallback,
                     allow_http_localhost=model_config.allow_http_localhost,
                     block_private_ranges=model_config.block_private_ranges,
                     endpoint_allowlist=model_config.endpoint_allowlist or None,
                 )
-            if isinstance(provider, RoutedOpenAIProvider):
+            if isinstance(provider, RoutedOpenAIProvider) and provider.monitor_remote_enabled():
                 monitor_provider = MonitorProviderAdapter(provider)
 
             embeddings_route = router.route_for(ModelComponent.EMBEDDINGS)
@@ -303,12 +295,7 @@ class DaemonServices:
                 model_id=embeddings_route.model_id,
             )
             credential_store = InMemoryCredentialStore()
-            if shisa_api_key:
-                credential_store.register(
-                    CredentialRef("shisa_primary"),
-                    shisa_api_key,
-                    CredentialConfig(allowed_hosts=["api.shisa.ai"]),
-                )
+            _register_route_credentials(credential_store=credential_store, router=router)
             egress_proxy = EgressProxy(credential_store=credential_store)
             connect_path_proxy = IptablesConnectPathProxy()
             if not connect_path_proxy.net_admin_available:
@@ -509,6 +496,7 @@ class DaemonServices:
                 shutdown_event=shutdown_event,
                 planner_model_id=planner_model_id,
                 model_routes=model_routes,
+                provider_diagnostics=provider_diagnostics,
                 internal_ingress_marker=internal_ingress_marker,
             )
             startup_complete = True
@@ -852,6 +840,141 @@ def _build_tool_registry(
     alarm_tool = AlarmTool(event_bus)
     registry.register(alarm_tool.tool_definition())
     return registry, alarm_tool
+
+
+def _build_provider_diagnostics(router: ModelRouter) -> dict[str, Any]:
+    routes: dict[str, Any] = {}
+    problems: list[str] = []
+    for component in ModelComponent:
+        route = router.route_for(component)
+        requires_key = route.auth_mode != AuthMode.NONE
+        has_key = bool(route.api_key)
+        if route.remote_enabled and requires_key and not has_key:
+            problems.append(f"{component.value}_missing_api_key")
+        routes[component.value] = {
+            "preset": route.provider_preset.value,
+            "preset_source": route.provider_preset_source,
+            "base_url": route.base_url,
+            "endpoint_family": route.endpoint_family.value,
+            "remote_enabled": route.remote_enabled,
+            "remote_enabled_source": route.remote_enabled_source,
+            "auth_mode": route.auth_mode.value,
+            "auth_header_name": route.auth_header_name,
+            "key_source": route.api_key_source,
+            "request_parameter_profile": route.request_parameter_profile,
+            "request_parameter_profile_source": route.request_parameter_profile_source,
+            "request_parameter_profile_reason": route.request_parameter_profile_reason,
+            "effective_request_parameters": dict(route.effective_request_payload),
+            "mapped_request_fields": list(route.mapped_request_fields),
+            "rejected_request_fields": list(route.rejected_request_fields),
+            "extra_headers": sorted(route.extra_headers.keys()),
+        }
+    return {
+        "status": "misconfigured" if problems else "ok",
+        "problems": sorted(set(problems)),
+        "routes": routes,
+        "key_gated_acceptance": _key_gated_acceptance_matrix(),
+    }
+
+
+def _key_gated_acceptance_matrix() -> dict[str, dict[str, str]]:
+    rows = {
+        "openai": {
+            "key_env": "OPENAI_API_KEY",
+            "model_id": "gpt-5.2-2025-12-11",
+        },
+        "openrouter": {
+            "key_env": "OPENROUTER_API_KEY",
+            "model_id": "qwen/qwen3.5-397b-a17b",
+        },
+        "google_openai": {
+            "key_env": "GEMINI_API_KEY",
+            "model_id": "gemini-3.1-pro-preview",
+        },
+        "shisa_default": {
+            "key_env": "SHISA_API_KEY",
+            "model_id": "shisa-ai/shisa-v2.1-unphi4-14b",
+        },
+    }
+    matrix: dict[str, dict[str, str]] = {}
+    for name, row in rows.items():
+        key_env = row["key_env"]
+        present = bool(os.getenv(key_env, "").strip())
+        matrix[name] = {
+            "status": "pass" if present else "N/A (key missing)",
+            "key_env": key_env,
+            "model_id": row["model_id"],
+        }
+    return matrix
+
+
+def _register_route_credentials(
+    *,
+    credential_store: InMemoryCredentialStore,
+    router: ModelRouter,
+) -> None:
+    seen: set[tuple[str, str, str, str]] = set()
+    for component in ModelComponent:
+        route = router.route_for(component)
+        if route.auth_mode == AuthMode.NONE:
+            continue
+        key = (route.api_key or "").strip()
+        if not key:
+            continue
+        hostname = (urlparse(route.base_url).hostname or "").strip().lower()
+        if not hostname:
+            continue
+        signature = (
+            key,
+            hostname,
+            route.auth_mode.value,
+            route.auth_header_name,
+        )
+        if signature in seen:
+            continue
+        seen.add(signature)
+
+        header_name = "Authorization"
+        header_prefix = "Bearer "
+        if route.auth_mode == AuthMode.HEADER:
+            header_name = route.auth_header_name
+            header_prefix = ""
+
+        ref_hash = hashlib.sha256(
+            f"{hostname}:{route.auth_mode.value}:{route.auth_header_name}:{key}".encode()
+        ).hexdigest()[:12]
+        credential_store.register(
+            CredentialRef(f"model_route_{ref_hash}"),
+            key,
+            CredentialConfig(
+                allowed_hosts=[hostname],
+                header_name=header_name,
+                header_prefix=header_prefix,
+            ),
+        )
+
+
+def _log_provider_route_summary(router: ModelRouter) -> None:
+    for component in ModelComponent:
+        route = router.route_for(component)
+        logger.info(
+            (
+                "Model route resolved: component=%s preset=%s preset_source=%s "
+                "base_url=%s endpoint_family=%s remote_enabled=%s remote_source=%s "
+                "auth_mode=%s key_source=%s request_profile=%s profile_source=%s"
+            ),
+            component.value,
+            route.provider_preset.value,
+            route.provider_preset_source,
+            route.base_url,
+            route.endpoint_family.value,
+            route.remote_enabled,
+            route.remote_enabled_source,
+            route.auth_mode.value,
+            route.api_key_source,
+            route.request_parameter_profile,
+            route.request_parameter_profile_source,
+        )
 
 
 def _validate_model_endpoints(model_config: ModelConfig, router: ModelRouter) -> None:

@@ -380,7 +380,10 @@ def doctor() -> None:
 @click.option(
     "--component",
     default="all",
-    help="Component to check (all, dependencies, policy, channels, sandbox, realitycheck)",
+    help=(
+        "Component to check "
+        "(all, dependencies, provider, policy, channels, sandbox, realitycheck)"
+    ),
 )
 def doctor_check(component: str) -> None:
     config = _get_config()

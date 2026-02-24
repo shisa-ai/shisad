@@ -27,6 +27,7 @@ logger = logging.getLogger(__name__)
 
 _DOCTOR_COMPONENTS: tuple[str, ...] = (
     "dependencies",
+    "provider",
     "policy",
     "channels",
     "sandbox",
@@ -134,6 +135,7 @@ class AdminImplMixin(HandlerMixinBase):
         component = str(params.get("component", "all")).strip().lower() or "all"
         component_factories = {
             "dependencies": self._doctor_dependencies_status,
+            "provider": self._doctor_provider_status,
             "policy": self._doctor_policy_status,
             "channels": self._doctor_channels_status,
             "sandbox": self._doctor_sandbox_status,

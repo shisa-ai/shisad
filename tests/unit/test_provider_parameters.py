@@ -51,6 +51,18 @@ def test_m2_request_parameters_enforce_range_validation() -> None:
         RequestParameters(presence_penalty=-3.0)
 
 
+def test_s0_request_parameters_support_reasoning_fields_in_payload() -> None:
+    payload = RequestParameters(
+        max_tokens=128,
+        reasoning_effort="medium",
+        reasoning={"budget_tokens": 64, "mode": "deliberate"},
+    ).to_payload()
+
+    assert payload["max_tokens"] == 128
+    assert payload["reasoning_effort"] == "medium"
+    assert payload["reasoning"] == {"budget_tokens": 64, "mode": "deliberate"}
+
+
 @pytest.mark.asyncio
 async def test_m2_openai_provider_merges_allowlisted_request_parameters(
     monkeypatch: pytest.MonkeyPatch,

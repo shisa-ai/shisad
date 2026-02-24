@@ -204,6 +204,7 @@ class HandlerImplementation(
         self._shutdown_event = services.shutdown_event
         self._provenance_status = services.provenance_status
         self._model_routes = services.model_routes
+        self._provider_diagnostics = services.provider_diagnostics
         self._planner_model_id = services.planner_model_id
         self._classifier_mode = services.firewall.classifier_mode
         self._internal_ingress_marker = services.internal_ingress_marker
@@ -542,6 +543,15 @@ class HandlerImplementation(
             "classifier_mode": self._classifier_mode,
             "channels": channel_rows,
         }
+
+    def _doctor_provider_status(self) -> dict[str, Any]:
+        payload = self._provider_diagnostics
+        if not isinstance(payload, dict):
+            return {
+                "status": "error",
+                "problems": ["provider_diagnostics_unavailable"],
+            }
+        return dict(payload)
 
     def _doctor_policy_status(self) -> dict[str, Any]:
         problems: list[str] = []

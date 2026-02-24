@@ -58,11 +58,13 @@ async def test_facade_routes_across_handler_groups(
         assert doctor_all["status"] in {"ok", "degraded"}
         checks = doctor_all.get("checks", {})
         assert "dependencies" in checks
+        assert "provider" in checks
         assert "policy" in checks
         assert "channels" in checks
         assert "sandbox" in checks
         assert "realitycheck" in checks
         assert checks["dependencies"]["status"] in {"ok", "misconfigured"}
+        assert checks["provider"]["status"] in {"ok", "misconfigured"}
         assert checks["policy"]["status"] in {"ok", "degraded", "misconfigured"}
         assert checks["channels"]["status"] in {"ok", "degraded", "misconfigured", "disabled"}
         assert checks["sandbox"]["status"] in {"ok", "degraded", "misconfigured"}

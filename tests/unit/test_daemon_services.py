@@ -16,6 +16,7 @@ from shisad.daemon.services import (
     _normalize_tool_destination,
     _validate_security_route_pins,
 )
+from shisad.security.credentials import InMemoryCredentialStore
 
 
 @pytest.mark.asyncio
@@ -61,6 +62,78 @@ async def test_daemon_services_builds_with_remote_provider_when_enabled(
     services = await DaemonServices.build(config)
     try:
         assert isinstance(services.provider, RoutedOpenAIProvider)
+    finally:
+        await services.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_s0_daemon_services_supports_remote_route_with_auth_none(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("SHISA_API_KEY", raising=False)
+    monkeypatch.delenv("SHISAD_MODEL_API_KEY", raising=False)
+    monkeypatch.setenv("SHISAD_MODEL_PLANNER_PROVIDER_PRESET", "vllm_local_default")
+    monkeypatch.setenv("SHISAD_MODEL_PLANNER_BASE_URL", "http://127.0.0.1:8000/v1")
+    monkeypatch.setenv("SHISAD_MODEL_PLANNER_REMOTE_ENABLED", "true")
+    monkeypatch.setenv("SHISAD_MODEL_PLANNER_AUTH_MODE", "none")
+
+    config = DaemonConfig(
+        data_dir=tmp_path / "data",
+        socket_path=tmp_path / "control.sock",
+        policy_path=tmp_path / "policy.yaml",
+    )
+    services = await DaemonServices.build(config)
+    try:
+        assert isinstance(services.provider, RoutedOpenAIProvider)
+    finally:
+        await services.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_s0_daemon_services_registers_credentials_per_route_host(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SHISAD_MODEL_REMOTE_ENABLED", "true")
+    monkeypatch.setenv("SHISAD_MODEL_PLANNER_PROVIDER_PRESET", "openai_default")
+    monkeypatch.setenv("SHISAD_MODEL_PLANNER_API_KEY", "planner-key")
+    monkeypatch.setenv("SHISAD_MODEL_MONITOR_PROVIDER_PRESET", "openrouter_default")
+    monkeypatch.setenv("SHISAD_MODEL_MONITOR_API_KEY", "monitor-key")
+    monkeypatch.setenv("SHISAD_MODEL_MONITOR_REMOTE_ENABLED", "true")
+    monkeypatch.setenv("SHISAD_MODEL_EMBEDDINGS_PROVIDER_PRESET", "vllm_local_default")
+    monkeypatch.setenv("SHISAD_MODEL_EMBEDDINGS_REMOTE_ENABLED", "true")
+    monkeypatch.setenv("SHISAD_MODEL_EMBEDDINGS_AUTH_MODE", "none")
+
+    captured: list[tuple[str, str, tuple[str, ...], str, str]] = []
+
+    class _CapturingCredentialStore(InMemoryCredentialStore):
+        def register(self, ref, value, config):  # type: ignore[no-untyped-def]
+            captured.append(
+                (
+                    str(ref),
+                    value,
+                    tuple(config.allowed_hosts),
+                    config.header_name,
+                    config.header_prefix,
+                )
+            )
+            super().register(ref, value, config)
+
+    monkeypatch.setattr("shisad.daemon.services.InMemoryCredentialStore", _CapturingCredentialStore)
+
+    config = DaemonConfig(
+        data_dir=tmp_path / "data",
+        socket_path=tmp_path / "control.sock",
+        policy_path=tmp_path / "policy.yaml",
+    )
+    services = await DaemonServices.build(config)
+    try:
+        hosts = {entry[2][0] for entry in captured}
+        assert "api.openai.com" in hosts
+        assert "openrouter.ai" in hosts
+        assert "api.shisa.ai" not in hosts
+        assert all(prefix == "Bearer " for *_rest, prefix in captured)
     finally:
         await services.shutdown()
 

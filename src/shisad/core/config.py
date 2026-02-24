@@ -13,7 +13,14 @@ from typing import Literal, Self
 from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from shisad.core.providers.capabilities import ProviderCapabilities, RequestParameters
+from shisad.core.providers.capabilities import (
+    AuthMode,
+    EndpointFamily,
+    ProviderCapabilities,
+    ProviderPreset,
+    RequestParameters,
+)
+from shisad.core.providers.http_headers import validate_auth_header_name, validate_extra_headers
 
 
 class DaemonConfig(BaseSettings):
@@ -470,7 +477,24 @@ class ModelConfig(BaseSettings):
     )
     api_key: str | None = Field(
         default=None,
-        description="Optional API key override (falls back to SHISA_API_KEY).",
+        description="Optional global API key override (SHISAD_MODEL_API_KEY).",
+    )
+    remote_enabled: bool = Field(
+        default=False,
+        description="Global default remote-provider enablement.",
+    )
+
+    planner_provider_preset: ProviderPreset | None = Field(
+        default=None,
+        description="Optional provider preset for planner route.",
+    )
+    embeddings_provider_preset: ProviderPreset | None = Field(
+        default=None,
+        description="Optional provider preset for embeddings route.",
+    )
+    monitor_provider_preset: ProviderPreset | None = Field(
+        default=None,
+        description="Optional provider preset for monitor route.",
     )
 
     planner_base_url: str | None = Field(
@@ -485,6 +509,98 @@ class ModelConfig(BaseSettings):
         default=None,
         description="Optional base URL override for monitor provider",
     )
+
+    planner_remote_enabled: bool | None = Field(
+        default=None,
+        description="Optional planner remote toggle (None inherits global).",
+    )
+    embeddings_remote_enabled: bool | None = Field(
+        default=None,
+        description="Optional embeddings remote toggle (None inherits global).",
+    )
+    monitor_remote_enabled: bool | None = Field(
+        default=None,
+        description="Optional monitor remote toggle (None inherits global).",
+    )
+
+    planner_api_key: str | None = Field(
+        default=None,
+        description="Optional route-local planner API key override.",
+    )
+    embeddings_api_key: str | None = Field(
+        default=None,
+        description="Optional route-local embeddings API key override.",
+    )
+    monitor_api_key: str | None = Field(
+        default=None,
+        description="Optional route-local monitor API key override.",
+    )
+
+    planner_auth_mode: AuthMode | None = Field(
+        default=None,
+        description="Route auth mode override for planner route.",
+    )
+    embeddings_auth_mode: AuthMode | None = Field(
+        default=None,
+        description="Route auth mode override for embeddings route.",
+    )
+    monitor_auth_mode: AuthMode | None = Field(
+        default=None,
+        description="Route auth mode override for monitor route.",
+    )
+
+    planner_auth_header_name: str | None = Field(
+        default=None,
+        description="Route auth header name when planner_auth_mode=header.",
+    )
+    embeddings_auth_header_name: str | None = Field(
+        default=None,
+        description="Route auth header name when embeddings_auth_mode=header.",
+    )
+    monitor_auth_header_name: str | None = Field(
+        default=None,
+        description="Route auth header name when monitor_auth_mode=header.",
+    )
+
+    planner_extra_headers: dict[str, str] = Field(
+        default_factory=dict,
+        description="Optional planner route custom headers.",
+    )
+    embeddings_extra_headers: dict[str, str] = Field(
+        default_factory=dict,
+        description="Optional embeddings route custom headers.",
+    )
+    monitor_extra_headers: dict[str, str] = Field(
+        default_factory=dict,
+        description="Optional monitor route custom headers.",
+    )
+
+    planner_endpoint_family: EndpointFamily | None = Field(
+        default=None,
+        description="Planner endpoint family override.",
+    )
+    embeddings_endpoint_family: EndpointFamily | None = Field(
+        default=None,
+        description="Embeddings endpoint family override.",
+    )
+    monitor_endpoint_family: EndpointFamily | None = Field(
+        default=None,
+        description="Monitor endpoint family override.",
+    )
+
+    planner_request_parameter_profile: str | None = Field(
+        default=None,
+        description="Planner request-parameter profile override.",
+    )
+    embeddings_request_parameter_profile: str | None = Field(
+        default=None,
+        description="Embeddings request-parameter profile override.",
+    )
+    monitor_request_parameter_profile: str | None = Field(
+        default=None,
+        description="Monitor request-parameter profile override.",
+    )
+
     planner_capabilities: ProviderCapabilities = Field(
         default_factory=ProviderCapabilities,
         description="Capability declaration for planner route.",
@@ -552,6 +668,46 @@ class ModelConfig(BaseSettings):
         return value
 
     @staticmethod
+    def _parse_optional_header_name(value: object) -> object:
+        if isinstance(value, str):
+            stripped = value.strip()
+            if not stripped:
+                return None
+            return stripped
+        return value
+
+    @staticmethod
+    def _parse_optional_secret(value: object) -> object:
+        if isinstance(value, str):
+            stripped = value.strip()
+            if not stripped:
+                return None
+            return stripped
+        return value
+
+    @staticmethod
+    def _parse_optional_bool(value: object) -> object:
+        if isinstance(value, str):
+            stripped = value.strip()
+            if not stripped:
+                return None
+        return value
+
+    @staticmethod
+    def _parse_header_map(value: object, *, field_name: str) -> object:
+        if isinstance(value, str):
+            stripped = value.strip()
+            if not stripped:
+                return {}
+            parsed = json.loads(stripped)
+            if not isinstance(parsed, dict):
+                raise ValueError(f"{field_name} JSON must be an object")
+            return {str(key): str(item) for key, item in parsed.items()}
+        if isinstance(value, dict):
+            return {str(key): str(item) for key, item in value.items()}
+        return value
+
+    @staticmethod
     def _parse_nested_model(value: object, *, field_name: str) -> object:
         if isinstance(value, str):
             stripped = value.strip()
@@ -584,6 +740,64 @@ class ModelConfig(BaseSettings):
     def _parse_request_parameters(cls, value: object, info: object) -> object:
         field_name = f"SHISAD_MODEL_{str(getattr(info, 'field_name', '')).upper()}"
         return cls._parse_nested_model(value, field_name=field_name)
+
+    @field_validator(
+        "planner_api_key",
+        "embeddings_api_key",
+        "monitor_api_key",
+        mode="before",
+    )
+    @classmethod
+    def _parse_route_api_keys(cls, value: object) -> object:
+        return cls._parse_optional_secret(value)
+
+    @field_validator(
+        "planner_remote_enabled",
+        "embeddings_remote_enabled",
+        "monitor_remote_enabled",
+        mode="before",
+    )
+    @classmethod
+    def _parse_route_remote_enabled(cls, value: object) -> object:
+        return cls._parse_optional_bool(value)
+
+    @field_validator(
+        "planner_auth_header_name",
+        "embeddings_auth_header_name",
+        "monitor_auth_header_name",
+        mode="before",
+    )
+    @classmethod
+    def _parse_route_auth_header_names(cls, value: object) -> object:
+        return cls._parse_optional_header_name(value)
+
+    @field_validator(
+        "planner_extra_headers",
+        "embeddings_extra_headers",
+        "monitor_extra_headers",
+        mode="before",
+    )
+    @classmethod
+    def _parse_route_extra_headers(cls, value: object, info: object) -> object:
+        field_name = f"SHISAD_MODEL_{str(getattr(info, 'field_name', '')).upper()}"
+        return cls._parse_header_map(value, field_name=field_name)
+
+    @model_validator(mode="after")
+    def _validate_route_header_configuration(self) -> Self:
+        for route in ("planner", "embeddings", "monitor"):
+            auth_mode = getattr(self, f"{route}_auth_mode")
+            auth_header_name = getattr(self, f"{route}_auth_header_name")
+            extra_headers = getattr(self, f"{route}_extra_headers")
+
+            if auth_mode == AuthMode.HEADER and not auth_header_name:
+                raise ValueError(
+                    f"{route}_auth_header_name is required when {route}_auth_mode=header"
+                )
+            if auth_header_name:
+                validate_auth_header_name(auth_header_name)
+            validate_extra_headers(extra_headers)
+
+        return self
 
 
 class ShisadConfig(BaseSettings):
