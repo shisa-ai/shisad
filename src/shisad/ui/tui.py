@@ -351,24 +351,26 @@ async def _decision(socket_path: Path, method: str, confirmation_id: str) -> Non
         await client.connect()
         payload: dict[str, Any] = {"confirmation_id": confirmation_id}
         if method == "action.confirm":
+            pending_payload = await client.call(
+                "action.pending",
+                {
+                    "confirmation_id": confirmation_id,
+                    "status": "pending",
+                    "limit": 1,
+                    "include_ui": False,
+                },
+            )
             decision_nonce = ""
-            for limit in (200, 1000, 5000, 20000):
-                pending_payload = await client.call(
-                    "action.pending",
-                    {"status": "pending", "limit": limit, "include_ui": False},
-                )
-                if isinstance(pending_payload, Mapping):
-                    actions = pending_payload.get("actions", [])
-                    if isinstance(actions, list):
-                        for raw in actions:
-                            if not isinstance(raw, Mapping):
-                                continue
-                            if str(raw.get("confirmation_id", "")).strip() != confirmation_id:
-                                continue
-                            decision_nonce = str(raw.get("decision_nonce", "")).strip()
-                            break
-                if decision_nonce:
-                    break
+            if isinstance(pending_payload, Mapping):
+                actions = pending_payload.get("actions", [])
+                if isinstance(actions, list):
+                    for raw in actions:
+                        if not isinstance(raw, Mapping):
+                            continue
+                        if str(raw.get("confirmation_id", "")).strip() != confirmation_id:
+                            continue
+                        decision_nonce = str(raw.get("decision_nonce", "")).strip()
+                        break
             if not decision_nonce:
                 print("decision_nonce not found for confirmation_id")
                 return

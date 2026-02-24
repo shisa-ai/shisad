@@ -360,6 +360,9 @@ def test_cli_commands_route_through_rpc_wrapper(
         method == "action.pending"
         and isinstance(params, dict)
         and params.get("include_ui") is False
+        and params.get("confirmation_id") == "c-1"
+        and params.get("limit") == 1
+        and params.get("status") == "pending"
         for method, params in calls
     )
     assert (

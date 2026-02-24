@@ -117,6 +117,27 @@ class _ConfirmationImplHarness(ConfirmationImplMixin):
         _ = (sid, user_id, tool_name, arguments, capabilities, approval_actor, execution_action)
         return True, None, None
 
+    @staticmethod
+    def _pending_to_dict(pending: PendingAction) -> dict[str, object]:
+        return {
+            "confirmation_id": pending.confirmation_id,
+            "decision_nonce": pending.decision_nonce,
+            "session_id": str(pending.session_id),
+            "user_id": str(pending.user_id),
+            "workspace_id": str(pending.workspace_id),
+            "tool_name": str(pending.tool_name),
+            "arguments": dict(pending.arguments),
+            "reason": pending.reason,
+            "capabilities": sorted(cap.value for cap in pending.capabilities),
+            "created_at": pending.created_at.isoformat(),
+            "execute_after": pending.execute_after.isoformat() if pending.execute_after else "",
+            "safe_preview": pending.safe_preview,
+            "warnings": list(pending.warnings),
+            "leak_check": dict(pending.leak_check),
+            "status": pending.status,
+            "status_reason": pending.status_reason,
+        }
+
 
 def _pending_action(*, nonce: str, execute_after: datetime | None = None) -> PendingAction:
     return PendingAction(
@@ -132,6 +153,20 @@ def _pending_action(*, nonce: str, execute_after: datetime | None = None) -> Pen
         created_at=datetime.now(UTC),
         execute_after=execute_after,
     )
+
+
+@pytest.mark.asyncio
+async def test_m1_rr3_action_pending_filters_by_confirmation_id() -> None:
+    harness = _ConfirmationImplHarness()
+    first = _pending_action(nonce="first")
+    second = _pending_action(nonce="second")
+    second.confirmation_id = "c-2"
+    harness._pending_actions[first.confirmation_id] = first
+    harness._pending_actions[second.confirmation_id] = second
+
+    filtered = await harness.do_action_pending({"confirmation_id": "c-2", "limit": 10})
+    assert filtered["count"] == 1
+    assert filtered["actions"][0]["confirmation_id"] == "c-2"
 
 
 @pytest.mark.asyncio

@@ -358,13 +358,21 @@ async def test_tui_decision_handles_missing_and_present_confirmation_id(
     monkeypatch.setattr(asyncio, "sleep", _fake_sleep)
     await tui_module._decision(Path("/tmp/control.sock"), "action.confirm", "conf-1")
     assert created[0].calls == [
-        ("action.pending", {"status": "pending", "limit": 200, "include_ui": False}),
+        (
+            "action.pending",
+            {
+                "confirmation_id": "conf-1",
+                "status": "pending",
+                "limit": 1,
+                "include_ui": False,
+            },
+        ),
         ("action.confirm", {"confirmation_id": "conf-1", "decision_nonce": "nonce-1"}),
     ]
 
 
 @pytest.mark.asyncio
-async def test_tui_decision_retries_pending_lookup_with_higher_limits(
+async def test_tui_decision_fails_when_targeted_nonce_lookup_misses(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from shisad.ui import tui as tui_module
@@ -378,7 +386,6 @@ async def test_tui_decision_retries_pending_lookup_with_higher_limits(
     class _FakeClient:
         def __init__(self, _socket_path: Path) -> None:
             self.calls: list[tuple[str, dict[str, object]]] = []
-            self.pending_calls = 0
 
         async def connect(self) -> None:
             return
@@ -386,10 +393,7 @@ async def test_tui_decision_retries_pending_lookup_with_higher_limits(
         async def call(self, method: str, payload: dict[str, object]) -> dict[str, object]:
             self.calls.append((method, payload))
             if method == "action.pending":
-                self.pending_calls += 1
-                if self.pending_calls == 1:
-                    return {"actions": [{"confirmation_id": "other", "decision_nonce": "nonce-x"}]}
-                return {"actions": [{"confirmation_id": "conf-1", "decision_nonce": "nonce-1"}]}
+                return {"actions": [{"confirmation_id": "other", "decision_nonce": "nonce-x"}]}
             return {"ok": True, "method": method, "payload": payload}
 
         async def close(self) -> None:
@@ -408,10 +412,17 @@ async def test_tui_decision_retries_pending_lookup_with_higher_limits(
     monkeypatch.setattr(tui_module, "ControlClient", _factory)
     monkeypatch.setattr(asyncio, "sleep", _fake_sleep)
     await tui_module._decision(Path("/tmp/control.sock"), "action.confirm", "conf-1")
+    assert any("decision_nonce not found for confirmation_id" in line for line in printed)
     assert created[0].calls == [
-        ("action.pending", {"status": "pending", "limit": 200, "include_ui": False}),
-        ("action.pending", {"status": "pending", "limit": 1000, "include_ui": False}),
-        ("action.confirm", {"confirmation_id": "conf-1", "decision_nonce": "nonce-1"}),
+        (
+            "action.pending",
+            {
+                "confirmation_id": "conf-1",
+                "status": "pending",
+                "limit": 1,
+                "include_ui": False,
+            },
+        ),
     ]
 
 

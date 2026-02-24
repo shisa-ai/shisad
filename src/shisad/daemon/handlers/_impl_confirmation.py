@@ -27,15 +27,22 @@ class ConfirmationImplMixin(HandlerMixinBase):
         ]
         return {"metrics": rows, "count": len(rows)}
     async def do_action_pending(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        confirmation_filter = str(params.get("confirmation_id") or "").strip()
         session_filter = str(params.get("session_id") or "").strip()
         status_filter = str(params.get("status") or "").strip().lower()
         limit = int(params.get("limit", 100))
         include_ui = bool(params.get("include_ui", True))
 
-        pending_items = list(self._pending_actions.values())
-        pending_items.sort(key=lambda item: item.created_at, reverse=True)
+        if confirmation_filter:
+            candidate = self._pending_actions.get(confirmation_filter)
+            pending_items = [candidate] if candidate is not None else []
+        else:
+            pending_items = list(self._pending_actions.values())
+            pending_items.sort(key=lambda item: item.created_at, reverse=True)
         rows: list[dict[str, Any]] = []
         for item in pending_items:
+            if item is None:
+                continue
             if session_filter and str(item.session_id) != session_filter:
                 continue
             if status_filter and item.status.lower() != status_filter:

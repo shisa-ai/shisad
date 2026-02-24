@@ -700,17 +700,21 @@ def _resolve_pending_decision_nonce(
     config: DaemonConfig,
     confirmation_id: str,
 ) -> str:
-    for limit in (200, 1000, 5000, 20000):
-        pending = rpc_call(
-            config,
-            "action.pending",
-            {"status": "pending", "limit": limit, "include_ui": False},
-            response_model=ActionPendingResult,
-        )
-        for row in pending.actions:
-            if row.confirmation_id != confirmation_id:
-                continue
-            return (row.decision_nonce or "").strip()
+    pending = rpc_call(
+        config,
+        "action.pending",
+        {
+            "confirmation_id": confirmation_id,
+            "status": "pending",
+            "limit": 1,
+            "include_ui": False,
+        },
+        response_model=ActionPendingResult,
+    )
+    for row in pending.actions:
+        if row.confirmation_id != confirmation_id:
+            continue
+        return (row.decision_nonce or "").strip()
     return ""
 
 
