@@ -30,6 +30,11 @@ from shisad.core.types import (
 )
 
 logger = logging.getLogger(__name__)
+_DIR_FSYNC_UNSUPPORTED_ERRNOS = {errno.EINVAL, errno.ENOSYS}
+for _name in ("ENOTSUP", "EOPNOTSUPP"):
+    _value = getattr(errno, _name, None)
+    if isinstance(_value, int):
+        _DIR_FSYNC_UNSUPPORTED_ERRNOS.add(_value)
 
 
 @dataclass(frozen=True)
@@ -315,7 +320,7 @@ class SessionManager:
         try:
             os.fsync(dir_fd)
         except OSError as exc:
-            if exc.errno not in {errno.EINVAL, errno.ENOSYS}:
+            if exc.errno not in _DIR_FSYNC_UNSUPPORTED_ERRNOS:
                 raise
         finally:
             os.close(dir_fd)

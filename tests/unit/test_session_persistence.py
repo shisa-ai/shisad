@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import logging
 from pathlib import Path
 
@@ -97,6 +98,26 @@ def test_m1_pf46_session_persistence_calls_fsync_for_file_and_parent_dir(
     manager = SessionManager(state_dir=tmp_path / "sessions" / "state")
     _ = manager.create(channel="cli")
     assert len(fsync_calls) >= 2
+
+
+def test_m1_pf46_session_persistence_ignores_enotsup_for_parent_dir_fsync(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fsync_calls = 0
+
+    def _fsync(fd: int) -> None:
+        nonlocal fsync_calls
+        _ = fd
+        fsync_calls += 1
+        if fsync_calls >= 2:
+            raise OSError(errno.ENOTSUP, "directory fsync unsupported")
+
+    monkeypatch.setattr(session_module.os, "fsync", _fsync)
+    state_dir = tmp_path / "sessions" / "state"
+    manager = SessionManager(state_dir=state_dir)
+    created = manager.create(channel="cli")
+    assert _session_state_path(state_dir, str(created.id)).exists()
 
 
 def test_m3_session_manager_skips_non_utf8_persisted_state_files(tmp_path: Path) -> None:
