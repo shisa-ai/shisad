@@ -364,6 +364,58 @@ async def test_tui_decision_handles_missing_and_present_confirmation_id(
 
 
 @pytest.mark.asyncio
+async def test_tui_decision_retries_pending_lookup_with_higher_limits(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from shisad.ui import tui as tui_module
+
+    printed: list[str] = []
+    monkeypatch.setattr(
+        "builtins.print",
+        lambda *args, **kwargs: printed.append(" ".join(map(str, args))),
+    )
+
+    class _FakeClient:
+        def __init__(self, _socket_path: Path) -> None:
+            self.calls: list[tuple[str, dict[str, object]]] = []
+            self.pending_calls = 0
+
+        async def connect(self) -> None:
+            return
+
+        async def call(self, method: str, payload: dict[str, object]) -> dict[str, object]:
+            self.calls.append((method, payload))
+            if method == "action.pending":
+                self.pending_calls += 1
+                if self.pending_calls == 1:
+                    return {"actions": [{"confirmation_id": "other", "decision_nonce": "nonce-x"}]}
+                return {"actions": [{"confirmation_id": "conf-1", "decision_nonce": "nonce-1"}]}
+            return {"ok": True, "method": method, "payload": payload}
+
+        async def close(self) -> None:
+            return
+
+    created: list[_FakeClient] = []
+
+    def _factory(socket_path: Path) -> _FakeClient:
+        client = _FakeClient(socket_path)
+        created.append(client)
+        return client
+
+    async def _fake_sleep(_seconds: float) -> None:
+        return
+
+    monkeypatch.setattr(tui_module, "ControlClient", _factory)
+    monkeypatch.setattr(asyncio, "sleep", _fake_sleep)
+    await tui_module._decision(Path("/tmp/control.sock"), "action.confirm", "conf-1")
+    assert created[0].calls == [
+        ("action.pending", {"status": "pending", "limit": 200, "include_ui": False}),
+        ("action.pending", {"status": "pending", "limit": 1000, "include_ui": False}),
+        ("action.confirm", {"confirmation_id": "conf-1", "decision_nonce": "nonce-1"}),
+    ]
+
+
+@pytest.mark.asyncio
 async def test_web_fetch_and_write_snapshot(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

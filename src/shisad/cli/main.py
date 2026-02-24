@@ -684,8 +684,9 @@ def action_pending(session_id: str, status: str, limit: int, raw: bool) -> None:
         _echo("No pending confirmations", fg="yellow")
         return
     for row in rows:
+        nonce_value = (row.decision_nonce or "").strip()
         click.echo(
-            f"{row.confirmation_id} status={row.status} "
+            f"{row.confirmation_id} nonce={nonce_value} status={row.status} "
             f"tool={row.tool_name} reason={row.reason}"
         )
         preview = (row.safe_preview or "").strip()
@@ -694,19 +695,49 @@ def action_pending(session_id: str, status: str, limit: int, raw: bool) -> None:
             click.echo("")
 
 
+def _resolve_pending_decision_nonce(
+    *,
+    config: DaemonConfig,
+    confirmation_id: str,
+) -> str:
+    for limit in (200, 1000, 5000, 20000):
+        pending = rpc_call(
+            config,
+            "action.pending",
+            {"status": "pending", "limit": limit, "include_ui": False},
+            response_model=ActionPendingResult,
+        )
+        for row in pending.actions:
+            if row.confirmation_id != confirmation_id:
+                continue
+            return (row.decision_nonce or "").strip()
+    return ""
+
+
 @action.command("confirm")
 @click.argument("confirmation_id")
-@click.option("--nonce", required=True, help="Decision nonce for replay-safe confirmation")
+@click.option("--nonce", default="", help="Decision nonce for replay-safe confirmation")
 @click.option("--reason", default="", help="Operator note")
 def action_confirm(confirmation_id: str, nonce: str, reason: str) -> None:
     """Approve one pending confirmation."""
     config = _get_config()
+    decision_nonce = nonce.strip()
+    if not decision_nonce:
+        decision_nonce = _resolve_pending_decision_nonce(
+            config=config,
+            confirmation_id=confirmation_id,
+        )
+    if not decision_nonce:
+        raise click.ClickException(
+            "Decision nonce not found for confirmation_id; run 'shisad action pending' and retry "
+            "with --nonce."
+        )
     result = rpc_call(
         config,
         "action.confirm",
         {
             "confirmation_id": confirmation_id,
-            "decision_nonce": nonce,
+            "decision_nonce": decision_nonce,
             "reason": reason,
         },
         response_model=ActionConfirmResult,

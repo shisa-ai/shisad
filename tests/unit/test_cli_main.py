@@ -70,6 +70,7 @@ def test_cli_commands_route_through_rpc_wrapper(
             "actions": [
                 {
                     "confirmation_id": "c-1",
+                    "decision_nonce": "n-1",
                     "status": "pending",
                     "tool_name": "curl",
                     "reason": "manual_review",
@@ -264,7 +265,11 @@ def test_cli_commands_route_through_rpc_wrapper(
         runner,
         ["action", "pending", "--session", "s-1", "--status", "pending", "--limit", "5"],
     ).output
-    _invoke_ok(runner, ["action", "confirm", "c-1", "--nonce", "n-1", "--reason", "ok"])
+    assert "nonce=n-1" in _invoke_ok(
+        runner,
+        ["action", "pending", "--session", "s-1", "--status", "pending", "--limit", "5"],
+    ).output
+    _invoke_ok(runner, ["action", "confirm", "c-1", "--reason", "ok"])
     _invoke_ok(runner, ["action", "reject", "c-1", "--reason", "deny"])
     _invoke_ok(runner, ["channel", "pairing-propose", "--limit", "5"])
     assert "hash_chain valid=True checked=1" in _invoke_ok(
@@ -351,6 +356,12 @@ def test_cli_commands_route_through_rpc_wrapper(
         "session.create",
         {"user_id": "alice", "workspace_id": "ws-1", "mode": "default"},
     ) in calls
+    assert any(
+        method == "action.pending"
+        and isinstance(params, dict)
+        and params.get("include_ui") is False
+        for method, params in calls
+    )
     assert (
         "session.grant_capabilities",
         {"session_id": "s-1", "capabilities": ["http.request"], "reason": "unit-test"},
