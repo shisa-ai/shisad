@@ -13,6 +13,8 @@ from typing import Literal, Self
 from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from shisad.core.providers.capabilities import ProviderCapabilities, RequestParameters
+
 
 class DaemonConfig(BaseSettings):
     """Daemon process configuration."""
@@ -483,6 +485,33 @@ class ModelConfig(BaseSettings):
         default=None,
         description="Optional base URL override for monitor provider",
     )
+    planner_capabilities: ProviderCapabilities = Field(
+        default_factory=ProviderCapabilities,
+        description="Capability declaration for planner route.",
+    )
+    embeddings_capabilities: ProviderCapabilities = Field(
+        default_factory=lambda: ProviderCapabilities(supports_tool_calls=False),
+        description="Capability declaration for embeddings route.",
+    )
+    monitor_capabilities: ProviderCapabilities = Field(
+        default_factory=lambda: ProviderCapabilities(
+            supports_tool_calls=False,
+            supports_structured_output=True,
+        ),
+        description="Capability declaration for monitor route.",
+    )
+    planner_request_parameters: RequestParameters = Field(
+        default_factory=RequestParameters,
+        description="Allowlisted request parameters for planner route.",
+    )
+    embeddings_request_parameters: RequestParameters = Field(
+        default_factory=RequestParameters,
+        description="Allowlisted request parameters for embeddings route.",
+    )
+    monitor_request_parameters: RequestParameters = Field(
+        default_factory=RequestParameters,
+        description="Allowlisted request parameters for monitor route.",
+    )
 
     # Endpoint security
     allow_http_localhost: bool = Field(
@@ -521,6 +550,40 @@ class ModelConfig(BaseSettings):
                 raise ValueError("SHISAD_MODEL_ENDPOINT_ALLOWLIST JSON must be a list")
             return [entry.strip() for entry in stripped.split(",") if entry.strip()]
         return value
+
+    @staticmethod
+    def _parse_nested_model(value: object, *, field_name: str) -> object:
+        if isinstance(value, str):
+            stripped = value.strip()
+            if not stripped:
+                return {}
+            parsed = json.loads(stripped)
+            if not isinstance(parsed, dict):
+                raise ValueError(f"{field_name} JSON must be an object")
+            return parsed
+        return value
+
+    @field_validator(
+        "planner_capabilities",
+        "embeddings_capabilities",
+        "monitor_capabilities",
+        mode="before",
+    )
+    @classmethod
+    def _parse_capabilities(cls, value: object, info: object) -> object:
+        field_name = f"SHISAD_MODEL_{str(getattr(info, 'field_name', '')).upper()}"
+        return cls._parse_nested_model(value, field_name=field_name)
+
+    @field_validator(
+        "planner_request_parameters",
+        "embeddings_request_parameters",
+        "monitor_request_parameters",
+        mode="before",
+    )
+    @classmethod
+    def _parse_request_parameters(cls, value: object, info: object) -> object:
+        field_name = f"SHISAD_MODEL_{str(getattr(info, 'field_name', '')).upper()}"
+        return cls._parse_nested_model(value, field_name=field_name)
 
 
 class ShisadConfig(BaseSettings):

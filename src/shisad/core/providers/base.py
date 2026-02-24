@@ -21,6 +21,8 @@ from urllib.parse import urljoin, urlparse, urlunparse
 
 from pydantic import BaseModel, Field
 
+from shisad.core.providers.capabilities import RequestParameters
+
 logger = logging.getLogger(__name__)
 _PROVIDER_REDIRECT_CODES: set[int] = {301, 302, 303, 307, 308}
 _PROVIDER_MAX_REDIRECTS = 5
@@ -89,6 +91,7 @@ class OpenAICompatibleProvider:
         model_id: str,
         headers: dict[str, str] | None = None,
         force_json_response: bool = False,
+        request_parameters: RequestParameters | None = None,
         timeout_seconds: float = 30.0,
         allow_http_localhost: bool = True,
         block_private_ranges: bool = True,
@@ -98,6 +101,7 @@ class OpenAICompatibleProvider:
         self._model_id = model_id
         self._headers = headers or {}
         self._force_json_response = force_json_response
+        self._request_parameters = request_parameters or RequestParameters()
         self._timeout_seconds = timeout_seconds
         self._allow_http_localhost = allow_http_localhost
         self._block_private_ranges = block_private_ranges
@@ -112,6 +116,7 @@ class OpenAICompatibleProvider:
             "model": self._model_id,
             "messages": [self._serialize_message(msg) for msg in messages],
         }
+        payload.update(self._request_parameters.to_payload())
         if self._force_json_response:
             payload["response_format"] = {"type": "json_object"}
         if tools is not None:

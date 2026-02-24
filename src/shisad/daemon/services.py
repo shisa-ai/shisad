@@ -442,14 +442,17 @@ class DaemonServices:
                 registry,
                 credential_audit_hook=event_wiring.audit_credential_use,
             )
+            planner_route = router.route_for(ModelComponent.PLANNER)
             planner = Planner(
                 provider,
                 pep,
                 persona_tone=config.assistant_persona_tone,
                 custom_persona_text=config.assistant_persona_custom_text,
+                capabilities=planner_route.capabilities,
+                tool_registry=registry,
             )
             shutdown_event = asyncio.Event()
-            planner_model_id = router.route_for(ModelComponent.PLANNER).model_id
+            planner_model_id = planner_route.model_id
             model_routes = {
                 component.value: router.route_for(component).base_url
                 for component in ModelComponent
