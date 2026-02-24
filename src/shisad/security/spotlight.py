@@ -124,3 +124,25 @@ def build_planner_input(
         marker=marker,
         encode_untrusted=encode_untrusted,
     )
+
+
+def build_planner_input_v2(
+    *,
+    trusted_instructions: str,
+    user_goal: str,
+    untrusted_content: str,
+    untrusted_context: str = "",
+    marker: str = "^",
+    encode_untrusted: bool = False,
+    trusted_context: str = "",
+) -> str:
+    """v0.3.4 scaffold hook: delegates to the stable v1 builder."""
+    return build_planner_input(
+        trusted_instructions=trusted_instructions,
+        user_goal=user_goal,
+        untrusted_content=untrusted_content,
+        untrusted_context=untrusted_context,
+        marker=marker,
+        encode_untrusted=encode_untrusted,
+        trusted_context=trusted_context,
+    )

@@ -60,6 +60,18 @@ def label_retrieval(collection: str) -> set[TaintLabel]:
     return mapping.get(collection, {TaintLabel.UNTRUSTED})
 
 
+def normalize_retrieval_taints(
+    *,
+    taint_labels: set[TaintLabel] | list[TaintLabel] | None,
+    collection: str,
+) -> set[TaintLabel]:
+    """Normalize retrieval taints to at least UNTRUSTED across all retrieval paths."""
+    normalized = set(taint_labels or label_retrieval(collection))
+    if not normalized:
+        normalized.add(TaintLabel.UNTRUSTED)
+    return normalized
+
+
 def label_tool_output(tool_name: str) -> set[TaintLabel]:
     """Label tool output by trust characteristics."""
     canonical_name = canonical_tool_name(tool_name)

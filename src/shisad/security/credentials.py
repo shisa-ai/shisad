@@ -11,13 +11,13 @@ are injected only at the egress proxy boundary for pre-approved hosts.
 
 from __future__ import annotations
 
-import fnmatch
 import hashlib
 import logging
 from typing import Protocol
 
 from pydantic import BaseModel, Field
 
+from shisad.core.host_matching import host_matches
 from shisad.core.types import CredentialRef
 
 logger = logging.getLogger(__name__)
@@ -165,4 +165,4 @@ class InMemoryCredentialStore:
     @staticmethod
     def _host_allowed(host: str, allowed: list[str]) -> bool:
         """Check if a host matches any pattern in the allowlist."""
-        return any(fnmatch.fnmatch(host, pattern) for pattern in allowed)
+        return any(host_matches(host, pattern) for pattern in allowed)

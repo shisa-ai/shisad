@@ -58,6 +58,11 @@ def test_cli_commands_route_through_rpc_wrapper(
             "changed": True,
             "reason": "",
         },
+        "session.grant_capabilities": {
+            "session_id": "s-1",
+            "granted": True,
+            "capabilities": ["http.request"],
+        },
         "session.list": {"sessions": [{"id": "s-1", "state": "active", "user_id": "alice"}]},
         "session.restore": {"restored": True, "session_id": "s-1", "checkpoint_id": "cp-1"},
         "session.rollback": {"rolled_back": True, "session_id": "s-1", "checkpoint_id": "cp-1"},
@@ -207,7 +212,7 @@ def test_cli_commands_route_through_rpc_wrapper(
         "skill.revoke": {"revoked": True, "skill_name": "demo", "reason": "manual"},
         "policy.explain": {
             "session_id": "s-1",
-            "tool_name": "shell_exec",
+            "tool_name": "shell.exec",
             "action": "run",
             "effective_policy": {},
             "control_plane": {},
@@ -240,6 +245,18 @@ def test_cli_commands_route_through_rpc_wrapper(
     ).output
     assert "hello" in _invoke_ok(runner, ["session", "message", "s-1", "hi"]).output
     _invoke_ok(runner, ["session", "mode", "s-1", "--mode", "admin_cleanroom"])
+    _invoke_ok(
+        runner,
+        [
+            "session",
+            "grant-capabilities",
+            "s-1",
+            "--capability",
+            "http.request",
+            "--reason",
+            "unit-test",
+        ],
+    )
     assert "state=active" in _invoke_ok(runner, ["session", "list"]).output
     assert "Restored session s-1" in _invoke_ok(runner, ["session", "restore", "cp-1"]).output
     assert "Rolled back session s-1" in _invoke_ok(runner, ["session", "rollback", "cp-1"]).output
@@ -327,12 +344,16 @@ def test_cli_commands_route_through_rpc_wrapper(
     _invoke_ok(runner, ["skill", "revoke", "demo", "--reason", "manual"])
     _invoke_ok(
         runner,
-        ["policy", "explain", "--session", "s-1", "--action", "run", "--tool", "shell_exec"],
+        ["policy", "explain", "--session", "s-1", "--action", "run", "--tool", "shell.exec"],
     )
 
     assert (
         "session.create",
         {"user_id": "alice", "workspace_id": "ws-1", "mode": "default"},
+    ) in calls
+    assert (
+        "session.grant_capabilities",
+        {"session_id": "s-1", "capabilities": ["http.request"], "reason": "unit-test"},
     ) in calls
     assert ("memory.rotate_key", {"reencrypt_existing": True}) in calls
     assert ("doctor.check", {"component": "realitycheck"}) in calls

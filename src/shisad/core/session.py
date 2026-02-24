@@ -7,8 +7,10 @@ recovery and session state snapshots.
 from __future__ import annotations
 
 import contextlib
+import errno
 import json
 import logging
+import os
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -292,15 +294,31 @@ class SessionManager:
         tmp_path = path.with_suffix(".tmp")
         try:
             payload = session.model_dump_json(indent=2)
-            tmp_path.write_text(payload, encoding="utf-8")
+            with tmp_path.open("w", encoding="utf-8") as handle:
+                handle.write(payload)
+                handle.flush()
+                os.fsync(handle.fileno())
             tmp_path.chmod(0o600)
             tmp_path.replace(path)
+            self._fsync_parent_directory(path)
         except (OSError, TypeError, ValueError):
             logger.warning("Failed to persist session state for %s", session.id, exc_info=True)
             with contextlib.suppress(OSError):
                 tmp_path.unlink()
             return False
         return True
+
+    @staticmethod
+    def _fsync_parent_directory(path: Path) -> None:
+        parent = path.parent
+        dir_fd = os.open(parent, os.O_RDONLY)
+        try:
+            os.fsync(dir_fd)
+        except OSError as exc:
+            if exc.errno not in {errno.EINVAL, errno.ENOSYS}:
+                raise
+        finally:
+            os.close(dir_fd)
 
     def _delete_persisted_session(self, session_id: SessionId) -> None:
         path = self._session_state_path(session_id)

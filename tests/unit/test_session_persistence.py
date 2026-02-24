@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+import shisad.core.session as session_module
 from shisad.core.session import Session, SessionManager
 from shisad.core.types import Capability, SessionId, SessionMode, SessionState, UserId, WorkspaceId
 
@@ -81,6 +82,21 @@ def test_m3_session_manager_persist_supports_external_metadata_updates(
     restored = reloaded.get(session.id)
     assert restored is not None
     assert restored.metadata.get("delivery_target") == {"channel": "cli", "recipient": "ops"}
+
+
+def test_m1_pf46_session_persistence_calls_fsync_for_file_and_parent_dir(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fsync_calls: list[int] = []
+
+    def _record_fsync(fd: int) -> None:
+        fsync_calls.append(fd)
+
+    monkeypatch.setattr(session_module.os, "fsync", _record_fsync)
+    manager = SessionManager(state_dir=tmp_path / "sessions" / "state")
+    _ = manager.create(channel="cli")
+    assert len(fsync_calls) >= 2
 
 
 def test_m3_session_manager_skips_non_utf8_persisted_state_files(tmp_path: Path) -> None:

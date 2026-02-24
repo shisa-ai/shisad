@@ -4,15 +4,17 @@ from __future__ import annotations
 
 import pytest
 
-from shisad.core.config import DaemonConfig
+from shisad.core.config import DaemonConfig, ModelConfig
 from shisad.core.events import EventBus
 from shisad.core.providers.local_planner import LocalPlannerProvider
 from shisad.core.providers.routed_openai import RoutedOpenAIProvider
+from shisad.core.providers.routing import ModelRouter
 from shisad.core.types import Capability, ToolName
 from shisad.daemon.services import (
     DaemonServices,
     _build_tool_registry,
     _normalize_tool_destination,
+    _validate_security_route_pins,
 )
 
 
@@ -370,3 +372,32 @@ async def test_m3_daemon_services_fail_closed_on_invalid_endpoint_port(tmp_path)
         assert services.registry.get_tool(ToolName("realitycheck.read")) is None
     finally:
         await services.shutdown()
+
+
+def test_m1_pf11_model_route_pinning_rejects_mismatch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SHISAD_MODEL_REMOTE_ENABLED", "true")
+    monkeypatch.setenv("SHISAD_MODEL_MONITOR_MODEL", "monitor-live")
+    monkeypatch.setenv("SHISAD_MODEL_PLANNER_MODEL", "planner-live")
+    monkeypatch.setenv("SHISAD_MODEL_ENFORCE_SECURITY_ROUTE_PINNING", "true")
+    monkeypatch.setenv("SHISAD_MODEL_PINNED_MONITOR_MODEL_ID", "monitor-pinned")
+    monkeypatch.setenv("SHISAD_MODEL_PINNED_PLANNER_MODEL_ID", "planner-live")
+    model = ModelConfig()
+    router = ModelRouter(model)
+    with pytest.raises(ValueError, match="Security monitor route model id mismatch"):
+        _validate_security_route_pins(model, router)
+
+
+def test_m1_pf11_model_route_pinning_disabled_allows_mismatch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SHISAD_MODEL_REMOTE_ENABLED", "true")
+    monkeypatch.setenv("SHISAD_MODEL_MONITOR_MODEL", "monitor-live")
+    monkeypatch.setenv("SHISAD_MODEL_PLANNER_MODEL", "planner-live")
+    monkeypatch.setenv("SHISAD_MODEL_ENFORCE_SECURITY_ROUTE_PINNING", "false")
+    monkeypatch.setenv("SHISAD_MODEL_PINNED_MONITOR_MODEL_ID", "monitor-pinned")
+    monkeypatch.setenv("SHISAD_MODEL_PINNED_PLANNER_MODEL_ID", "planner-pinned")
+    model = ModelConfig()
+    router = ModelRouter(model)
+    _validate_security_route_pins(model, router)

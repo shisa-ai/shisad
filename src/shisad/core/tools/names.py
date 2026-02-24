@@ -6,7 +6,11 @@ Legacy underscore/hyphen aliases are translated through this module only.
 
 from __future__ import annotations
 
+import logging
+
 from shisad.core.types import ToolName
+
+logger = logging.getLogger(__name__)
 
 # Transitional alias map kept in one place to avoid split classifier/runtime drift.
 LEGACY_TOOL_NAME_ALIASES: dict[str, str] = {
@@ -32,10 +36,17 @@ def canonical_tool_name(name: str) -> str:
     lowered = name.strip().lower()
     if not lowered:
         return ""
-    return LEGACY_TOOL_NAME_ALIASES.get(lowered, lowered)
+    canonical = LEGACY_TOOL_NAME_ALIASES.get(lowered)
+    if canonical is not None:
+        logger.warning(
+            "Legacy tool alias '%s' is deprecated; use '%s' instead.",
+            lowered,
+            canonical,
+        )
+        return canonical
+    return lowered
 
 
 def canonical_tool_name_typed(name: ToolName | str) -> ToolName:
     """Typed wrapper over :func:`canonical_tool_name`."""
     return ToolName(canonical_tool_name(str(name)))
-

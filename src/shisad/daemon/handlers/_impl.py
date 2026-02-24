@@ -87,7 +87,7 @@ from shisad.security.control_plane.schema import (
 )
 from shisad.security.leakcheck import CrossThreadLeakDetector
 from shisad.security.reputation import ReputationScorer
-from shisad.security.taint import label_retrieval, label_tool_output
+from shisad.security.taint import label_tool_output, normalize_retrieval_taints
 from shisad.skills.manifest import parse_manifest
 from shisad.ui.confirmation import (
     ConfirmationAnalytics,
@@ -1190,7 +1190,12 @@ class HandlerImplementation(
             ]
             retrieval_taints: set[TaintLabel] = set()
             for item in records:
-                retrieval_taints.update(item.taint_labels or label_retrieval(item.collection))
+                retrieval_taints.update(
+                    normalize_retrieval_taints(
+                        taint_labels=item.taint_labels,
+                        collection=item.collection,
+                    )
+                )
             return (
                 True,
                 checkpoint_id,

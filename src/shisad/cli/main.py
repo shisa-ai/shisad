@@ -49,6 +49,7 @@ from shisad.core.api.schema import (
     RealityCheckReadResult,
     RealityCheckSearchResult,
     SessionCreateResult,
+    SessionGrantCapabilitiesResult,
     SessionListResult,
     SessionMessageResult,
     SessionRestoreResult,
@@ -469,6 +470,32 @@ def session_mode(session_id: str, mode: str) -> None:
         "session.set_mode",
         {"session_id": session_id, "mode": mode},
         response_model=SessionSetModeResult,
+    )
+    click.echo(_dump_model(result))
+
+
+@session.command("grant-capabilities")
+@click.argument("session_id")
+@click.option(
+    "--capability",
+    "capabilities",
+    multiple=True,
+    required=True,
+    help="Capability to grant (repeat for multiple values).",
+)
+@click.option("--reason", default="", help="Audit reason for capability grant.")
+def session_grant_capabilities(
+    session_id: str,
+    capabilities: tuple[str, ...],
+    reason: str,
+) -> None:
+    """Grant one or more capabilities to an active session."""
+    config = _get_config()
+    result = rpc_call(
+        config,
+        "session.grant_capabilities",
+        {"session_id": session_id, "capabilities": list(capabilities), "reason": reason},
+        response_model=SessionGrantCapabilitiesResult,
     )
     click.echo(_dump_model(result))
 

@@ -5,7 +5,6 @@ The PEP is the sole authority for approving proposed tool calls.
 
 from __future__ import annotations
 
-import fnmatch
 import logging
 import re
 from collections.abc import Callable
@@ -463,7 +462,7 @@ class PEP:
                 )
 
             allowed_hosts = self._credential_store.allowed_hosts(credential_ref)
-            if not any(fnmatch.fnmatch(destination.host, pattern) for pattern in allowed_hosts):
+            if not any(host_matches(destination.host, pattern) for pattern in allowed_hosts):
                 self._record_credential_attempt(
                     CredentialUseAttempt(
                         tool_name=tool_name,
@@ -486,7 +485,7 @@ class PEP:
                 for pattern in tool.destinations
             ]
             if not any(
-                pattern and fnmatch.fnmatch(destination.host, pattern)
+                pattern and host_matches(destination.host, pattern)
                 for pattern in declared_destination_hosts
             ):
                 self._record_credential_attempt(

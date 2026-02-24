@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import logging
+
+import pytest
+
 from shisad.core.tools.names import canonical_tool_name
 
 
@@ -20,3 +24,10 @@ def test_s9_canonical_tool_name_preserves_canonical_ids() -> None:
     assert canonical_tool_name("web.search") == "web.search"
     assert canonical_tool_name("web.fetch") == "web.fetch"
     assert canonical_tool_name("realitycheck.search") == "realitycheck.search"
+
+
+def test_m1_pf36_legacy_alias_emits_deprecation_warning(caplog: pytest.LogCaptureFixture) -> None:
+    with caplog.at_level(logging.WARNING, logger="shisad.core.tools.names"):
+        resolved = canonical_tool_name("shell_exec")
+    assert resolved == "shell.exec"
+    assert any("deprecated" in record.getMessage().lower() for record in caplog.records)

@@ -1,4 +1,11 @@
-"""Shared host allowlist matching utilities."""
+"""Shared host allowlist matching utilities.
+
+Matcher contract:
+- case-insensitive host matching
+- exact host match (`api.example.com`)
+- wildcard match (`*`)
+- suffix match for subdomains (`*.example.com`)
+"""
 
 from __future__ import annotations
 
