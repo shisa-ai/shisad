@@ -696,7 +696,7 @@ def action_pending(session_id: str, status: str, limit: int, raw: bool) -> None:
 
 @action.command("confirm")
 @click.argument("confirmation_id")
-@click.option("--nonce", default="", help="Decision nonce for replay-safe confirmation")
+@click.option("--nonce", required=True, help="Decision nonce for replay-safe confirmation")
 @click.option("--reason", default="", help="Operator note")
 def action_confirm(confirmation_id: str, nonce: str, reason: str) -> None:
     """Approve one pending confirmation."""
@@ -706,7 +706,7 @@ def action_confirm(confirmation_id: str, nonce: str, reason: str) -> None:
         "action.confirm",
         {
             "confirmation_id": confirmation_id,
-            "decision_nonce": nonce or None,
+            "decision_nonce": nonce,
             "reason": reason,
         },
         response_model=ActionConfirmResult,

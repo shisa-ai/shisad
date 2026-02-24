@@ -322,13 +322,23 @@ async def test_tui_decision_handles_missing_and_present_confirmation_id(
 
     class _FakeClient:
         def __init__(self, _socket_path: Path) -> None:
-            self.calls: list[tuple[str, dict[str, str]]] = []
+            self.calls: list[tuple[str, dict[str, object]]] = []
 
         async def connect(self) -> None:
             return
 
-        async def call(self, method: str, payload: dict[str, str]) -> dict[str, object]:
+        async def call(self, method: str, payload: dict[str, object]) -> dict[str, object]:
             self.calls.append((method, payload))
+            if method == "action.pending":
+                return {
+                    "actions": [
+                        {
+                            "confirmation_id": "conf-1",
+                            "decision_nonce": "nonce-1",
+                        }
+                    ],
+                    "count": 1,
+                }
             return {"ok": True, "method": method, "payload": payload}
 
         async def close(self) -> None:
@@ -347,7 +357,10 @@ async def test_tui_decision_handles_missing_and_present_confirmation_id(
     monkeypatch.setattr(tui_module, "ControlClient", _factory)
     monkeypatch.setattr(asyncio, "sleep", _fake_sleep)
     await tui_module._decision(Path("/tmp/control.sock"), "action.confirm", "conf-1")
-    assert created[0].calls == [("action.confirm", {"confirmation_id": "conf-1"})]
+    assert created[0].calls == [
+        ("action.pending", {"status": "pending", "limit": 200, "include_ui": False}),
+        ("action.confirm", {"confirmation_id": "conf-1", "decision_nonce": "nonce-1"}),
+    ]
 
 
 @pytest.mark.asyncio

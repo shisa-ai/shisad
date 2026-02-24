@@ -67,8 +67,7 @@ def normalize_retrieval_taints(
 ) -> set[TaintLabel]:
     """Normalize retrieval taints to at least UNTRUSTED across all retrieval paths."""
     normalized = set(taint_labels or label_retrieval(collection))
-    if not normalized:
-        normalized.add(TaintLabel.UNTRUSTED)
+    normalized.add(TaintLabel.UNTRUSTED)
     return normalized
 
 

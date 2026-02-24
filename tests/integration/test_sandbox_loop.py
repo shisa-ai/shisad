@@ -64,10 +64,16 @@ async def _confirm_tool_execute(
 ) -> dict[str, Any]:
     assert result.get("confirmation_required") is True
     confirmation_id = str(result.get("confirmation_id", ""))
+    decision_nonce = str(result.get("decision_nonce", "")).strip()
     assert confirmation_id
+    assert decision_nonce
     return await client.call(
         "action.confirm",
-        {"confirmation_id": confirmation_id, "reason": reason},
+        {
+            "confirmation_id": confirmation_id,
+            "decision_nonce": decision_nonce,
+            "reason": reason,
+        },
     )
 
 
@@ -98,7 +104,7 @@ async def test_m3_t1_blocks_non_allowlisted_domain(model_env: None, tmp_path: Pa
         assert result.get("confirmation_required") is True
         confirmation_id = str(result.get("confirmation_id", ""))
         assert confirmation_id
-        _ = await client.call("action.confirm", {"confirmation_id": confirmation_id})
+        _ = await _confirm_tool_execute(client, result)
         rejected = await client.call(
             "audit.query",
             {"event_type": "ToolRejected", "session_id": sid, "limit": 50},
@@ -286,7 +292,7 @@ async def test_m3_t6_checkpoint_before_destructive_and_t7_rollback_restores_sess
         assert destructive.get("confirmation_required") is True
         confirmation_id = str(destructive.get("confirmation_id", ""))
         assert confirmation_id
-        confirmed = await client.call("action.confirm", {"confirmation_id": confirmation_id})
+        confirmed = await _confirm_tool_execute(client, destructive)
         assert confirmed["confirmed"] is True
         checkpoint_id = str(confirmed["checkpoint_id"])
         assert checkpoint_id

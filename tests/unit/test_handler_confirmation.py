@@ -146,7 +146,7 @@ async def test_m1_pf11_confirmation_rejects_invalid_nonce() -> None:
 
 
 @pytest.mark.asyncio
-async def test_m1_pf11_confirmation_accepts_valid_or_missing_nonce() -> None:
+async def test_m1_pf11_confirmation_accepts_valid_nonce_and_rejects_missing_nonce() -> None:
     harness = _ConfirmationImplHarness()
     harness._pending_actions["c-1"] = _pending_action(nonce="expected")
     valid = await harness.do_action_confirm(
@@ -158,8 +158,8 @@ async def test_m1_pf11_confirmation_accepts_valid_or_missing_nonce() -> None:
     harness = _ConfirmationImplHarness()
     harness._pending_actions["c-1"] = _pending_action(nonce="expected")
     missing = await harness.do_action_confirm({"confirmation_id": "c-1"})
-    assert missing["confirmed"] is True
-    assert missing["status"] == "approved"
+    assert missing["confirmed"] is False
+    assert missing["reason"] == "missing_decision_nonce"
 
 
 @pytest.mark.asyncio
@@ -169,7 +169,9 @@ async def test_m1_pf11_confirmation_cooldown_active_and_expired() -> None:
         nonce="expected",
         execute_after=datetime.now(UTC) + timedelta(seconds=30),
     )
-    cooling = await harness.do_action_confirm({"confirmation_id": "c-1"})
+    cooling = await harness.do_action_confirm(
+        {"confirmation_id": "c-1", "decision_nonce": "expected"}
+    )
     assert cooling["confirmed"] is False
     assert cooling["reason"] == "cooldown_active"
     assert float(cooling["retry_after_seconds"]) > 0
@@ -179,6 +181,8 @@ async def test_m1_pf11_confirmation_cooldown_active_and_expired() -> None:
         nonce="expected",
         execute_after=datetime.now(UTC) - timedelta(seconds=1),
     )
-    expired = await harness.do_action_confirm({"confirmation_id": "c-1"})
+    expired = await harness.do_action_confirm(
+        {"confirmation_id": "c-1", "decision_nonce": "expected"}
+    )
     assert expired["confirmed"] is True
     assert expired["status"] == "approved"

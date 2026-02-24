@@ -60,8 +60,15 @@ class ConfirmationImplMixin(HandlerMixinBase):
         pending = self._pending_actions.get(confirmation_id)
         if pending is None:
             return {"confirmed": False, "confirmation_id": confirmation_id, "reason": "not_found"}
-        provided_nonce = str(params.get("decision_nonce", "")).strip()
-        if provided_nonce and provided_nonce != pending.decision_nonce:
+        raw_nonce = params.get("decision_nonce", "")
+        provided_nonce = raw_nonce.strip() if isinstance(raw_nonce, str) else ""
+        if not provided_nonce:
+            return {
+                "confirmed": False,
+                "confirmation_id": confirmation_id,
+                "reason": "missing_decision_nonce",
+            }
+        if provided_nonce != pending.decision_nonce:
             return {
                 "confirmed": False,
                 "confirmation_id": confirmation_id,

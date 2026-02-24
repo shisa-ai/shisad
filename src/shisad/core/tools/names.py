@@ -11,6 +11,7 @@ import logging
 from shisad.core.types import ToolName
 
 logger = logging.getLogger(__name__)
+_WARNED_LEGACY_ALIASES: set[str] = set()
 
 # Transitional alias map kept in one place to avoid split classifier/runtime drift.
 LEGACY_TOOL_NAME_ALIASES: dict[str, str] = {
@@ -38,11 +39,13 @@ def canonical_tool_name(name: str) -> str:
         return ""
     canonical = LEGACY_TOOL_NAME_ALIASES.get(lowered)
     if canonical is not None:
-        logger.warning(
-            "Legacy tool alias '%s' is deprecated; use '%s' instead.",
-            lowered,
-            canonical,
-        )
+        if lowered not in _WARNED_LEGACY_ALIASES:
+            logger.warning(
+                "Legacy tool alias '%s' is deprecated; use '%s' instead.",
+                lowered,
+                canonical,
+            )
+            _WARNED_LEGACY_ALIASES.add(lowered)
         return canonical
     return lowered
 

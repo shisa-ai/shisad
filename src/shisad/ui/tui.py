@@ -349,9 +349,30 @@ async def _decision(socket_path: Path, method: str, confirmation_id: str) -> Non
     client = ControlClient(socket_path)
     try:
         await client.connect()
+        payload: dict[str, Any] = {"confirmation_id": confirmation_id}
+        if method == "action.confirm":
+            pending_payload = await client.call(
+                "action.pending",
+                {"status": "pending", "limit": 200, "include_ui": False},
+            )
+            decision_nonce = ""
+            if isinstance(pending_payload, Mapping):
+                actions = pending_payload.get("actions", [])
+                if isinstance(actions, list):
+                    for raw in actions:
+                        if not isinstance(raw, Mapping):
+                            continue
+                        if str(raw.get("confirmation_id", "")).strip() != confirmation_id:
+                            continue
+                        decision_nonce = str(raw.get("decision_nonce", "")).strip()
+                        break
+            if not decision_nonce:
+                print("decision_nonce not found for confirmation_id")
+                return
+            payload["decision_nonce"] = decision_nonce
         result = await client.call(
             method,
-            {"confirmation_id": confirmation_id},
+            payload,
         )
     finally:
         await client.close()

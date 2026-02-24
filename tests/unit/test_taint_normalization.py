@@ -16,4 +16,12 @@ def test_m1_h0_normalize_retrieval_taints_preserves_existing_labels() -> None:
         taint_labels={TaintLabel.USER_CREDENTIALS},
         collection="project_docs",
     )
-    assert labels == {TaintLabel.USER_CREDENTIALS}
+    assert labels == {TaintLabel.UNTRUSTED, TaintLabel.USER_CREDENTIALS}
+
+
+def test_m1_h0_normalize_retrieval_taints_adds_untrusted_for_explicit_empty_set() -> None:
+    labels = normalize_retrieval_taints(
+        taint_labels=set(),
+        collection="project_docs",
+    )
+    assert labels == {TaintLabel.UNTRUSTED}

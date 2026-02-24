@@ -114,10 +114,16 @@ async def _confirm_tool_execute(
 ) -> dict[str, Any]:
     assert result.get("confirmation_required") is True
     confirmation_id = str(result.get("confirmation_id", ""))
+    decision_nonce = str(result.get("decision_nonce", "")).strip()
     assert confirmation_id
+    assert decision_nonce
     return await client.call(
         "action.confirm",
-        {"confirmation_id": confirmation_id, "reason": reason},
+        {
+            "confirmation_id": confirmation_id,
+            "decision_nonce": decision_nonce,
+            "reason": reason,
+        },
     )
 
 
@@ -427,9 +433,7 @@ async def test_m4_t25_tool_execute_narrows_caller_wildcard_to_server_allowlist(
         )
         assert result["allowed"] is False
         assert result.get("confirmation_required") is True
-        confirmation_id = str(result.get("confirmation_id", ""))
-        assert confirmation_id
-        _ = await client.call("action.confirm", {"confirmation_id": confirmation_id})
+        _ = await _confirm_tool_execute(client, result)
         rejected = await client.call(
             "audit.query",
             {"event_type": "ToolRejected", "session_id": sid, "limit": 50},
@@ -575,9 +579,7 @@ async def test_m4_t33_network_enabled_execution_blocks_without_isolated_boundary
         )
         assert result["allowed"] is False
         assert result.get("confirmation_required") is True
-        confirmation_id = str(result.get("confirmation_id", ""))
-        assert confirmation_id
-        _ = await client.call("action.confirm", {"confirmation_id": confirmation_id})
+        _ = await _confirm_tool_execute(client, result)
         rejected = await client.call(
             "audit.query",
             {"event_type": "ToolRejected", "session_id": sid, "limit": 50},

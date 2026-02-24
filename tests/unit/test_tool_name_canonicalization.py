@@ -6,7 +6,13 @@ import logging
 
 import pytest
 
+from shisad.core.tools import names as names_module
 from shisad.core.tools.names import canonical_tool_name
+
+
+@pytest.fixture(autouse=True)
+def _reset_deprecation_warning_cache() -> None:
+    names_module._WARNED_LEGACY_ALIASES.clear()
 
 
 def test_s9_canonical_tool_name_maps_legacy_aliases() -> None:
@@ -31,3 +37,10 @@ def test_m1_pf36_legacy_alias_emits_deprecation_warning(caplog: pytest.LogCaptur
         resolved = canonical_tool_name("shell_exec")
     assert resolved == "shell.exec"
     assert any("deprecated" in record.getMessage().lower() for record in caplog.records)
+
+
+def test_m1_pf36_legacy_alias_warning_emits_once(caplog: pytest.LogCaptureFixture) -> None:
+    with caplog.at_level(logging.WARNING, logger="shisad.core.tools.names"):
+        assert canonical_tool_name("shell_exec") == "shell.exec"
+        assert canonical_tool_name("shell_exec") == "shell.exec"
+    assert sum("deprecated" in record.getMessage().lower() for record in caplog.records) == 1

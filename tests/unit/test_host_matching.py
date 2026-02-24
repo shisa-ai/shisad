@@ -21,6 +21,18 @@ def test_m1_pf44_host_matches_wildcard_rule() -> None:
     assert host_matches("api.example.com", "*")
 
 
+def test_m1_pf44_host_matches_suffix_rule_does_not_match_apex() -> None:
+    assert not host_matches("example.com", "*.example.com")
+
+
+def test_m1_pf44_host_matches_suffix_rule_tld_breadth_is_explicit() -> None:
+    assert host_matches("evil.com", "*.com")
+
+
+def test_m1_pf44_host_matches_rejects_host_with_port_string() -> None:
+    assert not host_matches("example.com:443", "example.com")
+
+
 def test_m1_pf44_host_matches_case_insensitively() -> None:
     assert host_matches("API.Example.Com", "*.example.com")
 

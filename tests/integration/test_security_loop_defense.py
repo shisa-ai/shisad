@@ -43,6 +43,20 @@ async def _wait_for_socket(path: Path, timeout: float = 2.0) -> None:
     raise TimeoutError(f"Timed out waiting for socket {path}")
 
 
+def _decision_nonce_for_confirmation(
+    *,
+    pending_actions: list[object],
+    confirmation_id: str,
+) -> str:
+    for raw in pending_actions:
+        if not isinstance(raw, dict):
+            continue
+        if str(raw.get("confirmation_id", "")).strip() != confirmation_id:
+            continue
+        return str(raw.get("decision_nonce", "")).strip()
+    return ""
+
+
 async def _wait_for_future_started(
     future: object,
     timeout: float = 2.0,
@@ -973,10 +987,19 @@ async def test_m2_confirmation_queue_and_action_confirm_flow(
             {"session_id": sid, "status": "pending", "limit": 10},
         )
         assert pending["count"] >= 1
+        decision_nonce = _decision_nonce_for_confirmation(
+            pending_actions=list(pending.get("actions", [])),
+            confirmation_id=str(pending_ids[0]),
+        )
+        assert decision_nonce
 
         confirmed = await client.call(
             "action.confirm",
-            {"confirmation_id": pending_ids[0], "reason": "approved by operator"},
+            {
+                "confirmation_id": pending_ids[0],
+                "decision_nonce": decision_nonce,
+                "reason": "approved by operator",
+            },
         )
         assert confirmed["confirmed"] is True
         assert confirmed["status"] == "approved"
@@ -1115,6 +1138,15 @@ async def test_m2_action_confirm_in_lockdown_emits_human_rejection_event(
         pending_ids = reply["pending_confirmation_ids"]
         assert pending_ids
         pending_id = pending_ids[0]
+        pending = await client.call(
+            "action.pending",
+            {"session_id": sid, "status": "pending", "limit": 10},
+        )
+        decision_nonce = _decision_nonce_for_confirmation(
+            pending_actions=list(pending.get("actions", [])),
+            confirmation_id=str(pending_id),
+        )
+        assert decision_nonce
 
         await client.call(
             "lockdown.set",
@@ -1122,7 +1154,11 @@ async def test_m2_action_confirm_in_lockdown_emits_human_rejection_event(
         )
         confirmed = await client.call(
             "action.confirm",
-            {"confirmation_id": pending_id, "reason": "approved by operator"},
+            {
+                "confirmation_id": pending_id,
+                "decision_nonce": decision_nonce,
+                "reason": "approved by operator",
+            },
         )
         assert confirmed["confirmed"] is False
         assert confirmed["reason"] == "session_in_lockdown"
