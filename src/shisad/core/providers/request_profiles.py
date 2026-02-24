@@ -143,15 +143,15 @@ def auto_select_request_profile(
 
     hostname = (urlparse(base_url).hostname or "").lower()
     if endpoint_family == EndpointFamily.CHAT_COMPLETIONS:
-        if "openrouter.ai" in hostname:
+        if _hostname_matches_domain(hostname, "openrouter.ai"):
             return ProfileSelection(
                 profile_name=PROFILE_OPENROUTER_CHAT,
                 source="hostname_heuristic",
                 reason="openrouter hostname",
             )
-        if "generativelanguage.googleapis.com" in hostname or hostname.endswith(
-            "googleapis.com"
-        ):
+        if _hostname_matches_domain(
+            hostname, "generativelanguage.googleapis.com"
+        ) or _hostname_matches_domain(hostname, "googleapis.com"):
             return ProfileSelection(
                 profile_name=PROFILE_GOOGLE_OPENAI_CHAT,
                 source="hostname_heuristic",
@@ -183,3 +183,7 @@ def auto_select_request_profile(
         source="endpoint_family_fallback",
         reason="default openai-compatible fallback",
     )
+
+
+def _hostname_matches_domain(hostname: str, domain: str) -> bool:
+    return hostname == domain or hostname.endswith(f".{domain}")

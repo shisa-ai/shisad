@@ -6,8 +6,12 @@ import pytest
 
 from shisad.core.providers.capabilities import EndpointFamily, RequestParameters
 from shisad.core.providers.request_profiles import (
+    PROFILE_GOOGLE_OPENAI_CHAT,
+    PROFILE_OPENAI_CHAT_GENERAL,
+    PROFILE_OPENROUTER_CHAT,
     RequestProfileError,
     apply_request_profile,
+    auto_select_request_profile,
 )
 
 
@@ -52,3 +56,47 @@ def test_s0_embeddings_endpoint_rejects_chat_parameters() -> None:
             model_id="text-embedding-3-small",
             request_parameters=RequestParameters(temperature=0.2),
         )
+
+
+def test_s0_profile_heuristic_matches_openrouter_boundary_safely() -> None:
+    exact = auto_select_request_profile(
+        explicit_profile=None,
+        preset_default_profile=None,
+        base_url="https://openrouter.ai/api/v1",
+        endpoint_family=EndpointFamily.CHAT_COMPLETIONS,
+        model_id="qwen",
+    )
+    attacker = auto_select_request_profile(
+        explicit_profile=None,
+        preset_default_profile=None,
+        base_url="https://evil-openrouter.ai.attacker.com/v1",
+        endpoint_family=EndpointFamily.CHAT_COMPLETIONS,
+        model_id="qwen",
+    )
+
+    assert exact.profile_name == PROFILE_OPENROUTER_CHAT
+    assert exact.source == "hostname_heuristic"
+    assert attacker.profile_name == PROFILE_OPENAI_CHAT_GENERAL
+    assert attacker.source == "endpoint_family_fallback"
+
+
+def test_s0_profile_heuristic_matches_google_boundary_safely() -> None:
+    exact = auto_select_request_profile(
+        explicit_profile=None,
+        preset_default_profile=None,
+        base_url="https://generativelanguage.googleapis.com/v1beta/openai",
+        endpoint_family=EndpointFamily.CHAT_COMPLETIONS,
+        model_id="gemini-3.1-pro-preview",
+    )
+    attacker = auto_select_request_profile(
+        explicit_profile=None,
+        preset_default_profile=None,
+        base_url="https://notrealgenerativelanguage.googleapis.com.evil.com/v1",
+        endpoint_family=EndpointFamily.CHAT_COMPLETIONS,
+        model_id="gemini-3.1-pro-preview",
+    )
+
+    assert exact.profile_name == PROFILE_GOOGLE_OPENAI_CHAT
+    assert exact.source == "hostname_heuristic"
+    assert attacker.profile_name == PROFILE_GOOGLE_OPENAI_CHAT
+    assert attacker.source == "model_id_tiebreaker"

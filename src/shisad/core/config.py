@@ -789,13 +789,26 @@ class ModelConfig(BaseSettings):
             auth_header_name = getattr(self, f"{route}_auth_header_name")
             extra_headers = getattr(self, f"{route}_extra_headers")
 
+            if auth_header_name and auth_mode != AuthMode.HEADER:
+                raise ValueError(
+                    f"{route}_auth_header_name is only supported when {route}_auth_mode=header"
+                )
             if auth_mode == AuthMode.HEADER and not auth_header_name:
                 raise ValueError(
                     f"{route}_auth_header_name is required when {route}_auth_mode=header"
                 )
-            if auth_header_name:
+            if auth_mode == AuthMode.HEADER and auth_header_name:
                 validate_auth_header_name(auth_header_name)
-            validate_extra_headers(extra_headers)
+
+            selected_auth_header_name: str | None = None
+            if auth_mode == AuthMode.BEARER:
+                selected_auth_header_name = "Authorization"
+            elif auth_mode == AuthMode.HEADER:
+                selected_auth_header_name = auth_header_name
+            validate_extra_headers(
+                extra_headers,
+                selected_auth_header_name=selected_auth_header_name,
+            )
 
         return self
 

@@ -80,8 +80,7 @@ class RoutedOpenAIProvider:
         endpoint_allowlist: list[str] | None,
     ) -> OpenAICompatibleProvider | None:
         fallback_key = (fallback_api_key or "").strip()
-        remote_enabled = route.remote_enabled or bool(fallback_key)
-        if not remote_enabled:
+        if not route.remote_enabled:
             return None
 
         if (

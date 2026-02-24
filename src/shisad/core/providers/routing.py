@@ -133,6 +133,7 @@ class ModelRouter:
             preset = preset_override
             preset_source = "route_override"
 
+        route_base_url_override = getattr(self._config, f"{prefix}_base_url")
         base_url = self._resolve_route_base_url(
             component=component,
             preset=preset,
@@ -143,21 +144,13 @@ class ModelRouter:
         capabilities = getattr(self._config, f"{prefix}_capabilities")
         request_parameters = getattr(self._config, f"{prefix}_request_parameters")
 
-        route_remote_override = getattr(self._config, f"{prefix}_remote_enabled")
-        if route_remote_override is None:
-            remote_enabled = bool(self._config.remote_enabled)
-            remote_source = "global"
-        else:
-            remote_enabled = bool(route_remote_override)
-            remote_source = "route_override"
-
         auth_mode = getattr(self._config, f"{prefix}_auth_mode")
         if auth_mode is None:
             auth_mode = _PRESET_AUTH_MODES[preset]
 
         auth_header_name = getattr(self._config, f"{prefix}_auth_header_name")
         if auth_mode == AuthMode.BEARER:
-            auth_header_name = auth_header_name or "Authorization"
+            auth_header_name = "Authorization"
         elif auth_mode == AuthMode.HEADER:
             if not auth_header_name:
                 raise ValueError(
@@ -166,9 +159,7 @@ class ModelRouter:
         else:
             auth_header_name = ""
 
-        selected_auth_header_name = (
-            auth_header_name if auth_mode == AuthMode.HEADER else "Authorization"
-        )
+        selected_auth_header_name = auth_header_name if auth_mode != AuthMode.NONE else ""
         raw_extra_headers = getattr(self._config, f"{prefix}_extra_headers")
         extra_headers = validate_extra_headers(
             raw_extra_headers,
@@ -176,6 +167,16 @@ class ModelRouter:
         )
 
         api_key, api_key_source = self._resolve_route_api_key(component=component, preset=preset)
+        route_remote_override = getattr(self._config, f"{prefix}_remote_enabled")
+        remote_enabled, remote_source = self._resolve_route_remote_enabled(
+            component=component,
+            preset=preset,
+            preset_source=preset_source,
+            route_base_url_override=route_base_url_override,
+            route_remote_override=route_remote_override,
+            api_key=api_key,
+            api_key_source=api_key_source,
+        )
 
         endpoint_family_override = getattr(self._config, f"{prefix}_endpoint_family")
         endpoint_family = endpoint_family_override or _DEFAULT_ENDPOINT_BY_COMPONENT[component]
@@ -185,9 +186,7 @@ class ModelRouter:
         )
 
         profile_override = getattr(self._config, f"{prefix}_request_parameter_profile")
-        preset_default_profile = (
-            _PRESET_DEFAULT_PROFILES[preset] if preset_source == "route_override" else None
-        )
+        preset_default_profile = _PRESET_DEFAULT_PROFILES[preset]
         selection = auto_select_request_profile(
             explicit_profile=profile_override,
             preset_default_profile=preset_default_profile,
@@ -266,24 +265,62 @@ class ModelRouter:
             if preset_key:
                 return preset_key, f"preset_provider:{preset_env}"
 
-        global_key, source = self._resolve_global_api_key()
+        global_key, source = self._resolve_global_api_key(preset=preset)
         if global_key:
             return global_key, source
         return None, "missing"
 
-    def _resolve_global_api_key(self) -> tuple[str, str]:
+    def _resolve_global_api_key(self, *, preset: ProviderPreset) -> tuple[str, str]:
         if self._config.api_key and self._config.api_key.strip():
             return self._config.api_key.strip(), "global:SHISAD_MODEL_API_KEY"
 
-        shisa_key = os.getenv("SHISA_API_KEY", "").strip()
-        if shisa_key:
-            return shisa_key, "global:SHISA_API_KEY"
+        if preset == ProviderPreset.SHISA_DEFAULT:
+            shisa_key = os.getenv("SHISA_API_KEY", "").strip()
+            if shisa_key:
+                return shisa_key, "global:SHISA_API_KEY"
 
-        openai_key = os.getenv("OPENAI_API_KEY", "").strip()
-        if openai_key:
-            return openai_key, "global:OPENAI_API_KEY"
+        if preset == ProviderPreset.OPENAI_DEFAULT:
+            openai_key = os.getenv("OPENAI_API_KEY", "").strip()
+            if openai_key:
+                return openai_key, "global:OPENAI_API_KEY"
 
         return "", "missing"
+
+    def _resolve_route_remote_enabled(
+        self,
+        *,
+        component: ModelComponent,
+        preset: ProviderPreset,
+        preset_source: str,
+        route_base_url_override: str | None,
+        route_remote_override: bool | None,
+        api_key: str | None,
+        api_key_source: str,
+    ) -> tuple[bool, str]:
+        if route_remote_override is not None:
+            return bool(route_remote_override), "route_override"
+
+        if self._config.remote_enabled:
+            return True, "global"
+
+        if (
+            component == ModelComponent.PLANNER
+            and preset == ProviderPreset.SHISA_DEFAULT
+            and preset_source == "default"
+            and not route_base_url_override
+            and self._config.base_url == _PRESET_BASE_URLS[ProviderPreset.SHISA_DEFAULT]
+            and bool(api_key)
+            and api_key_source
+            in {
+                "route:planner_api_key",
+                "preset_provider:SHISA_API_KEY",
+                "global:SHISAD_MODEL_API_KEY",
+                "global:SHISA_API_KEY",
+            }
+        ):
+            return True, "implicit_shisa_key"
+
+        return False, "global"
 
     @staticmethod
     def _validate_component_endpoint_family(

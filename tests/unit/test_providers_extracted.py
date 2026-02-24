@@ -51,6 +51,7 @@ async def test_local_planner_provider_handles_retrieve_run_and_anomaly_paths() -
 async def test_routed_openai_provider_uses_component_routes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setenv("SHISAD_MODEL_REMOTE_ENABLED", "true")
     monkeypatch.setenv("SHISAD_MODEL_BASE_URL", "https://api.example.com/v1")
     monkeypatch.setenv("SHISAD_MODEL_PLANNER_BASE_URL", "https://planner.example.com/v1")
     monkeypatch.setenv("SHISAD_MODEL_EMBEDDINGS_BASE_URL", "https://embed.example.com/v1")
@@ -123,6 +124,86 @@ async def test_routed_openai_provider_uses_component_routes(
     assert route_flags["https://planner.example.com/v1"] is False
     assert route_flags["https://embed.example.com/v1"] is False
     assert route_flags["https://monitor.example.com/v1"] is True
+
+
+@pytest.mark.asyncio
+async def test_s0_routed_provider_does_not_bypass_route_toggles_with_constructor_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("SHISAD_MODEL_REMOTE_ENABLED", raising=False)
+    monkeypatch.delenv("SHISA_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("SHISAD_MODEL_API_KEY", raising=False)
+    monkeypatch.setenv("SHISAD_MODEL_BASE_URL", "https://api.example.com/v1")
+
+    created: list[str] = []
+
+    class _FakeOpenAIProvider:
+        def __init__(
+            self,
+            *,
+            base_url: str,
+            model_id: str,
+            headers: dict[str, str],
+            force_json_response: bool = False,
+            request_parameters: Any | None = None,
+            allow_http_localhost: bool = True,
+            block_private_ranges: bool = True,
+            endpoint_allowlist: list[str] | None = None,
+        ) -> None:
+            _ = (
+                model_id,
+                headers,
+                force_json_response,
+                request_parameters,
+                allow_http_localhost,
+                block_private_ranges,
+                endpoint_allowlist,
+            )
+            created.append(base_url)
+
+        async def complete(
+            self,
+            messages: list[Message],
+            tools: list[dict[str, Any]] | None = None,
+        ) -> ProviderResponse:
+            _ = (messages, tools)
+            return ProviderResponse(message=Message(role="assistant", content="remote"))
+
+        async def embeddings(
+            self,
+            input_texts: list[str],
+            *,
+            model_id: str | None = None,
+        ) -> EmbeddingResponse:
+            _ = (input_texts, model_id)
+            return EmbeddingResponse(vectors=[[9.0]])
+
+    monkeypatch.setattr(
+        "shisad.core.providers.routed_openai.OpenAICompatibleProvider",
+        _FakeOpenAIProvider,
+    )
+
+    class _Fallback(LocalPlannerProvider):
+        async def complete(
+            self,
+            messages: list[Message],
+            tools: list[dict[str, Any]] | None = None,
+        ) -> ProviderResponse:
+            _ = (messages, tools)
+            return ProviderResponse(message=Message(role="assistant", content="fallback"))
+
+    provider = RoutedOpenAIProvider(
+        router=ModelRouter(ModelConfig()),
+        api_key="token",
+        fallback=_Fallback(),
+    )
+
+    result = await provider.complete([Message(role="user", content="hello")])
+
+    assert created == []
+    assert provider.monitor_remote_enabled() is False
+    assert result.message.content == "fallback"
 
 
 @pytest.mark.asyncio

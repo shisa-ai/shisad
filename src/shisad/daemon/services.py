@@ -901,7 +901,8 @@ def _key_gated_acceptance_matrix() -> dict[str, dict[str, str]]:
         key_env = row["key_env"]
         present = bool(os.getenv(key_env, "").strip())
         matrix[name] = {
-            "status": "pass" if present else "N/A (key missing)",
+            "status": "eligible (key env present)" if present else "N/A (key missing)",
+            "evidence": "env_presence_only",
             "key_env": key_env,
             "model_id": row["model_id"],
         }
@@ -916,6 +917,8 @@ def _register_route_credentials(
     seen: set[tuple[str, str, str, str]] = set()
     for component in ModelComponent:
         route = router.route_for(component)
+        if not route.remote_enabled:
+            continue
         if route.auth_mode == AuthMode.NONE:
             continue
         key = (route.api_key or "").strip()
@@ -934,10 +937,9 @@ def _register_route_credentials(
             continue
         seen.add(signature)
 
-        header_name = "Authorization"
+        header_name = route.auth_header_name
         header_prefix = "Bearer "
         if route.auth_mode == AuthMode.HEADER:
-            header_name = route.auth_header_name
             header_prefix = ""
 
         ref_hash = hashlib.sha256(

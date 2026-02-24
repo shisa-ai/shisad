@@ -67,6 +67,22 @@ def test_s0_extra_header_validation_enforces_token_safe_names() -> None:
         ModelConfig(planner_extra_headers={"X Unsafe": "value"})
 
 
+@pytest.mark.parametrize("header_name", ["Content-Type", "Accept"])
+def test_s0_extra_header_validation_rejects_reserved_system_headers(
+    header_name: str,
+) -> None:
+    with pytest.raises(ValidationError, match="cannot override auth/system headers"):
+        ModelConfig(planner_extra_headers={header_name: "text/plain"})
+
+
+def test_s0_bearer_auth_rejects_custom_auth_header_name() -> None:
+    with pytest.raises(ValidationError, match="planner_auth_header_name is only supported"):
+        ModelConfig(
+            planner_auth_mode="bearer",
+            planner_auth_header_name="X-Api-Key",
+        )
+
+
 def test_s0_openrouter_headers_are_accepted_and_normalized() -> None:
     config = ModelConfig(
         planner_provider_preset="openrouter_default",
@@ -87,8 +103,73 @@ def test_s0_profile_auto_selection_uses_hostname_heuristic() -> None:
     config = ModelConfig(planner_base_url="https://openrouter.ai/api/v1")
     route = ModelRouter(config).route_for(ModelComponent.PLANNER)
 
-    assert route.request_parameter_profile == "openrouter_chat"
-    assert route.request_parameter_profile_source == "hostname_heuristic"
+    assert route.request_parameter_profile == "openai_chat_general"
+    assert route.request_parameter_profile_source == "preset_default"
+
+
+def test_s0_profile_auto_selection_uses_preset_default_for_default_preset() -> None:
+    route = ModelRouter(ModelConfig()).route_for(ModelComponent.PLANNER)
+    assert route.request_parameter_profile == "openai_chat_general"
+    assert route.request_parameter_profile_source == "preset_default"
+
+
+def test_s0_openrouter_route_does_not_fallback_to_cross_provider_keys(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "openai-key")
+    monkeypatch.setenv("SHISA_API_KEY", "shisa-key")
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.delenv("SHISAD_MODEL_API_KEY", raising=False)
+
+    config = ModelConfig(planner_provider_preset="openrouter_default")
+    route = ModelRouter(config).route_for(ModelComponent.PLANNER)
+
+    assert route.api_key is None
+    assert route.api_key_source == "missing"
+
+
+def test_s0_global_explicit_key_can_drive_openrouter_route(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SHISAD_MODEL_API_KEY", "global-key")
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("SHISA_API_KEY", raising=False)
+
+    config = ModelConfig(planner_provider_preset="openrouter_default")
+    route = ModelRouter(config).route_for(ModelComponent.PLANNER)
+
+    assert route.api_key == "global-key"
+    assert route.api_key_source == "global:SHISAD_MODEL_API_KEY"
+
+
+def test_s0_default_planner_auto_enables_remote_with_shisa_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SHISA_API_KEY", "shisa-key")
+    monkeypatch.delenv("SHISAD_MODEL_API_KEY", raising=False)
+    monkeypatch.delenv("SHISAD_MODEL_REMOTE_ENABLED", raising=False)
+
+    route = ModelRouter(ModelConfig()).route_for(ModelComponent.PLANNER)
+
+    assert route.remote_enabled is True
+    assert route.remote_enabled_source == "implicit_shisa_key"
+    assert route.api_key_source == "preset_provider:SHISA_API_KEY"
+
+
+def test_s0_implicit_shisa_remote_enable_only_applies_to_default_base_route(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SHISA_API_KEY", "shisa-key")
+    monkeypatch.delenv("SHISAD_MODEL_API_KEY", raising=False)
+    monkeypatch.delenv("SHISAD_MODEL_REMOTE_ENABLED", raising=False)
+
+    route = ModelRouter(
+        ModelConfig(planner_base_url="https://planner.example.com/v1")
+    ).route_for(ModelComponent.PLANNER)
+
+    assert route.remote_enabled is False
+    assert route.remote_enabled_source == "global"
 
 
 def test_s0_model_config_parses_reasoning_request_parameters_from_env(

@@ -341,7 +341,9 @@ def validate_endpoint(
             errors.append(f"HTTP not allowed for non-localhost endpoint: {hostname}")
 
     # Private range check for IP literals (hostname checks happen at runtime request time).
-    if block_private_ranges and hostname not in ("localhost", "127.0.0.1", "::1"):
+    # Loopback is only exempt when localhost HTTP is explicitly allowed.
+    allow_loopback = allow_http_localhost and hostname in ("localhost", "127.0.0.1", "::1")
+    if block_private_ranges and not allow_loopback:
         try:
             addr = ipaddress.ip_address(hostname)
             for network in _PRIVATE_NETWORKS:

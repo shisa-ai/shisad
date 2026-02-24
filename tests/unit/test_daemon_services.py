@@ -13,7 +13,9 @@ from shisad.core.types import Capability, ToolName
 from shisad.daemon.services import (
     DaemonServices,
     _build_tool_registry,
+    _key_gated_acceptance_matrix,
     _normalize_tool_destination,
+    _register_route_credentials,
     _validate_security_route_pins,
 )
 from shisad.security.credentials import InMemoryCredentialStore
@@ -136,6 +138,93 @@ async def test_s0_daemon_services_registers_credentials_per_route_host(
         assert all(prefix == "Bearer " for *_rest, prefix in captured)
     finally:
         await services.shutdown()
+
+
+def test_s0_register_route_credentials_coalesces_duplicate_signatures(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("SHISA_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("SHISAD_MODEL_API_KEY", raising=False)
+
+    captured: list[tuple[str, str, tuple[str, ...], str, str]] = []
+
+    class _CapturingCredentialStore(InMemoryCredentialStore):
+        def register(self, ref, value, config):  # type: ignore[no-untyped-def]
+            captured.append(
+                (
+                    str(ref),
+                    value,
+                    tuple(config.allowed_hosts),
+                    config.header_name,
+                    config.header_prefix,
+                )
+            )
+            super().register(ref, value, config)
+
+    router = ModelRouter(
+        ModelConfig(
+            remote_enabled=True,
+            planner_provider_preset="openai_default",
+            monitor_provider_preset="openai_default",
+            planner_api_key="shared-key",
+            monitor_api_key="shared-key",
+            embeddings_remote_enabled=False,
+        )
+    )
+    store = _CapturingCredentialStore()
+    _register_route_credentials(credential_store=store, router=router)
+
+    assert len(captured) == 1
+    assert captured[0][1] == "shared-key"
+    assert captured[0][2] == ("api.openai.com",)
+    assert captured[0][3] == "Authorization"
+    assert captured[0][4] == "Bearer "
+
+
+def test_s0_register_route_credentials_skips_local_only_routes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("SHISA_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("SHISAD_MODEL_API_KEY", raising=False)
+
+    captured: list[str] = []
+
+    class _CapturingCredentialStore(InMemoryCredentialStore):
+        def register(self, ref, value, config):  # type: ignore[no-untyped-def]
+            _ = (ref, value, config)
+            captured.append("registered")
+            super().register(ref, value, config)
+
+    router = ModelRouter(
+        ModelConfig(
+            planner_provider_preset="openai_default",
+            planner_api_key="planner-key",
+            planner_remote_enabled=False,
+            monitor_remote_enabled=False,
+            embeddings_remote_enabled=False,
+        )
+    )
+    store = _CapturingCredentialStore()
+    _register_route_credentials(credential_store=store, router=router)
+
+    assert captured == []
+
+
+def test_s0_key_gated_acceptance_reports_env_eligibility_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "openai-key")
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.delenv("SHISA_API_KEY", raising=False)
+
+    matrix = _key_gated_acceptance_matrix()
+
+    assert matrix["openai"]["status"] == "eligible (key env present)"
+    assert matrix["openai"]["evidence"] == "env_presence_only"
+    assert matrix["openrouter"]["status"] == "N/A (key missing)"
 
 
 @pytest.mark.asyncio

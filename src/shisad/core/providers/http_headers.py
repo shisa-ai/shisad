@@ -55,7 +55,9 @@ def validate_extra_headers(
         name = normalize_header_name(str(raw_name))
         if _is_blocked_header_name(name):
             raise ValueError(f"extra header '{raw_name}' is blocked")
-        if name == "authorization" or (auth_header and name == auth_header):
+        if name in {"authorization", "content-type", "accept"} or (
+            auth_header and name == auth_header
+        ):
             raise ValueError(f"extra header '{raw_name}' cannot override auth/system headers")
         if name in normalized:
             raise ValueError(f"duplicate extra header '{raw_name}' after normalization")
