@@ -98,6 +98,7 @@ async def test_m2_planner_extracts_hermes_content_tool_calls_when_capability_ena
         tools=_tools_payload(registry, {"echo"}),
     )
 
+    assert result.output.assistant_response == "Running tool."
     assert len(result.output.actions) == 1
     assert result.output.actions[0].tool_name == ToolName("echo")
     assert result.output.actions[0].arguments == {"text": "hello"}
@@ -213,6 +214,7 @@ async def test_m2_planner_extracts_json_array_tool_calls_from_content() -> None:
         tools=_tools_payload(registry, {"web.search"}),
     )
 
+    assert result.output.assistant_response == ""
     assert len(result.output.actions) == 1
     assert result.output.actions[0].tool_name == ToolName("web.search")
     assert result.output.actions[0].arguments == {"query": "shisad", "limit": 2}
@@ -283,6 +285,34 @@ async def test_m2_planner_enforces_content_tool_call_count_bound() -> None:
 
 
 @pytest.mark.asyncio
+async def test_m2_planner_enforces_json_array_tool_call_count_bound() -> None:
+    registry = _make_registry()
+    pep = PEP(PolicyBundle(default_require_confirmation=False), registry)
+    payload = json.dumps(
+        [{"name": "echo", "arguments": {"text": f"x-{idx}"}} for idx in range(11)]
+    )
+    provider = _StaticProvider([Message(role="assistant", content=payload)])
+    planner = Planner(
+        provider,
+        pep,
+        max_retries=0,
+        capabilities=ProviderCapabilities(
+            supports_tool_calls=False,
+            supports_content_tool_calls=True,
+        ),
+        tool_registry=registry,
+    )
+
+    result = await planner.propose(
+        "echo",
+        PolicyContext(capabilities={Capability.FILE_READ}),
+        tools=_tools_payload(registry, {"echo"}),
+    )
+
+    assert result.output.actions == []
+
+
+@pytest.mark.asyncio
 async def test_m2_planner_enforces_content_tool_argument_size_bound() -> None:
     registry = _make_registry()
     pep = PEP(PolicyBundle(default_require_confirmation=False), registry)
@@ -299,6 +329,35 @@ async def test_m2_planner_enforces_content_tool_argument_size_bound() -> None:
             )
         ]
     )
+    planner = Planner(
+        provider,
+        pep,
+        max_retries=0,
+        capabilities=ProviderCapabilities(
+            supports_tool_calls=False,
+            supports_content_tool_calls=True,
+        ),
+        tool_registry=registry,
+    )
+
+    result = await planner.propose(
+        "echo",
+        PolicyContext(capabilities={Capability.FILE_READ}),
+        tools=_tools_payload(registry, {"echo"}),
+    )
+
+    assert result.output.actions == []
+
+
+@pytest.mark.asyncio
+async def test_m2_planner_enforces_content_tool_total_payload_size_bound() -> None:
+    registry = _make_registry()
+    pep = PEP(PolicyBundle(default_require_confirmation=False), registry)
+    oversized_content = (
+        '<tool_call>{"name":"echo","arguments":{"text":"ok"}}</tool_call>'
+        + ("x" * 120_000)
+    )
+    provider = _StaticProvider([Message(role="assistant", content=oversized_content)])
     planner = Planner(
         provider,
         pep,
@@ -349,3 +408,48 @@ async def test_m2_planner_rejects_content_tool_call_not_in_runtime_tools_payload
     )
 
     assert result.output.actions == []
+
+
+@pytest.mark.asyncio
+async def test_m2_planner_content_tool_calls_are_disabled_when_tool_registry_missing() -> None:
+    pep = PEP(PolicyBundle(default_require_confirmation=False), ToolRegistry())
+    provider = _StaticProvider(
+        [
+            Message(
+                role="assistant",
+                content='<tool_call>{"name":"echo","arguments":{"text":"ignored"}}</tool_call>',
+            )
+        ]
+    )
+    planner = Planner(
+        provider,
+        pep,
+        max_retries=0,
+        capabilities=ProviderCapabilities(
+            supports_tool_calls=False,
+            supports_content_tool_calls=True,
+        ),
+        tool_registry=None,
+    )
+
+    result = await planner.propose(
+        "echo",
+        PolicyContext(capabilities={Capability.FILE_READ}),
+        tools=[
+            {
+                "type": "function",
+                "function": {
+                    "name": "echo",
+                    "description": "Echo tool",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"text": {"type": "string"}},
+                        "required": ["text"],
+                    },
+                },
+            }
+        ],
+    )
+
+    assert result.output.actions == []
+    assert "<tool_call>" in result.output.assistant_response

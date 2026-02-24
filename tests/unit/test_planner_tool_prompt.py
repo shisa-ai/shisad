@@ -84,6 +84,8 @@ async def test_m2_tool_prompt_fragment_is_injected_for_content_tool_routes() -> 
 
     system_prompt = provider.messages[0][0].content
     assert "CONTENT TOOL-CALLING RUNTIME MANIFEST" in system_prompt
+    assert "This route does not support native `tool_calls` fields." in system_prompt
+    assert "<tool_call>{\"name\": \"...\", \"arguments\": {...}}</tool_call>" in system_prompt
     assert "echo" in system_prompt
     assert "Echo text" in system_prompt
     assert "web.search" not in system_prompt
@@ -113,3 +115,30 @@ async def test_m2_tool_prompt_fragment_is_not_injected_for_native_tool_routes() 
 
     system_prompt = provider.messages[0][0].content
     assert "CONTENT TOOL-CALLING RUNTIME MANIFEST" not in system_prompt
+
+
+@pytest.mark.asyncio
+async def test_m2_tool_prompt_fragment_is_not_injected_when_content_fallback_disabled() -> None:
+    registry = _make_registry()
+    provider = _RecordingProvider()
+    pep = PEP(PolicyBundle(default_require_confirmation=False), registry)
+    planner = Planner(
+        provider,
+        pep,
+        max_retries=0,
+        capabilities=ProviderCapabilities(
+            supports_tool_calls=False,
+            supports_content_tool_calls=False,
+        ),
+        tool_registry=registry,
+    )
+
+    await planner.propose(
+        "hello",
+        PolicyContext(capabilities={Capability.FILE_READ}),
+        tools=_tools_payload(registry, {"echo"}),
+    )
+
+    system_prompt = provider.messages[0][0].content
+    assert "CONTENT TOOL-CALLING RUNTIME MANIFEST" not in system_prompt
+    assert "TOOL CALLING IS DISABLED ON THIS ROUTE" in system_prompt

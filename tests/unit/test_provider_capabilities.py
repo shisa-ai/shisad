@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from shisad.core.config import ModelConfig
 from shisad.core.providers.capabilities import ProviderCapabilities, RequestParameters
 from shisad.core.providers.routing import ModelComponent, ModelRouter
@@ -49,3 +51,30 @@ def test_m2_model_router_uses_safe_defaults_for_route_capabilities() -> None:
 
     assert planner_caps == ProviderCapabilities()
     assert planner_params == RequestParameters()
+
+
+def test_m2_model_config_parses_capabilities_from_env_json(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(
+        "SHISAD_MODEL_PLANNER_CAPABILITIES",
+        '{"supports_tool_calls": false, "supports_content_tool_calls": true}',
+    )
+    config = ModelConfig()
+
+    assert config.planner_capabilities.supports_tool_calls is False
+    assert config.planner_capabilities.supports_content_tool_calls is True
+
+
+def test_m2_model_config_parses_request_parameters_from_env_json(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(
+        "SHISAD_MODEL_PLANNER_REQUEST_PARAMETERS",
+        '{"temperature": 0.25, "max_tokens": 300, "top_p": 0.9}',
+    )
+    config = ModelConfig()
+
+    assert config.planner_request_parameters.temperature == 0.25
+    assert config.planner_request_parameters.max_tokens == 300
+    assert config.planner_request_parameters.top_p == 0.9

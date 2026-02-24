@@ -42,6 +42,8 @@ def test_m2_request_parameters_enforce_range_validation() -> None:
     with pytest.raises(ValidationError):
         RequestParameters(max_tokens=0)
     with pytest.raises(ValidationError):
+        RequestParameters(max_tokens=1_000_000)
+    with pytest.raises(ValidationError):
         RequestParameters(top_p=0.0)
     with pytest.raises(ValidationError):
         RequestParameters(frequency_penalty=3.0)
