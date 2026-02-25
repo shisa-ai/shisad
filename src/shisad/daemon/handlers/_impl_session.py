@@ -48,6 +48,7 @@ from shisad.daemon.handlers._mixin_typing import HandlerMixinBase
 from shisad.memory.ingestion import IngestionPipeline
 from shisad.memory.schema import MemorySource
 from shisad.security.control_plane.schema import (
+    ActionKind,
     ControlDecision,
     RiskTier,
     extract_request_size_bytes,
@@ -823,6 +824,19 @@ class SessionImplMixin(HandlerMixinBase):
                 declared_domains=declared_domains,
                 explicit_side_effect_intent=self._user_explicit_side_effect_intent(content),
             )
+            trace_only_stage2_block = (
+                cp_eval.trace_result.reason_code == "trace:stage2_upgrade_required"
+                and not any(
+                    vote.decision.value == "BLOCK"
+                    and vote.voter != "ExecutionTraceVerifier"
+                    for vote in cp_eval.consensus.votes
+                )
+            )
+            trace_only_stage2_shell_exec = (
+                trace_only_stage2_block
+                and str(getattr(cp_eval.action.action_kind, "value", cp_eval.action.action_kind))
+                == ActionKind.SHELL_EXEC.value
+            )
             await self._event_bus.publish(
                 ConsensusEvaluated(
                     session_id=sid,
@@ -978,6 +992,24 @@ class SessionImplMixin(HandlerMixinBase):
                         final_reason or monitor_decision.reason or "monitor_reject",
                     )
                 if not cp_eval.trace_result.allowed:
+                    logger.debug(
+                        (
+                            "Trace gate decision: tool=%s action_kind=%s reason=%s "
+                            "trace_only_stage2=%s trace_only_stage2_shell_exec=%s "
+                            "blocking_voters=%s"
+                        ),
+                        proposal.tool_name,
+                        cp_eval.action.action_kind,
+                        cp_eval.trace_result.reason_code,
+                        trace_only_stage2_block,
+                        trace_only_stage2_shell_exec,
+                        [
+                            vote.voter
+                            for vote in cp_eval.consensus.votes
+                            if vote.decision.value == "BLOCK"
+                        ],
+                    )
+                if not cp_eval.trace_result.allowed and not trace_only_stage2_shell_exec:
                     await self._record_plan_violation(
                         sid=sid,
                         tool_name=proposal.tool_name,
@@ -1076,6 +1108,18 @@ class SessionImplMixin(HandlerMixinBase):
             response_text = (
                 f"{response_text}\n\n{proposal_note}" if response_text.strip() else proposal_note
             )
+        if not response_text.strip():
+            if pending_confirmation > 0:
+                response_text = (
+                    "I can proceed after confirmation for the proposed action(s). "
+                    "Review pending confirmations via the control API."
+                )
+            elif rejected > 0:
+                response_text = (
+                    "I could not safely execute the proposed action(s) under current policy."
+                )
+            else:
+                response_text = "I have no additional response for that request."
         output_result = self._output_firewall.inspect(
             response_text,
             context={"session_id": sid, "actor": "assistant"},

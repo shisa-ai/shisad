@@ -423,6 +423,8 @@ async def test_m3_rr2_planner_shell_exec_stage1_requires_upgrade(
         )
         pending_ids = list(reply.get("pending_confirmation_ids", []))
         assert pending_ids == []
+        assert str(reply.get("response", "")).strip()
+        assert reply.get("lockdown_level") == "normal"
 
         rejected = await client.call(
             "audit.query",
@@ -434,6 +436,11 @@ async def test_m3_rr2_planner_shell_exec_stage1_requires_upgrade(
             if str(event.get("data", {}).get("tool_name", "")) == "shell.exec"
         ]
         assert any("trace:stage2_upgrade_required" in reason for reason in stage2_reasons)
+        lockdown_events = await client.call(
+            "audit.query",
+            {"event_type": "LockdownChanged", "session_id": sid, "limit": 10},
+        )
+        assert lockdown_events["total"] == 0
 
         executed = await client.call(
             "audit.query",
