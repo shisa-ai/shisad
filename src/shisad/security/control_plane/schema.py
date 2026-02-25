@@ -12,6 +12,7 @@ from urllib.parse import urlparse
 from pydantic import BaseModel, Field
 
 from shisad.core.tools.names import canonical_tool_name
+from shisad.core.types import Capability
 
 
 class ActionKind(StrEnum):
@@ -28,6 +29,35 @@ class ActionKind(StrEnum):
     MESSAGE_READ = "MESSAGE_READ"
     MESSAGE_SEND = "MESSAGE_SEND"
     UNKNOWN = "UNKNOWN"
+
+
+_CAPABILITY_TO_ACTION_KINDS: dict[Capability, set[ActionKind]] = {
+    Capability.HTTP_REQUEST: {ActionKind.EGRESS},
+    Capability.FILE_WRITE: {ActionKind.FS_WRITE},
+    Capability.FILE_READ: {ActionKind.FS_READ},
+    Capability.MEMORY_WRITE: {ActionKind.MEMORY_WRITE},
+    Capability.MEMORY_READ: {ActionKind.MEMORY_READ},
+    Capability.MESSAGE_SEND: {ActionKind.MESSAGE_SEND},
+    Capability.MESSAGE_READ: {ActionKind.MESSAGE_READ},
+    Capability.SHELL_EXEC: {ActionKind.SHELL_EXEC},
+    Capability.EMAIL_SEND: {ActionKind.MESSAGE_SEND},
+    Capability.EMAIL_READ: {ActionKind.MESSAGE_READ},
+    Capability.EMAIL_WRITE: {ActionKind.MESSAGE_SEND},
+    Capability.CALENDAR_READ: {ActionKind.MEMORY_READ},
+    Capability.CALENDAR_WRITE: {ActionKind.MEMORY_WRITE},
+}
+
+
+def action_kinds_for_capabilities(
+    capabilities: set[Capability],
+) -> set[ActionKind]:
+    """Map session capabilities to allowed ActionKinds for stage1 plans."""
+    result: set[ActionKind] = set()
+    for cap in capabilities:
+        kinds = _CAPABILITY_TO_ACTION_KINDS.get(cap)
+        if kinds is not None:
+            result.update(kinds)
+    return result
 
 
 class RiskTier(StrEnum):

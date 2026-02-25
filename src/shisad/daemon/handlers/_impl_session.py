@@ -739,6 +739,7 @@ class SessionImplMixin(HandlerMixinBase):
             origin=planner_origin,
             ttl_seconds=int(trace_policy.ttl_seconds),
             max_actions=int(trace_policy.max_actions),
+            capabilities=effective_caps,
         )
         if previous_plan_hash:
             await self._event_bus.publish(
@@ -975,8 +976,12 @@ class SessionImplMixin(HandlerMixinBase):
                 block_threshold=self._policy_loader.policy.risk_policy.block_threshold,
             )
             if cp_eval.decision == ControlDecision.BLOCK:
-                final_kind = "reject"
-                final_reason = ",".join(cp_eval.reason_codes) or "control_plane_block"
+                if trace_only_stage2_block:
+                    final_kind = "require_confirmation"
+                    final_reason = ",".join(cp_eval.reason_codes) or "trace:stage2_upgrade_required"
+                else:
+                    final_kind = "reject"
+                    final_reason = ",".join(cp_eval.reason_codes) or "control_plane_block"
             elif cp_eval.decision == ControlDecision.REQUIRE_CONFIRMATION and final_kind == "allow":
                 final_kind = "require_confirmation"
                 final_reason = ",".join(cp_eval.reason_codes) or "control_plane_confirmation"
@@ -1091,7 +1096,7 @@ class SessionImplMixin(HandlerMixinBase):
                             if vote.decision.value == "BLOCK"
                         ],
                     )
-                if not cp_eval.trace_result.allowed and not trace_only_stage2_shell_exec:
+                if not cp_eval.trace_result.allowed and not trace_only_stage2_block:
                     await self._record_plan_violation(
                         sid=sid,
                         tool_name=proposal.tool_name,

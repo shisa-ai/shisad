@@ -243,6 +243,7 @@ class ToolExecutionImplMixin(HandlerMixinBase):
             origin=operator_origin,
             ttl_seconds=int(trace_policy.ttl_seconds),
             max_actions=int(trace_policy.max_actions),
+            capabilities=session.capabilities,
         )
         if previous_plan_hash:
             await self._event_bus.publish(

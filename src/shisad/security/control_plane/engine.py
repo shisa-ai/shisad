@@ -8,6 +8,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from shisad.core.types import Capability
 from shisad.security.control_plane.audit import ControlPlaneAuditLog
 from shisad.security.control_plane.consensus import (
     ActionMonitorVoter,
@@ -142,6 +143,7 @@ class ControlPlaneEngine:
         origin: Origin,
         ttl_seconds: int,
         max_actions: int,
+        capabilities: set[Capability] | None = None,
     ) -> str:
         active = self._trace_verifier.active_plan(session_id)
         if active is not None:
@@ -158,6 +160,7 @@ class ControlPlaneEngine:
             origin=origin,
             ttl_seconds=ttl_seconds,
             max_actions=max_actions,
+            capabilities=capabilities,
         )
         self._audit_log.append(
             event_type="plan_committed",

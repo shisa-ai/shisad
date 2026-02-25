@@ -12,7 +12,14 @@ from typing import Any
 
 from pydantic import BaseModel, Field, ValidationError
 
-from shisad.security.control_plane.schema import ActionKind, ControlPlaneAction, Origin, RiskTier
+from shisad.core.types import Capability
+from shisad.security.control_plane.schema import (
+    ActionKind,
+    ControlPlaneAction,
+    Origin,
+    RiskTier,
+    action_kinds_for_capabilities,
+)
 
 
 class PlanStage(StrEnum):
@@ -66,12 +73,13 @@ class ExecutionTraceVerifier:
         origin: Origin,
         ttl_seconds: int | None = None,
         max_actions: int | None = None,
+        capabilities: set[Capability] | None = None,
     ) -> CommittedPlan:
         _ = origin
         now = datetime.now(UTC)
         ttl = ttl_seconds or self._default_ttl_seconds
         max_allowed = max_actions or self._default_max_actions
-        allowed_actions = self._stage1_allowed_actions(goal)
+        allowed_actions = self._stage1_allowed_actions(goal, capabilities=capabilities)
 
         plan = self._commit_plan(
             session_id=session_id,
@@ -268,9 +276,14 @@ class ExecutionTraceVerifier:
             ActionKind.MEMORY_READ,
         }
 
-    def _stage1_allowed_actions(self, goal: str) -> set[ActionKind]:
+    def _stage1_allowed_actions(
+        self, goal: str, *, capabilities: set[Capability] | None = None
+    ) -> set[ActionKind]:
         _ = goal
-        return self._strict_stage1_actions()
+        base = self._strict_stage1_actions()
+        if capabilities:
+            base = base | action_kinds_for_capabilities(capabilities)
+        return base
 
     def _persist(self) -> None:
         if self._storage_path is None:
