@@ -20,7 +20,7 @@ Both halves matter equally. "Everything they want" is the product. "As safely as
 - **Stage2 confirmation**: the user-facing approval flow for actions that are not authorized (or are flagged as risky).
 - **Lockdown**: an emergency brake for runaway/anomalous behavior; it is **not** the normal way to handle tool denials or configuration gaps.
 
-**Key distinction**: "default-grant" refers to *capabilities*, not *resources*. A session can be allowed to use `web.search`, while egress still fails closed unless the destination hosts are allowlisted. When egress is blocked by policy, the system should return an actionable denial (or a confirmation path), not disable the agent.
+**Key distinction**: "default-grant" refers to *capabilities*, not *resources*. A session has the capability to use `web.search`, while the specific destination (nytimes.com, evil.com) is a resource-level decision. But resource-level denials must not break the product either — see "Who asked for it?" below.
 
 ---
 
@@ -32,11 +32,33 @@ Security through disabling features is not security — it is a broken product d
 
 The correct response to a risky capability is never to remove it. It is to build enforcement infrastructure that makes the capability safe to use:
 
-- If egress is risky, build an allowlist and audit trail — don't disable HTTP.
+- If egress is risky, build confirmation gates and audit trails — don't block all HTTP.
 - If shell execution is risky, build sandboxing and confirmation gates — don't block all commands.
 - If file writes are risky, build taint tracking and approval flows — don't make the filesystem read-only.
 
 When a capability is disabled, the vulnerability is hidden, not fixed. The user routes around the limitation (using a different tool, a different agent, or no agent at all), and the security infrastructure never gets tested against real usage. Disabled capabilities are technical debt that masquerades as safety.
+
+### Who Asked for It?
+
+The fundamental question for any security decision is: **did the user request this action, or did something else (prompt injection, model hallucination, attacker-controlled input) cause it?**
+
+- **User says "get me news from nytimes.com"** → the user requested this → it should work.
+- **Injected prompt causes agent to visit evil.com** → the user did NOT request this → it should be blocked.
+
+A static allowlist that blocks both cases equally is not security — it blocks the user in case 1 and (correctly) blocks the attacker in case 2, but the user's experience is that the product doesn't work. The allowlist protects against the threat by also breaking the product.
+
+The correct model:
+
+| Scenario | Action |
+|---|---|
+| Destination on allowlist (pre-approved) | Proceed, audit trail |
+| Unknown destination, user-initiated request | **Confirmation gate**: "Fetch nytimes.com?" → user approves → proceed, audit trail |
+| Unknown destination, no clear user request | Block + actionable error |
+| Known-bad destination (exfil patterns) | Block regardless |
+
+The allowlist is an **auto-approve list**, not a hard wall. Destinations not on it route to confirmation for user-initiated actions, not denial. This preserves the security property (attacker-initiated egress is blocked) while preserving functionality (user-initiated egress works, with a confirmation step for unknown destinations).
+
+Blanket denial of user-requested actions is a product failure, not a security feature. "Fail-closed" means "deny the specific risky operation" — it does not mean "deny what the user asked for."
 
 ### The Test
 
@@ -50,8 +72,8 @@ For any security mechanism, ask:
 
 - **Default-grant, enforce-per-call.** Sessions should have all capabilities by default. Enforcement happens at execution time through the PEP pipeline, not by withholding capabilities.
 - **Stage gates match authorization, not fear.** If a session is authorized for `HTTP_REQUEST`, the stage1 plan should include `EGRESS`. Stage2 gating applies only to capabilities the session does NOT have.
-- **Confirmation > lockdown.** When the system is uncertain, ask the user. Lockdown is for actual anomalies (rate limit abuse, forbidden action sequences, max action overflow), not for normal tool usage that the session is authorized to perform.
-- **Fail-closed ≠ fail-dead.** When an action is denied by policy (missing allowlist, missing credentials, unsupported optional runtime), return a clear, user-actionable error and keep the session healthy.
+- **Confirmation > denial > lockdown.** When the user asks for something and the system isn't sure it's safe, ask the user — don't block it. Denial is for actions the user didn't request (attacker-initiated). Lockdown is for genuine anomalies (rate limit abuse, forbidden action sequences, max action overflow), not for normal tool usage.
+- **Deny the action, not the assistant.** When a specific action must be denied (attacker-initiated, known-bad destination, missing credentials), deny that action with a clear reason and keep the session healthy. Never cascade a single denial into session-wide lockdown. A denied action is not an anomaly.
 - **Lockdown is a last resort, not a default.** If normal usage routinely triggers lockdown, the lockdown threshold is wrong, not the usage.
 
 ---
@@ -74,7 +96,7 @@ shisad must pass these behavioral tests at all times. If any of these fail, the 
 
 These are not aspirational. They are the minimum bar. If the framework can't do these, it doesn't matter how sophisticated the consensus voting or trace verification is.
 
-Failing closed due to missing configuration is acceptable only when it is **actionable** (the user/operator can fix it) and does not cascade into lockdown. A misconfigured integration is not an attack.
+When an action fails due to missing configuration (missing credentials, unconfigured integration), the failure must be **actionable** (the user/operator can see what to fix), must not cascade into lockdown, and must not block other tools. A misconfigured integration is not an attack — and even a correctly-configured denial of a user-requested action is still a product failure that should be routed through confirmation, not hard-blocked.
 
 ### Milestone Gates
 
