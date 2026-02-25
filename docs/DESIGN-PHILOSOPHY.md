@@ -42,6 +42,8 @@ When a capability is disabled, the vulnerability is hidden, not fixed. The user 
 
 The fundamental question for any security decision is: **did the user request this action, or did something else (prompt injection, model hallucination, attacker-controlled input) cause it?**
 
+**"User requested" is a provenance claim, not a phrasing claim.** Treat an action as user-requested only when it is grounded in authenticated user input (i.e., the trusted **USER GOAL** section in spotlighted planner input). Untrusted external content (emails, web pages, tool output, retrieved documents/memory) may *suggest* actions, but it cannot *authorize* them.
+
 - **User says "get me news from nytimes.com"** → the user requested this → it should work.
 - **Injected prompt causes agent to visit evil.com** → the user did NOT request this → it should be blocked.
 
@@ -52,13 +54,14 @@ The correct model:
 | Scenario | Action |
 |---|---|
 | Destination on allowlist (pre-approved) | Proceed, audit trail |
-| Unknown destination, user-initiated request | **Confirmation gate**: "Fetch nytimes.com?" → user approves → proceed, audit trail |
-| Unknown destination, no clear user request | Block + actionable error |
+| Unknown destination, explicitly requested by user (USER GOAL) | **Confirmation gate**: "Fetch nytimes.com?" → user approves → proceed, audit trail |
+| Unknown destination suggested only by untrusted content | **Confirmation gate with warning**: "This link came from untrusted content. Fetch anyway?" |
+| Unknown destination with no user attribution (hallucination / plan drift) | Block + actionable error |
 | Known-bad destination (exfil patterns) | Block regardless |
 
 The allowlist is an **auto-approve list**, not a hard wall. Destinations not on it route to confirmation for user-initiated actions, not denial. This preserves the security property (attacker-initiated egress is blocked) while preserving functionality (user-initiated egress works, with a confirmation step for unknown destinations).
 
-Blanket denial of user-requested actions is a product failure, not a security feature. "Fail-closed" means "deny the specific risky operation" — it does not mean "deny what the user asked for."
+Routine denial of user-requested actions (when a confirmation gate would safely resolve the ambiguity) is a product failure, not a security feature. Hard denial is reserved for explicit operator policy, known-bad/exfil patterns, or cases where the system cannot safely proceed even with confirmation.
 
 ### The Test
 
@@ -72,7 +75,7 @@ For any security mechanism, ask:
 
 - **Default-grant, enforce-per-call.** Sessions should have all capabilities by default. Enforcement happens at execution time through the PEP pipeline, not by withholding capabilities.
 - **Stage gates match authorization, not fear.** If a session is authorized for `HTTP_REQUEST`, the stage1 plan should include `EGRESS`. Stage2 gating applies only to capabilities the session does NOT have.
-- **Confirmation > denial > lockdown.** When the user asks for something and the system isn't sure it's safe, ask the user — don't block it. Denial is for actions the user didn't request (attacker-initiated). Lockdown is for genuine anomalies (rate limit abuse, forbidden action sequences, max action overflow), not for normal tool usage.
+- **Confirmation > denial > lockdown.** When the user asks for something (or when it's ambiguous whether the user asked), ask the user — don't block it. Denial is for actions that are clearly not user-requested (attacker-initiated, hallucinated drift, operator-policy-forbidden). Lockdown is for genuine anomalies (rate limit abuse, forbidden action sequences, max action overflow), not for normal tool usage.
 - **Deny the action, not the assistant.** When a specific action must be denied (attacker-initiated, known-bad destination, missing credentials), deny that action with a clear reason and keep the session healthy. Never cascade a single denial into session-wide lockdown. A denied action is not an anomaly.
 - **Lockdown is a last resort, not a default.** If normal usage routinely triggers lockdown, the lockdown threshold is wrong, not the usage.
 
@@ -96,7 +99,7 @@ shisad must pass these behavioral tests at all times. If any of these fail, the 
 
 These are not aspirational. They are the minimum bar. If the framework can't do these, it doesn't matter how sophisticated the consensus voting or trace verification is.
 
-When an action fails due to missing configuration (missing credentials, unconfigured integration), the failure must be **actionable** (the user/operator can see what to fix), must not cascade into lockdown, and must not block other tools. A misconfigured integration is not an attack — and even a correctly-configured denial of a user-requested action is still a product failure that should be routed through confirmation, not hard-blocked.
+When an action fails due to missing configuration (missing credentials, unconfigured integration), the failure must be **actionable** (the user/operator can see what to fix), must not cascade into lockdown, and must not block other tools. A misconfigured integration is not an attack. If the user requested an action that policy forbids, the system must explain that operator decision clearly and provide safe alternatives or an operator approval path — not treat it as an anomaly.
 
 ### Milestone Gates
 
