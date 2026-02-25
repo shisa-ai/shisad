@@ -9,6 +9,7 @@ import time
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from typing import Any, Literal
+from urllib.parse import urlparse
 
 from pydantic import ValidationError
 
@@ -54,6 +55,7 @@ from shisad.security.control_plane.schema import (
     extract_request_size_bytes,
 )
 from shisad.security.firewall import FirewallResult
+from shisad.security.host_extraction import extract_hosts_from_text, host_patterns
 from shisad.security.monitor import MonitorDecisionType, combine_monitor_with_policy
 from shisad.security.pep import PolicyContext
 from shisad.security.risk import RiskObservation
@@ -718,12 +720,37 @@ class SessionImplMixin(HandlerMixinBase):
             capabilities=effective_caps,
             top_k=int(self._config.planner_memory_top_k),
         )
+
+        user_goal_host_patterns: set[str] = set()
+        if trusted_input:
+            user_goal_host_patterns = host_patterns(
+                extract_hosts_from_text(firewall_result.sanitized_text)
+            )
+        untrusted_current_turn = (
+            firewall_result.sanitized_text
+            if TaintLabel.UNTRUSTED in incoming_taint_labels
+            else ""
+        )
+        untrusted_context_text = "\n\n".join(
+            section
+            for section in (untrusted_current_turn, conversation_context, memory_context)
+            if section
+        )
+        untrusted_host_patterns = host_patterns(extract_hosts_from_text(untrusted_context_text))
+        policy_egress_host_patterns = {
+            rule.host.strip().lower()
+            for rule in self._policy_loader.policy.egress
+            if rule.host.strip()
+        }
+
         policy_taint_labels = set(incoming_taint_labels)
         policy_taint_labels.update(transcript_context_taints)
         policy_taint_labels.update(memory_context_taints)
         context = PolicyContext(
             capabilities=effective_caps,
             taint_labels=policy_taint_labels,
+            user_goal_host_patterns=user_goal_host_patterns,
+            untrusted_host_patterns=untrusted_host_patterns,
             workspace_id=session.workspace_id,
             user_id=session.user_id,
             tool_allowlist=tool_allowlist,
@@ -896,13 +923,27 @@ class SessionImplMixin(HandlerMixinBase):
 
             risk_score = evaluated.decision.risk_score or 0.0
             tool_def = self._registry.get_tool(proposal.tool_name)
-            declared_domains = list(tool_def.destinations) if tool_def is not None else []
+            declared_domains: set[str] = set()
+            declared_domains.update(policy_egress_host_patterns)
+            declared_domains.update(user_goal_host_patterns)
+            if tool_def is not None:
+                for destination in tool_def.destinations:
+                    raw_destination = str(destination).strip().lower()
+                    if not raw_destination:
+                        continue
+                    if "://" in raw_destination:
+                        parsed = urlparse(raw_destination)
+                        host = (parsed.hostname or "").lower()
+                        if host:
+                            declared_domains.add(host)
+                        continue
+                    declared_domains.add(raw_destination.split(":", 1)[0])
             cp_eval = await self._control_plane.evaluate_action(
                 tool_name=str(proposal.tool_name),
                 arguments=dict(proposal.arguments),
                 origin=planner_origin,
                 risk_tier=_risk_tier_from_score(risk_score),
-                declared_domains=declared_domains,
+                declared_domains=sorted(declared_domains),
                 explicit_side_effect_intent=self._user_explicit_side_effect_intent(content),
             )
             trace_only_stage2_block = (

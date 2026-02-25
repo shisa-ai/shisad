@@ -8,16 +8,6 @@ from shisad.core.tools.names import canonical_tool_name
 from shisad.core.types import TaintLabel
 from shisad.security.firewall.secrets import detect_ingress_secrets
 
-EGRESS_SINK_TOOLS = {
-    "http.request",
-    "web.fetch",
-    "web.search",
-    "send_email",
-    "send_message",
-    "post_to_webhook",
-    "upload_file",
-}
-
 WRITE_TOOLS = {
     "file.write",
     "fs.write",
@@ -25,12 +15,6 @@ WRITE_TOOLS = {
     "create_event",
     "send_email",
     "send_message",
-}
-
-SENSITIVE_LABELS = {
-    TaintLabel.SENSITIVE_EMAIL,
-    TaintLabel.SENSITIVE_FILE,
-    TaintLabel.SENSITIVE_CALENDAR,
 }
 
 
@@ -100,13 +84,6 @@ def sink_decision_for_tool(tool_name: str, labels: set[TaintLabel]) -> TaintSink
     canonical_name = canonical_tool_name(tool_name)
     if TaintLabel.USER_CREDENTIALS in labels:
         return TaintSinkDecision(block=True, require_confirmation=False, reason="credential_taint")
-
-    if canonical_name in EGRESS_SINK_TOOLS and SENSITIVE_LABELS.intersection(labels):
-        return TaintSinkDecision(
-            block=True,
-            require_confirmation=False,
-            reason="sensitive_data_to_egress",
-        )
 
     if canonical_name in WRITE_TOOLS and TaintLabel.UNTRUSTED in labels:
         return TaintSinkDecision(

@@ -1,8 +1,9 @@
-"""Web search/fetch helpers with fail-closed controls."""
+"""Web search/fetch helpers with bounded resource and redirect controls."""
 
 from __future__ import annotations
 
 import hashlib
+import ipaddress
 import json
 import re
 from dataclasses import dataclass
@@ -83,17 +84,12 @@ class WebToolkit:
                 reason="web_search_backend_unconfigured",
                 query=normalized_query,
             )
-        if not self.allowed_domains:
-            return self._error_payload(
-                operation="web_search",
-                reason="web_allowlist_unconfigured",
-                query=normalized_query,
-            )
         backend_host = (urlparse(backend).hostname or "").lower()
-        if not self._host_allowed(backend_host):
+        backend_block_reason = self._host_block_reason(backend_host)
+        if backend_block_reason:
             return self._error_payload(
                 operation="web_search",
-                reason="web_search_backend_not_allowlisted",
+                reason=backend_block_reason,
                 query=normalized_query,
             )
 
@@ -122,7 +118,6 @@ class WebToolkit:
             backend=backend,
             source_url=request_url,
             read_limit=_MAX_SEARCH_BYTES,
-            host_disallowed_reason="web_search_backend_not_allowlisted",
             invalid_scheme_reason="unsupported_backend_scheme",
             redirect_limit_reason="search_backend_too_many_redirects",
             missing_redirect_reason="search_backend_redirect_missing_location",
@@ -205,12 +200,6 @@ class WebToolkit:
                 reason="web_fetch_disabled",
                 url=normalized_url,
             )
-        if not self.allowed_domains:
-            return self._error_payload(
-                operation="web_fetch",
-                reason="web_allowlist_unconfigured",
-                url=normalized_url,
-            )
         parsed = urlparse(normalized_url)
         host = (parsed.hostname or "").lower()
         if parsed.scheme.lower() not in {"http", "https"}:
@@ -219,10 +208,11 @@ class WebToolkit:
                 reason="unsupported_scheme",
                 url=normalized_url,
             )
-        if not self._host_allowed(host):
+        destination_block_reason = self._host_block_reason(host)
+        if destination_block_reason:
             return self._error_payload(
                 operation="web_fetch",
-                reason="destination_not_allowlisted",
+                reason=destination_block_reason,
                 url=normalized_url,
             )
 
@@ -242,7 +232,6 @@ class WebToolkit:
             backend="",
             source_url=normalized_url,
             read_limit=fetch_limit,
-            host_disallowed_reason="destination_not_allowlisted",
             invalid_scheme_reason="unsupported_scheme",
             redirect_limit_reason="too_many_redirects",
             missing_redirect_reason="redirect_missing_location",
@@ -316,6 +305,48 @@ class WebToolkit:
     def _host_allowed(self, host: str) -> bool:
         return any(_host_matches(host, rule) for rule in self.allowed_domains)
 
+    def _host_block_reason(self, host: str) -> str:
+        normalized = host.strip().lower().rstrip(".")
+        if not normalized:
+            return "missing_host"
+        if self._is_ip_literal(normalized) and not self._host_allowed(normalized):
+            return "ip_literal_not_allowlisted"
+        if self._looks_like_local_destination(normalized) and not self._host_allowed(normalized):
+            return "local_destination_not_allowlisted"
+        return ""
+
+    @staticmethod
+    def _is_ip_literal(host: str) -> bool:
+        try:
+            ipaddress.ip_address(host)
+        except ValueError:
+            return False
+        return True
+
+    @staticmethod
+    def _looks_like_local_destination(host: str) -> bool:
+        lowered = host.strip().lower()
+        if not lowered:
+            return False
+        if lowered in {"localhost"}:
+            return True
+        return (
+            lowered.endswith(".local")
+            or lowered.endswith(".internal")
+            or lowered.endswith(".lan")
+        )
+
+    def _redirect_allowed(self, *, initial_host: str, target_host: str) -> bool:
+        source = initial_host.strip().lower().rstrip(".")
+        target = target_host.strip().lower().rstrip(".")
+        if not source or not target:
+            return False
+        if target == source:
+            return True
+        if target.endswith(f".{source}") or source.endswith(f".{target}"):
+            return True
+        return self._host_allowed(target)
+
     def _fetch_with_redirect_policy(
         self,
         *,
@@ -325,7 +356,6 @@ class WebToolkit:
         backend: str,
         source_url: str,
         read_limit: int,
-        host_disallowed_reason: str,
         invalid_scheme_reason: str,
         redirect_limit_reason: str,
         missing_redirect_reason: str,
@@ -333,6 +363,7 @@ class WebToolkit:
     ) -> _HttpResponsePayload | dict[str, Any]:
         current_url = source_url
         redirect_count = 0
+        initial_host = (urlparse(source_url).hostname or "").lower()
         headers = dict(request.header_items())
         while True:
             parsed = urlparse(current_url)
@@ -346,10 +377,11 @@ class WebToolkit:
                     url=source_url,
                     backend=backend,
                 )
-            if not self._host_allowed(host):
+            host_block_reason = self._host_block_reason(host)
+            if host_block_reason:
                 return self._error_payload(
                     operation=operation,
-                    reason=host_disallowed_reason,
+                    reason=host_block_reason,
                     query=query,
                     url=source_url,
                     backend=backend,
@@ -376,10 +408,11 @@ class WebToolkit:
                             url=source_url,
                             backend=backend,
                         )
-                    if not self._host_allowed(final_host):
+                    final_block_reason = self._host_block_reason(final_host)
+                    if final_block_reason:
                         return self._error_payload(
                             operation=operation,
-                            reason=host_disallowed_reason,
+                            reason=final_block_reason,
                             query=query,
                             url=source_url,
                             backend=backend,
@@ -418,7 +451,19 @@ class WebToolkit:
                         url=source_url,
                         backend=backend,
                     )
-                current_url = urljoin(current_url, location)
+                next_url = urljoin(current_url, location)
+                next_host = (urlparse(next_url).hostname or "").lower()
+                if not self._redirect_allowed(initial_host=initial_host, target_host=next_host):
+                    return self._error_payload(
+                        operation=operation,
+                        reason="redirect_host_not_preapproved",
+                        query=query,
+                        url=source_url,
+                        backend=backend,
+                        redirect_url=next_url,
+                        redirect_host=next_host,
+                    )
+                current_url = next_url
             except URLError as exc:
                 return self._error_payload(
                     operation=operation,
@@ -458,6 +503,8 @@ class WebToolkit:
         query: str = "",
         url: str = "",
         backend: str = "",
+        redirect_url: str = "",
+        redirect_host: str = "",
     ) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "ok": False,
@@ -478,4 +525,8 @@ class WebToolkit:
             "error": reason,
             "snapshot_path": "",
         }
+        if redirect_url:
+            payload["redirect_url"] = redirect_url
+        if redirect_host:
+            payload["redirect_host"] = redirect_host
         return payload

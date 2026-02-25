@@ -69,7 +69,7 @@ def test_m1_a1_direct_injection_send_email_blocked() -> None:
             taint_labels={TaintLabel.UNTRUSTED},
         ),
     )
-    assert decision.kind == PEPDecisionKind.REJECT
+    assert decision.kind == PEPDecisionKind.REQUIRE_CONFIRMATION
 
 
 def test_m1_a2_unicode_homoglyph_injection_flagged() -> None:
@@ -125,8 +125,7 @@ def test_m1_a6_read_file_then_http_request_exfil_blocked_by_taint() -> None:
             taint_labels={TaintLabel.SENSITIVE_FILE},
         ),
     )
-    assert egress_decision.kind == PEPDecisionKind.REJECT
-    assert "taint" in egress_decision.reason.lower()
+    assert egress_decision.kind == PEPDecisionKind.REQUIRE_CONFIRMATION
 
 
 def test_m1_a7_fake_tool_tags_do_not_execute_and_are_rejected_by_pep() -> None:

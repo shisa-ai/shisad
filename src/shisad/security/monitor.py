@@ -79,7 +79,23 @@ class ActionMonitor:
 
     @staticmethod
     def _goal_mentions_side_effect(goal_text: str) -> bool:
-        cues = ("send", "post", "publish", "email", "write", "update", "save")
+        cues = (
+            "send",
+            "post",
+            "publish",
+            "email",
+            "write",
+            "update",
+            "save",
+            "search",
+            "fetch",
+            "browse",
+            "open",
+            "visit",
+            "look up",
+            "lookup",
+            "download",
+        )
         return any(token in goal_text for token in cues)
 
     @staticmethod

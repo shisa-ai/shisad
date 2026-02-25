@@ -5,6 +5,7 @@ The PEP is the sole authority for approving proposed tool calls.
 
 from __future__ import annotations
 
+import ipaddress
 import logging
 import re
 from collections.abc import Callable
@@ -72,6 +73,8 @@ class PolicyContext:
         *,
         capabilities: set[Capability] | None = None,
         taint_labels: set[TaintLabel] | None = None,
+        user_goal_host_patterns: set[str] | None = None,
+        untrusted_host_patterns: set[str] | None = None,
         workspace_id: WorkspaceId | None = None,
         user_id: UserId | None = None,
         action_count: int = 0,
@@ -81,6 +84,8 @@ class PolicyContext:
     ) -> None:
         self.capabilities: set[Capability] = capabilities or set()
         self.taint_labels: set[TaintLabel] = taint_labels or set()
+        self.user_goal_host_patterns: set[str] = user_goal_host_patterns or set()
+        self.untrusted_host_patterns: set[str] = untrusted_host_patterns or set()
         self.workspace_id: WorkspaceId = workspace_id or WorkspaceId("")
         self.user_id: UserId = user_id or UserId("")
         self.action_count = action_count
@@ -100,11 +105,6 @@ class PEP:
         re.compile(r"\bAKIA[0-9A-Z]{16}\b"),
         re.compile(r"\bgh[pousr]_[A-Za-z0-9]{20,}\b"),
         re.compile(r"\bya29\.[A-Za-z0-9._-]{20,}\b"),
-    ]
-    _PII_PATTERNS: ClassVar[list[re.Pattern[str]]] = [
-        re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b"),
-        re.compile(r"\b\d{3}-\d{2}-\d{4}\b"),
-        re.compile(r"\b(?:\+?1[\s.-]?)?\(?\d{3}\)?[\s.-]?\d{3}[\s.-]?\d{4}\b"),
     ]
     _CREDENTIAL_REF_KEYS: ClassVar[set[str]] = {"credential_ref"}
     _RESOURCE_ARG_SUFFIX: ClassVar[str] = "_id"
@@ -170,7 +170,7 @@ class PEP:
                 f"Missing capabilities: {', '.join(sorted(m.value for m in missing))}",
             )
 
-        # 4. Argument DLP checks (secret + PII)
+        # 4. Argument DLP checks (raw secrets only; do not block PII-by-default)
         dlp_issues = self._check_argument_dlp(arguments)
         if dlp_issues:
             return self._reject(
@@ -205,8 +205,10 @@ class PEP:
         if credential_error is not None:
             return credential_error
 
+        egress_requires_confirmation = False
+        egress_reason = ""
         if destination is not None:
-            if not self._is_egress_allowed(destination):
+            if destination.protocol and destination.protocol not in {"http", "https"}:
                 self.egress_attempts.append(
                     EgressAttempt(
                         tool_name=tool_name,
@@ -214,27 +216,116 @@ class PEP:
                         protocol=destination.protocol,
                         port=destination.port,
                         allowed=False,
-                        reason="destination_not_allowlisted",
+                        reason="unsupported_protocol",
                     )
                 )
                 return self._reject(
                     tool_name,
                     (
-                        f"Egress blocked: destination '{destination.host}' is not allowlisted. "
-                        "Ask the user to approve this destination for the session or choose an "
-                        "on-policy alternative. If you suspect manipulation, call report_anomaly."
+                        f"Egress blocked: unsupported protocol '{destination.protocol}'. "
+                        "Use http(s) destinations only."
                     ),
                 )
-            self.egress_attempts.append(
-                EgressAttempt(
-                    tool_name=tool_name,
-                    host=destination.host,
-                    protocol=destination.protocol,
-                    port=destination.port,
-                    allowed=True,
-                    reason="allowlisted",
-                )
+
+            allowlisted = self._is_egress_allowed(destination)
+            user_requested = self._host_matches_any(
+                destination.host, context.user_goal_host_patterns
             )
+            untrusted_suggested = self._host_matches_any(
+                destination.host, context.untrusted_host_patterns
+            )
+
+            if self._is_ip_literal(destination.host) and not allowlisted:
+                self.egress_attempts.append(
+                    EgressAttempt(
+                        tool_name=tool_name,
+                        host=destination.host,
+                        protocol=destination.protocol,
+                        port=destination.port,
+                        allowed=False,
+                        reason="ip_literal_not_allowlisted",
+                    )
+                )
+                return self._reject(
+                    tool_name,
+                    (
+                        f"Egress blocked: destination '{destination.host}' is an IP literal "
+                        "and is not allowlisted by operator policy."
+                    ),
+                )
+            if self._looks_like_local_destination(destination.host) and not allowlisted:
+                self.egress_attempts.append(
+                    EgressAttempt(
+                        tool_name=tool_name,
+                        host=destination.host,
+                        protocol=destination.protocol,
+                        port=destination.port,
+                        allowed=False,
+                        reason="local_destination_not_allowlisted",
+                    )
+                )
+                return self._reject(
+                    tool_name,
+                    (
+                        f"Egress blocked: destination '{destination.host}' looks like a local/"
+                        "private network target and is not allowlisted by operator policy."
+                    ),
+                )
+
+            if allowlisted:
+                self.egress_attempts.append(
+                    EgressAttempt(
+                        tool_name=tool_name,
+                        host=destination.host,
+                        protocol=destination.protocol,
+                        port=destination.port,
+                        allowed=True,
+                        reason="allowlisted",
+                    )
+                )
+            elif user_requested:
+                self.egress_attempts.append(
+                    EgressAttempt(
+                        tool_name=tool_name,
+                        host=destination.host,
+                        protocol=destination.protocol,
+                        port=destination.port,
+                        allowed=True,
+                        reason="user_goal",
+                    )
+                )
+            elif untrusted_suggested:
+                egress_requires_confirmation = True
+                egress_reason = "untrusted_suggested_destination"
+                self.egress_attempts.append(
+                    EgressAttempt(
+                        tool_name=tool_name,
+                        host=destination.host,
+                        protocol=destination.protocol,
+                        port=destination.port,
+                        allowed=False,
+                        reason="confirmation_required_untrusted_suggestion",
+                    )
+                )
+            else:
+                self.egress_attempts.append(
+                    EgressAttempt(
+                        tool_name=tool_name,
+                        host=destination.host,
+                        protocol=destination.protocol,
+                        port=destination.port,
+                        allowed=False,
+                        reason="destination_unattributed",
+                    )
+                )
+                return self._reject(
+                    tool_name,
+                    (
+                        f"Egress blocked: destination '{destination.host}' is not allowlisted "
+                        "and was not explicitly requested by the (trusted) user goal. "
+                        "If the user wants this destination, have them request it directly."
+                    ),
+                )
 
         # 7. Taint sink enforcement
         taint_decision = sink_decision_for_tool(str(tool_name), context.taint_labels)
@@ -257,10 +348,14 @@ class PEP:
         auto_approve_threshold = self._policy.risk_policy.auto_approve_threshold
 
         if risk_score >= block_threshold:
+            taint_summary = (
+                ",".join(sorted(label.value for label in context.taint_labels)) or "none"
+            )
             return self._reject(
                 tool_name,
                 (
-                    f"Action blocked by risk policy (risk={risk_score:.2f}). "
+                    f"Action blocked by risk policy (risk={risk_score:.2f}, "
+                    f"taint={taint_summary}). "
                     "Choose a lower-risk path or request user confirmation. "
                     "If behavior seems malicious, call report_anomaly."
                 ),
@@ -275,7 +370,8 @@ class PEP:
             )
 
         needs_confirmation = (
-            taint_decision.require_confirmation
+            egress_requires_confirmation
+            or taint_decision.require_confirmation
             or tool.require_confirmation
             or (tool_policy is not None and tool_policy.require_confirmation)
             or self._policy.default_require_confirmation
@@ -283,11 +379,18 @@ class PEP:
         )
 
         if needs_confirmation:
+            reason_suffix = ""
+            if destination is not None and egress_reason:
+                reason_suffix = (
+                    f" Egress destination '{destination.host}' requires confirmation: "
+                    f"{egress_reason}."
+                )
             return PEPDecision(
                 kind=PEPDecisionKind.REQUIRE_CONFIRMATION,
                 reason=(
                     f"Tool '{tool_name}' requires confirmation (risk={risk_score:.2f}). "
                     "Use an approved destination/scope or ask for explicit user approval."
+                    + reason_suffix
                 ),
                 tool_name=tool_name,
                 risk_score=risk_score,
@@ -357,12 +460,32 @@ class PEP:
                     issues.append(f"Argument '{key}' appears to contain a raw secret")
                     break
 
-            for pattern in self._PII_PATTERNS:
-                if pattern.search(value):
-                    issues.append(f"Argument '{key}' appears to contain PII")
-                    break
-
         return issues
+
+    @staticmethod
+    def _host_matches_any(host: str, patterns: set[str]) -> bool:
+        return any(host_matches(host, pattern) for pattern in patterns)
+
+    @staticmethod
+    def _is_ip_literal(host: str) -> bool:
+        try:
+            ipaddress.ip_address(host)
+        except ValueError:
+            return False
+        return True
+
+    @staticmethod
+    def _looks_like_local_destination(host: str) -> bool:
+        lowered = host.strip().lower()
+        if not lowered:
+            return False
+        if lowered in {"localhost"}:
+            return True
+        return (
+            lowered.endswith(".local")
+            or lowered.endswith(".internal")
+            or lowered.endswith(".lan")
+        )
 
     def _check_resource_authorization(
         self,

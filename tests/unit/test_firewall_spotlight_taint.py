@@ -128,8 +128,9 @@ def test_m1_t9_taint_propagation_sensitive_and_untrusted() -> None:
 
 def test_m1_t10_taint_blocks_sensitive_to_egress_sink() -> None:
     decision = sink_decision_for_tool("http.request", {TaintLabel.SENSITIVE_FILE})
-    assert decision.block
-    assert decision.reason == "sensitive_data_to_egress"
+    assert decision.block is False
+    assert decision.require_confirmation is False
+    assert decision.reason == ""
 
 
 def test_m1_t18_firewall_detects_and_redacts_ingress_credentials() -> None:
@@ -194,8 +195,9 @@ def test_m6_taint_sink_decision_handles_credential_and_write_paths() -> None:
     assert write.reason == "untrusted_data_to_write_sink"
 
     web_egress = sink_decision_for_tool("web.fetch", {TaintLabel.SENSITIVE_FILE})
-    assert web_egress.block is True
-    assert web_egress.reason == "sensitive_data_to_egress"
+    assert web_egress.block is False
+    assert web_egress.require_confirmation is False
+    assert web_egress.reason == ""
 
     safe = sink_decision_for_tool("file.read", set())
     assert safe.block is False

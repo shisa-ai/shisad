@@ -527,7 +527,7 @@ async def test_v0_3_1_session_message_passes_tool_manifest_and_tools_payload(
             isinstance(item, dict)
             and str(item.get("type")) == "function"
             and isinstance(item.get("function"), dict)
-            and str(item["function"].get("name")) == "fs.read"
+            and str(item["function"].get("name")) == "fs_read"
             for item in tools_payload
         )
     finally:

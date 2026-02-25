@@ -93,19 +93,31 @@ def test_web_search_returns_structured_results(
     assert result["evidence"]["operation"] == "web_search"
 
 
-def test_web_fetch_blocks_unallowlisted_destination(tmp_path: Path) -> None:
+def test_web_fetch_allows_public_destination_without_allowlist(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(
+        "shisad.assistant.web._open_no_redirect",
+        lambda *_args, **_kwargs: _FakeResponse(
+            body=b"<html><title>Hello</title><body>ok</body></html>",
+            status=200,
+            headers={"Content-Type": "text/html"},
+            url="https://blocked.example/path",
+        ),
+    )
     toolkit = WebToolkit(
         data_dir=tmp_path,
         search_enabled=True,
         search_backend_url="https://search.example",
         fetch_enabled=True,
-        allowed_domains=["allowed.example"],
+        allowed_domains=[],
         timeout_seconds=5.0,
         max_fetch_bytes=65536,
     )
     result = toolkit.fetch(url="https://blocked.example/path")
-    assert result["ok"] is False
-    assert result["error"] == "destination_not_allowlisted"
+    assert result["ok"] is True
+    assert result["title"] == "Hello"
 
 
 def test_web_fetch_detects_interstitial(
@@ -220,7 +232,8 @@ def test_web_fetch_redirect_blocks_unallowlisted_destination(
     )
     result = toolkit.fetch(url="https://allowed.example/start")
     assert result["ok"] is False
-    assert result["error"] == "destination_not_allowlisted"
+    assert result["error"] == "redirect_host_not_preapproved"
+    assert result["redirect_host"] == "evil.example"
 
 
 def test_web_search_redirect_blocks_unallowlisted_backend(
@@ -248,7 +261,8 @@ def test_web_search_redirect_blocks_unallowlisted_backend(
     )
     result = toolkit.search(query="roadmap")
     assert result["ok"] is False
-    assert result["error"] == "web_search_backend_not_allowlisted"
+    assert result["error"] == "redirect_host_not_preapproved"
+    assert result["redirect_host"] == "evil.example"
 
 
 def test_web_fetch_strips_script_and_style_content(
