@@ -140,10 +140,17 @@ class RoutedOpenAIProvider:
 
         try:
             return await self._planner_provider.complete(messages, tools)
-        except (OSError, RuntimeError, TypeError, ValueError):
+        except (OSError, RuntimeError, TypeError, ValueError) as exc:
             if self._fallback is None:
                 raise
-            logger.warning("Remote planner provider failed; falling back to local provider")
+            logger.warning(
+                "Remote planner provider failed; falling back to local provider: %s",
+                exc,
+            )
+            logger.debug(
+                "Planner route fallback exception details",
+                exc_info=exc,
+            )
             return await self._fallback.complete(messages, tools)
 
     async def embeddings(
@@ -162,10 +169,17 @@ class RoutedOpenAIProvider:
 
         try:
             return await self._embeddings_provider.embeddings(input_texts, model_id=target_model)
-        except (OSError, RuntimeError, TypeError, ValueError):
+        except (OSError, RuntimeError, TypeError, ValueError) as exc:
             if self._fallback is None:
                 raise
-            logger.warning("Remote embeddings provider failed; falling back to local provider")
+            logger.warning(
+                "Remote embeddings provider failed; falling back to local provider: %s",
+                exc,
+            )
+            logger.debug(
+                "Embeddings route fallback exception details",
+                exc_info=exc,
+            )
             return await self._fallback.embeddings(input_texts, model_id=target_model)
 
     async def monitor_complete(
@@ -178,9 +192,14 @@ class RoutedOpenAIProvider:
 
         try:
             return await self._monitor_provider.complete(messages, tools)
-        except (OSError, RuntimeError, TypeError, ValueError):
+        except (OSError, RuntimeError, TypeError, ValueError) as exc:
             logger.warning(
-                "Remote monitor provider failed; using deterministic monitor fallback",
+                "Remote monitor provider failed; using deterministic monitor fallback: %s",
+                exc,
+            )
+            logger.debug(
+                "Monitor route fallback exception details",
+                exc_info=exc,
             )
             return self._deterministic_monitor_fallback()
 

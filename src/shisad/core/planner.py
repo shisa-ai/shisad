@@ -370,7 +370,7 @@ class Planner:
             name_raw = raw_call.get("name")
             if not isinstance(name_raw, str) or not name_raw.strip():
                 return []
-            canonical_name = canonical_tool_name(name_raw)
+            canonical_name = canonical_tool_name(name_raw, warn_on_alias=False)
             if not canonical_name:
                 return []
             if canonical_name not in allowed_tools:
@@ -477,7 +477,7 @@ class Planner:
             name_raw = function.get("name")
             if not isinstance(name_raw, str):
                 continue
-            canonical_name = canonical_tool_name(name_raw)
+            canonical_name = canonical_tool_name(name_raw, warn_on_alias=False)
             if canonical_name:
                 payload_names.add(canonical_name)
         if not payload_names:
@@ -520,7 +520,7 @@ class Planner:
             name_raw = function.get("name")
             if not isinstance(name_raw, str) or not name_raw.strip():
                 continue
-            canonical_name = canonical_tool_name(name_raw)
+            canonical_name = canonical_tool_name(name_raw, warn_on_alias=False)
             if not canonical_name:
                 continue
             parsed_arguments = cls._parse_tool_arguments(function.get("arguments"))

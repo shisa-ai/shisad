@@ -52,3 +52,10 @@ def test_m1_pf36_legacy_alias_warning_emits_once(caplog: pytest.LogCaptureFixtur
         assert canonical_tool_name("shell_exec") == "shell.exec"
         assert canonical_tool_name("shell_exec") == "shell.exec"
     assert sum("deprecated" in record.getMessage().lower() for record in caplog.records) == 1
+
+
+def test_m3_tool_alias_can_be_resolved_without_warning(caplog: pytest.LogCaptureFixture) -> None:
+    with caplog.at_level(logging.WARNING, logger="shisad.core.tools.names"):
+        resolved = canonical_tool_name("fs_read", warn_on_alias=False)
+    assert resolved == "fs.read"
+    assert not caplog.records

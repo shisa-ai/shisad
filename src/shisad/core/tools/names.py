@@ -48,14 +48,14 @@ LEGACY_TOOL_NAME_ALIASES: dict[str, str] = {
 }
 
 
-def canonical_tool_name(name: str) -> str:
+def canonical_tool_name(name: str, *, warn_on_alias: bool = True) -> str:
     """Return canonical dotted tool name for runtime/control-plane use."""
     lowered = name.strip().lower()
     if not lowered:
         return ""
     canonical = LEGACY_TOOL_NAME_ALIASES.get(lowered)
     if canonical is not None:
-        if lowered not in _WARNED_LEGACY_ALIASES:
+        if warn_on_alias and lowered not in _WARNED_LEGACY_ALIASES:
             logger.warning(
                 "Legacy tool alias '%s' is deprecated; use '%s' instead.",
                 lowered,
@@ -66,6 +66,6 @@ def canonical_tool_name(name: str) -> str:
     return lowered
 
 
-def canonical_tool_name_typed(name: ToolName | str) -> ToolName:
+def canonical_tool_name_typed(name: ToolName | str, *, warn_on_alias: bool = True) -> ToolName:
     """Typed wrapper over :func:`canonical_tool_name`."""
-    return ToolName(canonical_tool_name(str(name)))
+    return ToolName(canonical_tool_name(str(name), warn_on_alias=warn_on_alias))
