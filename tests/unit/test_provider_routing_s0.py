@@ -83,6 +83,14 @@ def test_s0_bearer_auth_rejects_custom_auth_header_name() -> None:
         )
 
 
+def test_s0_auth_mode_none_rejects_custom_auth_header_name() -> None:
+    with pytest.raises(ValidationError, match="planner_auth_header_name is only supported"):
+        ModelConfig(
+            planner_auth_mode="none",
+            planner_auth_header_name="X-Api-Key",
+        )
+
+
 def test_s0_openrouter_headers_are_accepted_and_normalized() -> None:
     config = ModelConfig(
         planner_provider_preset="openrouter_default",
@@ -99,7 +107,7 @@ def test_s0_openrouter_headers_are_accepted_and_normalized() -> None:
     }
 
 
-def test_s0_profile_auto_selection_uses_hostname_heuristic() -> None:
+def test_s0_profile_auto_selection_uses_preset_default_over_hostname_heuristic() -> None:
     config = ModelConfig(planner_base_url="https://openrouter.ai/api/v1")
     route = ModelRouter(config).route_for(ModelComponent.PLANNER)
 

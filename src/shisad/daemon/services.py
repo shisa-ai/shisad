@@ -882,18 +882,26 @@ def _key_gated_acceptance_matrix() -> dict[str, dict[str, str]]:
         "openai": {
             "key_env": "OPENAI_API_KEY",
             "model_id": "gpt-5.2-2025-12-11",
+            "scope": "route_configurable",
         },
         "openrouter": {
             "key_env": "OPENROUTER_API_KEY",
             "model_id": "qwen/qwen3.5-397b-a17b",
+            "scope": "route_configurable",
         },
         "google_openai": {
             "key_env": "GEMINI_API_KEY",
             "model_id": "gemini-3.1-pro-preview",
+            "scope": "route_configurable",
         },
         "shisa_default": {
             "key_env": "SHISA_API_KEY",
             "model_id": "shisa-ai/shisa-v2.1-unphi4-14b",
+            "scope": "planner_only",
+            "note": (
+                "implicit remote-enable applies to planner route only when "
+                "SHISA defaults are unchanged"
+            ),
         },
     }
     matrix: dict[str, dict[str, str]] = {}
@@ -905,7 +913,11 @@ def _key_gated_acceptance_matrix() -> dict[str, dict[str, str]]:
             "evidence": "env_presence_only",
             "key_env": key_env,
             "model_id": row["model_id"],
+            "scope": row["scope"],
         }
+        note = row.get("note")
+        if isinstance(note, str) and note.strip():
+            matrix[name]["note"] = note
     return matrix
 
 

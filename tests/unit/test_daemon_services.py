@@ -224,7 +224,10 @@ def test_s0_key_gated_acceptance_reports_env_eligibility_only(
 
     assert matrix["openai"]["status"] == "eligible (key env present)"
     assert matrix["openai"]["evidence"] == "env_presence_only"
+    assert matrix["openai"]["scope"] == "route_configurable"
     assert matrix["openrouter"]["status"] == "N/A (key missing)"
+    assert matrix["shisa_default"]["scope"] == "planner_only"
+    assert "planner route only" in matrix["shisa_default"]["note"]
 
 
 @pytest.mark.asyncio

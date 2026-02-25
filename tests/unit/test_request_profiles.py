@@ -95,8 +95,17 @@ def test_s0_profile_heuristic_matches_google_boundary_safely() -> None:
         endpoint_family=EndpointFamily.CHAT_COMPLETIONS,
         model_id="gemini-3.1-pro-preview",
     )
+    attacker_non_gemini = auto_select_request_profile(
+        explicit_profile=None,
+        preset_default_profile=None,
+        base_url="https://notrealgenerativelanguage.googleapis.com.evil.com/v1",
+        endpoint_family=EndpointFamily.CHAT_COMPLETIONS,
+        model_id="llama-3",
+    )
 
     assert exact.profile_name == PROFILE_GOOGLE_OPENAI_CHAT
     assert exact.source == "hostname_heuristic"
     assert attacker.profile_name == PROFILE_GOOGLE_OPENAI_CHAT
     assert attacker.source == "model_id_tiebreaker"
+    assert attacker_non_gemini.profile_name == PROFILE_OPENAI_CHAT_GENERAL
+    assert attacker_non_gemini.source == "endpoint_family_fallback"

@@ -315,7 +315,6 @@ class ModelRouter:
                 "route:planner_api_key",
                 "preset_provider:SHISA_API_KEY",
                 "global:SHISAD_MODEL_API_KEY",
-                "global:SHISA_API_KEY",
             }
         ):
             return True, "implicit_shisa_key"
