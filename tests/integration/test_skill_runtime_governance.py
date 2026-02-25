@@ -270,6 +270,13 @@ async def test_m4_rr10_default_tool_execute_omission_uses_fail_closed_posture(
     model_env: None,
     tmp_path: Path,
 ) -> None:
+    # Restrict capabilities so shell.exec triggers stage2 → confirmation.
+    (tmp_path / "policy.yaml").write_text(
+        "version: \"1\"\ndefault_deny: false\n"
+        "default_capabilities:\n"
+        "  - file.read\n  - memory.read\n",
+        encoding="utf-8",
+    )
     daemon_task, client = await _start_daemon(tmp_path)
     try:
         created = await client.call("session.create", {"channel": "cli"})
@@ -462,6 +469,13 @@ async def test_m4_t27_audit_durable_prelaunch_failure_blocks_execution(
         await original_publish(self, event)  # type: ignore[arg-type]
 
     monkeypatch.setattr(EventBus, "publish", _patched_publish)
+    # Restrict capabilities so shell_exec triggers stage2 → confirmation.
+    (tmp_path / "policy.yaml").write_text(
+        "version: \"1\"\ndefault_deny: false\n"
+        "default_capabilities:\n"
+        "  - file.read\n  - memory.read\n",
+        encoding="utf-8",
+    )
     daemon_task, client = await _start_daemon(tmp_path)
     try:
         created = await client.call("session.create", {"channel": "cli"})
@@ -556,6 +570,13 @@ async def test_m4_t33_network_enabled_execution_blocks_without_isolated_boundary
         "shisad.executors.connect_path.NoopConnectPathProxy.detect_net_admin_capability",
         staticmethod(lambda: False),
     )
+    # Restrict capabilities so http_request triggers stage2 → confirmation.
+    (tmp_path / "policy.yaml").write_text(
+        "version: \"1\"\ndefault_deny: false\n"
+        "default_capabilities:\n"
+        "  - file.read\n  - memory.read\n",
+        encoding="utf-8",
+    )
     daemon_task, client = await _start_daemon(tmp_path)
     try:
         created = await client.call("session.create", {"channel": "cli"})
@@ -603,6 +624,13 @@ async def test_m4_t34_write_ahead_audit_envelope_pairs_action_hash(
     model_env: None,
     tmp_path: Path,
 ) -> None:
+    # Restrict capabilities so shell_exec triggers stage2 → confirmation.
+    (tmp_path / "policy.yaml").write_text(
+        "version: \"1\"\ndefault_deny: false\n"
+        "default_capabilities:\n"
+        "  - file.read\n  - memory.read\n",
+        encoding="utf-8",
+    )
     daemon_task, client = await _start_daemon(tmp_path)
     try:
         created = await client.call("session.create", {"channel": "cli"})

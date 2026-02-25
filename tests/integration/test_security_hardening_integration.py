@@ -110,6 +110,14 @@ async def test_m6_t12_cross_thread_high_overlap_requires_confirmation_and_audit_
     model_env: None,
     tmp_path: Path,
 ) -> None:
+    # Restrict capabilities so http_request triggers stage2 → confirmation,
+    # where the leak-check analysis can fire.
+    (tmp_path / "policy.yaml").write_text(
+        "version: \"1\"\ndefault_deny: false\n"
+        "default_capabilities:\n"
+        "  - file.read\n  - memory.read\n",
+        encoding="utf-8",
+    )
     daemon_task, client = await _start_daemon(tmp_path)
     try:
         created = await client.call("session.create", {"channel": "cli"})
@@ -170,6 +178,14 @@ async def test_m6_t13_explicit_forward_intent_allows_warning_trail(
     model_env: None,
     tmp_path: Path,
 ) -> None:
+    # Restrict capabilities so http_request triggers stage2 → confirmation,
+    # where the leak-check analysis can fire.
+    (tmp_path / "policy.yaml").write_text(
+        "version: \"1\"\ndefault_deny: false\n"
+        "default_capabilities:\n"
+        "  - file.read\n  - memory.read\n",
+        encoding="utf-8",
+    )
     daemon_task, client = await _start_daemon(tmp_path)
     try:
         created = await client.call("session.create", {"channel": "cli"})
