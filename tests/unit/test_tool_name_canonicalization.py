@@ -22,6 +22,14 @@ def test_s9_canonical_tool_name_maps_legacy_aliases() -> None:
     assert canonical_tool_name("web_fetch") == "web.fetch"
     assert canonical_tool_name("file_read") == "file.read"
     assert canonical_tool_name("file_write") == "file.write"
+    assert canonical_tool_name("fs_list") == "fs.list"
+    assert canonical_tool_name("fs_read") == "fs.read"
+    assert canonical_tool_name("fs_write") == "fs.write"
+    assert canonical_tool_name("git_status") == "git.status"
+    assert canonical_tool_name("git_diff") == "git.diff"
+    assert canonical_tool_name("git_log") == "git.log"
+    assert canonical_tool_name("realitycheck_search") == "realitycheck.search"
+    assert canonical_tool_name("realitycheck_read") == "realitycheck.read"
 
 
 def test_s9_canonical_tool_name_preserves_canonical_ids() -> None:

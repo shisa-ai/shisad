@@ -9,6 +9,7 @@ import pytest
 from shisad.core.planner import Planner
 from shisad.core.providers.base import Message, ProviderResponse
 from shisad.core.providers.capabilities import ProviderCapabilities
+from shisad.core.tools.names import canonical_tool_name
 from shisad.core.tools.registry import ToolRegistry
 from shisad.core.tools.schema import ToolDefinition, ToolParameter, tool_definitions_to_openai
 from shisad.core.types import Capability, ToolName
@@ -56,7 +57,7 @@ def _tools_payload(registry: ToolRegistry, names: set[str]) -> list[dict[str, An
     return [
         item
         for item in payload
-        if str(item.get("function", {}).get("name", "")) in names
+        if canonical_tool_name(str(item.get("function", {}).get("name", ""))) in names
     ]
 
 

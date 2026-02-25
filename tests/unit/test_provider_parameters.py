@@ -44,6 +44,10 @@ def test_m2_request_parameters_enforce_range_validation() -> None:
     with pytest.raises(ValidationError):
         RequestParameters(max_tokens=1_000_000)
     with pytest.raises(ValidationError):
+        RequestParameters(max_completion_tokens=0)
+    with pytest.raises(ValidationError):
+        RequestParameters(max_completion_tokens=1_000_000)
+    with pytest.raises(ValidationError):
         RequestParameters(top_p=0.0)
     with pytest.raises(ValidationError):
         RequestParameters(frequency_penalty=3.0)
@@ -54,11 +58,13 @@ def test_m2_request_parameters_enforce_range_validation() -> None:
 def test_s0_request_parameters_support_reasoning_fields_in_payload() -> None:
     payload = RequestParameters(
         max_tokens=128,
+        max_completion_tokens=256,
         reasoning_effort="medium",
         reasoning={"budget_tokens": 64, "mode": "deliberate"},
     ).to_payload()
 
     assert payload["max_tokens"] == 128
+    assert payload["max_completion_tokens"] == 256
     assert payload["reasoning_effort"] == "medium"
     assert payload["reasoning"] == {"budget_tokens": 64, "mode": "deliberate"}
 

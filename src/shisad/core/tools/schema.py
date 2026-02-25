@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -24,6 +25,7 @@ class ToolParameter(BaseModel):
     description: str = ""
     required: bool = True
     enum: list[str] | None = None
+    items_type: str | None = None
 
     model_config = {"frozen": True}
 
@@ -69,6 +71,9 @@ class ToolDefinition(BaseModel):
                 "type": param.type,
                 "description": param.description,
             }
+            if param.type == "array":
+                # OpenAI function-parameter schemas require `items` for array fields.
+                prop["items"] = {"type": param.items_type or "string"}
             if param.enum is not None:
                 prop["enum"] = param.enum
             properties[param.name] = prop
@@ -83,6 +88,23 @@ class ToolDefinition(BaseModel):
         }
 
 
+_OPENAI_FUNCTION_NAME_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
+
+
+def _openai_function_name(tool_name: str) -> str:
+    """Return an OpenAI-compliant function name for a canonical tool id.
+
+    OpenAI function names must match ``^[a-zA-Z0-9_-]+$``. Canonical shisad
+    tool ids use dotted names, so we map dots/hyphens to underscores.
+    """
+
+    candidate = tool_name.strip()
+    if _OPENAI_FUNCTION_NAME_RE.fullmatch(candidate):
+        return candidate
+    normalized = candidate.replace(".", "_").replace("-", "_")
+    return normalized
+
+
 def tool_definitions_to_openai(tools: list[ToolDefinition]) -> list[dict[str, Any]]:
     """Convert tool definitions to OpenAI-compatible `tools` payload format."""
     payload: list[dict[str, Any]] = []
@@ -91,7 +113,7 @@ def tool_definitions_to_openai(tools: list[ToolDefinition]) -> list[dict[str, An
             {
                 "type": "function",
                 "function": {
-                    "name": str(tool.name),
+                    "name": _openai_function_name(str(tool.name)),
                     "description": tool.description,
                     "parameters": tool.json_schema(),
                 },

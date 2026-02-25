@@ -28,10 +28,23 @@ def test_tool_definitions_to_openai_converts_function_payload() -> None:
     assert len(payload) == 1
     item = payload[0]
     assert item["type"] == "function"
-    assert item["function"]["name"] == "fs.read"
+    assert item["function"]["name"] == "fs_read"
     assert item["function"]["description"] == "Read files from allowlisted roots."
     assert item["function"]["parameters"]["type"] == "object"
     assert item["function"]["parameters"]["required"] == ["path"]
+
+
+def test_tool_definition_json_schema_defaults_array_items_to_string() -> None:
+    tool = ToolDefinition(
+        name=ToolName("shell.exec"),
+        description="Execute shell command",
+        parameters=[ToolParameter(name="command", type="array", required=True)],
+        capabilities_required=[Capability.SHELL_EXEC],
+    )
+
+    schema = tool.json_schema()
+    assert schema["properties"]["command"]["type"] == "array"
+    assert schema["properties"]["command"]["items"] == {"type": "string"}
 
 
 def test_tool_definitions_to_openai_handles_empty_input() -> None:

@@ -24,8 +24,23 @@ def test_s0_openai_profile_accepts_reasoning_fields() -> None:
     )
 
     assert evaluation.payload["reasoning_effort"] == "high"
-    assert evaluation.payload["max_tokens"] == 256
+    assert evaluation.payload["max_completion_tokens"] == 256
+    assert "max_tokens" not in evaluation.payload
+    assert evaluation.mapped_fields == ["max_tokens->max_completion_tokens"]
     assert evaluation.rejected_fields == []
+
+
+def test_s0_openai_profile_rejects_conflicting_max_token_fields() -> None:
+    with pytest.raises(RequestProfileError, match=r"max_tokens.*max_completion_tokens"):
+        apply_request_profile(
+            profile_name="openai_chat_general",
+            endpoint_family=EndpointFamily.CHAT_COMPLETIONS,
+            model_id="gpt-5.2-2025-12-11",
+            request_parameters=RequestParameters(
+                max_tokens=256,
+                max_completion_tokens=128,
+            ),
+        )
 
 
 def test_s0_google_profile_rejects_unsupported_reasoning_effort() -> None:

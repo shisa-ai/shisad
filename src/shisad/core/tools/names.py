@@ -29,6 +29,22 @@ LEGACY_TOOL_NAME_ALIASES: dict[str, str] = {
     "web-search": "web.search",
     "web_fetch": "web.fetch",
     "web-fetch": "web.fetch",
+    "fs_list": "fs.list",
+    "fs-list": "fs.list",
+    "fs_read": "fs.read",
+    "fs-read": "fs.read",
+    "fs_write": "fs.write",
+    "fs-write": "fs.write",
+    "git_status": "git.status",
+    "git-status": "git.status",
+    "git_diff": "git.diff",
+    "git-diff": "git.diff",
+    "git_log": "git.log",
+    "git-log": "git.log",
+    "realitycheck_search": "realitycheck.search",
+    "realitycheck-search": "realitycheck.search",
+    "realitycheck_read": "realitycheck.read",
+    "realitycheck-read": "realitycheck.read",
 }
 
 

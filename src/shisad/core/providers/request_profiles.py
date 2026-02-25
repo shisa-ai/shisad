@@ -17,6 +17,7 @@ _PROFILE_ALLOWED_FIELDS: dict[str, set[str]] = {
     PROFILE_OPENAI_CHAT_GENERAL: {
         "temperature",
         "max_tokens",
+        "max_completion_tokens",
         "top_p",
         "frequency_penalty",
         "presence_penalty",
@@ -77,6 +78,7 @@ def apply_request_profile(
     supported_parameters: set[str] | None = None,
 ) -> RequestProfileEvaluation:
     payload = request_parameters.to_payload()
+    mapped_fields: list[str] = []
 
     if endpoint_family == EndpointFamily.EMBEDDINGS:
         if payload:
@@ -94,6 +96,25 @@ def apply_request_profile(
             raise RequestProfileError(
                 f"field '{key}' is not allowed for profile '{profile_name}'"
             )
+
+    if profile_name == PROFILE_OPENAI_CHAT_GENERAL and "max_tokens" in payload:
+        legacy_max_tokens = payload["max_tokens"]
+        explicit_max_completion_tokens = payload.get("max_completion_tokens")
+        if (
+            explicit_max_completion_tokens is not None
+            and explicit_max_completion_tokens != legacy_max_tokens
+        ):
+            raise RequestProfileError(
+                "fields 'max_tokens' and 'max_completion_tokens' conflict for "
+                "openai_chat_general"
+            )
+        payload["max_completion_tokens"] = (
+            explicit_max_completion_tokens
+            if explicit_max_completion_tokens is not None
+            else legacy_max_tokens
+        )
+        payload.pop("max_tokens", None)
+        mapped_fields.append("max_tokens->max_completion_tokens")
 
     if profile_name == PROFILE_GOOGLE_OPENAI_CHAT:
         effort = payload.get("reasoning_effort")
@@ -115,7 +136,7 @@ def apply_request_profile(
     _ = model_id
     return RequestProfileEvaluation(
         payload=dict(payload),
-        mapped_fields=[],
+        mapped_fields=mapped_fields,
         rejected_fields=[],
     )
 
