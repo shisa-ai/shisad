@@ -12,6 +12,18 @@ Both halves matter equally. "Everything they want" is the product. "As safely as
 
 ---
 
+## Terms (So We Don't Talk Past Each Other)
+
+- **Capability**: a session-level permission to use a class of tools (e.g., `HTTP_REQUEST`, `FS_WRITE`, `SHELL_EXEC`).
+- **Resource policy**: operator-defined allowlists/constraints for specific targets (egress hosts, filesystem roots, channel identities, etc.).
+- **Stage1 plan**: what the runtime lets the agent attempt without additional confirmation.
+- **Stage2 confirmation**: the user-facing approval flow for actions that are not authorized (or are flagged as risky).
+- **Lockdown**: an emergency brake for runaway/anomalous behavior; it is **not** the normal way to handle tool denials or configuration gaps.
+
+**Key distinction**: "default-grant" refers to *capabilities*, not *resources*. A session can be allowed to use `web.search`, while egress still fails closed unless the destination hosts are allowlisted. When egress is blocked by policy, the system should return an actionable denial (or a confirmation path), not disable the agent.
+
+---
+
 ## First Principle: Security Enables Functionality
 
 **A broken product is not a secure product.**
@@ -39,6 +51,7 @@ For any security mechanism, ask:
 - **Default-grant, enforce-per-call.** Sessions should have all capabilities by default. Enforcement happens at execution time through the PEP pipeline, not by withholding capabilities.
 - **Stage gates match authorization, not fear.** If a session is authorized for `HTTP_REQUEST`, the stage1 plan should include `EGRESS`. Stage2 gating applies only to capabilities the session does NOT have.
 - **Confirmation > lockdown.** When the system is uncertain, ask the user. Lockdown is for actual anomalies (rate limit abuse, forbidden action sequences, max action overflow), not for normal tool usage that the session is authorized to perform.
+- **Fail-closed ≠ fail-dead.** When an action is denied by policy (missing allowlist, missing credentials, unsupported optional runtime), return a clear, user-actionable error and keep the session healthy.
 - **Lockdown is a last resort, not a default.** If normal usage routinely triggers lockdown, the lockdown threshold is wrong, not the usage.
 
 ---
@@ -60,6 +73,8 @@ shisad must pass these behavioral tests at all times. If any of these fail, the 
 5. **Multi-tool**: User sends "read the README and search for related projects" → agent uses both `file.read` and `web.search` without lockdown.
 
 These are not aspirational. They are the minimum bar. If the framework can't do these, it doesn't matter how sophisticated the consensus voting or trace verification is.
+
+Failing closed due to missing configuration is acceptable only when it is **actionable** (the user/operator can fix it) and does not cascade into lockdown. A misconfigured integration is not an attack.
 
 ### Milestone Gates
 
