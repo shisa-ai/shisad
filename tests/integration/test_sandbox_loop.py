@@ -77,6 +77,17 @@ async def _confirm_tool_execute(
     )
 
 
+async def _confirm_if_required(
+    client: ControlClient,
+    result: dict[str, Any],
+    *,
+    reason: str = "approved for test",
+) -> dict[str, Any]:
+    if result.get("confirmation_required") is True:
+        return await _confirm_tool_execute(client, result, reason=reason)
+    return result
+
+
 @pytest.mark.asyncio
 async def test_m3_t1_blocks_non_allowlisted_domain(model_env: None, tmp_path: Path) -> None:
     daemon_task, client, _ = await _start_daemon(tmp_path)
@@ -135,6 +146,109 @@ async def test_m3_rr2_empty_command_rejected_as_invalid_params(
                     "session_id": sid,
                     "tool_name": "shell_exec",
                     "command": [],
+                },
+            )
+    finally:
+        await _shutdown(daemon_task, client)
+
+
+@pytest.mark.asyncio
+async def test_m3_s0b2_tool_execute_accepts_structured_arguments_for_runtime_tools(
+    model_env: None,
+    tmp_path: Path,
+) -> None:
+    daemon_task, client, _ = await _start_daemon(tmp_path)
+    try:
+        created = await client.call("session.create", {"channel": "cli"})
+        sid = created["session_id"]
+
+        retrieve = await client.call(
+            "tool.execute",
+            {
+                "session_id": sid,
+                "tool_name": "retrieve_rag",
+                "command": [sys.executable, "-c", "print('ok')"],
+                "arguments": {"query": "roadmap", "limit": 2},
+                "security_critical": False,
+                "degraded_mode": "fail_open",
+            },
+        )
+        _ = await _confirm_if_required(client, retrieve)
+        executed = await client.call(
+            "audit.query",
+            {"event_type": "ToolExecuted", "session_id": sid, "limit": 20},
+        )
+        assert any(
+            str(item.get("data", {}).get("tool_name", "")) == "retrieve_rag"
+            and bool(item.get("data", {}).get("success")) is True
+            for item in executed["events"]
+        )
+
+        report = await client.call(
+            "tool.execute",
+            {
+                "session_id": sid,
+                "tool_name": "report_anomaly",
+                "command": [sys.executable, "-c", "print('ok')"],
+                "arguments": {
+                    "anomaly_type": "security_incident",
+                    "description": "integration test anomaly",
+                    "recommended_action": "review",
+                    "confidence": 0.7,
+                },
+                "security_critical": False,
+                "degraded_mode": "fail_open",
+            },
+        )
+        report_result = await _confirm_if_required(client, report)
+        if "confirmed" in report_result:
+            assert report_result["confirmed"] is True
+        rejected = await client.call(
+            "audit.query",
+            {"event_type": "ToolRejected", "session_id": sid, "limit": 20},
+        )
+        report_reasons = [
+            str(item.get("data", {}).get("reason", ""))
+            for item in rejected["events"]
+            if str(item.get("data", {}).get("tool_name", "")) == "report_anomaly"
+        ]
+        assert not any(reason.startswith("invalid_tool_arguments:") for reason in report_reasons)
+        anomalies = await client.call(
+            "audit.query",
+            {"event_type": "AnomalyReported", "session_id": sid, "limit": 20},
+        )
+        report_executed = await client.call(
+            "audit.query",
+            {"event_type": "ToolExecuted", "session_id": sid, "limit": 20},
+        )
+        executed_report = any(
+            str(item.get("data", {}).get("tool_name", "")) == "report_anomaly"
+            for item in report_executed["events"]
+        )
+        assert anomalies["total"] >= 1 or executed_report or bool(report_reasons)
+    finally:
+        await _shutdown(daemon_task, client)
+
+
+@pytest.mark.asyncio
+async def test_m3_s0b2_tool_execute_arguments_reject_reserved_key_collisions(
+    model_env: None,
+    tmp_path: Path,
+) -> None:
+    daemon_task, client, _ = await _start_daemon(tmp_path)
+    try:
+        created = await client.call("session.create", {"channel": "cli"})
+        sid = created["session_id"]
+        with pytest.raises(RuntimeError, match=r"RPC error -32602"):
+            await client.call(
+                "tool.execute",
+                {
+                    "session_id": sid,
+                    "tool_name": "retrieve_rag",
+                    "command": [sys.executable, "-c", "print('ok')"],
+                    "arguments": {"command": ["echo", "shadowed"]},
+                    "security_critical": False,
+                    "degraded_mode": "fail_open",
                 },
             )
     finally:

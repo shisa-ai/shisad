@@ -92,6 +92,28 @@ class TestApiSchemaValidation:
                 }
             )
 
+    def test_tool_execute_accepts_structured_arguments_map(self) -> None:
+        params = ToolExecuteParams.model_validate(
+            {
+                "session_id": "s1",
+                "tool_name": "retrieve_rag",
+                "command": ["python", "-c", "print('ok')"],
+                "arguments": {"query": "roadmap", "limit": 3},
+            }
+        )
+        assert params.arguments == {"query": "roadmap", "limit": 3}
+
+    def test_tool_execute_rejects_non_mapping_arguments(self) -> None:
+        with pytest.raises(ValidationError):
+            ToolExecuteParams.model_validate(
+                {
+                    "session_id": "s1",
+                    "tool_name": "retrieve_rag",
+                    "command": ["python", "-c", "print('ok')"],
+                    "arguments": ["query", "roadmap"],
+                }
+            )
+
     def test_tool_execute_result_preserves_confirmation_fields(self) -> None:
         result = ToolExecuteResult.model_validate(
             {

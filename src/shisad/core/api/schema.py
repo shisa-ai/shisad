@@ -792,6 +792,7 @@ class ToolExecuteParams(_StrictParams):
     tool_name: str
     skill_name: str | None = None
     command: list[str] = Field(min_length=1)
+    arguments: dict[str, Any] = Field(default_factory=dict)
     read_paths: list[str] = Field(default_factory=list)
     write_paths: list[str] = Field(default_factory=list)
     network_urls: list[str] = Field(default_factory=list)

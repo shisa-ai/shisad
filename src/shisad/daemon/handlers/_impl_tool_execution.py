@@ -27,6 +27,36 @@ from shisad.skills.sandbox import SkillExecutionRequest
 
 logger = logging.getLogger(__name__)
 
+_RESERVED_TOOL_EXECUTION_ARGUMENT_KEYS: frozenset[str] = frozenset(
+    {
+        "session_id",
+        "tool_name",
+        "skill_name",
+        "arguments",
+        "command",
+        "read_paths",
+        "write_paths",
+        "network_urls",
+        "env",
+        "cwd",
+        "sandbox_type",
+        "security_critical",
+        "request_headers",
+        "request_body",
+        "source_ids",
+        "explicit_share_intent",
+        "degraded_mode",
+        "filesystem",
+        "network",
+        "environment",
+        "limits",
+        "_rpc_peer",
+        "_internal_ingress_marker",
+        "_firewall_result",
+        "trust_level",
+    }
+)
+
 
 class ToolExecutionImplMixin(HandlerMixinBase):
     async def do_tool_execute(self, params: Mapping[str, Any]) -> dict[str, Any]:
@@ -54,6 +84,18 @@ class ToolExecutionImplMixin(HandlerMixinBase):
                 )
             )
             raise ValueError(f"unknown tool: {tool_name}")
+        try:
+            params = self._merge_tool_arguments(params)
+        except ValueError as exc:
+            await self._event_bus.publish(
+                ToolRejected(
+                    session_id=sid,
+                    actor="control_api",
+                    tool_name=tool_name,
+                    reason=f"invalid_tool_arguments:{exc}",
+                )
+            )
+            raise
         skill_name = str(params.get("skill_name") or "").strip()
         if skill_name:
             network_hosts: list[str] = []
@@ -425,6 +467,33 @@ class ToolExecutionImplMixin(HandlerMixinBase):
         success = bool(result.allowed and not result.timed_out and (result.exit_code or 0) == 0)
         self._control_plane.record_execution(action=cp_eval.action, success=success)
         return cast(dict[str, Any], result.model_dump(mode="json"))
+
+    @staticmethod
+    def _merge_tool_arguments(params: Mapping[str, Any]) -> dict[str, Any]:
+        payload = dict(params)
+        raw_arguments = payload.pop("arguments", {})
+        if not raw_arguments:
+            return payload
+        if not isinstance(raw_arguments, Mapping):
+            raise ValueError("arguments must be an object")
+        merged_arguments: dict[str, Any] = {}
+        for raw_key, value in raw_arguments.items():
+            key = str(raw_key).strip()
+            if not key:
+                raise ValueError("arguments keys must be non-empty strings")
+            merged_arguments[key] = value
+        collisions = sorted(
+            key
+            for key in merged_arguments
+            if key in _RESERVED_TOOL_EXECUTION_ARGUMENT_KEYS
+        )
+        if collisions:
+            joined = ", ".join(collisions)
+            raise ValueError(
+                f"arguments must not include reserved execution keys: {joined}"
+            )
+        payload.update(merged_arguments)
+        return payload
 
     async def do_browser_paste(self, params: Mapping[str, Any]) -> dict[str, Any]:
         sid = SessionId(str(params.get("session_id", "")))
