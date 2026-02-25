@@ -127,7 +127,7 @@ Each layer assumes the layer above it has been bypassed. This is the correct mod
 
 ### The LOC Trap
 
-shisad is ~50K lines. If a user sends "search for news" and gets a lockdown notice, those 50K lines are doing the wrong thing precisely and thoroughly. More code is not the answer. Correct code is.
+shisad is >50K lines. If a user sends "search for news" and gets a lockdown notice, those 50K lines are doing the wrong thing precisely and thoroughly. More code is not the answer. Correct code is.
 
 ---
 
