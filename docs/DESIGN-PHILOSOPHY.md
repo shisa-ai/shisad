@@ -120,9 +120,9 @@ The security architecture is layered specifically so that no single layer needs 
 | Layer | Purpose | Failure mode |
 |---|---|---|
 | Content firewall (ingress) | Sanitize untrusted input | Malicious input reaches planner |
-| PEP pipeline (8 checks) | Validate tool proposals | Unauthorized tool call reaches sandbox |
-| Control plane (5 voters) | Detect behavioral anomalies | Anomalous pattern executes |
-| Sandbox/egress proxy | Constrain execution environment | Unscoped execution |
+| PEP pipeline | Validate tool proposals | Unauthorized tool call reaches sandbox |
+| Control plane (consensus voters) | Detect behavioral anomalies | Anomalous pattern executes |
+| Sandbox | Constrain execution environment | Unscoped execution |
 | Output firewall (egress) | Prevent data exfiltration | Sensitive data in response |
 | Audit trail | Post-hoc detection | Undetected incident |
 
