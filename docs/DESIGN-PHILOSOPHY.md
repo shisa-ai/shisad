@@ -54,12 +54,12 @@ The correct model:
 | Scenario | Action |
 |---|---|
 | Destination on allowlist (pre-approved) | Proceed, audit trail (**no confirmation**) |
-| Unknown destination, explicitly requested by user (USER GOAL) | **Confirmation gate**: "Fetch nytimes.com?" → user approves → proceed, audit trail |
+| Unknown destination, explicitly requested by user (USER GOAL) | Proceed, audit trail (**no confirmation**) |
 | Unknown destination suggested only by untrusted content | **Confirmation gate with warning**: "This link came from untrusted content. Fetch anyway?" |
 | Unknown destination with no user attribution (hallucination / plan drift) | Block + actionable error |
 | Known-bad destination (exfil patterns) | Block regardless |
 
-The allowlist is an **auto-approve list**, not a hard wall. Destinations not on it route to confirmation for user-initiated actions, not denial. This preserves the security property (attacker-initiated egress is blocked) while preserving functionality (user-initiated egress works, with a confirmation step for unknown destinations).
+The allowlist is an **auto-approve list**, not a hard wall. It is a friction reducer (common destinations proceed with no prompt) and a safe default for unattributed/autonomous actions. When the user explicitly requests a destination in **USER GOAL**, the agent should proceed (subject to per-call enforcement). Confirmation is for ambiguous provenance (e.g., a destination sourced only from untrusted content), not for re-litigating clear user intent.
 
 Routine denial of user-requested actions (when a confirmation gate would safely resolve the ambiguity) is a product failure, not a security feature. Hard denial is reserved for explicit operator policy, known-bad/exfil patterns, or cases where the system cannot safely proceed even with confirmation.
 
