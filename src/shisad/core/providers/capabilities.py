@@ -78,6 +78,7 @@ class RequestParameters(BaseModel):
         payload: dict[str, Any] = {}
         for key, value in self.model_dump(exclude_none=True).items():
             if isinstance(value, bool):
+                # Forward-compatible branch for potential future boolean request fields.
                 payload[key] = value
                 continue
             if isinstance(value, (int, float)):
