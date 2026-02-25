@@ -472,8 +472,8 @@ class ModelConfig(BaseSettings):
         description="Pinned model id for planner route used in security-sensitive analyses.",
     )
     enforce_security_route_pinning: bool = Field(
-        default=True,
-        description="Require pinned model IDs for security-critical routes.",
+        default=False,
+        description="If enabled, require pinned model IDs for security-critical routes.",
     )
     api_key: str | None = Field(
         default=None,

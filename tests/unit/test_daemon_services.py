@@ -566,3 +566,14 @@ def test_m1_pf11_model_route_pinning_disabled_allows_mismatch(
     model = ModelConfig()
     router = ModelRouter(model)
     _validate_security_route_pins(model, router)
+
+
+def test_m1_pf11_model_route_pinning_default_allows_mismatch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("SHISAD_MODEL_ENFORCE_SECURITY_ROUTE_PINNING", raising=False)
+    monkeypatch.setenv("SHISAD_MODEL_PINNED_MONITOR_MODEL_ID", "monitor-pinned")
+    monkeypatch.setenv("SHISAD_MODEL_PINNED_PLANNER_MODEL_ID", "planner-pinned")
+    model = ModelConfig()
+    router = ModelRouter(model)
+    _validate_security_route_pins(model, router)
