@@ -78,6 +78,10 @@ _CONTEXT_SUMMARY_SAMPLE_SIZE = 6
 _CONTEXT_SUMMARY_SCAN_LIMIT = 24
 _MEMORY_CONTEXT_ENTRY_MAX_CHARS = 220
 _MEMORY_QUERY_CONTEXT_MAX_CHARS = 400
+_REJECTION_REASON_SPLITTER = ","
+_GENERIC_BLOCKED_ACTION_MESSAGE = (
+    "I could not safely execute the proposed action(s) under current policy."
+)
 
 
 def _tool_available_in_session(
@@ -230,6 +234,81 @@ def _relative_time_ago(timestamp: datetime, *, now: datetime | None = None) -> s
         return f"{hours}h ago"
     days = hours // 24
     return f"{days}d ago"
+
+
+def _flatten_rejection_reason_codes(reasons: list[str]) -> list[str]:
+    codes: list[str] = []
+    for raw in reasons:
+        for token in str(raw).split(_REJECTION_REASON_SPLITTER):
+            normalized = token.strip()
+            if normalized:
+                codes.append(normalized)
+    return codes
+
+
+def _blocked_action_feedback(reasons: list[str]) -> str:
+    codes = _flatten_rejection_reason_codes(reasons)
+    if any(
+        code
+        in {
+            "web_search_disabled",
+            "web_fetch_disabled",
+            "web_allowlist_unconfigured",
+            "web_search_backend_unconfigured",
+            "web_search_backend_not_allowlisted",
+            "destination_not_allowlisted",
+            "unsupported_scheme",
+        }
+        for code in codes
+    ):
+        return (
+            "I couldn't complete that request because live web access is disabled or "
+            "restricted by this daemon policy."
+        )
+    if any(
+        code
+        in {
+            "http.request_allowlist_required",
+            "http.request_wildcard_disallowed",
+            "egress_wildcard_disallowed_without_break_glass",
+        }
+        for code in codes
+    ):
+        return (
+            "I couldn't complete that request because external network destinations are "
+            "restricted by policy in this session."
+        )
+    if any(code == "trace:stage2_upgrade_required" for code in codes):
+        return (
+            "I couldn't complete that request because it requires elevated runtime actions "
+            "(for example network or write operations) that are blocked without approval."
+        )
+    if any(code == "session_in_lockdown" for code in codes):
+        return (
+            "I couldn't complete that request because this session is in lockdown. "
+            "An operator can resume it via the control API."
+        )
+    if codes:
+        return (
+            "I could not safely execute the proposed action(s) under current policy "
+            f"(reason: {codes[0]})."
+        )
+    return _GENERIC_BLOCKED_ACTION_MESSAGE
+
+
+def _coerce_blocked_action_response_text(
+    *,
+    response_text: str,
+    rejected: int,
+    pending_confirmation: int,
+    executed_tool_outputs: int,
+    rejection_reasons: list[str],
+) -> str:
+    if rejected <= 0 or pending_confirmation > 0 or executed_tool_outputs > 0:
+        return response_text
+    if response_text.strip() != _GENERIC_BLOCKED_ACTION_MESSAGE:
+        return response_text
+    return _blocked_action_feedback(rejection_reasons)
 
 
 def _transcript_metadata_for_channel(*, channel: str, session_mode: SessionMode) -> dict[str, Any]:
@@ -780,6 +859,7 @@ class SessionImplMixin(HandlerMixinBase):
         rejected = 0
         pending_confirmation = 0
         executed = 0
+        rejection_reasons_for_user: list[str] = []
         checkpoint_ids: list[str] = []
         pending_confirmation_ids: list[str] = []
         executed_tool_outputs: list[Any] = []
@@ -945,6 +1025,7 @@ class SessionImplMixin(HandlerMixinBase):
                         f"{proposal.tool_name!s}:untrusted_context_source"
                     )
                     rejected += 1
+                    rejection_reasons_for_user.append(proposal_reason)
                 cleanroom_proposals.append(
                     {
                         "tool_name": str(proposal.tool_name),
@@ -978,6 +1059,7 @@ class SessionImplMixin(HandlerMixinBase):
 
             if final_kind == "reject":
                 rejected += 1
+                rejection_reasons_for_user.append(final_reason or evaluated.decision.reason)
                 await self._event_bus.publish(
                     ToolRejected(
                         session_id=sid,
@@ -1115,11 +1197,17 @@ class SessionImplMixin(HandlerMixinBase):
                     "Review pending confirmations via the control API."
                 )
             elif rejected > 0:
-                response_text = (
-                    "I could not safely execute the proposed action(s) under current policy."
-                )
+                response_text = _blocked_action_feedback(rejection_reasons_for_user)
             else:
                 response_text = "I have no additional response for that request."
+        else:
+            response_text = _coerce_blocked_action_response_text(
+                response_text=response_text,
+                rejected=rejected,
+                pending_confirmation=pending_confirmation,
+                executed_tool_outputs=len(executed_tool_outputs),
+                rejection_reasons=rejection_reasons_for_user,
+            )
         output_result = self._output_firewall.inspect(
             response_text,
             context={"session_id": sid, "actor": "assistant"},
