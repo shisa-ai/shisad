@@ -53,7 +53,7 @@ The correct model:
 
 | Scenario | Action |
 |---|---|
-| Destination on allowlist (pre-approved) | Proceed, audit trail |
+| Destination on allowlist (pre-approved) | Proceed, audit trail (**no confirmation**) |
 | Unknown destination, explicitly requested by user (USER GOAL) | **Confirmation gate**: "Fetch nytimes.com?" → user approves → proceed, audit trail |
 | Unknown destination suggested only by untrusted content | **Confirmation gate with warning**: "This link came from untrusted content. Fetch anyway?" |
 | Unknown destination with no user attribution (hallucination / plan drift) | Block + actionable error |
@@ -75,7 +75,7 @@ For any security mechanism, ask:
 
 - **Default-grant, enforce-per-call.** Sessions should have all capabilities by default. Enforcement happens at execution time through the PEP pipeline, not by withholding capabilities.
 - **Stage gates match authorization, not fear.** If a session is authorized for `HTTP_REQUEST`, the stage1 plan should include `EGRESS`. Stage2 gating applies only to capabilities the session does NOT have.
-- **Confirmation > denial > lockdown.** When the user asks for something (or when it's ambiguous whether the user asked), ask the user — don't block it. Denial is for actions that are clearly not user-requested (attacker-initiated, hallucinated drift, operator-policy-forbidden). Lockdown is for genuine anomalies (rate limit abuse, forbidden action sequences, max action overflow), not for normal tool usage.
+- **Auto-approve (no confirmation) > confirmation > denial > lockdown.** Normal user-requested actions should just work (no prompt). Confirmation is for first-time/unknown/risky actions and ambiguous provenance. Denial is for actions that are clearly not user-requested (attacker-initiated, hallucinated drift, operator-policy-forbidden). Lockdown is for genuine anomalies (rate limit abuse, forbidden action sequences, max action overflow), not for normal tool usage.
 - **Deny the action, not the assistant.** When a specific action must be denied (attacker-initiated, known-bad destination, missing credentials), deny that action with a clear reason and keep the session healthy. Never cascade a single denial into session-wide lockdown. A denied action is not an anomaly.
 - **Lockdown is a last resort, not a default.** If normal usage routinely triggers lockdown, the lockdown threshold is wrong, not the usage.
 
