@@ -95,7 +95,7 @@ shisad must pass these behavioral tests at all times. If any of these fail, the 
 2. **Web search**: User sends "search for the latest news" → agent calls `web.search` → user gets results (when web search is configured).
 3. **File read**: User sends "read README.md" → agent reads the file → user gets content.
 4. **Memory**: User sends "remember that my favorite color is blue" → agent stores it → later retrieval works.
-5. **Multi-tool**: User sends "read the README and search for related projects" → agent uses both `file.read` and `web.search` without lockdown.
+5. **Multi-tool**: User sends "read the README and search for related projects" → agent uses both `fs.read` and `web.search` without lockdown.
 
 These are not aspirational. They are the minimum bar. If the framework can't do these, it doesn't matter how sophisticated the consensus voting or trace verification is.
 
