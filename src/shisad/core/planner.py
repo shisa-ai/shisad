@@ -419,19 +419,19 @@ class Planner:
         actions: list[ActionProposal] = []
         for index, raw_call in enumerate(parsed_calls):
             if not isinstance(raw_call, dict):
-                return []
+                continue
             name_raw = raw_call.get("name")
             if not isinstance(name_raw, str) or not name_raw.strip():
-                return []
+                continue
             canonical_name = canonical_tool_name(name_raw, warn_on_alias=False)
             if not canonical_name:
-                return []
+                continue
             if canonical_name not in allowed_tools:
                 logger.debug(
                     "Dropping content tool call for non-runtime tool '%s'",
                     canonical_name,
                 )
-                return []
+                continue
             arguments_raw = raw_call.get("arguments")
             serialized_arguments: str
             if isinstance(arguments_raw, str):
@@ -440,23 +440,23 @@ class Planner:
                     len(serialized_arguments.encode("utf-8"))
                     > _CONTENT_TOOL_CALL_MAX_ARGUMENT_BYTES
                 ):
-                    return []
+                    continue
                 try:
                     parsed_arguments = json.loads(serialized_arguments)
                 except json.JSONDecodeError:
-                    return []
+                    continue
             elif isinstance(arguments_raw, dict):
                 serialized_arguments = json.dumps(arguments_raw, sort_keys=True)
                 if (
                     len(serialized_arguments.encode("utf-8"))
                     > _CONTENT_TOOL_CALL_MAX_ARGUMENT_BYTES
                 ):
-                    return []
+                    continue
                 parsed_arguments = arguments_raw
             else:
-                return []
+                continue
             if not isinstance(parsed_arguments, dict):
-                return []
+                continue
             payload = {
                 "action_id": f"content-call-{index + 1}",
                 "tool_name": canonical_name,
@@ -467,7 +467,7 @@ class Planner:
             try:
                 actions.append(ActionProposal.model_validate(payload))
             except ValidationError:
-                return []
+                continue
         return actions
 
     def _parse_content_tool_call_payloads(self, content: str) -> list[dict[str, Any]]:

@@ -1096,7 +1096,7 @@ class HandlerImplementation(
             )
         )
         threshold = max(1, int(self._policy_loader.policy.control_plane.trace.escalation_threshold))
-        if risk_tier in {RiskTier.HIGH, RiskTier.CRITICAL} or count >= threshold:
+        if count >= threshold:
             await self._handle_lockdown_transition(
                 sid,
                 trigger="plan_violation",

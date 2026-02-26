@@ -17,6 +17,7 @@ from shisad.daemon.context import RequestContext
 from shisad.daemon.handlers._impl import PendingAction
 from shisad.daemon.handlers._impl_confirmation import ConfirmationImplMixin
 from shisad.daemon.handlers.confirmation import ConfirmationHandlers
+from shisad.security.control_plane.schema import Origin, RiskTier
 
 
 class _StubImpl:
@@ -81,17 +82,33 @@ async def test_confirmation_decision_wrappers() -> None:
     assert reject.rejected is True
 
 
-class _ConfirmationImplHarness(ConfirmationImplMixin):
+class _ControlPlaneRecorder:
     def __init__(self) -> None:
+        self.approved_actions: list[object] = []
+
+    def active_plan_hash(self, _session_id: str) -> str:
+        return "plan-before"
+
+    def approve_stage2(self, *, action: object, approved_by: str) -> str:
+        _ = approved_by
+        self.approved_actions.append(action)
+        return "plan-after"
+
+
+class _ConfirmationImplHarness(ConfirmationImplMixin):
+    def __init__(self, *, allow_amendment: bool = False) -> None:
         self._pending_actions: dict[str, PendingAction] = {}
         self._lockdown_manager = SimpleNamespace(should_block_all_actions=lambda _sid: False)
         self._event_bus = SimpleNamespace(publish=self._noop_publish)
         self._session_manager = SimpleNamespace(get=lambda _sid: object())
         self._policy_loader = SimpleNamespace(
             policy=SimpleNamespace(
-                control_plane=SimpleNamespace(trace=SimpleNamespace(allow_amendment=False))
+                control_plane=SimpleNamespace(
+                    trace=SimpleNamespace(allow_amendment=allow_amendment)
+                )
             )
         )
+        self._control_plane = _ControlPlaneRecorder()
         self._confirmation_analytics = SimpleNamespace(record=lambda **_kwargs: None)
 
     async def _noop_publish(self, _event: object) -> None:
@@ -102,6 +119,16 @@ class _ConfirmationImplHarness(ConfirmationImplMixin):
 
     def _persist_pending_actions(self) -> None:
         return None
+
+    @staticmethod
+    def _origin_for(*, session: object, actor: str, skill_name: str = "") -> Origin:
+        _ = session, skill_name
+        return Origin(
+            session_id="s-1",
+            user_id="alice",
+            workspace_id="w-1",
+            actor=actor,
+        )
 
     async def _execute_approved_action(
         self,
@@ -221,3 +248,20 @@ async def test_m1_pf11_confirmation_cooldown_active_and_expired() -> None:
     )
     assert expired["confirmed"] is True
     assert expired["status"] == "approved"
+
+
+@pytest.mark.asyncio
+async def test_m1_rlc3_stage2_fallback_confirmation_uses_low_risk_tier() -> None:
+    harness = _ConfirmationImplHarness(allow_amendment=True)
+    pending = _pending_action(nonce="expected")
+    pending.reason = "trace:stage2_upgrade_required"
+    pending.preflight_action = None
+    harness._pending_actions["c-1"] = pending
+
+    result = await harness.do_action_confirm(
+        {"confirmation_id": "c-1", "decision_nonce": "expected"}
+    )
+    assert result["confirmed"] is True
+    assert harness._control_plane.approved_actions
+    approved = harness._control_plane.approved_actions[0]
+    assert getattr(approved, "risk_tier", None) == RiskTier.LOW

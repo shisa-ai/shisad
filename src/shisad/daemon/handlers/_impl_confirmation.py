@@ -164,11 +164,16 @@ class ConfirmationImplMixin(HandlerMixinBase):
                     "confirmation_id": confirmation_id,
                     "reason": "plan_amendment_disabled",
                 }
+            fallback_risk_tier = (
+                pending_preflight_action.risk_tier
+                if pending_preflight_action is not None
+                else RiskTier.LOW
+            )
             approved_action = pending_preflight_action or build_action(
                 tool_name=str(pending.tool_name),
                 arguments=dict(pending.arguments),
                 origin=self._origin_for(session=session, actor="human_confirmation"),
-                risk_tier=RiskTier.HIGH,
+                risk_tier=fallback_risk_tier,
             )
             previous_hash = self._control_plane.active_plan_hash(str(pending.session_id))
             plan_hash = self._control_plane.approve_stage2(

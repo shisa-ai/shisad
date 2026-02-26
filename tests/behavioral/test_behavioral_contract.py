@@ -140,7 +140,14 @@ async def _stub_complete(
         )
         else None
     )
-    if search_call is not None and read_call is not None:
+    unknown_probe_call = (
+        _tool_call("unknown.tool", {"probe": True}, call_id="t-unknown")
+        if "unknown tool probe" in goal_lower
+        else None
+    )
+    if unknown_probe_call is not None:
+        tool_calls.append(unknown_probe_call)
+    elif search_call is not None and read_call is not None:
         read_pos = goal_lower.find("read")
         search_pos = goal_lower.find("search")
         if 0 <= read_pos < (search_pos if search_pos >= 0 else 1_000_000):
@@ -441,6 +448,32 @@ async def test_contract_fs_list_executes_and_returns_entries(
     assert isinstance(entries, list)
     assert int(payload.get("count", 0)) >= 1
     assert any(str(item.get("path", "")).strip() for item in entries)
+
+
+@pytest.mark.asyncio
+async def test_contract_single_unknown_action_kind_does_not_immediately_lockdown(
+    contract_harness: ContractHarness,
+) -> None:
+    sid = await _create_session(contract_harness.client)
+    reply = await contract_harness.client.call(
+        "session.message",
+        {
+            "session_id": sid,
+            "content": "please run unknown tool probe now",
+        },
+    )
+    assert reply.get("lockdown_level") == "normal"
+    assert int(reply.get("blocked_actions", 0)) >= 1
+
+    violations = await contract_harness.client.call(
+        "audit.query",
+        {"event_type": "PlanViolationDetected", "session_id": sid, "limit": 20},
+    )
+    assert violations["total"] >= 1
+    assert any(
+        "trace:action_not_committed" in json.dumps(event, ensure_ascii=True)
+        for event in violations.get("events", [])
+    )
 
 
 @pytest.mark.asyncio

@@ -286,6 +286,43 @@ async def test_m2_planner_rejects_mixed_valid_and_malformed_content_tool_calls()
 
 
 @pytest.mark.asyncio
+async def test_m1_rlc4_planner_skips_unknown_content_tool_calls_but_keeps_valid_calls() -> None:
+    registry = _make_registry()
+    pep = PEP(PolicyBundle(default_require_confirmation=False), registry)
+    provider = _StaticProvider(
+        [
+            Message(
+                role="assistant",
+                content=(
+                    '<tool_call>{"name":"unknown.tool","arguments":{"x":1}}</tool_call>'
+                    ' <tool_call>{"name":"echo","arguments":{"text":"ok"}}</tool_call>'
+                ),
+            )
+        ]
+    )
+    planner = Planner(
+        provider,
+        pep,
+        max_retries=0,
+        capabilities=ProviderCapabilities(
+            supports_tool_calls=False,
+            supports_content_tool_calls=True,
+        ),
+        tool_registry=registry,
+    )
+
+    result = await planner.propose(
+        "echo",
+        PolicyContext(capabilities={Capability.FILE_READ}),
+        tools=_tools_payload(registry, {"echo"}),
+    )
+
+    assert len(result.output.actions) == 1
+    assert result.output.actions[0].tool_name == ToolName("echo")
+    assert result.output.actions[0].arguments == {"text": "ok"}
+
+
+@pytest.mark.asyncio
 async def test_m2_planner_enforces_content_tool_call_count_bound() -> None:
     registry = _make_registry()
     pep = PEP(PolicyBundle(default_require_confirmation=False), registry)
