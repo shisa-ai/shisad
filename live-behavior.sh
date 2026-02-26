@@ -13,15 +13,17 @@ usage() {
 Run shisad behavioral gates.
 
 Usage:
-  bash live-behavior.sh                 # deterministic behavioral suite (default)
+  bash live-behavior.sh                 # deterministic + live-model suites (default)
   bash live-behavior.sh --verbose       # verbose test output + executed command echo
+  bash live-behavior.sh --behavioral    # deterministic behavioral suite only
   bash live-behavior.sh --contract      # deterministic live-daemon contract only
-  bash live-behavior.sh --live-model    # opt-in live-model contract (requires remote model config)
+  bash live-behavior.sh --live-model    # live-model contract only (requires remote model config)
+  bash live-behavior.sh --all           # deterministic + live-model suites
   bash live-behavior.sh --tool-matrix   # probe a *running* daemon (see docs/TOOL-STATUS.md)
 
 Notes:
-  - Default mode is deterministic and does not call remote model providers.
-  - --live-model is intended for v0.3.4 model suitability evaluation; it is opt-in.
+  - Default mode now runs both deterministic and live-model behavioral tests.
+  - Use --behavioral for deterministic-only execution.
 EOF
 }
 
@@ -53,6 +55,9 @@ while [[ "${#}" -gt 0 ]]; do
       ;;
     --behavioral|--all)
       want_behavioral=true
+      if [[ "${1}" == "--all" ]]; then
+        want_live_model=true
+      fi
       ;;
     --contract)
       want_contract=true
@@ -78,6 +83,7 @@ if [[ "${want_behavioral}" == false ]] \
   && [[ "${want_live_model}" == false ]] \
   && [[ "${want_tool_matrix}" == false ]]; then
   want_behavioral=true
+  want_live_model=true
 fi
 
 if [[ "${verbose}" == true ]]; then
