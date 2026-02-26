@@ -32,6 +32,13 @@ def test_s9_canonical_tool_name_maps_legacy_aliases() -> None:
     assert canonical_tool_name("realitycheck_read") == "realitycheck.read"
 
 
+def test_s9_canonical_tool_name_accepts_functions_namespace_aliases() -> None:
+    assert canonical_tool_name("functions.fs_list") == "fs.list"
+    assert canonical_tool_name("functions.fs.read") == "fs.read"
+    assert canonical_tool_name("functions.web_search") == "web.search"
+    assert canonical_tool_name("functions.report_anomaly") == "report_anomaly"
+
+
 def test_s9_canonical_tool_name_preserves_canonical_ids() -> None:
     assert canonical_tool_name("shell.exec") == "shell.exec"
     assert canonical_tool_name("http.request") == "http.request"

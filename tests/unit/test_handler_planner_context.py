@@ -30,6 +30,25 @@ def test_m6_planner_tool_context_normalizes_trust_level_casing() -> None:
     assert "Unavailable tools in this session:" in context
 
 
+def test_cc19_planner_tool_context_documents_native_tool_aliases() -> None:
+    tool = ToolDefinition(
+        name=ToolName("fs.list"),
+        description="List files",
+        parameters=[],
+        capabilities_required=[],
+    )
+
+    context = _build_planner_tool_context(
+        registry_tools=[tool],
+        capabilities={Capability.FILE_READ},
+        tool_allowlist=None,
+        trust_level="trusted",
+    )
+    assert "Tool-name alias note:" in context
+    assert "fs.list -> fs_list" in context
+    assert "fs.list (native function: fs_list)" in context
+
+
 def test_m3_s0b3_blocked_action_feedback_explains_web_policy_restriction() -> None:
     message = _blocked_action_feedback(
         [

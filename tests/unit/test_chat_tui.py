@@ -56,6 +56,7 @@ def test_chat_app_can_be_constructed() -> None:
     assert app._user_id == "ops"
     assert app._workspace_id == "default"
     assert app._session_id is None
+    assert app._reuse_bound_session is True
 
 
 def test_chat_app_with_existing_session() -> None:
@@ -145,6 +146,26 @@ async def test_chat_app_reuses_existing_session_by_user_workspace_binding() -> N
 
     mock_client.call.assert_awaited_once_with("session.list", params={})
     assert app._session_id == "active-sid"
+
+
+@pytest.mark.asyncio
+async def test_chat_app_force_new_session_skips_binding_lookup() -> None:
+    app = ChatApp(
+        socket_path=Path("/tmp/test.sock"),
+        user_id="ops",
+        workspace_id="prod",
+        reuse_bound_session=False,
+    )
+    mock_client = AsyncMock()
+    mock_client.call = AsyncMock(return_value={"session_id": "fresh-sid"})
+
+    await app._ensure_session(mock_client)
+
+    mock_client.call.assert_awaited_once_with(
+        "session.create",
+        params={"user_id": "ops", "workspace_id": "prod"},
+    )
+    assert app._session_id == "fresh-sid"
 
 
 @pytest.mark.asyncio

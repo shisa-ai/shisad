@@ -222,6 +222,35 @@ async def test_m2_planner_extracts_json_array_tool_calls_from_content() -> None:
 
 
 @pytest.mark.asyncio
+async def test_m2_planner_preserves_json_list_text_with_extra_fields() -> None:
+    registry = _make_registry()
+    pep = PEP(PolicyBundle(default_require_confirmation=False), registry)
+    content = '[{"name":"web.search","arguments":{"query":"shisad"},"note":"keep"}]'
+    provider = _StaticProvider([Message(role="assistant", content=content)])
+    planner = Planner(
+        provider,
+        pep,
+        max_retries=0,
+        capabilities=ProviderCapabilities(
+            supports_tool_calls=False,
+            supports_content_tool_calls=True,
+        ),
+        tool_registry=registry,
+    )
+
+    result = await planner.propose(
+        "search shisad",
+        PolicyContext(capabilities={Capability.HTTP_REQUEST}),
+        tools=_tools_payload(registry, {"web.search"}),
+    )
+
+    assert result.output.assistant_response == content
+    assert len(result.output.actions) == 1
+    assert result.output.actions[0].tool_name == ToolName("web.search")
+    assert result.output.actions[0].arguments == {"query": "shisad"}
+
+
+@pytest.mark.asyncio
 async def test_m2_planner_rejects_mixed_valid_and_malformed_content_tool_calls() -> None:
     registry = _make_registry()
     pep = PEP(PolicyBundle(default_require_confirmation=False), registry)

@@ -53,9 +53,14 @@ def canonical_tool_name(name: str, *, warn_on_alias: bool = True) -> str:
     lowered = name.strip().lower()
     if not lowered:
         return ""
+    had_functions_prefix = lowered.startswith("functions.")
+    if had_functions_prefix:
+        lowered = lowered[len("functions.") :]
+        if not lowered:
+            return ""
     canonical = LEGACY_TOOL_NAME_ALIASES.get(lowered)
     if canonical is not None:
-        if warn_on_alias and lowered not in _WARNED_LEGACY_ALIASES:
+        if warn_on_alias and not had_functions_prefix and lowered not in _WARNED_LEGACY_ALIASES:
             logger.warning(
                 "Legacy tool alias '%s' is deprecated; use '%s' instead.",
                 lowered,

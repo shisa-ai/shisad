@@ -584,12 +584,34 @@ def test_s9_infer_action_kind_treats_web_search_as_egress() -> None:
     assert infer_action_kind("web.search", {"query": "security updates"}) == ActionKind.EGRESS
 
 
+def test_s9_infer_action_kind_treats_fs_list_without_path_as_fs_list() -> None:
+    assert infer_action_kind("fs.list", {}) == ActionKind.FS_LIST
+
+
+def test_s9_infer_action_kind_treats_git_status_as_fs_read() -> None:
+    assert infer_action_kind("git.status", {}) == ActionKind.FS_READ
+
+
 def test_m5_rt9_command_filename_token_is_not_misclassified_as_egress() -> None:
     kind = infer_action_kind(
         "shell.exec",
         {"command": ["cat", "config.json"]},
     )
     assert kind != ActionKind.EGRESS
+
+
+def test_m5_rt10_trace_allows_fs_list_without_path_arguments() -> None:
+    verifier = ExecutionTraceVerifier()
+    origin = _origin("s-rt10")
+    verifier.begin_precontent_plan(
+        session_id=origin.session_id,
+        goal="list files",
+        origin=origin,
+    )
+    action = build_action(tool_name="fs.list", arguments={}, origin=origin)
+    result = verifier.verify_action(session_id=origin.session_id, action=action)
+    assert result.allowed is True
+    assert result.reason_code == "trace:allowed"
 
 
 def test_m5_t16_control_plane_metadata_events_exclude_raw_payload_fields() -> None:

@@ -154,8 +154,16 @@ def tui(interactive: bool, plain: bool) -> None:
 @click.option("--session", "session_id", default="", help="Attach to existing session ID.")
 @click.option("--user", "-u", default="ops", help="User ID for new session.")
 @click.option("--workspace", "-w", default="default", help="Workspace ID for new session.")
-def chat(session_id: str, user: str, workspace: str) -> None:
+@click.option(
+    "--new",
+    "new_session",
+    is_flag=True,
+    help="Force a fresh session (skip user/workspace binding reuse).",
+)
+def chat(session_id: str, user: str, workspace: str, new_session: bool) -> None:
     """Interactive chat with the shisad daemon."""
+    if new_session and session_id:
+        raise click.ClickException("--new cannot be used together with --session.")
     try:
         from shisad.ui.chat import ChatApp
     except ModuleNotFoundError as exc:
@@ -174,6 +182,7 @@ def chat(session_id: str, user: str, workspace: str) -> None:
         user_id=user,
         workspace_id=workspace,
         session_id=session_id or None,
+        reuse_bound_session=not new_session,
     )
     app.run()
 

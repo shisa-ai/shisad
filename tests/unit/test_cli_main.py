@@ -600,11 +600,13 @@ def test_chat_command_runs_textual_app(
             user_id: str,
             workspace_id: str,
             session_id: str | None,
+            reuse_bound_session: bool,
         ) -> None:
             captured["socket_path"] = socket_path
             captured["user_id"] = user_id
             captured["workspace_id"] = workspace_id
             captured["session_id"] = session_id
+            captured["reuse_bound_session"] = reuse_bound_session
 
         def run(self) -> None:
             captured["ran"] = True
@@ -622,7 +624,65 @@ def test_chat_command_runs_textual_app(
     assert captured["user_id"] == "alice"
     assert captured["workspace_id"] == "ws-a"
     assert captured["session_id"] == "sess-123"
+    assert captured["reuse_bound_session"] is True
     assert captured["ran"] is True
+
+
+def test_chat_command_new_forces_fresh_session_binding(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _config(tmp_path)
+    monkeypatch.setattr(cli_main, "_get_config", lambda: config)
+    captured: dict[str, object] = {}
+
+    class _FakeApp:
+        def __init__(
+            self,
+            *,
+            socket_path: Path,
+            user_id: str,
+            workspace_id: str,
+            session_id: str | None,
+            reuse_bound_session: bool,
+        ) -> None:
+            captured["socket_path"] = socket_path
+            captured["user_id"] = user_id
+            captured["workspace_id"] = workspace_id
+            captured["session_id"] = session_id
+            captured["reuse_bound_session"] = reuse_bound_session
+
+        def run(self) -> None:
+            captured["ran"] = True
+
+    monkeypatch.setitem(sys.modules, "shisad.ui.chat", SimpleNamespace(ChatApp=_FakeApp))
+    runner = CliRunner()
+
+    result = runner.invoke(
+        cli_main.cli,
+        ["chat", "--new", "--user", "alice", "--workspace", "ws-a"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert captured["socket_path"] == config.socket_path
+    assert captured["user_id"] == "alice"
+    assert captured["workspace_id"] == "ws-a"
+    assert captured["session_id"] is None
+    assert captured["reuse_bound_session"] is False
+    assert captured["ran"] is True
+
+
+def test_chat_command_rejects_new_and_session_together(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _config(tmp_path)
+    monkeypatch.setattr(cli_main, "_get_config", lambda: config)
+    runner = CliRunner()
+
+    result = runner.invoke(cli_main.cli, ["chat", "--new", "--session", "sess-123"])
+    assert result.exit_code == 1
+    assert "--new cannot be used together with --session" in result.output
 
 
 def test_chat_command_reports_missing_textual_dependency(

@@ -30,7 +30,12 @@ from shisad.core.providers.local_planner import LocalPlannerProvider
 from shisad.daemon.runner import run_daemon
 
 _USER_GOAL_RE = re.compile(
-    r"=== USER GOAL ===\n.*?\n(.*?)\n\n=== (?:EXTERNAL CONTENT[^\n]*|END CONTEXT)",
+    (
+        r"=== (?:USER GOAL|USER REQUEST) ===\n"
+        r".*?\n"
+        r"(.*?)\n\n"
+        r"=== (?:EXTERNAL CONTENT[^\n]*|DATA EVIDENCE[^\n]*|END CONTEXT|END PAYLOAD)"
+    ),
     flags=re.DOTALL,
 )
 _SUMMARIZER_SYSTEM_MARKER = "You extract durable memory candidates from conversation history."
@@ -127,6 +132,14 @@ async def _stub_complete(
         if ("read" in goal_lower and "readme" in goal_lower)
         else None
     )
+    list_call = (
+        _tool_call("fs.list", {}, call_id="t-list")
+        if (
+            "list" in goal_lower
+            and any(token in goal_lower for token in ("file", "files", "folder", "directory"))
+        )
+        else None
+    )
     if search_call is not None and read_call is not None:
         read_pos = goal_lower.find("read")
         search_pos = goal_lower.find("search")
@@ -138,6 +151,8 @@ async def _stub_complete(
         tool_calls.append(read_call)
     elif search_call is not None:
         tool_calls.append(search_call)
+    elif list_call is not None:
+        tool_calls.append(list_call)
 
     assistant_response = (
         "Working on it." if tool_calls else "Hello! How can I help?"
@@ -400,6 +415,32 @@ async def test_contract_file_read_executes_and_returns_content(
     payload = outputs["fs.read"][0]
     assert payload.get("ok") is True
     assert "behavioral-readme" in str(payload.get("content", ""))
+
+
+@pytest.mark.asyncio
+async def test_contract_fs_list_executes_and_returns_entries(
+    contract_harness: ContractHarness,
+) -> None:
+    sid = await _create_session(contract_harness.client)
+    reply = await contract_harness.client.call(
+        "session.message",
+        {
+            "session_id": sid,
+            "content": "can you list the files in the folder you're in?",
+        },
+    )
+    assert reply.get("lockdown_level") == "normal"
+    assert int(reply.get("blocked_actions", 0)) == 0
+    assert int(reply.get("confirmation_required_actions", 0)) == 0
+    assert int(reply.get("executed_actions", 0)) == 1
+    outputs = _extract_tool_outputs(str(reply.get("response", "")))
+    assert "fs.list" in outputs
+    payload = outputs["fs.list"][0]
+    assert payload.get("ok") is True
+    entries = payload.get("entries")
+    assert isinstance(entries, list)
+    assert int(payload.get("count", 0)) >= 1
+    assert any(str(item.get("path", "")).strip() for item in entries)
 
 
 @pytest.mark.asyncio

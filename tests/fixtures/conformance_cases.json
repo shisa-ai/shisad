@@ -1,0 +1,83 @@
+{
+  "version": "1",
+  "cases": [
+    {
+      "id": "single_web_search_tool_call",
+      "prompt": "Use web.search to find the latest world news and return the result.",
+      "available_tools": [
+        "web.search"
+      ],
+      "expected_behavior": "tool_call",
+      "expected_tools": [
+        "web.search"
+      ],
+      "send_tools_payload": true,
+      "expect_content_extraction": false
+    },
+    {
+      "id": "multi_tool_read_and_search",
+      "prompt": "Read README.md with fs.read and then use web.search for related projects.",
+      "available_tools": [
+        "fs.read",
+        "web.search"
+      ],
+      "expected_behavior": "tool_call",
+      "expected_tools": [
+        "fs.read",
+        "web.search"
+      ],
+      "send_tools_payload": true,
+      "expect_content_extraction": false
+    },
+    {
+      "id": "complex_http_request_arguments",
+      "prompt": "Use http.request with command, network_urls, request_headers, and request_body for a POST to https://example.com/api with a JSON body.",
+      "available_tools": [
+        "http.request"
+      ],
+      "expected_behavior": "tool_call",
+      "expected_tools": [
+        "http.request"
+      ],
+      "send_tools_payload": true,
+      "expect_content_extraction": false
+    },
+    {
+      "id": "content_tool_call_format_probe",
+      "prompt": "Output exactly one <tool_call>{\"name\":\"fs.list\",\"arguments\":{\"path\":\".\",\"recursive\":false,\"limit\":5}}</tool_call> and no other text.",
+      "available_tools": [
+        "fs.list"
+      ],
+      "expected_behavior": "tool_call",
+      "expected_tools": [
+        "fs.list"
+      ],
+      "send_tools_payload": false,
+      "expect_content_extraction": true
+    },
+    {
+      "id": "pure_conversational_response",
+      "prompt": "Say hello in one short sentence without using any tool.",
+      "available_tools": [
+        "web.search",
+        "fs.read"
+      ],
+      "expected_behavior": "conversational",
+      "expected_tools": [],
+      "send_tools_payload": true,
+      "expect_content_extraction": false
+    },
+    {
+      "id": "ambiguous_either_ok",
+      "prompt": "Help me get oriented in this repo.",
+      "available_tools": [
+        "fs.list",
+        "fs.read"
+      ],
+      "expected_behavior": "either",
+      "expected_tools": [],
+      "send_tools_payload": true,
+      "expect_content_extraction": false
+    }
+  ]
+}

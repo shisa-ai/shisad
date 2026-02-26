@@ -166,7 +166,7 @@ def test_m1_t14_tool_metadata_poisoning_cannot_alter_tool_schema() -> None:
     assert any("Unexpected argument" in error for error in errors)
 
 
-def test_m2_pep_enforces_egress_for_tools_with_static_destination_metadata() -> None:
+def test_m2_pep_allows_tools_with_static_destination_metadata_without_allowlist() -> None:
     registry = ToolRegistry()
     registry.register(
         ToolDefinition(
@@ -187,21 +187,24 @@ def test_m2_pep_enforces_egress_for_tools_with_static_destination_metadata() -> 
         {"query": "roadmap"},
         PolicyContext(capabilities={Capability.HTTP_REQUEST}),
     )
-    assert blocked.kind == PEPDecisionKind.REJECT
+    assert blocked.kind == PEPDecisionKind.ALLOW
 
     allowed_policy = PolicyBundle(
         default_require_confirmation=False,
         egress=[EgressRule(host="search.example", protocols=["https"], ports=[443])],
     )
-    allowed = PEP(allowed_policy, registry).evaluate(
+    pep = PEP(allowed_policy, registry)
+    allowed = pep.evaluate(
         ToolName("web_search"),
         {"query": "roadmap"},
         PolicyContext(capabilities={Capability.HTTP_REQUEST}),
     )
-    assert allowed.kind in {PEPDecisionKind.ALLOW, PEPDecisionKind.REQUIRE_CONFIRMATION}
+    assert allowed.kind == PEPDecisionKind.ALLOW
+    assert pep.egress_attempts
+    assert pep.egress_attempts[-1].reason == "tool_declared"
 
 
-def test_m3_pep_static_destination_metadata_preserves_protocol_and_port() -> None:
+def test_m3_pep_static_destination_metadata_preserves_protocol_and_port_metadata() -> None:
     registry = ToolRegistry()
     registry.register(
         ToolDefinition(
@@ -222,18 +225,24 @@ def test_m3_pep_static_destination_metadata_preserves_protocol_and_port() -> Non
         {"query": "roadmap"},
         PolicyContext(capabilities={Capability.HTTP_REQUEST}),
     )
-    assert blocked.kind == PEPDecisionKind.REJECT
+    assert blocked.kind == PEPDecisionKind.ALLOW
 
     allowed_policy = PolicyBundle(
         default_require_confirmation=False,
         egress=[EgressRule(host="search.example", protocols=["http"], ports=[8080])],
     )
-    allowed = PEP(allowed_policy, registry).evaluate(
+    pep = PEP(allowed_policy, registry)
+    allowed = pep.evaluate(
         ToolName("web_search"),
         {"query": "roadmap"},
         PolicyContext(capabilities={Capability.HTTP_REQUEST}),
     )
-    assert allowed.kind in {PEPDecisionKind.ALLOW, PEPDecisionKind.REQUIRE_CONFIRMATION}
+    assert allowed.kind == PEPDecisionKind.ALLOW
+    assert pep.egress_attempts
+    attempt = pep.egress_attempts[-1]
+    assert attempt.reason == "tool_declared"
+    assert attempt.protocol == "http"
+    assert attempt.port == 8080
 
 
 def test_m6_pep_rejects_malformed_url_port_without_raising() -> None:

@@ -23,7 +23,7 @@ Usage:
   bash live-behavior.sh --tool-matrix   # probe a *running* daemon (see docs/TOOL-STATUS.md)
 
 Notes:
-  - Default mode now runs both deterministic and live-model behavioral tests.
+  - Default mode runs deterministic tests and attempts live-model tests when configured.
   - Default output shows each test as PASSED/FAILED.
   - Use --behavioral for deterministic-only execution.
 EOF
@@ -33,6 +33,7 @@ want_behavioral=false
 want_contract=false
 want_live_model=false
 want_tool_matrix=false
+explicit_live_request=false
 verbose=false
 quiet=false
 
@@ -63,6 +64,7 @@ while [[ "${#}" -gt 0 ]]; do
       want_behavioral=true
       if [[ "${1}" == "--all" ]]; then
         want_live_model=true
+        explicit_live_request=true
       fi
       ;;
     --contract)
@@ -70,6 +72,7 @@ while [[ "${#}" -gt 0 ]]; do
       ;;
     --live-model)
       want_live_model=true
+      explicit_live_request=true
       ;;
     --tool-matrix)
       want_tool_matrix=true
@@ -107,39 +110,49 @@ if [[ "${want_contract}" == true ]]; then
 fi
 
 if [[ "${want_live_model}" == true ]]; then
+  live_prereq_error=""
   if [[ "${SHISAD_MODEL_REMOTE_ENABLED:-}" =~ ^(false|0|no)$ ]]; then
-    echo "Refusing --live-model: SHISAD_MODEL_REMOTE_ENABLED is disabled." >&2
-    exit 2
-  fi
-  if [[ "${SHISAD_MODEL_PLANNER_REMOTE_ENABLED:-}" =~ ^(false|0|no)$ ]]; then
-    echo "Refusing --live-model: SHISAD_MODEL_PLANNER_REMOTE_ENABLED is disabled." >&2
-    exit 2
-  fi
-  if [[ -z "${SHISAD_MODEL_PLANNER_API_KEY:-}" ]] \
+    live_prereq_error="SHISAD_MODEL_REMOTE_ENABLED is disabled."
+  elif [[ "${SHISAD_MODEL_PLANNER_REMOTE_ENABLED:-}" =~ ^(false|0|no)$ ]]; then
+    live_prereq_error="SHISAD_MODEL_PLANNER_REMOTE_ENABLED is disabled."
+  elif [[ -z "${SHISAD_MODEL_PLANNER_API_KEY:-}" ]] \
     && [[ -z "${SHISAD_MODEL_API_KEY:-}" ]] \
     && [[ -z "${SHISA_API_KEY:-}" ]] \
     && [[ -z "${OPENAI_API_KEY:-}" ]] \
     && [[ -z "${OPENROUTER_API_KEY:-}" ]] \
     && [[ -z "${GEMINI_API_KEY:-}" ]]; then
-    echo "Refusing --live-model: no API key env var found." >&2
-    echo "Set one of: SHISAD_MODEL_PLANNER_API_KEY, SHISAD_MODEL_API_KEY, SHISA_API_KEY," >&2
-    echo "OPENAI_API_KEY, OPENROUTER_API_KEY, GEMINI_API_KEY." >&2
-    exit 2
+    live_prereq_error="no API key env var found."
   fi
-  # Auto-select OpenAI GPT-5.2 when OPENAI_API_KEY is available and no
-  # explicit planner model/preset/base-url has been configured.  The Shisa
-  # default model (14B) does not reliably emit OpenAI-format tool calls.
-  live_env=(SHISAD_LIVE_MODEL_TESTS=1)
-  if [[ -n "${OPENAI_API_KEY:-}" ]] \
-    && [[ -z "${SHISAD_MODEL_PLANNER_PROVIDER_PRESET:-}" ]] \
-    && [[ -z "${SHISAD_MODEL_PLANNER_BASE_URL:-}" ]] \
-    && [[ -z "${SHISAD_MODEL_PLANNER_MODEL_ID:-}" ]]; then
-    live_env+=(
-      SHISAD_MODEL_PLANNER_PROVIDER_PRESET=openai_default
-    )
+
+  if [[ -n "${live_prereq_error}" ]]; then
+    if [[ "${explicit_live_request}" == true ]]; then
+      echo "Refusing --live-model: ${live_prereq_error}" >&2
+      if [[ "${live_prereq_error}" == "no API key env var found." ]]; then
+        echo "Set one of: SHISAD_MODEL_PLANNER_API_KEY, SHISAD_MODEL_API_KEY, SHISA_API_KEY," >&2
+        echo "OPENAI_API_KEY, OPENROUTER_API_KEY, GEMINI_API_KEY." >&2
+      fi
+      exit 2
+    fi
+    echo "Skipping live-model behavioral suite: ${live_prereq_error}" >&2
+    if [[ "${live_prereq_error}" == "no API key env var found." ]]; then
+      echo "Set API key env vars and rerun with --live-model to require live execution." >&2
+    fi
+  else
+    # Auto-select OpenAI GPT-5.2 when OPENAI_API_KEY is available and no
+    # explicit planner model/preset/base-url has been configured.  The Shisa
+    # default model (14B) does not reliably emit OpenAI-format tool calls.
+    live_env=(SHISAD_LIVE_MODEL_TESTS=1)
+    if [[ -n "${OPENAI_API_KEY:-}" ]] \
+      && [[ -z "${SHISAD_MODEL_PLANNER_PROVIDER_PRESET:-}" ]] \
+      && [[ -z "${SHISAD_MODEL_PLANNER_BASE_URL:-}" ]] \
+      && [[ -z "${SHISAD_MODEL_PLANNER_MODEL_ID:-}" ]]; then
+      live_env+=(
+        SHISAD_MODEL_PLANNER_PROVIDER_PRESET=openai_default
+      )
+    fi
+    run_cmd env "${live_env[@]}" uv run pytest \
+      tests/behavioral/test_behavioral_contract_live_model.py "${pytest_args[@]}"
   fi
-  run_cmd env "${live_env[@]}" uv run pytest \
-    tests/behavioral/test_behavioral_contract_live_model.py "${pytest_args[@]}"
 fi
 
 if [[ "${want_tool_matrix}" == true ]]; then

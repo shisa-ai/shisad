@@ -91,7 +91,7 @@ class ToolDefinition(BaseModel):
 _OPENAI_FUNCTION_NAME_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
 
 
-def _openai_function_name(tool_name: str) -> str:
+def openai_function_name(tool_name: str) -> str:
     """Return an OpenAI-compliant function name for a canonical tool id.
 
     OpenAI function names must match ``^[a-zA-Z0-9_-]+$``. Canonical shisad
@@ -105,6 +105,10 @@ def _openai_function_name(tool_name: str) -> str:
     return normalized
 
 
+def _openai_function_name(tool_name: str) -> str:
+    return openai_function_name(tool_name)
+
+
 def tool_definitions_to_openai(tools: list[ToolDefinition]) -> list[dict[str, Any]]:
     """Convert tool definitions to OpenAI-compatible `tools` payload format."""
     payload: list[dict[str, Any]] = []
@@ -113,7 +117,7 @@ def tool_definitions_to_openai(tools: list[ToolDefinition]) -> list[dict[str, An
             {
                 "type": "function",
                 "function": {
-                    "name": _openai_function_name(str(tool.name)),
+                    "name": openai_function_name(str(tool.name)),
                     "description": tool.description,
                     "parameters": tool.json_schema(),
                 },

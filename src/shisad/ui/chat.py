@@ -106,12 +106,14 @@ class ChatApp(App[None]):
         user_id: str = "ops",
         workspace_id: str = "default",
         session_id: str | None = None,
+        reuse_bound_session: bool = True,
     ) -> None:
         super().__init__()
         self._socket_path = socket_path
         self._user_id = user_id
         self._workspace_id = workspace_id
         self._session_id = session_id
+        self._reuse_bound_session = reuse_bound_session
         self._reconnected = False
 
     def compose(self) -> ComposeResult:
@@ -177,10 +179,11 @@ class ChatApp(App[None]):
         """Create a session if one wasn't provided."""
         if self._session_id:
             return
-        existing_session_id = await self._find_bound_session(client)
-        if existing_session_id:
-            self._session_id = existing_session_id
-            return
+        if self._reuse_bound_session:
+            existing_session_id = await self._find_bound_session(client)
+            if existing_session_id:
+                self._session_id = existing_session_id
+                return
         result = await client.call(
             "session.create",
             params={"user_id": self._user_id, "workspace_id": self._workspace_id},
