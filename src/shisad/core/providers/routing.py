@@ -85,6 +85,25 @@ _PRESET_DEFAULT_PROFILES: dict[ProviderPreset, str] = {
     ProviderPreset.VLLM_LOCAL_DEFAULT: PROFILE_VLLM_CHAT,
 }
 
+_PRESET_DEFAULT_MODEL_IDS: dict[ProviderPreset, dict[ModelComponent, str]] = {
+    ProviderPreset.OPENAI_DEFAULT: {
+        ModelComponent.PLANNER: "gpt-5.2-2025-12-11",
+        ModelComponent.EMBEDDINGS: "text-embedding-3-small",
+        ModelComponent.MONITOR: "gpt-5.2-2025-12-11",
+    },
+    ProviderPreset.GOOGLE_OPENAI_DEFAULT: {
+        ModelComponent.PLANNER: "gemini-2.5-flash",
+        ModelComponent.EMBEDDINGS: "text-embedding-004",
+        ModelComponent.MONITOR: "gemini-2.5-flash",
+    },
+}
+
+_API_KEY_ENV_TO_PRESET: list[tuple[str, ProviderPreset]] = [
+    ("OPENAI_API_KEY", ProviderPreset.OPENAI_DEFAULT),
+    ("GEMINI_API_KEY", ProviderPreset.GOOGLE_OPENAI_DEFAULT),
+    ("OPENROUTER_API_KEY", ProviderPreset.OPENROUTER_DEFAULT),
+]
+
 _PRESET_PROVIDER_KEY_ENV: dict[ProviderPreset, str | None] = {
     ProviderPreset.SHISA_DEFAULT: "SHISA_API_KEY",
     ProviderPreset.OPENAI_DEFAULT: "OPENAI_API_KEY",
@@ -127,8 +146,13 @@ class ModelRouter:
 
         preset_override = getattr(self._config, f"{prefix}_provider_preset")
         if preset_override is None:
-            preset = _DEFAULT_PRESET_BY_COMPONENT[component]
-            preset_source = "default"
+            detected = self._auto_detect_preset_from_api_key()
+            if detected is not None:
+                preset = detected
+                preset_source = "auto_detected"
+            else:
+                preset = _DEFAULT_PRESET_BY_COMPONENT[component]
+                preset_source = "default"
         else:
             preset = preset_override
             preset_source = "route_override"
@@ -140,7 +164,15 @@ class ModelRouter:
             preset_source=preset_source,
         )
 
-        model_id = getattr(self._config, f"{prefix}_model_id")
+        model_id_field = f"{prefix}_model_id"
+        model_id = getattr(self._config, model_id_field)
+        if (
+            model_id_field not in self._config.model_fields_set
+            and preset != ProviderPreset.SHISA_DEFAULT
+        ):
+            preset_models = _PRESET_DEFAULT_MODEL_IDS.get(preset, {})
+            if component in preset_models:
+                model_id = preset_models[component]
         capabilities = getattr(self._config, f"{prefix}_capabilities")
         request_parameters = getattr(self._config, f"{prefix}_request_parameters")
 
@@ -242,7 +274,7 @@ class ModelRouter:
         route_override: str | None = getattr(self._config, f"{prefix}_base_url")
         if route_override:
             return str(route_override)
-        if preset_source == "route_override":
+        if preset_source in {"route_override", "auto_detected"}:
             preset_url = _PRESET_BASE_URLS.get(preset, "")
             if preset_url:
                 return preset_url
@@ -304,6 +336,13 @@ class ModelRouter:
             return True, "global"
 
         if (
+            preset_source in {"route_override", "auto_detected"}
+            and bool(api_key)
+            and api_key_source != "missing"
+        ):
+            return True, f"implicit_preset_key:{preset_source}"
+
+        if (
             component == ModelComponent.PLANNER
             and preset == ProviderPreset.SHISA_DEFAULT
             and preset_source == "default"
@@ -320,6 +359,13 @@ class ModelRouter:
             return True, "implicit_shisa_key"
 
         return False, "global"
+
+    @staticmethod
+    def _auto_detect_preset_from_api_key() -> ProviderPreset | None:
+        for env_var, preset in _API_KEY_ENV_TO_PRESET:
+            if os.getenv(env_var, "").strip():
+                return preset
+        return None
 
     @staticmethod
     def _validate_component_endpoint_family(

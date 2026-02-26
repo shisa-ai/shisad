@@ -133,6 +133,8 @@ async def test_s0_routed_provider_does_not_bypass_route_toggles_with_constructor
     monkeypatch.delenv("SHISAD_MODEL_REMOTE_ENABLED", raising=False)
     monkeypatch.delenv("SHISA_API_KEY", raising=False)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     monkeypatch.delenv("SHISAD_MODEL_API_KEY", raising=False)
     monkeypatch.setenv("SHISAD_MODEL_BASE_URL", "https://api.example.com/v1")
 

@@ -13,8 +13,9 @@ usage() {
 Run shisad behavioral gates.
 
 Usage:
-  bash live-behavior.sh                 # deterministic + live-model suites (default)
-  bash live-behavior.sh --verbose       # verbose test output + executed command echo
+  bash live-behavior.sh                 # deterministic + live-model suites (per-test output)
+  bash live-behavior.sh --verbose       # very verbose test output + executed command echo
+  bash live-behavior.sh --quiet         # compact dot output
   bash live-behavior.sh --behavioral    # deterministic behavioral suite only
   bash live-behavior.sh --contract      # deterministic live-daemon contract only
   bash live-behavior.sh --live-model    # live-model contract only (requires remote model config)
@@ -23,6 +24,7 @@ Usage:
 
 Notes:
   - Default mode now runs both deterministic and live-model behavioral tests.
+  - Default output shows each test as PASSED/FAILED.
   - Use --behavioral for deterministic-only execution.
 EOF
 }
@@ -32,8 +34,9 @@ want_contract=false
 want_live_model=false
 want_tool_matrix=false
 verbose=false
+quiet=false
 
-pytest_args=(-q)
+pytest_args=(-v -ra)
 
 run_cmd() {
   if [[ "${verbose}" == true ]]; then
@@ -52,6 +55,9 @@ while [[ "${#}" -gt 0 ]]; do
       ;;
     -v|--verbose)
       verbose=true
+      ;;
+    -q|--quiet)
+      quiet=true
       ;;
     --behavioral|--all)
       want_behavioral=true
@@ -88,6 +94,8 @@ fi
 
 if [[ "${verbose}" == true ]]; then
   pytest_args=(-vv -rA)
+elif [[ "${quiet}" == true ]]; then
+  pytest_args=(-q)
 fi
 
 if [[ "${want_behavioral}" == true ]]; then
@@ -118,7 +126,19 @@ if [[ "${want_live_model}" == true ]]; then
     echo "OPENAI_API_KEY, OPENROUTER_API_KEY, GEMINI_API_KEY." >&2
     exit 2
   fi
-  run_cmd env SHISAD_LIVE_MODEL_TESTS=1 uv run pytest \
+  # Auto-select OpenAI GPT-5.2 when OPENAI_API_KEY is available and no
+  # explicit planner model/preset/base-url has been configured.  The Shisa
+  # default model (14B) does not reliably emit OpenAI-format tool calls.
+  live_env=(SHISAD_LIVE_MODEL_TESTS=1)
+  if [[ -n "${OPENAI_API_KEY:-}" ]] \
+    && [[ -z "${SHISAD_MODEL_PLANNER_PROVIDER_PRESET:-}" ]] \
+    && [[ -z "${SHISAD_MODEL_PLANNER_BASE_URL:-}" ]] \
+    && [[ -z "${SHISAD_MODEL_PLANNER_MODEL_ID:-}" ]]; then
+    live_env+=(
+      SHISAD_MODEL_PLANNER_PROVIDER_PRESET=openai_default
+    )
+  fi
+  run_cmd env "${live_env[@]}" uv run pytest \
     tests/behavioral/test_behavioral_contract_live_model.py "${pytest_args[@]}"
 fi
 

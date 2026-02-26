@@ -9,7 +9,12 @@ from shisad.core.providers.routing import ModelRouter
 from shisad.daemon.runner import _validate_model_endpoints
 
 
-def test_model_endpoint_validation_rejects_remote_http() -> None:
+def test_model_endpoint_validation_rejects_remote_http(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     config = ModelConfig(base_url="http://example.com/v1", allow_http_localhost=False)
     router = ModelRouter(config)
 

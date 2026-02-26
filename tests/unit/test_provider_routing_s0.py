@@ -9,6 +9,20 @@ from shisad.core.config import ModelConfig
 from shisad.core.providers.routing import ModelComponent, ModelRouter
 
 
+def _clean_api_key_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Remove all API key env vars that could trigger auto-detection."""
+    for var in (
+        "OPENAI_API_KEY",
+        "GEMINI_API_KEY",
+        "OPENROUTER_API_KEY",
+        "SHISA_API_KEY",
+        "SHISAD_MODEL_API_KEY",
+        "SHISAD_MODEL_PLANNER_API_KEY",
+        "SHISAD_MODEL_REMOTE_ENABLED",
+    ):
+        monkeypatch.delenv(var, raising=False)
+
+
 def test_s0_openai_preset_resolves_route_defaults_and_global_remote(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -154,9 +168,8 @@ def test_s0_global_explicit_key_can_drive_openrouter_route(
 def test_s0_default_planner_auto_enables_remote_with_shisa_key(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    _clean_api_key_env(monkeypatch)
     monkeypatch.setenv("SHISA_API_KEY", "shisa-key")
-    monkeypatch.delenv("SHISAD_MODEL_API_KEY", raising=False)
-    monkeypatch.delenv("SHISAD_MODEL_REMOTE_ENABLED", raising=False)
 
     route = ModelRouter(ModelConfig()).route_for(ModelComponent.PLANNER)
 
@@ -168,9 +181,8 @@ def test_s0_default_planner_auto_enables_remote_with_shisa_key(
 def test_s0_implicit_shisa_remote_enable_only_applies_to_default_base_route(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    _clean_api_key_env(monkeypatch)
     monkeypatch.setenv("SHISA_API_KEY", "shisa-key")
-    monkeypatch.delenv("SHISAD_MODEL_API_KEY", raising=False)
-    monkeypatch.delenv("SHISAD_MODEL_REMOTE_ENABLED", raising=False)
 
     route = ModelRouter(
         ModelConfig(planner_base_url="https://planner.example.com/v1")
@@ -193,3 +205,107 @@ def test_s0_model_config_parses_reasoning_request_parameters_from_env(
     assert config.planner_request_parameters.reasoning_effort == "medium"
     assert config.planner_request_parameters.reasoning is not None
     assert config.planner_request_parameters.reasoning.budget_tokens == 128
+
+
+# --- Smart model routing defaults (auto-detection) ---
+
+
+def test_s0_openai_key_auto_detects_preset(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clean_api_key_env(monkeypatch)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+
+    route = ModelRouter(ModelConfig()).route_for(ModelComponent.PLANNER)
+
+    assert route.provider_preset == "openai_default"
+    assert route.provider_preset_source == "auto_detected"
+
+
+def test_s0_auto_detected_preset_enables_remote_implicitly(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clean_api_key_env(monkeypatch)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+
+    route = ModelRouter(ModelConfig()).route_for(ModelComponent.PLANNER)
+
+    assert route.remote_enabled is True
+    assert route.remote_enabled_source == "implicit_preset_key:auto_detected"
+
+
+def test_s0_auto_detected_preset_uses_preset_default_model_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clean_api_key_env(monkeypatch)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+
+    route = ModelRouter(ModelConfig()).route_for(ModelComponent.PLANNER)
+
+    assert route.model_id == "gpt-5.2-2025-12-11"
+
+
+def test_s0_auto_detected_preset_uses_preset_base_url(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clean_api_key_env(monkeypatch)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+
+    route = ModelRouter(ModelConfig()).route_for(ModelComponent.PLANNER)
+
+    assert route.base_url == "https://api.openai.com/v1"
+
+
+def test_s0_explicit_preset_overrides_auto_detection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clean_api_key_env(monkeypatch)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "or-test")
+
+    config = ModelConfig(planner_provider_preset="openrouter_default")
+    route = ModelRouter(config).route_for(ModelComponent.PLANNER)
+
+    assert route.provider_preset == "openrouter_default"
+    assert route.provider_preset_source == "route_override"
+    assert route.base_url == "https://openrouter.ai/api/v1"
+
+
+def test_s0_explicit_model_id_overrides_preset_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clean_api_key_env(monkeypatch)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+
+    config = ModelConfig(planner_model_id="gpt-4o-custom")
+    route = ModelRouter(config).route_for(ModelComponent.PLANNER)
+
+    assert route.model_id == "gpt-4o-custom"
+
+
+def test_s0_explicit_remote_false_overrides_auto_enable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clean_api_key_env(monkeypatch)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+
+    config = ModelConfig(planner_remote_enabled=False)
+    route = ModelRouter(config).route_for(ModelComponent.PLANNER)
+
+    assert route.remote_enabled is False
+    assert route.remote_enabled_source == "route_override"
+
+
+def test_s0_gemini_key_auto_detects_google_preset(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clean_api_key_env(monkeypatch)
+    monkeypatch.setenv("GEMINI_API_KEY", "gem-test")
+
+    route = ModelRouter(ModelConfig()).route_for(ModelComponent.PLANNER)
+
+    assert route.provider_preset == "google_openai_default"
+    assert route.provider_preset_source == "auto_detected"
+    assert route.base_url == "https://generativelanguage.googleapis.com/v1beta/openai"
+    assert route.model_id == "gemini-2.5-flash"
+    assert route.remote_enabled is True

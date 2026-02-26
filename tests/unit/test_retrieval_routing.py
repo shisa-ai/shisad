@@ -4,12 +4,19 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from shisad.core.config import ModelConfig
 from shisad.core.providers.routing import ModelComponent, ModelRouter
 from shisad.memory.ingestion import EmbeddingFingerprint, IngestionPipeline, RetrieveRagTool
 
 
-def test_m1_model_router_supports_per_component_routes() -> None:
+def test_m1_model_router_supports_per_component_routes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     config = ModelConfig(
         base_url="https://api.default/v1",
         planner_model_id="planner-a",

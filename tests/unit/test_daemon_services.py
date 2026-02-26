@@ -29,6 +29,9 @@ async def test_daemon_services_builds_with_local_provider(
     # Explicitly clear API key overrides to force local provider path.
     monkeypatch.delenv("SHISA_API_KEY", raising=False)
     monkeypatch.delenv("SHISAD_MODEL_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     config = DaemonConfig(
         data_dir=tmp_path / "data",
         socket_path=tmp_path / "control.sock",
