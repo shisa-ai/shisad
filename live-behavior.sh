@@ -3,12 +3,18 @@ set -euo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")"
 
+if [[ -z "${UV_CACHE_DIR:-}" ]]; then
+  export UV_CACHE_DIR="/tmp/uv-cache"
+fi
+mkdir -p "${UV_CACHE_DIR}"
+
 usage() {
   cat <<'EOF'
 Run shisad behavioral gates.
 
 Usage:
   bash live-behavior.sh                 # deterministic behavioral suite (default)
+  bash live-behavior.sh --verbose       # verbose test output + executed command echo
   bash live-behavior.sh --contract      # deterministic live-daemon contract only
   bash live-behavior.sh --live-model    # opt-in live-model contract (requires remote model config)
   bash live-behavior.sh --tool-matrix   # probe a *running* daemon (see docs/TOOL-STATUS.md)
@@ -23,16 +29,27 @@ want_behavioral=false
 want_contract=false
 want_live_model=false
 want_tool_matrix=false
+verbose=false
 
-if [[ "${#}" -eq 0 ]]; then
-  want_behavioral=true
-fi
+pytest_args=(-q)
+
+run_cmd() {
+  if [[ "${verbose}" == true ]]; then
+    printf '+ '
+    printf '%q ' "$@"
+    printf '\n'
+  fi
+  "$@"
+}
 
 while [[ "${#}" -gt 0 ]]; do
   case "${1}" in
     -h|--help)
       usage
       exit 0
+      ;;
+    -v|--verbose)
+      verbose=true
       ;;
     --behavioral|--all)
       want_behavioral=true
@@ -56,12 +73,23 @@ while [[ "${#}" -gt 0 ]]; do
   shift
 done
 
+if [[ "${want_behavioral}" == false ]] \
+  && [[ "${want_contract}" == false ]] \
+  && [[ "${want_live_model}" == false ]] \
+  && [[ "${want_tool_matrix}" == false ]]; then
+  want_behavioral=true
+fi
+
+if [[ "${verbose}" == true ]]; then
+  pytest_args=(-vv -rA)
+fi
+
 if [[ "${want_behavioral}" == true ]]; then
-  uv run pytest tests/behavioral/ -q
+  run_cmd uv run pytest tests/behavioral/ "${pytest_args[@]}"
 fi
 
 if [[ "${want_contract}" == true ]]; then
-  uv run pytest tests/behavioral/test_behavioral_contract.py -q
+  run_cmd uv run pytest tests/behavioral/test_behavioral_contract.py "${pytest_args[@]}"
 fi
 
 if [[ "${want_live_model}" == true ]]; then
@@ -84,9 +112,10 @@ if [[ "${want_live_model}" == true ]]; then
     echo "OPENAI_API_KEY, OPENROUTER_API_KEY, GEMINI_API_KEY." >&2
     exit 2
   fi
-  SHISAD_LIVE_MODEL_TESTS=1 uv run pytest tests/behavioral/test_behavioral_contract_live_model.py -q
+  run_cmd env SHISAD_LIVE_MODEL_TESTS=1 uv run pytest \
+    tests/behavioral/test_behavioral_contract_live_model.py "${pytest_args[@]}"
 fi
 
 if [[ "${want_tool_matrix}" == true ]]; then
-  uv run python scripts/live_tool_matrix.py
+  run_cmd uv run python scripts/live_tool_matrix.py
 fi
