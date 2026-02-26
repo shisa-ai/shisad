@@ -41,6 +41,11 @@ def test_m3_s0b3_blocked_action_feedback_explains_web_policy_restriction() -> No
     assert "live web access is disabled or restricted" in message
 
 
+def test_m3_s0b3_blocked_action_feedback_explains_backend_config_error() -> None:
+    message = _blocked_action_feedback(["web_search_backend_unconfigured"])
+    assert "live web access is disabled or restricted" in message
+
+
 def test_m3_s0b3_blocked_action_feedback_explains_stage2_gate() -> None:
     message = _blocked_action_feedback(
         ["consensus:veto:ExecutionTraceVerifier,trace:stage2_upgrade_required"]

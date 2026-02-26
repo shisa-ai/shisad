@@ -100,9 +100,14 @@ class SequenceVoter:
                     ],
                 )
             highest = max(findings, key=lambda item: risk_rank(item.risk_tier))
+            kind = (
+                VoteKind.BLOCK
+                if highest.risk_tier in {RiskTier.HIGH, RiskTier.CRITICAL}
+                else VoteKind.FLAG
+            )
             return VoterDecision(
                 voter="BehavioralSequenceAnalyzer",
-                decision=VoteKind.FLAG,
+                decision=kind,
                 risk_tier=highest.risk_tier,
                 reason_codes=reasons,
             )

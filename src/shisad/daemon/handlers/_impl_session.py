@@ -258,6 +258,13 @@ def _blocked_action_feedback(reasons: list[str]) -> str:
             "web_allowlist_unconfigured",
             "web_search_backend_unconfigured",
             "web_search_backend_not_allowlisted",
+            "ip_literal_not_allowlisted",
+            "local_destination_not_allowlisted",
+            "missing_host",
+            "unsupported_backend_scheme",
+            "search_backend_too_many_redirects",
+            "search_backend_redirect_missing_location",
+            "search_backend_request_failed",
             "destination_not_allowlisted",
             "unsupported_scheme",
         }

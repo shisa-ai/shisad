@@ -152,7 +152,7 @@ async def test_m5_t1b_sequence_voter_allows_web_search_after_read() -> None:
 
 
 @pytest.mark.asyncio
-async def test_m5_t1c_sequence_voter_flags_http_request_after_read_for_confirmation() -> None:
+async def test_m5_t1c_sequence_voter_blocks_http_request_after_read() -> None:
     history = SessionActionHistoryStore()
     analyzer = BehavioralSequenceAnalyzer()
     origin = _origin("s1-t1c")
@@ -181,7 +181,7 @@ async def test_m5_t1c_sequence_voter_flags_http_request_after_read_for_confirmat
             metadata_payload={},
         )
     )
-    assert vote.decision == VoteKind.FLAG
+    assert vote.decision == VoteKind.BLOCK
 
 
 def test_m5_t2_sequence_detects_rapid_fire_pattern() -> None:
