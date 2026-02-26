@@ -113,18 +113,31 @@ async def _stub_complete(
         )
 
     tool_calls: list[dict[str, Any]] = []
-    if "search" in goal_lower or "latest news" in goal_lower:
-        tool_calls.append(
-            _tool_call(
-                "web.search",
-                {"query": "latest world news", "limit": 3},
-                call_id="t-search",
-            )
+    search_call = (
+        _tool_call(
+            "web.search",
+            {"query": "latest world news", "limit": 3},
+            call_id="t-search",
         )
-    if "read" in goal_lower and "readme" in goal_lower:
-        tool_calls.append(
-            _tool_call("fs.read", {"path": "README.md", "max_bytes": 4096}, call_id="t-readme")
-        )
+        if ("search" in goal_lower or "latest news" in goal_lower)
+        else None
+    )
+    read_call = (
+        _tool_call("fs.read", {"path": "README.md", "max_bytes": 4096}, call_id="t-readme")
+        if ("read" in goal_lower and "readme" in goal_lower)
+        else None
+    )
+    if search_call is not None and read_call is not None:
+        read_pos = goal_lower.find("read")
+        search_pos = goal_lower.find("search")
+        if 0 <= read_pos < (search_pos if search_pos >= 0 else 1_000_000):
+            tool_calls.extend([read_call, search_call])
+        else:
+            tool_calls.extend([search_call, read_call])
+    elif read_call is not None:
+        tool_calls.append(read_call)
+    elif search_call is not None:
+        tool_calls.append(search_call)
 
     assistant_response = (
         "Working on it." if tool_calls else "Hello! How can I help?"

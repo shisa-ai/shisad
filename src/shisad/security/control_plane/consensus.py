@@ -61,6 +61,13 @@ class Voter(Protocol):
 
 
 class SequenceVoter:
+    _SAFE_EGRESS_AFTER_READ_TOOLS: frozenset[str] = frozenset(
+        {
+            "web.search",
+            "web.fetch",
+        }
+    )
+
     def __init__(
         self,
         *,
@@ -78,6 +85,26 @@ class SequenceVoter:
                 decision=VoteKind.ALLOW,
                 risk_tier=RiskTier.LOW,
                 reason_codes=["sequence:ok"],
+            )
+        if any(item.pattern_name == "exfil_after_read" for item in findings):
+            tool_name = str(data.action.tool_name).strip()
+            reasons = [item.reason_code for item in findings]
+            if tool_name in self._SAFE_EGRESS_AFTER_READ_TOOLS:
+                return VoterDecision(
+                    voter="BehavioralSequenceAnalyzer",
+                    decision=VoteKind.ALLOW,
+                    risk_tier=RiskTier.MEDIUM,
+                    reason_codes=[
+                        *reasons,
+                        "sequence:allow_safe_egress_after_read",
+                    ],
+                )
+            highest = max(findings, key=lambda item: risk_rank(item.risk_tier))
+            return VoterDecision(
+                voter="BehavioralSequenceAnalyzer",
+                decision=VoteKind.FLAG,
+                risk_tier=highest.risk_tier,
+                reason_codes=reasons,
             )
         highest = max(findings, key=lambda item: risk_rank(item.risk_tier))
         kind = (

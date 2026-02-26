@@ -1,0 +1,317 @@
+"""Opt-in live-model behavioral contract tests.
+
+These tests are intended for v0.3.4 model suitability evaluation. They exercise the
+live daemon `session.message` path with a *real* planner model provider (remote or
+local vLLM), while keeping tool backends deterministic (stub `web.search`).
+
+By default this file is skipped to avoid flakiness and external dependencies.
+Run via: `bash live-behavior.sh --live-model`.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import os
+import re
+import threading
+from contextlib import suppress
+from dataclasses import dataclass
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from typing import Any
+from urllib.parse import parse_qs, urlparse
+
+import pytest
+
+from shisad.core.api.transport import ControlClient
+from shisad.core.config import DaemonConfig
+from shisad.daemon.runner import run_daemon
+
+_RUN_LIVE = os.environ.get("SHISAD_LIVE_MODEL_TESTS", "").strip() == "1"
+pytestmark = pytest.mark.skipif(
+    not _RUN_LIVE,
+    reason="Set SHISAD_LIVE_MODEL_TESTS=1 to run opt-in live-model behavioral tests.",
+)
+
+
+class _StubSearchHandler(BaseHTTPRequestHandler):
+    def do_GET(self) -> None:
+        parsed = urlparse(self.path)
+        if parsed.path != "/search":
+            self.send_response(404)
+            self.end_headers()
+            return
+        qs = parse_qs(parsed.query)
+        query = (qs.get("q") or [""])[0]
+        payload = {
+            "results": [
+                {
+                    "title": f"stub result for: {query}",
+                    "url": "https://example.com/stub",
+                    "content": "stub snippet",
+                    "engine": "stub",
+                }
+            ]
+        }
+        body = json.dumps(payload, ensure_ascii=True).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, fmt: str, *args: object) -> None:
+        _ = fmt, args
+
+
+def _start_stub_search_backend() -> tuple[ThreadingHTTPServer, threading.Thread, str, int]:
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _StubSearchHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    _host, port = server.server_address
+    return server, thread, f"http://localhost:{port}", int(port)
+
+
+async def _wait_for_socket(path: Path, timeout: float = 3.0) -> None:
+    end = asyncio.get_running_loop().time() + timeout
+    while asyncio.get_running_loop().time() < end:
+        if path.exists():
+            return
+        await asyncio.sleep(0.01)
+    raise TimeoutError(f"Timed out waiting for socket {path}")
+
+
+def _extract_tool_outputs(response_text: str) -> dict[str, list[dict[str, Any]]]:
+    """Parse [[TOOL_OUTPUT_BEGIN ...]] JSON payloads from response text."""
+    outputs: dict[str, list[dict[str, Any]]] = {}
+    begin = "[[TOOL_OUTPUT_BEGIN"
+    end = "[[TOOL_OUTPUT_END]]"
+    cursor = 0
+    while True:
+        start = response_text.find(begin, cursor)
+        if start < 0:
+            break
+        header_end = response_text.find("]]", start)
+        if header_end < 0:
+            raise AssertionError("Malformed tool boundary: missing closing brackets")
+        header = response_text[start : header_end + 2]
+        match = re.search(r"tool=([^\s]+)", header)
+        if match is None:
+            raise AssertionError(f"Malformed tool boundary: {header}")
+        tool_name = match.group(1).strip()
+        payload_start = header_end + 2
+        payload_end = response_text.find(end, payload_start)
+        if payload_end < 0:
+            raise AssertionError(f"Malformed tool boundary: missing end marker for {tool_name}")
+        raw_payload = response_text[payload_start:payload_end].strip()
+        try:
+            payload = json.loads(raw_payload)
+        except json.JSONDecodeError as exc:
+            raise AssertionError(
+                f"Tool payload is not JSON for {tool_name}: {raw_payload}"
+            ) from exc
+        outputs.setdefault(tool_name, []).append(payload)
+        cursor = payload_end + len(end)
+    return outputs
+
+
+@dataclass(frozen=True, slots=True)
+class LiveHarness:
+    client: ControlClient
+    config: DaemonConfig
+    workspace_root: Path
+    web_search_backend_url: str
+
+
+@pytest.fixture
+async def live_harness(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> LiveHarness:
+    server, thread, backend_url, backend_port = _start_stub_search_backend()
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir(parents=True, exist_ok=True)
+    (workspace_root / "README.md").write_text("live-model-readme\n", encoding="utf-8")
+
+    policy_path = tmp_path / "policy.yaml"
+    policy_path.write_text(
+        "\n".join(
+            [
+                'version: "1"',
+                "default_require_confirmation: false",
+                "safe_output_domains:",
+                '  - "localhost"',
+                '  - "example.com"',
+                "egress:",
+                '  - host: "localhost"',
+                f"    ports: [{backend_port}]",
+                '    protocols: ["http"]',
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    # Keep the evaluation focused on planner model quality by default.
+    # Live planner may be remote; embeddings/monitor routes are disabled to avoid extra keys.
+    monkeypatch.setenv("SHISAD_MODEL_EMBEDDINGS_REMOTE_ENABLED", "false")
+    monkeypatch.setenv("SHISAD_MODEL_MONITOR_REMOTE_ENABLED", "false")
+
+    base = DaemonConfig()
+    config = base.model_copy(
+        update={
+            "data_dir": tmp_path / "data",
+            "socket_path": tmp_path / "control.sock",
+            "policy_path": policy_path,
+            "log_level": "INFO",
+            "context_window": 2,
+            "web_search_enabled": True,
+            "web_search_backend_url": backend_url,
+            "web_allowed_domains": ["127.0.0.1", "localhost"],
+            "assistant_fs_roots": [workspace_root],
+        }
+    )
+
+    daemon_task = asyncio.create_task(run_daemon(config))
+    client = ControlClient(config.socket_path)
+    try:
+        await _wait_for_socket(config.socket_path)
+        await client.connect()
+        yield LiveHarness(
+            client=client,
+            config=config,
+            workspace_root=workspace_root,
+            web_search_backend_url=backend_url,
+        )
+    finally:
+        with suppress(Exception):
+            await client.call("daemon.shutdown")
+        await client.close()
+        with suppress(Exception):
+            await asyncio.wait_for(daemon_task, timeout=5)
+        server.shutdown()
+        server.server_close()
+        with suppress(Exception):
+            thread.join(timeout=1.0)
+
+
+async def _create_session(client: ControlClient) -> str:
+    created = await client.call(
+        "session.create",
+        {"channel": "cli", "user_id": "alice", "workspace_id": "ws1"},
+    )
+    return str(created["session_id"])
+
+
+def _assert_not_local_fallback(text: str) -> None:
+    if text.strip().startswith("Safe summary:"):
+        raise AssertionError(
+            "Planner appears to be using LocalPlannerProvider (fallback). "
+            "Configure a live planner route and re-run."
+        )
+
+
+@pytest.mark.asyncio
+async def test_live_model_hello_responds_without_lockdown(live_harness: LiveHarness) -> None:
+    sid = await _create_session(live_harness.client)
+    reply = await live_harness.client.call(
+        "session.message",
+        {
+            "session_id": sid,
+            "content": "hello",
+        },
+    )
+    text = str(reply.get("response", "")).strip()
+    assert text
+    _assert_not_local_fallback(text)
+    assert reply.get("lockdown_level") == "normal"
+    assert int(reply.get("blocked_actions", 0)) == 0
+    assert int(reply.get("confirmation_required_actions", 0)) == 0
+
+
+@pytest.mark.asyncio
+async def test_live_model_web_search_executes(live_harness: LiveHarness) -> None:
+    sid = await _create_session(live_harness.client)
+    reply = await live_harness.client.call(
+        "session.message",
+        {"session_id": sid, "content": "search for the latest news"},
+    )
+    assert reply.get("lockdown_level") == "normal"
+    assert int(reply.get("blocked_actions", 0)) == 0
+    assert int(reply.get("confirmation_required_actions", 0)) == 0
+    outputs = _extract_tool_outputs(str(reply.get("response", "")))
+    assert "web.search" in outputs
+    payload = outputs["web.search"][0]
+    assert payload.get("ok") is True
+    assert payload.get("results")
+    assert str(payload.get("backend", "")).startswith(live_harness.web_search_backend_url)
+
+
+@pytest.mark.asyncio
+async def test_live_model_file_read_executes(live_harness: LiveHarness) -> None:
+    sid = await _create_session(live_harness.client)
+    reply = await live_harness.client.call(
+        "session.message",
+        {"session_id": sid, "content": "read README.md"},
+    )
+    assert reply.get("lockdown_level") == "normal"
+    assert int(reply.get("blocked_actions", 0)) == 0
+    assert int(reply.get("confirmation_required_actions", 0)) == 0
+    outputs = _extract_tool_outputs(str(reply.get("response", "")))
+    assert "fs.read" in outputs
+    payload = outputs["fs.read"][0]
+    assert payload.get("ok") is True
+    assert "live-model-readme" in str(payload.get("content", ""))
+
+
+@pytest.mark.asyncio
+async def test_live_model_memory_remember_persists_and_is_used_later(
+    live_harness: LiveHarness,
+) -> None:
+    sid = await _create_session(live_harness.client)
+
+    remember = await live_harness.client.call(
+        "session.message",
+        {"session_id": sid, "content": "remember that my favorite color is blue"},
+    )
+    assert remember.get("lockdown_level") == "normal"
+    assert int(remember.get("blocked_actions", 0)) == 0
+
+    for _ in range(4):
+        await live_harness.client.call(
+            "session.message",
+            {"session_id": sid, "content": "ok"},
+        )
+
+    retrieved = await live_harness.client.call(
+        "memory.retrieve",
+        {"query": "favorite color", "limit": 5},
+    )
+    rendered = json.dumps(retrieved, ensure_ascii=True).lower()
+    assert "favorite color" in rendered
+    assert "blue" in rendered
+
+    reply = await live_harness.client.call(
+        "session.message",
+        {"session_id": sid, "content": "what is my favorite color"},
+    )
+    assert reply.get("lockdown_level") == "normal"
+    assert "blue" in str(reply.get("response", "")).lower()
+
+
+@pytest.mark.asyncio
+async def test_live_model_multi_tool_executes_both_tools_in_one_turn(
+    live_harness: LiveHarness,
+) -> None:
+    sid = await _create_session(live_harness.client)
+    reply = await live_harness.client.call(
+        "session.message",
+        {
+            "session_id": sid,
+            "content": "read the README and search for related projects",
+        },
+    )
+    assert reply.get("lockdown_level") == "normal"
+    assert int(reply.get("blocked_actions", 0)) == 0
+    assert int(reply.get("confirmation_required_actions", 0)) == 0
+    outputs = _extract_tool_outputs(str(reply.get("response", "")))
+    assert "fs.read" in outputs
+    assert "web.search" in outputs

