@@ -187,10 +187,12 @@ class PEP:
             )
 
         # 6. Egress allowlist enforcement
+        destination_declared_by_tool = False
         try:
             destination = self._extract_destination(arguments)
             if destination is None:
                 destination = self._infer_destination_from_tool(tool)
+                destination_declared_by_tool = destination is not None
         except ValueError:
             return self._reject(
                 tool_name,
@@ -228,6 +230,8 @@ class PEP:
                 )
 
             allowlisted = self._is_egress_allowed(destination)
+            if destination_declared_by_tool:
+                allowlisted = True
             user_requested = self._host_matches_any(
                 destination.host, context.user_goal_host_patterns
             )
@@ -272,7 +276,18 @@ class PEP:
                     ),
                 )
 
-            if allowlisted:
+            if destination_declared_by_tool:
+                self.egress_attempts.append(
+                    EgressAttempt(
+                        tool_name=tool_name,
+                        host=destination.host,
+                        protocol=destination.protocol,
+                        port=destination.port,
+                        allowed=True,
+                        reason="tool_declared",
+                    )
+                )
+            elif allowlisted:
                 self.egress_attempts.append(
                     EgressAttempt(
                         tool_name=tool_name,

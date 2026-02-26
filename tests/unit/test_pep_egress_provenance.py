@@ -27,6 +27,24 @@ def _registry_with_web_fetch() -> ToolRegistry:
     return registry
 
 
+def _registry_with_web_search(destination: str) -> ToolRegistry:
+    registry = ToolRegistry()
+    registry.register(
+        ToolDefinition(
+            name=ToolName("web.search"),
+            description="Search via configured backend (SearxNG reference in v0.3).",
+            parameters=[
+                ToolParameter(name="query", type="string", required=True),
+                ToolParameter(name="limit", type="integer", required=False),
+            ],
+            capabilities_required=[Capability.HTTP_REQUEST],
+            destinations=[destination],
+            require_confirmation=False,
+        )
+    )
+    return registry
+
+
 def test_pep_allows_user_goal_destination_without_allowlist() -> None:
     pep = PEP(PolicyBundle(), _registry_with_web_fetch())
     context = PolicyContext(
@@ -37,6 +55,34 @@ def test_pep_allows_user_goal_destination_without_allowlist() -> None:
     decision = pep.evaluate(
         ToolName("web.fetch"),
         {"url": "https://www.nytimes.com/"},
+        context,
+    )
+    assert decision.kind == PEPDecisionKind.ALLOW
+
+
+def test_pep_allows_tool_declared_destination_without_allowlist_or_user_goal() -> None:
+    pep = PEP(PolicyBundle(), _registry_with_web_search("https://search.example.com"))
+    context = PolicyContext(
+        capabilities={Capability.HTTP_REQUEST},
+        trust_level="trusted",
+    )
+    decision = pep.evaluate(
+        ToolName("web.search"),
+        {"query": "latest news", "limit": 3},
+        context,
+    )
+    assert decision.kind == PEPDecisionKind.ALLOW
+
+
+def test_pep_allows_tool_declared_local_destination_without_allowlist() -> None:
+    pep = PEP(PolicyBundle(), _registry_with_web_search("http://localhost:8080"))
+    context = PolicyContext(
+        capabilities={Capability.HTTP_REQUEST},
+        trust_level="trusted",
+    )
+    decision = pep.evaluate(
+        ToolName("web.search"),
+        {"query": "latest news", "limit": 3},
         context,
     )
     assert decision.kind == PEPDecisionKind.ALLOW
@@ -101,4 +147,3 @@ def test_pep_allows_operator_allowlisted_ip_literal() -> None:
         context,
     )
     assert decision.kind == PEPDecisionKind.ALLOW
-

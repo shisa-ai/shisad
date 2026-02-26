@@ -166,7 +166,7 @@ class DaemonConfig(BaseSettings):
         ),
     )
     web_search_enabled: bool = Field(
-        default=False,
+        default=True,
         description="Enable web search primitive.",
     )
     web_search_backend_url: str = Field(

@@ -1209,7 +1209,7 @@ class SessionImplMixin(HandlerMixinBase):
                 checkpoint_ids.append(checkpoint_id)
             if success:
                 executed += 1
-            if success and tool_output is not None:
+            if tool_output is not None:
                 executed_tool_outputs.append(tool_output)
             if self._trace_recorder is not None:
                 trace_tool_calls.append(TraceToolCall(

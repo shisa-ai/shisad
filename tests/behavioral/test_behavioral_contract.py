@@ -152,6 +152,30 @@ async def _stub_complete(
     )
 
 
+def _force_deterministic_local_planner(
+    *,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Model routing has an implicit remote-enable path when SHISA_API_KEY is present,
+    # so explicitly disable remote per-route and clear common API keys.
+    for var in (
+        "SHISAD_MODEL_REMOTE_ENABLED",
+        "SHISAD_MODEL_PLANNER_REMOTE_ENABLED",
+        "SHISAD_MODEL_EMBEDDINGS_REMOTE_ENABLED",
+        "SHISAD_MODEL_MONITOR_REMOTE_ENABLED",
+    ):
+        monkeypatch.setenv(var, "false")
+    for key in (
+        "SHISA_API_KEY",
+        "SHISAD_MODEL_API_KEY",
+        "OPENAI_API_KEY",
+        "OPENROUTER_API_KEY",
+        "GEMINI_API_KEY",
+    ):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setattr(LocalPlannerProvider, "complete", _stub_complete, raising=True)
+
+
 class _StubSearchHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
@@ -266,26 +290,7 @@ async def contract_harness(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> C
         encoding="utf-8",
     )
 
-    # Force deterministic local planner provider for behavioral tests.
-    #
-    # Model routing has an implicit remote-enable path when SHISA_API_KEY is present,
-    # so explicitly disable remote per-route and clear common API keys.
-    for var in (
-        "SHISAD_MODEL_REMOTE_ENABLED",
-        "SHISAD_MODEL_PLANNER_REMOTE_ENABLED",
-        "SHISAD_MODEL_EMBEDDINGS_REMOTE_ENABLED",
-        "SHISAD_MODEL_MONITOR_REMOTE_ENABLED",
-    ):
-        monkeypatch.setenv(var, "false")
-    for key in (
-        "SHISA_API_KEY",
-        "SHISAD_MODEL_API_KEY",
-        "OPENAI_API_KEY",
-        "OPENROUTER_API_KEY",
-        "GEMINI_API_KEY",
-    ):
-        monkeypatch.delenv(key, raising=False)
-    monkeypatch.setattr(LocalPlannerProvider, "complete", _stub_complete, raising=True)
+    _force_deterministic_local_planner(monkeypatch=monkeypatch)
 
     config = DaemonConfig(
         data_dir=tmp_path / "data",
@@ -454,3 +459,167 @@ async def test_contract_multi_tool_executes_both_tools_in_one_turn(
     outputs = _extract_tool_outputs(str(reply.get("response", "")))
     assert "fs.read" in outputs
     assert "web.search" in outputs
+
+
+@pytest.fixture
+async def contract_harness_no_policy_egress(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> ContractHarness:
+    server, thread, backend_url, _backend_port = _start_stub_search_backend()
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir(parents=True, exist_ok=True)
+    (workspace_root / "README.md").write_text("behavioral-readme\n", encoding="utf-8")
+
+    policy_path = tmp_path / "policy.yaml"
+    policy_path.write_text(
+        "\n".join(
+            [
+                'version: "1"',
+                "default_require_confirmation: false",
+                "safe_output_domains:",
+                '  - "localhost"',
+                '  - "example.com"',
+                "egress: []",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    _force_deterministic_local_planner(monkeypatch=monkeypatch)
+
+    config = DaemonConfig(
+        data_dir=tmp_path / "data",
+        socket_path=tmp_path / "control.sock",
+        policy_path=policy_path,
+        log_level="WARNING",
+        context_window=1,
+        web_search_enabled=True,
+        web_search_backend_url=backend_url,
+        web_allowed_domains=["localhost"],
+        assistant_fs_roots=[workspace_root],
+    )
+
+    daemon_task = asyncio.create_task(run_daemon(config))
+    client = ControlClient(config.socket_path)
+    try:
+        await _wait_for_socket(config.socket_path)
+        await client.connect()
+        yield ContractHarness(
+            client=client,
+            config=config,
+            workspace_root=workspace_root,
+            web_search_backend_url=backend_url,
+        )
+    finally:
+        with suppress(Exception):
+            await client.call("daemon.shutdown")
+        await client.close()
+        with suppress(Exception):
+            await asyncio.wait_for(daemon_task, timeout=3)
+        server.shutdown()
+        server.server_close()
+        with suppress(Exception):
+            thread.join(timeout=1.0)
+
+
+@pytest.fixture
+async def contract_harness_backend_unconfigured(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> ContractHarness:
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir(parents=True, exist_ok=True)
+    (workspace_root / "README.md").write_text("behavioral-readme\n", encoding="utf-8")
+
+    policy_path = tmp_path / "policy.yaml"
+    policy_path.write_text(
+        "\n".join(
+            [
+                'version: "1"',
+                "default_require_confirmation: false",
+                "safe_output_domains:",
+                '  - "localhost"',
+                '  - "example.com"',
+                "egress: []",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    _force_deterministic_local_planner(monkeypatch=monkeypatch)
+
+    config = DaemonConfig(
+        data_dir=tmp_path / "data",
+        socket_path=tmp_path / "control.sock",
+        policy_path=policy_path,
+        log_level="WARNING",
+        context_window=1,
+        web_search_enabled=True,
+        web_search_backend_url="",
+        assistant_fs_roots=[workspace_root],
+    )
+
+    daemon_task = asyncio.create_task(run_daemon(config))
+    client = ControlClient(config.socket_path)
+    try:
+        await _wait_for_socket(config.socket_path)
+        await client.connect()
+        yield ContractHarness(
+            client=client,
+            config=config,
+            workspace_root=workspace_root,
+            web_search_backend_url="",
+        )
+    finally:
+        with suppress(Exception):
+            await client.call("daemon.shutdown")
+        await client.close()
+        with suppress(Exception):
+            await asyncio.wait_for(daemon_task, timeout=3)
+
+
+@pytest.mark.asyncio
+async def test_contract_web_search_executes_without_policy_egress_allowlist(
+    contract_harness_no_policy_egress: ContractHarness,
+) -> None:
+    sid = await _create_session(contract_harness_no_policy_egress.client)
+    reply = await contract_harness_no_policy_egress.client.call(
+        "session.message",
+        {
+            "session_id": sid,
+            "content": "search for the latest news",
+        },
+    )
+    assert reply.get("lockdown_level") == "normal"
+    assert int(reply.get("blocked_actions", 0)) == 0
+    assert int(reply.get("confirmation_required_actions", 0)) == 0
+    assert int(reply.get("executed_actions", 0)) == 1
+    outputs = _extract_tool_outputs(str(reply.get("response", "")))
+    assert "web.search" in outputs
+    payload = outputs["web.search"][0]
+    assert payload.get("ok") is True
+    assert payload.get("results")
+
+
+@pytest.mark.asyncio
+async def test_contract_web_search_backend_unconfigured_is_actionable(
+    contract_harness_backend_unconfigured: ContractHarness,
+) -> None:
+    sid = await _create_session(contract_harness_backend_unconfigured.client)
+    reply = await contract_harness_backend_unconfigured.client.call(
+        "session.message",
+        {
+            "session_id": sid,
+            "content": "search for the latest news",
+        },
+    )
+    assert reply.get("lockdown_level") == "normal"
+    assert int(reply.get("blocked_actions", 0)) == 0
+    assert int(reply.get("confirmation_required_actions", 0)) == 0
+    assert int(reply.get("executed_actions", 0)) == 0
+    outputs = _extract_tool_outputs(str(reply.get("response", "")))
+    assert "web.search" in outputs
+    payload = outputs["web.search"][0]
+    assert payload.get("ok") is False
+    assert payload.get("error") == "web_search_backend_unconfigured"
