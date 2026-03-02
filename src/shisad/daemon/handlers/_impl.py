@@ -435,30 +435,6 @@ class HandlerImplementation(
         )
 
     @staticmethod
-    def _user_explicit_side_effect_intent(content: str) -> bool:
-        lowered = content.lower()
-        cues = (
-            "send",
-            "post",
-            "publish",
-            "write",
-            "save",
-            "upload",
-            "search",
-            "fetch",
-            "browse",
-            "open",
-            "visit",
-            "look up",
-            "lookup",
-            "download",
-            "execute",
-            "run:",
-            "run ",
-        )
-        return any(token in lowered for token in cues)
-
-    @staticmethod
     def _origin_for(
         *,
         session: Session,

@@ -185,7 +185,8 @@ class ControlPlaneEngine:
         origin: Origin,
         risk_tier: RiskTier,
         declared_domains: list[str],
-        explicit_side_effect_intent: bool,
+        session_tainted: bool,
+        trusted_input: bool,
     ) -> ControlPlaneEvaluation:
         metadata_arguments = sanitize_metadata_payload(arguments)
         action = build_action(
@@ -221,7 +222,8 @@ class ControlPlaneEngine:
                 network_metadata=network_metadata,
                 declared_domains=declared_domains,
                 metadata_payload={
-                    "explicit_side_effect_intent": explicit_side_effect_intent,
+                    "session_tainted": session_tainted,
+                    "trusted_input": trusted_input,
                     "action_kind": action.action_kind.value,
                     "resource_ids": list(action.resource_ids),
                     "network_hosts": list(action.network_hosts),

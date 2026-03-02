@@ -402,6 +402,28 @@ async def test_contract_web_search_executes_and_returns_results(
 
 
 @pytest.mark.asyncio
+async def test_m1_rlc7_clean_session_latest_news_executes_without_confirmation(
+    contract_harness: ContractHarness,
+) -> None:
+    sid = await _create_session(contract_harness.client)
+    reply = await contract_harness.client.call(
+        "session.message",
+        {
+            "session_id": sid,
+            "content": "can you get me the latest news?",
+        },
+    )
+    assert reply.get("lockdown_level") == "normal"
+    assert int(reply.get("blocked_actions", 0)) == 0
+    assert int(reply.get("confirmation_required_actions", 0)) == 0
+    assert int(reply.get("executed_actions", 0)) == 1
+    outputs = _extract_tool_outputs(str(reply.get("response", "")))
+    assert "web.search" in outputs
+    payload = outputs["web.search"][0]
+    assert payload.get("ok") is True
+
+
+@pytest.mark.asyncio
 async def test_contract_file_read_executes_and_returns_content(
     contract_harness: ContractHarness,
 ) -> None:

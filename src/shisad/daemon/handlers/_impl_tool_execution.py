@@ -276,7 +276,8 @@ class ToolExecutionImplMixin(HandlerMixinBase):
             origin=operator_origin,
             risk_tier=risk_tier,
             declared_domains=merged_domains,
-            explicit_side_effect_intent=True,
+            session_tainted=False,
+            trusted_input=True,
         )
         await self._event_bus.publish(
             ConsensusEvaluated(

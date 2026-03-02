@@ -91,7 +91,8 @@ async def test_m5_t12_plan_commitment_prevents_post_content_privilege_upgrade(
         origin=origin,
         risk_tier=RiskTier.HIGH,
         declared_domains=["evil.example"],
-        explicit_side_effect_intent=True,
+        session_tainted=False,
+        trusted_input=True,
     )
     assert evaluation.decision == ControlDecision.BLOCK
     assert evaluation.trace_result.reason_code == "trace:stage2_upgrade_required"
@@ -119,7 +120,8 @@ async def test_m5_t13_consensus_blocks_when_high_voter_rejects(tmp_path: Path) -
         origin=origin,
         risk_tier=RiskTier.LOW,
         declared_domains=[],
-        explicit_side_effect_intent=False,
+        session_tainted=False,
+        trusted_input=True,
     )
     assert first.decision == ControlDecision.ALLOW
 
@@ -137,7 +139,8 @@ async def test_m5_t13_consensus_blocks_when_high_voter_rejects(tmp_path: Path) -
         origin=origin,
         risk_tier=RiskTier.HIGH,
         declared_domains=["allowed.example"],
-        explicit_side_effect_intent=True,
+        session_tainted=False,
+        trusted_input=True,
     )
     assert second.decision == ControlDecision.BLOCK
     assert any(code.startswith("consensus:veto:") for code in second.reason_codes)
@@ -167,7 +170,8 @@ async def test_m5_t14_end_to_end_control_plane_happy_and_compromise_paths(tmp_pa
         origin=origin,
         risk_tier=RiskTier.LOW,
         declared_domains=[],
-        explicit_side_effect_intent=False,
+        session_tainted=False,
+        trusted_input=True,
     )
     assert happy.decision == ControlDecision.ALLOW
     engine.record_execution(action=happy.action, success=True)
@@ -185,7 +189,8 @@ async def test_m5_t14_end_to_end_control_plane_happy_and_compromise_paths(tmp_pa
         origin=origin,
         risk_tier=RiskTier.HIGH,
         declared_domains=["allowed.example"],
-        explicit_side_effect_intent=True,
+        session_tainted=False,
+        trusted_input=True,
     )
     assert compromised.decision == ControlDecision.BLOCK
 

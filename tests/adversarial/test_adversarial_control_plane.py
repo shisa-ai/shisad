@@ -49,7 +49,8 @@ async def test_m5_a1_compromised_planner_fs_read_then_egress_is_blocked(tmp_path
         origin=origin,
         risk_tier=RiskTier.LOW,
         declared_domains=[],
-        explicit_side_effect_intent=False,
+        session_tainted=True,
+        trusted_input=True,
     )
     assert first.decision == ControlDecision.ALLOW
     stage2_action = build_action(
@@ -65,7 +66,8 @@ async def test_m5_a1_compromised_planner_fs_read_then_egress_is_blocked(tmp_path
         origin=origin,
         risk_tier=RiskTier.HIGH,
         declared_domains=["allowed.example"],
-        explicit_side_effect_intent=True,
+        session_tainted=True,
+        trusted_input=True,
     )
     assert second.decision == ControlDecision.BLOCK
 
@@ -87,7 +89,8 @@ async def test_m5_a2_action_not_in_committed_plan_is_blocked(tmp_path) -> None:
         origin=origin,
         risk_tier=RiskTier.HIGH,
         declared_domains=[],
-        explicit_side_effect_intent=True,
+        session_tainted=True,
+        trusted_input=True,
     )
     assert blocked.decision == ControlDecision.BLOCK
     assert blocked.trace_result.reason_code in {
@@ -177,7 +180,8 @@ async def test_m5_a5_credential_harvest_env_then_egress_blocked(tmp_path) -> Non
         origin=origin,
         risk_tier=RiskTier.HIGH,
         declared_domains=[],
-        explicit_side_effect_intent=True,
+        session_tainted=True,
+        trusted_input=True,
     )
     egress = await engine.evaluate_action(
         tool_name="http_request",
@@ -185,7 +189,8 @@ async def test_m5_a5_credential_harvest_env_then_egress_blocked(tmp_path) -> Non
         origin=origin,
         risk_tier=RiskTier.CRITICAL,
         declared_domains=[],
-        explicit_side_effect_intent=True,
+        session_tainted=True,
+        trusted_input=True,
     )
     assert egress.decision == ControlDecision.BLOCK
 
@@ -286,7 +291,8 @@ async def test_m5_a8_gradual_plan_drift_across_commitments_is_blocked(tmp_path) 
         origin=origin,
         risk_tier=RiskTier.HIGH,
         declared_domains=["allowed.example"],
-        explicit_side_effect_intent=True,
+        session_tainted=True,
+        trusted_input=True,
     )
     assert blocked.decision == ControlDecision.BLOCK
     assert blocked.trace_result.reason_code == "trace:stage2_upgrade_required"

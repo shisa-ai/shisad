@@ -928,6 +928,7 @@ class SessionImplMixin(HandlerMixinBase):
         executed_tool_outputs: list[Any] = []
         cleanroom_proposals: list[dict[str, Any]] = []
         cleanroom_block_reasons: list[str] = []
+        session_tainted = self._session_has_tainted_history(sid)
 
         for evaluated in planner_result.evaluated:
             proposal = evaluated.proposal
@@ -979,7 +980,8 @@ class SessionImplMixin(HandlerMixinBase):
                 origin=planner_origin,
                 risk_tier=_risk_tier_from_score(risk_score),
                 declared_domains=sorted(declared_domains),
-                explicit_side_effect_intent=self._user_explicit_side_effect_intent(content),
+                session_tainted=session_tainted,
+                trusted_input=trusted_input,
             )
             trace_only_stage2_block = (
                 cp_eval.trace_result.reason_code == "trace:stage2_upgrade_required"

@@ -50,7 +50,8 @@ async def test_egress_tool_does_not_trigger_lockdown(
         origin=planner_origin,
         risk_tier=RiskTier.LOW,
         declared_domains=[],
-        explicit_side_effect_intent=False,
+        session_tainted=False,
+        trusted_input=True,
     )
     assert result.decision != ControlDecision.BLOCK, (
         f"web.search blocked with reason: {result.reason_codes}"
@@ -138,7 +139,8 @@ async def test_trace_only_stage2_routes_to_confirmation(
         origin=planner_origin,
         risk_tier=RiskTier.LOW,
         declared_domains=[],
-        explicit_side_effect_intent=False,
+        session_tainted=False,
+        trusted_input=True,
     )
     # The trace verifier should block with stage2_upgrade_required
     assert result.trace_result.reason_code == "trace:stage2_upgrade_required"

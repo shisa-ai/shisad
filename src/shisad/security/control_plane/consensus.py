@@ -241,18 +241,27 @@ class ActionMonitorVoter:
             )
 
         action = data.action
-        explicit_intent = bool(data.metadata_payload.get("explicit_side_effect_intent", False))
+        session_tainted = bool(data.metadata_payload.get("session_tainted", True))
+        trusted_input = bool(data.metadata_payload.get("trusted_input", False))
+        if trusted_input and not session_tainted:
+            return VoterDecision(
+                voter="ActionMonitorVoter",
+                decision=VoteKind.ALLOW,
+                risk_tier=RiskTier.LOW,
+                reason_codes=["action_monitor:clean_session_trust_planner"],
+            )
+
         if action.action_kind in {
             ActionKind.EGRESS,
             ActionKind.FS_WRITE,
             ActionKind.MEMORY_WRITE,
             ActionKind.MESSAGE_SEND,
-        } and not explicit_intent:
+        } and session_tainted:
             return VoterDecision(
                 voter="ActionMonitorVoter",
                 decision=VoteKind.FLAG,
                 risk_tier=RiskTier.HIGH,
-                reason_codes=["action_monitor:side_effect_without_explicit_intent"],
+                reason_codes=["action_monitor:side_effect_on_tainted_session"],
             )
 
         return VoterDecision(
