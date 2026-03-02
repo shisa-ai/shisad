@@ -619,6 +619,82 @@ def test_restart_fresh_config_reloads_before_start(
     assert captured["config"] is refreshed_config
 
 
+def test_restart_fresh_config_creates_backup_before_reload(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    initial_config = _config(tmp_path)
+    initial_config.socket_path.touch()
+    refreshed_config = _config(tmp_path).model_copy(update={"log_level": "WARNING"})
+    config_calls = {"count": 0}
+    captured_backup: dict[str, DaemonConfig] = {}
+    captured_start: dict[str, DaemonConfig] = {}
+
+    def _fake_get_config() -> DaemonConfig:
+        config_calls["count"] += 1
+        if config_calls["count"] == 1:
+            return initial_config
+        return refreshed_config
+
+    def _fake_rpc_call(
+        _config: DaemonConfig,
+        method: str,
+        params: dict[str, object] | None = None,
+        *,
+        response_model: type[object] | None = None,
+    ) -> object:
+        assert _config is initial_config
+        assert method == "daemon.shutdown"
+        assert params is None
+        payload = {"status": "shutting_down"}
+        if response_model is None:
+            return payload
+        return response_model.model_validate(payload)  # type: ignore[attr-defined]
+
+    def _fake_backup(config: DaemonConfig) -> Path:
+        captured_backup["config"] = config
+        return tmp_path / "config-backups" / "20260302-120000.json"
+
+    def _fake_start(config: DaemonConfig, foreground: bool, debug: bool) -> None:
+        assert foreground is False
+        assert debug is False
+        captured_start["config"] = config
+
+    monkeypatch.setattr(cli_main, "_get_config", _fake_get_config)
+    monkeypatch.setattr(cli_main, "rpc_call", _fake_rpc_call)
+    monkeypatch.setattr(cli_main, "_backup_config_snapshot", _fake_backup)
+    monkeypatch.setattr(cli_main, "_start_daemon", _fake_start)
+
+    runner = CliRunner()
+    result = runner.invoke(cli_main.cli, ["restart", "--fresh-config"])
+
+    assert result.exit_code == 0, result.output
+    assert captured_backup["config"] is initial_config
+    assert captured_start["config"] is refreshed_config
+
+
+def test_backup_config_snapshot_writes_timestamped_file(tmp_path: Path) -> None:
+    config = _config(tmp_path).model_copy(
+        update={
+            "discord_bot_token": "secret-token",
+            "web_search_backend_url": "https://search.example",
+        }
+    )
+    backup = cli_main._backup_config_snapshot(config)
+
+    assert backup.parent == config.data_dir / "config-backups"
+    assert backup.name.endswith(".json")
+    stem = backup.stem
+    assert len(stem) == 15
+    assert stem[8] == "-"
+    assert stem.replace("-", "").isdigit()
+    assert backup.exists()
+
+    raw = backup.read_text(encoding="utf-8")
+    assert "secret-token" in raw
+    assert "search.example" in raw
+
+
 async def test_run_daemon_with_autoreload_restarts_when_source_changes(tmp_path: Path) -> None:
     watched_file = tmp_path / "watched.py"
     watched_file.write_text("value = 1\n", encoding="utf-8")

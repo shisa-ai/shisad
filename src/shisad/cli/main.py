@@ -7,10 +7,12 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import sys
 import time
 from collections.abc import Callable, Coroutine
 from contextlib import contextmanager, suppress
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -318,6 +320,25 @@ def _run_daemon_foreground(config: DaemonConfig) -> None:
     run_async(run_daemon(config))
 
 
+def _backup_config_snapshot(config: DaemonConfig) -> Path:
+    """Write a timestamped JSON snapshot of current config before reload."""
+    backup_dir = config.data_dir / "config-backups"
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
+    backup_path = backup_dir / f"{timestamp}.json"
+
+    # Keep names unique if multiple backups happen within the same second.
+    counter = 1
+    while backup_path.exists():
+        backup_path = backup_dir / f"{timestamp}-{counter}.json"
+        counter += 1
+
+    payload = config.model_dump(mode="json")
+    backup_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+    os.chmod(backup_path, 0o600)
+    return backup_path
+
+
 def _start_daemon(*, config: DaemonConfig, foreground: bool, debug: bool) -> None:
     effective_foreground = foreground or debug
     effective_config = config.model_copy(update={"log_level": "DEBUG"}) if debug else config
@@ -394,6 +415,8 @@ def restart(foreground: bool, debug: bool, fresh_config: bool) -> None:
         )
 
     if fresh_config:
+        backup_path = _backup_config_snapshot(config)
+        _echo(f"Saved prior config snapshot: {backup_path}", fg="yellow")
         config = _get_config()
         _echo("Reloaded configuration from environment", fg="cyan")
 
