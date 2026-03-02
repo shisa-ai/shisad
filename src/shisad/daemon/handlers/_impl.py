@@ -501,6 +501,13 @@ class HandlerImplementation(
     def _session_has_tainted_history(self, session_id: SessionId) -> bool:
         return any(entry.taint_labels for entry in self._transcript_store.list_entries(session_id))
 
+    def _session_has_tainted_user_history(self, session_id: SessionId) -> bool:
+        return any(
+            entry.taint_labels
+            for entry in self._transcript_store.list_entries(session_id)
+            if str(entry.role).strip().lower() == "user"
+        )
+
     def _doctor_dependencies_status(self) -> dict[str, Any]:
         channel_rows: dict[str, dict[str, Any]] = {}
         problems: list[str] = []

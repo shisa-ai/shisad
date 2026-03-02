@@ -424,6 +424,38 @@ async def test_m1_rlc7_clean_session_latest_news_executes_without_confirmation(
 
 
 @pytest.mark.asyncio
+async def test_m1_rlc7_repeat_latest_news_same_session_executes_without_confirmation(
+    contract_harness: ContractHarness,
+) -> None:
+    sid = await _create_session(contract_harness.client)
+    first = await contract_harness.client.call(
+        "session.message",
+        {
+            "session_id": sid,
+            "content": "search for the latest news",
+        },
+    )
+    assert first.get("lockdown_level") == "normal"
+    assert int(first.get("blocked_actions", 0)) == 0
+    assert int(first.get("confirmation_required_actions", 0)) == 0
+    assert int(first.get("executed_actions", 0)) == 1
+
+    second = await contract_harness.client.call(
+        "session.message",
+        {
+            "session_id": sid,
+            "content": "search for the latest news",
+        },
+    )
+    assert second.get("lockdown_level") == "normal"
+    assert int(second.get("blocked_actions", 0)) == 0
+    assert int(second.get("confirmation_required_actions", 0)) == 0
+    assert int(second.get("executed_actions", 0)) == 1
+    outputs = _extract_tool_outputs(str(second.get("response", "")))
+    assert "web.search" in outputs
+
+
+@pytest.mark.asyncio
 async def test_contract_file_read_executes_and_returns_content(
     contract_harness: ContractHarness,
 ) -> None:

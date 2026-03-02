@@ -263,6 +263,18 @@ class ActionMonitorVoter:
                 risk_tier=RiskTier.HIGH,
                 reason_codes=["action_monitor:side_effect_on_tainted_session"],
             )
+        if action.action_kind in {
+            ActionKind.EGRESS,
+            ActionKind.FS_WRITE,
+            ActionKind.MEMORY_WRITE,
+            ActionKind.MESSAGE_SEND,
+        } and not trusted_input:
+            return VoterDecision(
+                voter="ActionMonitorVoter",
+                decision=VoteKind.FLAG,
+                risk_tier=RiskTier.HIGH,
+                reason_codes=["action_monitor:untrusted_input_side_effect"],
+            )
 
         return VoterDecision(
             voter="ActionMonitorVoter",

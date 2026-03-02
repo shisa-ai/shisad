@@ -928,7 +928,9 @@ class SessionImplMixin(HandlerMixinBase):
         executed_tool_outputs: list[Any] = []
         cleanroom_proposals: list[dict[str, Any]] = []
         cleanroom_block_reasons: list[str] = []
-        session_tainted = self._session_has_tainted_history(sid)
+        # Use user-origin taint for AMV gating so routine untrusted tool output
+        # does not force confirmation on every later side-effect request.
+        session_tainted = self._session_has_tainted_user_history(sid)
 
         for evaluated in planner_result.evaluated:
             proposal = evaluated.proposal

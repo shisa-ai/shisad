@@ -276,6 +276,8 @@ class ToolExecutionImplMixin(HandlerMixinBase):
             origin=operator_origin,
             risk_tier=risk_tier,
             declared_domains=merged_domains,
+            # tool.execute is an explicit operator-initiated RPC path.
+            # Keep this trusted/clean to preserve operator override semantics.
             session_tainted=False,
             trusted_input=True,
         )
