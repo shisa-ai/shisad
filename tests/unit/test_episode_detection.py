@@ -5,19 +5,53 @@ from __future__ import annotations
 import logging
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
+from shisad.channels.identity import ChannelIdentityMap
 from shisad.core.context import (
     build_conversation_episodes,
     compress_episodes_to_budget,
 )
+from shisad.core.session import SessionManager
 from shisad.core.transcript import TranscriptEntry, TranscriptStore
-from shisad.core.types import SessionId, TaintLabel
+from shisad.core.types import SessionId, TaintLabel, UserId, WorkspaceId
 from shisad.daemon.handlers._impl_session import (
+    SessionImplMixin,
     _build_episode_snapshot,
     _build_planner_conversation_context,
 )
+from shisad.security.firewall import ContentFirewall
+
+
+class _EventCollector:
+    def __init__(self) -> None:
+        self.events: list[object] = []
+
+    async def publish(self, event: object) -> None:
+        self.events.append(event)
+
+
+class _SessionMessageHarness(SessionImplMixin):
+    def __init__(self, tmp_path: Path) -> None:
+        self._session_manager = SessionManager()
+        self._identity_map = ChannelIdentityMap()
+        self._firewall = ContentFirewall()
+        self._event_bus = _EventCollector()
+        self._internal_ingress_marker = object()
+        self._transcript_root = tmp_path / "sessions"
+        self._transcript_store = TranscriptStore(self._transcript_root)
+        self._config = SimpleNamespace(context_window=20)
+
+    @staticmethod
+    def _session_mode(session: object) -> object:
+        return session.mode  # type: ignore[attr-defined]
+
+    @staticmethod
+    def _is_admin_rpc_peer(params: object) -> bool:
+        _ = params
+        return False
 
 
 def _append(
@@ -286,3 +320,42 @@ def test_m2_r_open_5_episode_snapshot_logs_failure_reason(
 
     assert snapshot is None
     assert "episode snapshot build failed" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_m2_rr3_do_session_message_logs_episode_degraded_warning(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    tmp_path: Path,
+) -> None:
+    harness = _SessionMessageHarness(tmp_path)
+    session = harness._session_manager.create(
+        channel="cli",
+        user_id=UserId("u-1"),
+        workspace_id=WorkspaceId("w-1"),
+        metadata={"trust_level": "untrusted"},
+    )
+    params = {
+        "session_id": str(session.id),
+        "content": "hello",
+        "channel": "cli",
+        "user_id": "u-1",
+        "workspace_id": "w-1",
+    }
+
+    from shisad.daemon.handlers import _impl_session as impl_module
+
+    monkeypatch.setattr(impl_module, "_build_episode_snapshot", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        impl_module,
+        "_build_planner_conversation_context",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("stop_after_degrade")),
+    )
+
+    with (
+        caplog.at_level(logging.WARNING, logger="shisad.daemon.handlers._impl_session"),
+        pytest.raises(RuntimeError, match="stop_after_degrade"),
+    ):
+        await SessionImplMixin.do_session_message(harness, params)  # type: ignore[arg-type]
+
+    assert "episode snapshot degraded for session" in caplog.text
