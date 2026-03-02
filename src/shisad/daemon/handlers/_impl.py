@@ -1234,6 +1234,7 @@ class HandlerImplementation(
                 ToolOutputRecord(
                     tool_name=str(tool_name),
                     content=result.content,
+                    success=result.success,
                     taint_labels=result.taint_labels,
                 ),
             )

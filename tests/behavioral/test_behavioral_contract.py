@@ -790,6 +790,15 @@ async def test_contract_web_search_backend_unconfigured_is_actionable(
     assert int(reply.get("blocked_actions", 0)) == 0
     assert int(reply.get("confirmation_required_actions", 0)) == 0
     assert int(reply.get("executed_actions", 0)) == 0
+    tool_output_records = reply.get("tool_outputs")
+    assert isinstance(tool_output_records, list)
+    web_search_records = [
+        record
+        for record in tool_output_records
+        if isinstance(record, dict) and str(record.get("tool_name", "")) == "web.search"
+    ]
+    assert web_search_records
+    assert web_search_records[0].get("success") is False
     outputs = _extract_tool_outputs(reply)
     assert "web.search" in outputs
     payload = outputs["web.search"][0]
