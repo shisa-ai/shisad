@@ -69,6 +69,52 @@ def test_chat_app_with_existing_session() -> None:
     assert app._session_id == "abc123"
 
 
+def test_chat_app_bindings_include_new_session_hotkey() -> None:
+    keys = {(binding.key, binding.action) for binding in ChatApp.BINDINGS}
+    assert ("ctrl+n", "new_session") in keys
+
+
+def test_chat_app_prompt_history_cycles_through_previous_prompts() -> None:
+    app = ChatApp(
+        socket_path=Path("/tmp/test.sock"),
+        user_id="ops",
+        workspace_id="default",
+    )
+    app._record_prompt_history("first prompt")
+    app._record_prompt_history("second prompt")
+
+    assert app._recall_prompt_history(direction=-1, current_value="") == "second prompt"
+    assert app._recall_prompt_history(direction=-1, current_value="") == "first prompt"
+    assert app._recall_prompt_history(direction=1, current_value="") == "second prompt"
+
+
+def test_chat_app_prompt_history_restores_draft_after_navigation() -> None:
+    app = ChatApp(
+        socket_path=Path("/tmp/test.sock"),
+        user_id="ops",
+        workspace_id="default",
+    )
+    app._record_prompt_history("first prompt")
+    app._record_prompt_history("second prompt")
+
+    assert (
+        app._recall_prompt_history(direction=-1, current_value="draft message")
+        == "second prompt"
+    )
+    assert app._recall_prompt_history(direction=1, current_value="ignored") == "draft message"
+
+
+def test_chat_app_prompt_history_down_without_active_cursor_keeps_current_value() -> None:
+    app = ChatApp(
+        socket_path=Path("/tmp/test.sock"),
+        user_id="ops",
+        workspace_id="default",
+    )
+    app._record_prompt_history("only prompt")
+
+    assert app._recall_prompt_history(direction=1, current_value="draft") == "draft"
+
+
 # ---------------------------------------------------------------------------
 # RPC integration tests (mocked)
 # ---------------------------------------------------------------------------
@@ -253,6 +299,27 @@ async def test_chat_app_send_message_rejects_non_mapping_payload() -> None:
 
     with pytest.raises(RuntimeError, match=r"Invalid session\.message response type"):
         await app._send_message(mock_client, "hello")
+
+
+@pytest.mark.asyncio
+async def test_chat_app_create_new_session_calls_session_create() -> None:
+    app = ChatApp(
+        socket_path=Path("/tmp/test.sock"),
+        user_id="ops",
+        workspace_id="prod",
+        session_id="existing-id",
+    )
+
+    mock_client = AsyncMock()
+    mock_client.call = AsyncMock(return_value={"session_id": "fresh-id"})
+
+    await app._create_new_session(mock_client)
+
+    mock_client.call.assert_awaited_once_with(
+        "session.create",
+        params={"user_id": "ops", "workspace_id": "prod"},
+    )
+    assert app._session_id == "fresh-id"
 
 
 # ---------------------------------------------------------------------------

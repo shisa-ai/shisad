@@ -13,6 +13,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
+from textual import events
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.widgets import Footer, Header, Input, TextArea
@@ -95,6 +96,7 @@ class ChatApp(App[None]):
     BINDINGS = [  # noqa: RUF012
         Binding("ctrl+c", "quit", "Quit", show=True),
         Binding("ctrl+d", "quit", "Quit", show=False),
+        Binding("ctrl+n", "new_session", "New Session", show=True),
         Binding("tab", "focus_next_pane", show=False),
         Binding("shift+tab", "focus_prev_pane", show=False),
     ]
@@ -115,6 +117,9 @@ class ChatApp(App[None]):
         self._session_id = session_id
         self._reuse_bound_session = reuse_bound_session
         self._reconnected = False
+        self._prompt_history: list[str] = []
+        self._prompt_history_cursor: int | None = None
+        self._prompt_draft = ""
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -131,7 +136,12 @@ class ChatApp(App[None]):
             finally:
                 await client.close()
             self._append_history("Connected.")
-            self._append_history("Type a message and press Enter. Ctrl-C to quit.")
+            self._append_history(
+                "Type a message and press Enter. "
+                "Up/Down recalls prompts. "
+                "Ctrl-N starts a new session. "
+                "Ctrl-C to quit."
+            )
             self._append_history("")
             self.sub_title = "connected"
         except (OSError, RuntimeError, TypeError, ValueError) as exc:
@@ -139,11 +149,22 @@ class ChatApp(App[None]):
             self._append_history("Is the daemon running? Try: shisad start --foreground")
         self.query_one("#chat-input", Input).focus()
 
+    def on_key(self, event: events.Key) -> None:
+        """Support readline-like history navigation on the input widget."""
+        if event.key == "up" and self._is_input_focused():
+            self.action_history_prev()
+            event.stop()
+            return
+        if event.key == "down" and self._is_input_focused():
+            self.action_history_next()
+            event.stop()
+
     async def on_input_submitted(self, event: Input.Submitted) -> None:
         content = event.value.strip()
         if not content:
             return
 
+        self._record_prompt_history(content)
         input_widget = self.query_one("#chat-input", Input)
         input_widget.value = ""
 
@@ -184,6 +205,10 @@ class ChatApp(App[None]):
             if existing_session_id:
                 self._session_id = existing_session_id
                 return
+        await self._create_new_session(client)
+
+    async def _create_new_session(self, client: Any) -> None:
+        """Create a fresh session for the current user/workspace."""
         result = await client.call(
             "session.create",
             params={"user_id": self._user_id, "workspace_id": self._workspace_id},
@@ -294,3 +319,80 @@ class ChatApp(App[None]):
     def action_focus_prev_pane(self) -> None:
         """Move focus between history and input panes."""
         self.action_focus_next_pane()
+
+    def action_history_prev(self) -> None:
+        """Recall the previous submitted prompt."""
+        if not self._is_input_focused():
+            return
+        input_widget = self.query_one("#chat-input", Input)
+        input_widget.value = self._recall_prompt_history(
+            direction=-1,
+            current_value=input_widget.value,
+        )
+
+    def action_history_next(self) -> None:
+        """Recall the next submitted prompt."""
+        if not self._is_input_focused():
+            return
+        input_widget = self.query_one("#chat-input", Input)
+        input_widget.value = self._recall_prompt_history(
+            direction=1,
+            current_value=input_widget.value,
+        )
+
+    async def action_new_session(self) -> None:
+        """Create and switch to a new session without restarting chat."""
+        old_session_id = self._session_id
+        self._session_id = None
+        self._reconnected = False
+        try:
+            client = await self._connect()
+            try:
+                await self._create_new_session(client)
+            finally:
+                await client.close()
+            self._append_history("info: started a new session.")
+            self._append_history("")
+        except (OSError, RuntimeError, TypeError, ValueError) as exc:
+            self._session_id = old_session_id
+            self._append_history(_format_error(f"Could not start new session: {exc}"))
+            self._append_history("")
+        self.query_one("#chat-input", Input).focus()
+
+    def _is_input_focused(self) -> bool:
+        focused = self.focused
+        return focused is not None and focused.id == "chat-input"
+
+    def _record_prompt_history(self, content: str) -> None:
+        """Store a submitted prompt for Up/Down recall."""
+        text = content.strip()
+        if not text:
+            return
+        self._prompt_history.append(text)
+        self._prompt_history_cursor = None
+        self._prompt_draft = ""
+
+    def _recall_prompt_history(self, *, direction: int, current_value: str) -> str:
+        """Step through prompt history, restoring draft text when exiting."""
+        if not self._prompt_history:
+            return current_value
+        if direction not in (-1, 1):
+            return current_value
+        if self._prompt_history_cursor is None:
+            if direction == 1:
+                return current_value
+            self._prompt_draft = current_value
+            self._prompt_history_cursor = len(self._prompt_history) - 1
+            return self._prompt_history[self._prompt_history_cursor]
+
+        next_index = self._prompt_history_cursor + direction
+        if next_index < 0:
+            self._prompt_history_cursor = 0
+            return self._prompt_history[0]
+        if next_index >= len(self._prompt_history):
+            self._prompt_history_cursor = None
+            draft = self._prompt_draft
+            self._prompt_draft = ""
+            return draft
+        self._prompt_history_cursor = next_index
+        return self._prompt_history[next_index]
