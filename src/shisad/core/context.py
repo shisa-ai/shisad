@@ -97,6 +97,7 @@ def _entry_to_episode_message(entry: TranscriptEntry) -> EpisodeMessage:
 
 
 def _deterministic_summary_line(episode: ConversationEpisode) -> str:
+    """Build one-line deterministic episode summary before message compaction."""
     role_counts: dict[str, int] = {}
     tool_names: set[str] = set()
     for message in episode.messages:

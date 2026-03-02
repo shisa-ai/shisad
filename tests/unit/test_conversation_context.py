@@ -55,6 +55,26 @@ def test_m4_s4_build_planner_conversation_context_excludes_inflight_turn(tmp_pat
     assert "current turn should be excluded" not in rendered
 
 
+def test_m2_r_open_1_context_entries_are_not_double_excluded(tmp_path: Path) -> None:
+    store = TranscriptStore(tmp_path / "sessions")
+    sid = SessionId("sess-m2-r1")
+    store.append(sid, role="user", content="history question")
+    store.append(sid, role="assistant", content="history answer")
+    store.append(sid, role="user", content="current turn should be excluded")
+
+    rendered, _taints = _build_planner_conversation_context(
+        transcript_store=store,
+        session_id=sid,
+        context_window=10,
+        exclude_latest_turn=True,
+        entries=store.list_entries(sid)[:-1],
+    )
+
+    assert "history question" in rendered
+    assert "history answer" in rendered
+    assert "current turn should be excluded" not in rendered
+
+
 def test_m4_s6_build_planner_conversation_context_compacts_and_propagates_taint(
     tmp_path: Path,
 ) -> None:

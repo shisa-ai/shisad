@@ -58,7 +58,7 @@ class TranscriptStore:
         content_hash = hashlib.sha256(raw).hexdigest()
         entry_timestamp = self._normalize_timestamp(timestamp)
         entry_metadata = dict(metadata or {})
-        entry_metadata.setdefault("timestamp_utc", entry_timestamp.isoformat())
+        entry_metadata["timestamp_utc"] = entry_timestamp.isoformat()
 
         blob_ref: str | None = None
         preview = content

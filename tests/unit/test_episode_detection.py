@@ -2,15 +2,18 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+
+import pytest
 
 from shisad.core.context import (
     build_conversation_episodes,
     compress_episodes_to_budget,
 )
 from shisad.core.transcript import TranscriptEntry, TranscriptStore
-from shisad.core.types import SessionId
+from shisad.core.types import SessionId, TaintLabel
 from shisad.daemon.handlers._impl_session import (
     _build_episode_snapshot,
     _build_planner_conversation_context,
@@ -224,3 +227,62 @@ def test_m2_cs3_transcript_append_supports_explicit_timestamp(tmp_path: Path) ->
     assert entry.timestamp == timestamp
     assert entry.metadata["timestamp_utc"] == timestamp.isoformat()
     assert entry.metadata["channel"] == "cli"
+
+
+def test_m2_r_open_2_episode_snapshot_runtime_success_path(tmp_path: Path) -> None:
+    store = TranscriptStore(tmp_path / "sessions")
+    sid = SessionId("sess-episode-runtime")
+    base = datetime(2026, 3, 1, 8, 0, tzinfo=UTC)
+
+    _append(store, sid, role="user", content="first", timestamp=base)
+    store.append(
+        sid,
+        role="assistant",
+        content="first reply",
+        timestamp=base + timedelta(minutes=2),
+        metadata={"channel": "cli", "tool_name": "web.search"},
+        taint_labels={TaintLabel.UNTRUSTED},
+    )
+    _append(store, sid, role="user", content="second", timestamp=base + timedelta(hours=5))
+
+    snapshot = _build_episode_snapshot(store.list_entries(sid))
+    assert snapshot is not None
+    assert len(snapshot["episodes"]) == 2
+    assert snapshot["episodes"][0]["finalized"] is True
+    assert snapshot["episodes"][1]["finalized"] is False
+    assert snapshot["episodes"][0]["source_taint_labels"] == [TaintLabel.UNTRUSTED.value]
+
+
+def test_m2_r_open_3_transcript_timestamp_metadata_is_canonical(tmp_path: Path) -> None:
+    store = TranscriptStore(tmp_path / "sessions")
+    sid = SessionId("sess-episode-ts-canonical")
+    timestamp = datetime(2026, 3, 1, 12, 0, tzinfo=UTC)
+
+    entry = store.append(
+        sid,
+        role="user",
+        content="canonical timestamp",
+        timestamp=timestamp,
+        metadata={"timestamp_utc": "2099-01-01T00:00:00+00:00"},
+    )
+
+    assert entry.timestamp == timestamp
+    assert entry.metadata["timestamp_utc"] == timestamp.isoformat()
+
+
+def test_m2_r_open_5_episode_snapshot_logs_failure_reason(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    bad_entry = TranscriptEntry(
+        role="user",
+        content_hash="deadbeef",
+        content_preview="bad metadata",
+        timestamp=datetime(2026, 3, 1, 10, 0, tzinfo=UTC),
+        metadata={},
+    )
+
+    with caplog.at_level(logging.WARNING):
+        snapshot = _build_episode_snapshot([bad_entry])
+
+    assert snapshot is None
+    assert "episode snapshot build failed" in caplog.text

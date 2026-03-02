@@ -404,10 +404,13 @@ def _build_planner_conversation_context(
     exclude_latest_turn: bool = True,
     entries: list[TranscriptEntry] | None = None,
 ) -> tuple[str, set[TaintLabel]]:
-    resolved_entries = (
-        list(entries) if entries is not None else transcript_store.list_entries(session_id)
-    )
-    if exclude_latest_turn and resolved_entries:
+    if entries is not None:
+        # Caller supplied an explicit history window (for example already excluding
+        # the in-flight user turn), so do not trim again.
+        resolved_entries = list(entries)
+    else:
+        resolved_entries = transcript_store.list_entries(session_id)
+    if entries is None and exclude_latest_turn and resolved_entries:
         resolved_entries = resolved_entries[:-1]
     entries = resolved_entries
     if not entries:
@@ -485,7 +488,8 @@ def _build_episode_snapshot(
             gap_threshold=gap_threshold,
         )
         budgeted = compress_episodes_to_budget(episodes, token_budget=token_budget)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError) as exc:
+        logger.warning("episode snapshot build failed: %s", exc)
         return None
 
     serialized_episodes: list[dict[str, Any]] = []
@@ -828,6 +832,10 @@ class SessionImplMixin(HandlerMixinBase):
         context_entries = transcript_entries[:-1] if transcript_entries else []
         episode_snapshot = _build_episode_snapshot(context_entries)
         if episode_snapshot is None:
+            logger.warning(
+                "episode snapshot degraded for session %s; falling back to flat context",
+                sid,
+            )
             session.metadata.pop("episode_snapshot", None)
             session.metadata["episode_snapshot_degraded"] = True
         else:
@@ -839,7 +847,7 @@ class SessionImplMixin(HandlerMixinBase):
             transcript_store=self._transcript_store,
             session_id=sid,
             context_window=int(self._config.context_window),
-            exclude_latest_turn=True,
+            exclude_latest_turn=False,
             entries=context_entries,
         )
         effective_caps = self._lockdown_manager.apply_capability_restrictions(
