@@ -376,6 +376,20 @@ async def run_daemon(config: DaemonConfig) -> None:
 
     await services.server.start()
     logger.info("shisad daemon started")
+
+    # Effective config summary — so operators can verify settings from logs
+    _search_status = "enabled" if config.web_search_enabled else "DISABLED"
+    _fetch_status = "enabled" if config.web_fetch_enabled else "DISABLED"
+    _search_backend = config.web_search_backend_url or "(not configured)"
+    _n_domains = len(config.web_allowed_domains)
+    logger.info(
+        "Config: web.search=%s backend=%s web.fetch=%s allowed_domains=%d fs_roots=%s",
+        _search_status,
+        _search_backend,
+        _fetch_status,
+        _n_domains,
+        config.assistant_fs_roots,
+    )
     channel_pump_tasks: list[asyncio.Task[None]] = []
     reminder_pump_task = asyncio.create_task(_reminder_delivery_pump(services=services))
     for channel_name, channel in services.channels.items():
