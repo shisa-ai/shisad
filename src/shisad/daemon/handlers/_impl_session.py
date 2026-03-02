@@ -7,13 +7,19 @@ import json
 import logging
 import time
 from collections.abc import Mapping
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
 from urllib.parse import urlparse
 
 from pydantic import ValidationError
 
 from shisad.channels.base import DeliveryTarget
+from shisad.core.context import (
+    DEFAULT_EPISODE_GAP_THRESHOLD,
+    DEFAULT_INTERNAL_TIER_TOKEN_BUDGET,
+    build_conversation_episodes,
+    compress_episodes_to_budget,
+)
 from shisad.core.events import (
     AnomalyReported,
     ConsensusEvaluated,
@@ -85,6 +91,8 @@ _CONTEXT_SUMMARY_SCAN_LIMIT = 24
 _MEMORY_CONTEXT_ENTRY_MAX_CHARS = 220
 _MEMORY_QUERY_CONTEXT_MAX_CHARS = 400
 _REJECTION_REASON_SPLITTER = ","
+_EPISODE_GAP_THRESHOLD = DEFAULT_EPISODE_GAP_THRESHOLD
+_EPISODE_INTERNAL_TOKEN_BUDGET = DEFAULT_INTERNAL_TIER_TOKEN_BUDGET
 _GENERIC_BLOCKED_ACTION_MESSAGE = (
     "I could not safely execute the proposed action(s) under current policy."
 )
@@ -394,10 +402,14 @@ def _build_planner_conversation_context(
     session_id: SessionId,
     context_window: int,
     exclude_latest_turn: bool = True,
+    entries: list[TranscriptEntry] | None = None,
 ) -> tuple[str, set[TaintLabel]]:
-    entries = transcript_store.list_entries(session_id)
-    if exclude_latest_turn and entries:
-        entries = entries[:-1]
+    resolved_entries = (
+        list(entries) if entries is not None else transcript_store.list_entries(session_id)
+    )
+    if exclude_latest_turn and resolved_entries:
+        resolved_entries = resolved_entries[:-1]
+    entries = resolved_entries
     if not entries:
         return "", set()
 
@@ -428,6 +440,80 @@ def _build_planner_conversation_context(
     if len(lines) == 1:
         return "", context_taints
     return "\n".join(lines), context_taints
+
+
+def _episode_timestamp_from_metadata(entry: TranscriptEntry) -> datetime:
+    if not isinstance(entry.metadata, dict):
+        raise ValueError("invalid transcript metadata for episode detection")
+    raw_timestamp = entry.metadata.get("timestamp_utc")
+    if not isinstance(raw_timestamp, str) or not raw_timestamp.strip():
+        raise ValueError("missing timestamp_utc metadata for episode detection")
+    try:
+        parsed = datetime.fromisoformat(raw_timestamp)
+    except ValueError as exc:
+        raise ValueError("malformed timestamp_utc metadata for episode detection") from exc
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
+
+
+def _build_episode_snapshot(
+    entries: list[TranscriptEntry],
+    *,
+    gap_threshold: timedelta = _EPISODE_GAP_THRESHOLD,
+    token_budget: int = _EPISODE_INTERNAL_TOKEN_BUDGET,
+) -> dict[str, Any] | None:
+    """Build compressed episode metadata for session-scaffold staging.
+
+    Returns None when episode detection cannot be performed safely so callers can
+    fall back to the flat-context path without partial episode output.
+    """
+    if not entries:
+        return {
+            "episodes": [],
+            "compressed_episode_ids": [],
+            "evicted_episode_ids": [],
+            "used_tokens": 0,
+        }
+    try:
+        normalized_entries = [
+            entry.model_copy(update={"timestamp": _episode_timestamp_from_metadata(entry)})
+            for entry in entries
+        ]
+        episodes = build_conversation_episodes(
+            normalized_entries,
+            gap_threshold=gap_threshold,
+        )
+        budgeted = compress_episodes_to_budget(episodes, token_budget=token_budget)
+    except (TypeError, ValueError):
+        return None
+
+    serialized_episodes: list[dict[str, Any]] = []
+    for episode in budgeted.episodes:
+        source_taints = sorted(label.value for label in episode.source_taint_labels)
+        serialized_episodes.append(
+            {
+                "episode_id": episode.episode_id,
+                "start_ts": episode.start_ts.isoformat(),
+                "end_ts": episode.end_ts.isoformat(),
+                "message_count": int(episode.message_count),
+                "finalized": bool(episode.finalized),
+                "compressed": bool(episode.compressed),
+                "summary": episode.summary.text if episode.summary is not None else "",
+                "summary_minimized": (
+                    bool(episode.summary.minimized)
+                    if episode.summary is not None
+                    else False
+                ),
+                "source_taint_labels": source_taints,
+            }
+        )
+    return {
+        "episodes": serialized_episodes,
+        "compressed_episode_ids": list(budgeted.compressed_episode_ids),
+        "evicted_episode_ids": list(budgeted.evicted_episode_ids),
+        "used_tokens": int(budgeted.used_tokens),
+    }
 
 
 def _build_memory_retrieval_query(
@@ -735,11 +821,23 @@ class SessionImplMixin(HandlerMixinBase):
             if canonical_allowlist:
                 tool_allowlist = canonical_allowlist
 
+        transcript_entries = self._transcript_store.list_entries(sid)
+        context_entries = transcript_entries[:-1] if transcript_entries else []
+        episode_snapshot = _build_episode_snapshot(context_entries)
+        if episode_snapshot is None:
+            session.metadata.pop("episode_snapshot", None)
+            session.metadata["episode_snapshot_degraded"] = True
+        else:
+            session.metadata["episode_snapshot"] = episode_snapshot
+            session.metadata["episode_snapshot_degraded"] = False
+        self._session_manager.persist(sid)
+
         conversation_context, transcript_context_taints = _build_planner_conversation_context(
             transcript_store=self._transcript_store,
             session_id=sid,
             context_window=int(self._config.context_window),
             exclude_latest_turn=True,
+            entries=context_entries,
         )
         effective_caps = self._lockdown_manager.apply_capability_restrictions(
             sid,

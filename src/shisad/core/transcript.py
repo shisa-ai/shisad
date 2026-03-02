@@ -51,10 +51,14 @@ class TranscriptStore:
         content: str,
         taint_labels: set[TaintLabel] | None = None,
         metadata: dict[str, Any] | None = None,
+        timestamp: datetime | None = None,
     ) -> TranscriptEntry:
         """Append a transcript entry for a session."""
         raw = content.encode("utf-8")
         content_hash = hashlib.sha256(raw).hexdigest()
+        entry_timestamp = self._normalize_timestamp(timestamp)
+        entry_metadata = dict(metadata or {})
+        entry_metadata.setdefault("timestamp_utc", entry_timestamp.isoformat())
 
         blob_ref: str | None = None
         preview = content
@@ -70,9 +74,10 @@ class TranscriptStore:
             role=role,
             content_hash=content_hash,
             taint_labels=sorted(taint_labels or set()),
+            timestamp=entry_timestamp,
             blob_ref=blob_ref,
             content_preview=preview,
-            metadata=metadata or {},
+            metadata=entry_metadata,
         )
 
         transcript_path = self._transcript_dir / f"{session_id}.jsonl"
@@ -111,3 +116,11 @@ class TranscriptStore:
     def _ensure_file_permissions(path: Path) -> None:
         with contextlib.suppress(OSError):
             os.chmod(path, 0o600)
+
+    @staticmethod
+    def _normalize_timestamp(timestamp: datetime | None) -> datetime:
+        if timestamp is None:
+            return datetime.now(UTC)
+        if timestamp.tzinfo is None:
+            return timestamp.replace(tzinfo=UTC)
+        return timestamp.astimezone(UTC)
