@@ -302,6 +302,10 @@ async def _run_daemon_with_autoreload(
         daemon_task.cancel()
         with suppress(asyncio.CancelledError):
             await daemon_task
+        if str(config.log_level).strip().upper() == "DEBUG":
+            refreshed = _get_config()
+            config = refreshed.model_copy(update={"log_level": "DEBUG"})
+            _echo("Autoreload reloaded daemon config from environment", fg="cyan")
 
 
 def _run_daemon_with_autoreload_sync(config: DaemonConfig) -> None:
@@ -314,16 +318,7 @@ def _run_daemon_foreground(config: DaemonConfig) -> None:
     run_async(run_daemon(config))
 
 
-@cli.command()
-@click.option("--foreground", "-f", is_flag=True, help="Run in foreground (don't daemonize)")
-@click.option(
-    "--debug",
-    is_flag=True,
-    help="Run in foreground with DEBUG logging and local autoreload.",
-)
-def start(foreground: bool, debug: bool) -> None:
-    """Start the shisad daemon."""
-    config = _get_config()
+def _start_daemon(*, config: DaemonConfig, foreground: bool, debug: bool) -> None:
     effective_foreground = foreground or debug
     effective_config = config.model_copy(update={"log_level": "DEBUG"}) if debug else config
 
@@ -347,6 +342,18 @@ def start(foreground: bool, debug: bool) -> None:
 
 
 @cli.command()
+@click.option("--foreground", "-f", is_flag=True, help="Run in foreground (don't daemonize)")
+@click.option(
+    "--debug",
+    is_flag=True,
+    help="Run in foreground with DEBUG logging and local autoreload.",
+)
+def start(foreground: bool, debug: bool) -> None:
+    """Start the shisad daemon."""
+    _start_daemon(config=_get_config(), foreground=foreground, debug=debug)
+
+
+@cli.command()
 def stop() -> None:
     """Stop the shisad daemon."""
     config = _get_config()
@@ -358,6 +365,39 @@ def stop() -> None:
     with _progress("Connecting"):
         rpc_call(config, "daemon.shutdown", response_model=DaemonShutdownResult)
     _echo("Shutdown signal sent", fg="green")
+
+
+@cli.command()
+@click.option("--foreground", "-f", is_flag=True, help="Run in foreground (don't daemonize)")
+@click.option(
+    "--debug",
+    is_flag=True,
+    help="Run in foreground with DEBUG logging and local autoreload.",
+)
+@click.option(
+    "--fresh-config",
+    is_flag=True,
+    help="Reload config from environment after shutdown before start.",
+)
+def restart(foreground: bool, debug: bool, fresh_config: bool) -> None:
+    """Restart the shisad daemon."""
+    config = _get_config()
+
+    if config.socket_path.exists():
+        with _progress("Connecting"):
+            rpc_call(config, "daemon.shutdown", response_model=DaemonShutdownResult)
+        _echo("Shutdown signal sent", fg="green")
+    else:
+        _echo(
+            "Daemon does not appear to be running (no socket found); starting anyway",
+            fg="yellow",
+        )
+
+    if fresh_config:
+        config = _get_config()
+        _echo("Reloaded configuration from environment", fg="cyan")
+
+    _start_daemon(config=config, foreground=foreground, debug=debug)
 
 
 @cli.command()

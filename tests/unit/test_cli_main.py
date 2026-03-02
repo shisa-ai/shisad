@@ -526,6 +526,99 @@ def test_start_default_routes_to_foreground_path(
     assert "only supported mode" in result.output
 
 
+def test_restart_default_shuts_down_then_starts_foreground(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _config(tmp_path)
+    config.socket_path.touch()
+    monkeypatch.setattr(cli_main, "_get_config", lambda: config)
+
+    shutdown_calls: list[tuple[str, dict[str, object] | None]] = []
+    captured: dict[str, DaemonConfig] = {}
+
+    def _fake_rpc_call(
+        _config: DaemonConfig,
+        method: str,
+        params: dict[str, object] | None = None,
+        *,
+        response_model: type[object] | None = None,
+    ) -> object:
+        shutdown_calls.append((method, params))
+        payload = {"status": "shutting_down"}
+        if response_model is None:
+            return payload
+        return response_model.model_validate(payload)  # type: ignore[attr-defined]
+
+    def _fake_foreground_start(effective_config: DaemonConfig) -> None:
+        captured["config"] = effective_config
+
+    def _fake_debug_start(_: DaemonConfig) -> None:
+        raise AssertionError("debug/autoreload path should not be used without --debug")
+
+    monkeypatch.setattr(cli_main, "rpc_call", _fake_rpc_call)
+    monkeypatch.setattr(cli_main, "_run_daemon_foreground", _fake_foreground_start)
+    monkeypatch.setattr(cli_main, "_run_daemon_with_autoreload_sync", _fake_debug_start)
+
+    runner = CliRunner()
+    result = runner.invoke(cli_main.cli, ["restart"])
+
+    assert result.exit_code == 0, result.output
+    assert shutdown_calls == [("daemon.shutdown", None)]
+    assert captured["config"] is config
+
+
+def test_restart_fresh_config_reloads_before_start(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    initial_config = _config(tmp_path)
+    initial_config.socket_path.touch()
+    refreshed_config = _config(tmp_path).model_copy(update={"log_level": "WARNING"})
+    config_calls = {"count": 0}
+
+    def _fake_get_config() -> DaemonConfig:
+        config_calls["count"] += 1
+        if config_calls["count"] == 1:
+            return initial_config
+        return refreshed_config
+
+    captured: dict[str, DaemonConfig] = {}
+
+    def _fake_rpc_call(
+        _config: DaemonConfig,
+        method: str,
+        params: dict[str, object] | None = None,
+        *,
+        response_model: type[object] | None = None,
+    ) -> object:
+        assert _config is initial_config
+        assert method == "daemon.shutdown"
+        assert params is None
+        payload = {"status": "shutting_down"}
+        if response_model is None:
+            return payload
+        return response_model.model_validate(payload)  # type: ignore[attr-defined]
+
+    def _fake_foreground_start(effective_config: DaemonConfig) -> None:
+        captured["config"] = effective_config
+
+    def _fake_debug_start(_: DaemonConfig) -> None:
+        raise AssertionError("debug/autoreload path should not be used without --debug")
+
+    monkeypatch.setattr(cli_main, "_get_config", _fake_get_config)
+    monkeypatch.setattr(cli_main, "rpc_call", _fake_rpc_call)
+    monkeypatch.setattr(cli_main, "_run_daemon_foreground", _fake_foreground_start)
+    monkeypatch.setattr(cli_main, "_run_daemon_with_autoreload_sync", _fake_debug_start)
+
+    runner = CliRunner()
+    result = runner.invoke(cli_main.cli, ["restart", "--fresh-config"])
+
+    assert result.exit_code == 0, result.output
+    assert config_calls["count"] == 2
+    assert captured["config"] is refreshed_config
+
+
 async def test_run_daemon_with_autoreload_restarts_when_source_changes(tmp_path: Path) -> None:
     watched_file = tmp_path / "watched.py"
     watched_file.write_text("value = 1\n", encoding="utf-8")
@@ -560,6 +653,60 @@ async def test_run_daemon_with_autoreload_restarts_when_source_changes(tmp_path:
     await asyncio.wait_for(task, timeout=1.0)
 
     assert starts == [1, 2]
+
+
+async def test_run_daemon_with_autoreload_debug_reloads_config_between_restarts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    watched_file = tmp_path / "watched.py"
+    watched_file.write_text("value = 1\n", encoding="utf-8")
+    config = _config(tmp_path).model_copy(
+        update={
+            "log_level": "DEBUG",
+            "data_dir": tmp_path / "data-initial",
+        }
+    )
+    refreshed = _config(tmp_path).model_copy(
+        update={
+            "log_level": "INFO",
+            "data_dir": tmp_path / "data-refreshed",
+        }
+    )
+    monkeypatch.setattr(cli_main, "_get_config", lambda: refreshed)
+
+    seen_data_dirs: list[Path] = []
+    seen_log_levels: list[str] = []
+    first_started = asyncio.Event()
+    first_cancelled = asyncio.Event()
+
+    async def _fake_daemon(run_config: DaemonConfig) -> None:
+        seen_data_dirs.append(run_config.data_dir)
+        seen_log_levels.append(run_config.log_level)
+        if len(seen_data_dirs) == 1:
+            first_started.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                first_cancelled.set()
+                raise
+
+    task = asyncio.create_task(
+        cli_main._run_daemon_with_autoreload(
+            config=config,
+            watch_roots=(tmp_path,),
+            poll_interval=0.01,
+            daemon_runner=_fake_daemon,
+        )
+    )
+
+    await asyncio.wait_for(first_started.wait(), timeout=1.0)
+    watched_file.write_text("value = 2\n", encoding="utf-8")
+    await asyncio.wait_for(first_cancelled.wait(), timeout=1.0)
+    await asyncio.wait_for(task, timeout=1.0)
+
+    assert seen_data_dirs == [tmp_path / "data-initial", tmp_path / "data-refreshed"]
+    assert seen_log_levels == ["DEBUG", "DEBUG"]
 
 
 async def test_run_daemon_with_autoreload_exits_without_restart_when_daemon_stops(
