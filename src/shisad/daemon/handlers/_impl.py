@@ -469,6 +469,55 @@ class HandlerImplementation(
             return RiskTier.MEDIUM
         return RiskTier.LOW
 
+    def _build_merged_policy(
+        self,
+        *,
+        tool_name: ToolName,
+        arguments: Mapping[str, Any],
+        tool_definition: ToolDefinition | None,
+        operator_surface: bool = False,
+    ) -> ToolExecutionPolicy:
+        floor = self._compute_tool_policy_floor(
+            tool_name=tool_name,
+            tool_definition=tool_definition,
+            operator_surface=operator_surface,
+        )
+        return PolicyMerge.merge(server=floor, caller=normalize_patch(dict(arguments)))
+
+    @staticmethod
+    def _build_sandbox_config(
+        *,
+        sid: SessionId | str,
+        tool_name: ToolName | str,
+        params: Mapping[str, Any],
+        merged_policy: ToolExecutionPolicy,
+        origin: Origin,
+        approved_by_pep: bool,
+    ) -> SandboxConfig:
+        return SandboxConfig(
+            session_id=str(sid),
+            tool_name=str(tool_name),
+            command=[str(token) for token in params.get("command", [])],
+            read_paths=[str(item) for item in params.get("read_paths", [])],
+            write_paths=[str(item) for item in params.get("write_paths", [])],
+            network_urls=[str(item) for item in params.get("network_urls", [])],
+            env={str(k): str(v) for k, v in dict(params.get("env", {})).items()},
+            request_headers={
+                str(k): str(v) for k, v in dict(params.get("request_headers", {})).items()
+            },
+            request_body=str(params.get("request_body", "")),
+            cwd=str(params.get("cwd", "")),
+            sandbox_type=merged_policy.sandbox_type,
+            security_critical=merged_policy.security_critical,
+            approved_by_pep=approved_by_pep,
+            filesystem=merged_policy.filesystem,
+            network=merged_policy.network,
+            environment=merged_policy.environment,
+            limits=merged_policy.limits,
+            degraded_mode=merged_policy.degraded_mode,
+            origin=origin.model_dump(mode="json"),
+        )
+
     @staticmethod
     def _action_hash(*, session_id: SessionId, tool_name: ToolName, command: list[str]) -> str:
         payload = {
@@ -1461,11 +1510,11 @@ class HandlerImplementation(
                 ),
                 session=session,
             )
-        floor = self._compute_tool_policy_floor(tool_name=tool.name, tool_definition=tool)
         try:
-            merged_policy = PolicyMerge.merge(
-                server=floor,
-                caller=normalize_patch(arguments),
+            merged_policy = self._build_merged_policy(
+                tool_name=tool.name,
+                arguments=arguments,
+                tool_definition=tool,
             )
         except PolicyMergeError as exc:
             return SandboxResult(
@@ -1474,28 +1523,13 @@ class HandlerImplementation(
                 origin=origin.model_dump(mode="json"),
             )
 
-        config = SandboxConfig(
-            session_id=str(sid),
-            tool_name=str(tool.name),
-            command=command,
-            read_paths=[str(item) for item in arguments.get("read_paths", [])],
-            write_paths=[str(item) for item in arguments.get("write_paths", [])],
-            network_urls=[str(item) for item in arguments.get("network_urls", [])],
-            env={str(k): str(v) for k, v in dict(arguments.get("env", {})).items()},
-            request_headers={
-                str(k): str(v) for k, v in dict(arguments.get("request_headers", {})).items()
-            },
-            request_body=str(arguments.get("request_body", "")),
-            cwd=str(arguments.get("cwd", "")),
-            sandbox_type=merged_policy.sandbox_type,
-            security_critical=merged_policy.security_critical,
+        config = self._build_sandbox_config(
+            sid=sid,
+            tool_name=tool.name,
+            params={**dict(arguments), "command": command},
+            merged_policy=merged_policy,
+            origin=origin,
             approved_by_pep=approved_by_pep,
-            filesystem=merged_policy.filesystem,
-            network=merged_policy.network,
-            environment=merged_policy.environment,
-            limits=merged_policy.limits,
-            degraded_mode=merged_policy.degraded_mode,
-            origin=origin.model_dump(mode="json"),
         )
         return await self._execute_sandbox_config(
             sid=sid,

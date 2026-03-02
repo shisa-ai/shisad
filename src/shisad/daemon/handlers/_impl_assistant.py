@@ -2,19 +2,32 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Mapping
 from typing import Any, cast
 
 from shisad.daemon.handlers._mixin_typing import HandlerMixinBase
 
+logger = logging.getLogger(__name__)
+
 
 class AssistantImplMixin(HandlerMixinBase):
+    @staticmethod
+    def _log_operator_bypass(*, tool: str, handler: str) -> None:
+        logger.info(
+            "operator_bypass_rpc tool=%s handler=%s origin=direct_assistant",
+            tool,
+            handler,
+        )
+
     async def do_web_search(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        self._log_operator_bypass(tool="web.search", handler="do_web_search")
         query = str(params.get("query", ""))
         limit = int(params.get("limit", 5))
         return cast(dict[str, Any], self._web_toolkit.search(query=query, limit=limit))
 
     async def do_web_fetch(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        self._log_operator_bypass(tool="web.fetch", handler="do_web_fetch")
         url = str(params.get("url", ""))
         snapshot = bool(params.get("snapshot", False))
         raw_max_bytes = params.get("max_bytes")
@@ -25,6 +38,10 @@ class AssistantImplMixin(HandlerMixinBase):
         )
 
     async def do_realitycheck_search(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        self._log_operator_bypass(
+            tool="realitycheck.search",
+            handler="do_realitycheck_search",
+        )
         query = str(params.get("query", ""))
         limit = int(params.get("limit", 5))
         mode = str(params.get("mode", "auto"))
@@ -34,6 +51,7 @@ class AssistantImplMixin(HandlerMixinBase):
         )
 
     async def do_realitycheck_read(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        self._log_operator_bypass(tool="realitycheck.read", handler="do_realitycheck_read")
         path = str(params.get("path", ""))
         raw_max_bytes = params.get("max_bytes")
         max_bytes = int(raw_max_bytes) if raw_max_bytes is not None else None
@@ -43,6 +61,7 @@ class AssistantImplMixin(HandlerMixinBase):
         )
 
     async def do_fs_list(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        self._log_operator_bypass(tool="fs.list", handler="do_fs_list")
         return cast(
             dict[str, Any],
             self._fs_git_toolkit.list_dir(
@@ -53,6 +72,7 @@ class AssistantImplMixin(HandlerMixinBase):
         )
 
     async def do_fs_read(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        self._log_operator_bypass(tool="fs.read", handler="do_fs_read")
         raw_max_bytes = params.get("max_bytes")
         max_bytes = int(raw_max_bytes) if raw_max_bytes is not None else None
         return cast(
@@ -64,6 +84,7 @@ class AssistantImplMixin(HandlerMixinBase):
         )
 
     async def do_fs_write(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        self._log_operator_bypass(tool="fs.write", handler="do_fs_write")
         return cast(
             dict[str, Any],
             self._fs_git_toolkit.write_file(
@@ -74,12 +95,14 @@ class AssistantImplMixin(HandlerMixinBase):
         )
 
     async def do_git_status(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        self._log_operator_bypass(tool="git.status", handler="do_git_status")
         return cast(
             dict[str, Any],
             self._fs_git_toolkit.git_status(repo_path=str(params.get("repo_path", "."))),
         )
 
     async def do_git_diff(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        self._log_operator_bypass(tool="git.diff", handler="do_git_diff")
         return cast(
             dict[str, Any],
             self._fs_git_toolkit.git_diff(
@@ -90,6 +113,7 @@ class AssistantImplMixin(HandlerMixinBase):
         )
 
     async def do_git_log(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        self._log_operator_bypass(tool="git.log", handler="do_git_log")
         return cast(
             dict[str, Any],
             self._fs_git_toolkit.git_log(

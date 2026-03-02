@@ -114,6 +114,7 @@ class SchedulerManager:
         payload: str,
     ) -> list[TaskRunRequest]:
         requests: list[TaskRunRequest] = []
+        dirty = False
         for task in self._tasks.values():
             if not task.enabled:
                 continue
@@ -121,6 +122,8 @@ class SchedulerManager:
                 continue
             if task.schedule.event_type != event_type:
                 continue
+            task.trigger_count += 1
+            dirty = True
             requests.append(
                 TaskRunRequest(
                     task_id=task.id,
@@ -132,6 +135,8 @@ class SchedulerManager:
                 "task.trigger",
                 {"task_id": task.id, "event_type": event_type, "payload_taint": "UNTRUSTED"},
             )
+        if dirty:
+            self._persist_tasks()
         return requests
 
     def trigger_due(
@@ -166,6 +171,7 @@ class SchedulerManager:
             else:
                 continue
             task.last_triggered_at = current
+            task.trigger_count += 1
             dirty = True
             requests.append(
                 TaskRunRequest(
@@ -193,6 +199,35 @@ class SchedulerManager:
 
     def pending_confirmations(self, task_id: str) -> list[dict[str, Any]]:
         return list(self._pending_confirmations.get(task_id, []))
+
+    def task_status_snapshot(self, *, limit: int = 8) -> list[dict[str, Any]]:
+        tasks = sorted(
+            self._tasks.values(),
+            key=lambda item: (item.created_at, item.id),
+            reverse=True,
+        )
+        rows: list[dict[str, Any]] = []
+        for task in tasks[: max(0, int(limit))]:
+            pending = len(self._pending_confirmations.get(task.id, []))
+            rows.append(
+                {
+                    "task_id": task.id,
+                    "title": task.name,
+                    "status": "enabled" if task.enabled else "disabled",
+                    "created_at": task.created_at.isoformat(),
+                    "last_triggered_at": (
+                        task.last_triggered_at.isoformat()
+                        if task.last_triggered_at is not None
+                        else ""
+                    ),
+                    "confirmation_needed": pending > 0,
+                    "pending_confirmation_count": pending,
+                    "trigger_count": int(task.trigger_count),
+                    "success_count": int(task.success_count),
+                    "failure_count": int(task.failure_count),
+                }
+            )
+        return rows
 
     def _validate_schedule(self, schedule: Schedule) -> None:
         if schedule.kind == ScheduleKind.EVENT:

@@ -6,7 +6,8 @@ import hashlib
 import json
 import logging
 import time
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
 from urllib.parse import urlparse
@@ -36,6 +37,7 @@ from shisad.core.events import (
     SessionMessageResponded,
     SessionModeChanged,
     SessionRolledBack,
+    TaskDelegationAdvisory,
     ToolProposed,
     ToolRejected,
 )
@@ -66,6 +68,7 @@ from shisad.security.control_plane.schema import (
     ControlDecision,
     RiskTier,
     extract_request_size_bytes,
+    infer_action_kind,
 )
 from shisad.security.firewall import FirewallResult
 from shisad.security.host_extraction import extract_hosts_from_text, host_patterns
@@ -102,6 +105,28 @@ _EPISODE_INTERNAL_TOKEN_BUDGET = DEFAULT_INTERNAL_TIER_TOKEN_BUDGET
 _GENERIC_BLOCKED_ACTION_MESSAGE = (
     "I could not safely execute the proposed action(s) under current policy."
 )
+_IN_BAND_READ_ONLY_ACTION_KINDS: set[ActionKind] = {
+    ActionKind.FS_READ,
+    ActionKind.FS_LIST,
+    ActionKind.MEMORY_READ,
+    ActionKind.MESSAGE_READ,
+}
+_DELEGATE_SIDE_EFFECT_ACTION_KINDS: set[ActionKind] = {
+    ActionKind.EGRESS,
+    ActionKind.FS_WRITE,
+    ActionKind.MEMORY_WRITE,
+    ActionKind.MESSAGE_SEND,
+    ActionKind.SHELL_EXEC,
+    ActionKind.ENV_ACCESS,
+}
+
+
+@dataclass(frozen=True, slots=True)
+class TaskDelegationRecommendation:
+    delegate: bool
+    action_count: int
+    reason_codes: tuple[str, ...]
+    tools: tuple[str, ...]
 
 
 def _tool_available_in_session(
@@ -634,6 +659,120 @@ def _preview_multiline_output(
     return preview_lines, truncated
 
 
+def _normalized_task_rows(task_ledger_snapshot: dict[str, Any] | None) -> list[dict[str, Any]]:
+    if not isinstance(task_ledger_snapshot, dict):
+        return []
+    rows_raw = task_ledger_snapshot.get("tasks")
+    if not isinstance(rows_raw, list):
+        return []
+    rows: list[dict[str, Any]] = []
+    for raw in rows_raw:
+        if not isinstance(raw, dict):
+            continue
+        task_id = str(raw.get("task_id", "")).strip()
+        if not task_id:
+            continue
+        rows.append(raw)
+    return rows
+
+
+def should_delegate_to_task(
+    *,
+    proposals: Sequence[Any],
+) -> TaskDelegationRecommendation:
+    normalized: list[tuple[str, dict[str, Any]]] = []
+    for proposal in proposals:
+        tool_name = canonical_tool_name(str(getattr(proposal, "tool_name", "")))
+        arguments_raw = getattr(proposal, "arguments", {})
+        arguments = dict(arguments_raw) if isinstance(arguments_raw, Mapping) else {}
+        if tool_name:
+            normalized.append((tool_name, arguments))
+
+    if not normalized:
+        return TaskDelegationRecommendation(
+            delegate=False,
+            action_count=0,
+            reason_codes=("no_tool_actions",),
+            tools=(),
+        )
+
+    reason_codes: list[str] = []
+    delegate = False
+    if len(normalized) > 1:
+        delegate = True
+        reason_codes.append("multi_action_batch")
+
+    has_side_effect = False
+    has_unknown = False
+    has_non_read_only = False
+    for tool_name, arguments in normalized:
+        action_kind = infer_action_kind(tool_name, arguments)
+        if action_kind in _DELEGATE_SIDE_EFFECT_ACTION_KINDS:
+            has_side_effect = True
+            continue
+        if action_kind == ActionKind.UNKNOWN:
+            has_unknown = True
+            continue
+        if action_kind not in _IN_BAND_READ_ONLY_ACTION_KINDS:
+            has_non_read_only = True
+
+    if has_side_effect:
+        delegate = True
+        reason_codes.append("side_effect_action")
+    if has_unknown:
+        delegate = True
+        reason_codes.append("unknown_action_kind")
+    if has_non_read_only:
+        delegate = True
+        reason_codes.append("non_read_only_action")
+    if not delegate and len(normalized) == 1:
+        reason_codes.append("in_band_read_only_single_action")
+    if not reason_codes:
+        reason_codes.append("advisory_delegate_default")
+    return TaskDelegationRecommendation(
+        delegate=delegate,
+        action_count=len(normalized),
+        reason_codes=tuple(reason_codes),
+        tools=tuple(tool_name for tool_name, _ in normalized),
+    )
+
+
+def _build_task_internal_scaffold_entries(
+    *,
+    task_ledger_snapshot: dict[str, Any] | None,
+) -> list[ContextScaffoldEntry]:
+    rows = _normalized_task_rows(task_ledger_snapshot)
+    entries: list[ContextScaffoldEntry] = []
+    for row in rows:
+        task_id = str(row.get("task_id", "")).strip()
+        title = _compact_context_text(str(row.get("title", "")), max_chars=80)
+        status = str(row.get("status", "")).strip().lower() or "unknown"
+        created_at = str(row.get("created_at", "")).strip() or "unknown"
+        last_triggered = str(row.get("last_triggered_at", "")).strip() or "none"
+        pending = int(row.get("pending_confirmation_count", 0) or 0)
+        trigger_count = int(row.get("trigger_count", 0) or 0)
+        success_count = int(row.get("success_count", 0) or 0)
+        failure_count = int(row.get("failure_count", 0) or 0)
+        confirmation_needed = bool(row.get("confirmation_needed", False))
+        content = (
+            f"task_id={task_id} title={title} status={status} "
+            f"created_at={created_at} last_triggered_at={last_triggered} "
+            f"confirmation_needed={confirmation_needed} "
+            f"pending_confirmation_count={pending} trigger_count={trigger_count} "
+            f"success_count={success_count} failure_count={failure_count}"
+        )
+        entries.append(
+            ContextScaffoldEntry(
+                entry_id=f"task:{task_id}",
+                trust_level="TRUSTED",
+                content=content,
+                provenance=[f"task:{task_id}"],
+                source_taint_labels=[],
+            )
+        )
+    return entries
+
+
 def _build_session_frontmatter(
     *,
     session_id: SessionId,
@@ -642,6 +781,7 @@ def _build_session_frontmatter(
     capabilities: set[Capability],
     policy_taints: set[TaintLabel],
     episode_snapshot: dict[str, Any] | None,
+    task_ledger_snapshot: dict[str, Any] | None = None,
 ) -> str:
     active_capabilities = ",".join(sorted(cap.value for cap in capabilities)) or "none"
     taint_labels = ",".join(sorted(label.value for label in policy_taints)) or "none"
@@ -677,37 +817,57 @@ def _build_session_frontmatter(
                 )
                 lines.append(f"active_episode_messages={active.get('message_count', 0)}")
                 lines.append(f"active_episode_finalized={bool(active.get('finalized', False))}")
+    task_rows = _normalized_task_rows(task_ledger_snapshot)
+    if task_rows:
+        snapshot = task_ledger_snapshot if isinstance(task_ledger_snapshot, dict) else {}
+        task_total_raw = snapshot.get("task_status_total", len(task_rows))
+        confirmation_total_raw = snapshot.get(
+            "task_confirmation_needed_total",
+            sum(1 for row in task_rows if bool(row.get("confirmation_needed", False))),
+        )
+        lines.append(f"task_status_total={int(task_total_raw)}")
+        lines.append(f"task_confirmation_needed_total={int(confirmation_total_raw)}")
+        for index, row in enumerate(task_rows, start=1):
+            task_meta = (
+                f"id:{row.get('task_id', '')},status:{row.get('status', '')},"
+                f"created_at:{row.get('created_at', '')},"
+                f"last_triggered_at:{row.get('last_triggered_at', '') or 'none'},"
+                f"confirmation_needed:{bool(row.get('confirmation_needed', False))}"
+            )
+            lines.append(f"task_meta_{index}={_sanitize_frontmatter_value(task_meta)}")
     return "\n".join(lines)
 
 
 def _build_internal_scaffold_entries(
     *,
     episode_snapshot: dict[str, Any] | None,
+    task_ledger_snapshot: dict[str, Any] | None = None,
 ) -> list[ContextScaffoldEntry]:
-    if not isinstance(episode_snapshot, dict):
-        return []
-    episodes_raw = episode_snapshot.get("episodes")
-    if not isinstance(episodes_raw, list):
-        return []
     entries: list[ContextScaffoldEntry] = []
-    for index, raw_episode in enumerate(episodes_raw, start=1):
-        if not isinstance(raw_episode, dict):
-            continue
-        summary = str(raw_episode.get("summary", "")).strip()
-        if not summary:
-            continue
-        episode_id = str(raw_episode.get("episode_id", "")).strip() or f"ep-{index:04d}"
-        entries.append(
-            ContextScaffoldEntry(
-                entry_id=f"episode:{episode_id}",
-                trust_level="SEMI_TRUSTED",
-                content=summary,
-                provenance=[f"episode:{episode_id}"],
-                source_taint_labels=_normalize_source_taint_labels(
-                    raw_episode.get("source_taint_labels")
-                ),
-            )
-        )
+    if isinstance(episode_snapshot, dict):
+        episodes_raw = episode_snapshot.get("episodes")
+        if isinstance(episodes_raw, list):
+            for index, raw_episode in enumerate(episodes_raw, start=1):
+                if not isinstance(raw_episode, dict):
+                    continue
+                summary = str(raw_episode.get("summary", "")).strip()
+                if not summary:
+                    continue
+                episode_id = str(raw_episode.get("episode_id", "")).strip() or f"ep-{index:04d}"
+                entries.append(
+                    ContextScaffoldEntry(
+                        entry_id=f"episode:{episode_id}",
+                        trust_level="SEMI_TRUSTED",
+                        content=summary,
+                        provenance=[f"episode:{episode_id}"],
+                        source_taint_labels=_normalize_source_taint_labels(
+                            raw_episode.get("source_taint_labels")
+                        ),
+                    )
+                )
+    entries.extend(
+        _build_task_internal_scaffold_entries(task_ledger_snapshot=task_ledger_snapshot)
+    )
     return entries
 
 
@@ -763,13 +923,17 @@ def _build_planner_context_scaffold(
     conversation_context: str,
     memory_context: str,
     episode_snapshot: dict[str, Any] | None,
+    task_ledger_snapshot: dict[str, Any] | None = None,
 ) -> ContextScaffold:
     policy_taints = set(incoming_taint_labels)
     if conversation_context.strip():
         policy_taints.add(TaintLabel.UNTRUSTED)
     if memory_context.strip():
         policy_taints.add(TaintLabel.UNTRUSTED)
-    internal_entries = _build_internal_scaffold_entries(episode_snapshot=episode_snapshot)
+    internal_entries = _build_internal_scaffold_entries(
+        episode_snapshot=episode_snapshot,
+        task_ledger_snapshot=task_ledger_snapshot,
+    )
     untrusted_entries = _build_untrusted_scaffold_entries(
         current_turn_text=current_turn_text,
         incoming_taint_labels=incoming_taint_labels,
@@ -785,6 +949,7 @@ def _build_planner_context_scaffold(
             capabilities=capabilities,
             policy_taints=policy_taints,
             episode_snapshot=episode_snapshot,
+            task_ledger_snapshot=task_ledger_snapshot,
         ),
         internal_entries=internal_entries,
         untrusted_entries=untrusted_entries,
@@ -894,6 +1059,36 @@ def _risk_tier_from_score(score: float) -> RiskTier:
 
 
 class SessionImplMixin(HandlerMixinBase):
+    def _build_task_ledger_snapshot(self, *, limit: int = 8) -> dict[str, Any] | None:
+        scheduler = getattr(self, "_scheduler", None)
+        if scheduler is None:
+            return None
+        status_builder = getattr(scheduler, "task_status_snapshot", None)
+        if not callable(status_builder):
+            return None
+        try:
+            task_rows = status_builder(limit=limit)
+        except (OSError, RuntimeError, TypeError, ValueError):
+            logger.warning("task ledger snapshot build failed", exc_info=True)
+            return None
+        if not isinstance(task_rows, list):
+            return None
+        cleaned_rows: list[dict[str, Any]] = [
+            row
+            for row in task_rows
+            if isinstance(row, dict) and str(row.get("task_id", "")).strip()
+        ]
+        if not cleaned_rows:
+            return None
+        confirmation_total = sum(
+            1 for row in cleaned_rows if bool(row.get("confirmation_needed", False))
+        )
+        return {
+            "task_status_total": len(cleaned_rows),
+            "task_confirmation_needed_total": confirmation_total,
+            "tasks": cleaned_rows,
+        }
+
     async def do_session_create(self, params: Mapping[str, Any]) -> dict[str, Any]:
         channel = str(params.get("channel", "cli"))
         requested_mode = str(params.get("mode", SessionMode.DEFAULT.value)).strip().lower()
@@ -1248,6 +1443,7 @@ class SessionImplMixin(HandlerMixinBase):
             tool_allowlist=tool_allowlist,
             trust_level=trust_level,
         )
+        task_ledger_snapshot = self._build_task_ledger_snapshot()
         context_scaffold = _build_planner_context_scaffold(
             session_id=sid,
             session=session,
@@ -1258,6 +1454,7 @@ class SessionImplMixin(HandlerMixinBase):
             conversation_context=conversation_context,
             memory_context=memory_context,
             episode_snapshot=episode_snapshot,
+            task_ledger_snapshot=task_ledger_snapshot,
         )
         planner_input = build_planner_input_v2(
             trusted_instructions=(
@@ -1332,6 +1529,27 @@ class SessionImplMixin(HandlerMixinBase):
 
         # --- trace: capture planner response metadata ---
         trace_tool_calls: list[TraceToolCall] = []
+        delegation_advisory = should_delegate_to_task(
+            proposals=[item.proposal for item in planner_result.evaluated]
+        )
+        if delegation_advisory.action_count > 0:
+            logger.info(
+                "task delegation advisory session=%s delegate=%s reasons=%s tools=%s",
+                sid,
+                delegation_advisory.delegate,
+                ",".join(delegation_advisory.reason_codes),
+                ",".join(delegation_advisory.tools),
+            )
+            await self._event_bus.publish(
+                TaskDelegationAdvisory(
+                    session_id=sid,
+                    actor="orchestrator",
+                    delegate=delegation_advisory.delegate,
+                    action_count=delegation_advisory.action_count,
+                    reason_codes=list(delegation_advisory.reason_codes),
+                    tools=list(delegation_advisory.tools),
+                )
+            )
 
         rejected = 0
         pending_confirmation = 0

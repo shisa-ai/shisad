@@ -18,6 +18,7 @@ from shisad.core.types import Capability, SessionId, SessionMode, TaintLabel, Us
 from shisad.daemon.handlers._impl_session import (
     _build_planner_context_scaffold,
     _serialize_tool_outputs,
+    should_delegate_to_task,
 )
 from shisad.security import spotlight
 
@@ -226,3 +227,105 @@ def test_m3_rr2_tool_output_serialization_preserves_non_json_and_success() -> No
     assert serialized[0]["payload"]["text"] == "line1\nline2\nline3"
     assert serialized[0]["payload"]["structured"] is False
     assert serialized[0]["taint_labels"] == [TaintLabel.UNTRUSTED.value]
+
+
+def test_m4_cs6_task_ledger_entries_are_trusted_and_provenanced() -> None:
+    session = Session(
+        id=SessionId("sess-m4"),
+        channel="cli",
+        mode=SessionMode.DEFAULT,
+        metadata={"trust_level": "trusted"},
+        created_at=datetime(2026, 3, 2, 10, 0, tzinfo=UTC),
+    )
+    scaffold = _build_planner_context_scaffold(
+        session_id=SessionId("sess-m4"),
+        session=session,
+        trust_level="trusted",
+        capabilities={Capability.FILE_READ, Capability.MEMORY_READ},
+        current_turn_text="hello",
+        incoming_taint_labels=set(),
+        conversation_context="",
+        memory_context="",
+        episode_snapshot=None,
+        task_ledger_snapshot={
+            "task_status_total": 2,
+            "task_confirmation_needed_total": 1,
+            "tasks": [
+                {
+                    "task_id": "task-1",
+                    "title": "daily summary",
+                    "status": "enabled",
+                    "created_at": "2026-03-01T10:00:00+00:00",
+                    "last_triggered_at": "2026-03-02T09:00:00+00:00",
+                    "confirmation_needed": True,
+                    "trigger_count": 3,
+                    "success_count": 2,
+                    "failure_count": 1,
+                    "pending_confirmation_count": 1,
+                },
+                {
+                    "task_id": "task-2",
+                    "title": "weekly digest",
+                    "status": "disabled",
+                    "created_at": "2026-02-27T10:00:00+00:00",
+                    "last_triggered_at": "",
+                    "confirmation_needed": False,
+                    "trigger_count": 0,
+                    "success_count": 0,
+                    "failure_count": 0,
+                    "pending_confirmation_count": 0,
+                },
+            ],
+        },
+    )
+    assert "task_status_total=2" in scaffold.trusted_frontmatter
+    assert "task_confirmation_needed_total=1" in scaffold.trusted_frontmatter
+    task_entries = [
+        entry for entry in scaffold.internal_entries if entry.entry_id.startswith("task:")
+    ]
+    assert len(task_entries) == 2
+    first = task_entries[0]
+    assert first.trust_level == "TRUSTED"
+    assert first.provenance == ["task:task-1"]
+    assert "title=daily summary" in first.content
+    assert "success_count=2" in first.content
+    assert "failure_count=1" in first.content
+
+
+def test_m4_cs9_should_delegate_to_task_classifies_read_only_vs_batch_and_side_effect() -> None:
+    read_only = should_delegate_to_task(
+        proposals=[
+            SimpleNamespace(
+                tool_name="retrieve_rag",
+                arguments={"query": "roadmap", "top_k": 2},
+            )
+        ]
+    )
+    assert read_only.delegate is False
+    assert "in_band_read_only_single_action" in read_only.reason_codes
+
+    batch = should_delegate_to_task(
+        proposals=[
+            SimpleNamespace(
+                tool_name="retrieve_rag",
+                arguments={"query": "one", "top_k": 1},
+            ),
+            SimpleNamespace(
+                tool_name="retrieve_rag",
+                arguments={"query": "two", "top_k": 1},
+            ),
+        ]
+    )
+    assert batch.delegate is True
+    assert "multi_action_batch" in batch.reason_codes
+
+    side_effect = should_delegate_to_task(
+        proposals=[
+            SimpleNamespace(
+                tool_name="web.search",
+                arguments={"query": "latest news", "limit": 3},
+            )
+        ]
+    )
+    assert side_effect.delegate is True
+    assert "side_effect_action" in side_effect.reason_codes

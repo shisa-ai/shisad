@@ -257,6 +257,15 @@ class TaskTriggered(BaseEvent):
     event_type: str = ""
 
 
+class TaskDelegationAdvisory(BaseEvent):
+    """Advisory command/task delegation recommendation (telemetry-only)."""
+
+    delegate: bool = False
+    action_count: int = 0
+    reason_codes: list[str] = Field(default_factory=list)
+    tools: list[str] = Field(default_factory=list)
+
+
 class OutputFirewallAlert(BaseEvent):
     """Outbound content triggered firewall controls."""
 
@@ -428,6 +437,7 @@ type AnyEvent = (
     | MemoryEntryDeleted
     | TaskScheduled
     | TaskTriggered
+    | TaskDelegationAdvisory
     | OutputFirewallAlert
     | SandboxDegraded
     | SandboxEscapeDetected
@@ -469,6 +479,7 @@ EVENT_TYPES: dict[str, type[BaseEvent]] = {
     "MemoryEntryDeleted": MemoryEntryDeleted,
     "TaskScheduled": TaskScheduled,
     "TaskTriggered": TaskTriggered,
+    "TaskDelegationAdvisory": TaskDelegationAdvisory,
     "OutputFirewallAlert": OutputFirewallAlert,
     "SandboxDegraded": SandboxDegraded,
     "SandboxEscapeDetected": SandboxEscapeDetected,

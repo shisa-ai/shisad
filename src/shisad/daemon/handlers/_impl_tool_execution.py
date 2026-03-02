@@ -20,8 +20,8 @@ from shisad.core.events import (
 from shisad.core.tools.names import canonical_tool_name
 from shisad.core.types import Capability, SessionId, TaintLabel, ToolName
 from shisad.daemon.handlers._mixin_typing import HandlerMixinBase
-from shisad.executors.sandbox import DegradedModePolicy, SandboxConfig, SandboxResult
-from shisad.governance.merge import PolicyMerge, PolicyMergeError, normalize_patch
+from shisad.executors.sandbox import DegradedModePolicy, SandboxResult
+from shisad.governance.merge import PolicyMergeError, normalize_patch
 from shisad.security.control_plane.schema import ControlDecision, extract_request_size_bytes
 from shisad.skills.sandbox import SkillExecutionRequest
 
@@ -159,13 +159,13 @@ class ToolExecutionImplMixin(HandlerMixinBase):
             params = patched_params
             patch_params = normalize_patch(params)
 
-        floor = self._compute_tool_policy_floor(
-            tool_name=tool_name,
-            tool_definition=tool_def,
-            operator_surface=True,
-        )
         try:
-            merged_policy = PolicyMerge.merge(server=floor, caller=patch_params)
+            merged_policy = self._build_merged_policy(
+                tool_name=tool_name,
+                arguments=params,
+                tool_definition=tool_def,
+                operator_surface=True,
+            )
         except PolicyMergeError as exc:
             await self._event_bus.publish(
                 ToolRejected(
@@ -422,28 +422,13 @@ class ToolExecutionImplMixin(HandlerMixinBase):
                 origin=cp_eval.action.origin.model_dump(mode="json"),
             ).model_dump(mode="json")
 
-        config = SandboxConfig(
-            session_id=str(sid),
+        config = self._build_sandbox_config(
+            sid=sid,
             tool_name=tool_name_value,
-            command=list(params.get("command", [])),
-            read_paths=[str(item) for item in params.get("read_paths", [])],
-            write_paths=[str(item) for item in params.get("write_paths", [])],
-            network_urls=[str(item) for item in params.get("network_urls", [])],
-            env={str(k): str(v) for k, v in dict(params.get("env", {})).items()},
-            request_headers={
-                str(k): str(v) for k, v in dict(params.get("request_headers", {})).items()
-            },
-            request_body=str(params.get("request_body", "")),
-            cwd=str(params.get("cwd", "")),
-            sandbox_type=merged_policy.sandbox_type,
-            security_critical=merged_policy.security_critical,
+            params=params,
+            merged_policy=merged_policy,
+            origin=operator_origin,
             approved_by_pep=cp_eval.decision == ControlDecision.ALLOW,
-            filesystem=merged_policy.filesystem,
-            network=merged_policy.network,
-            environment=merged_policy.environment,
-            limits=merged_policy.limits,
-            degraded_mode=merged_policy.degraded_mode,
-            origin=operator_origin.model_dump(mode="json"),
         )
         result = await self._execute_sandbox_config(
             sid=sid,

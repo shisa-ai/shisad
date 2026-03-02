@@ -48,6 +48,9 @@ class ScheduledTask(BaseModel):
     created_by: UserId
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     last_triggered_at: datetime | None = None
+    trigger_count: int = 0
+    success_count: int = 0
+    failure_count: int = 0
     enabled: bool = True
 
     def commitment_hash(self) -> str:
