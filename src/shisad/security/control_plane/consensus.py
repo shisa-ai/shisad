@@ -228,6 +228,14 @@ class NetworkVoter:
         )
 
 
+def _strict_metadata_bool(value: Any, *, default: bool) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int) and value in {0, 1}:
+        return bool(value)
+    return default
+
+
 class ActionMonitorVoter:
     """Metadata-only action monitor voter used in M5 consensus path."""
 
@@ -241,8 +249,14 @@ class ActionMonitorVoter:
             )
 
         action = data.action
-        session_tainted = bool(data.metadata_payload.get("session_tainted", True))
-        trusted_input = bool(data.metadata_payload.get("trusted_input", False))
+        session_tainted = _strict_metadata_bool(
+            data.metadata_payload.get("session_tainted"),
+            default=True,
+        )
+        trusted_input = _strict_metadata_bool(
+            data.metadata_payload.get("trusted_input"),
+            default=False,
+        )
         if trusted_input and not session_tainted:
             return VoterDecision(
                 voter="ActionMonitorVoter",

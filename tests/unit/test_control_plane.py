@@ -884,6 +884,72 @@ async def test_m1_rlc7_action_monitor_voter_flags_tainted_untrusted_side_effect(
     assert "action_monitor:side_effect_on_tainted_session" in decision.reason_codes
 
 
+@pytest.mark.asyncio
+async def test_m1_rr2_action_monitor_voter_missing_metadata_fails_closed() -> None:
+    voter = ActionMonitorVoter()
+    action = build_action(
+        tool_name="web.search",
+        arguments={"query": "latest news"},
+        origin=_origin("s-action-monitor-missing-metadata"),
+    )
+    decision = await voter.cast_vote(
+        ConsensusInput(
+            action=action,
+            trace_result=PlanVerificationResult(allowed=True, reason_code="trace:allowed"),
+            metadata_payload={},
+        )
+    )
+    assert decision.decision == VoteKind.FLAG
+    assert decision.risk_tier == RiskTier.HIGH
+    assert "action_monitor:side_effect_on_tainted_session" in decision.reason_codes
+
+
+@pytest.mark.asyncio
+async def test_m1_rr2_action_monitor_voter_string_metadata_fails_closed() -> None:
+    voter = ActionMonitorVoter()
+    action = build_action(
+        tool_name="web.search",
+        arguments={"query": "latest news"},
+        origin=_origin("s-action-monitor-string-metadata"),
+    )
+    decision = await voter.cast_vote(
+        ConsensusInput(
+            action=action,
+            trace_result=PlanVerificationResult(allowed=True, reason_code="trace:allowed"),
+            metadata_payload={
+                "session_tainted": "false",
+                "trusted_input": "true",
+            },
+        )
+    )
+    assert decision.decision == VoteKind.FLAG
+    assert decision.risk_tier == RiskTier.HIGH
+    assert "action_monitor:side_effect_on_tainted_session" in decision.reason_codes
+
+
+@pytest.mark.asyncio
+async def test_m1_rr2_action_monitor_voter_string_false_trusted_input_fails_closed() -> None:
+    voter = ActionMonitorVoter()
+    action = build_action(
+        tool_name="web.search",
+        arguments={"query": "latest news"},
+        origin=_origin("s-action-monitor-string-false"),
+    )
+    decision = await voter.cast_vote(
+        ConsensusInput(
+            action=action,
+            trace_result=PlanVerificationResult(allowed=True, reason_code="trace:allowed"),
+            metadata_payload={
+                "session_tainted": False,
+                "trusted_input": "false",
+            },
+        )
+    )
+    assert decision.decision == VoteKind.FLAG
+    assert decision.risk_tier == RiskTier.HIGH
+    assert "action_monitor:untrusted_input_side_effect" in decision.reason_codes
+
+
 def test_m5_rt4_contains_freeform_text_blocks_large_single_line_values() -> None:
     assert contains_freeform_text({"note": "a" * 257}) is True
     assert contains_freeform_text({"note": "a" * 256}) is False
