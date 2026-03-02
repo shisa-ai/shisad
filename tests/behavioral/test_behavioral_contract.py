@@ -14,6 +14,7 @@ import asyncio
 import json
 import re
 import threading
+from collections.abc import Mapping
 from contextlib import suppress
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -245,7 +246,24 @@ async def _wait_for_socket(path: Path, timeout: float = 2.0) -> None:
     raise TimeoutError(f"Timed out waiting for socket {path}")
 
 
-def _extract_tool_outputs(response_text: str) -> dict[str, list[dict[str, Any]]]:
+def _extract_tool_outputs(payload: Mapping[str, Any] | str) -> dict[str, list[dict[str, Any]]]:
+    if isinstance(payload, Mapping):
+        raw_records = payload.get("tool_outputs")
+        if isinstance(raw_records, list):
+            outputs: dict[str, list[dict[str, Any]]] = {}
+            for record in raw_records:
+                if not isinstance(record, dict):
+                    continue
+                tool_name = str(record.get("tool_name", "")).strip()
+                data = record.get("payload")
+                if tool_name and isinstance(data, dict):
+                    outputs.setdefault(tool_name, []).append(data)
+            if outputs:
+                return outputs
+        response_text = str(payload.get("response", ""))
+    else:
+        response_text = str(payload)
+
     outputs: dict[str, list[dict[str, Any]]] = {}
     begin = "[[TOOL_OUTPUT_BEGIN"
     end = "[[TOOL_OUTPUT_END]]"
@@ -393,7 +411,7 @@ async def test_contract_web_search_executes_and_returns_results(
     assert int(reply.get("blocked_actions", 0)) == 0
     assert int(reply.get("confirmation_required_actions", 0)) == 0
     assert int(reply.get("executed_actions", 0)) == 1
-    outputs = _extract_tool_outputs(str(reply.get("response", "")))
+    outputs = _extract_tool_outputs(reply)
     assert "web.search" in outputs
     payload = outputs["web.search"][0]
     assert payload.get("ok") is True
@@ -417,7 +435,7 @@ async def test_m1_rlc7_clean_session_latest_news_executes_without_confirmation(
     assert int(reply.get("blocked_actions", 0)) == 0
     assert int(reply.get("confirmation_required_actions", 0)) == 0
     assert int(reply.get("executed_actions", 0)) == 1
-    outputs = _extract_tool_outputs(str(reply.get("response", "")))
+    outputs = _extract_tool_outputs(reply)
     assert "web.search" in outputs
     payload = outputs["web.search"][0]
     assert payload.get("ok") is True
@@ -451,7 +469,7 @@ async def test_m1_rlc7_repeat_latest_news_same_session_executes_without_confirma
     assert int(second.get("blocked_actions", 0)) == 0
     assert int(second.get("confirmation_required_actions", 0)) == 0
     assert int(second.get("executed_actions", 0)) == 1
-    outputs = _extract_tool_outputs(str(second.get("response", "")))
+    outputs = _extract_tool_outputs(second)
     assert "web.search" in outputs
 
 
@@ -471,7 +489,7 @@ async def test_contract_file_read_executes_and_returns_content(
     assert int(reply.get("blocked_actions", 0)) == 0
     assert int(reply.get("confirmation_required_actions", 0)) == 0
     assert int(reply.get("executed_actions", 0)) == 1
-    outputs = _extract_tool_outputs(str(reply.get("response", "")))
+    outputs = _extract_tool_outputs(reply)
     assert "fs.read" in outputs
     payload = outputs["fs.read"][0]
     assert payload.get("ok") is True
@@ -494,7 +512,7 @@ async def test_contract_fs_list_executes_and_returns_entries(
     assert int(reply.get("blocked_actions", 0)) == 0
     assert int(reply.get("confirmation_required_actions", 0)) == 0
     assert int(reply.get("executed_actions", 0)) == 1
-    outputs = _extract_tool_outputs(str(reply.get("response", "")))
+    outputs = _extract_tool_outputs(reply)
     assert "fs.list" in outputs
     payload = outputs["fs.list"][0]
     assert payload.get("ok") is True
@@ -584,7 +602,11 @@ async def test_contract_multi_tool_executes_both_tools_in_one_turn(
     assert int(reply.get("blocked_actions", 0)) == 0
     assert int(reply.get("confirmation_required_actions", 0)) == 0
     assert int(reply.get("executed_actions", 0)) == 2
-    outputs = _extract_tool_outputs(str(reply.get("response", "")))
+    response_text = str(reply.get("response", ""))
+    assert "[[TOOL_OUTPUT_BEGIN" not in response_text
+    assert "[[TOOL_OUTPUT_END]]" not in response_text
+    assert "=== TOOL OUTPUTS (UNTRUSTED DATA) ===" not in response_text
+    outputs = _extract_tool_outputs(reply)
     assert "fs.read" in outputs
     assert "web.search" in outputs
 
@@ -723,7 +745,7 @@ async def test_contract_web_search_executes_without_policy_egress_allowlist(
     assert int(reply.get("blocked_actions", 0)) == 0
     assert int(reply.get("confirmation_required_actions", 0)) == 0
     assert int(reply.get("executed_actions", 0)) == 1
-    outputs = _extract_tool_outputs(str(reply.get("response", "")))
+    outputs = _extract_tool_outputs(reply)
     assert "web.search" in outputs
     payload = outputs["web.search"][0]
     assert payload.get("ok") is True
@@ -746,7 +768,7 @@ async def test_contract_web_search_backend_unconfigured_is_actionable(
     assert int(reply.get("blocked_actions", 0)) == 0
     assert int(reply.get("confirmation_required_actions", 0)) == 0
     assert int(reply.get("executed_actions", 0)) == 0
-    outputs = _extract_tool_outputs(str(reply.get("response", "")))
+    outputs = _extract_tool_outputs(reply)
     assert "web.search" in outputs
     payload = outputs["web.search"][0]
     assert payload.get("ok") is False

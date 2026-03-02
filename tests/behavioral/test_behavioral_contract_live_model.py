@@ -15,6 +15,7 @@ import json
 import os
 import re
 import threading
+from collections.abc import Mapping
 from contextlib import suppress
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -82,8 +83,25 @@ async def _wait_for_socket(path: Path, timeout: float = 3.0) -> None:
     raise TimeoutError(f"Timed out waiting for socket {path}")
 
 
-def _extract_tool_outputs(response_text: str) -> dict[str, list[dict[str, Any]]]:
-    """Parse [[TOOL_OUTPUT_BEGIN ...]] JSON payloads from response text."""
+def _extract_tool_outputs(payload: Mapping[str, Any] | str) -> dict[str, list[dict[str, Any]]]:
+    """Parse structured `tool_outputs`, falling back to legacy response markers."""
+    if isinstance(payload, Mapping):
+        raw_records = payload.get("tool_outputs")
+        if isinstance(raw_records, list):
+            outputs: dict[str, list[dict[str, Any]]] = {}
+            for record in raw_records:
+                if not isinstance(record, dict):
+                    continue
+                tool_name = str(record.get("tool_name", "")).strip()
+                data = record.get("payload")
+                if tool_name and isinstance(data, dict):
+                    outputs.setdefault(tool_name, []).append(data)
+            if outputs:
+                return outputs
+        response_text = str(payload.get("response", ""))
+    else:
+        response_text = str(payload)
+
     outputs: dict[str, list[dict[str, Any]]] = {}
     begin = "[[TOOL_OUTPUT_BEGIN"
     end = "[[TOOL_OUTPUT_END]]"
@@ -237,7 +255,7 @@ async def test_live_model_web_search_executes(live_harness: LiveHarness) -> None
     assert reply.get("lockdown_level") == "normal"
     assert int(reply.get("blocked_actions", 0)) == 0
     assert int(reply.get("confirmation_required_actions", 0)) == 0
-    outputs = _extract_tool_outputs(str(reply.get("response", "")))
+    outputs = _extract_tool_outputs(reply)
     assert "web.search" in outputs
     payload = outputs["web.search"][0]
     assert payload.get("ok") is True
@@ -255,7 +273,7 @@ async def test_live_model_file_read_executes(live_harness: LiveHarness) -> None:
     assert reply.get("lockdown_level") == "normal"
     assert int(reply.get("blocked_actions", 0)) == 0
     assert int(reply.get("confirmation_required_actions", 0)) == 0
-    outputs = _extract_tool_outputs(str(reply.get("response", "")))
+    outputs = _extract_tool_outputs(reply)
     assert "fs.read" in outputs
     payload = outputs["fs.read"][0]
     assert payload.get("ok") is True
@@ -275,7 +293,7 @@ async def test_live_model_fs_list_executes(live_harness: LiveHarness) -> None:
     assert reply.get("lockdown_level") == "normal"
     assert int(reply.get("blocked_actions", 0)) == 0
     assert int(reply.get("confirmation_required_actions", 0)) == 0
-    outputs = _extract_tool_outputs(str(reply.get("response", "")))
+    outputs = _extract_tool_outputs(reply)
     assert "fs.list" in outputs
     payload = outputs["fs.list"][0]
     assert payload.get("ok") is True
@@ -334,6 +352,9 @@ async def test_live_model_multi_tool_executes_both_tools_in_one_turn(
     assert reply.get("lockdown_level") == "normal"
     assert int(reply.get("blocked_actions", 0)) == 0
     assert int(reply.get("confirmation_required_actions", 0)) == 0
-    outputs = _extract_tool_outputs(str(reply.get("response", "")))
+    response_text = str(reply.get("response", ""))
+    assert "[[TOOL_OUTPUT_BEGIN" not in response_text
+    assert "[[TOOL_OUTPUT_END]]" not in response_text
+    outputs = _extract_tool_outputs(reply)
     assert "fs.read" in outputs
     assert "web.search" in outputs

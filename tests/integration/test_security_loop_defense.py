@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import textwrap
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
@@ -227,7 +228,7 @@ def test_m2_t20_hybrid_retrieval_prioritizes_trusted_evidence(tmp_path: Path) ->
 
 
 @pytest.mark.asyncio
-async def test_m2_tool_outputs_are_delimited_and_sanitized_in_session_response(
+async def test_m3_tool_outputs_are_structured_and_not_leaked_with_raw_markers(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -301,11 +302,20 @@ async def test_m2_tool_outputs_are_delimited_and_sanitized_in_session_response(
             },
         )
         response = str(reply["response"])
-        assert "=== TOOL OUTPUTS (UNTRUSTED DATA) ===" in response
-        assert response.count("[[TOOL_OUTPUT_BEGIN") == 1
-        assert response.count("[[TOOL_OUTPUT_END]]") == 1
-        assert "[[TOOL_OUTPUT_BEGIN tool=retrieve_rag" in response
-        assert "[REDACTED:openai_key]" in response
+        assert "[[TOOL_OUTPUT_BEGIN" not in response
+        assert "[[TOOL_OUTPUT_END]]" not in response
+        assert "=== TOOL OUTPUTS (UNTRUSTED DATA) ===" not in response
+        tool_outputs = reply.get("tool_outputs")
+        assert isinstance(tool_outputs, list)
+        retrieve_payloads = [
+            record.get("payload")
+            for record in tool_outputs
+            if isinstance(record, dict) and record.get("tool_name") == "retrieve_rag"
+        ]
+        assert retrieve_payloads
+        payload = retrieve_payloads[0]
+        assert isinstance(payload, dict)
+        assert "[REDACTED:openai_key]" in json.dumps(payload, ensure_ascii=True)
     finally:
         with suppress(Exception):
             await client.call("daemon.shutdown")
