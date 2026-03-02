@@ -570,6 +570,7 @@ class TaskCreateParams(_StrictParams):
     capability_snapshot: list[str] = Field(default_factory=list)
     policy_snapshot_ref: str
     created_by: str
+    workspace_id: str = ""
     allowed_recipients: list[str] = Field(default_factory=list)
     allowed_domains: list[str] = Field(default_factory=list)
     delivery_target: dict[str, str] = Field(default_factory=dict)
@@ -599,6 +600,7 @@ class TaskCreateResult(BaseModel):
     allowed_domains: list[str] = Field(default_factory=list)
     delivery_target: dict[str, str] = Field(default_factory=dict)
     created_by: str = ""
+    workspace_id: str = ""
     created_at: datetime | str | None = None
     last_triggered_at: datetime | str | None = None
     enabled: bool = True

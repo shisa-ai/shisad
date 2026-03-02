@@ -15,9 +15,12 @@ class AssistantImplMixin(HandlerMixinBase):
     @staticmethod
     def _log_operator_bypass(*, tool: str, handler: str) -> None:
         logger.info(
-            "operator_bypass_rpc tool=%s handler=%s origin=direct_assistant",
-            tool,
-            handler,
+            "operator_bypass_rpc",
+            extra={
+                "tool": tool,
+                "handler": handler,
+                "origin": "direct_assistant",
+            },
         )
 
     async def do_web_search(self, params: Mapping[str, Any]) -> dict[str, Any]:

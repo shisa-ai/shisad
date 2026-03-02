@@ -157,7 +157,6 @@ class ToolExecutionImplMixin(HandlerMixinBase):
             if "security_critical" not in patch_params.model_fields_set:
                 patched_params["security_critical"] = bool(strict_defaults)
             params = patched_params
-            patch_params = normalize_patch(params)
 
         try:
             merged_policy = self._build_merged_policy(

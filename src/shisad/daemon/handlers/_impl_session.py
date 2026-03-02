@@ -754,8 +754,8 @@ def _build_task_internal_scaffold_entries(
         success_count = int(row.get("success_count", 0) or 0)
         failure_count = int(row.get("failure_count", 0) or 0)
         confirmation_needed = bool(row.get("confirmation_needed", False))
-        content = (
-            f"task_id={task_id} title={title} status={status} "
+        status_content = (
+            f"task_id={task_id} status={status} "
             f"created_at={created_at} last_triggered_at={last_triggered} "
             f"confirmation_needed={confirmation_needed} "
             f"pending_confirmation_count={pending} trigger_count={trigger_count} "
@@ -765,11 +765,22 @@ def _build_task_internal_scaffold_entries(
             ContextScaffoldEntry(
                 entry_id=f"task:{task_id}",
                 trust_level="TRUSTED",
-                content=content,
+                content=status_content,
                 provenance=[f"task:{task_id}"],
                 source_taint_labels=[],
             )
         )
+        if title:
+            # Task titles originate from user input and remain semi-trusted context.
+            entries.append(
+                ContextScaffoldEntry(
+                    entry_id=f"task-title:{task_id}",
+                    trust_level="SEMI_TRUSTED",
+                    content=f"task_id={task_id} title={json.dumps(title, ensure_ascii=True)}",
+                    provenance=[f"task:{task_id}"],
+                    source_taint_labels=[TaintLabel.UNTRUSTED.value],
+                )
+            )
     return entries
 
 
@@ -865,6 +876,8 @@ def _build_internal_scaffold_entries(
                         ),
                     )
                 )
+    # Internal tier entries are intentionally heterogeneous:
+    # episode summaries remain SEMI_TRUSTED while deterministic task status is TRUSTED.
     entries.extend(
         _build_task_internal_scaffold_entries(task_ledger_snapshot=task_ledger_snapshot)
     )
@@ -1059,7 +1072,17 @@ def _risk_tier_from_score(score: float) -> RiskTier:
 
 
 class SessionImplMixin(HandlerMixinBase):
-    def _build_task_ledger_snapshot(self, *, limit: int = 8) -> dict[str, Any] | None:
+    def _build_task_ledger_snapshot(
+        self,
+        *,
+        user_id: UserId,
+        workspace_id: WorkspaceId,
+        limit: int = 8,
+    ) -> dict[str, Any] | None:
+        scoped_user = str(user_id).strip()
+        scoped_workspace = str(workspace_id).strip()
+        if not scoped_user:
+            return None
         scheduler = getattr(self, "_scheduler", None)
         if scheduler is None:
             return None
@@ -1067,17 +1090,55 @@ class SessionImplMixin(HandlerMixinBase):
         if not callable(status_builder):
             return None
         try:
-            task_rows = status_builder(limit=limit)
-        except (OSError, RuntimeError, TypeError, ValueError):
+            task_rows = status_builder(
+                limit=limit,
+                created_by=UserId(scoped_user),
+                workspace_id=WorkspaceId(scoped_workspace),
+            )
+        except TypeError:
+            # Backward-compatibility for scheduler stubs without identity-scoped kwargs.
+            try:
+                task_rows = status_builder(limit=limit)
+            except (OSError, RuntimeError, TypeError, ValueError):
+                logger.warning("task ledger snapshot build failed", exc_info=True)
+                return None
+        except (OSError, RuntimeError, ValueError):
             logger.warning("task ledger snapshot build failed", exc_info=True)
             return None
         if not isinstance(task_rows, list):
             return None
-        cleaned_rows: list[dict[str, Any]] = [
-            row
-            for row in task_rows
-            if isinstance(row, dict) and str(row.get("task_id", "")).strip()
-        ]
+        cleaned_rows: list[dict[str, Any]] = []
+        for row in task_rows:
+            if not isinstance(row, dict):
+                continue
+            task_id = str(row.get("task_id", "")).strip()
+            if not task_id:
+                continue
+            row_owner = str(row.get("created_by", "")).strip()
+            if not row_owner or row_owner != scoped_user:
+                continue
+            row_workspace = str(row.get("workspace_id", "")).strip()
+            if scoped_workspace:
+                if row_workspace and row_workspace != scoped_workspace:
+                    continue
+            elif row_workspace:
+                continue
+            cleaned_rows.append(
+                {
+                    "task_id": task_id,
+                    "title": str(row.get("title", "")),
+                    "status": str(row.get("status", "")),
+                    "created_at": str(row.get("created_at", "")),
+                    "last_triggered_at": str(row.get("last_triggered_at", "")),
+                    "confirmation_needed": bool(row.get("confirmation_needed", False)),
+                    "pending_confirmation_count": int(
+                        row.get("pending_confirmation_count", 0) or 0
+                    ),
+                    "trigger_count": int(row.get("trigger_count", 0) or 0),
+                    "success_count": int(row.get("success_count", 0) or 0),
+                    "failure_count": int(row.get("failure_count", 0) or 0),
+                }
+            )
         if not cleaned_rows:
             return None
         confirmation_total = sum(
@@ -1443,7 +1504,10 @@ class SessionImplMixin(HandlerMixinBase):
             tool_allowlist=tool_allowlist,
             trust_level=trust_level,
         )
-        task_ledger_snapshot = self._build_task_ledger_snapshot()
+        task_ledger_snapshot = self._build_task_ledger_snapshot(
+            user_id=session.user_id,
+            workspace_id=session.workspace_id,
+        )
         context_scaffold = _build_planner_context_scaffold(
             session_id=sid,
             session=session,

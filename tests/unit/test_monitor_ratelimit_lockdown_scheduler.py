@@ -6,7 +6,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
-from shisad.core.types import Capability, SessionId, UserId
+from shisad.core.types import Capability, SessionId, UserId, WorkspaceId
 from shisad.scheduler.manager import SchedulerManager
 from shisad.scheduler.schema import Schedule
 from shisad.security.lockdown import LockdownLevel, LockdownManager
@@ -300,6 +300,47 @@ def test_m2_scheduler_cron_step_respects_nonzero_field_minimum() -> None:
     assert len(scheduler.trigger_due(now=day_01)) == 1
     assert scheduler.trigger_due(now=day_01 + timedelta(days=1)) == []
     assert len(scheduler.trigger_due(now=day_01 + timedelta(days=2))) == 1
+
+
+def test_m4_task_status_snapshot_scopes_to_owner_and_workspace() -> None:
+    scheduler = SchedulerManager()
+    task_alice_ws1 = scheduler.create_task(
+        name="alice-ws1",
+        goal="task one",
+        schedule=Schedule.from_event("message.received"),
+        capability_snapshot={Capability.MEMORY_READ},
+        policy_snapshot_ref="p1",
+        created_by=UserId("alice"),
+        workspace_id=WorkspaceId("ws1"),
+    )
+    _task_alice_ws2 = scheduler.create_task(
+        name="alice-ws2",
+        goal="task two",
+        schedule=Schedule.from_event("message.received"),
+        capability_snapshot={Capability.MEMORY_READ},
+        policy_snapshot_ref="p1",
+        created_by=UserId("alice"),
+        workspace_id=WorkspaceId("ws2"),
+    )
+    _task_bob_ws1 = scheduler.create_task(
+        name="bob-ws1",
+        goal="task three",
+        schedule=Schedule.from_event("message.received"),
+        capability_snapshot={Capability.MEMORY_READ},
+        policy_snapshot_ref="p1",
+        created_by=UserId("bob"),
+        workspace_id=WorkspaceId("ws1"),
+    )
+
+    rows = scheduler.task_status_snapshot(
+        limit=10,
+        created_by=UserId("alice"),
+        workspace_id=WorkspaceId("ws1"),
+    )
+    assert len(rows) == 1
+    assert rows[0]["task_id"] == task_alice_ws1.id
+    assert rows[0]["created_by"] == "alice"
+    assert rows[0]["workspace_id"] == "ws1"
 
 
 def test_m2_t21_risk_policy_versioning_is_deterministic(tmp_path: Path) -> None:

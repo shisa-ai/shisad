@@ -12,7 +12,7 @@ from typing import Any
 
 from pydantic import ValidationError
 
-from shisad.core.types import Capability, UserId
+from shisad.core.types import Capability, UserId, WorkspaceId
 from shisad.scheduler.schema import Schedule, ScheduledTask, ScheduleKind, TaskRunRequest
 
 
@@ -47,6 +47,7 @@ class SchedulerManager:
         capability_snapshot: set[Capability],
         policy_snapshot_ref: str,
         created_by: UserId,
+        workspace_id: WorkspaceId | None = None,
         allowed_recipients: list[str] | None = None,
         allowed_domains: list[str] | None = None,
         delivery_target: dict[str, str] | None = None,
@@ -62,6 +63,7 @@ class SchedulerManager:
             allowed_domains=allowed_domains or [],
             delivery_target=dict(delivery_target or {}),
             created_by=created_by,
+            workspace_id=workspace_id or WorkspaceId(""),
         )
         self._tasks[task.id] = task
         self._persist_tasks()
@@ -200,12 +202,28 @@ class SchedulerManager:
     def pending_confirmations(self, task_id: str) -> list[dict[str, Any]]:
         return list(self._pending_confirmations.get(task_id, []))
 
-    def task_status_snapshot(self, *, limit: int = 8) -> list[dict[str, Any]]:
+    def task_status_snapshot(
+        self,
+        *,
+        limit: int = 8,
+        created_by: UserId | None = None,
+        workspace_id: WorkspaceId | None = None,
+    ) -> list[dict[str, Any]]:
         tasks = sorted(
             self._tasks.values(),
             key=lambda item: (item.created_at, item.id),
             reverse=True,
         )
+        owner = str(created_by or "").strip()
+        workspace = str(workspace_id or "").strip()
+        if owner:
+            tasks = [task for task in tasks if str(task.created_by).strip() == owner]
+        if workspace:
+            tasks = [
+                task
+                for task in tasks
+                if not str(task.workspace_id).strip() or str(task.workspace_id).strip() == workspace
+            ]
         rows: list[dict[str, Any]] = []
         for task in tasks[: max(0, int(limit))]:
             pending = len(self._pending_confirmations.get(task.id, []))
@@ -225,6 +243,8 @@ class SchedulerManager:
                     "trigger_count": int(task.trigger_count),
                     "success_count": int(task.success_count),
                     "failure_count": int(task.failure_count),
+                    "created_by": str(task.created_by),
+                    "workspace_id": str(task.workspace_id),
                 }
             )
         return rows

@@ -6,7 +6,7 @@ from collections.abc import Mapping
 from typing import Any, cast
 
 from shisad.core.events import TaskScheduled, TaskTriggered
-from shisad.core.types import Capability, UserId
+from shisad.core.types import Capability, UserId, WorkspaceId
 from shisad.daemon.handlers._mixin_typing import HandlerMixinBase
 from shisad.scheduler.schema import Schedule
 
@@ -31,6 +31,7 @@ class TasksImplMixin(HandlerMixinBase):
             capability_snapshot={Capability(cap) for cap in params.get("capability_snapshot", [])},
             policy_snapshot_ref=str(params.get("policy_snapshot_ref", "")),
             created_by=UserId(str(params.get("created_by", ""))),
+            workspace_id=WorkspaceId(str(params.get("workspace_id", ""))),
             allowed_recipients=list(params.get("allowed_recipients", [])),
             allowed_domains=list(params.get("allowed_domains", [])),
             delivery_target=delivery_target,
