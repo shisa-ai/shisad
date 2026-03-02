@@ -494,6 +494,7 @@ async def test_contract_file_read_executes_and_returns_content(
     payload = outputs["fs.read"][0]
     assert payload.get("ok") is True
     assert "behavioral-readme" in str(payload.get("content", ""))
+    assert "behavioral-readme" in str(reply.get("response", ""))
 
 
 @pytest.mark.asyncio
@@ -520,6 +521,27 @@ async def test_contract_fs_list_executes_and_returns_entries(
     assert isinstance(entries, list)
     assert int(payload.get("count", 0)) >= 1
     assert any(str(item.get("path", "")).strip() for item in entries)
+
+
+@pytest.mark.asyncio
+async def test_m3_long_clean_session_goal_not_truncated_for_planner(
+    contract_harness: ContractHarness,
+) -> None:
+    sid = await _create_session(contract_harness.client)
+    long_prefix = "x" * 600
+    reply = await contract_harness.client.call(
+        "session.message",
+        {
+            "session_id": sid,
+            "content": f"{long_prefix} search for the latest news",
+        },
+    )
+    assert reply.get("lockdown_level") == "normal"
+    assert int(reply.get("blocked_actions", 0)) == 0
+    assert int(reply.get("confirmation_required_actions", 0)) == 0
+    assert int(reply.get("executed_actions", 0)) == 1
+    outputs = _extract_tool_outputs(reply)
+    assert "web.search" in outputs
 
 
 @pytest.mark.asyncio

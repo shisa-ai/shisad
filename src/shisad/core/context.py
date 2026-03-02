@@ -56,16 +56,6 @@ class EpisodeCompressionResult(BaseModel):
     used_tokens: int = 0
 
 
-class ContextScaffold(BaseModel):
-    """Top-level context scaffold container."""
-
-    session_id: str = ""
-    episodes: list[ConversationEpisode] = Field(default_factory=list)
-    trusted_frontmatter: str = ""
-    internal_entries: list[ContextScaffoldEntry] = Field(default_factory=list)
-    untrusted_entries: list[ContextScaffoldEntry] = Field(default_factory=list)
-
-
 class ContextScaffoldEntry(BaseModel):
     """Single context block within the three-tier scaffold."""
 
@@ -74,6 +64,16 @@ class ContextScaffoldEntry(BaseModel):
     content: str = ""
     provenance: list[str] = Field(default_factory=list)
     source_taint_labels: list[str] = Field(default_factory=list)
+
+
+class ContextScaffold(BaseModel):
+    """Top-level context scaffold container."""
+
+    session_id: str = ""
+    episodes: list[ConversationEpisode] = Field(default_factory=list)
+    trusted_frontmatter: str = ""
+    internal_entries: list[ContextScaffoldEntry] = Field(default_factory=list)
+    untrusted_entries: list[ContextScaffoldEntry] = Field(default_factory=list)
 
 
 def _normalize_timestamp(timestamp: datetime) -> datetime:

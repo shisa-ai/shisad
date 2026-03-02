@@ -44,7 +44,9 @@ def _deterministic_delimiter(prefix: str, *, seed: str) -> str:
 def _resolve_delimiters(*, deterministic: bool, delimiter_seed: str) -> Delimiters:
     if not deterministic:
         return generate_delimiters()
-    seed = delimiter_seed.strip() or "shisad_deterministic"
+    seed = delimiter_seed.strip()
+    if not seed:
+        raise ValueError("delimiter_seed is required when deterministic=True")
     return Delimiters(
         evidence_start=_deterministic_delimiter("EVIDENCE_START", seed=seed),
         evidence_end=_deterministic_delimiter("EVIDENCE_END", seed=seed),

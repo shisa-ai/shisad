@@ -149,6 +149,7 @@ class PendingAction:
 class ToolOutputRecord:
     tool_name: str
     content: str
+    success: bool = True
     taint_labels: set[TaintLabel] = field(default_factory=set)
 
 
@@ -1416,6 +1417,7 @@ class HandlerImplementation(
             ToolOutputRecord(
                 tool_name=str(tool_name),
                 content=self._sanitize_tool_output_text(raw_output),
+                success=success,
                 taint_labels=label_tool_output(str(tool_name)),
             )
             if raw_output
@@ -1435,16 +1437,6 @@ class HandlerImplementation(
             .replace("TOOL_OUTPUT_END", "TOOL_OUTPUT_MARKER")
             .strip()
         )
-
-    @staticmethod
-    def _render_tool_output_boundary(records: list[ToolOutputRecord]) -> str:
-        lines = ["=== TOOL OUTPUTS (UNTRUSTED DATA) ==="]
-        for record in records:
-            taints = ",".join(sorted(label.value for label in record.taint_labels)) or "none"
-            lines.append(f"[[TOOL_OUTPUT_BEGIN tool={record.tool_name} taint={taints}]]")
-            lines.append(record.content)
-            lines.append("[[TOOL_OUTPUT_END]]")
-        return "\n".join(lines).strip()
 
     async def _execute_via_sandbox(
         self,
