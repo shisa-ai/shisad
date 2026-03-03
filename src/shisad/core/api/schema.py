@@ -138,6 +138,24 @@ class SessionListResult(BaseModel):
     sessions: list[SessionListEntry] = Field(default_factory=list)
 
 
+class SessionTerminateParams(_StrictParams):
+    """Parameters for session.terminate."""
+
+    session_id: str
+    channel: str = ""
+    user_id: str = ""
+    workspace_id: str = ""
+    reason: str = ""
+
+
+class SessionTerminateResult(BaseModel):
+    """Result for session.terminate."""
+
+    session_id: str
+    terminated: bool
+    reason: str = ""
+
+
 class SessionRestoreParams(_StrictParams):
     """Parameters for session.restore."""
 

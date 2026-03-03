@@ -201,9 +201,17 @@ class ChatApp(App[None]):
         if self._session_id:
             return
         if self._reuse_bound_session:
-            existing_session_id = await self._find_bound_session(client)
+            existing_session_id, lockdown_level = await self._find_bound_session(client)
             if existing_session_id:
                 self._session_id = existing_session_id
+                normalized_lockdown = lockdown_level.strip().lower()
+                if normalized_lockdown and normalized_lockdown != "normal":
+                    self._append_history(
+
+                            "info: reusing existing session in lockdown "
+                            f"state ({normalized_lockdown})."
+
+                    )
                 return
         await self._create_new_session(client)
 
@@ -222,17 +230,17 @@ class ChatApp(App[None]):
             raise RuntimeError("session.create returned invalid session_id")
         self._session_id = sid
 
-    async def _find_bound_session(self, client: Any) -> str:
+    async def _find_bound_session(self, client: Any) -> tuple[str, str]:
         """Resolve an existing active CLI session by user/workspace binding."""
         try:
             result = await client.call("session.list", params={})
         except Exception:
-            return ""
+            return "", ""
         if not isinstance(result, Mapping):
-            return ""
+            return "", ""
         sessions = result.get("sessions", [])
         if not isinstance(sessions, list):
-            return ""
+            return "", ""
         for item in sessions:
             if not isinstance(item, Mapping):
                 continue
@@ -246,8 +254,9 @@ class ChatApp(App[None]):
                 continue
             sid = str(item.get("id", "")).strip()
             if sid:
-                return sid
-        return ""
+                lockdown_level = str(item.get("lockdown_level", "")).strip()
+                return sid, lockdown_level
+        return "", ""
 
     async def _send_message(self, client: Any, content: str) -> str:
         """Send a message and return the assistant response.

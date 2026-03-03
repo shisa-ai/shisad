@@ -17,6 +17,8 @@ from shisad.core.api.schema import (
     SessionRollbackResult,
     SessionSetModeParams,
     SessionSetModeResult,
+    SessionTerminateParams,
+    SessionTerminateResult,
 )
 from shisad.daemon.context import RequestContext
 from shisad.daemon.handlers._helpers import build_params_payload
@@ -111,3 +113,15 @@ class SessionHandlers:
             internal_ingress_marker=self._internal_ingress_marker,
         )
         return SessionSetModeResult.model_validate(await self._impl.do_session_set_mode(payload))
+
+    async def handle_session_terminate(
+        self,
+        params: SessionTerminateParams,
+        ctx: RequestContext,
+    ) -> SessionTerminateResult:
+        payload = build_params_payload(
+            params,
+            ctx,
+            internal_ingress_marker=self._internal_ingress_marker,
+        )
+        return SessionTerminateResult.model_validate(await self._impl.do_session_terminate(payload))

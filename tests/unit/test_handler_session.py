@@ -9,6 +9,7 @@ from shisad.core.api.schema import (
     SessionCreateParams,
     SessionGrantCapabilitiesParams,
     SessionSetModeParams,
+    SessionTerminateParams,
 )
 from shisad.daemon.context import RequestContext
 from shisad.daemon.handlers.session import SessionHandlers
@@ -40,6 +41,13 @@ class _StubImpl:
             "session_id": str(payload.get("session_id", "")),
             "granted": True,
             "capabilities": list(payload.get("capabilities", [])),
+        }
+
+    async def do_session_terminate(self, payload: dict[str, object]) -> dict[str, object]:
+        self.payloads.append(("terminate", payload))
+        return {
+            "session_id": str(payload.get("session_id", "")),
+            "terminated": True,
         }
 
 
@@ -114,3 +122,23 @@ async def test_session_grant_capabilities_uses_request_context_payload() -> None
     assert payload["session_id"] == "sess-1"
     assert payload["capabilities"] == ["http.request"]
     assert payload["reason"] == "manual"
+
+
+@pytest.mark.asyncio
+async def test_session_terminate_uses_request_context_payload() -> None:
+    marker = object()
+    impl = _StubImpl()
+    handlers = SessionHandlers(impl, internal_ingress_marker=marker)  # type: ignore[arg-type]
+
+    result = await handlers.handle_session_terminate(
+        SessionTerminateParams(session_id="sess-1"),
+        RequestContext(
+            rpc_peer={"uid": 1000, "gid": 1000, "pid": 1},
+            is_internal_ingress=False,
+        ),
+    )
+
+    assert result.terminated is True
+    payload = impl.payloads[-1][1]
+    assert payload["session_id"] == "sess-1"
+    assert payload["_rpc_peer"] == {"uid": 1000, "gid": 1000, "pid": 1}

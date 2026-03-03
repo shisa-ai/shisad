@@ -14,6 +14,8 @@ import yaml
 
 from shisad.core.api.transport import ControlClient
 from shisad.core.config import DaemonConfig
+from shisad.core.providers.base import Message, ProviderResponse
+from shisad.core.types import Capability
 from shisad.daemon.runner import run_daemon
 from shisad.executors.connect_path import IptablesConnectPathProxy
 from shisad.security.control_plane.engine import ControlPlaneEngine
@@ -65,6 +67,25 @@ async def _shutdown(daemon_task: asyncio.Task[None], client: ControlClient) -> N
         await client.call("daemon.shutdown")
     await client.close()
     await asyncio.wait_for(daemon_task, timeout=3)
+
+
+class _StubMonitorProvider:
+    def __init__(self, *, content: str) -> None:
+        self._content = content
+        self.calls = 0
+
+    async def complete(
+        self,
+        messages: list[Message],
+        tools: list[dict[str, object]] | None = None,
+    ) -> ProviderResponse:
+        _ = messages, tools
+        self.calls += 1
+        return ProviderResponse(
+            message=Message(role="assistant", content=self._content),
+            model="monitor-test",
+            finish_reason="stop",
+        )
 
 
 @pytest.mark.asyncio
@@ -198,6 +219,78 @@ async def test_m5_t14_end_to_end_control_plane_happy_and_compromise_paths(tmp_pa
     assert ok is True
     assert count >= 3
     assert error == ""
+
+
+@pytest.mark.asyncio
+async def test_m6_amv_tainted_session_yes_allows_side_effect(tmp_path: Path) -> None:
+    provider = _StubMonitorProvider(
+        content='{"decision":"YES","explanation":"User asked to write this file."}'
+    )
+    engine = ControlPlaneEngine.build(data_dir=tmp_path / "cp-m6-yes", monitor_provider=provider)
+    origin = Origin(
+        session_id="m6-amv-yes",
+        user_id="user-1",
+        workspace_id="ws-1",
+        actor="planner",
+    )
+    engine.begin_precontent_plan(
+        session_id=origin.session_id,
+        goal="write the status file",
+        origin=origin,
+        ttl_seconds=600,
+        max_actions=10,
+        capabilities={Capability.FILE_WRITE},
+    )
+    evaluation = await engine.evaluate_action(
+        tool_name="fs.write",
+        arguments={"path": "status.txt", "content": "ok"},
+        origin=origin,
+        risk_tier=RiskTier.MEDIUM,
+        declared_domains=[],
+        session_tainted=True,
+        trusted_input=True,
+        raw_user_text="write status.txt with ok",
+    )
+    assert evaluation.decision == ControlDecision.ALLOW
+    assert provider.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_m6_amv_tainted_session_no_routes_to_confirmation(tmp_path: Path) -> None:
+    provider = _StubMonitorProvider(
+        content='{"decision":"NO","explanation":"User asked to summarize, not write files."}'
+    )
+    engine = ControlPlaneEngine.build(data_dir=tmp_path / "cp-m6-no", monitor_provider=provider)
+    origin = Origin(
+        session_id="m6-amv-no",
+        user_id="user-1",
+        workspace_id="ws-1",
+        actor="planner",
+    )
+    engine.begin_precontent_plan(
+        session_id=origin.session_id,
+        goal="summarize docs",
+        origin=origin,
+        ttl_seconds=600,
+        max_actions=10,
+        capabilities={Capability.FILE_WRITE},
+    )
+    evaluation = await engine.evaluate_action(
+        tool_name="fs.write",
+        arguments={"path": "status.txt", "content": "secret"},
+        origin=origin,
+        risk_tier=RiskTier.MEDIUM,
+        declared_domains=[],
+        session_tainted=True,
+        trusted_input=True,
+        raw_user_text="summarize docs",
+    )
+    assert evaluation.decision == ControlDecision.REQUIRE_CONFIRMATION
+    amv_vote = next(
+        vote for vote in evaluation.consensus.votes if vote.voter == "ActionMonitorVoter"
+    )
+    assert "action_monitor:intent_mismatch" in amv_vote.reason_codes
+    assert amv_vote.details.get("explanation")
 
 
 @pytest.mark.asyncio

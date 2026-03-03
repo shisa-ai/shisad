@@ -88,6 +88,8 @@ from shisad.core.api.schema import (
     SessionRollbackResult,
     SessionSetModeParams,
     SessionSetModeResult,
+    SessionTerminateParams,
+    SessionTerminateResult,
     SkillInstallParams,
     SkillInstallResult,
     SkillListResult,
@@ -213,6 +215,11 @@ class DaemonControlHandlers:
         self, params: SessionSetModeParams, ctx: RequestContext
     ) -> SessionSetModeResult:
         return await self._session.handle_session_set_mode(params, ctx)
+
+    async def handle_session_terminate(
+        self, params: SessionTerminateParams, ctx: RequestContext
+    ) -> SessionTerminateResult:
+        return await self._session.handle_session_terminate(params, ctx)
 
     async def handle_daemon_status(
         self, params: NoParams, ctx: RequestContext

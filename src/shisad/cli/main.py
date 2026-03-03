@@ -12,7 +12,7 @@ import sys
 import time
 from collections.abc import Callable, Coroutine
 from contextlib import contextmanager, suppress
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -39,6 +39,7 @@ from shisad.core.api.schema import (
     GitDiffResult,
     GitLogResult,
     GitStatusResult,
+    LockdownSetResult,
     MemoryListResult,
     MemoryRotateKeyResult,
     MemoryWriteResult,
@@ -57,6 +58,7 @@ from shisad.core.api.schema import (
     SessionRestoreResult,
     SessionRollbackResult,
     SessionSetModeResult,
+    SessionTerminateResult,
     SkillInstallResult,
     SkillListResult,
     SkillReviewResult,
@@ -93,6 +95,29 @@ def _echo(message: str, *, fg: str | None = None, bold: bool = False, err: bool 
 
 def _dump_model(model: BaseModel) -> str:
     return json.dumps(model.model_dump(mode="json", exclude_unset=True), indent=2)
+
+
+def _parse_relative_duration(value: str) -> timedelta:
+    text = value.strip().lower()
+    if len(text) < 2:
+        raise click.ClickException("Invalid duration. Use formats like 24h, 7d, or 30m.")
+    unit = text[-1]
+    amount_raw = text[:-1]
+    try:
+        amount = int(amount_raw)
+    except ValueError as exc:
+        raise click.ClickException("Invalid duration. Use formats like 24h, 7d, or 30m.") from exc
+    if amount < 0:
+        raise click.ClickException("Duration must be non-negative.")
+    if unit == "s":
+        return timedelta(seconds=amount)
+    if unit == "m":
+        return timedelta(minutes=amount)
+    if unit == "h":
+        return timedelta(hours=amount)
+    if unit == "d":
+        return timedelta(days=amount)
+    raise click.ClickException("Invalid duration unit. Supported: s, m, h, d.")
 
 
 @contextmanager
@@ -524,8 +549,11 @@ def session_list() -> None:
         click.echo("No active sessions")
         return
     for item in result.sessions:
+        workspace = item.workspace_id or "-"
+        lockdown = item.lockdown_level or "normal"
         click.echo(
-            f"  {item.id}  state={item.state}  mode={item.mode}  user={item.user_id}"
+            f"  {item.id}  state={item.state}  mode={item.mode}  "
+            f"user={item.user_id}  workspace={workspace}  lockdown={lockdown}"
         )
 
 
@@ -573,6 +601,103 @@ def session_grant_capabilities(
         response_model=SessionGrantCapabilitiesResult,
     )
     click.echo(_dump_model(result))
+
+
+def _session_binding_payload_from_list(
+    *,
+    sessions: SessionListResult,
+    session_id: str,
+) -> dict[str, str]:
+    for item in sessions.sessions:
+        if item.id != session_id:
+            continue
+        return {
+            "channel": item.channel or "",
+            "user_id": item.user_id or "",
+            "workspace_id": item.workspace_id or "",
+        }
+    raise click.ClickException(f"Session not found: {session_id}")
+
+
+@session.command("terminate")
+@click.argument("session_id")
+@click.option("--reason", default="manual", help="Termination reason.")
+def session_terminate(session_id: str, reason: str) -> None:
+    """Terminate a session by ID."""
+    config = _get_config()
+    listed = rpc_call(config, "session.list", response_model=SessionListResult)
+    binding = _session_binding_payload_from_list(sessions=listed, session_id=session_id)
+    result = rpc_call(
+        config,
+        "session.terminate",
+        {
+            "session_id": session_id,
+            "channel": binding["channel"],
+            "user_id": binding["user_id"],
+            "workspace_id": binding["workspace_id"],
+            "reason": reason,
+        },
+        response_model=SessionTerminateResult,
+    )
+    click.echo(_dump_model(result))
+
+
+@session.command("prune")
+@click.option("--all", "prune_all", is_flag=True, help="Prune all active sessions.")
+@click.option("--user", "user_id", default="", help="Prune sessions for a specific user_id.")
+@click.option(
+    "--older-than",
+    default="",
+    help="Prune sessions older than this duration (for example 24h, 7d).",
+)
+@click.option("--confirm", is_flag=True, help="Required with --all.")
+def session_prune(prune_all: bool, user_id: str, older_than: str, confirm: bool) -> None:
+    """Bulk-terminate sessions by filter."""
+    if prune_all and not confirm:
+        raise click.ClickException("--confirm is required with --all.")
+    config = _get_config()
+    listed = rpc_call(config, "session.list", response_model=SessionListResult)
+    cutoff: datetime | None = None
+    if older_than.strip():
+        cutoff = datetime.now(UTC) - _parse_relative_duration(older_than)
+
+    candidates = []
+    for item in listed.sessions:
+        if item.state.strip().lower() != "active":
+            continue
+        if user_id and item.user_id != user_id:
+            continue
+        if cutoff is not None:
+            created_raw = (item.created_at or "").strip()
+            if not created_raw:
+                continue
+            try:
+                created = datetime.fromisoformat(created_raw)
+            except ValueError:
+                continue
+            if created > cutoff:
+                continue
+        if not prune_all and not user_id and cutoff is None:
+            continue
+        candidates.append(item)
+
+    terminated = 0
+    for item in candidates:
+        result = rpc_call(
+            config,
+            "session.terminate",
+            {
+                "session_id": item.id,
+                "channel": item.channel,
+                "user_id": item.user_id,
+                "workspace_id": item.workspace_id,
+                "reason": "prune",
+            },
+            response_model=SessionTerminateResult,
+        )
+        if result.terminated:
+            terminated += 1
+    click.echo(f"Pruned {terminated}/{len(candidates)} sessions")
 
 
 @session.command("restore")
@@ -826,15 +951,72 @@ def action_confirm(confirmation_id: str, nonce: str, reason: str) -> None:
 
 @action.command("reject")
 @click.argument("confirmation_id")
+@click.option("--nonce", default="", help="Decision nonce for replay-safe rejection")
 @click.option("--reason", default="manual_reject", help="Rejection reason")
-def action_reject(confirmation_id: str, reason: str) -> None:
+def action_reject(confirmation_id: str, nonce: str, reason: str) -> None:
     """Reject one pending confirmation."""
     config = _get_config()
+    decision_nonce = nonce.strip()
+    if not decision_nonce:
+        decision_nonce = _resolve_pending_decision_nonce(
+            config=config,
+            confirmation_id=confirmation_id,
+        )
+    if not decision_nonce:
+        raise click.ClickException(
+            "Decision nonce not found for confirmation_id; run 'shisad action pending' and retry "
+            "with --nonce."
+        )
     result = rpc_call(
         config,
         "action.reject",
-        {"confirmation_id": confirmation_id, "reason": reason},
+        {
+            "confirmation_id": confirmation_id,
+            "decision_nonce": decision_nonce,
+            "reason": reason,
+        },
         response_model=ActionRejectResult,
+    )
+    click.echo(_dump_model(result))
+
+
+@cli.group()
+def lockdown() -> None:
+    """Manual lockdown controls."""
+
+
+@lockdown.command("resume")
+@click.argument("session_id")
+@click.option("--reason", default="manual", help="Operator note")
+def lockdown_resume(session_id: str, reason: str) -> None:
+    """Resume a session to normal lockdown level."""
+    config = _get_config()
+    result = rpc_call(
+        config,
+        "lockdown.set",
+        {"session_id": session_id, "action": "resume", "reason": reason},
+        response_model=LockdownSetResult,
+    )
+    click.echo(_dump_model(result))
+
+
+@lockdown.command("set")
+@click.argument("session_id")
+@click.option(
+    "--action",
+    "action_name",
+    required=True,
+    type=click.Choice(["resume", "caution", "quarantine"], case_sensitive=False),
+)
+@click.option("--reason", default="manual", help="Operator note")
+def lockdown_set(session_id: str, action_name: str, reason: str) -> None:
+    """Set lockdown level for a session."""
+    config = _get_config()
+    result = rpc_call(
+        config,
+        "lockdown.set",
+        {"session_id": session_id, "action": action_name, "reason": reason},
+        response_model=LockdownSetResult,
     )
     click.echo(_dump_model(result))
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import re
 import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -37,6 +38,7 @@ from shisad.core.events import (
     SessionMessageResponded,
     SessionModeChanged,
     SessionRolledBack,
+    SessionTerminated,
     TaskDelegationAdvisory,
     ToolProposed,
     ToolRejected,
@@ -129,6 +131,90 @@ class TaskDelegationRecommendation:
     action_count: int
     reason_codes: tuple[str, ...]
     tools: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class ChatConfirmationIntent:
+    action: Literal["confirm", "reject", "none"]
+    target: Literal["single", "all", "index", "none"]
+    index: int | None = None
+
+
+_CRC_POSITIVE_PATTERNS = {
+    "yes",
+    "y",
+    "confirm",
+    "confirmed",
+    "do it",
+    "go ahead",
+    "approve",
+    "ok",
+    "okay",
+    "sure",
+    "proceed",
+}
+_CRC_NEGATIVE_PATTERNS = {
+    "no",
+    "n",
+    "reject",
+    "cancel",
+    "deny",
+    "stop",
+}
+_CRC_CONFIRM_ALL_PATTERNS = {"yes to all", "confirm all", "approve all"}
+_CRC_REJECT_ALL_PATTERNS = {"no to all", "reject all", "deny all", "cancel all"}
+_CRC_CONFIRM_INDEX_RE = re.compile(r"^(?:confirm|approve|yes)\s+(\d+)$")
+_CRC_REJECT_INDEX_RE = re.compile(r"^(?:reject|deny|no)\s+(\d+)$")
+
+
+def _classify_chat_confirmation_intent(text: str) -> ChatConfirmationIntent:
+    normalized = " ".join(text.strip().lower().split())
+    if not normalized:
+        return ChatConfirmationIntent(action="none", target="none")
+    if normalized in _CRC_CONFIRM_ALL_PATTERNS:
+        return ChatConfirmationIntent(action="confirm", target="all")
+    if normalized in _CRC_REJECT_ALL_PATTERNS:
+        return ChatConfirmationIntent(action="reject", target="all")
+    confirm_index_match = _CRC_CONFIRM_INDEX_RE.fullmatch(normalized)
+    if confirm_index_match is not None:
+        return ChatConfirmationIntent(
+            action="confirm",
+            target="index",
+            index=int(confirm_index_match.group(1)),
+        )
+    reject_index_match = _CRC_REJECT_INDEX_RE.fullmatch(normalized)
+    if reject_index_match is not None:
+        return ChatConfirmationIntent(
+            action="reject",
+            target="index",
+            index=int(reject_index_match.group(1)),
+        )
+    if normalized in _CRC_POSITIVE_PATTERNS:
+        return ChatConfirmationIntent(action="confirm", target="single")
+    if normalized in _CRC_NEGATIVE_PATTERNS:
+        return ChatConfirmationIntent(action="reject", target="single")
+    return ChatConfirmationIntent(action="none", target="none")
+
+
+def _resolve_chat_confirmation_indexes(
+    *,
+    intent: ChatConfirmationIntent,
+    pending_count: int,
+    tainted_session: bool,
+) -> list[int]:
+    if intent.action == "none" or pending_count <= 0:
+        return []
+    if intent.target == "all":
+        return list(range(pending_count))
+    if intent.target == "index":
+        if intent.index is None or intent.index <= 0 or intent.index > pending_count:
+            return []
+        return [intent.index - 1]
+    if pending_count != 1:
+        return []
+    if tainted_session:
+        return []
+    return [0]
 
 
 def _tool_available_in_session(
@@ -315,6 +401,19 @@ def _flatten_rejection_reason_codes(reasons: list[str]) -> list[str]:
             if normalized:
                 codes.append(normalized)
     return codes
+
+
+def _action_monitor_explanation_from_votes(votes: Sequence[Any]) -> str:
+    for vote in votes:
+        if str(getattr(vote, "voter", "")) != "ActionMonitorVoter":
+            continue
+        details = getattr(vote, "details", {})
+        if not isinstance(details, dict):
+            continue
+        explanation = str(details.get("explanation", "")).strip()
+        if explanation:
+            return explanation
+    return ""
 
 
 def _blocked_action_feedback(reasons: list[str]) -> str:
@@ -1152,6 +1251,215 @@ class SessionImplMixin(HandlerMixinBase):
             "tasks": cleaned_rows,
         }
 
+    def _pending_confirmations_for_binding(
+        self,
+        *,
+        session_id: SessionId,
+        user_id: UserId,
+        workspace_id: WorkspaceId,
+    ) -> list[Any]:
+        pending_actions = getattr(self, "_pending_actions", {})
+        if not isinstance(pending_actions, dict):
+            return []
+        rows = [
+            item
+            for item in pending_actions.values()
+            if item.status == "pending"
+            and item.session_id == session_id
+            and item.user_id == user_id
+            and item.workspace_id == workspace_id
+        ]
+        rows.sort(key=lambda item: item.created_at)
+        return rows
+
+    @staticmethod
+    def _chat_pending_confirmation_summary(
+        *,
+        pending_rows: Sequence[Any],
+        tainted_session: bool,
+    ) -> str:
+        if tainted_session:
+            lines = [
+                "Pending confirmations (tainted session).",
+                "Reply with 'confirm N', 'reject N', 'yes to all', or 'no to all'.",
+            ]
+        else:
+            lines = [
+                "Pending confirmations.",
+                "Reply with 'confirm N', 'reject N', 'yes to all', or 'no to all'.",
+            ]
+        for idx, pending in enumerate(pending_rows, start=1):
+            reason = str(pending.reason or "").strip()
+            if not reason:
+                reason = "requires_confirmation"
+            lines.append(f"{idx}. {pending.tool_name}: {reason}")
+            for warning in list(getattr(pending, "warnings", []) or []):
+                warning_text = str(warning).strip()
+                if warning_text.startswith("This action was flagged because:"):
+                    lines.append(f"   {warning_text}")
+                    break
+        return "\n".join(lines)
+
+    async def _maybe_handle_chat_confirmation(
+        self,
+        *,
+        sid: SessionId,
+        channel: str,
+        user_id: UserId,
+        workspace_id: WorkspaceId,
+        session_mode: SessionMode,
+        trust_level: str,
+        trusted_input: bool,
+        is_internal_ingress: bool,
+        content: str,
+        firewall_result: FirewallResult,
+    ) -> dict[str, Any] | None:
+        if is_internal_ingress or not trusted_input:
+            return None
+        pending_rows = self._pending_confirmations_for_binding(
+            session_id=sid,
+            user_id=user_id,
+            workspace_id=workspace_id,
+        )
+        if not pending_rows:
+            return None
+
+        intent = _classify_chat_confirmation_intent(content)
+        if intent.action == "none":
+            return None
+        tainted_session = (
+            self._session_has_tainted_history(sid) or firewall_result.risk_score >= 0.7
+        )
+        indexes = _resolve_chat_confirmation_indexes(
+            intent=intent,
+            pending_count=len(pending_rows),
+            tainted_session=tainted_session,
+        )
+        if not indexes:
+            response_text = self._chat_pending_confirmation_summary(
+                pending_rows=pending_rows,
+                tainted_session=tainted_session,
+            )
+            executed_actions = 0
+            blocked_actions = 0
+            checkpoint_ids: list[str] = []
+        else:
+            executed_actions = 0
+            blocked_actions = 0
+            checkpoint_ids = []
+            outcome_lines: list[str] = []
+            for index in indexes:
+                pending = pending_rows[index]
+                payload = {
+                    "confirmation_id": pending.confirmation_id,
+                    "decision_nonce": pending.decision_nonce,
+                    "reason": "chat_confirmation",
+                }
+                if intent.action == "confirm":
+                    result = await self.do_action_confirm(payload)
+                    confirmed = bool(result.get("confirmed", False))
+                    if confirmed:
+                        executed_actions += 1
+                    else:
+                        blocked_actions += 1
+                    checkpoint_id = str(result.get("checkpoint_id", "")).strip()
+                    if checkpoint_id:
+                        checkpoint_ids.append(checkpoint_id)
+                    status = str(result.get("status") or result.get("reason") or "failed").strip()
+                    outcome_lines.append(
+                        f"confirmed {index + 1} ({pending.tool_name}): {status}"
+                    )
+                else:
+                    result = await self.do_action_reject(payload)
+                    rejected = bool(result.get("rejected", False))
+                    if rejected:
+                        blocked_actions += 1
+                    status = str(result.get("status") or result.get("reason") or "failed").strip()
+                    outcome_lines.append(
+                        f"rejected {index + 1} ({pending.tool_name}): {status}"
+                    )
+            response_text = "\n".join(outcome_lines)
+            remaining = self._pending_confirmations_for_binding(
+                session_id=sid,
+                user_id=user_id,
+                workspace_id=workspace_id,
+            )
+            if remaining:
+                response_text = (
+                    f"{response_text}\n\n"
+                    + self._chat_pending_confirmation_summary(
+                        pending_rows=remaining,
+                        tainted_session=tainted_session,
+                    )
+                )
+
+        output_result = self._output_firewall.inspect(
+            response_text,
+            context={"session_id": sid, "actor": "assistant"},
+        )
+        if output_result.blocked:
+            response_text = "Response blocked by output policy."
+        else:
+            response_text = output_result.sanitized_text
+            if output_result.require_confirmation:
+                response_text = f"[CONFIRMATION REQUIRED] {response_text}"
+        lockdown_notice = self._lockdown_manager.user_notification(sid)
+        if lockdown_notice:
+            response_text = f"{response_text}\n\n[LOCKDOWN NOTICE] {lockdown_notice}"
+        assistant_transcript_metadata = _transcript_metadata_for_channel(
+            channel=channel,
+            session_mode=session_mode,
+        )
+        self._transcript_store.append(
+            sid,
+            role="assistant",
+            content=response_text,
+            taint_labels=set(),
+            metadata=assistant_transcript_metadata,
+        )
+        pending_confirmation_ids = [
+            pending.confirmation_id
+            for pending in self._pending_confirmations_for_binding(
+                session_id=sid,
+                user_id=user_id,
+                workspace_id=workspace_id,
+            )
+        ]
+        await self._event_bus.publish(
+            SessionMessageResponded(
+                session_id=sid,
+                actor="assistant",
+                response_hash=_short_hash(response_text),
+                blocked_actions=blocked_actions + len(pending_confirmation_ids),
+                executed_actions=executed_actions,
+                trust_level=trust_level,
+                taint_labels=[],
+                risk_score=firewall_result.risk_score,
+            )
+        )
+        return {
+            "session_id": sid,
+            "response": response_text,
+            "plan_hash": self._control_plane.active_plan_hash(str(sid)),
+            "risk_score": firewall_result.risk_score,
+            "blocked_actions": blocked_actions,
+            "confirmation_required_actions": len(pending_confirmation_ids),
+            "executed_actions": executed_actions,
+            "checkpoint_ids": checkpoint_ids,
+            "checkpoints_created": len(checkpoint_ids),
+            "transcript_root": str(self._transcript_root),
+            "lockdown_level": self._lockdown_manager.state_for(sid).level.value,
+            "trust_level": trust_level,
+            "session_mode": session_mode.value,
+            "proposal_only": session_mode == SessionMode.ADMIN_CLEANROOM,
+            "proposals": [],
+            "cleanroom_block_reasons": [],
+            "pending_confirmation_ids": pending_confirmation_ids,
+            "output_policy": output_result.model_dump(mode="json"),
+            "planner_error": "",
+            "tool_outputs": [],
+        }
+
     async def do_session_create(self, params: Mapping[str, Any]) -> dict[str, Any]:
         channel = str(params.get("channel", "cli"))
         requested_mode = str(params.get("mode", SessionMode.DEFAULT.value)).strip().lower()
@@ -1373,6 +1681,20 @@ class SessionImplMixin(HandlerMixinBase):
             taint_labels=incoming_taint_labels,
             metadata=user_transcript_metadata,
         )
+        chat_confirmation_result = await self._maybe_handle_chat_confirmation(
+            sid=sid,
+            channel=str(channel),
+            user_id=user_id,
+            workspace_id=workspace_id,
+            session_mode=session_mode,
+            trust_level=trust_level,
+            trusted_input=trusted_input,
+            is_internal_ingress=is_internal_ingress,
+            content=content,
+            firewall_result=firewall_result,
+        )
+        if chat_confirmation_result is not None:
+            return chat_confirmation_result
 
         raw_allowlist = session.metadata.get("tool_allowlist")
         tool_allowlist: set[ToolName] | None = None
@@ -1752,6 +2074,7 @@ class SessionImplMixin(HandlerMixinBase):
                 declared_domains=sorted(declared_domains),
                 session_tainted=session_tainted,
                 trusted_input=trusted_input,
+                raw_user_text=content,
             )
             trace_only_stage2_block = (
                 cp_eval.trace_result.reason_code == "trace:stage2_upgrade_required"
@@ -1967,6 +2290,12 @@ class SessionImplMixin(HandlerMixinBase):
 
             if final_kind == "require_confirmation":
                 pending_confirmation += 1
+                amv_explanation = _action_monitor_explanation_from_votes(cp_eval.consensus.votes)
+                extra_warnings: list[str] = []
+                if amv_explanation:
+                    extra_warnings.append(
+                        f"This action was flagged because: {amv_explanation}"
+                    )
                 pending = self._queue_pending_action(
                     session_id=sid,
                     user_id=user_id,
@@ -1977,6 +2306,7 @@ class SessionImplMixin(HandlerMixinBase):
                     capabilities=effective_caps,
                     preflight_action=cp_eval.action,
                     taint_labels=list(context.taint_labels),
+                    extra_warnings=extra_warnings,
                 )
                 pending_confirmation_ids.append(pending.confirmation_id)
                 await self._event_bus.publish(
@@ -2304,6 +2634,43 @@ class SessionImplMixin(HandlerMixinBase):
                 }
                 for s in sessions
             ]
+        }
+
+    async def do_session_terminate(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        sid = SessionId(str(params.get("session_id", "")).strip())
+        if not sid:
+            raise ValueError("session_id is required")
+        reason = str(params.get("reason", "")).strip()
+        session = self._session_manager.get(sid)
+        if session is None:
+            return {
+                "session_id": sid,
+                "terminated": False,
+                "reason": "not_found",
+            }
+        channel = str(params.get("channel", "")).strip()
+        user_id = UserId(str(params.get("user_id", "")).strip())
+        workspace_id = WorkspaceId(str(params.get("workspace_id", "")).strip())
+        if not self._session_manager.validate_identity_binding(
+            sid,
+            channel=channel,
+            user_id=user_id,
+            workspace_id=workspace_id,
+        ):
+            raise ValueError("Session identity binding mismatch")
+        terminated = self._session_manager.terminate(sid, reason=reason)
+        if terminated:
+            await self._event_bus.publish(
+                SessionTerminated(
+                    session_id=sid,
+                    actor="control_api",
+                    reason=reason,
+                )
+            )
+        return {
+            "session_id": sid,
+            "terminated": terminated,
+            "reason": reason,
         }
 
     async def do_session_restore(self, params: Mapping[str, Any]) -> dict[str, Any]:

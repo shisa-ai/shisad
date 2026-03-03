@@ -928,6 +928,7 @@ class HandlerImplementation(
         capabilities: set[Capability],
         preflight_action: ControlPlaneAction | None = None,
         taint_labels: list[TaintLabel] | None = None,
+        extra_warnings: list[str] | None = None,
     ) -> PendingAction:
         created_at = datetime.now(UTC)
         decision_nonce = uuid.uuid4().hex
@@ -945,6 +946,8 @@ class HandlerImplementation(
             arguments=arguments,
             taint_labels=[label.value for label in taint_labels or []],
         )
+        if extra_warnings:
+            warnings.extend(str(item).strip() for item in extra_warnings if str(item).strip())
         leak_result_payload: dict[str, Any] = {}
         outbound_text = self._extract_outbound_text(arguments)
         if outbound_text:

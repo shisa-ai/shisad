@@ -11,6 +11,7 @@ from shisad.core.api.schema import (
     RealityCheckReadParams,
     RealityCheckSearchParams,
     SessionSetModeParams,
+    SessionTerminateParams,
 )
 from shisad.daemon.runner import _method_specs
 
@@ -56,6 +57,7 @@ def test_runner_registers_m3_realitycheck_and_doctor_methods() -> None:
     mapping = {name: params_model for name, _handler, _admin_only, params_model in specs}
     assert mapping["doctor.check"] is DoctorCheckParams
     assert mapping["session.set_mode"] is SessionSetModeParams
+    assert mapping["session.terminate"] is SessionTerminateParams
     assert mapping["channel.pairing_propose"] is ChannelPairingProposalParams
     assert mapping["realitycheck.search"] is RealityCheckSearchParams
     assert mapping["realitycheck.read"] is RealityCheckReadParams

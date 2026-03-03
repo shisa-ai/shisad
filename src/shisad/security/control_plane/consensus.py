@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import re
 from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any, Protocol
 
 from pydantic import BaseModel, Field
 
+from shisad.core.providers.base import Message
 from shisad.security.control_plane.history import SessionActionHistoryStore
 from shisad.security.control_plane.network import (
     NetworkIntelligenceMonitor,
@@ -39,6 +42,7 @@ class VoterDecision(BaseModel, frozen=True):
     decision: VoteKind
     risk_tier: RiskTier
     reason_codes: list[str] = Field(default_factory=list)
+    details: dict[str, Any] = Field(default_factory=dict)
 
 
 class ConsensusInput(BaseModel, frozen=True):
@@ -237,7 +241,63 @@ def _strict_metadata_bool(value: Any, *, default: bool) -> bool:
 
 
 class ActionMonitorVoter:
-    """Metadata-only action monitor voter used in M5 consensus path."""
+    """Taint-aware action monitor voter with optional isolated LLM classifier."""
+
+    _SIDE_EFFECT_KINDS: frozenset[ActionKind] = frozenset(
+        {
+            ActionKind.EGRESS,
+            ActionKind.FS_WRITE,
+            ActionKind.MEMORY_WRITE,
+            ActionKind.MESSAGE_SEND,
+        }
+    )
+
+    def __init__(self, *, intent_provider: Any | None = None) -> None:
+        self._intent_provider = intent_provider
+
+    @staticmethod
+    def _build_classifier_messages(
+        *,
+        user_text: str,
+        tool_name: str,
+        action_arguments: dict[str, Any],
+    ) -> list[Message]:
+        proposed_arguments = json.dumps(action_arguments, ensure_ascii=True, sort_keys=True)
+        system_prompt = (
+            "You evaluate whether the user's message authorizes a proposed action. "
+            "Respond with strict JSON: "
+            '{"decision":"YES|NO|UNCLEAR","explanation":"one short sentence"}'
+        )
+        user_prompt = (
+            f"The user said: {user_text}\n"
+            f"The system proposes: {tool_name}({proposed_arguments})\n"
+            "Does the user's message express intent for this action?"
+        )
+        return [
+            Message(role="system", content=system_prompt),
+            Message(role="user", content=user_prompt),
+        ]
+
+    @staticmethod
+    def _parse_classifier_response(content: str) -> tuple[str, str]:
+        text = content.strip()
+        if not text:
+            return "UNCLEAR", ""
+        try:
+            payload = json.loads(text)
+        except json.JSONDecodeError:
+            match = re.search(r"\b(YES|NO|UNCLEAR)\b", text.upper())
+            if match is None:
+                return "UNCLEAR", text
+            decision = match.group(1)
+            return decision, text
+        if not isinstance(payload, dict):
+            return "UNCLEAR", text
+        decision = str(payload.get("decision", "")).strip().upper()
+        if decision not in {"YES", "NO", "UNCLEAR"}:
+            decision = "UNCLEAR"
+        explanation = str(payload.get("explanation", "")).strip()
+        return decision, explanation
 
     async def cast_vote(self, data: ConsensusInput) -> VoterDecision:
         if contains_freeform_text(data.metadata_payload):
@@ -265,24 +325,53 @@ class ActionMonitorVoter:
                 reason_codes=["action_monitor:clean_session_trust_planner"],
             )
 
-        if action.action_kind in {
-            ActionKind.EGRESS,
-            ActionKind.FS_WRITE,
-            ActionKind.MEMORY_WRITE,
-            ActionKind.MESSAGE_SEND,
-        } and session_tainted:
+        if action.action_kind in self._SIDE_EFFECT_KINDS and session_tainted:
+            user_text = str(data.metadata_payload.get("raw_user_text", "")).strip()
+            action_arguments = data.metadata_payload.get("action_arguments", {})
+            if not isinstance(action_arguments, dict):
+                action_arguments = {}
+            if self._intent_provider is None or not user_text:
+                return VoterDecision(
+                    voter="ActionMonitorVoter",
+                    decision=VoteKind.FLAG,
+                    risk_tier=RiskTier.HIGH,
+                    reason_codes=["action_monitor:side_effect_on_tainted_session"],
+                )
+            try:
+                provider_response = await self._intent_provider.complete(
+                    self._build_classifier_messages(
+                        user_text=user_text,
+                        tool_name=str(action.tool_name),
+                        action_arguments=action_arguments,
+                    ),
+                    tools=[],
+                )
+            except Exception:
+                return VoterDecision(
+                    voter="ActionMonitorVoter",
+                    decision=VoteKind.FLAG,
+                    risk_tier=RiskTier.HIGH,
+                    reason_codes=["action_monitor:classifier_unavailable"],
+                )
+            decision_value, explanation = self._parse_classifier_response(
+                str(provider_response.message.content)
+            )
+            if decision_value == "YES":
+                return VoterDecision(
+                    voter="ActionMonitorVoter",
+                    decision=VoteKind.ALLOW,
+                    risk_tier=RiskTier.LOW,
+                    reason_codes=["action_monitor:intent_match"],
+                    details={"explanation": explanation},
+                )
             return VoterDecision(
                 voter="ActionMonitorVoter",
                 decision=VoteKind.FLAG,
                 risk_tier=RiskTier.HIGH,
-                reason_codes=["action_monitor:side_effect_on_tainted_session"],
+                reason_codes=["action_monitor:intent_mismatch"],
+                details={"explanation": explanation},
             )
-        if action.action_kind in {
-            ActionKind.EGRESS,
-            ActionKind.FS_WRITE,
-            ActionKind.MEMORY_WRITE,
-            ActionKind.MESSAGE_SEND,
-        } and not trusted_input:
+        if action.action_kind in self._SIDE_EFFECT_KINDS and not trusted_input:
             return VoterDecision(
                 voter="ActionMonitorVoter",
                 decision=VoteKind.FLAG,

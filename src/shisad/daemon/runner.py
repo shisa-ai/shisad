@@ -52,6 +52,7 @@ from shisad.core.api.schema import (
     SessionRestoreParams,
     SessionRollbackParams,
     SessionSetModeParams,
+    SessionTerminateParams,
     SkillInstallParams,
     SkillProfileParams,
     SkillReviewParams,
@@ -118,6 +119,7 @@ def _method_specs(
         ("session.create", handlers.handle_session_create, False, SessionCreateParams),
         ("session.message", handlers.handle_session_message, False, SessionMessageParams),
         ("session.list", handlers.handle_session_list, False, NoParams),
+        ("session.terminate", handlers.handle_session_terminate, False, SessionTerminateParams),
         ("session.restore", handlers.handle_session_restore, False, SessionRestoreParams),
         ("session.rollback", handlers.handle_session_rollback, True, SessionRollbackParams),
         (

@@ -350,7 +350,7 @@ async def _decision(socket_path: Path, method: str, confirmation_id: str) -> Non
     try:
         await client.connect()
         payload: dict[str, Any] = {"confirmation_id": confirmation_id}
-        if method == "action.confirm":
+        if method in {"action.confirm", "action.reject"}:
             pending_payload = await client.call(
                 "action.pending",
                 {

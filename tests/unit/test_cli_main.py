@@ -58,12 +58,30 @@ def test_cli_commands_route_through_rpc_wrapper(
             "changed": True,
             "reason": "",
         },
+        "session.terminate": {
+            "session_id": "s-1",
+            "terminated": True,
+            "reason": "manual",
+        },
         "session.grant_capabilities": {
             "session_id": "s-1",
             "granted": True,
             "capabilities": ["http.request"],
         },
-        "session.list": {"sessions": [{"id": "s-1", "state": "active", "user_id": "alice"}]},
+        "session.list": {
+            "sessions": [
+                {
+                    "id": "s-1",
+                    "state": "active",
+                    "mode": "default",
+                    "user_id": "alice",
+                    "workspace_id": "ws-1",
+                    "lockdown_level": "normal",
+                    "created_at": "2026-03-01T00:00:00+00:00",
+                    "channel": "cli",
+                }
+            ]
+        },
         "session.restore": {"restored": True, "session_id": "s-1", "checkpoint_id": "cp-1"},
         "session.rollback": {"rolled_back": True, "session_id": "s-1", "checkpoint_id": "cp-1"},
         "action.pending": {
@@ -81,6 +99,7 @@ def test_cli_commands_route_through_rpc_wrapper(
         },
         "action.confirm": {"confirmed": True, "confirmation_id": "c-1"},
         "action.reject": {"rejected": True, "confirmation_id": "c-1"},
+        "lockdown.set": {"session_id": "s-1", "level": "normal", "reason": "manual"},
         "channel.pairing_propose": {
             "proposal_id": "proposal-1",
             "proposal_path": "/tmp/proposal-1.json",
@@ -259,6 +278,10 @@ def test_cli_commands_route_through_rpc_wrapper(
         ],
     )
     assert "state=active" in _invoke_ok(runner, ["session", "list"]).output
+    assert "workspace=ws-1" in _invoke_ok(runner, ["session", "list"]).output
+    assert "lockdown=normal" in _invoke_ok(runner, ["session", "list"]).output
+    _invoke_ok(runner, ["session", "terminate", "s-1", "--reason", "manual"])
+    _invoke_ok(runner, ["session", "prune", "--user", "alice"])
     assert "Restored session s-1" in _invoke_ok(runner, ["session", "restore", "cp-1"]).output
     assert "Rolled back session s-1" in _invoke_ok(runner, ["session", "rollback", "cp-1"]).output
     assert "preview payload" in _invoke_ok(
@@ -271,6 +294,11 @@ def test_cli_commands_route_through_rpc_wrapper(
     ).output
     _invoke_ok(runner, ["action", "confirm", "c-1", "--reason", "ok"])
     _invoke_ok(runner, ["action", "reject", "c-1", "--reason", "deny"])
+    _invoke_ok(runner, ["lockdown", "resume", "s-1", "--reason", "manual"])
+    _invoke_ok(
+        runner,
+        ["lockdown", "set", "s-1", "--action", "quarantine", "--reason", "manual"],
+    )
     _invoke_ok(runner, ["channel", "pairing-propose", "--limit", "5"])
     assert "hash_chain valid=True checked=1" in _invoke_ok(
         runner,
@@ -369,6 +397,28 @@ def test_cli_commands_route_through_rpc_wrapper(
         "session.grant_capabilities",
         {"session_id": "s-1", "capabilities": ["http.request"], "reason": "unit-test"},
     ) in calls
+    assert any(
+        method == "session.terminate"
+        and isinstance(params, dict)
+        and params.get("session_id") == "s-1"
+        and params.get("reason") == "manual"
+        and params.get("channel") == "cli"
+        and params.get("user_id") == "alice"
+        and params.get("workspace_id") == "ws-1"
+        for method, params in calls
+    )
+    assert any(
+        method == "session.terminate"
+        and isinstance(params, dict)
+        and params.get("session_id") == "s-1"
+        and params.get("reason") == "prune"
+        for method, params in calls
+    )
+    assert ("lockdown.set", {"session_id": "s-1", "action": "resume", "reason": "manual"}) in calls
+    assert (
+        "lockdown.set",
+        {"session_id": "s-1", "action": "quarantine", "reason": "manual"},
+    ) in calls
     assert ("memory.rotate_key", {"reencrypt_existing": True}) in calls
     assert ("doctor.check", {"component": "realitycheck"}) in calls
     assert ("realitycheck.read", {"path": "sources/a.md", "max_bytes": 64}) in calls
@@ -447,6 +497,94 @@ def test_session_restore_not_found_exits_nonzero(
     result = runner.invoke(cli_main.cli, ["session", "restore", "cp-missing"])
     assert result.exit_code == 1
     assert "Checkpoint not found: cp-missing" in result.output
+
+
+def test_session_prune_all_requires_confirm(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _config(tmp_path)
+    monkeypatch.setattr(cli_main, "_get_config", lambda: config)
+    runner = CliRunner()
+
+    result = runner.invoke(cli_main.cli, ["session", "prune", "--all"])
+
+    assert result.exit_code != 0
+    assert "--confirm is required with --all" in result.output
+
+
+def test_session_prune_filters_by_older_than(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _config(tmp_path)
+    monkeypatch.setattr(cli_main, "_get_config", lambda: config)
+    calls: list[tuple[str, dict[str, object] | None]] = []
+
+    def _fake_rpc_call(
+        _config: DaemonConfig,
+        method: str,
+        params: dict[str, object] | None = None,
+        *,
+        response_model: type[object] | None = None,
+    ) -> object:
+        calls.append((method, params))
+        if method == "session.list":
+            payload = {
+                "sessions": [
+                    {
+                        "id": "old",
+                        "state": "active",
+                        "channel": "cli",
+                        "user_id": "alice",
+                        "workspace_id": "w1",
+                        "created_at": "2026-02-01T00:00:00+00:00",
+                    },
+                    {
+                        "id": "new",
+                        "state": "active",
+                        "channel": "cli",
+                        "user_id": "alice",
+                        "workspace_id": "w1",
+                        "created_at": "2026-03-03T00:00:00+00:00",
+                    },
+                ]
+            }
+            if response_model is None:
+                return payload
+            return response_model.model_validate(payload)  # type: ignore[attr-defined]
+        if method == "session.terminate":
+            payload = {
+                "session_id": str(params.get("session_id", "")) if isinstance(params, dict) else "",
+                "terminated": True,
+                "reason": "prune",
+            }
+            if response_model is None:
+                return payload
+            return response_model.model_validate(payload)  # type: ignore[attr-defined]
+        raise AssertionError(f"unexpected method {method}")
+
+    monkeypatch.setattr(cli_main, "rpc_call", _fake_rpc_call)
+    runner = CliRunner()
+
+    result = runner.invoke(cli_main.cli, ["session", "prune", "--older-than", "24h"])
+    assert result.exit_code == 0, result.output
+    assert any(
+        method == "session.terminate"
+        and isinstance(params, dict)
+        and params.get("session_id") == "old"
+        and params.get("reason") == "prune"
+        and params.get("channel") == "cli"
+        and params.get("user_id") == "alice"
+        and params.get("workspace_id") == "w1"
+        for method, params in calls
+    )
+    assert not any(
+        method == "session.terminate"
+        and isinstance(params, dict)
+        and params.get("session_id") == "new"
+        for method, params in calls
+    )
 
 
 def test_status_progress_reports_failure_instead_of_done(

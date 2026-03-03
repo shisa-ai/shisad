@@ -64,6 +64,7 @@ class ControlPlaneEngine:
         network_monitor: NetworkIntelligenceMonitor,
         consensus_policy: ConsensusPolicy,
         audit_log: ControlPlaneAuditLog,
+        action_monitor_provider: Any | None = None,
     ) -> None:
         self._history_store = history_store
         self._trace_verifier = trace_verifier
@@ -77,7 +78,7 @@ class ControlPlaneEngine:
                 SequenceVoter(analyzer=self._sequence_analyzer, history=self._history_store),
                 ResourceVoter(monitor=self._resource_monitor, history=self._history_store),
                 TraceVoter(),
-                ActionMonitorVoter(),
+                ActionMonitorVoter(intent_provider=action_monitor_provider),
             ],
             policy=consensus_policy,
             audit_hook=self._audit_consensus,
@@ -89,6 +90,7 @@ class ControlPlaneEngine:
         *,
         data_dir: Path,
         monitor_provider: Any | None = None,
+        action_monitor_provider: Any | None = None,
         monitor_timeout_seconds: float = 0.5,
         monitor_cache_ttl_seconds: int = 300,
         baseline_learning_rate: float = 0.1,
@@ -129,6 +131,7 @@ class ControlPlaneEngine:
             network_monitor=network_monitor,
             consensus_policy=consensus_policy or ConsensusPolicy(),
             audit_log=audit_log,
+            action_monitor_provider=action_monitor_provider or monitor_provider,
         )
 
     @property
@@ -187,6 +190,7 @@ class ControlPlaneEngine:
         declared_domains: list[str],
         session_tainted: bool,
         trusted_input: bool,
+        raw_user_text: str = "",
     ) -> ControlPlaneEvaluation:
         metadata_arguments = sanitize_metadata_payload(arguments)
         action = build_action(
@@ -224,6 +228,8 @@ class ControlPlaneEngine:
                 metadata_payload={
                     "session_tainted": session_tainted,
                     "trusted_input": trusted_input,
+                    "raw_user_text": str(raw_user_text)[:256],
+                    "action_arguments": metadata_arguments,
                     "action_kind": action.action_kind.value,
                     "resource_ids": list(action.resource_ids),
                     "network_hosts": list(action.network_hosts),

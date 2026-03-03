@@ -225,6 +225,28 @@ async def test_m1_pf11_confirmation_accepts_valid_nonce_and_rejects_missing_nonc
 
 
 @pytest.mark.asyncio
+async def test_m6_s8_reject_requires_valid_decision_nonce() -> None:
+    harness = _ConfirmationImplHarness()
+    harness._pending_actions["c-1"] = _pending_action(nonce="expected")
+
+    missing = await harness.do_action_reject({"confirmation_id": "c-1"})
+    assert missing["rejected"] is False
+    assert missing["reason"] == "missing_decision_nonce"
+
+    invalid = await harness.do_action_reject(
+        {"confirmation_id": "c-1", "decision_nonce": "wrong"}
+    )
+    assert invalid["rejected"] is False
+    assert invalid["reason"] == "invalid_decision_nonce"
+
+    valid = await harness.do_action_reject(
+        {"confirmation_id": "c-1", "decision_nonce": "expected"}
+    )
+    assert valid["rejected"] is True
+    assert valid["status"] == "rejected"
+
+
+@pytest.mark.asyncio
 async def test_m1_pf11_confirmation_cooldown_active_and_expired() -> None:
     harness = _ConfirmationImplHarness()
     harness._pending_actions["c-1"] = _pending_action(

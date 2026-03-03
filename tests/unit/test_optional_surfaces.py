@@ -372,6 +372,70 @@ async def test_tui_decision_handles_missing_and_present_confirmation_id(
 
 
 @pytest.mark.asyncio
+async def test_tui_decision_reject_fetches_decision_nonce(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from shisad.ui import tui as tui_module
+
+    printed: list[str] = []
+    monkeypatch.setattr(
+        "builtins.print",
+        lambda *args, **kwargs: printed.append(" ".join(map(str, args))),
+    )
+
+    class _FakeClient:
+        def __init__(self, _socket_path: Path) -> None:
+            self.calls: list[tuple[str, dict[str, object]]] = []
+
+        async def connect(self) -> None:
+            return
+
+        async def call(self, method: str, payload: dict[str, object]) -> dict[str, object]:
+            self.calls.append((method, payload))
+            if method == "action.pending":
+                return {
+                    "actions": [
+                        {
+                            "confirmation_id": "conf-2",
+                            "decision_nonce": "nonce-2",
+                        }
+                    ],
+                    "count": 1,
+                }
+            return {"ok": True, "method": method, "payload": payload}
+
+        async def close(self) -> None:
+            return
+
+    created: list[_FakeClient] = []
+
+    def _factory(socket_path: Path) -> _FakeClient:
+        client = _FakeClient(socket_path)
+        created.append(client)
+        return client
+
+    async def _fake_sleep(_seconds: float) -> None:
+        return
+
+    monkeypatch.setattr(tui_module, "ControlClient", _factory)
+    monkeypatch.setattr(asyncio, "sleep", _fake_sleep)
+    await tui_module._decision(Path("/tmp/control.sock"), "action.reject", "conf-2")
+    assert created[0].calls == [
+        (
+            "action.pending",
+            {
+                "confirmation_id": "conf-2",
+                "status": "pending",
+                "limit": 1,
+                "include_ui": False,
+            },
+        ),
+        ("action.reject", {"confirmation_id": "conf-2", "decision_nonce": "nonce-2"}),
+    ]
+    assert not any("decision_nonce not found" in line for line in printed)
+
+
+@pytest.mark.asyncio
 async def test_tui_decision_fails_when_targeted_nonce_lookup_misses(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

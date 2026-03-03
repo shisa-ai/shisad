@@ -228,6 +228,26 @@ class ConfirmationImplMixin(HandlerMixinBase):
         pending = self._pending_actions.get(confirmation_id)
         if pending is None:
             return {"rejected": False, "confirmation_id": confirmation_id, "reason": "not_found"}
+        raw_nonce = params.get("decision_nonce", "")
+        provided_nonce = raw_nonce.strip() if isinstance(raw_nonce, str) else ""
+        if not provided_nonce:
+            return {
+                "rejected": False,
+                "confirmation_id": confirmation_id,
+                "reason": "missing_decision_nonce",
+            }
+        if provided_nonce != pending.decision_nonce:
+            return {
+                "rejected": False,
+                "confirmation_id": confirmation_id,
+                "reason": "invalid_decision_nonce",
+            }
+        if pending.status != "pending":
+            return {
+                "rejected": False,
+                "confirmation_id": confirmation_id,
+                "reason": f"already_{pending.status}",
+            }
         pending.status = "rejected"
         pending.status_reason = reason
         await self._event_bus.publish(

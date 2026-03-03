@@ -195,6 +195,38 @@ async def test_chat_app_reuses_existing_session_by_user_workspace_binding() -> N
 
 
 @pytest.mark.asyncio
+async def test_chat_app_reuse_emits_lockdown_notice_for_non_normal_session() -> None:
+    app = ChatApp(
+        socket_path=Path("/tmp/test.sock"),
+        user_id="ops",
+        workspace_id="prod",
+    )
+    appended: list[str] = []
+    app._append_history = appended.append  # type: ignore[method-assign]
+
+    mock_client = AsyncMock()
+    mock_client.call = AsyncMock(
+        return_value={
+            "sessions": [
+                {
+                    "id": "active-sid",
+                    "state": "active",
+                    "channel": "cli",
+                    "user_id": "ops",
+                    "workspace_id": "prod",
+                    "lockdown_level": "caution",
+                }
+            ]
+        }
+    )
+
+    await app._ensure_session(mock_client)
+
+    assert app._session_id == "active-sid"
+    assert any("lockdown" in line.lower() and "caution" in line.lower() for line in appended)
+
+
+@pytest.mark.asyncio
 async def test_chat_app_force_new_session_skips_binding_lookup() -> None:
     app = ChatApp(
         socket_path=Path("/tmp/test.sock"),
