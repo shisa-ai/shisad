@@ -339,7 +339,16 @@ class OutputFirewall:
             return False
         if any(len(segment) > 64 for segment in segments):
             return False
-        return all(re.fullmatch(r"[A-Za-z0-9_-]+", segment) for segment in segments)
+        has_human_readable_segment = False
+        for segment in segments:
+            if not re.fullmatch(r"[A-Za-z0-9_-]+", segment):
+                return False
+            segment_entropy = cls._shannon_entropy(segment)
+            if len(segment) >= 10 and segment_entropy >= 3.6:
+                return False
+            if re.fullmatch(r"[A-Za-z_-]+", segment) and segment_entropy < 3.4:
+                has_human_readable_segment = True
+        return has_human_readable_segment
 
     @staticmethod
     def _shannon_entropy(value: str) -> float:

@@ -110,3 +110,11 @@ def test_m5_dlp1_entropy_detector_still_redacts_secret_like_tokens() -> None:
     result = firewall.inspect(f"token={secret_blob} key=AKIAABCDEFGHIJKLMNOP")
     assert "[REDACTED:high_entropy_secret]" in result.sanitized_text
     assert "[REDACTED:aws_access_key]" in result.sanitized_text
+
+
+def test_m5_rr2_entropy_detector_redacts_slash_separated_high_entropy_tokens() -> None:
+    firewall = OutputFirewall(safe_domains=["api.good.com"])
+    token = "/a8F2kL9pQ4rT1vN3/b7D4mS8xZ1cV6nH2/u9J3qW5eR7tY2iK4"
+    result = firewall.inspect(f"debug={token}")
+    assert "[REDACTED:high_entropy_secret]" in result.sanitized_text
+    assert "high_entropy_secret" in result.secret_findings

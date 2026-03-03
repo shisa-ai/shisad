@@ -1531,13 +1531,14 @@ class SessionImplMixin(HandlerMixinBase):
                 episode_snapshot=episode_snapshot,
                 task_ledger_snapshot=task_ledger_snapshot,
             )
-        except (TypeError, ValueError, RuntimeError) as exc:
+        except Exception as exc:
             context_scaffold_degraded = True
             context_scaffold_reason_codes.append("context_scaffold_build_failed")
             logger.warning(
                 "context scaffold build degraded for session %s: %s",
                 sid,
                 exc,
+                exc_info=True,
             )
 
         planner_input = ""
@@ -1552,13 +1553,14 @@ class SessionImplMixin(HandlerMixinBase):
                     trusted_context="",
                     scaffold=context_scaffold,
                 )
-            except (TypeError, ValueError, RuntimeError) as exc:
+            except Exception as exc:
                 context_scaffold_degraded = True
                 context_scaffold_reason_codes.append("context_scaffold_render_failed")
                 logger.warning(
                     "context scaffold render degraded for session %s: %s",
                     sid,
                     exc,
+                    exc_info=True,
                 )
 
         if context_scaffold_degraded:
@@ -1579,12 +1581,13 @@ class SessionImplMixin(HandlerMixinBase):
                     trusted_context="",
                     scaffold=None,
                 )
-            except (TypeError, ValueError, RuntimeError) as exc:
+            except Exception as exc:
                 context_scaffold_reason_codes.append("context_scaffold_fallback_failed")
                 logger.warning(
                     "context scaffold fallback degraded for session %s: %s",
                     sid,
                     exc,
+                    exc_info=True,
                 )
                 planner_input = firewall_result.sanitized_text
 

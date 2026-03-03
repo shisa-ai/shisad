@@ -133,6 +133,8 @@ class Planner:
         self._custom_persona_text = custom_persona_text.strip()
         self._capabilities = capabilities or ProviderCapabilities()
         self._tool_registry = tool_registry
+        # Keep direct-constructor default lenient for backwards-compatible test/tooling
+        # callers; daemon runtime wiring sets this from model config (default enabled).
         self._schema_strict_mode = bool(schema_strict_mode)
 
     async def propose(
@@ -539,7 +541,20 @@ class Planner:
             return False
         if _CONTENT_TOOL_CALL_PATTERN.search(stripped):
             return True
-        return stripped.startswith("[")
+        if not stripped.startswith("["):
+            return False
+        try:
+            parsed_json = json.loads(stripped)
+        except json.JSONDecodeError:
+            return False
+        if not isinstance(parsed_json, list) or not parsed_json:
+            return False
+        for item in parsed_json:
+            if not isinstance(item, dict):
+                return False
+            if "name" not in item or "arguments" not in item:
+                return False
+        return True
 
     def _allowed_content_tool_names(
         self,

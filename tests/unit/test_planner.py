@@ -410,3 +410,23 @@ async def test_planner_does_not_parse_legacy_json_content_as_actions() -> None:
 
     assert result.output.actions == []
     assert result.output.assistant_response == payload
+
+
+@pytest.mark.asyncio
+async def test_m5_rr2_schema_strict_mode_allows_non_tool_json_array_assistant_text() -> None:
+    registry = _make_registry()
+    pep = PEP(PolicyBundle(default_require_confirmation=False), registry)
+    planner = Planner(
+        StaticProvider([Message(role="assistant", content='[1, 2, 3]')]),
+        pep,
+        max_retries=0,
+        schema_strict_mode=True,
+    )
+
+    result = await planner.propose(
+        "show list",
+        PolicyContext(capabilities={Capability.FILE_READ}),
+    )
+
+    assert result.output.actions == []
+    assert result.output.assistant_response == "[1, 2, 3]"
