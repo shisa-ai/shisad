@@ -7,7 +7,7 @@ from typing import Any
 
 import pytest
 
-from shisad.core.planner import Planner
+from shisad.core.planner import Planner, PlannerOutputError
 from shisad.core.providers.base import Message, ProviderResponse
 from shisad.core.providers.capabilities import ProviderCapabilities
 from shisad.core.tools.names import canonical_tool_name
@@ -283,6 +283,41 @@ async def test_m2_planner_rejects_mixed_valid_and_malformed_content_tool_calls()
     )
 
     assert result.output.actions == []
+
+
+@pytest.mark.asyncio
+async def test_m5_cf_v0351_schema_strict_mode_rejects_unknown_content_tool_calls() -> None:
+    registry = _make_registry()
+    pep = PEP(PolicyBundle(default_require_confirmation=False), registry)
+    provider = _StaticProvider(
+        [
+            Message(
+                role="assistant",
+                content=(
+                    '<tool_call>{"name":"unknown.tool","arguments":{"x":1}}</tool_call>'
+                    ' <tool_call>{"name":"echo","arguments":{"text":"ok"}}</tool_call>'
+                ),
+            )
+        ]
+    )
+    planner = Planner(
+        provider,
+        pep,
+        max_retries=0,
+        capabilities=ProviderCapabilities(
+            supports_tool_calls=False,
+            supports_content_tool_calls=True,
+        ),
+        tool_registry=registry,
+        schema_strict_mode=True,
+    )
+
+    with pytest.raises(PlannerOutputError, match="strict schema validation"):
+        await planner.propose(
+            "echo",
+            PolicyContext(capabilities={Capability.FILE_READ}),
+            tools=_tools_payload(registry, {"echo"}),
+        )
 
 
 @pytest.mark.asyncio

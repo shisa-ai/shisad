@@ -7,7 +7,7 @@ from typing import Any
 
 import pytest
 
-from shisad.core.planner import Planner
+from shisad.core.planner import Planner, PlannerOutputError
 from shisad.core.providers.base import Message, ProviderResponse
 from shisad.core.tools.registry import ToolRegistry
 from shisad.core.tools.schema import ToolDefinition, ToolParameter
@@ -152,6 +152,35 @@ async def test_m1_t2_planner_drops_malformed_native_tool_calls() -> None:
     )
 
     assert result.output.actions == []
+
+
+@pytest.mark.asyncio
+async def test_m5_cf_v0351_schema_strict_mode_rejects_malformed_native_tool_calls() -> None:
+    registry = _make_registry()
+    pep = PEP(PolicyBundle(default_require_confirmation=False), registry)
+    planner = Planner(
+        StaticProvider(
+            [
+                Message(
+                    role="assistant",
+                    content="No valid calls.",
+                    tool_calls=[
+                        {"id": "x", "type": "function", "function": {"arguments": "{}"}},
+                        {"id": "y", "type": "other"},
+                    ],
+                )
+            ]
+        ),
+        pep,
+        max_retries=0,
+        schema_strict_mode=True,
+    )
+
+    with pytest.raises(PlannerOutputError, match="strict schema validation"):
+        await planner.propose(
+            "hello",
+            PolicyContext(capabilities={Capability.FILE_READ}),
+        )
 
 
 @pytest.mark.asyncio

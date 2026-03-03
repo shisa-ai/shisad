@@ -74,6 +74,23 @@ class OutputFirewall:
     )
     _HIGH_ENTROPY_TOKEN_RE: ClassVar[re.Pattern[str]] = re.compile(r"\b[A-Za-z0-9+/=_-]{24,}\b")
     _QUERY_BLOB_RE: ClassVar[re.Pattern[str]] = re.compile(r"[A-Za-z0-9+/=_%-]{20,}")
+    _PATH_CONTEXT_CHARS: ClassVar[set[str]] = {
+        " ",
+        "\t",
+        "\n",
+        "\r",
+        "'",
+        '"',
+        "(",
+        ")",
+        "[",
+        "]",
+        "{",
+        "}",
+        ",",
+        ";",
+        ":",
+    }
     _TOXIC_PHRASES: ClassVar[dict[str, float]] = {
         "kill yourself": 0.95,
         "end your life": 0.95,
@@ -267,10 +284,23 @@ class OutputFirewall:
     def _redact_high_entropy_tokens(cls, text: str) -> tuple[str, list[str]]:
         redacted = text
         findings: list[str] = []
-        for token in sorted(set(cls._HIGH_ENTROPY_TOKEN_RE.findall(text)), key=len, reverse=True):
+        matches = sorted(
+            cls._HIGH_ENTROPY_TOKEN_RE.finditer(text),
+            key=lambda match: len(match.group(0)),
+            reverse=True,
+        )
+        for match in matches:
+            token = match.group(0)
             if token.startswith("http"):
                 continue
             if "." in token and "/" in token:
+                continue
+            if cls._looks_like_filesystem_path_token(
+                text,
+                token=token,
+                start=match.start(),
+                end=match.end(),
+            ):
                 continue
             entropy = cls._shannon_entropy(token)
             if entropy < 4.0:
@@ -278,6 +308,38 @@ class OutputFirewall:
             findings.append("high_entropy_secret")
             redacted = redacted.replace(token, "[REDACTED:high_entropy_secret]")
         return redacted, findings
+
+    @classmethod
+    def _looks_like_filesystem_path_token(
+        cls,
+        text: str,
+        *,
+        token: str,
+        start: int,
+        end: int,
+    ) -> bool:
+        if "/" not in token:
+            return False
+        if token.count("/") < 2:
+            return False
+        if "+" in token or "=" in token:
+            return False
+        previous = text[start - 1] if start > 0 else ""
+        following = text[end] if end < len(text) else ""
+        if previous and previous not in cls._PATH_CONTEXT_CHARS and previous not in {"/", "\\"}:
+            return False
+        if (
+            following
+            and following not in cls._PATH_CONTEXT_CHARS
+            and following not in {".", "/", "\\"}
+        ):
+            return False
+        segments = [segment for segment in token.strip("/").split("/") if segment]
+        if len(segments) < 2:
+            return False
+        if any(len(segment) > 64 for segment in segments):
+            return False
+        return all(re.fullmatch(r"[A-Za-z0-9_-]+", segment) for segment in segments)
 
     @staticmethod
     def _shannon_entropy(value: str) -> float:

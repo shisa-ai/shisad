@@ -437,6 +437,7 @@ class DaemonServices:
                 custom_persona_text=config.assistant_persona_custom_text,
                 capabilities=planner_route.capabilities,
                 tool_registry=registry,
+                schema_strict_mode=bool(model_config.planner_schema_strict_mode),
             )
             shutdown_event = asyncio.Event()
             planner_model_id = planner_route.model_id

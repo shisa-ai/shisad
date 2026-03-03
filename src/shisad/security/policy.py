@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from pydantic import BaseModel, Field, ValidationError, model_validator
+from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 
 from shisad.core.tools.names import canonical_tool_name
 from shisad.core.types import Capability, ToolName
@@ -41,6 +41,27 @@ class EgressRule(BaseModel):
     host: str
     ports: list[int] = Field(default_factory=lambda: [443])
     protocols: list[str] = Field(default_factory=lambda: ["https"])
+
+    @field_validator("host")
+    @classmethod
+    def _lint_host_pattern(cls, value: str) -> str:
+        candidate = value.strip().lower()
+        if not candidate:
+            raise ValueError("Egress host pattern must not be empty")
+        if candidate == "*":
+            raise ValueError(
+                "Egress host pattern '*' is too broad. "
+                "Use an explicit host or a scoped wildcard such as '*.example.com'."
+            )
+        if candidate.startswith("*."):
+            suffix = candidate[2:]
+            labels = [part for part in suffix.split(".") if part]
+            if len(labels) < 2:
+                raise ValueError(
+                    f"Egress host pattern '{candidate}' is too broad. "
+                    "Use an explicit host or a scoped wildcard such as '*.example.com'."
+                )
+        return candidate
 
 
 class FilesystemRule(BaseModel):

@@ -93,3 +93,20 @@ def test_m5_output_firewall_host_matching_normalizes_allowlist_rules() -> None:
     assert result.blocked is False
     assert result.require_confirmation is False
     assert result.url_findings[0].allowed is True
+
+
+def test_m5_dlp1_entropy_detector_keeps_filesystem_paths_unredacted() -> None:
+    firewall = OutputFirewall(safe_domains=["api.good.com"])
+    text = "files: /path/to/shisad/CLAUDE.md and /path/to/shisad/pyproject.toml"
+    result = firewall.inspect(text)
+    assert "/path/to/shisad/CLAUDE.md" in result.sanitized_text
+    assert "/path/to/shisad/pyproject.toml" in result.sanitized_text
+    assert "high_entropy_secret" not in result.secret_findings
+
+
+def test_m5_dlp1_entropy_detector_still_redacts_secret_like_tokens() -> None:
+    firewall = OutputFirewall(safe_domains=["api.good.com"])
+    secret_blob = "QWxhZGRpbjpPcGVuU2VzYW1lLTIwMjYtWFlaMTIzNDU2Nzg5MA=="
+    result = firewall.inspect(f"token={secret_blob} key=AKIAABCDEFGHIJKLMNOP")
+    assert "[REDACTED:high_entropy_secret]" in result.sanitized_text
+    assert "[REDACTED:aws_access_key]" in result.sanitized_text

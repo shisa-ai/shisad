@@ -123,6 +123,7 @@ class Planner:
         custom_persona_text: str = "",
         capabilities: ProviderCapabilities | None = None,
         tool_registry: ToolRegistry | None = None,
+        schema_strict_mode: bool = False,
     ) -> None:
         self._provider = provider
         self._pep = pep
@@ -132,6 +133,7 @@ class Planner:
         self._custom_persona_text = custom_persona_text.strip()
         self._capabilities = capabilities or ProviderCapabilities()
         self._tool_registry = tool_registry
+        self._schema_strict_mode = bool(schema_strict_mode)
 
     async def propose(
         self,
@@ -272,14 +274,22 @@ class Planner:
         tools_payload: list[dict[str, Any]] | None = None,
     ) -> PlannerOutput:
         assistant_response = message.content.strip()
-        actions = self._extract_tool_calls(message.tool_calls)
+        actions, native_invalid = self._extract_tool_calls(message.tool_calls)
+        if self._schema_strict_mode and native_invalid > 0:
+            raise PlannerOutputError(
+                "Planner output failed strict schema validation for native tool_calls"
+            )
         if actions:
             return PlannerOutput(assistant_response=assistant_response, actions=actions)
         if assistant_response:
-            content_actions = self._extract_content_tool_calls(
+            content_actions, content_invalid = self._extract_content_tool_calls(
                 message.content,
                 tools_payload=tools_payload,
             )
+            if self._schema_strict_mode and content_invalid > 0:
+                raise PlannerOutputError(
+                    "Planner output failed strict schema validation for content tool calls"
+                )
             if content_actions:
                 clean_response = self._strip_extracted_content_tool_calls(
                     assistant_response,
@@ -404,33 +414,39 @@ class Planner:
         content: str,
         *,
         tools_payload: list[dict[str, Any]] | None,
-    ) -> list[ActionProposal]:
+    ) -> tuple[list[ActionProposal], int]:
+        invalid_count = 0
+        has_structured_payload = self._has_content_tool_call_syntax(content)
         if not self._is_content_tool_fallback_enabled():
-            return []
+            return [], 1 if (self._schema_strict_mode and has_structured_payload) else 0
         if self._tool_registry is None:
-            return []
+            return [], 1 if (self._schema_strict_mode and has_structured_payload) else 0
         allowed_tools = self._allowed_content_tool_names(tools_payload)
         if not allowed_tools:
-            return []
+            return [], 1 if (self._schema_strict_mode and has_structured_payload) else 0
         parsed_calls = self._parse_content_tool_call_payloads(content)
         if not parsed_calls:
-            return []
+            return [], 1 if has_structured_payload else 0
 
         actions: list[ActionProposal] = []
         for index, raw_call in enumerate(parsed_calls):
             if not isinstance(raw_call, dict):
+                invalid_count += 1
                 continue
             name_raw = raw_call.get("name")
             if not isinstance(name_raw, str) or not name_raw.strip():
+                invalid_count += 1
                 continue
             canonical_name = canonical_tool_name(name_raw, warn_on_alias=False)
             if not canonical_name:
+                invalid_count += 1
                 continue
             if canonical_name not in allowed_tools:
                 logger.debug(
                     "Dropping content tool call for non-runtime tool '%s'",
                     canonical_name,
                 )
+                invalid_count += 1
                 continue
             arguments_raw = raw_call.get("arguments")
             serialized_arguments: str
@@ -440,10 +456,12 @@ class Planner:
                     len(serialized_arguments.encode("utf-8"))
                     > _CONTENT_TOOL_CALL_MAX_ARGUMENT_BYTES
                 ):
+                    invalid_count += 1
                     continue
                 try:
                     parsed_arguments = json.loads(serialized_arguments)
                 except json.JSONDecodeError:
+                    invalid_count += 1
                     continue
             elif isinstance(arguments_raw, dict):
                 serialized_arguments = json.dumps(arguments_raw, sort_keys=True)
@@ -451,11 +469,14 @@ class Planner:
                     len(serialized_arguments.encode("utf-8"))
                     > _CONTENT_TOOL_CALL_MAX_ARGUMENT_BYTES
                 ):
+                    invalid_count += 1
                     continue
                 parsed_arguments = arguments_raw
             else:
+                invalid_count += 1
                 continue
             if not isinstance(parsed_arguments, dict):
+                invalid_count += 1
                 continue
             payload = {
                 "action_id": f"content-call-{index + 1}",
@@ -467,8 +488,9 @@ class Planner:
             try:
                 actions.append(ActionProposal.model_validate(payload))
             except ValidationError:
+                invalid_count += 1
                 continue
-        return actions
+        return actions, invalid_count
 
     def _parse_content_tool_call_payloads(self, content: str) -> list[dict[str, Any]]:
         stripped = content.strip()
@@ -509,6 +531,15 @@ class Planner:
                 return []
             json_array_payloads.append(item)
         return json_array_payloads
+
+    @staticmethod
+    def _has_content_tool_call_syntax(content: str) -> bool:
+        stripped = content.strip()
+        if not stripped:
+            return False
+        if _CONTENT_TOOL_CALL_PATTERN.search(stripped):
+            return True
+        return stripped.startswith("[")
 
     def _allowed_content_tool_names(
         self,
@@ -560,25 +591,35 @@ class Planner:
         return dict(parsed) if isinstance(parsed, dict) else None
 
     @classmethod
-    def _extract_tool_calls(cls, raw_tool_calls: list[dict[str, Any]]) -> list[ActionProposal]:
+    def _extract_tool_calls(
+        cls,
+        raw_tool_calls: list[dict[str, Any]],
+    ) -> tuple[list[ActionProposal], int]:
         actions: list[ActionProposal] = []
+        invalid_count = 0
         for index, raw_call in enumerate(raw_tool_calls):
             if not isinstance(raw_call, dict):
+                invalid_count += 1
                 continue
             if str(raw_call.get("type", "")).strip().lower() != "function":
+                invalid_count += 1
                 continue
             function = raw_call.get("function")
             if not isinstance(function, dict):
+                invalid_count += 1
                 continue
             name_raw = function.get("name")
             if not isinstance(name_raw, str) or not name_raw.strip():
+                invalid_count += 1
                 continue
             canonical_name = canonical_tool_name(name_raw, warn_on_alias=False)
             if not canonical_name:
+                invalid_count += 1
                 continue
             parsed_arguments = cls._parse_tool_arguments(function.get("arguments"))
             if parsed_arguments is None:
                 logger.debug("Dropping native tool call with invalid arguments payload")
+                invalid_count += 1
                 continue
             action_id_raw = raw_call.get("id")
             action_id = str(action_id_raw).strip() if action_id_raw is not None else ""
@@ -594,8 +635,9 @@ class Planner:
             try:
                 actions.append(ActionProposal.model_validate(payload))
             except ValidationError:
+                invalid_count += 1
                 logger.debug(
                     "Dropping malformed native tool call payload: %s",
                     json.dumps(payload, sort_keys=True)[:200],
                 )
-        return actions
+        return actions, invalid_count

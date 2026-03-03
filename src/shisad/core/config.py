@@ -605,6 +605,13 @@ class ModelConfig(BaseSettings):
         default_factory=ProviderCapabilities,
         description="Capability declaration for planner route.",
     )
+    planner_schema_strict_mode: bool = Field(
+        default=True,
+        description=(
+            "Enable strict planner structured-output schema validation. "
+            "When true, malformed structured tool-call payloads are rejected."
+        ),
+    )
     embeddings_capabilities: ProviderCapabilities = Field(
         default_factory=lambda: ProviderCapabilities(supports_tool_calls=False),
         description="Capability declaration for embeddings route.",
