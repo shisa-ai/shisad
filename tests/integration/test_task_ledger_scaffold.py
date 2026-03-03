@@ -306,6 +306,63 @@ async def test_m4_cs6_task_ledger_snapshot_is_scoped_by_user_and_workspace(
 
 
 @pytest.mark.asyncio
+async def test_m4_cs6_task_create_requires_workspace_binding(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SHISAD_MODEL_BASE_URL", "https://api.example.com/v1")
+    monkeypatch.setenv("SHISAD_MODEL_PLANNER_BASE_URL", "https://planner.example.com/v1")
+    monkeypatch.setenv("SHISAD_MODEL_EMBEDDINGS_BASE_URL", "https://embed.example.com/v1")
+    monkeypatch.setenv("SHISAD_MODEL_MONITOR_BASE_URL", "https://monitor.example.com/v1")
+
+    policy_path = tmp_path / "policy.yaml"
+    policy_path.write_text(
+        textwrap.dedent(
+            """
+            version: "1"
+            default_require_confirmation: false
+            default_capabilities:
+              - memory.read
+            """
+        ).strip()
+        + "\n"
+    )
+    config = DaemonConfig(
+        data_dir=tmp_path / "data",
+        socket_path=tmp_path / "control.sock",
+        policy_path=policy_path,
+        log_level="INFO",
+    )
+
+    daemon_task = asyncio.create_task(run_daemon(config))
+    client = ControlClient(config.socket_path)
+    try:
+        await _wait_for_socket(config.socket_path)
+        await client.connect()
+        with pytest.raises(RuntimeError, match=r"RPC error -32602"):
+            await client.call(
+                "task.create",
+                {
+                    "schedule": {
+                        "kind": "event",
+                        "expression": "message.received",
+                        "event_type": "message.received",
+                        "event_filter": {},
+                    },
+                    "name": "daily-summary",
+                    "goal": "summarize daily updates",
+                    "policy_snapshot_ref": "policy-1",
+                    "created_by": "alice",
+                },
+            )
+    finally:
+        with suppress(Exception):
+            await client.call("daemon.shutdown")
+        await client.close()
+        await asyncio.wait_for(daemon_task, timeout=3)
+
+
+@pytest.mark.asyncio
 async def test_m4_cs9_delegation_advisory_emits_telemetry_without_enforcement(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

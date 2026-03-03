@@ -43,6 +43,7 @@ async def test_task_create_and_list_wrappers() -> None:
             goal="scan logs",
             policy_snapshot_ref="policy-1",
             created_by="alice",
+            workspace_id="ws1",
         ),
         RequestContext(),
     )

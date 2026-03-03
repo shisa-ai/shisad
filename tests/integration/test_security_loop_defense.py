@@ -1275,6 +1275,7 @@ async def test_m2_task_trigger_runtime_checks_queue_confirmations(
                 "capability_snapshot": ["memory.read"],
                 "policy_snapshot_ref": "p1",
                 "created_by": "alice",
+                "workspace_id": "ws1",
             },
         )
         runs = await client.call(
@@ -1324,6 +1325,7 @@ async def test_m2_interval_scheduler_pump_emits_task_trigger_and_anomaly(
                 "capability_snapshot": ["message.send"],
                 "policy_snapshot_ref": "p1",
                 "created_by": "alice",
+                "workspace_id": "ws1",
             },
         )
 
@@ -1405,6 +1407,7 @@ async def test_m2_restart_hydrates_memory_retrieval_and_tasks(
                 "capability_snapshot": ["memory.read"],
                 "policy_snapshot_ref": "p1",
                 "created_by": "alice",
+                "workspace_id": "ws1",
             },
         )
     finally:

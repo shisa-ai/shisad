@@ -42,6 +42,7 @@ from shisad.core.api.schema import (
     SkillProfileResult,
     SkillReviewResult,
     SkillRevokeResult,
+    TaskCreateParams,
     TaskCreateResult,
     TaskDisableResult,
     TaskListResult,
@@ -81,6 +82,16 @@ class TestApiSchemaValidation:
     def test_session_create_tone_rejects_unknown_values(self) -> None:
         with pytest.raises(ValidationError):
             SessionCreateParams(tone="casual")
+
+    def test_task_create_requires_workspace_id(self) -> None:
+        with pytest.raises(ValidationError):
+            TaskCreateParams(
+                schedule={"kind": "event", "expression": "message.received"},
+                name="scan",
+                goal="scan logs",
+                policy_snapshot_ref="policy-1",
+                created_by="alice",
+            )
 
     def test_tool_execute_rejects_empty_command(self) -> None:
         with pytest.raises(ValidationError):

@@ -14,6 +14,9 @@ from shisad.scheduler.schema import Schedule
 class TasksImplMixin(HandlerMixinBase):
     async def do_task_create(self, params: Mapping[str, Any]) -> dict[str, Any]:
         schedule = Schedule.model_validate(params.get("schedule", {}))
+        workspace_raw = str(params.get("workspace_id", "")).strip()
+        if not workspace_raw:
+            raise ValueError("workspace_id is required")
         raw_delivery_target = params.get("delivery_target", {})
         delivery_target: dict[str, str]
         if isinstance(raw_delivery_target, Mapping):
@@ -31,7 +34,7 @@ class TasksImplMixin(HandlerMixinBase):
             capability_snapshot={Capability(cap) for cap in params.get("capability_snapshot", [])},
             policy_snapshot_ref=str(params.get("policy_snapshot_ref", "")),
             created_by=UserId(str(params.get("created_by", ""))),
-            workspace_id=WorkspaceId(str(params.get("workspace_id", ""))),
+            workspace_id=WorkspaceId(workspace_raw),
             allowed_recipients=list(params.get("allowed_recipients", [])),
             allowed_domains=list(params.get("allowed_domains", [])),
             delivery_target=delivery_target,

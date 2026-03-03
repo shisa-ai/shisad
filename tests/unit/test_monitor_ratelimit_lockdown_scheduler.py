@@ -343,6 +343,36 @@ def test_m4_task_status_snapshot_scopes_to_owner_and_workspace() -> None:
     assert rows[0]["workspace_id"] == "ws1"
 
 
+def test_m4_task_status_snapshot_excludes_blank_workspace_from_scoped_queries() -> None:
+    scheduler = SchedulerManager()
+    _blank_workspace = scheduler.create_task(
+        name="legacy-global-task",
+        goal="task one",
+        schedule=Schedule.from_event("message.received"),
+        capability_snapshot={Capability.MEMORY_READ},
+        policy_snapshot_ref="p1",
+        created_by=UserId("alice"),
+    )
+    task_scoped = scheduler.create_task(
+        name="scoped-task",
+        goal="task two",
+        schedule=Schedule.from_event("message.received"),
+        capability_snapshot={Capability.MEMORY_READ},
+        policy_snapshot_ref="p1",
+        created_by=UserId("alice"),
+        workspace_id=WorkspaceId("ws1"),
+    )
+
+    rows = scheduler.task_status_snapshot(
+        limit=10,
+        created_by=UserId("alice"),
+        workspace_id=WorkspaceId("ws1"),
+    )
+    assert len(rows) == 1
+    assert rows[0]["task_id"] == task_scoped.id
+    assert rows[0]["workspace_id"] == "ws1"
+
+
 def test_m2_t21_risk_policy_versioning_is_deterministic(tmp_path: Path) -> None:
     calibrator = RiskCalibrator(
         policy_path=tmp_path / "risk-policy.json",

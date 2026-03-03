@@ -1119,7 +1119,7 @@ class SessionImplMixin(HandlerMixinBase):
                 continue
             row_workspace = str(row.get("workspace_id", "")).strip()
             if scoped_workspace:
-                if row_workspace and row_workspace != scoped_workspace:
+                if row_workspace != scoped_workspace:
                     continue
             elif row_workspace:
                 continue

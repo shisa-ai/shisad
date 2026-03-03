@@ -222,7 +222,7 @@ class SchedulerManager:
             tasks = [
                 task
                 for task in tasks
-                if not str(task.workspace_id).strip() or str(task.workspace_id).strip() == workspace
+                if str(task.workspace_id).strip() == workspace
             ]
         rows: list[dict[str, Any]] = []
         for task in tasks[: max(0, int(limit))]:

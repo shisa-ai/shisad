@@ -570,7 +570,7 @@ class TaskCreateParams(_StrictParams):
     capability_snapshot: list[str] = Field(default_factory=list)
     policy_snapshot_ref: str
     created_by: str
-    workspace_id: str = ""
+    workspace_id: str = Field(min_length=1)
     allowed_recipients: list[str] = Field(default_factory=list)
     allowed_domains: list[str] = Field(default_factory=list)
     delivery_target: dict[str, str] = Field(default_factory=dict)
