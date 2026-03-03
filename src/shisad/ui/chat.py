@@ -207,10 +207,8 @@ class ChatApp(App[None]):
                 normalized_lockdown = lockdown_level.strip().lower()
                 if normalized_lockdown and normalized_lockdown != "normal":
                     self._append_history(
-
-                            "info: reusing existing session in lockdown "
-                            f"state ({normalized_lockdown})."
-
+                        "info: reusing existing session in lockdown "
+                        f"state ({normalized_lockdown})."
                     )
                 return
         await self._create_new_session(client)

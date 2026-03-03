@@ -57,6 +57,7 @@ from shisad.core.types import (
     Capability,
     SessionId,
     SessionMode,
+    SessionState,
     TaintLabel,
     ToolName,
     UserId,
@@ -101,6 +102,7 @@ _MEMORY_QUERY_CONTEXT_MAX_CHARS = 400
 _TOOL_OUTPUT_RESPONSE_PREVIEW_MAX_CHARS = 800
 _TOOL_OUTPUT_RESPONSE_PREVIEW_MAX_LINES = 12
 _FRONTMATTER_VALUE_MAX_CHARS = 240
+_AMV_EXPLANATION_MAX_CHARS = 240
 _REJECTION_REASON_SPLITTER = ","
 _EPISODE_GAP_THRESHOLD = DEFAULT_EPISODE_GAP_THRESHOLD
 _EPISODE_INTERNAL_TOKEN_BUDGET = DEFAULT_INTERNAL_TIER_TOKEN_BUDGET
@@ -412,7 +414,11 @@ def _action_monitor_explanation_from_votes(votes: Sequence[Any]) -> str:
             continue
         explanation = str(details.get("explanation", "")).strip()
         if explanation:
-            return explanation
+            single_line = " ".join(explanation.split())
+            if len(single_line) <= _AMV_EXPLANATION_MAX_CHARS:
+                return single_line
+            clipped = single_line[: max(0, _AMV_EXPLANATION_MAX_CHARS - 3)].rstrip()
+            return f"{clipped}..."
     return ""
 
 
@@ -1542,6 +1548,8 @@ class SessionImplMixin(HandlerMixinBase):
         content = params.get("content", "")
         session = self._session_manager.get(sid)
         if session is None:
+            raise ValueError(f"Unknown session: {sid}")
+        if session.state != SessionState.ACTIVE:
             raise ValueError(f"Unknown session: {sid}")
         session_mode = self._session_mode(session)
         is_admin_rpc_peer = self._is_admin_rpc_peer(params)
@@ -2720,6 +2728,7 @@ class SessionImplMixin(HandlerMixinBase):
             "files_deleted": files_deleted,
             "restore_errors": restore_errors,
         }
+
     async def do_session_grant_capabilities(self, params: Mapping[str, Any]) -> dict[str, Any]:
         sid = SessionId(params.get("session_id", ""))
         peer = params.get("_rpc_peer", {})

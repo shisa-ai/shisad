@@ -675,6 +675,10 @@ def session_prune(prune_all: bool, user_id: str, older_than: str, confirm: bool)
                 created = datetime.fromisoformat(created_raw)
             except ValueError:
                 continue
+            if created.tzinfo is None:
+                created = created.replace(tzinfo=UTC)
+            else:
+                created = created.astimezone(UTC)
             if created > cutoff:
                 continue
         if not prune_all and not user_id and cutoff is None:

@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 from shisad.core.tools.schema import ToolDefinition, ToolParameter
 from shisad.core.types import Capability, ToolName
 from shisad.daemon.handlers._impl_session import (
+    _action_monitor_explanation_from_votes,
     _blocked_action_feedback,
     _build_planner_tool_context,
     _coerce_blocked_action_response_text,
@@ -97,3 +100,19 @@ def test_m3_s0b3_does_not_coerce_non_generic_response() -> None:
         rejection_reasons=["web_search_disabled"],
     )
     assert response == "I can't access that right now."
+
+
+def test_m6_rr2_action_monitor_explanation_is_bounded_for_user_output() -> None:
+    vote = SimpleNamespace(
+        voter="ActionMonitorVoter",
+        details={
+            "explanation": (
+                "user asked for summary only\n"
+                + "unexpected side-effect proposed " * 30
+            )
+        },
+    )
+    explanation = _action_monitor_explanation_from_votes([vote])
+    assert "\n" not in explanation
+    assert len(explanation) <= 240
+    assert explanation.endswith("...")

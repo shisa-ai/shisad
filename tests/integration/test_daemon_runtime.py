@@ -183,6 +183,64 @@ async def test_m3_session_persists_across_daemon_restart(
 
 
 @pytest.mark.asyncio
+async def test_m6_session_terminate_makes_session_non_operable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SHISAD_MODEL_BASE_URL", "https://api.example.com/v1")
+    monkeypatch.setenv("SHISAD_MODEL_PLANNER_BASE_URL", "https://planner.example.com/v1")
+    monkeypatch.setenv("SHISAD_MODEL_EMBEDDINGS_BASE_URL", "https://embed.example.com/v1")
+    monkeypatch.setenv("SHISAD_MODEL_MONITOR_BASE_URL", "https://monitor.example.com/v1")
+
+    config = DaemonConfig(
+        data_dir=tmp_path / "data",
+        socket_path=tmp_path / "control.sock",
+        policy_path=tmp_path / "policy.yaml",
+        log_level="INFO",
+    )
+
+    daemon_task = asyncio.create_task(run_daemon(config))
+    client = ControlClient(config.socket_path)
+    try:
+        await _wait_for_socket(config.socket_path)
+        await client.connect()
+        created = await client.call(
+            "session.create",
+            {"channel": "cli", "user_id": "alice", "workspace_id": "ws1"},
+        )
+        sid = str(created["session_id"])
+
+        terminated = await client.call(
+            "session.terminate",
+            {
+                "session_id": sid,
+                "channel": "cli",
+                "user_id": "alice",
+                "workspace_id": "ws1",
+                "reason": "manual",
+            },
+        )
+        assert terminated.get("terminated") is True
+
+        with pytest.raises(RuntimeError, match="Unknown session"):
+            await client.call(
+                "session.message",
+                {
+                    "session_id": sid,
+                    "channel": "cli",
+                    "user_id": "alice",
+                    "workspace_id": "ws1",
+                    "content": "hello after terminate",
+                },
+            )
+    finally:
+        with suppress(Exception):
+            await client.call("daemon.shutdown")
+        await client.close()
+        await asyncio.wait_for(daemon_task, timeout=3)
+
+
+@pytest.mark.asyncio
 async def test_m6_restored_legacy_session_backfills_current_policy_capabilities(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

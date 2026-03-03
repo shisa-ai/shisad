@@ -587,6 +587,70 @@ def test_session_prune_filters_by_older_than(
     )
 
 
+def test_session_prune_older_than_handles_offset_naive_created_at(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _config(tmp_path)
+    monkeypatch.setattr(cli_main, "_get_config", lambda: config)
+    calls: list[tuple[str, dict[str, object] | None]] = []
+
+    def _fake_rpc_call(
+        _config: DaemonConfig,
+        method: str,
+        params: dict[str, object] | None = None,
+        *,
+        response_model: type[object] | None = None,
+    ) -> object:
+        calls.append((method, params))
+        if method == "session.list":
+            payload = {
+                "sessions": [
+                    {
+                        "id": "naive-old",
+                        "state": "active",
+                        "channel": "cli",
+                        "user_id": "alice",
+                        "workspace_id": "w1",
+                        "created_at": "2026-02-01T00:00:00",
+                    },
+                    {
+                        "id": "aware-new",
+                        "state": "active",
+                        "channel": "cli",
+                        "user_id": "alice",
+                        "workspace_id": "w1",
+                        "created_at": "2026-03-03T00:00:00+00:00",
+                    },
+                ]
+            }
+            if response_model is None:
+                return payload
+            return response_model.model_validate(payload)  # type: ignore[attr-defined]
+        if method == "session.terminate":
+            payload = {
+                "session_id": str(params.get("session_id", "")) if isinstance(params, dict) else "",
+                "terminated": True,
+                "reason": "prune",
+            }
+            if response_model is None:
+                return payload
+            return response_model.model_validate(payload)  # type: ignore[attr-defined]
+        raise AssertionError(f"unexpected method {method}")
+
+    monkeypatch.setattr(cli_main, "rpc_call", _fake_rpc_call)
+    runner = CliRunner()
+
+    result = runner.invoke(cli_main.cli, ["session", "prune", "--older-than", "24h"])
+    assert result.exit_code == 0, result.output
+    assert any(
+        method == "session.terminate"
+        and isinstance(params, dict)
+        and params.get("session_id") == "naive-old"
+        for method, params in calls
+    )
+
+
 def test_status_progress_reports_failure_instead_of_done(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

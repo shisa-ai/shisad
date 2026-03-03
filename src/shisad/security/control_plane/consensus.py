@@ -300,15 +300,6 @@ class ActionMonitorVoter:
         return decision, explanation
 
     async def cast_vote(self, data: ConsensusInput) -> VoterDecision:
-        if contains_freeform_text(data.metadata_payload):
-            return VoterDecision(
-                voter="ActionMonitorVoter",
-                decision=VoteKind.BLOCK,
-                risk_tier=RiskTier.CRITICAL,
-                reason_codes=["action_monitor:raw_text_payload_forbidden"],
-            )
-
-        action = data.action
         session_tainted = _strict_metadata_bool(
             data.metadata_payload.get("session_tainted"),
             default=True,
@@ -324,6 +315,15 @@ class ActionMonitorVoter:
                 risk_tier=RiskTier.LOW,
                 reason_codes=["action_monitor:clean_session_trust_planner"],
             )
+        if contains_freeform_text(data.metadata_payload):
+            return VoterDecision(
+                voter="ActionMonitorVoter",
+                decision=VoteKind.BLOCK,
+                risk_tier=RiskTier.CRITICAL,
+                reason_codes=["action_monitor:raw_text_payload_forbidden"],
+            )
+
+        action = data.action
 
         if action.action_kind in self._SIDE_EFFECT_KINDS and session_tainted:
             user_text = str(data.metadata_payload.get("raw_user_text", "")).strip()

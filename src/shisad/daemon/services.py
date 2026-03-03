@@ -369,6 +369,7 @@ class DaemonServices:
             control_plane = ControlPlaneEngine.build(
                 data_dir=config.data_dir,
                 monitor_provider=monitor_provider,
+                action_monitor_provider=monitor_provider,
                 monitor_timeout_seconds=max(
                     0.05, control_plane_policy.network.timeout_ms / 1000.0
                 ),

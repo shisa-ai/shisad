@@ -51,6 +51,26 @@ class ControlPlaneEvaluation(BaseModel, frozen=True):
     reason_codes: list[str] = Field(default_factory=list)
 
 
+_AMV_METADATA_TEXT_MAX_CHARS = 256
+
+
+def _normalize_voter_text(value: str) -> str:
+    collapsed = " ".join(value.split())
+    if len(collapsed) <= _AMV_METADATA_TEXT_MAX_CHARS:
+        return collapsed
+    return collapsed[:_AMV_METADATA_TEXT_MAX_CHARS]
+
+
+def _normalize_voter_payload(value: Any) -> Any:
+    if isinstance(value, str):
+        return _normalize_voter_text(value)
+    if isinstance(value, dict):
+        return {str(key): _normalize_voter_payload(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_normalize_voter_payload(item) for item in value]
+    return value
+
+
 class ControlPlaneEngine:
     """Coordinates M5 voters, plan commitment, and metadata-only auditing."""
 
@@ -192,7 +212,9 @@ class ControlPlaneEngine:
         trusted_input: bool,
         raw_user_text: str = "",
     ) -> ControlPlaneEvaluation:
-        metadata_arguments = sanitize_metadata_payload(arguments)
+        normalized_payload = _normalize_voter_payload(sanitize_metadata_payload(arguments))
+        metadata_arguments = normalized_payload if isinstance(normalized_payload, dict) else {}
+        raw_user_text_for_voter = _normalize_voter_text(str(raw_user_text))
         action = build_action(
             tool_name=tool_name,
             arguments=metadata_arguments,
@@ -228,7 +250,7 @@ class ControlPlaneEngine:
                 metadata_payload={
                     "session_tainted": session_tainted,
                     "trusted_input": trusted_input,
-                    "raw_user_text": str(raw_user_text)[:256],
+                    "raw_user_text": raw_user_text_for_voter,
                     "action_arguments": metadata_arguments,
                     "action_kind": action.action_kind.value,
                     "resource_ids": list(action.resource_ids),

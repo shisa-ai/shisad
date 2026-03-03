@@ -294,6 +294,46 @@ async def test_m6_amv_tainted_session_no_routes_to_confirmation(tmp_path: Path) 
 
 
 @pytest.mark.asyncio
+async def test_m6_rr2_amv_clean_session_multiline_user_text_does_not_hard_block(
+    tmp_path: Path,
+) -> None:
+    engine = ControlPlaneEngine.build(data_dir=tmp_path / "cp-m6-multiline")
+    origin = Origin(
+        session_id="m6-amv-multiline",
+        user_id="user-1",
+        workspace_id="ws-1",
+        actor="planner",
+    )
+    engine.begin_precontent_plan(
+        session_id=origin.session_id,
+        goal="read the README",
+        origin=origin,
+        ttl_seconds=600,
+        max_actions=10,
+        capabilities={Capability.FILE_READ},
+    )
+    evaluation = await engine.evaluate_action(
+        tool_name="fs.read",
+        arguments={"path": "README.md"},
+        origin=origin,
+        risk_tier=RiskTier.LOW,
+        declared_domains=[],
+        session_tainted=False,
+        trusted_input=True,
+        raw_user_text=(
+            "Please read README.md and summarize key points in bullet form.\n"
+            "Include setup, usage, and troubleshooting details."
+        ),
+    )
+    assert evaluation.decision == ControlDecision.ALLOW
+    amv_vote = next(
+        vote for vote in evaluation.consensus.votes if vote.voter == "ActionMonitorVoter"
+    )
+    assert "action_monitor:raw_text_payload_forbidden" not in amv_vote.reason_codes
+    assert "consensus:veto:ActionMonitorVoter" not in evaluation.reason_codes
+
+
+@pytest.mark.asyncio
 async def test_m5_t19_trace_stage2_routes_to_confirmation_not_lockdown(
     model_env: None,
     tmp_path: Path,
