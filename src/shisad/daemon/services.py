@@ -709,7 +709,10 @@ def _build_tool_registry(
     registry.register(
         ToolDefinition(
             name=ToolName("web.search"),
-            description="Search via configured backend (SearxNG reference in v0.3).",
+            description=(
+                "Search the web for current information. Use for weather, news,"
+                " live data, or any query requiring up-to-date results."
+            ),
             parameters=[
                 ToolParameter(name="query", type="string", required=True),
                 ToolParameter(name="limit", type="integer", required=False),

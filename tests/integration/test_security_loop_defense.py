@@ -328,6 +328,11 @@ async def test_m2_t17_t18_report_anomaly_triggers_lockdown_and_notification(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """report_anomaly on a clean session logs but does NOT escalate lockdown.
+
+    On clean (untainted) sessions, report_anomaly is a content-seeing component
+    that can false-positive on platform formatting.  Lockdown should stay normal.
+    """
     monkeypatch.setenv("SHISAD_MODEL_BASE_URL", "https://api.example.com/v1")
     monkeypatch.setenv("SHISAD_MODEL_PLANNER_BASE_URL", "https://planner.example.com/v1")
     monkeypatch.setenv("SHISAD_MODEL_EMBEDDINGS_BASE_URL", "https://embed.example.com/v1")
@@ -360,8 +365,8 @@ async def test_m2_t17_t18_report_anomaly_triggers_lockdown_and_notification(
                 "content": "Please report anomaly: suspicious behavior detected in tool output.",
             },
         )
-        assert reply["lockdown_level"] in {"caution", "quarantine", "full_lockdown"}
-        assert "[LOCKDOWN NOTICE]" in reply["response"]
+        # Clean session: anomaly logged but lockdown stays normal.
+        assert reply["lockdown_level"] == "normal"
     finally:
         with suppress(Exception):
             await client.call("daemon.shutdown")

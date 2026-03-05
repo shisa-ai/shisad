@@ -250,7 +250,7 @@ async def test_live_model_web_search_executes(live_harness: LiveHarness) -> None
     sid = await _create_session(live_harness.client)
     reply = await live_harness.client.call(
         "session.message",
-        {"session_id": sid, "content": "search for the latest news"},
+        {"session_id": sid, "content": "what's the weather in Tokyo right now"},
     )
     assert reply.get("lockdown_level") == "normal"
     assert int(reply.get("blocked_actions", 0)) == 0
@@ -346,7 +346,7 @@ async def test_live_model_multi_tool_executes_both_tools_in_one_turn(
         "session.message",
         {
             "session_id": sid,
-            "content": "Use fs.read to read README.md and use web.search for related projects.",
+            "content": "Read README.md and search the web for related projects.",
         },
     )
     assert reply.get("lockdown_level") == "normal"

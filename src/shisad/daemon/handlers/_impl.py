@@ -1193,12 +1193,19 @@ class HandlerImplementation(
                 actor="planner",
                 payload=payload,
             )
-            await self._handle_lockdown_transition(
-                sid,
-                trigger="alarm_bell",
-                reason=payload.description,
-                recommended_action=payload.recommended_action,
-            )
+            # On clean (untainted) sessions, report_anomaly is a content-seeing
+            # component that can false-positive on platform formatting.  Log the
+            # anomaly for audit but do NOT escalate lockdown — the session is
+            # still trusted.  Escalate only when the session already carries
+            # tainted history, where the anomaly is more likely to be genuine.
+            session_tainted = self._session_has_tainted_history(sid)
+            if session_tainted:
+                await self._handle_lockdown_transition(
+                    sid,
+                    trigger="alarm_bell",
+                    reason=payload.description,
+                    recommended_action=payload.recommended_action,
+                )
             await self._event_bus.publish(
                 ToolExecuted(
                     session_id=sid,
