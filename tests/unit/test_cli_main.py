@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import builtins
 import sys
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -520,6 +521,9 @@ def test_session_prune_filters_by_older_than(
     config = _config(tmp_path)
     monkeypatch.setattr(cli_main, "_get_config", lambda: config)
     calls: list[tuple[str, dict[str, object] | None]] = []
+    now = datetime.now(UTC)
+    old_created = (now - timedelta(days=10)).isoformat()
+    new_created = (now - timedelta(hours=6)).isoformat()
 
     def _fake_rpc_call(
         _config: DaemonConfig,
@@ -538,7 +542,7 @@ def test_session_prune_filters_by_older_than(
                         "channel": "cli",
                         "user_id": "alice",
                         "workspace_id": "w1",
-                        "created_at": "2026-02-01T00:00:00+00:00",
+                        "created_at": old_created,
                     },
                     {
                         "id": "new",
@@ -546,7 +550,7 @@ def test_session_prune_filters_by_older_than(
                         "channel": "cli",
                         "user_id": "alice",
                         "workspace_id": "w1",
-                        "created_at": "2026-03-03T00:00:00+00:00",
+                        "created_at": new_created,
                     },
                 ]
             }
@@ -594,6 +598,9 @@ def test_session_prune_older_than_handles_offset_naive_created_at(
     config = _config(tmp_path)
     monkeypatch.setattr(cli_main, "_get_config", lambda: config)
     calls: list[tuple[str, dict[str, object] | None]] = []
+    now = datetime.now(UTC)
+    naive_old_created = (now - timedelta(days=10)).replace(tzinfo=None).isoformat()
+    aware_new_created = (now - timedelta(hours=6)).isoformat()
 
     def _fake_rpc_call(
         _config: DaemonConfig,
@@ -612,7 +619,7 @@ def test_session_prune_older_than_handles_offset_naive_created_at(
                         "channel": "cli",
                         "user_id": "alice",
                         "workspace_id": "w1",
-                        "created_at": "2026-02-01T00:00:00",
+                        "created_at": naive_old_created,
                     },
                     {
                         "id": "aware-new",
@@ -620,7 +627,7 @@ def test_session_prune_older_than_handles_offset_naive_created_at(
                         "channel": "cli",
                         "user_id": "alice",
                         "workspace_id": "w1",
-                        "created_at": "2026-03-03T00:00:00+00:00",
+                        "created_at": aware_new_created,
                     },
                 ]
             }
@@ -647,6 +654,12 @@ def test_session_prune_older_than_handles_offset_naive_created_at(
         method == "session.terminate"
         and isinstance(params, dict)
         and params.get("session_id") == "naive-old"
+        for method, params in calls
+    )
+    assert not any(
+        method == "session.terminate"
+        and isinstance(params, dict)
+        and params.get("session_id") == "aware-new"
         for method, params in calls
     )
 

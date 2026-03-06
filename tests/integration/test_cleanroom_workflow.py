@@ -150,7 +150,16 @@ async def test_m6_cleanroom_transition_rejects_tool_output_tainted_history(
             "session.message",
             {"session_id": sid, "content": "fetch the source"},
         )
-        assert "TOOL OUTPUTS" in str(reply.get("response", ""))
+        assert "Tool results summary:" in str(reply.get("response", ""))
+        tool_outputs = reply.get("tool_outputs")
+        assert isinstance(tool_outputs, list)
+        assert any(
+            isinstance(record, dict)
+            and record.get("tool_name") == "retrieve_rag"
+            and record.get("success") is True
+            and "untrusted" in list(record.get("taint_labels") or [])
+            for record in tool_outputs
+        )
         mode_update = await client.call(
             "session.set_mode",
             {"session_id": sid, "mode": "admin_cleanroom"},

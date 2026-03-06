@@ -517,8 +517,9 @@ async def test_v0_3_1_session_message_passes_tool_manifest_and_tools_payload(
         )
         assert str(reply["response"]).strip().lower() == "ok"
         planner_input = str(captured.get("user_content", ""))
-        assert planner_input.strip() == "what can you do?"
-        assert "TRUSTED RUNTIME CONTEXT" not in planner_input
+        assert "=== USER REQUEST ===" in planner_input
+        assert "what can you do?" in planner_input
+        assert "=== RUNTIME CONTEXT SNAPSHOT ===" in planner_input
         tools_payload = captured.get("tools")
         assert isinstance(tools_payload, list)
         assert any(
