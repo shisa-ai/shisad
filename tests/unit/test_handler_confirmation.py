@@ -140,9 +140,9 @@ class _ConfirmationImplHarness(ConfirmationImplMixin):
         capabilities: set[Capability],
         approval_actor: str,
         execution_action: object | None = None,
-    ) -> tuple[bool, str | None, object | None]:
+    ) -> object:
         _ = (sid, user_id, tool_name, arguments, capabilities, approval_actor, execution_action)
-        return True, None, None
+        return SimpleNamespace(success=True, checkpoint_id=None)
 
     @staticmethod
     def _pending_to_dict(pending: PendingAction) -> dict[str, object]:

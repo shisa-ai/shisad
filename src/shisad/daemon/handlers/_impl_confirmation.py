@@ -190,7 +190,7 @@ class ConfirmationImplMixin(HandlerMixinBase):
                 )
             )
 
-        success, checkpoint_id, _tool_output = await self._execute_approved_action(
+        execution_result = await self._execute_approved_action(
             sid=pending.session_id,
             user_id=pending.user_id,
             tool_name=pending.tool_name,
@@ -199,6 +199,8 @@ class ConfirmationImplMixin(HandlerMixinBase):
             approval_actor="human_confirmation",
             execution_action=pending_preflight_action,
         )
+        success = execution_result.success
+        checkpoint_id = execution_result.checkpoint_id
         pending.status = "approved" if success else "failed"
         pending.status_reason = str(params.get("reason", "")).strip() or pending.status
         self._persist_pending_actions()

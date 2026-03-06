@@ -26,10 +26,6 @@ from shisad.core.context import (
 )
 from shisad.core.events import (
     AnomalyReported,
-    ConsensusEvaluated,
-    ControlPlaneActionObserved,
-    ControlPlaneNetworkObserved,
-    ControlPlaneResourceObserved,
     MonitorEvaluated,
     PlanCancelled,
     PlanCommitted,
@@ -70,7 +66,6 @@ from shisad.security.control_plane.schema import (
     ActionKind,
     ControlDecision,
     RiskTier,
-    extract_request_size_bytes,
     infer_action_kind,
 )
 from shisad.security.firewall import FirewallResult
@@ -2243,55 +2238,12 @@ class SessionImplMixin(HandlerMixinBase):
                 and str(getattr(cp_eval.action.action_kind, "value", cp_eval.action.action_kind))
                 == ActionKind.SHELL_EXEC.value
             )
-            await self._event_bus.publish(
-                ConsensusEvaluated(
-                    session_id=sid,
-                    actor="control_plane",
-                    tool_name=proposal.tool_name,
-                    decision=cp_eval.decision.value,
-                    risk_tier=cp_eval.consensus.risk_tier.value,
-                    reason_codes=list(cp_eval.reason_codes),
-                    votes=[vote.model_dump(mode="json") for vote in cp_eval.consensus.votes],
-                )
+            await self._publish_control_plane_evaluation(
+                sid=sid,
+                tool_name=proposal.tool_name,
+                arguments=proposal.arguments,
+                evaluation=cp_eval,
             )
-            await self._event_bus.publish(
-                ControlPlaneActionObserved(
-                    session_id=sid,
-                    actor="control_plane",
-                    tool_name=proposal.tool_name,
-                    action_kind=cp_eval.action.action_kind.value,
-                    resource_id=cp_eval.action.resource_id,
-                    decision=cp_eval.decision.value,
-                    reason_codes=list(cp_eval.reason_codes),
-                    origin=cp_eval.action.origin.model_dump(mode="json"),
-                )
-            )
-            for resource in cp_eval.action.resource_ids:
-                await self._event_bus.publish(
-                    ControlPlaneResourceObserved(
-                        session_id=sid,
-                        actor="control_plane",
-                        tool_name=proposal.tool_name,
-                        action_kind=cp_eval.action.action_kind.value,
-                        resource_id=resource,
-                        origin=cp_eval.action.origin.model_dump(mode="json"),
-                    )
-                )
-            for host in cp_eval.action.network_hosts:
-                await self._event_bus.publish(
-                    ControlPlaneNetworkObserved(
-                        session_id=sid,
-                        actor="control_plane",
-                        tool_name=proposal.tool_name,
-                        destination_host=host,
-                        destination_port=443,
-                        protocol="https",
-                        request_size=extract_request_size_bytes(dict(proposal.arguments)),
-                        allowed=cp_eval.decision == ControlDecision.ALLOW,
-                        reason="preflight",
-                        origin=cp_eval.action.origin.model_dump(mode="json"),
-                    )
-                )
 
             final_kind, final_reason = combine_monitor_with_policy(
                 pep_kind=evaluated.decision.kind.value,
@@ -2495,7 +2447,7 @@ class SessionImplMixin(HandlerMixinBase):
                     )
                 continue
 
-            success, checkpoint_id, tool_output = await self._execute_approved_action(
+            execution_result = await self._execute_approved_action(
                 sid=sid,
                 user_id=validated.user_id,
                 tool_name=proposal.tool_name,
@@ -2504,6 +2456,9 @@ class SessionImplMixin(HandlerMixinBase):
                 approval_actor="policy_loop",
                 execution_action=cp_eval.action,
             )
+            success = execution_result.success
+            checkpoint_id = execution_result.checkpoint_id
+            tool_output = execution_result.tool_output
             if checkpoint_id:
                 checkpoint_ids.append(checkpoint_id)
             if success:
@@ -2607,7 +2562,6 @@ class SessionImplMixin(HandlerMixinBase):
         response_taint_labels = set(planner_context.context.taint_labels)
         for tool_output in execution.executed_tool_outputs:
             response_taint_labels.update(tool_output.taint_labels)
-        planner_context.context.taint_labels = response_taint_labels
 
         assistant_transcript_metadata = _transcript_metadata_for_channel(
             channel=validated.channel,

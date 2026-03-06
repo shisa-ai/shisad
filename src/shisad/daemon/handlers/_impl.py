@@ -22,7 +22,10 @@ from shisad.assistant.web import WebToolkit
 from shisad.core.events import (
     AnomalyReported,
     BaseEvent,
+    ConsensusEvaluated,
+    ControlPlaneActionObserved,
     ControlPlaneNetworkObserved,
+    ControlPlaneResourceObserved,
     EventBus,
     LockdownChanged,
     PlanViolationDetected,
@@ -78,12 +81,15 @@ from shisad.governance.merge import (
     normalize_patch,
 )
 from shisad.memory.summarizer import ConversationSummarizer
+from shisad.security.control_plane.engine import ControlPlaneEvaluation
 from shisad.security.control_plane.schema import (
     ActionKind,
+    ControlDecision,
     ControlPlaneAction,
     Origin,
     RiskTier,
     build_action,
+    extract_request_size_bytes,
 )
 from shisad.security.leakcheck import CrossThreadLeakDetector
 from shisad.security.reputation import ReputationScorer
@@ -151,6 +157,14 @@ class ToolOutputRecord:
     content: str
     success: bool = True
     taint_labels: set[TaintLabel] = field(default_factory=set)
+
+
+@dataclass(slots=True)
+class ApprovedToolExecutionResult:
+    success: bool
+    checkpoint_id: str | None = None
+    tool_output: ToolOutputRecord | None = None
+    sandbox_result: SandboxResult | None = None
 
 
 class HandlerImplementation(
@@ -517,6 +531,100 @@ class HandlerImplementation(
             degraded_mode=merged_policy.degraded_mode,
             origin=origin.model_dump(mode="json"),
         )
+
+    async def _publish_control_plane_evaluation(
+        self,
+        *,
+        sid: SessionId,
+        tool_name: ToolName,
+        arguments: Mapping[str, Any],
+        evaluation: ControlPlaneEvaluation,
+    ) -> None:
+        await self._event_bus.publish(
+            ConsensusEvaluated(
+                session_id=sid,
+                actor="control_plane",
+                tool_name=tool_name,
+                decision=evaluation.decision.value,
+                risk_tier=evaluation.consensus.risk_tier.value,
+                reason_codes=list(evaluation.reason_codes),
+                votes=[vote.model_dump(mode="json") for vote in evaluation.consensus.votes],
+            )
+        )
+        await self._event_bus.publish(
+            ControlPlaneActionObserved(
+                session_id=sid,
+                actor="control_plane",
+                tool_name=tool_name,
+                action_kind=evaluation.action.action_kind.value,
+                resource_id=evaluation.action.resource_id,
+                decision=evaluation.decision.value,
+                reason_codes=list(evaluation.reason_codes),
+                origin=evaluation.action.origin.model_dump(mode="json"),
+            )
+        )
+        for resource in evaluation.action.resource_ids:
+            await self._event_bus.publish(
+                ControlPlaneResourceObserved(
+                    session_id=sid,
+                    actor="control_plane",
+                    tool_name=tool_name,
+                    action_kind=evaluation.action.action_kind.value,
+                    resource_id=resource,
+                    origin=evaluation.action.origin.model_dump(mode="json"),
+                )
+            )
+        request_size = extract_request_size_bytes(dict(arguments))
+        for host in evaluation.action.network_hosts:
+            await self._event_bus.publish(
+                ControlPlaneNetworkObserved(
+                    session_id=sid,
+                    actor="control_plane",
+                    tool_name=tool_name,
+                    destination_host=host,
+                    destination_port=443,
+                    protocol="https",
+                    request_size=request_size,
+                    allowed=evaluation.decision == ControlDecision.ALLOW,
+                    reason="preflight",
+                    origin=evaluation.action.origin.model_dump(mode="json"),
+                )
+            )
+
+    @staticmethod
+    def _structured_tool_reason(tool_output: ToolOutputRecord | None) -> str:
+        if tool_output is None or not tool_output.content:
+            return ""
+        try:
+            payload = json.loads(tool_output.content)
+        except (TypeError, ValueError):
+            return ""
+        if isinstance(payload, dict):
+            reason = str(payload.get("error", "")).strip()
+            if reason:
+                return reason
+        return ""
+
+    def _tool_execute_result_from_execution(
+        self,
+        *,
+        execution: ApprovedToolExecutionResult,
+        origin: Origin,
+    ) -> dict[str, Any]:
+        if execution.sandbox_result is not None:
+            return execution.sandbox_result.model_dump(mode="json")
+        tool_output = execution.tool_output
+        success = execution.success
+        payload = SandboxResult(
+            allowed=success,
+            exit_code=0 if success else 1,
+            stdout=tool_output.content if tool_output is not None else "",
+            stderr="",
+            reason="" if success else self._structured_tool_reason(tool_output),
+            checkpoint_id=execution.checkpoint_id or "",
+            origin=origin.model_dump(mode="json"),
+        )
+        return payload.model_dump(mode="json")
 
     @staticmethod
     def _action_hash(*, session_id: SessionId, tool_name: ToolName, command: list[str]) -> str:
@@ -1149,10 +1257,11 @@ class HandlerImplementation(
         capabilities: set[Capability],
         approval_actor: str,
         execution_action: ControlPlaneAction | None = None,
-    ) -> tuple[bool, str | None, ToolOutputRecord | None]:
+        merged_policy: ToolExecutionPolicy | None = None,
+    ) -> ApprovedToolExecutionResult:
         session = self._session_manager.get(sid)
         if session is None:
-            return False, None, None
+            return ApprovedToolExecutionResult(success=False)
 
         origin = self._origin_for(
             session=session,
@@ -1215,10 +1324,10 @@ class HandlerImplementation(
                 )
             )
             self._control_plane.record_execution(action=executed_action, success=True)
-            return (
-                True,
-                checkpoint_id,
-                ToolOutputRecord(
+            return ApprovedToolExecutionResult(
+                success=True,
+                checkpoint_id=checkpoint_id,
+                tool_output=ToolOutputRecord(
                     tool_name=str(tool_name),
                     content="Anomaly reported and lockdown evaluation triggered.",
                     taint_labels=set(),
@@ -1257,10 +1366,10 @@ class HandlerImplementation(
                         collection=item.collection,
                     )
                 )
-            return (
-                True,
-                checkpoint_id,
-                ToolOutputRecord(
+            return ApprovedToolExecutionResult(
+                success=True,
+                checkpoint_id=checkpoint_id,
+                tool_output=ToolOutputRecord(
                     tool_name=str(tool_name),
                     content=self._sanitize_tool_output_text(
                         json.dumps(preview_rows, ensure_ascii=True)
@@ -1276,7 +1385,7 @@ class HandlerImplementation(
             payload: Mapping[str, Any],
             *,
             default_error: str,
-        ) -> tuple[bool, ToolOutputRecord]:
+        ) -> ApprovedToolExecutionResult:
             result = await execute_structured_tool(
                 session_id=sid,
                 tool_name=tool_name,
@@ -1288,9 +1397,10 @@ class HandlerImplementation(
                 sanitize_output=self._sanitize_tool_output_text,
                 taint_labels=label_tool_output(str(tool_name)),
             )
-            return (
-                result.success,
-                ToolOutputRecord(
+            return ApprovedToolExecutionResult(
+                success=result.success,
+                checkpoint_id=checkpoint_id,
+                tool_output=ToolOutputRecord(
                     tool_name=str(tool_name),
                     content=result.content,
                     success=result.success,
@@ -1303,11 +1413,10 @@ class HandlerImplementation(
                 query=str(arguments.get("query", "")),
                 limit=int(arguments.get("limit", 5)),
             )
-            success, output = await _execute_structured_payload_tool(
+            return await _execute_structured_payload_tool(
                 search_payload,
                 default_error="web_search_failed",
             )
-            return success, checkpoint_id, output
 
         if tool_name == "web.fetch":
             raw_max_bytes = arguments.get("max_bytes")
@@ -1317,11 +1426,10 @@ class HandlerImplementation(
                 snapshot=bool(arguments.get("snapshot", False)),
                 max_bytes=max_bytes,
             )
-            success, output = await _execute_structured_payload_tool(
+            return await _execute_structured_payload_tool(
                 fetch_payload,
                 default_error="web_fetch_failed",
             )
-            return success, checkpoint_id, output
 
         if tool_name == "realitycheck.search":
             realitycheck_payload = self._realitycheck_toolkit.search(
@@ -1329,11 +1437,10 @@ class HandlerImplementation(
                 limit=int(arguments.get("limit", 5)),
                 mode=str(arguments.get("mode", "auto")),
             )
-            success, output = await _execute_structured_payload_tool(
+            return await _execute_structured_payload_tool(
                 realitycheck_payload,
                 default_error="realitycheck_search_failed",
             )
-            return success, checkpoint_id, output
 
         if tool_name == "realitycheck.read":
             raw_max_bytes = arguments.get("max_bytes")
@@ -1342,11 +1449,10 @@ class HandlerImplementation(
                 path=str(arguments.get("path", "")),
                 max_bytes=max_bytes,
             )
-            success, output = await _execute_structured_payload_tool(
+            return await _execute_structured_payload_tool(
                 realitycheck_payload,
                 default_error="realitycheck_read_failed",
             )
-            return success, checkpoint_id, output
 
         if tool_name == "fs.list":
             fs_list_payload = self._fs_git_toolkit.list_dir(
@@ -1354,11 +1460,10 @@ class HandlerImplementation(
                 recursive=bool(arguments.get("recursive", False)),
                 limit=int(arguments.get("limit", 200)),
             )
-            success, output = await _execute_structured_payload_tool(
+            return await _execute_structured_payload_tool(
                 fs_list_payload,
                 default_error="fs_list_failed",
             )
-            return success, checkpoint_id, output
 
         if tool_name == "fs.read":
             raw_max_bytes = arguments.get("max_bytes")
@@ -1367,11 +1472,10 @@ class HandlerImplementation(
                 path=str(arguments.get("path", "")),
                 max_bytes=max_bytes,
             )
-            success, output = await _execute_structured_payload_tool(
+            return await _execute_structured_payload_tool(
                 fs_read_payload,
                 default_error="fs_read_failed",
             )
-            return success, checkpoint_id, output
 
         if tool_name == "fs.write":
             fs_write_payload = self._fs_git_toolkit.write_file(
@@ -1379,21 +1483,19 @@ class HandlerImplementation(
                 content=str(arguments.get("content", "")),
                 confirm=bool(arguments.get("confirm", False)),
             )
-            success, output = await _execute_structured_payload_tool(
+            return await _execute_structured_payload_tool(
                 fs_write_payload,
                 default_error="fs_write_failed",
             )
-            return success, checkpoint_id, output
 
         if tool_name == "git.status":
             git_status_payload = self._fs_git_toolkit.git_status(
                 repo_path=str(arguments.get("repo_path", ".")),
             )
-            success, output = await _execute_structured_payload_tool(
+            return await _execute_structured_payload_tool(
                 git_status_payload,
                 default_error="git_status_failed",
             )
-            return success, checkpoint_id, output
 
         if tool_name == "git.diff":
             git_diff_payload = self._fs_git_toolkit.git_diff(
@@ -1401,22 +1503,20 @@ class HandlerImplementation(
                 ref=str(arguments.get("ref", "")),
                 max_lines=int(arguments.get("max_lines", 400)),
             )
-            success, output = await _execute_structured_payload_tool(
+            return await _execute_structured_payload_tool(
                 git_diff_payload,
                 default_error="git_diff_failed",
             )
-            return success, checkpoint_id, output
 
         if tool_name == "git.log":
             git_log_payload = self._fs_git_toolkit.git_log(
                 repo_path=str(arguments.get("repo_path", ".")),
                 limit=int(arguments.get("limit", 20)),
             )
-            success, output = await _execute_structured_payload_tool(
+            return await _execute_structured_payload_tool(
                 git_log_payload,
                 default_error="git_log_failed",
             )
-            return success, checkpoint_id, output
 
         if tool is None:
             await self._event_bus.publish(
@@ -1428,7 +1528,10 @@ class HandlerImplementation(
                 )
             )
             self._control_plane.record_execution(action=executed_action, success=False)
-            return False, checkpoint_id, None
+            return ApprovedToolExecutionResult(
+                success=False,
+                checkpoint_id=checkpoint_id,
+            )
 
         sandbox_result = await self._execute_via_sandbox(
             sid=sid,
@@ -1437,6 +1540,7 @@ class HandlerImplementation(
             arguments=arguments,
             origin=origin,
             approved_by_pep=True,
+            merged_policy=merged_policy,
         )
         await self._publish_sandbox_events(
             sid=sid,
@@ -1471,10 +1575,10 @@ class HandlerImplementation(
         raw_output = "\n".join(
             segment for segment in [sandbox_result.stdout, sandbox_result.stderr] if segment
         ).strip()
-        return (
-            success,
-            checkpoint_id,
-            ToolOutputRecord(
+        return ApprovedToolExecutionResult(
+            success=success,
+            checkpoint_id=checkpoint_id,
+            tool_output=ToolOutputRecord(
                 tool_name=str(tool_name),
                 content=self._sanitize_tool_output_text(raw_output),
                 success=success,
@@ -1482,6 +1586,7 @@ class HandlerImplementation(
             )
             if raw_output
             else None,
+            sandbox_result=sandbox_result,
         )
 
     def _sanitize_tool_output_text(self, raw: str) -> str:
@@ -1507,6 +1612,7 @@ class HandlerImplementation(
         arguments: dict[str, Any],
         origin: Origin,
         approved_by_pep: bool,
+        merged_policy: ToolExecutionPolicy | None = None,
     ) -> SandboxResult:
         raw_command = arguments.get("command", [])
         command = [str(token) for token in raw_command] if isinstance(raw_command, list) else []
@@ -1520,18 +1626,19 @@ class HandlerImplementation(
                 ),
                 session=session,
             )
-        try:
-            merged_policy = self._build_merged_policy(
-                tool_name=tool.name,
-                arguments=arguments,
-                tool_definition=tool,
-            )
-        except PolicyMergeError as exc:
-            return SandboxResult(
-                allowed=False,
-                reason=f"policy_merge:{exc}",
-                origin=origin.model_dump(mode="json"),
-            )
+        if merged_policy is None:
+            try:
+                merged_policy = self._build_merged_policy(
+                    tool_name=tool.name,
+                    arguments=arguments,
+                    tool_definition=tool,
+                )
+            except PolicyMergeError as exc:
+                return SandboxResult(
+                    allowed=False,
+                    reason=f"policy_merge:{exc}",
+                    origin=origin.model_dump(mode="json"),
+                )
 
         config = self._build_sandbox_config(
             sid=sid,

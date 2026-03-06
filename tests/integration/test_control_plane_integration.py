@@ -14,8 +14,15 @@ import yaml
 
 from shisad.core.api.transport import ControlClient
 from shisad.core.config import DaemonConfig
+from shisad.core.planner import (
+    ActionProposal,
+    EvaluatedProposal,
+    Planner,
+    PlannerOutput,
+    PlannerResult,
+)
 from shisad.core.providers.base import Message, ProviderResponse
-from shisad.core.types import Capability
+from shisad.core.types import Capability, ToolName
 from shisad.daemon.runner import run_daemon
 from shisad.executors.connect_path import IptablesConnectPathProxy
 from shisad.security.control_plane.engine import ControlPlaneEngine
@@ -416,6 +423,135 @@ async def test_m5_t21_tool_execute_has_declared_threat_model_path_and_no_bypass(
             event.get("data", {}).get("tool_name") == "shell.exec"
             for event in consensus["events"]
         )
+    finally:
+        await _shutdown(daemon_task, client)
+
+
+@pytest.mark.asyncio
+async def test_g2_t1_direct_structured_tool_execute_matches_session_execution_events(
+    model_env: None,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = Path.cwd() / "README.md"
+    expected_snippet = "shisad"
+
+    async def _forced_fs_read_propose(
+        self: Planner,
+        user_content: str,
+        context: object,
+        *,
+        tools: list[dict[str, object]] | None = None,
+        persona_tone_override: str | None = None,
+    ) -> PlannerResult:
+        _ = user_content, tools, persona_tone_override
+        proposal = ActionProposal(
+            action_id="g2-fs-read",
+            tool_name=ToolName("fs.read"),
+            arguments={"path": str(target)},
+            reasoning="g2 structured fs.read parity",
+            data_sources=[],
+        )
+        decision = self._pep.evaluate(proposal.tool_name, proposal.arguments, context)
+        return PlannerResult(
+            output=PlannerOutput(actions=[proposal], assistant_response="reading note"),
+            evaluated=[EvaluatedProposal(proposal=proposal, decision=decision)],
+            attempts=1,
+            provider_response=None,
+            messages_sent=(),
+        )
+
+    monkeypatch.setattr(Planner, "propose", _forced_fs_read_propose)
+
+    daemon_task, client = await _start_daemon_with_policy(
+        tmp_path,
+        policy={"version": "1", "default_require_confirmation": False},
+    )
+    try:
+        session_created = await client.call("session.create", {"channel": "cli"})
+        session_sid = session_created["session_id"]
+        direct_created = await client.call("session.create", {"channel": "cli"})
+        direct_sid = direct_created["session_id"]
+
+        session_reply = await client.call(
+            "session.message",
+            {"session_id": session_sid, "content": "read the pipeline note"},
+        )
+        assert session_reply["executed_actions"] >= 1
+
+        direct_reply = await client.call(
+            "tool.execute",
+            {
+                "session_id": direct_sid,
+                "tool_name": "fs.read",
+                "command": [sys.executable, "-c", "print('sandbox fallback')"],
+                "arguments": {"path": str(target)},
+                "security_critical": False,
+                "degraded_mode": "fail_open",
+            },
+        )
+        assert direct_reply["allowed"] is True
+        assert expected_snippet in str(direct_reply.get("stdout", ""))
+
+        session_approved = await client.call(
+            "audit.query",
+            {"event_type": "ToolApproved", "session_id": session_sid, "limit": 20},
+        )
+        direct_approved = await client.call(
+            "audit.query",
+            {"event_type": "ToolApproved", "session_id": direct_sid, "limit": 20},
+        )
+        assert any(
+            str(event.get("data", {}).get("tool_name", "")) == "fs.read"
+            for event in session_approved["events"]
+        )
+        assert any(
+            str(event.get("data", {}).get("tool_name", "")) == "fs.read"
+            for event in direct_approved["events"]
+        )
+
+        session_executed = await client.call(
+            "audit.query",
+            {"event_type": "ToolExecuted", "session_id": session_sid, "limit": 20},
+        )
+        direct_executed = await client.call(
+            "audit.query",
+            {"event_type": "ToolExecuted", "session_id": direct_sid, "limit": 20},
+        )
+        assert any(
+            str(event.get("data", {}).get("tool_name", "")) == "fs.read"
+            and str(event.get("data", {}).get("actor", "")) == "tool_runtime"
+            and bool(event.get("data", {}).get("success")) is True
+            for event in session_executed["events"]
+        )
+        assert any(
+            str(event.get("data", {}).get("tool_name", "")) == "fs.read"
+            and str(event.get("data", {}).get("actor", "")) == "tool_runtime"
+            and bool(event.get("data", {}).get("success")) is True
+            for event in direct_executed["events"]
+        )
+
+        session_actions = await client.call(
+            "audit.query",
+            {"event_type": "ControlPlaneActionObserved", "session_id": session_sid, "limit": 20},
+        )
+        direct_actions = await client.call(
+            "audit.query",
+            {"event_type": "ControlPlaneActionObserved", "session_id": direct_sid, "limit": 20},
+        )
+        session_action = next(
+            event["data"]
+            for event in session_actions["events"]
+            if str(event.get("data", {}).get("tool_name", "")) == "fs.read"
+        )
+        direct_action = next(
+            event["data"]
+            for event in direct_actions["events"]
+            if str(event.get("data", {}).get("tool_name", "")) == "fs.read"
+        )
+        assert session_action["action_kind"] == "FS_READ"
+        assert direct_action["action_kind"] == session_action["action_kind"]
+        assert direct_action["decision"] == session_action["decision"]
     finally:
         await _shutdown(daemon_task, client)
 

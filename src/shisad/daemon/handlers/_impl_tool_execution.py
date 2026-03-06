@@ -7,22 +7,13 @@ from collections.abc import Mapping
 from typing import Any, cast
 from urllib.parse import urlparse
 
-from shisad.core.events import (
-    ConsensusEvaluated,
-    ControlPlaneActionObserved,
-    ControlPlaneNetworkObserved,
-    ControlPlaneResourceObserved,
-    PlanCancelled,
-    PlanCommitted,
-    ToolExecuted,
-    ToolRejected,
-)
+from shisad.core.events import PlanCancelled, PlanCommitted, ToolRejected
 from shisad.core.tools.names import canonical_tool_name
 from shisad.core.types import Capability, SessionId, TaintLabel, ToolName
 from shisad.daemon.handlers._mixin_typing import HandlerMixinBase
 from shisad.executors.sandbox import DegradedModePolicy, SandboxResult
 from shisad.governance.merge import PolicyMergeError, normalize_patch
-from shisad.security.control_plane.schema import ControlDecision, extract_request_size_bytes
+from shisad.security.control_plane.schema import ControlDecision
 from shisad.skills.sandbox import SkillExecutionRequest
 
 logger = logging.getLogger(__name__)
@@ -280,55 +271,12 @@ class ToolExecutionImplMixin(HandlerMixinBase):
             session_tainted=False,
             trusted_input=True,
         )
-        await self._event_bus.publish(
-            ConsensusEvaluated(
-                session_id=sid,
-                actor="control_plane",
-                tool_name=tool_name,
-                decision=cp_eval.decision.value,
-                risk_tier=cp_eval.consensus.risk_tier.value,
-                reason_codes=list(cp_eval.reason_codes),
-                votes=[vote.model_dump(mode="json") for vote in cp_eval.consensus.votes],
-            )
+        await self._publish_control_plane_evaluation(
+            sid=sid,
+            tool_name=tool_name,
+            arguments=params,
+            evaluation=cp_eval,
         )
-        await self._event_bus.publish(
-            ControlPlaneActionObserved(
-                session_id=sid,
-                actor="control_plane",
-                tool_name=tool_name,
-                action_kind=cp_eval.action.action_kind.value,
-                resource_id=cp_eval.action.resource_id,
-                decision=cp_eval.decision.value,
-                reason_codes=list(cp_eval.reason_codes),
-                origin=cp_eval.action.origin.model_dump(mode="json"),
-            )
-        )
-        for resource in cp_eval.action.resource_ids:
-            await self._event_bus.publish(
-                ControlPlaneResourceObserved(
-                    session_id=sid,
-                    actor="control_plane",
-                    tool_name=tool_name,
-                    action_kind=cp_eval.action.action_kind.value,
-                    resource_id=resource,
-                    origin=cp_eval.action.origin.model_dump(mode="json"),
-                )
-            )
-        for host in cp_eval.action.network_hosts:
-            await self._event_bus.publish(
-                ControlPlaneNetworkObserved(
-                    session_id=sid,
-                    actor="control_plane",
-                    tool_name=tool_name,
-                    destination_host=host,
-                    destination_port=443,
-                    protocol="https",
-                    request_size=extract_request_size_bytes(dict(params)),
-                    allowed=cp_eval.decision == ControlDecision.ALLOW,
-                    reason="preflight",
-                    origin=cp_eval.action.origin.model_dump(mode="json"),
-                )
-            )
 
         stage2_upgrade_required = (
             cp_eval.trace_result.reason_code == "trace:stage2_upgrade_required"
@@ -421,40 +369,23 @@ class ToolExecutionImplMixin(HandlerMixinBase):
                 origin=cp_eval.action.origin.model_dump(mode="json"),
             ).model_dump(mode="json")
 
-        config = self._build_sandbox_config(
+        execution = await self._execute_approved_action(
             sid=sid,
-            tool_name=tool_name_value,
-            params=params,
+            user_id=session.user_id,
+            tool_name=tool_name,
+            arguments=dict(params),
+            capabilities=set(session.capabilities),
+            approval_actor="control_api",
+            execution_action=cp_eval.action,
             merged_policy=merged_policy,
-            origin=operator_origin,
-            approved_by_pep=cp_eval.decision == ControlDecision.ALLOW,
         )
-        result = await self._execute_sandbox_config(
-            sid=sid,
-            session=session,
-            tool_name=ToolName(config.tool_name),
-            config=config,
+        return cast(
+            dict[str, Any],
+            self._tool_execute_result_from_execution(
+                execution=execution,
+                origin=operator_origin,
+            ),
         )
-        await self._publish_sandbox_events(
-            sid=sid,
-            config_tool_name=ToolName(config.tool_name),
-            result=result,
-        )
-
-        await self._event_bus.publish(
-            ToolExecuted(
-                session_id=sid,
-                actor="sandbox",
-                tool_name=ToolName(config.tool_name),
-                success=bool(
-                    result.allowed and not result.timed_out and (result.exit_code or 0) == 0
-                ),
-                error="" if result.allowed else result.reason,
-            )
-        )
-        success = bool(result.allowed and not result.timed_out and (result.exit_code or 0) == 0)
-        self._control_plane.record_execution(action=cp_eval.action, success=success)
-        return cast(dict[str, Any], result.model_dump(mode="json"))
 
     @staticmethod
     def _merge_tool_arguments(params: Mapping[str, Any]) -> dict[str, Any]:

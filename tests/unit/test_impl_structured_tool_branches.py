@@ -107,7 +107,7 @@ async def test_m7_impl_web_search_branch_records_success_with_structured_helper(
         web_payload={"ok": True, "results": [{"title": "roadmap"}]},
         git_status_payload={"ok": True, "status": "clean"},
     )
-    success, checkpoint_id, output = await HandlerImplementation._execute_approved_action(
+    result = await HandlerImplementation._execute_approved_action(
         harness,  # type: ignore[arg-type]
         sid=harness.session_id,
         user_id=UserId("user-1"),
@@ -117,11 +117,11 @@ async def test_m7_impl_web_search_branch_records_success_with_structured_helper(
         approval_actor="control_api",
     )
 
-    assert success is True
-    assert checkpoint_id is None
-    assert output is not None
-    assert output.tool_name == "web.search"
-    assert output.taint_labels == {TaintLabel.UNTRUSTED}
+    assert result.success is True
+    assert result.checkpoint_id is None
+    assert result.tool_output is not None
+    assert result.tool_output.tool_name == "web.search"
+    assert result.tool_output.taint_labels == {TaintLabel.UNTRUSTED}
     assert harness._web_toolkit.calls == [("roadmap", 2)]
     assert harness._control_plane.results == [True]
     assert any(isinstance(event, ToolApproved) for event in harness._event_bus.events)
@@ -138,7 +138,7 @@ async def test_m7_impl_git_status_branch_failure_keeps_rejected_before_executed(
         web_payload={"ok": True, "results": []},
         git_status_payload={"ok": False, "error": "git_status_failed"},
     )
-    success, checkpoint_id, output = await HandlerImplementation._execute_approved_action(
+    result = await HandlerImplementation._execute_approved_action(
         harness,  # type: ignore[arg-type]
         sid=harness.session_id,
         user_id=UserId("user-1"),
@@ -148,11 +148,11 @@ async def test_m7_impl_git_status_branch_failure_keeps_rejected_before_executed(
         approval_actor="control_api",
     )
 
-    assert success is False
-    assert checkpoint_id is None
-    assert output is not None
-    assert output.tool_name == "git.status"
-    assert output.taint_labels == set()
+    assert result.success is False
+    assert result.checkpoint_id is None
+    assert result.tool_output is not None
+    assert result.tool_output.tool_name == "git.status"
+    assert result.tool_output.taint_labels == set()
     assert harness._fs_git_toolkit.calls == ["/tmp/repo"]
     assert harness._control_plane.results == [False]
 
