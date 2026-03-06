@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from shisad.core.api.transport import ControlClient
+from shisad.core.audit import AuditLog
 from shisad.core.config import DaemonConfig
 from shisad.core.planner import (
     ActionProposal,
@@ -17,6 +18,7 @@ from shisad.core.planner import (
     PlannerOutput,
     PlannerResult,
 )
+from shisad.core.transcript import TranscriptStore
 from shisad.core.types import PEPDecision, PEPDecisionKind, ToolName
 from shisad.daemon.runner import run_daemon
 
@@ -205,6 +207,58 @@ async def test_m4_cleanroom_session_message_is_proposal_only_and_rejects_tainted
             "cleanroom_tainted_payload" in reason
             for reason in tainted.get("cleanroom_block_reasons", [])
         )
+    finally:
+        await _shutdown(daemon_task, client)
+
+
+@pytest.mark.asyncio
+async def test_g1_cleanroom_tainted_payload_early_return_skips_transcript_and_response_audit(
+    model_env: None,
+    tmp_path: Path,
+) -> None:
+    daemon_task, client, config = await _start_daemon(tmp_path)
+    try:
+        created = await client.call(
+            "session.create",
+            {
+                "channel": "cli",
+                "user_id": "admin",
+                "workspace_id": "ops",
+                "mode": "admin_cleanroom",
+            },
+        )
+        sid = created["session_id"]
+        transcript_store = TranscriptStore(config.data_dir / "sessions")
+        audit_log = AuditLog(config.data_dir / "audit.jsonl")
+
+        result = await client.call(
+            "session.message",
+            {
+                "session_id": sid,
+                "content": "api key sk-ABCDEFGHIJKLMNOPQRSTUV123456",
+            },
+        )
+
+        entries = transcript_store.list_entries(sid)
+        received_events = audit_log.query(
+            event_type="SessionMessageReceived",
+            session_id=sid,
+            limit=10,
+        )
+        responded_events = audit_log.query(
+            event_type="SessionMessageResponded",
+            session_id=sid,
+            limit=10,
+        )
+
+        assert result["proposal_only"] is True
+        assert any(
+            "cleanroom_tainted_payload" in reason
+            for reason in result.get("cleanroom_block_reasons", [])
+        )
+        assert entries == []
+        assert len(received_events) == 1
+        assert responded_events == []
     finally:
         await _shutdown(daemon_task, client)
 
