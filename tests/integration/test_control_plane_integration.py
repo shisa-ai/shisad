@@ -50,18 +50,22 @@ async def _start_daemon_with_policy(
     tmp_path: Path,
     *,
     policy: dict[str, object] | None = None,
+    checkpoint_trigger: str | None = None,
 ) -> tuple[asyncio.Task[None], ControlClient]:
     if policy is not None:
         (tmp_path / "policy.yaml").write_text(
             yaml.safe_dump(policy, sort_keys=False),
             encoding="utf-8",
         )
-    config = DaemonConfig(
-        data_dir=tmp_path / "data",
-        socket_path=tmp_path / "control.sock",
-        policy_path=tmp_path / "policy.yaml",
-        log_level="INFO",
-    )
+    config_kwargs: dict[str, object] = {
+        "data_dir": tmp_path / "data",
+        "socket_path": tmp_path / "control.sock",
+        "policy_path": tmp_path / "policy.yaml",
+        "log_level": "INFO",
+    }
+    if checkpoint_trigger is not None:
+        config_kwargs["checkpoint_trigger"] = checkpoint_trigger
+    config = DaemonConfig(**config_kwargs)
     daemon_task = asyncio.create_task(run_daemon(config))
     client = ControlClient(config.socket_path)
     await _wait_for_socket(config.socket_path)
@@ -552,6 +556,78 @@ async def test_g2_t1_direct_structured_tool_execute_matches_session_execution_ev
         assert session_action["action_kind"] == "FS_READ"
         assert direct_action["action_kind"] == session_action["action_kind"]
         assert direct_action["decision"] == session_action["decision"]
+    finally:
+        await _shutdown(daemon_task, client)
+
+
+@pytest.mark.asyncio
+async def test_g2_t2_direct_structured_tool_failure_preserves_policy_allow_semantics(
+    model_env: None,
+    tmp_path: Path,
+) -> None:
+    missing_path = Path.cwd() / ".pytest-g2-missing" / "missing.txt"
+    assert not missing_path.exists()
+
+    daemon_task, client = await _start_daemon_with_policy(
+        tmp_path,
+        policy={"version": "1", "default_require_confirmation": False},
+    )
+    try:
+        created = await client.call("session.create", {"channel": "cli"})
+        sid = created["session_id"]
+
+        result = await client.call(
+            "tool.execute",
+            {
+                "session_id": sid,
+                "tool_name": "fs.read",
+                "command": [sys.executable, "-c", "print('sandbox fallback')"],
+                "arguments": {"path": str(missing_path)},
+                "security_critical": False,
+                "degraded_mode": "fail_open",
+            },
+        )
+
+        assert result["allowed"] is True
+        assert result["exit_code"] == 1
+        assert result["reason"] == "path_not_found"
+        assert result["stderr"] == ""
+        payload = json.loads(str(result["stdout"]))
+        assert payload["ok"] is False
+        assert payload["error"] == "path_not_found"
+    finally:
+        await _shutdown(daemon_task, client)
+
+
+@pytest.mark.asyncio
+async def test_g2_t3_direct_sandbox_tool_execute_returns_precreated_checkpoint_id(
+    model_env: None,
+    tmp_path: Path,
+) -> None:
+    daemon_task, client = await _start_daemon_with_policy(
+        tmp_path,
+        checkpoint_trigger="before_any_tool",
+    )
+    try:
+        created = await client.call("session.create", {"channel": "cli"})
+        sid = created["session_id"]
+
+        result = await client.call(
+            "tool.execute",
+            {
+                "session_id": sid,
+                "tool_name": "shell.exec",
+                "command": [sys.executable, "-c", "print('checkpoint-ok')"],
+                "security_critical": False,
+                "degraded_mode": "fail_open",
+            },
+        )
+
+        assert result["allowed"] is True
+        checkpoint_id = str(result.get("checkpoint_id", "")).strip()
+        assert checkpoint_id
+        assert result["exit_code"] == 0
+        assert (tmp_path / "data" / "checkpoints" / f"{checkpoint_id}.json").exists()
     finally:
         await _shutdown(daemon_task, client)
 

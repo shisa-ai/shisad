@@ -612,11 +612,19 @@ class HandlerImplementation(
         origin: Origin,
     ) -> dict[str, Any]:
         if execution.sandbox_result is not None:
-            return execution.sandbox_result.model_dump(mode="json")
+            checkpoint_id = execution.checkpoint_id or execution.sandbox_result.checkpoint_id
+            sandbox_result = execution.sandbox_result
+            if checkpoint_id != sandbox_result.checkpoint_id:
+                sandbox_result = sandbox_result.model_copy(
+                    update={"checkpoint_id": checkpoint_id}
+                )
+            return sandbox_result.model_dump(mode="json")
         tool_output = execution.tool_output
         success = execution.success
         payload = SandboxResult(
-            allowed=success,
+            # For direct tool.execute, "allowed" reports the policy decision.
+            # Structured tools can still fail operationally after approval.
+            allowed=True,
             exit_code=0 if success else 1,
             stdout=tool_output.content if tool_output is not None else "",
             stderr="",
