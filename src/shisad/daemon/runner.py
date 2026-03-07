@@ -7,11 +7,9 @@ import contextlib
 import logging
 from datetime import UTC, datetime
 from typing import Any, cast
-from urllib.parse import urlparse
 
 from pydantic import BaseModel
 
-from shisad.channels.base import DeliveryTarget
 from shisad.core.api.schema import (
     ActionDecisionParams,
     ActionPendingParams,
@@ -70,39 +68,14 @@ from shisad.core.api.schema import (
     WebSearchParams,
 )
 from shisad.core.config import DaemonConfig, ModelConfig
-from shisad.core.events import AnomalyReported, TaskTriggered
 from shisad.core.interfaces import TypedHandler
 from shisad.core.log import setup_logging
 from shisad.core.providers.routing import ModelRouter
-from shisad.core.types import Capability
 from shisad.daemon.control_handlers import DaemonControlHandlers
 from shisad.daemon.event_wiring import channel_receive_pump
 from shisad.daemon.services import DaemonServices
 
 logger = logging.getLogger(__name__)
-
-
-def _recipient_matches_rule(recipient: str, rule: str) -> bool:
-    normalized_recipient = recipient.strip().lower()
-    normalized_rule = rule.strip().lower()
-    if not normalized_recipient or not normalized_rule:
-        return False
-    if normalized_rule.startswith("*."):
-        return normalized_recipient.endswith(normalized_rule[1:])
-    return normalized_recipient == normalized_rule
-
-
-def _recipient_domain(recipient: str) -> str:
-    value = recipient.strip()
-    if not value:
-        return ""
-    parsed = urlparse(value)
-    if parsed.hostname:
-        return parsed.hostname.lower()
-    if "@" in value:
-        _, _, domain = value.rpartition("@")
-        return domain.lower().strip()
-    return ""
 
 
 def _validate_model_endpoints(model_config: ModelConfig, router: ModelRouter) -> None:
@@ -234,8 +207,12 @@ def _method_specs(
     ]
 
 
-async def _reminder_delivery_pump(*, services: DaemonServices) -> None:
-    """Poll scheduler due-runs and deliver reminder tasks over channel delivery."""
+async def _reminder_delivery_pump(
+    *,
+    services: DaemonServices,
+    handlers: DaemonControlHandlers,
+) -> None:
+    """Poll scheduler due-runs and route them through the shared background executor."""
     while not services.shutdown_event.is_set():
         try:
             due_runs = services.scheduler.trigger_due(now=datetime.now(UTC))
@@ -246,116 +223,10 @@ async def _reminder_delivery_pump(*, services: DaemonServices) -> None:
             task = services.scheduler.get_task(run.task_id)
             if task is None:
                 continue
-            await services.event_bus.publish(
-                TaskTriggered(
-                    session_id=None,
-                    actor="scheduler",
-                    task_id=task.id,
-                    event_type=f"schedule.{task.schedule.kind.value}",
-                )
+            await handlers._impl.do_task_execute_due_run(
+                run,
+                event_type=f"schedule.{task.schedule.kind.value}",
             )
-            available_caps = set(services.policy_loader.policy.default_capabilities)
-            if not available_caps:
-                available_caps = set(task.capability_snapshot)
-            if not services.scheduler.can_execute_with_capabilities(
-                task.id,
-                {Capability.MESSAGE_SEND},
-                available_capabilities=available_caps,
-            ):
-                await services.event_bus.publish(
-                    AnomalyReported(
-                        session_id=None,
-                        actor="scheduler",
-                        severity="warning",
-                        description=(
-                            f"Scheduled reminder blocked by capability snapshot for task {task.id}"
-                        ),
-                        recommended_action="review_task_capability_snapshot",
-                    )
-                )
-                continue
-            channel = task.delivery_target.get("channel", "").strip()
-            recipient = task.delivery_target.get("recipient", "").strip()
-            if not channel or not recipient:
-                await services.event_bus.publish(
-                    AnomalyReported(
-                        session_id=None,
-                        actor="scheduler",
-                        severity="warning",
-                        description=(
-                            "Scheduled reminder missing delivery target "
-                            f"for task {task.id}"
-                        ),
-                        recommended_action="update_task_delivery_target",
-                    )
-                )
-                continue
-            recipient_allowlist = [
-                str(item).strip()
-                for item in getattr(task, "allowed_recipients", [])
-                if str(item).strip()
-            ]
-            if recipient_allowlist and not any(
-                _recipient_matches_rule(recipient, rule) for rule in recipient_allowlist
-            ):
-                await services.event_bus.publish(
-                    AnomalyReported(
-                        session_id=None,
-                        actor="scheduler",
-                        severity="warning",
-                        description=(
-                            "Scheduled reminder blocked by recipient allowlist "
-                            f"for task {task.id}"
-                        ),
-                        recommended_action="review_task_delivery_target",
-                    )
-                )
-                continue
-            domain_allowlist = [
-                str(item).strip()
-                for item in getattr(task, "allowed_domains", [])
-                if str(item).strip()
-            ]
-            if domain_allowlist:
-                destination_domain = _recipient_domain(recipient)
-                if not destination_domain or not any(
-                    _recipient_matches_rule(destination_domain, rule) for rule in domain_allowlist
-                ):
-                    await services.event_bus.publish(
-                        AnomalyReported(
-                            session_id=None,
-                            actor="scheduler",
-                            severity="warning",
-                            description=(
-                                "Scheduled reminder blocked by domain allowlist "
-                                f"for task {task.id}"
-                            ),
-                            recommended_action="review_task_allowed_domains",
-                        )
-                    )
-                    continue
-            delivery_result = await services.delivery.send(
-                target=DeliveryTarget(
-                    channel=channel,
-                    recipient=recipient,
-                    workspace_hint=task.delivery_target.get("workspace_hint", ""),
-                    thread_id=task.delivery_target.get("thread_id", ""),
-                ),
-                message=task.goal,
-            )
-            if not delivery_result.sent:
-                await services.event_bus.publish(
-                    AnomalyReported(
-                        session_id=None,
-                        actor="scheduler",
-                        severity="warning",
-                        description=(
-                            "Scheduled reminder delivery failed "
-                            f"for task {task.id} ({delivery_result.reason})"
-                        ),
-                        recommended_action="check_channel_connectivity",
-                    )
-                )
         try:
             await asyncio.wait_for(services.shutdown_event.wait(), timeout=1.0)
         except TimeoutError:
@@ -393,7 +264,9 @@ async def run_daemon(config: DaemonConfig) -> None:
         config.assistant_fs_roots,
     )
     channel_pump_tasks: list[asyncio.Task[None]] = []
-    reminder_pump_task = asyncio.create_task(_reminder_delivery_pump(services=services))
+    reminder_pump_task = asyncio.create_task(
+        _reminder_delivery_pump(services=services, handlers=handlers)
+    )
     for channel_name, channel in services.channels.items():
         channel_pump_tasks.append(
             asyncio.create_task(

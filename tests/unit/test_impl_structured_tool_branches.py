@@ -56,8 +56,26 @@ class _FsGitToolkitStub:
         return dict(self._payload)
 
 
+class _DeliveryStub:
+    def __init__(self, *, sent: bool, reason: str = "sent") -> None:
+        self._sent = sent
+        self._reason = reason
+        self.calls: list[tuple[str, str, str]] = []
+
+    async def send(self, *, target: Any, message: str) -> Any:
+        self.calls.append((str(target.channel), str(target.recipient), message))
+        return SimpleNamespace(sent=self._sent, reason=self._reason, target=target)
+
+
 class _StructuredBranchHarness:
-    def __init__(self, *, web_payload: dict[str, Any], git_status_payload: dict[str, Any]) -> None:
+    def __init__(
+        self,
+        *,
+        web_payload: dict[str, Any],
+        git_status_payload: dict[str, Any],
+        delivery_sent: bool = True,
+        delivery_reason: str = "sent",
+    ) -> None:
         self._session_manager = SessionManager()
         self._session = self._session_manager.create(
             channel="cli",
@@ -72,6 +90,7 @@ class _StructuredBranchHarness:
         self._control_plane = _ExecutionRecorder()
         self._web_toolkit = _WebToolkitStub(web_payload)
         self._fs_git_toolkit = _FsGitToolkitStub(git_status_payload)
+        self._delivery = _DeliveryStub(sent=delivery_sent, reason=delivery_reason)
 
     @property
     def session_id(self) -> SessionId:
@@ -169,3 +188,36 @@ async def test_m7_impl_git_status_branch_failure_keeps_rejected_before_executed(
     assert rejected_indices
     assert executed_indices
     assert rejected_indices[0] < executed_indices[0]
+
+
+@pytest.mark.asyncio
+async def test_g3_impl_message_send_branch_uses_delivery_service_and_records_success() -> None:
+    harness = _StructuredBranchHarness(
+        web_payload={"ok": True, "results": []},
+        git_status_payload={"ok": True, "status": "clean"},
+        delivery_sent=True,
+    )
+    result = await HandlerImplementation._execute_approved_action(
+        harness,  # type: ignore[arg-type]
+        sid=harness.session_id,
+        user_id=UserId("user-1"),
+        tool_name=ToolName("message.send"),
+        arguments={
+            "channel": "discord",
+            "recipient": "ops-room",
+            "message": "Reminder: standup",
+        },
+        capabilities=set(),
+        approval_actor="scheduler",
+    )
+
+    assert result.success is True
+    assert result.tool_output is not None
+    assert result.tool_output.tool_name == "message.send"
+    assert harness._delivery.calls == [("discord", "ops-room", "Reminder: standup")]
+    assert harness._control_plane.results == [True]
+    assert any(isinstance(event, ToolApproved) for event in harness._event_bus.events)
+    assert any(
+        isinstance(event, ToolExecuted) and event.success
+        for event in harness._event_bus.events
+    )

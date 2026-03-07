@@ -116,6 +116,7 @@ _TOOL_KIND_MAP: dict[str, ActionKind] = {
     "web.search": ActionKind.EGRESS,
     "web.fetch": ActionKind.EGRESS,
     "send_email": ActionKind.MESSAGE_SEND,
+    "message.send": ActionKind.MESSAGE_SEND,
     "session.message": ActionKind.MESSAGE_READ,
 }
 
@@ -326,6 +327,13 @@ def normalize_resource_ids(*, action_kind: ActionKind, arguments: dict[str, Any]
         env_obj = arguments.get("env")
         if isinstance(env_obj, dict):
             resources.extend(str(key).strip().upper() for key in env_obj if str(key).strip())
+    elif action_kind == ActionKind.MESSAGE_SEND:
+        recipient = str(arguments.get("recipient", "")).strip()
+        channel = str(arguments.get("channel", "")).strip()
+        if channel and recipient:
+            resources.append(f"{channel}:{recipient}")
+        elif recipient:
+            resources.append(recipient)
     elif action_kind in {ActionKind.MEMORY_READ, ActionKind.MEMORY_WRITE}:
         for key in ("key", "entry_id", "memory_id"):
             value = arguments.get(key)

@@ -809,6 +809,21 @@ def _build_tool_registry(
             require_confirmation=False,
         )
     )
+    registry.register(
+        ToolDefinition(
+            name=ToolName("message.send"),
+            description="Background/runtime message delivery primitive.",
+            parameters=[
+                ToolParameter(name="channel", type="string", required=True),
+                ToolParameter(name="recipient", type="string", required=True),
+                ToolParameter(name="message", type="string", required=True),
+                ToolParameter(name="workspace_hint", type="string", required=False),
+                ToolParameter(name="thread_id", type="string", required=False),
+            ],
+            capabilities_required=[Capability.MESSAGE_SEND],
+            require_confirmation=False,
+        )
+    )
     if realitycheck_surface_enabled:
         realitycheck_caps: list[Capability] = [Capability.FILE_READ]
         realitycheck_destinations: list[str] = []

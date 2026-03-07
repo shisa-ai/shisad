@@ -19,6 +19,7 @@ from pydantic import ValidationError
 
 from shisad.assistant.fs_git import FsGitToolkit
 from shisad.assistant.web import WebToolkit
+from shisad.channels.base import DeliveryTarget
 from shisad.core.events import (
     AnomalyReported,
     BaseEvent,
@@ -142,6 +143,7 @@ class PendingAction:
     reason: str
     capabilities: set[Capability]
     created_at: datetime
+    task_id: str = ""
     preflight_action: ControlPlaneAction | None = None
     execute_after: datetime | None = None
     safe_preview: str = ""
@@ -215,6 +217,7 @@ class HandlerImplementation(
         self._realitycheck_toolkit = services.realitycheck_toolkit
         self._sandbox = services.sandbox
         self._control_plane = services.control_plane
+        self._pep = services.pep
         self._browser_sandbox = services.browser_sandbox
         self._shutdown_event = services.shutdown_event
         self._provenance_status = services.provenance_status
@@ -984,6 +987,7 @@ class HandlerImplementation(
             "session_id": str(pending.session_id),
             "user_id": str(pending.user_id),
             "workspace_id": str(pending.workspace_id),
+            "task_id": pending.task_id,
             "tool_name": str(pending.tool_name),
             "arguments": dict(pending.arguments),
             "reason": pending.reason,
@@ -1042,6 +1046,7 @@ class HandlerImplementation(
         arguments: dict[str, Any],
         reason: str,
         capabilities: set[Capability],
+        task_id: str = "",
         preflight_action: ControlPlaneAction | None = None,
         taint_labels: list[TaintLabel] | None = None,
         extra_warnings: list[str] | None = None,
@@ -1104,6 +1109,7 @@ class HandlerImplementation(
             session_id=session_id,
             user_id=user_id,
             workspace_id=workspace_id,
+            task_id=task_id,
             tool_name=tool_name,
             arguments=dict(arguments),
             reason=reason,
@@ -1159,6 +1165,7 @@ class HandlerImplementation(
                     session_id=session_id,
                     user_id=UserId(str(item.get("user_id", ""))),
                     workspace_id=WorkspaceId(str(item.get("workspace_id", ""))),
+                    task_id=str(item.get("task_id", "")),
                     tool_name=ToolName(str(item.get("tool_name", ""))),
                     arguments=dict(item.get("arguments", {})),
                     reason=str(item.get("reason", "")),
@@ -1383,6 +1390,64 @@ class HandlerImplementation(
                         json.dumps(preview_rows, ensure_ascii=True)
                     ),
                     taint_labels=retrieval_taints,
+                ),
+            )
+
+        if tool_name == "message.send":
+            target = DeliveryTarget(
+                channel=str(arguments.get("channel", "")).strip(),
+                recipient=str(arguments.get("recipient", "")).strip(),
+                workspace_hint=str(arguments.get("workspace_hint", "")).strip(),
+                thread_id=str(arguments.get("thread_id", "")).strip(),
+            )
+            delivery_result = await self._delivery.send(
+                target=target,
+                message=str(arguments.get("message", "")),
+            )
+            as_dict = getattr(delivery_result, "as_dict", None)
+            if callable(as_dict):
+                delivery_payload = as_dict()
+            else:
+                delivery_payload = {
+                    "attempted": True,
+                    "sent": bool(getattr(delivery_result, "sent", False)),
+                    "reason": str(getattr(delivery_result, "reason", "")),
+                    "target": {
+                        "channel": target.channel,
+                        "recipient": target.recipient,
+                        "workspace_hint": target.workspace_hint,
+                        "thread_id": target.thread_id,
+                    },
+                }
+            success = bool(delivery_result.sent)
+            if not success:
+                await self._event_bus.publish(
+                    ToolRejected(
+                        session_id=sid,
+                        actor="tool_runtime",
+                        tool_name=tool_name,
+                        reason=delivery_result.reason or "message_send_failed",
+                    )
+                )
+            await self._event_bus.publish(
+                ToolExecuted(
+                    session_id=sid,
+                    actor="tool_runtime",
+                    tool_name=tool_name,
+                    success=success,
+                )
+            )
+            self._control_plane.record_execution(action=executed_action, success=success)
+            return ApprovedToolExecutionResult(
+                success=success,
+                checkpoint_id=checkpoint_id,
+                tool_output=ToolOutputRecord(
+                    tool_name=str(tool_name),
+                    content=self._sanitize_tool_output_text(
+                        json.dumps(delivery_payload, ensure_ascii=True)
+                    ),
+                    success=success,
+                    taint_labels=set(),
                 ),
             )
 

@@ -12,6 +12,34 @@ from shisad.security.control_plane.schema import RiskTier, build_action
 
 
 class ConfirmationImplMixin(HandlerMixinBase):
+    def _sync_task_confirmation_status(self, pending: Any) -> None:
+        task_id = str(getattr(pending, "task_id", "")).strip()
+        if not task_id:
+            return
+        resolver = getattr(self, "_scheduler", None)
+        if resolver is None:
+            return
+        resolve_confirmation = getattr(resolver, "resolve_confirmation", None)
+        if not callable(resolve_confirmation):
+            return
+        resolve_confirmation(
+            task_id,
+            confirmation_id=str(getattr(pending, "confirmation_id", "")),
+            status=str(getattr(pending, "status", "")),
+            status_reason=str(getattr(pending, "status_reason", "")),
+        )
+
+    def _record_task_confirmation_outcome(self, pending: Any, *, success: bool) -> None:
+        task_id = str(getattr(pending, "task_id", "")).strip()
+        if not task_id:
+            return
+        scheduler = getattr(self, "_scheduler", None)
+        if scheduler is None:
+            return
+        recorder = getattr(scheduler, "record_run_outcome", None)
+        if callable(recorder):
+            recorder(task_id, success=success)
+
     async def do_confirmation_metrics(self, params: Mapping[str, Any]) -> dict[str, Any]:
         window_seconds = max(60, int(params.get("window_seconds", 900)))
         requested_user = str(params.get("user_id") or "").strip()
@@ -107,6 +135,8 @@ class ConfirmationImplMixin(HandlerMixinBase):
                     reason="session_in_lockdown",
                 )
             )
+            self._sync_task_confirmation_status(pending)
+            self._record_task_confirmation_outcome(pending, success=False)
             self._persist_pending_actions()
             self._confirmation_analytics.record(
                 user_id=str(pending.user_id),
@@ -127,6 +157,8 @@ class ConfirmationImplMixin(HandlerMixinBase):
         if session is None:
             pending.status = "failed"
             pending.status_reason = "session_missing"
+            self._sync_task_confirmation_status(pending)
+            self._record_task_confirmation_outcome(pending, success=False)
             self._persist_pending_actions()
             self._confirmation_analytics.record(
                 user_id=str(pending.user_id),
@@ -149,6 +181,8 @@ class ConfirmationImplMixin(HandlerMixinBase):
             if not bool(self._policy_loader.policy.control_plane.trace.allow_amendment):
                 pending.status = "rejected"
                 pending.status_reason = "plan_amendment_disabled"
+                self._sync_task_confirmation_status(pending)
+                self._record_task_confirmation_outcome(pending, success=False)
                 self._persist_pending_actions()
                 self._confirmation_analytics.record(
                     user_id=str(pending.user_id),
@@ -203,6 +237,8 @@ class ConfirmationImplMixin(HandlerMixinBase):
         checkpoint_id = execution_result.checkpoint_id
         pending.status = "approved" if success else "failed"
         pending.status_reason = str(params.get("reason", "")).strip() or pending.status
+        self._sync_task_confirmation_status(pending)
+        self._record_task_confirmation_outcome(pending, success=success)
         self._persist_pending_actions()
         self._confirmation_analytics.record(
             user_id=str(pending.user_id),
@@ -260,6 +296,8 @@ class ConfirmationImplMixin(HandlerMixinBase):
                 reason=reason,
             )
         )
+        self._sync_task_confirmation_status(pending)
+        self._record_task_confirmation_outcome(pending, success=False)
         self._persist_pending_actions()
         self._confirmation_analytics.record(
             user_id=str(pending.user_id),

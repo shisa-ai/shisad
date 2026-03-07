@@ -47,6 +47,7 @@ class ScheduledTask(BaseModel):
     delivery_target: dict[str, str] = Field(default_factory=dict)
     created_by: UserId
     workspace_id: WorkspaceId = Field(default_factory=lambda: WorkspaceId(""))
+    execution_session_id: str = ""
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     last_triggered_at: datetime | None = None
     trigger_count: int = 0

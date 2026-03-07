@@ -791,6 +791,7 @@ class PEP:
 
         high_risk_tools = {
             "send_email": 0.4,
+            "message.send": 0.4,
             "http.request": 0.45,
             "shell.exec": 0.55,
             "file.write": 0.45,

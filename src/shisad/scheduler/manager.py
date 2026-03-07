@@ -85,6 +85,16 @@ class SchedulerManager:
         self._audit("task.disable", {"task_id": task_id})
         return True
 
+    def attach_execution_session(self, task_id: str, session_id: str) -> bool:
+        task = self._tasks.get(task_id)
+        normalized = session_id.strip()
+        if task is None or not normalized:
+            return False
+        task.execution_session_id = normalized
+        self._persist_tasks()
+        self._audit("task.attach_execution_session", {"task_id": task_id, "session_id": normalized})
+        return True
+
     def can_execute_with_capabilities(
         self,
         task_id: str,
@@ -195,12 +205,69 @@ class SchedulerManager:
         return requests
 
     def queue_confirmation(self, task_id: str, action: dict[str, Any]) -> None:
-        self._pending_confirmations[task_id].append(action)
+        payload = dict(action)
+        payload["status"] = str(payload.get("status", "pending") or "pending")
+        self._pending_confirmations[task_id].append(payload)
         self._persist_pending_confirmations()
         self._audit("task.confirmation_queued", {"task_id": task_id})
 
     def pending_confirmations(self, task_id: str) -> list[dict[str, Any]]:
-        return list(self._pending_confirmations.get(task_id, []))
+        pending: list[dict[str, Any]] = []
+        for row in self._pending_confirmations.get(task_id, []):
+            status = str(row.get("status", "pending") or "pending").strip().lower()
+            if status == "pending":
+                pending.append(dict(row))
+        return pending
+
+    def resolve_confirmation(
+        self,
+        task_id: str,
+        *,
+        confirmation_id: str,
+        status: str,
+        status_reason: str = "",
+    ) -> bool:
+        rows = self._pending_confirmations.get(task_id, [])
+        normalized_confirmation = confirmation_id.strip()
+        normalized_status = status.strip().lower()
+        if not normalized_confirmation or not normalized_status:
+            return False
+        for row in rows:
+            if str(row.get("confirmation_id", "")).strip() != normalized_confirmation:
+                continue
+            row["status"] = normalized_status
+            row["status_reason"] = status_reason.strip()
+            self._persist_pending_confirmations()
+            self._audit(
+                "task.confirmation_resolved",
+                {
+                    "task_id": task_id,
+                    "confirmation_id": normalized_confirmation,
+                    "status": normalized_status,
+                },
+            )
+            return True
+        return False
+
+    def record_run_outcome(self, task_id: str, *, success: bool) -> bool:
+        task = self._tasks.get(task_id)
+        if task is None:
+            return False
+        if success:
+            task.success_count += 1
+        else:
+            task.failure_count += 1
+        self._persist_tasks()
+        self._audit(
+            "task.run_outcome",
+            {
+                "task_id": task_id,
+                "success": success,
+                "success_count": task.success_count,
+                "failure_count": task.failure_count,
+            },
+        )
+        return True
 
     def task_status_snapshot(
         self,
@@ -226,7 +293,7 @@ class SchedulerManager:
             ]
         rows: list[dict[str, Any]] = []
         for task in tasks[: max(0, int(limit))]:
-            pending = len(self._pending_confirmations.get(task.id, []))
+            pending = len(self.pending_confirmations(task.id))
             rows.append(
                 {
                     "task_id": task.id,

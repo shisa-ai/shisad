@@ -15,6 +15,7 @@ WRITE_TOOLS = {
     "create_event",
     "send_email",
     "send_message",
+    "message.send",
 }
 
 

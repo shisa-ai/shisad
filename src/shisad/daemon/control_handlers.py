@@ -148,6 +148,7 @@ class DaemonControlHandlers:
 
     def __init__(self, *, services: DaemonServices) -> None:
         impl = HandlerImplementation(services=services)
+        self._impl = impl
         internal_ingress_marker = services.internal_ingress_marker
         self._session = SessionHandlers(impl, internal_ingress_marker=internal_ingress_marker)
         self._tool_execution = ToolExecutionHandlers(

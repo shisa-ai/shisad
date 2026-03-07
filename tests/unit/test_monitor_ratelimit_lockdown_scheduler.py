@@ -229,6 +229,51 @@ def test_m2_scheduler_hydrates_pending_confirmations_after_restart(tmp_path: Pat
     assert pending[0]["task_id"] == created.id
 
 
+def test_g3_scheduler_persists_execution_session_and_filters_resolved_confirmations(
+    tmp_path: Path,
+) -> None:
+    storage = tmp_path / "tasks"
+    first = SchedulerManager(storage_dir=storage)
+    created = first.create_task(
+        name="reminder",
+        goal="ping ops",
+        schedule=Schedule(kind="interval", expression="60s"),
+        capability_snapshot={Capability.MESSAGE_SEND},
+        policy_snapshot_ref="p1",
+        created_by=UserId("alice"),
+        workspace_id=WorkspaceId("ws1"),
+    )
+    first.attach_execution_session(created.id, "sess-background-1")
+    first.queue_confirmation(
+        created.id,
+        {
+            "confirmation_id": "confirm-1",
+            "task_id": created.id,
+            "status": "pending",
+        },
+    )
+    first.resolve_confirmation(
+        created.id,
+        confirmation_id="confirm-1",
+        status="approved",
+        status_reason="manual_confirm",
+    )
+
+    restarted = SchedulerManager(storage_dir=storage)
+    loaded = restarted.get_task(created.id)
+    assert loaded is not None
+    assert loaded.execution_session_id == "sess-background-1"
+    assert restarted.pending_confirmations(created.id) == []
+
+    rows = restarted.task_status_snapshot(
+        limit=8,
+        created_by=UserId("alice"),
+        workspace_id=WorkspaceId("ws1"),
+    )
+    assert rows[0]["pending_confirmation_count"] == 0
+    assert rows[0]["confirmation_needed"] is False
+
+
 def test_m2_scheduler_skips_corrupt_utf8_persisted_files(tmp_path: Path) -> None:
     storage = tmp_path / "tasks"
     storage.mkdir(parents=True, exist_ok=True)
