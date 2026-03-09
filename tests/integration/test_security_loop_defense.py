@@ -1248,7 +1248,7 @@ async def test_m2_monitor_rejects_escalate_lockdown_after_threshold(
 
 
 @pytest.mark.asyncio
-async def test_m2_task_trigger_runtime_checks_queue_confirmations(
+async def test_m2_task_trigger_runtime_checks_degrade_missing_delivery_target(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1287,13 +1287,23 @@ async def test_m2_task_trigger_runtime_checks_queue_confirmations(
             "task.trigger_event",
             {"event_type": "message.received", "payload": "hello"},
         )
-        assert runs["count"] == 1
-        assert runs["queued_confirmations"] == 1
+        assert runs["count"] == 0
+        assert runs["queued_confirmations"] == 0
+        assert runs["blocked_runs"] == 1
         pending = await client.call(
             "task.pending_confirmations",
             {"task_id": task["id"]},
         )
-        assert pending["count"] >= 1
+        assert pending["count"] == 0
+        anomalies = await client.call(
+            "audit.query",
+            {"event_type": "AnomalyReported", "limit": 20},
+        )
+        assert any(
+            "missing delivery target"
+            in str(event.get("data", {}).get("description", "")).lower()
+            for event in anomalies["events"]
+        )
     finally:
         with suppress(Exception):
             await client.call("daemon.shutdown")

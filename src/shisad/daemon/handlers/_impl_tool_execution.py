@@ -13,6 +13,7 @@ from shisad.core.types import Capability, SessionId, TaintLabel, ToolName
 from shisad.daemon.handlers._mixin_typing import HandlerMixinBase
 from shisad.executors.sandbox import DegradedModePolicy, SandboxResult
 from shisad.governance.merge import PolicyMergeError, normalize_patch
+from shisad.security.control_plane.consensus import TRACE_VOTER_NAME
 from shisad.security.control_plane.schema import ControlDecision
 from shisad.skills.sandbox import SkillExecutionRequest
 
@@ -282,7 +283,7 @@ class ToolExecutionImplMixin(HandlerMixinBase):
             cp_eval.trace_result.reason_code == "trace:stage2_upgrade_required"
         )
         trace_only_stage2_block = stage2_upgrade_required and not any(
-            vote.decision.value == "BLOCK" and vote.voter != "ExecutionTraceVerifier"
+            vote.decision.value == "BLOCK" and vote.voter != TRACE_VOTER_NAME
             for vote in cp_eval.consensus.votes
         )
         if trace_only_stage2_block and not bool(

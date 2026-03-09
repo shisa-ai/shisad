@@ -30,6 +30,8 @@ from shisad.security.control_plane.schema import (
 from shisad.security.control_plane.sequence import BehavioralSequenceAnalyzer
 from shisad.security.control_plane.trace import PlanVerificationResult
 
+TRACE_VOTER_NAME = "ExecutionTraceVerifier"
+
 
 class VoteKind(StrEnum):
     ALLOW = "ALLOW"
@@ -167,13 +169,13 @@ class TraceVoter:
     async def cast_vote(self, data: ConsensusInput) -> VoterDecision:
         if data.trace_result.allowed:
             return VoterDecision(
-                voter="ExecutionTraceVerifier",
+                voter=TRACE_VOTER_NAME,
                 decision=VoteKind.ALLOW,
                 risk_tier=RiskTier.LOW,
                 reason_codes=[data.trace_result.reason_code],
             )
         return VoterDecision(
-            voter="ExecutionTraceVerifier",
+            voter=TRACE_VOTER_NAME,
             decision=VoteKind.BLOCK,
             risk_tier=data.trace_result.risk_tier,
             reason_codes=[data.trace_result.reason_code],

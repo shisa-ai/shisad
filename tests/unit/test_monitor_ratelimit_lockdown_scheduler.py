@@ -274,6 +274,44 @@ def test_g3_scheduler_persists_execution_session_and_filters_resolved_confirmati
     assert rows[0]["confirmation_needed"] is False
 
 
+def test_g3_scheduler_prunes_resolved_confirmation_backlog(tmp_path: Path) -> None:
+    storage = tmp_path / "tasks"
+    scheduler = SchedulerManager(storage_dir=storage)
+    created = scheduler.create_task(
+        name="reminder",
+        goal="ping ops",
+        schedule=Schedule(kind="interval", expression="60s"),
+        capability_snapshot={Capability.MESSAGE_SEND},
+        policy_snapshot_ref="p1",
+        created_by=UserId("alice"),
+    )
+    for index in range(40):
+        confirmation_id = f"confirm-{index}"
+        scheduler.queue_confirmation(
+            created.id,
+            {
+                "confirmation_id": confirmation_id,
+                "task_id": created.id,
+                "status": "pending",
+            },
+        )
+        scheduler.resolve_confirmation(
+            created.id,
+            confirmation_id=confirmation_id,
+            status="approved",
+            status_reason="manual_confirm",
+        )
+
+    restarted = SchedulerManager(storage_dir=storage)
+    assert restarted.pending_confirmations(created.id) == []
+    assert len(restarted._pending_confirmations[created.id]) == 32
+    remaining_ids = [
+        str(row.get("confirmation_id", "")) for row in restarted._pending_confirmations[created.id]
+    ]
+    assert "confirm-0" not in remaining_ids
+    assert "confirm-39" in remaining_ids
+
+
 def test_m2_scheduler_skips_corrupt_utf8_persisted_files(tmp_path: Path) -> None:
     storage = tmp_path / "tasks"
     storage.mkdir(parents=True, exist_ok=True)

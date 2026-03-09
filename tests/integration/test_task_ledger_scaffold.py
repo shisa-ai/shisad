@@ -98,9 +98,11 @@ async def test_m4_cs6_task_ledger_status_metadata_is_in_planner_scaffold(
                 },
                 "name": "daily-summary",
                 "goal": "summarize daily updates",
+                "capability_snapshot": ["message.send"],
                 "policy_snapshot_ref": "policy-1",
                 "created_by": "alice",
                 "workspace_id": "ws1",
+                "delivery_target": {"channel": "discord", "recipient": "ops-room"},
             },
         )
         second_task = await client.call(

@@ -223,10 +223,13 @@ async def _reminder_delivery_pump(
             task = services.scheduler.get_task(run.task_id)
             if task is None:
                 continue
-            await handlers._impl.do_task_execute_due_run(
-                run,
-                event_type=f"schedule.{task.schedule.kind.value}",
-            )
+            try:
+                await handlers._impl.do_task_execute_due_run(
+                    run,
+                    event_type=f"schedule.{task.schedule.kind.value}",
+                )
+            except Exception:
+                logger.exception("scheduler due-run execution failed for task %s", run.task_id)
         try:
             await asyncio.wait_for(services.shutdown_event.wait(), timeout=1.0)
         except TimeoutError:

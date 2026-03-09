@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from typing import Any, cast
+from urllib.parse import urlparse
 
 from shisad.core.events import (
     AnomalyReported,
@@ -24,6 +25,7 @@ from shisad.core.types import (
 )
 from shisad.daemon.handlers._mixin_typing import HandlerMixinBase
 from shisad.scheduler.schema import Schedule
+from shisad.security.control_plane.consensus import TRACE_VOTER_NAME
 from shisad.security.control_plane.schema import ControlDecision, Origin, RiskTier
 from shisad.security.pep import PolicyContext
 
@@ -44,6 +46,12 @@ def _recipient_domain(recipient: str) -> str:
     value = recipient.strip()
     if not value:
         return ""
+    parsed = urlparse(value)
+    if parsed.hostname:
+        return parsed.hostname.lower().strip()
+    fallback = urlparse(f"https://{value}")
+    if fallback.hostname:
+        return fallback.hostname.lower().strip()
     if "@" in value:
         _, _, domain = value.rpartition("@")
         return domain.lower().strip()
@@ -60,6 +68,15 @@ def _payload_trust_level(payload_taint: str) -> str:
     if payload_taint.strip().lower() == "trusted_scheduler":
         return "internal"
     return "untrusted"
+
+
+def _join_reason_codes(*codes: str) -> str:
+    ordered: list[str] = []
+    for code in codes:
+        normalized = str(code).strip()
+        if normalized and normalized not in ordered:
+            ordered.append(normalized)
+    return ",".join(ordered)
 
 
 class TasksImplMixin(HandlerMixinBase):
@@ -169,15 +186,6 @@ class TasksImplMixin(HandlerMixinBase):
             return RiskTier.MEDIUM
         return RiskTier.LOW
 
-    @staticmethod
-    def _stage2_reason(reason_codes: list[str], extra_code: str) -> str:
-        ordered: list[str] = []
-        for code in ["trace:stage2_upgrade_required", *reason_codes, extra_code]:
-            normalized = str(code).strip()
-            if normalized and normalized not in ordered:
-                ordered.append(normalized)
-        return ",".join(ordered)
-
     def _queue_task_confirmation(
         self,
         *,
@@ -187,6 +195,7 @@ class TasksImplMixin(HandlerMixinBase):
         session: Any,
         arguments: dict[str, Any],
         reason: str,
+        capabilities: set[Capability],
         preflight_action: Any | None,
     ) -> str:
         pending = self._queue_pending_action(
@@ -197,7 +206,7 @@ class TasksImplMixin(HandlerMixinBase):
             tool_name=_BACKGROUND_MESSAGE_SEND,
             arguments=dict(arguments),
             reason=reason,
-            capabilities=set(getattr(task, "capability_snapshot", set())),
+            capabilities=set(capabilities),
             preflight_action=preflight_action,
             taint_labels=list(_payload_taints(str(getattr(run, "payload_taint", "")))),
         )
@@ -218,6 +227,24 @@ class TasksImplMixin(HandlerMixinBase):
         )
         return str(pending.confirmation_id)
 
+    async def _reject_task_run(
+        self,
+        *,
+        sid: SessionId,
+        task: Any,
+        reason: str,
+    ) -> dict[str, Any]:
+        await self._event_bus.publish(
+            ToolRejected(
+                session_id=sid,
+                actor="policy_loop",
+                tool_name=_BACKGROUND_MESSAGE_SEND,
+                reason=reason,
+            )
+        )
+        self._scheduler.record_run_outcome(str(getattr(task, "id", "")), success=False)
+        return {"accepted": False, "queued_confirmation": False, "executed": False}
+
     async def _execute_task_run(
         self,
         run: Any,
@@ -225,6 +252,7 @@ class TasksImplMixin(HandlerMixinBase):
         event_type: str,
         due_run: bool,
     ) -> dict[str, Any]:
+        _ = due_run
         task = self._scheduler.get_task(str(getattr(run, "task_id", "")))
         if task is None:
             return {"accepted": False, "queued_confirmation": False, "executed": False}
@@ -235,6 +263,7 @@ class TasksImplMixin(HandlerMixinBase):
                 description=f"Task plan commitment mismatch blocked execution for task {task.id}",
                 recommended_action="review_task_commitment",
             )
+            self._scheduler.record_run_outcome(task.id, success=False)
             return {"accepted": False, "queued_confirmation": False, "executed": False}
 
         delivery_arguments = self._task_delivery_arguments(task)
@@ -247,26 +276,13 @@ class TasksImplMixin(HandlerMixinBase):
                     event_type=event_type,
                 )
             )
-            if due_run:
-                await self._publish_task_anomaly(
-                    session_id=None,
-                    description=f"Scheduled reminder missing delivery target for task {task.id}",
-                    recommended_action="update_task_delivery_target",
-                )
-                return {"accepted": False, "queued_confirmation": False, "executed": False}
-            self._scheduler.queue_confirmation(
-                task.id,
-                {
-                    "task_id": task.id,
-                    "event_type": event_type,
-                    "trigger_payload": str(getattr(run, "trigger_payload", "")),
-                    "plan_commitment": str(getattr(run, "plan_commitment", "")),
-                    "payload_taint": str(getattr(run, "payload_taint", "")),
-                    "reason": "background:missing_delivery_target",
-                    "status": "pending",
-                },
+            await self._publish_task_anomaly(
+                session_id=None,
+                description=f"Background task missing delivery target for task {task.id}",
+                recommended_action="update_task_delivery_target",
             )
-            return {"accepted": True, "queued_confirmation": True, "executed": False}
+            self._scheduler.record_run_outcome(task.id, success=False)
+            return {"accepted": False, "queued_confirmation": False, "executed": False}
 
         session = self._ensure_task_execution_session(task)
         sid = SessionId(str(session.id))
@@ -311,6 +327,10 @@ class TasksImplMixin(HandlerMixinBase):
         )
 
         scope_reason = self._task_scope_mismatch_reason(task, delivery_arguments)
+        effective_capabilities = self._lockdown_manager.apply_capability_restrictions(
+            sid,
+            set(getattr(task, "capability_snapshot", set())),
+        )
         cp_eval = await self._control_plane.evaluate_action(
             tool_name=str(_BACKGROUND_MESSAGE_SEND),
             arguments=dict(delivery_arguments),
@@ -334,41 +354,11 @@ class TasksImplMixin(HandlerMixinBase):
             evaluation=cp_eval,
         )
 
-        if Capability.MESSAGE_SEND not in set(getattr(task, "capability_snapshot", set())):
-            self._queue_task_confirmation(
-                task=task,
-                run=run,
-                event_type=event_type,
-                session=session,
-                arguments=delivery_arguments,
-                reason=self._stage2_reason(
-                    list(getattr(cp_eval, "reason_codes", [])),
-                    "background:capability_snapshot_scope_mismatch",
-                ),
-                preflight_action=cp_eval.action,
-            )
-            return {"accepted": True, "queued_confirmation": True, "executed": False}
-
-        if scope_reason:
-            self._queue_task_confirmation(
-                task=task,
-                run=run,
-                event_type=event_type,
-                session=session,
-                arguments=delivery_arguments,
-                reason=self._stage2_reason(
-                    list(getattr(cp_eval, "reason_codes", [])),
-                    scope_reason,
-                ),
-                preflight_action=cp_eval.action,
-            )
-            return {"accepted": True, "queued_confirmation": True, "executed": False}
-
         pep_decision = self._pep.evaluate(
             _BACKGROUND_MESSAGE_SEND,
             dict(delivery_arguments),
             PolicyContext(
-                capabilities=set(getattr(task, "capability_snapshot", set())),
+                capabilities=effective_capabilities,
                 taint_labels=_payload_taints(str(getattr(run, "payload_taint", ""))),
                 workspace_id=WorkspaceId(str(getattr(task, "workspace_id", ""))),
                 user_id=UserId(str(getattr(task, "created_by", ""))),
@@ -379,16 +369,31 @@ class TasksImplMixin(HandlerMixinBase):
         trace_only_stage2_block = (
             cp_eval.trace_result.reason_code == "trace:stage2_upgrade_required"
             and not any(
-                vote.decision.value == "BLOCK" and vote.voter != "ExecutionTraceVerifier"
+                vote.decision.value == "BLOCK" and vote.voter != TRACE_VOTER_NAME
                 for vote in cp_eval.consensus.votes
             )
         )
         final_kind = pep_decision.kind.value
         final_reason = pep_decision.reason
+        if (
+            trace_only_stage2_block
+            and final_kind != PEPDecisionKind.REJECT.value
+            and not bool(self._policy_loader.policy.control_plane.trace.allow_amendment)
+        ):
+            final_kind = PEPDecisionKind.REJECT.value
+            final_reason = "trace:plan_amendment_disabled"
         if cp_eval.decision == ControlDecision.BLOCK:
-            if trace_only_stage2_block:
+            if trace_only_stage2_block and final_kind == PEPDecisionKind.ALLOW.value:
                 final_kind = PEPDecisionKind.REQUIRE_CONFIRMATION.value
                 final_reason = ",".join(cp_eval.reason_codes) or "trace:stage2_upgrade_required"
+            elif (
+                trace_only_stage2_block
+                and final_kind == PEPDecisionKind.REQUIRE_CONFIRMATION.value
+            ):
+                final_reason = _join_reason_codes(
+                    final_reason,
+                    ",".join(cp_eval.reason_codes) or "trace:stage2_upgrade_required",
+                )
             else:
                 final_kind = PEPDecisionKind.REJECT.value
                 final_reason = ",".join(cp_eval.reason_codes) or "control_plane_block"
@@ -398,18 +403,32 @@ class TasksImplMixin(HandlerMixinBase):
         ):
             final_kind = PEPDecisionKind.REQUIRE_CONFIRMATION.value
             final_reason = ",".join(cp_eval.reason_codes) or "control_plane_confirmation"
+        elif (
+            cp_eval.decision == ControlDecision.REQUIRE_CONFIRMATION
+            and final_kind == PEPDecisionKind.REQUIRE_CONFIRMATION.value
+        ):
+            final_reason = _join_reason_codes(
+                final_reason,
+                ",".join(cp_eval.reason_codes) or "control_plane_confirmation",
+            )
+
+        if self._lockdown_manager.should_block_all_actions(sid):
+            final_kind = PEPDecisionKind.REJECT.value
+            final_reason = "session_in_lockdown"
+
+        if scope_reason and final_kind != PEPDecisionKind.REJECT.value:
+            if final_kind == PEPDecisionKind.ALLOW.value:
+                final_kind = PEPDecisionKind.REQUIRE_CONFIRMATION.value
+                final_reason = scope_reason
+            else:
+                final_reason = _join_reason_codes(final_reason, scope_reason)
 
         if final_kind == PEPDecisionKind.REJECT.value:
-            await self._event_bus.publish(
-                ToolRejected(
-                    session_id=sid,
-                    actor="policy_loop",
-                    tool_name=_BACKGROUND_MESSAGE_SEND,
-                    reason=final_reason or pep_decision.reason,
-                )
+            return await self._reject_task_run(
+                sid=sid,
+                task=task,
+                reason=final_reason or pep_decision.reason or "background_execution_rejected",
             )
-            self._scheduler.record_run_outcome(task.id, success=False)
-            return {"accepted": False, "queued_confirmation": False, "executed": False}
 
         if final_kind == PEPDecisionKind.REQUIRE_CONFIRMATION.value:
             self._queue_task_confirmation(
@@ -419,6 +438,7 @@ class TasksImplMixin(HandlerMixinBase):
                 session=session,
                 arguments=delivery_arguments,
                 reason=final_reason or "requires_confirmation",
+                capabilities=effective_capabilities,
                 preflight_action=cp_eval.action,
             )
             return {"accepted": True, "queued_confirmation": True, "executed": False}
@@ -428,7 +448,7 @@ class TasksImplMixin(HandlerMixinBase):
             user_id=UserId(str(getattr(task, "created_by", ""))),
             tool_name=_BACKGROUND_MESSAGE_SEND,
             arguments=delivery_arguments,
-            capabilities=set(getattr(task, "capability_snapshot", set())),
+            capabilities=effective_capabilities,
             approval_actor="scheduler",
             execution_action=cp_eval.action,
         )

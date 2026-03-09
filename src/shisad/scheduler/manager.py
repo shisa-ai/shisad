@@ -15,6 +15,8 @@ from pydantic import ValidationError
 from shisad.core.types import Capability, UserId, WorkspaceId
 from shisad.scheduler.schema import Schedule, ScheduledTask, ScheduleKind, TaskRunRequest
 
+_MAX_RESOLVED_CONFIRMATIONS_PER_TASK = 32
+
 
 class SchedulerManager:
     """Stores tasks and creates safe run requests from triggers."""
@@ -207,7 +209,11 @@ class SchedulerManager:
     def queue_confirmation(self, task_id: str, action: dict[str, Any]) -> None:
         payload = dict(action)
         payload["status"] = str(payload.get("status", "pending") or "pending")
+        payload["queued_at"] = (
+            str(payload.get("queued_at", "")).strip() or datetime.now(UTC).isoformat()
+        )
         self._pending_confirmations[task_id].append(payload)
+        self._prune_confirmation_rows(task_id)
         self._persist_pending_confirmations()
         self._audit("task.confirmation_queued", {"task_id": task_id})
 
@@ -237,6 +243,8 @@ class SchedulerManager:
                 continue
             row["status"] = normalized_status
             row["status_reason"] = status_reason.strip()
+            row["resolved_at"] = datetime.now(UTC).isoformat()
+            self._prune_confirmation_rows(task_id)
             self._persist_pending_confirmations()
             self._audit(
                 "task.confirmation_resolved",
@@ -315,6 +323,29 @@ class SchedulerManager:
                 }
             )
         return rows
+
+    def _prune_confirmation_rows(self, task_id: str) -> None:
+        rows = list(self._pending_confirmations.get(task_id, []))
+        if not rows:
+            return
+        pending: list[dict[str, Any]] = []
+        resolved: list[dict[str, Any]] = []
+        for row in rows:
+            status = str(row.get("status", "pending") or "pending").strip().lower()
+            if status == "pending":
+                pending.append(row)
+            else:
+                resolved.append(row)
+        resolved.sort(
+            key=lambda row: (
+                str(row.get("resolved_at", "")).strip(),
+                str(row.get("queued_at", "")).strip(),
+                str(row.get("confirmation_id", "")).strip(),
+            )
+        )
+        if len(resolved) > _MAX_RESOLVED_CONFIRMATIONS_PER_TASK:
+            resolved = resolved[-_MAX_RESOLVED_CONFIRMATIONS_PER_TASK :]
+        self._pending_confirmations[task_id] = [*pending, *resolved]
 
     def _validate_schedule(self, schedule: Schedule) -> None:
         if schedule.kind == ScheduleKind.EVENT:

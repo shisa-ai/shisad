@@ -62,6 +62,7 @@ from shisad.core.types import (
 from shisad.daemon.handlers._mixin_typing import HandlerMixinBase
 from shisad.memory.ingestion import IngestionPipeline
 from shisad.memory.schema import MemorySource
+from shisad.security.control_plane.consensus import TRACE_VOTER_NAME
 from shisad.security.control_plane.schema import (
     ActionKind,
     ControlDecision,
@@ -2229,7 +2230,7 @@ class SessionImplMixin(HandlerMixinBase):
                 cp_eval.trace_result.reason_code == "trace:stage2_upgrade_required"
                 and not any(
                     vote.decision.value == "BLOCK"
-                    and vote.voter != "ExecutionTraceVerifier"
+                    and vote.voter != TRACE_VOTER_NAME
                     for vote in cp_eval.consensus.votes
                 )
             )

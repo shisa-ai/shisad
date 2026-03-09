@@ -4,14 +4,22 @@ from __future__ import annotations
 
 import asyncio
 import textwrap
+from collections.abc import Callable
 from contextlib import suppress
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 from shisad.core.api.transport import ControlClient
 from shisad.core.config import DaemonConfig
 from shisad.daemon.runner import run_daemon
+from shisad.security.control_plane.consensus import (
+    ActionMonitorVoter,
+    VoteKind,
+    VoterDecision,
+)
+from shisad.security.control_plane.schema import RiskTier
 
 
 async def _wait_for_socket(path: Path, timeout: float = 2.0) -> None:
@@ -42,6 +50,64 @@ async def _wait_for_task_pending_confirmation(
     raise AssertionError(f"Timed out waiting for pending confirmation for task {task_id}: {latest}")
 
 
+def _event_reason(event: dict[str, Any]) -> str:
+    return str(
+        event.get("reason")
+        or event.get("reasoning")
+        or event.get("data", {}).get("reason", "")
+        or event.get("data", {}).get("reasoning", "")
+    )
+
+
+def _event_description(event: dict[str, Any]) -> str:
+    return str(
+        event.get("description")
+        or event.get("data", {}).get("description", "")
+    )
+
+
+async def _wait_for_audit_event(
+    client: ControlClient,
+    *,
+    event_type: str,
+    session_id: str = "",
+    predicate: Callable[[dict[str, Any]], bool],
+    timeout: float = 4.0,
+) -> dict[str, Any]:
+    end = asyncio.get_running_loop().time() + timeout
+    latest: list[dict[str, Any]] = []
+    while asyncio.get_running_loop().time() < end:
+        payload: dict[str, object] = {"event_type": event_type, "limit": 50}
+        if session_id:
+            payload["session_id"] = session_id
+        result = await client.call("audit.query", payload)
+        latest = [dict(event) for event in result.get("events", [])]
+        for event in latest:
+            if predicate(event):
+                return event
+        await asyncio.sleep(0.1)
+    raise AssertionError(f"Timed out waiting for {event_type}: {latest}")
+
+
+async def _wait_for_task_session_id(
+    client: ControlClient,
+    *,
+    task_id: str,
+    timeout: float = 4.0,
+) -> str:
+    event = await _wait_for_audit_event(
+        client,
+        event_type="TaskTriggered",
+        predicate=lambda item: str(item.get("data", {}).get("task_id", "")) == task_id
+        and bool(str(item.get("session_id", "")).strip()),
+        timeout=timeout,
+    )
+    session_id = str(event.get("session_id", "")).strip()
+    if not session_id:
+        raise AssertionError(f"TaskTriggered missing session_id for task {task_id}: {event}")
+    return session_id
+
+
 def _base_policy() -> str:
     return (
         textwrap.dedent(
@@ -55,16 +121,18 @@ def _base_policy() -> str:
     )
 
 
-@pytest.mark.asyncio
-async def test_g3_triggered_task_queues_shared_pending_action_for_tainted_message_send(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def _configure_model_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("SHISAD_MODEL_BASE_URL", "https://api.example.com/v1")
     monkeypatch.setenv("SHISAD_MODEL_PLANNER_BASE_URL", "https://planner.example.com/v1")
     monkeypatch.setenv("SHISAD_MODEL_EMBEDDINGS_BASE_URL", "https://embed.example.com/v1")
     monkeypatch.setenv("SHISAD_MODEL_MONITOR_BASE_URL", "https://monitor.example.com/v1")
 
+
+async def _start_daemon(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> tuple[asyncio.Task[None], ControlClient]:
+    _configure_model_env(monkeypatch)
     policy_path = tmp_path / "policy.yaml"
     policy_path.write_text(_base_policy(), encoding="utf-8")
     config = DaemonConfig(
@@ -76,9 +144,25 @@ async def test_g3_triggered_task_queues_shared_pending_action_for_tainted_messag
 
     daemon_task = asyncio.create_task(run_daemon(config))
     client = ControlClient(config.socket_path)
+    await _wait_for_socket(config.socket_path)
+    await client.connect()
+    return daemon_task, client
+
+
+async def _shutdown_daemon(daemon_task: asyncio.Task[None], client: ControlClient) -> None:
+    with suppress(Exception):
+        await client.call("daemon.shutdown")
+    await client.close()
+    await asyncio.wait_for(daemon_task, timeout=3)
+
+
+@pytest.mark.asyncio
+async def test_g3_triggered_task_queues_shared_pending_action_for_tainted_message_send(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    daemon_task, client = await _start_daemon(tmp_path, monkeypatch)
     try:
-        await _wait_for_socket(config.socket_path)
-        await client.connect()
         created = await client.call(
             "task.create",
             {
@@ -156,47 +240,31 @@ async def test_g3_triggered_task_queues_shared_pending_action_for_tainted_messag
             for event in consensus["events"]
         )
     finally:
-        with suppress(Exception):
-            await client.call("daemon.shutdown")
-        await client.close()
-        await asyncio.wait_for(daemon_task, timeout=3)
+        await _shutdown_daemon(daemon_task, client)
 
 
 @pytest.mark.asyncio
-async def test_g3_due_run_with_scope_mismatch_routes_to_confirmation_not_direct_delivery(
+async def test_g3_due_run_with_domain_scope_mismatch_routes_to_confirmation_not_direct_delivery(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("SHISAD_MODEL_BASE_URL", "https://api.example.com/v1")
-    monkeypatch.setenv("SHISAD_MODEL_PLANNER_BASE_URL", "https://planner.example.com/v1")
-    monkeypatch.setenv("SHISAD_MODEL_EMBEDDINGS_BASE_URL", "https://embed.example.com/v1")
-    monkeypatch.setenv("SHISAD_MODEL_MONITOR_BASE_URL", "https://monitor.example.com/v1")
-
-    policy_path = tmp_path / "policy.yaml"
-    policy_path.write_text(_base_policy(), encoding="utf-8")
-    config = DaemonConfig(
-        data_dir=tmp_path / "data",
-        socket_path=tmp_path / "control.sock",
-        policy_path=policy_path,
-        log_level="INFO",
-    )
-
-    daemon_task = asyncio.create_task(run_daemon(config))
-    client = ControlClient(config.socket_path)
+    daemon_task, client = await _start_daemon(tmp_path, monkeypatch)
     try:
-        await _wait_for_socket(config.socket_path)
-        await client.connect()
         created = await client.call(
             "task.create",
             {
                 "name": "interval-reminder",
                 "goal": "Reminder: check deployment status",
                 "schedule": {"kind": "interval", "expression": "1s"},
-                "capability_snapshot": ["memory.read"],
+                "capability_snapshot": ["message.send"],
                 "policy_snapshot_ref": "p1",
                 "created_by": "alice",
                 "workspace_id": "ws1",
-                "delivery_target": {"channel": "discord", "recipient": "ops-room"},
+                "allowed_domains": ["example.com"],
+                "delivery_target": {
+                    "channel": "discord",
+                    "recipient": "https://hooks.example.net/alert",
+                },
             },
         )
 
@@ -220,7 +288,7 @@ async def test_g3_due_run_with_scope_mismatch_routes_to_confirmation_not_direct_
         background_sid = str(pending_action.get("session_id", ""))
         assert background_sid
         assert str(pending_action.get("tool_name", "")) == "message.send"
-        assert "stage2_upgrade_required" in str(pending_action.get("reason", ""))
+        assert "background:domain_scope_mismatch" in str(pending_action.get("reason", ""))
 
         control_plane = await client.call(
             "audit.query",
@@ -250,7 +318,237 @@ async def test_g3_due_run_with_scope_mismatch_routes_to_confirmation_not_direct_
             for event in executed["events"]
         )
     finally:
-        with suppress(Exception):
-            await client.call("daemon.shutdown")
-        await client.close()
-        await asyncio.wait_for(daemon_task, timeout=3)
+        await _shutdown_daemon(daemon_task, client)
+
+
+@pytest.mark.asyncio
+async def test_g3_due_run_with_capability_mismatch_stays_non_confirmable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    daemon_task, client = await _start_daemon(tmp_path, monkeypatch)
+    try:
+        created = await client.call(
+            "task.create",
+            {
+                "name": "restricted-reminder",
+                "goal": "Reminder: check deployment status",
+                "schedule": {"kind": "interval", "expression": "1s"},
+                "capability_snapshot": ["memory.read"],
+                "policy_snapshot_ref": "p1",
+                "created_by": "alice",
+                "workspace_id": "ws1",
+                "delivery_target": {"channel": "discord", "recipient": "ops-room"},
+            },
+        )
+
+        background_sid = await _wait_for_task_session_id(client, task_id=str(created["id"]))
+
+        pending = await client.call(
+            "task.pending_confirmations",
+            {"task_id": created["id"]},
+        )
+        assert pending["count"] == 0
+
+        action_pending = await client.call("action.pending", {"status": "pending", "limit": 20})
+        assert not any(
+            str(item.get("session_id", "")) == background_sid
+            for item in action_pending["actions"]
+        )
+
+        rejected = await _wait_for_audit_event(
+            client,
+            event_type="ToolRejected",
+            session_id=background_sid,
+            predicate=lambda event: "trace:stage2_upgrade_required" in _event_reason(event),
+        )
+        assert "trace:stage2_upgrade_required" in _event_reason(rejected)
+    finally:
+        await _shutdown_daemon(daemon_task, client)
+
+
+@pytest.mark.asyncio
+async def test_g3_due_run_control_plane_block_vote_does_not_become_confirmable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _forced_block_vote(self: ActionMonitorVoter, data: object) -> VoterDecision:
+        _ = data
+        return VoterDecision(
+            voter="ActionMonitorVoter",
+            decision=VoteKind.BLOCK,
+            risk_tier=RiskTier.HIGH,
+            reason_codes=["test:forced_background_block"],
+        )
+
+    monkeypatch.setattr(ActionMonitorVoter, "cast_vote", _forced_block_vote)
+    daemon_task, client = await _start_daemon(tmp_path, monkeypatch)
+    try:
+        created = await client.call(
+            "task.create",
+            {
+                "name": "blocked-reminder",
+                "goal": "Reminder: check deployment status",
+                "schedule": {"kind": "interval", "expression": "1s"},
+                "capability_snapshot": ["memory.read"],
+                "policy_snapshot_ref": "p1",
+                "created_by": "alice",
+                "workspace_id": "ws1",
+                "delivery_target": {"channel": "discord", "recipient": "ops-room"},
+            },
+        )
+
+        background_sid = await _wait_for_task_session_id(client, task_id=str(created["id"]))
+
+        pending = await client.call(
+            "task.pending_confirmations",
+            {"task_id": created["id"]},
+        )
+        assert pending["count"] == 0
+
+        consensus = await _wait_for_audit_event(
+            client,
+            event_type="ConsensusEvaluated",
+            session_id=background_sid,
+            predicate=lambda event: any(
+                str(vote.get("voter", "")) == "ActionMonitorVoter"
+                and str(vote.get("decision", "")) == "BLOCK"
+                and "test:forced_background_block"
+                in list(vote.get("reason_codes", []))
+                for vote in event.get("data", {}).get("votes", [])
+            ),
+        )
+        assert any(
+            str(vote.get("voter", "")) == "ActionMonitorVoter"
+            and str(vote.get("decision", "")) == "BLOCK"
+            and "test:forced_background_block"
+            in list(vote.get("reason_codes", []))
+            for vote in consensus.get("data", {}).get("votes", [])
+        )
+
+        rejected = await _wait_for_audit_event(
+            client,
+            event_type="ToolRejected",
+            session_id=background_sid,
+            predicate=lambda event: "ActionMonitorVoter" in _event_reason(event),
+        )
+        assert "ActionMonitorVoter" in _event_reason(rejected)
+    finally:
+        await _shutdown_daemon(daemon_task, client)
+
+
+@pytest.mark.asyncio
+async def test_g3_due_run_honors_caution_and_full_lockdown(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    daemon_task, client = await _start_daemon(tmp_path, monkeypatch)
+    try:
+        created = await client.call(
+            "task.create",
+            {
+                "name": "lockdown-reminder",
+                "goal": "Reminder: check deployment status",
+                "schedule": {"kind": "interval", "expression": "1s"},
+                "capability_snapshot": ["message.send"],
+                "policy_snapshot_ref": "p1",
+                "created_by": "alice",
+                "workspace_id": "ws1",
+                "delivery_target": {"channel": "discord", "recipient": "ops-room"},
+            },
+        )
+
+        background_sid = await _wait_for_task_session_id(client, task_id=str(created["id"]))
+
+        await _wait_for_audit_event(
+            client,
+            event_type="ToolExecuted",
+            session_id=background_sid,
+            predicate=lambda _event: True,
+        )
+
+        await client.call(
+            "lockdown.set",
+            {"session_id": background_sid, "action": "caution", "reason": "manual review"},
+        )
+
+        caution_rejected = await _wait_for_audit_event(
+            client,
+            event_type="ToolRejected",
+            session_id=background_sid,
+            predicate=lambda event: "Missing capabilities: message.send" in _event_reason(event),
+        )
+        assert "Missing capabilities: message.send" in _event_reason(caution_rejected)
+
+        await client.call(
+            "lockdown.set",
+            {
+                "session_id": background_sid,
+                "action": "full_lockdown",
+                "reason": "incident",
+            },
+        )
+
+        locked_rejected = await _wait_for_audit_event(
+            client,
+            event_type="ToolRejected",
+            session_id=background_sid,
+            predicate=lambda event: _event_reason(event) == "session_in_lockdown",
+        )
+        assert _event_reason(locked_rejected) == "session_in_lockdown"
+
+        pending = await client.call(
+            "task.pending_confirmations",
+            {"task_id": created["id"]},
+        )
+        assert pending["count"] == 0
+    finally:
+        await _shutdown_daemon(daemon_task, client)
+
+
+@pytest.mark.asyncio
+async def test_g3_triggered_task_missing_delivery_target_degrades_without_pending_confirmation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    daemon_task, client = await _start_daemon(tmp_path, monkeypatch)
+    try:
+        created = await client.call(
+            "task.create",
+            {
+                "name": "broken-event-reminder",
+                "goal": "Reminder: investigate the reported issue",
+                "schedule": {
+                    "kind": "event",
+                    "expression": "message.received",
+                    "event_type": "message.received",
+                },
+                "capability_snapshot": ["message.send"],
+                "policy_snapshot_ref": "p1",
+                "created_by": "alice",
+                "workspace_id": "ws1",
+            },
+        )
+
+        runs = await client.call(
+            "task.trigger_event",
+            {"event_type": "message.received", "payload": "forward this raw user message"},
+        )
+        assert runs["count"] == 0
+        assert runs["queued_confirmations"] == 0
+        assert runs["blocked_runs"] == 1
+
+        pending = await client.call(
+            "task.pending_confirmations",
+            {"task_id": created["id"]},
+        )
+        assert pending["count"] == 0
+
+        anomaly = await _wait_for_audit_event(
+            client,
+            event_type="AnomalyReported",
+            predicate=lambda event: "missing delivery target" in _event_description(event).lower(),
+        )
+        assert "missing delivery target" in _event_description(anomaly).lower()
+    finally:
+        await _shutdown_daemon(daemon_task, client)
