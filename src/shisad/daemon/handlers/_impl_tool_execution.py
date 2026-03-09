@@ -322,6 +322,7 @@ class ToolExecutionImplMixin(HandlerMixinBase):
                 reason=reason,
                 capabilities=effective_caps,
                 preflight_action=cp_eval.action,
+                merged_policy=merged_policy,
                 taint_labels=[],
             )
             await self._event_bus.publish(

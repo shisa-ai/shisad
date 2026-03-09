@@ -3,6 +3,12 @@
 from __future__ import annotations
 
 from shisad.core.api.schema import (
+    AdminSelfModApplyParams,
+    AdminSelfModApplyResult,
+    AdminSelfModProposeParams,
+    AdminSelfModProposeResult,
+    AdminSelfModRollbackParams,
+    AdminSelfModRollbackResult,
     ChannelIngestParams,
     ChannelIngestResult,
     ChannelPairingProposalParams,
@@ -114,4 +120,46 @@ class AdminHandlers:
         )
         return ChannelPairingProposalResult.model_validate(
             await self._impl.do_channel_pairing_propose(payload)
+        )
+
+    async def handle_admin_selfmod_propose(
+        self,
+        params: AdminSelfModProposeParams,
+        ctx: RequestContext,
+    ) -> AdminSelfModProposeResult:
+        payload = build_params_payload(
+            params,
+            ctx,
+            internal_ingress_marker=self._internal_ingress_marker,
+        )
+        return AdminSelfModProposeResult.model_validate(
+            await self._impl.do_admin_selfmod_propose(payload)
+        )
+
+    async def handle_admin_selfmod_apply(
+        self,
+        params: AdminSelfModApplyParams,
+        ctx: RequestContext,
+    ) -> AdminSelfModApplyResult:
+        payload = build_params_payload(
+            params,
+            ctx,
+            internal_ingress_marker=self._internal_ingress_marker,
+        )
+        return AdminSelfModApplyResult.model_validate(
+            await self._impl.do_admin_selfmod_apply(payload)
+        )
+
+    async def handle_admin_selfmod_rollback(
+        self,
+        params: AdminSelfModRollbackParams,
+        ctx: RequestContext,
+    ) -> AdminSelfModRollbackResult:
+        payload = build_params_payload(
+            params,
+            ctx,
+            internal_ingress_marker=self._internal_ingress_marker,
+        )
+        return AdminSelfModRollbackResult.model_validate(
+            await self._impl.do_admin_selfmod_rollback(payload)
         )

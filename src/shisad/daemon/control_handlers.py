@@ -10,6 +10,12 @@ from shisad.core.api.schema import (
     ActionPendingParams,
     ActionPendingResult,
     ActionRejectResult,
+    AdminSelfModApplyParams,
+    AdminSelfModApplyResult,
+    AdminSelfModProposeParams,
+    AdminSelfModProposeResult,
+    AdminSelfModRollbackParams,
+    AdminSelfModRollbackResult,
     AuditQueryParams,
     AuditQueryResult,
     BrowserPasteParams,
@@ -241,6 +247,21 @@ class DaemonControlHandlers:
         self, params: DoctorCheckParams, ctx: RequestContext
     ) -> DoctorCheckResult:
         return await self._admin.handle_doctor_check(params, ctx)
+
+    async def handle_admin_selfmod_propose(
+        self, params: AdminSelfModProposeParams, ctx: RequestContext
+    ) -> AdminSelfModProposeResult:
+        return await self._admin.handle_admin_selfmod_propose(params, ctx)
+
+    async def handle_admin_selfmod_apply(
+        self, params: AdminSelfModApplyParams, ctx: RequestContext
+    ) -> AdminSelfModApplyResult:
+        return await self._admin.handle_admin_selfmod_apply(params, ctx)
+
+    async def handle_admin_selfmod_rollback(
+        self, params: AdminSelfModRollbackParams, ctx: RequestContext
+    ) -> AdminSelfModRollbackResult:
+        return await self._admin.handle_admin_selfmod_rollback(params, ctx)
 
     async def handle_audit_query(
         self, params: AuditQueryParams, ctx: RequestContext

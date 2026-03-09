@@ -9,7 +9,7 @@ import json
 import logging
 import os
 import uuid
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -131,6 +131,107 @@ def _should_checkpoint(trigger: str, tool: ToolDefinition | None) -> bool:
         return tool is not None and is_side_effect_tool(tool)
     return False
 
+
+def _optional_int(value: Any) -> int | None:
+    return int(value) if value is not None else None
+
+
+def _structured_web_search(handler: Any, arguments: Mapping[str, Any]) -> Mapping[str, Any]:
+    return dict(
+        handler._web_toolkit.search(
+            query=str(arguments.get("query", "")),
+            limit=int(arguments.get("limit", 5)),
+        )
+    )
+
+
+def _structured_web_fetch(handler: Any, arguments: Mapping[str, Any]) -> Mapping[str, Any]:
+    return dict(
+        handler._web_toolkit.fetch(
+            url=str(arguments.get("url", "")),
+            snapshot=bool(arguments.get("snapshot", False)),
+            max_bytes=_optional_int(arguments.get("max_bytes")),
+        )
+    )
+
+
+def _structured_realitycheck_search(
+    handler: Any,
+    arguments: Mapping[str, Any],
+) -> Mapping[str, Any]:
+    return dict(
+        handler._realitycheck_toolkit.search(
+            query=str(arguments.get("query", "")),
+            limit=int(arguments.get("limit", 5)),
+            mode=str(arguments.get("mode", "auto")),
+        )
+    )
+
+
+def _structured_realitycheck_read(handler: Any, arguments: Mapping[str, Any]) -> Mapping[str, Any]:
+    return dict(
+        handler._realitycheck_toolkit.read_source(
+            path=str(arguments.get("path", "")),
+            max_bytes=_optional_int(arguments.get("max_bytes")),
+        )
+    )
+
+
+def _structured_fs_list(handler: Any, arguments: Mapping[str, Any]) -> Mapping[str, Any]:
+    return dict(
+        handler._fs_git_toolkit.list_dir(
+            path=str(arguments.get("path", ".")),
+            recursive=bool(arguments.get("recursive", False)),
+            limit=int(arguments.get("limit", 200)),
+        )
+    )
+
+
+def _structured_fs_read(handler: Any, arguments: Mapping[str, Any]) -> Mapping[str, Any]:
+    return dict(
+        handler._fs_git_toolkit.read_file(
+            path=str(arguments.get("path", "")),
+            max_bytes=_optional_int(arguments.get("max_bytes")),
+        )
+    )
+
+
+def _structured_fs_write(handler: Any, arguments: Mapping[str, Any]) -> Mapping[str, Any]:
+    return dict(
+        handler._fs_git_toolkit.write_file(
+            path=str(arguments.get("path", "")),
+            content=str(arguments.get("content", "")),
+            confirm=bool(arguments.get("confirm", False)),
+        )
+    )
+
+
+def _structured_git_status(handler: Any, arguments: Mapping[str, Any]) -> Mapping[str, Any]:
+    return dict(
+        handler._fs_git_toolkit.git_status(
+            repo_path=str(arguments.get("repo_path", ".")),
+        )
+    )
+
+
+def _structured_git_diff(handler: Any, arguments: Mapping[str, Any]) -> Mapping[str, Any]:
+    return dict(
+        handler._fs_git_toolkit.git_diff(
+            repo_path=str(arguments.get("repo_path", ".")),
+            ref=str(arguments.get("ref", "")),
+            max_lines=int(arguments.get("max_lines", 400)),
+        )
+    )
+
+
+def _structured_git_log(handler: Any, arguments: Mapping[str, Any]) -> Mapping[str, Any]:
+    return dict(
+        handler._fs_git_toolkit.git_log(
+            repo_path=str(arguments.get("repo_path", ".")),
+            limit=int(arguments.get("limit", 20)),
+        )
+    )
+
 @dataclass(slots=True)
 class PendingAction:
     confirmation_id: str
@@ -149,6 +250,7 @@ class PendingAction:
     safe_preview: str = ""
     warnings: list[str] = field(default_factory=list)
     leak_check: dict[str, Any] = field(default_factory=dict)
+    merged_policy: ToolExecutionPolicy | None = None
     status: str = "pending"
     status_reason: str = ""
 
@@ -214,6 +316,7 @@ class HandlerImplementation(
         self._conversation_summarizer = ConversationSummarizer(provider=services.provider)
         self._scheduler = services.scheduler
         self._skill_manager = services.skill_manager
+        self._selfmod_manager = services.selfmod_manager
         self._realitycheck_toolkit = services.realitycheck_toolkit
         self._sandbox = services.sandbox
         self._control_plane = services.control_plane
@@ -1002,6 +1105,8 @@ class HandlerImplementation(
         }
         if pending.preflight_action is not None:
             payload["preflight_action"] = pending.preflight_action.model_dump(mode="json")
+        if pending.merged_policy is not None:
+            payload["merged_policy"] = pending.merged_policy.model_dump(mode="json")
         return payload
 
     @staticmethod
@@ -1048,6 +1153,7 @@ class HandlerImplementation(
         capabilities: set[Capability],
         task_id: str = "",
         preflight_action: ControlPlaneAction | None = None,
+        merged_policy: ToolExecutionPolicy | None = None,
         taint_labels: list[TaintLabel] | None = None,
         extra_warnings: list[str] | None = None,
     ) -> PendingAction:
@@ -1120,6 +1226,11 @@ class HandlerImplementation(
             safe_preview=render_structured_confirmation(summary, warnings=sorted(set(warnings))),
             warnings=sorted(set(warnings)),
             leak_check=leak_result_payload,
+            merged_policy=(
+                merged_policy.model_copy(deep=True)
+                if merged_policy is not None
+                else None
+            ),
         )
         self._pending_actions[confirmation_id] = pending
         self._pending_by_session.setdefault(session_id, []).append(confirmation_id)
@@ -1155,6 +1266,12 @@ class HandlerImplementation(
                     if isinstance(preflight_action_payload, dict)
                     else None
                 )
+                merged_policy_payload = item.get("merged_policy")
+                merged_policy = (
+                    ToolExecutionPolicy.model_validate(merged_policy_payload)
+                    if isinstance(merged_policy_payload, dict)
+                    else None
+                )
                 execute_after_raw = str(item.get("execute_after", "")).strip()
                 execute_after = (
                     datetime.fromisoformat(execute_after_raw) if execute_after_raw else None
@@ -1180,6 +1297,7 @@ class HandlerImplementation(
                     safe_preview=str(item.get("safe_preview", "")),
                     warnings=[str(value) for value in item.get("warnings", [])],
                     leak_check=dict(item.get("leak_check", {})),
+                    merged_policy=merged_policy,
                     status=str(item.get("status", "pending")),
                     status_reason=str(item.get("status_reason", "")),
                 )
@@ -1481,114 +1599,15 @@ class HandlerImplementation(
                 ),
             )
 
-        if tool_name == "web.search":
-            search_payload = self._web_toolkit.search(
-                query=str(arguments.get("query", "")),
-                limit=int(arguments.get("limit", 5)),
-            )
+        structured_handler = HandlerImplementation._structured_tool_registry().get(
+            str(tool_name)
+        )
+        if structured_handler is not None:
+            payload_builder, default_error = structured_handler
+            structured_payload = payload_builder(self, arguments)
             return await _execute_structured_payload_tool(
-                search_payload,
-                default_error="web_search_failed",
-            )
-
-        if tool_name == "web.fetch":
-            raw_max_bytes = arguments.get("max_bytes")
-            max_bytes = int(raw_max_bytes) if raw_max_bytes is not None else None
-            fetch_payload = self._web_toolkit.fetch(
-                url=str(arguments.get("url", "")),
-                snapshot=bool(arguments.get("snapshot", False)),
-                max_bytes=max_bytes,
-            )
-            return await _execute_structured_payload_tool(
-                fetch_payload,
-                default_error="web_fetch_failed",
-            )
-
-        if tool_name == "realitycheck.search":
-            realitycheck_payload = self._realitycheck_toolkit.search(
-                query=str(arguments.get("query", "")),
-                limit=int(arguments.get("limit", 5)),
-                mode=str(arguments.get("mode", "auto")),
-            )
-            return await _execute_structured_payload_tool(
-                realitycheck_payload,
-                default_error="realitycheck_search_failed",
-            )
-
-        if tool_name == "realitycheck.read":
-            raw_max_bytes = arguments.get("max_bytes")
-            max_bytes = int(raw_max_bytes) if raw_max_bytes is not None else None
-            realitycheck_payload = self._realitycheck_toolkit.read_source(
-                path=str(arguments.get("path", "")),
-                max_bytes=max_bytes,
-            )
-            return await _execute_structured_payload_tool(
-                realitycheck_payload,
-                default_error="realitycheck_read_failed",
-            )
-
-        if tool_name == "fs.list":
-            fs_list_payload = self._fs_git_toolkit.list_dir(
-                path=str(arguments.get("path", ".")),
-                recursive=bool(arguments.get("recursive", False)),
-                limit=int(arguments.get("limit", 200)),
-            )
-            return await _execute_structured_payload_tool(
-                fs_list_payload,
-                default_error="fs_list_failed",
-            )
-
-        if tool_name == "fs.read":
-            raw_max_bytes = arguments.get("max_bytes")
-            max_bytes = int(raw_max_bytes) if raw_max_bytes is not None else None
-            fs_read_payload = self._fs_git_toolkit.read_file(
-                path=str(arguments.get("path", "")),
-                max_bytes=max_bytes,
-            )
-            return await _execute_structured_payload_tool(
-                fs_read_payload,
-                default_error="fs_read_failed",
-            )
-
-        if tool_name == "fs.write":
-            fs_write_payload = self._fs_git_toolkit.write_file(
-                path=str(arguments.get("path", "")),
-                content=str(arguments.get("content", "")),
-                confirm=bool(arguments.get("confirm", False)),
-            )
-            return await _execute_structured_payload_tool(
-                fs_write_payload,
-                default_error="fs_write_failed",
-            )
-
-        if tool_name == "git.status":
-            git_status_payload = self._fs_git_toolkit.git_status(
-                repo_path=str(arguments.get("repo_path", ".")),
-            )
-            return await _execute_structured_payload_tool(
-                git_status_payload,
-                default_error="git_status_failed",
-            )
-
-        if tool_name == "git.diff":
-            git_diff_payload = self._fs_git_toolkit.git_diff(
-                repo_path=str(arguments.get("repo_path", ".")),
-                ref=str(arguments.get("ref", "")),
-                max_lines=int(arguments.get("max_lines", 400)),
-            )
-            return await _execute_structured_payload_tool(
-                git_diff_payload,
-                default_error="git_diff_failed",
-            )
-
-        if tool_name == "git.log":
-            git_log_payload = self._fs_git_toolkit.git_log(
-                repo_path=str(arguments.get("repo_path", ".")),
-                limit=int(arguments.get("limit", 20)),
-            )
-            return await _execute_structured_payload_tool(
-                git_log_payload,
-                default_error="git_log_failed",
+                structured_payload,
+                default_error=default_error,
             )
 
         if tool is None:
@@ -1661,6 +1680,27 @@ class HandlerImplementation(
             else None,
             sandbox_result=sandbox_result,
         )
+
+    @staticmethod
+    def _structured_tool_registry() -> dict[
+        str,
+        tuple[Callable[[Any, Mapping[str, Any]], Mapping[str, Any]], str],
+    ]:
+        return {
+            "web.search": (_structured_web_search, "web_search_failed"),
+            "web.fetch": (_structured_web_fetch, "web_fetch_failed"),
+            "realitycheck.search": (
+                _structured_realitycheck_search,
+                "realitycheck_search_failed",
+            ),
+            "realitycheck.read": (_structured_realitycheck_read, "realitycheck_read_failed"),
+            "fs.list": (_structured_fs_list, "fs_list_failed"),
+            "fs.read": (_structured_fs_read, "fs_read_failed"),
+            "fs.write": (_structured_fs_write, "fs_write_failed"),
+            "git.status": (_structured_git_status, "git_status_failed"),
+            "git.diff": (_structured_git_diff, "git_diff_failed"),
+            "git.log": (_structured_git_log, "git_log_failed"),
+        }
 
     def _sanitize_tool_output_text(self, raw: str) -> str:
         if not raw:

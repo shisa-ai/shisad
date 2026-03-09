@@ -110,6 +110,7 @@ class _ConfirmationImplHarness(ConfirmationImplMixin):
         )
         self._control_plane = _ControlPlaneRecorder()
         self._confirmation_analytics = SimpleNamespace(record=lambda **_kwargs: None)
+        self.execution_merged_policies: list[object | None] = []
 
     async def _noop_publish(self, _event: object) -> None:
         return None
@@ -140,8 +141,10 @@ class _ConfirmationImplHarness(ConfirmationImplMixin):
         capabilities: set[Capability],
         approval_actor: str,
         execution_action: object | None = None,
+        merged_policy: object | None = None,
     ) -> object:
         _ = (sid, user_id, tool_name, arguments, capabilities, approval_actor, execution_action)
+        self.execution_merged_policies.append(merged_policy)
         return SimpleNamespace(success=True, checkpoint_id=None)
 
     @staticmethod
@@ -222,6 +225,21 @@ async def test_m1_pf11_confirmation_accepts_valid_nonce_and_rejects_missing_nonc
     missing = await harness.do_action_confirm({"confirmation_id": "c-1"})
     assert missing["confirmed"] is False
     assert missing["reason"] == "missing_decision_nonce"
+
+
+@pytest.mark.asyncio
+async def test_m1_d11_confirmation_reuses_pending_merged_policy_snapshot() -> None:
+    harness = _ConfirmationImplHarness()
+    pending = _pending_action(nonce="expected")
+    pending.merged_policy = SimpleNamespace(snapshot="queue-time")
+    harness._pending_actions["c-1"] = pending
+
+    result = await harness.do_action_confirm(
+        {"confirmation_id": "c-1", "decision_nonce": "expected"}
+    )
+
+    assert result["confirmed"] is True
+    assert harness.execution_merged_policies == [pending.merged_policy]
 
 
 @pytest.mark.asyncio

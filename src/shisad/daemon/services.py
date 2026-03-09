@@ -62,6 +62,7 @@ from shisad.security.policy import PolicyLoader
 from shisad.security.provenance import SecurityAssetManifest, load_manifest, verify_assets
 from shisad.security.ratelimit import RateLimitConfig, RateLimiter
 from shisad.security.risk import RiskCalibrator
+from shisad.selfmod import SelfModificationManager
 from shisad.skills.manager import SkillManager
 
 logger = logging.getLogger(__name__)
@@ -140,6 +141,7 @@ class DaemonServices:
     memory_manager: MemoryManager
     scheduler: SchedulerManager
     skill_manager: SkillManager
+    selfmod_manager: SelfModificationManager
     realitycheck_toolkit: RealityCheckToolkit
     realitycheck_status: dict[str, Any]
     lockdown_manager: LockdownManager
@@ -324,10 +326,6 @@ class DaemonServices:
                 audit_hook=event_wiring.audit_memory_event,
             )
             scheduler = SchedulerManager(storage_dir=config.data_dir / "tasks")
-            skill_manager = SkillManager(
-                storage_dir=config.data_dir / "skills",
-                policy=policy_loader.policy.skills,
-            )
             realitycheck_domains = [
                 item
                 for item in config.realitycheck_allowed_domains
@@ -440,6 +438,19 @@ class DaemonServices:
                 tool_registry=registry,
                 schema_strict_mode=bool(model_config.planner_schema_strict_mode),
             )
+            skill_manager = SkillManager(
+                storage_dir=config.data_dir / "skills",
+                policy=policy_loader.policy.skills,
+                tool_registry=registry,
+            )
+            selfmod_manager = SelfModificationManager(
+                root=config.data_dir / "selfmod",
+                allowed_signers_path=config.selfmod_allowed_signers_path,
+                skill_manager=skill_manager,
+                planner=planner,
+                default_persona_tone=config.assistant_persona_tone,
+                default_persona_text=config.assistant_persona_custom_text,
+            )
             shutdown_event = asyncio.Event()
             planner_model_id = planner_route.model_id
             model_routes = {
@@ -484,6 +495,7 @@ class DaemonServices:
                 memory_manager=memory_manager,
                 scheduler=scheduler,
                 skill_manager=skill_manager,
+                selfmod_manager=selfmod_manager,
                 realitycheck_toolkit=realitycheck_toolkit,
                 realitycheck_status=realitycheck_status,
                 lockdown_manager=lockdown_manager,

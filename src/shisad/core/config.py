@@ -23,6 +23,10 @@ from shisad.core.providers.capabilities import (
 from shisad.core.providers.http_headers import validate_auth_header_name, validate_extra_headers
 
 
+def _default_selfmod_allowed_signers_path() -> Path:
+    return Path(__file__).resolve().parents[3] / "config" / "selfmod" / "allowed_signers"
+
+
 class DaemonConfig(BaseSettings):
     """Daemon process configuration."""
 
@@ -40,6 +44,10 @@ class DaemonConfig(BaseSettings):
     policy_path: Path = Field(
         default=Path("/etc/shisad/policy.yaml"),
         description="Path to the trusted policy bundle",
+    )
+    selfmod_allowed_signers_path: Path = Field(
+        default_factory=_default_selfmod_allowed_signers_path,
+        description="Path to the trusted SSH allowed_signers file for self-mod artifacts.",
     )
 
     # Runtime

@@ -120,6 +120,22 @@ class _StructuredBranchHarness:
         return raw
 
 
+def test_m1_rf014_structured_tool_registry_lists_expected_handlers() -> None:
+    registry = HandlerImplementation._structured_tool_registry()  # type: ignore[attr-defined]
+    assert {
+        "web.search",
+        "web.fetch",
+        "realitycheck.search",
+        "realitycheck.read",
+        "fs.list",
+        "fs.read",
+        "fs.write",
+        "git.status",
+        "git.diff",
+        "git.log",
+    }.issubset(set(registry))
+
+
 @pytest.mark.asyncio
 async def test_m7_impl_web_search_branch_records_success_with_structured_helper() -> None:
     harness = _StructuredBranchHarness(

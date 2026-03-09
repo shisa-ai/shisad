@@ -74,6 +74,13 @@ class ToolRegistry:
         """Check if a tool is registered."""
         return canonical_tool_name_typed(name) in self._tools
 
+    def unregister(self, name: ToolName) -> bool:
+        """Remove a tool definition if present."""
+        canonical_name = canonical_tool_name_typed(name)
+        removed = self._tools.pop(canonical_name, None)
+        self._expected_hashes.pop(canonical_name, None)
+        return removed is not None
+
     def validate_call(self, name: ToolName, arguments: dict[str, Any]) -> list[str]:
         """Validate a tool call's arguments against the tool's schema.
 

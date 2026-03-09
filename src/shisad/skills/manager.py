@@ -8,6 +8,9 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from shisad.core.tools.registry import ToolRegistry
+from shisad.core.tools.schema import ToolDefinition
+from shisad.core.types import Capability, ToolName
 from shisad.security.policy import SkillPolicy
 from shisad.skills.analyzer import (
     CapabilityInferenceAnalyzer,
@@ -56,6 +59,7 @@ class SkillManager:
         policy: SkillPolicy | None = None,
         keyring: KeyRing | None = None,
         llm_analyzer: LlmSkillAnalyzer | None = None,
+        tool_registry: ToolRegistry | None = None,
     ) -> None:
         self._storage_dir = storage_dir
         self._storage_dir.mkdir(parents=True, exist_ok=True)
@@ -63,6 +67,7 @@ class SkillManager:
         self._policy = policy or SkillPolicy()
         self._keyring = keyring or KeyRing()
         self._llm_analyzer = llm_analyzer
+        self._tool_registry = tool_registry
         self._dangerous = DangerousPatternAnalyzer(
             yara_rules_dir=Path(__file__).resolve().parents[1] / "security" / "rules" / "yara"
         )
@@ -74,6 +79,8 @@ class SkillManager:
             config_root=self._storage_dir.parent,
         )
         self._inventory = self._load_inventory()
+        self._skill_tool_map: dict[str, list[ToolName]] = {}
+        self._register_inventory_tools()
 
     def review(self, skill_path: Path) -> dict[str, Any]:
         bundle = load_skill_bundle(
@@ -188,15 +195,7 @@ class SkillManager:
                 artifact_state=ArtifactState.REVIEW,
             )
 
-        self._inventory[bundle.manifest.name] = InstalledSkill(
-            name=bundle.manifest.name,
-            version=bundle.manifest.version,
-            path=str(skill_path),
-            manifest_hash=bundle.manifest.manifest_hash(),
-            state=ArtifactState.PUBLISHED,
-            author=bundle.manifest.author,
-        )
-        self._persist_inventory()
+        self.activate_bundle(skill_path)
         return SkillInstallDecision(
             allowed=True,
             status="installed",
@@ -235,8 +234,37 @@ class SkillManager:
         updated = installed.model_copy(update={"state": ArtifactState.REVOKED})
         self._inventory[skill_name] = updated
         self._persist_inventory()
+        self._unregister_skill_tools(skill_name)
         _ = reason
         return updated
+
+    def activate_bundle(
+        self,
+        skill_path: Path,
+        *,
+        state: ArtifactState = ArtifactState.PUBLISHED,
+    ) -> InstalledSkill | None:
+        bundle = load_skill_bundle(
+            skill_path,
+            allowed_dependency_sources=set(self._policy.dependency_source_allowlist),
+        )
+        self._unregister_skill_tools(bundle.manifest.name)
+        installed = InstalledSkill(
+            name=bundle.manifest.name,
+            version=bundle.manifest.version,
+            path=str(skill_path),
+            manifest_hash=bundle.manifest.manifest_hash(),
+            state=state,
+            author=bundle.manifest.author,
+        )
+        self._inventory[bundle.manifest.name] = installed
+        self._persist_inventory()
+        if state == ArtifactState.PUBLISHED:
+            self._register_skill_tools(bundle.manifest)
+        return installed
+
+    def tool_names_for_skill(self, skill_name: str) -> list[str]:
+        return [str(name) for name in self._skill_tool_map.get(skill_name, [])]
 
     def authorize_runtime(
         self,
@@ -300,6 +328,51 @@ class SkillManager:
                 continue
         return bundles
 
+    def _register_inventory_tools(self) -> None:
+        if self._tool_registry is None:
+            return
+        for installed in self._inventory.values():
+            if installed.state != ArtifactState.PUBLISHED:
+                continue
+            path = Path(installed.path)
+            if not path.exists():
+                continue
+            try:
+                bundle = load_skill_bundle(
+                    path,
+                    allowed_dependency_sources=set(self._policy.dependency_source_allowlist),
+                )
+            except (FileNotFoundError, OSError, TypeError, ValueError):
+                continue
+            self._register_skill_tools(bundle.manifest)
+
+    def _register_skill_tools(self, manifest: Any) -> list[ToolName]:
+        if self._tool_registry is None:
+            return []
+        required_caps = _skill_tool_capabilities(manifest)
+        registered: list[ToolName] = []
+        for declared_tool in getattr(manifest, "tools", []):
+            tool_name = ToolName(f"skill.{manifest.name}.{declared_tool.name}")
+            tool_def = ToolDefinition(
+                name=tool_name,
+                description=declared_tool.description,
+                parameters=list(declared_tool.parameters),
+                capabilities_required=sorted(required_caps, key=str),
+                destinations=list(declared_tool.destinations),
+                require_confirmation=bool(declared_tool.require_confirmation),
+            )
+            self._tool_registry.register(tool_def)
+            registered.append(tool_name)
+        self._skill_tool_map[manifest.name] = registered
+        return registered
+
+    def _unregister_skill_tools(self, skill_name: str) -> None:
+        if self._tool_registry is None:
+            return
+        for tool_name in self._skill_tool_map.get(skill_name, []):
+            self._tool_registry.unregister(tool_name)
+        self._skill_tool_map.pop(skill_name, None)
+
 
 def _risk_score(findings: list[Finding]) -> float:
     if not findings:
@@ -325,3 +398,17 @@ def _max_severity(findings: list[Finding]) -> FindingSeverity:
         if severity in found:
             return severity
     return FindingSeverity.LOW
+
+
+def _skill_tool_capabilities(manifest: Any) -> set[Capability]:
+    capabilities: set[Capability] = set()
+    if getattr(manifest.capabilities, "network", []):
+        capabilities.add(Capability.HTTP_REQUEST)
+    filesystem_caps = list(getattr(manifest.capabilities, "filesystem", []))
+    if filesystem_caps:
+        capabilities.add(Capability.FILE_READ)
+    if any(getattr(item, "access", "") == "read-write" for item in filesystem_caps):
+        capabilities.add(Capability.FILE_WRITE)
+    if getattr(manifest.capabilities, "shell", []):
+        capabilities.add(Capability.SHELL_EXEC)
+    return capabilities

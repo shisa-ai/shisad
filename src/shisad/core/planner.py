@@ -137,6 +137,18 @@ class Planner:
         # callers; daemon runtime wiring sets this from model config (default enabled).
         self._schema_strict_mode = bool(schema_strict_mode)
 
+    def set_persona_defaults(
+        self,
+        *,
+        tone: str,
+        custom_text: str,
+    ) -> None:
+        """Update trusted default persona overlays without rebuilding the planner."""
+        normalized = self._normalize_persona_tone(tone)
+        if normalized is not None:
+            self._persona_tone = normalized
+        self._custom_persona_text = custom_text.strip()
+
     async def propose(
         self,
         user_content: str,

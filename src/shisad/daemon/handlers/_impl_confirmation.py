@@ -232,6 +232,7 @@ class ConfirmationImplMixin(HandlerMixinBase):
             capabilities=set(pending.capabilities),
             approval_actor="human_confirmation",
             execution_action=pending_preflight_action,
+            merged_policy=pending.merged_policy,
         )
         success = execution_result.success
         checkpoint_id = execution_result.checkpoint_id

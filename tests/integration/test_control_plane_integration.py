@@ -694,6 +694,101 @@ async def test_m5_rt1_tool_execute_stage2_upgrade_requires_confirmation_gate(
 
 
 @pytest.mark.asyncio
+async def test_m1_d11_confirmation_replay_uses_persisted_merged_policy_snapshot_across_restart(
+    model_env: None,
+    tmp_path: Path,
+) -> None:
+    daemon_task, client = await _start_daemon_with_policy(
+        tmp_path,
+        policy={
+            "version": "1",
+            "default_deny": False,
+            "default_require_confirmation": False,
+            "default_capabilities": ["file.read", "memory.read"],
+        },
+    )
+    try:
+        created = await client.call("session.create", {"channel": "cli"})
+        sid = created["session_id"]
+
+        queued = await client.call(
+            "tool.execute",
+            {
+                "session_id": sid,
+                "tool_name": "http_request",
+                "command": [sys.executable, "-c", "print('snapshot-ok')"],
+                "network_urls": ["https://example.com/upload"],
+                "network": {
+                    "allow_network": True,
+                    "allowed_domains": ["example.com"],
+                    "deny_private_ranges": True,
+                    "deny_ip_literals": True,
+                },
+                "degraded_mode": "fail_open",
+                "security_critical": False,
+            },
+        )
+
+        assert queued["allowed"] is False
+        assert queued["confirmation_required"] is True
+        confirmation_id = str(queued["confirmation_id"])
+        assert confirmation_id
+    finally:
+        await _shutdown(daemon_task, client)
+
+    (tmp_path / "policy.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "version": "1",
+                "default_deny": False,
+                "default_require_confirmation": False,
+                "default_capabilities": ["file.read", "memory.read"],
+                "sandbox": {
+                    "tool_overrides": {
+                        "http.request": {
+                            "network": {
+                                "allow_network": True,
+                                "allowed_domains": ["other.example"],
+                                "deny_private_ranges": True,
+                                "deny_ip_literals": True,
+                            }
+                        }
+                    }
+                },
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+
+    daemon_task, client = await _start_daemon_with_policy(tmp_path)
+    try:
+        pending = await client.call(
+            "action.pending",
+            {"session_id": sid, "status": "pending", "limit": 20},
+        )
+        row = next(
+            item
+            for item in pending["actions"]
+            if item["confirmation_id"] == confirmation_id
+        )
+
+        confirmed = await client.call(
+            "action.confirm",
+            {
+                "confirmation_id": confirmation_id,
+                "decision_nonce": row["decision_nonce"],
+                "reason": "operator_approved",
+            },
+        )
+
+        assert confirmed["confirmed"] is True
+        assert confirmed["status"] == "approved"
+    finally:
+        await _shutdown(daemon_task, client)
+
+
+@pytest.mark.asyncio
 async def test_m5_rt2_policy_explain_includes_control_plane_section(
     model_env: None,
     tmp_path: Path,

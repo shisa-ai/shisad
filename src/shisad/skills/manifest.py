@@ -11,6 +11,8 @@ from typing import Any
 import yaml
 from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 
+from shisad.core.tools.schema import ToolParameter
+
 _SEMVER_RE = re.compile(
     r"^(?P<major>0|[1-9]\d*)\.(?P<minor>0|[1-9]\d*)\.(?P<patch>0|[1-9]\d*)"
     r"(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$"
@@ -105,6 +107,24 @@ class SkillDependency(BaseModel):
         return normalized
 
 
+class SkillToolDeclaration(BaseModel):
+    name: str
+    description: str
+    parameters: list[ToolParameter] = Field(default_factory=list)
+    require_confirmation: bool = False
+    destinations: list[str] = Field(default_factory=list)
+
+    @field_validator("name")
+    @classmethod
+    def _validate_name(cls, value: str) -> str:
+        candidate = value.strip()
+        if not candidate:
+            raise ValueError("tool name must not be empty")
+        if "." in candidate:
+            raise ValueError("skill tool names must be local names, not namespaced ids")
+        return candidate
+
+
 class SkillManifest(BaseModel):
     """Canonical skill manifest."""
 
@@ -117,6 +137,7 @@ class SkillManifest(BaseModel):
     description: str = ""
     capabilities: SkillCapabilities
     dependencies: list[SkillDependency] = Field(default_factory=list)
+    tools: list[SkillToolDeclaration] = Field(default_factory=list)
 
     @field_validator("version", "manifest_version")
     @classmethod

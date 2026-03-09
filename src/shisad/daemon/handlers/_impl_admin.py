@@ -7,6 +7,7 @@ import logging
 import uuid
 from collections.abc import Mapping
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any, cast
 
 from shisad.channels.base import ChannelMessage, DeliveryTarget
@@ -93,6 +94,7 @@ class AdminImplMixin(HandlerMixinBase):
                 "connect_path": self._sandbox.connect_path_status(),
                 "browser": self._browser_sandbox.policy.model_dump(mode="json"),
             },
+            "selfmod": self._selfmod_manager.status(),
             "realitycheck": self._realitycheck_toolkit.doctor_status(),
             "provenance": self._provenance_status,
         }
@@ -131,6 +133,31 @@ class AdminImplMixin(HandlerMixinBase):
         _ = params
         self._shutdown_event.set()
         return {"status": "shutting_down"}
+
+    async def do_admin_selfmod_propose(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        artifact_path = Path(str(params.get("artifact_path", "")).strip())
+        if not str(artifact_path):
+            raise ValueError("artifact_path is required")
+        proposal = self._selfmod_manager.propose(artifact_path)
+        return cast(dict[str, Any], proposal.model_dump(mode="json"))
+
+    async def do_admin_selfmod_apply(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        proposal_id = str(params.get("proposal_id", "")).strip()
+        if not proposal_id:
+            raise ValueError("proposal_id is required")
+        result = self._selfmod_manager.apply(
+            proposal_id,
+            confirm=bool(params.get("confirm", False)),
+        )
+        return cast(dict[str, Any], result.model_dump(mode="json"))
+
+    async def do_admin_selfmod_rollback(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        change_id = str(params.get("change_id", "")).strip()
+        if not change_id:
+            raise ValueError("change_id is required")
+        result = self._selfmod_manager.rollback(change_id)
+        return cast(dict[str, Any], result.model_dump(mode="json"))
+
     async def do_doctor_check(self, params: Mapping[str, Any]) -> dict[str, Any]:
         component = str(params.get("component", "all")).strip().lower() or "all"
         component_factories = {

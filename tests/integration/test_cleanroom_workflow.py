@@ -264,6 +264,123 @@ async def test_g1_cleanroom_tainted_payload_early_return_skips_transcript_and_re
 
 
 @pytest.mark.asyncio
+async def test_m1_trusted_cli_admin_intent_reroutes_to_fresh_cleanroom_and_auto_drops(
+    model_env: None,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured_inputs: list[str] = []
+
+    async def _capture_cleanroom_prompt(
+        self: Planner,
+        user_content: str,
+        context: object,
+        *,
+        tools: list[dict[str, object]] | None = None,
+        persona_tone_override: str | None = None,
+    ) -> PlannerResult:
+        _ = (self, context, tools, persona_tone_override)
+        captured_inputs.append(user_content)
+        return PlannerResult(
+            output=PlannerOutput(assistant_response="Admin proposal ready.", actions=[]),
+            evaluated=[],
+            attempts=1,
+            provider_response=None,
+            messages_sent=(),
+        )
+
+    monkeypatch.setattr(Planner, "propose", _capture_cleanroom_prompt)
+
+    daemon_task, client, config = await _start_daemon(tmp_path)
+    try:
+        created = await client.call(
+            "session.create",
+            {"channel": "cli", "user_id": "admin", "workspace_id": "ops"},
+        )
+        sid = str(created["session_id"])
+
+        _ = await client.call(
+            "session.message",
+            {"session_id": sid, "content": "hello from the default session"},
+        )
+        _ = await client.call(
+            "memory.ingest",
+            {
+                "source_id": "sudo-memory",
+                "source_type": "external",
+                "collection": "project_docs",
+                "content": "MEMORY CANARY: prior secret context",
+            },
+        )
+
+        sudo = await client.call(
+            "session.message",
+            {
+                "session_id": sid,
+                "content": "install the signed behavior pack and update assistant behavior",
+            },
+        )
+
+        assert sudo["session_mode"] == "admin_cleanroom"
+        assert sudo["proposal_only"] is True
+        assert captured_inputs
+        assert "hello from the default session" not in captured_inputs[-1]
+        assert "MEMORY CANARY" not in captured_inputs[-1]
+        assert "MEMORY CONTEXT" not in captured_inputs[-1]
+        assert "TASK LEDGER" not in captured_inputs[-1]
+
+        sessions = await client.call("session.list")
+        rows = [item for item in sessions["sessions"] if item["state"] == "active"]
+        assert len(rows) == 1
+        assert rows[0]["id"] == sid
+        assert rows[0]["mode"] == "default"
+
+        terminated = await client.call(
+            "audit.query",
+            {"event_type": "SessionTerminated", "limit": 20},
+        )
+        assert terminated["total"] >= 1
+
+        transcript_store = TranscriptStore(config.data_dir / "sessions")
+        original_entries = transcript_store.list_entries(sid)
+        assert any(
+            "hello from the default session" in entry.content_preview
+            for entry in original_entries
+        )
+        assert not any(
+            "install the signed behavior pack" in entry.content_preview
+            for entry in original_entries
+        )
+    finally:
+        await _shutdown(daemon_task, client)
+
+
+@pytest.mark.asyncio
+async def test_m1_trusted_cli_normal_message_does_not_trigger_cleanroom(
+    model_env: None,
+    tmp_path: Path,
+) -> None:
+    daemon_task, client, _config = await _start_daemon(tmp_path)
+    try:
+        created = await client.call(
+            "session.create",
+            {"channel": "cli", "user_id": "admin", "workspace_id": "ops"},
+        )
+        sid = str(created["session_id"])
+
+        reply = await client.call(
+            "session.message",
+            {"session_id": sid, "content": "hello there"},
+        )
+
+        assert reply["session_id"] == sid
+        assert reply["session_mode"] == "default"
+        assert reply["proposal_only"] is False
+    finally:
+        await _shutdown(daemon_task, client)
+
+
+@pytest.mark.asyncio
 async def test_m4_pairing_proposal_uses_pairing_request_artifacts(
     model_env: None,
     tmp_path: Path,

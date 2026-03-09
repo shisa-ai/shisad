@@ -723,6 +723,7 @@ class ActionPendingEntry(BaseModel):
     leak_check: dict[str, Any] = Field(default_factory=dict)
     status_reason: str | None = None
     preflight_action: dict[str, Any] | None = None
+    merged_policy: dict[str, Any] | None = None
 
 
 class ActionPendingResult(BaseModel):
@@ -764,6 +765,54 @@ class PolicyExplainResult(BaseModel):
     contributors: dict[str, str] = Field(default_factory=dict)
 
 
+class AdminSelfModProposeParams(_StrictParams):
+    artifact_path: str
+
+
+class AdminSelfModApplyParams(_StrictParams):
+    proposal_id: str
+    confirm: bool = False
+
+
+class AdminSelfModRollbackParams(_StrictParams):
+    change_id: str
+
+
+class AdminSelfModProposeResult(BaseModel):
+    proposal_id: str
+    artifact_type: str
+    name: str
+    version: str
+    artifact_path: str
+    valid: bool
+    warnings: list[str] = Field(default_factory=list)
+    capability_diff: dict[str, Any] = Field(default_factory=dict)
+    signer: str = ""
+    reason: str = ""
+
+
+class AdminSelfModApplyResult(BaseModel):
+    applied: bool
+    proposal_id: str = ""
+    change_id: str = ""
+    requires_confirmation: bool = False
+    warnings: list[str] = Field(default_factory=list)
+    capability_diff: dict[str, Any] = Field(default_factory=dict)
+    active_version: str = ""
+    tool_names: list[str] = Field(default_factory=list)
+    reason: str = ""
+
+
+class AdminSelfModRollbackResult(BaseModel):
+    rolled_back: bool
+    change_id: str = ""
+    artifact_type: str = ""
+    name: str = ""
+    restored_version: str = ""
+    active_version: str = ""
+    reason: str = ""
+
+
 class DaemonStatusResult(BaseModel):
     status: str
     sessions_active: int = 0
@@ -778,6 +827,7 @@ class DaemonStatusResult(BaseModel):
     channels: dict[str, Any] = Field(default_factory=dict)
     delivery: dict[str, Any] = Field(default_factory=dict)
     executors: dict[str, Any] = Field(default_factory=dict)
+    selfmod: dict[str, Any] = Field(default_factory=dict)
     realitycheck: dict[str, Any] = Field(default_factory=dict)
     provenance: dict[str, Any] = Field(default_factory=dict)
 

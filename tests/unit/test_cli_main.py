@@ -111,6 +111,36 @@ def test_cli_commands_route_through_rpc_wrapper(
             "config_patch": {},
             "applied": False,
         },
+        "admin.selfmod.propose": {
+            "proposal_id": "selfmod-proposal-1",
+            "artifact_type": "skill_bundle",
+            "name": "calendar-helper",
+            "version": "1.0.0",
+            "artifact_path": str(skill_path),
+            "valid": True,
+            "warnings": ["new_tool_surface"],
+            "capability_diff": {"added": {"tools": ["skill.calendar-helper.lookup"]}},
+            "reason": "",
+        },
+        "admin.selfmod.apply": {
+            "applied": True,
+            "proposal_id": "selfmod-proposal-1",
+            "change_id": "change-1",
+            "requires_confirmation": False,
+            "warnings": ["new_tool_surface"],
+            "capability_diff": {"added": {"tools": ["skill.calendar-helper.lookup"]}},
+            "active_version": "1.0.0",
+            "reason": "",
+        },
+        "admin.selfmod.rollback": {
+            "rolled_back": True,
+            "change_id": "change-1",
+            "artifact_type": "skill_bundle",
+            "name": "calendar-helper",
+            "restored_version": "0.9.0",
+            "active_version": "0.9.0",
+            "reason": "",
+        },
         "dashboard.audit_explorer": {
             "events": [
                 {
@@ -301,6 +331,18 @@ def test_cli_commands_route_through_rpc_wrapper(
         ["lockdown", "set", "s-1", "--action", "quarantine", "--reason", "manual"],
     )
     _invoke_ok(runner, ["channel", "pairing-propose", "--limit", "5"])
+    assert "selfmod-proposal-1" in _invoke_ok(
+        runner,
+        ["admin", "selfmod", "propose", str(skill_path)],
+    ).output
+    assert "change-1" in _invoke_ok(
+        runner,
+        ["admin", "selfmod", "apply", "selfmod-proposal-1", "--yes"],
+    ).output
+    assert "restored_version=0.9.0" in _invoke_ok(
+        runner,
+        ["admin", "selfmod", "rollback", "change-1"],
+    ).output
     assert "hash_chain valid=True checked=1" in _invoke_ok(
         runner,
         ["dashboard", "audit", "--limit", "1"],
@@ -424,6 +466,12 @@ def test_cli_commands_route_through_rpc_wrapper(
     assert ("doctor.check", {"component": "realitycheck"}) in calls
     assert ("realitycheck.read", {"path": "sources/a.md", "max_bytes": 64}) in calls
     assert ("dashboard.alerts", {"limit": 1}) in calls
+    assert ("admin.selfmod.propose", {"artifact_path": str(skill_path)}) in calls
+    assert (
+        "admin.selfmod.apply",
+        {"proposal_id": "selfmod-proposal-1", "confirm": True},
+    ) in calls
+    assert ("admin.selfmod.rollback", {"change_id": "change-1"}) in calls
 
 
 def test_events_subscribe_uses_rpc_run_wrapper(

@@ -26,6 +26,9 @@ from shisad.core.api.schema import (
     ActionConfirmResult,
     ActionPendingResult,
     ActionRejectResult,
+    AdminSelfModApplyResult,
+    AdminSelfModProposeResult,
+    AdminSelfModRollbackResult,
     ChannelPairingProposalResult,
     ConfirmationMetricsResult,
     DaemonShutdownResult,
@@ -491,6 +494,90 @@ def doctor_check(component: str) -> None:
         response_model=DoctorCheckResult,
     )
     click.echo(_dump_model(result))
+
+
+@cli.group()
+def admin() -> None:
+    """Administrative workflows."""
+
+
+@admin.group("selfmod")
+def admin_selfmod() -> None:
+    """Signed self-modification artifact controls."""
+
+
+@admin_selfmod.command("propose")
+@click.argument("artifact_path", type=click.Path(exists=True, path_type=Path))
+def admin_selfmod_propose(artifact_path: Path) -> None:
+    """Inspect and stage a signed artifact proposal."""
+    config = _get_config()
+    result = rpc_call(
+        config,
+        "admin.selfmod.propose",
+        {"artifact_path": str(artifact_path)},
+        response_model=AdminSelfModProposeResult,
+    )
+    click.echo(
+        " ".join(
+            [
+                f"proposal_id={result.proposal_id}",
+                f"artifact_type={result.artifact_type}",
+                f"name={result.name}",
+                f"version={result.version}",
+                f"valid={result.valid}",
+            ]
+        )
+    )
+
+
+@admin_selfmod.command("apply")
+@click.argument("proposal_id")
+@click.option("--yes", "confirm", is_flag=True, help="Apply immediately after preview.")
+def admin_selfmod_apply(proposal_id: str, confirm: bool) -> None:
+    """Preview or apply a staged self-modification proposal."""
+    config = _get_config()
+    result = rpc_call(
+        config,
+        "admin.selfmod.apply",
+        {"proposal_id": proposal_id, "confirm": confirm},
+        response_model=AdminSelfModApplyResult,
+    )
+    if result.applied:
+        click.echo(
+            " ".join(
+                [
+                    "applied=True",
+                    f"proposal_id={result.proposal_id}",
+                    f"change_id={result.change_id}",
+                    f"active_version={result.active_version}",
+                ]
+            )
+        )
+        return
+    click.echo(_dump_model(result))
+
+
+@admin_selfmod.command("rollback")
+@click.argument("change_id")
+def admin_selfmod_rollback(change_id: str) -> None:
+    """Rollback a previously applied self-modification change."""
+    config = _get_config()
+    result = rpc_call(
+        config,
+        "admin.selfmod.rollback",
+        {"change_id": change_id},
+        response_model=AdminSelfModRollbackResult,
+    )
+    click.echo(
+        " ".join(
+            [
+                f"rolled_back={result.rolled_back}",
+                f"change_id={result.change_id}",
+                f"restored_version={result.restored_version}",
+                f"active_version={result.active_version}",
+            ]
+        )
+    )
 
 
 # --- Session commands ---
