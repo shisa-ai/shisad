@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import textwrap
 from collections.abc import Callable
 from contextlib import suppress
@@ -48,6 +49,34 @@ async def _wait_for_task_pending_confirmation(
             return latest
         await asyncio.sleep(0.1)
     raise AssertionError(f"Timed out waiting for pending confirmation for task {task_id}: {latest}")
+
+
+async def _wait_for_confirmation_to_leave_pending(
+    client: ControlClient,
+    *,
+    task_id: str,
+    confirmation_id: str,
+    timeout: float = 4.0,
+) -> dict[str, object]:
+    end = asyncio.get_running_loop().time() + timeout
+    latest: dict[str, object] = {"task_id": task_id, "pending": [], "count": 0}
+    normalized_confirmation = confirmation_id.strip()
+    while asyncio.get_running_loop().time() < end:
+        latest = await client.call(
+            "task.pending_confirmations",
+            {"task_id": task_id},
+        )
+        if not any(
+            str(item.get("confirmation_id", "")).strip() == normalized_confirmation
+            for item in latest.get("pending", [])
+        ):
+            return latest
+        await asyncio.sleep(0.1)
+    message = (
+        "Timed out waiting for confirmation to leave pending "
+        f"for task {task_id}: {latest}"
+    )
+    raise AssertionError(message)
 
 
 def _event_reason(event: dict[str, Any]) -> str:
@@ -106,6 +135,46 @@ async def _wait_for_task_session_id(
     if not session_id:
         raise AssertionError(f"TaskTriggered missing session_id for task {task_id}: {event}")
     return session_id
+
+
+def _decision_nonce_for_confirmation(
+    *,
+    pending_actions: list[dict[str, Any]],
+    confirmation_id: str,
+) -> str:
+    for item in pending_actions:
+        if str(item.get("confirmation_id", "")) == confirmation_id:
+            return str(item.get("decision_nonce", "")).strip()
+    return ""
+
+
+async def _confirm_pending_action(
+    client: ControlClient,
+    *,
+    confirmation_id: str,
+    decision_nonce: str,
+    reason: str,
+    timeout: float = 8.0,
+) -> dict[str, Any]:
+    end = asyncio.get_running_loop().time() + timeout
+    latest: dict[str, Any] = {}
+    while asyncio.get_running_loop().time() < end:
+        latest = await client.call(
+            "action.confirm",
+            {
+                "confirmation_id": confirmation_id,
+                "decision_nonce": decision_nonce,
+                "reason": reason,
+            },
+        )
+        if str(latest.get("reason", "")) != "cooldown_active":
+            return latest
+        retry_after = float(latest.get("retry_after_seconds", 0.1) or 0.1)
+        await asyncio.sleep(max(0.05, retry_after))
+    raise AssertionError(
+        "Timed out waiting for confirmation cooldown to expire: "
+        f"{confirmation_id} latest={latest}"
+    )
 
 
 def _base_policy() -> str:
@@ -317,6 +386,135 @@ async def test_g3_due_run_with_domain_scope_mismatch_routes_to_confirmation_not_
             and bool(event.get("data", {}).get("success")) is True
             for event in executed["events"]
         )
+    finally:
+        await _shutdown_daemon(daemon_task, client)
+
+
+@pytest.mark.asyncio
+async def test_g3_due_run_allowed_recipient_mismatch_routes_to_confirmation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    daemon_task, client = await _start_daemon(tmp_path, monkeypatch)
+    try:
+        created = await client.call(
+            "task.create",
+            {
+                "name": "recipient-guard",
+                "goal": "Reminder: check deployment status",
+                "schedule": {"kind": "interval", "expression": "1s"},
+                "capability_snapshot": ["message.send"],
+                "policy_snapshot_ref": "p1",
+                "created_by": "alice",
+                "workspace_id": "ws1",
+                "allowed_recipients": ["ops-room-2"],
+                "delivery_target": {"channel": "discord", "recipient": "ops-room"},
+            },
+        )
+
+        pending = await _wait_for_task_pending_confirmation(
+            client,
+            task_id=str(created["id"]),
+        )
+        queued = pending["pending"][0]
+        confirmation_id = str(queued.get("confirmation_id", ""))
+        assert confirmation_id
+
+        action_pending = await client.call(
+            "action.pending",
+            {"status": "pending", "limit": 20},
+        )
+        pending_action = next(
+            item
+            for item in action_pending["actions"]
+            if str(item.get("confirmation_id", "")) == confirmation_id
+        )
+        assert "background:recipient_scope_mismatch" in str(pending_action.get("reason", ""))
+    finally:
+        await _shutdown_daemon(daemon_task, client)
+
+
+@pytest.mark.asyncio
+async def test_g3_task_confirmation_replay_updates_scheduler_state_and_outcome(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    daemon_task, client = await _start_daemon(tmp_path, monkeypatch)
+    try:
+        created = await client.call(
+            "task.create",
+            {
+                "name": "confirm-replay",
+                "goal": "Reminder: check deployment status",
+                "schedule": {"kind": "interval", "expression": "1s"},
+                "capability_snapshot": ["message.send"],
+                "policy_snapshot_ref": "p1",
+                "created_by": "alice",
+                "workspace_id": "ws1",
+                "allowed_recipients": ["ops-room-2"],
+                "delivery_target": {"channel": "discord", "recipient": "ops-room"},
+            },
+        )
+
+        pending = await _wait_for_task_pending_confirmation(
+            client,
+            task_id=str(created["id"]),
+        )
+        queued = pending["pending"][0]
+        confirmation_id = str(queued.get("confirmation_id", ""))
+        assert confirmation_id
+
+        action_pending = await client.call(
+            "action.pending",
+            {"status": "pending", "limit": 20},
+        )
+        decision_nonce = _decision_nonce_for_confirmation(
+            pending_actions=[dict(item) for item in action_pending["actions"]],
+            confirmation_id=confirmation_id,
+        )
+        assert decision_nonce
+
+        confirmed = await _confirm_pending_action(
+            client,
+            confirmation_id=confirmation_id,
+            decision_nonce=decision_nonce,
+            reason="approve for regression test",
+        )
+        assert confirmed["confirmed"] is False
+        assert str(confirmed.get("confirmation_id", "")) == confirmation_id
+        assert str(confirmed.get("status", "")) == "failed"
+        assert str(confirmed.get("status_reason", "")) == "approve for regression test"
+
+        remaining = await _wait_for_confirmation_to_leave_pending(
+            client,
+            task_id=str(created["id"]),
+            confirmation_id=confirmation_id,
+        )
+        assert not any(
+            str(item.get("confirmation_id", "")) == confirmation_id
+            for item in remaining["pending"]
+        )
+
+        tasks_payload = json.loads(
+            (tmp_path / "data" / "tasks" / "tasks.json").read_text(encoding="utf-8")
+        )
+        task_row = next(item for item in tasks_payload if str(item.get("id", "")) == created["id"])
+        assert int(task_row.get("failure_count", 0)) >= 1
+        assert int(task_row.get("success_count", 0)) == 0
+
+        pending_payload = json.loads(
+            (tmp_path / "data" / "tasks" / "pending_confirmations.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        rows = list(pending_payload.get(str(created["id"]), []))
+        matching = next(
+            item
+            for item in rows
+            if str(item.get("confirmation_id", "")) == confirmation_id
+        )
+        assert str(matching.get("status", "")) == "failed"
+        assert str(matching.get("status_reason", "")) == "approve for regression test"
     finally:
         await _shutdown_daemon(daemon_task, client)
 
