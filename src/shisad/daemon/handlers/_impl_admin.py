@@ -135,9 +135,10 @@ class AdminImplMixin(HandlerMixinBase):
         return {"status": "shutting_down"}
 
     async def do_admin_selfmod_propose(self, params: Mapping[str, Any]) -> dict[str, Any]:
-        artifact_path = Path(str(params.get("artifact_path", "")).strip())
-        if not str(artifact_path):
+        artifact_path_raw = str(params.get("artifact_path", "")).strip()
+        if not artifact_path_raw:
             raise ValueError("artifact_path is required")
+        artifact_path = Path(artifact_path_raw)
         proposal = self._selfmod_manager.propose(artifact_path)
         return cast(dict[str, Any], proposal.model_dump(mode="json"))
 

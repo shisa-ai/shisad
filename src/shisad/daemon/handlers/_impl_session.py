@@ -60,6 +60,7 @@ from shisad.core.types import (
     WorkspaceId,
 )
 from shisad.daemon.handlers._mixin_typing import HandlerMixinBase
+from shisad.governance.merge import PolicyMergeError
 from shisad.memory.ingestion import IngestionPipeline
 from shisad.memory.schema import MemorySource
 from shisad.security.control_plane.consensus import TRACE_VOTER_NAME
@@ -232,12 +233,20 @@ _CRC_CONFIRM_ALL_PATTERNS = {"yes to all", "confirm all", "approve all"}
 _CRC_REJECT_ALL_PATTERNS = {"no to all", "reject all", "deny all", "cancel all"}
 _CRC_CONFIRM_INDEX_RE = re.compile(r"^(?:confirm|approve|yes)\s+(\d+)$")
 _CRC_REJECT_INDEX_RE = re.compile(r"^(?:reject|deny|no)\s+(\d+)$")
-_AUTO_CLEANROOM_ADMIN_INTENT_RE = re.compile(
+_AUTO_CLEANROOM_ADMIN_ACTION_RE = re.compile(
     r"(?i)\b("
-    r"selfmod|behavior\s+pack|skill\s+bundle|signed\s+behavior|signed\s+skill|"
-    r"install\s+the\s+signed|apply\s+the\s+signed|rollback\s+the\s+signed|"
-    r"update\s+assistant\s+behavior"
+    r"install|apply|rollback|roll\s+back|update|enable|disable|activate|deactivate|"
+    r"propose|review|inspect|show|list"
     r")\b"
+)
+_AUTO_CLEANROOM_ADMIN_SUBJECT_RE = re.compile(
+    r"(?i)\b("
+    r"selfmod|behavior\s+pack|skill\s+bundle|signed\s+behavior(?:\s+pack)?|"
+    r"signed\s+skill(?:\s+bundle)?|assistant\s+behavior"
+    r")\b"
+)
+_AUTO_CLEANROOM_ADMIN_COMMAND_RE = re.compile(
+    r"(?i)\bselfmod\s+(?:propose|apply|rollback)\b"
 )
 
 
@@ -327,7 +336,15 @@ def _is_trusted_level(trust_level: str) -> bool:
 
 
 def _looks_like_admin_cleanroom_request(text: str) -> bool:
-    return _AUTO_CLEANROOM_ADMIN_INTENT_RE.search(text) is not None
+    normalized = " ".join(text.strip().split())
+    if not normalized:
+        return False
+    if _AUTO_CLEANROOM_ADMIN_COMMAND_RE.search(normalized) is not None:
+        return True
+    return (
+        _AUTO_CLEANROOM_ADMIN_ACTION_RE.search(normalized) is not None
+        and _AUTO_CLEANROOM_ADMIN_SUBJECT_RE.search(normalized) is not None
+    )
 
 
 def _normalize_assistant_tone(raw_tone: Any) -> AssistantTone | None:
@@ -2437,6 +2454,39 @@ class SessionImplMixin(HandlerMixinBase):
                     extra_warnings.append(
                         f"This action was flagged because: {amv_explanation}"
                     )
+                merged_policy = None
+                if tool_def is not None:
+                    try:
+                        merged_policy = self._build_merged_policy(
+                            tool_name=proposal.tool_name,
+                            arguments=proposal.arguments,
+                            tool_definition=tool_def,
+                        )
+                    except PolicyMergeError as exc:
+                        rejected += 1
+                        rejection_reasons_for_user.append(f"policy_merge:{exc}")
+                        await self._event_bus.publish(
+                            ToolRejected(
+                                session_id=sid,
+                                actor="policy_loop",
+                                tool_name=proposal.tool_name,
+                                reason=f"policy_merge:{exc}",
+                            )
+                        )
+                        if self._trace_recorder is not None:
+                            trace_tool_calls.append(
+                                TraceToolCall(
+                                    tool_name=str(proposal.tool_name),
+                                    arguments=dict(proposal.arguments),
+                                    pep_decision=evaluated.decision.kind.value,
+                                    monitor_decision=monitor_decision.kind.value,
+                                    control_plane_decision=cp_eval.decision.value,
+                                    final_decision="reject",
+                                    executed=False,
+                                    execution_success=None,
+                                )
+                            )
+                        continue
                 pending = self._queue_pending_action(
                     session_id=sid,
                     user_id=validated.user_id,
@@ -2446,6 +2496,7 @@ class SessionImplMixin(HandlerMixinBase):
                     reason=final_reason or "requires_confirmation",
                     capabilities=planner_context.effective_caps,
                     preflight_action=cp_eval.action,
+                    merged_policy=merged_policy,
                     taint_labels=list(planner_context.context.taint_labels),
                     extra_warnings=extra_warnings,
                 )

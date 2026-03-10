@@ -3,13 +3,30 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
-from shisad.core.planner import PlannerOutput, PlannerResult
+from shisad.core.planner import (
+    ActionProposal,
+    EvaluatedProposal,
+    PlannerOutput,
+    PlannerResult,
+)
 from shisad.core.session import Session
-from shisad.core.types import SessionId, SessionMode, SessionState, UserId, WorkspaceId
+from shisad.core.tools.schema import ToolDefinition
+from shisad.core.types import (
+    Capability,
+    PEPDecision,
+    PEPDecisionKind,
+    SessionId,
+    SessionMode,
+    SessionState,
+    ToolName,
+    UserId,
+    WorkspaceId,
+)
 from shisad.daemon.handlers._impl_session import (
     SessionImplMixin,
     SessionMessageExecutionResult,
@@ -18,7 +35,9 @@ from shisad.daemon.handlers._impl_session import (
     SessionMessageValidationResult,
     TaskDelegationRecommendation,
 )
+from shisad.security.control_plane.schema import ActionKind, ControlDecision, RiskTier
 from shisad.security.firewall import FirewallResult
+from shisad.security.monitor import MonitorDecisionType
 from shisad.security.pep import PolicyContext
 
 
@@ -204,3 +223,162 @@ async def test_g1_do_session_message_short_circuits_on_phase1_early_response() -
 
     assert harness.calls == ["validate"]
     assert result == {"session_id": "sess-g1", "response": "blocked"}
+
+
+class _PendingPolicySnapshotHarness(SessionImplMixin):
+    def __init__(self) -> None:
+        self.captured_merged_policy: object | None = None
+        self._event_bus = SimpleNamespace(publish=self._noop_publish)
+        self._monitor = SimpleNamespace(
+            evaluate=lambda **_kwargs: SimpleNamespace(
+                kind=MonitorDecisionType.APPROVE,
+                reason="",
+            )
+        )
+        self._monitor_reject_counts: dict[str, int] = {}
+        self._registry = SimpleNamespace(
+            get_tool=lambda _tool_name: ToolDefinition(
+                name=ToolName("shell.exec"),
+                description="shell",
+            )
+        )
+        self._control_plane = SimpleNamespace(evaluate_action=self._evaluate_action)
+        self._lockdown_manager = SimpleNamespace(should_block_all_actions=lambda _sid: False)
+        self._rate_limiter = SimpleNamespace(
+            evaluate=lambda **_kwargs: SimpleNamespace(
+                block=False,
+                require_confirmation=False,
+                reason="",
+            )
+        )
+        self._risk_calibrator = SimpleNamespace(record=lambda _observation: None)
+        self._trace_recorder = None
+        self._policy_loader = SimpleNamespace(
+            policy=SimpleNamespace(
+                risk_policy=SimpleNamespace(
+                    auto_approve_threshold=0.2,
+                    block_threshold=0.8,
+                )
+            )
+        )
+
+    async def _noop_publish(self, _event: object) -> None:
+        return None
+
+    async def _evaluate_action(self, **_kwargs: object) -> object:
+        return SimpleNamespace(
+            decision=ControlDecision.ALLOW,
+            reason_codes=["trace:stage2_upgrade_required"],
+            trace_result=SimpleNamespace(
+                allowed=True,
+                reason_code="",
+                risk_tier=RiskTier.MEDIUM,
+            ),
+            consensus=SimpleNamespace(votes=[]),
+            action=SimpleNamespace(
+                action_kind=ActionKind.SHELL_EXEC,
+                resource_id="shell.exec",
+                resource_ids=[],
+                origin=SimpleNamespace(model_dump=lambda mode="json": {}),
+            ),
+        )
+
+    async def _publish_control_plane_evaluation(self, **_kwargs: object) -> None:
+        return None
+
+    def _session_has_tainted_user_history(self, _sid: SessionId) -> bool:
+        return False
+
+    async def _record_monitor_reject(self, _sid: SessionId, _reason: str) -> None:
+        return None
+
+    async def _record_plan_violation(
+        self,
+        *,
+        sid: SessionId,
+        tool_name: ToolName,
+        action_kind: ActionKind,
+        reason_code: str,
+        risk_tier: RiskTier,
+    ) -> None:
+        _ = (sid, tool_name, action_kind, reason_code, risk_tier)
+        return None
+
+    def _build_merged_policy(self, **_kwargs: object) -> object:
+        return SimpleNamespace(snapshot="queue-time")
+
+    def _queue_pending_action(self, **kwargs: object) -> object:
+        self.captured_merged_policy = kwargs.get("merged_policy")
+        return SimpleNamespace(confirmation_id="c-1", reason="requires_confirmation")
+
+
+@pytest.mark.asyncio
+async def test_m1_planner_confirmation_persists_queue_time_merged_policy_snapshot() -> None:
+    harness = _PendingPolicySnapshotHarness()
+    validated = _validation_result(params={"session_id": "sess-g1", "content": "run shell"})
+    planner_context = SessionMessagePlannerContextResult(
+        validated=validated,
+        conversation_context="",
+        transcript_context_taints=set(),
+        effective_caps={Capability.SHELL_EXEC},
+        memory_query="",
+        memory_context="",
+        memory_context_taints=set(),
+        memory_context_tainted_for_amv=False,
+        user_goal_host_patterns=set(),
+        untrusted_current_turn="",
+        untrusted_host_patterns=set(),
+        policy_egress_host_patterns=set(),
+        context=PolicyContext(),
+        planner_origin="planner-origin",
+        committed_plan_hash="plan-g1",
+        active_plan_hash="plan-g1",
+        planner_tools_payload=[],
+        planner_input="planner input",
+        assistant_tone_override=None,
+    )
+    proposal = ActionProposal(
+        action_id="a-1",
+        tool_name=ToolName("shell.exec"),
+        arguments={"command": ["echo", "ok"]},
+        reasoning="Run the operator-requested command.",
+        data_sources=[],
+    )
+    planner_dispatch = SessionMessagePlannerDispatchResult(
+        planner_context=planner_context,
+        planner_result=PlannerResult(
+            output=PlannerOutput(assistant_response="Need confirmation.", actions=[proposal]),
+            evaluated=[
+                EvaluatedProposal(
+                    proposal=proposal,
+                    decision=PEPDecision(
+                        kind=PEPDecisionKind.REQUIRE_CONFIRMATION,
+                        reason="needs confirmation",
+                        tool_name=proposal.tool_name,
+                        risk_score=0.5,
+                    ),
+                )
+            ],
+            attempts=1,
+            provider_response=None,
+            messages_sent=(),
+        ),
+        planner_failure_code="",
+        trace_t0=0.0,
+        delegation_advisory=TaskDelegationRecommendation(
+            delegate=False,
+            action_count=0,
+            reason_codes=(),
+            tools=(),
+        ),
+        trace_tool_calls=[],
+    )
+
+    result = await SessionImplMixin._evaluate_and_execute_actions(
+        harness,
+        planner_dispatch,
+    )
+
+    assert result.pending_confirmation == 1
+    assert harness.captured_merged_policy is not None
+    assert getattr(harness.captured_merged_policy, "snapshot", "") == "queue-time"

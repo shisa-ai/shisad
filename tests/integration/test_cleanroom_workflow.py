@@ -370,7 +370,7 @@ async def test_m1_trusted_cli_normal_message_does_not_trigger_cleanroom(
 
         reply = await client.call(
             "session.message",
-            {"session_id": sid, "content": "hello there"},
+            {"session_id": sid, "content": "What is a skill bundle?"},
         )
 
         assert reply["session_id"] == sid

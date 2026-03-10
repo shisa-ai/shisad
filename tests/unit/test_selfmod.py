@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import subprocess
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+import pytest
 import yaml
 
+import shisad.selfmod.manager as selfmod_manager_module
 from shisad.core.tools.registry import ToolRegistry
 from shisad.security.policy import SkillPolicy
 from shisad.selfmod import SelfModificationManager
@@ -97,7 +101,7 @@ def _write_signed_skill_bundle(root: Path, *, key_path: Path, version: str = "1.
         files.append(
             {
                 "path": str(path.relative_to(root)),
-                "sha256": __import__("hashlib").sha256(data).hexdigest(),
+                "sha256": hashlib.sha256(data).hexdigest(),
                 "size": len(data),
             }
         )
@@ -155,7 +159,7 @@ def _write_signed_behavior_pack(
         files.append(
             {
                 "path": str(path.relative_to(root)),
-                "sha256": __import__("hashlib").sha256(data).hexdigest(),
+                "sha256": hashlib.sha256(data).hexdigest(),
                 "size": len(data),
             }
         )
@@ -209,6 +213,22 @@ def _build_manager(
     return manager, planner
 
 
+def _rewrite_manifest(
+    artifact_root: Path,
+    *,
+    key_path: Path,
+    mutate: Callable[[dict[str, Any]], None],
+) -> None:
+    manifest_path = artifact_root / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    mutate(manifest)
+    manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+    signature_path = artifact_root / "manifest.json.sig"
+    if signature_path.exists():
+        signature_path.unlink()
+    _sign_manifest(manifest_path, key_path=key_path)
+
+
 def test_m1_selfmod_propose_reports_skill_capability_diff(tmp_path: Path) -> None:
     key_path = _generate_ssh_keypair(tmp_path, name="dev-key")
     allowed_signers = tmp_path / "allowed_signers"
@@ -226,6 +246,234 @@ def test_m1_selfmod_propose_reports_skill_capability_diff(tmp_path: Path) -> Non
     assert proposal.artifact_type == "skill_bundle"
     assert proposal.capability_diff["added"]["tools"] == ["skill.calendar-helper.lookup"]
     assert proposal.warnings
+
+
+def test_m1_selfmod_rejects_invalid_identifiers(tmp_path: Path) -> None:
+    manager, _planner = _build_manager(
+        tmp_path,
+        allowed_signers_path=tmp_path / "allowed_signers",
+    )
+
+    apply_result = manager.apply("../escape", confirm=True)
+    rollback_result = manager.rollback("../escape")
+
+    assert apply_result.applied is False
+    assert apply_result.reason == "invalid_proposal_id"
+    assert rollback_result.rolled_back is False
+    assert rollback_result.reason == "invalid_change_id"
+
+
+def test_m1_selfmod_missing_signature_returns_signature_missing(tmp_path: Path) -> None:
+    key_path = _generate_ssh_keypair(tmp_path, name="dev-key")
+    allowed_signers = tmp_path / "allowed_signers"
+    _write_allowed_signers(
+        allowed_signers,
+        principal="dev",
+        public_key=Path(f"{key_path}.pub"),
+    )
+    manager, _planner = _build_manager(tmp_path, allowed_signers_path=allowed_signers)
+    artifact = _write_signed_skill_bundle(tmp_path / "skill-bundle", key_path=key_path)
+    (artifact / "manifest.json.sig").unlink()
+
+    proposal = manager.propose(artifact)
+
+    assert proposal.valid is False
+    assert proposal.reason == "signature_missing"
+
+
+def test_m1_selfmod_invalid_manifest_without_signature_is_fail_closed(tmp_path: Path) -> None:
+    key_path = _generate_ssh_keypair(tmp_path, name="dev-key")
+    allowed_signers = tmp_path / "allowed_signers"
+    _write_allowed_signers(
+        allowed_signers,
+        principal="dev",
+        public_key=Path(f"{key_path}.pub"),
+    )
+    manager, _planner = _build_manager(tmp_path, allowed_signers_path=allowed_signers)
+    artifact = tmp_path / "invalid-artifact"
+    artifact.mkdir(parents=True, exist_ok=True)
+    (artifact / "manifest.json").write_text("{not-json", encoding="utf-8")
+
+    proposal = manager.propose(artifact)
+
+    assert proposal.valid is False
+    assert proposal.reason == "invalid_manifest_schema"
+
+
+def test_m1_selfmod_non_utf8_manifest_is_fail_closed(tmp_path: Path) -> None:
+    key_path = _generate_ssh_keypair(tmp_path, name="dev-key")
+    allowed_signers = tmp_path / "allowed_signers"
+    _write_allowed_signers(
+        allowed_signers,
+        principal="dev",
+        public_key=Path(f"{key_path}.pub"),
+    )
+    manager, _planner = _build_manager(tmp_path, allowed_signers_path=allowed_signers)
+    artifact = tmp_path / "invalid-utf8-artifact"
+    artifact.mkdir(parents=True, exist_ok=True)
+    (artifact / "manifest.json").write_bytes(b"\xff\xfe\xfd")
+    (artifact / "manifest.json.sig").write_text("placeholder", encoding="utf-8")
+
+    proposal = manager.propose(artifact)
+
+    assert proposal.valid is False
+    assert proposal.reason == "invalid_manifest_schema"
+
+
+def test_m1_selfmod_missing_trust_store_fails_closed(tmp_path: Path) -> None:
+    key_path = _generate_ssh_keypair(tmp_path, name="dev-key")
+    manager, _planner = _build_manager(
+        tmp_path,
+        allowed_signers_path=tmp_path / "missing_allowed_signers",
+    )
+    artifact = _write_signed_skill_bundle(tmp_path / "skill-bundle", key_path=key_path)
+
+    proposal = manager.propose(artifact)
+
+    assert proposal.valid is False
+    assert proposal.reason == "trust_store_missing"
+
+
+def test_m1_selfmod_rejects_file_set_mismatch(tmp_path: Path) -> None:
+    key_path = _generate_ssh_keypair(tmp_path, name="dev-key")
+    allowed_signers = tmp_path / "allowed_signers"
+    _write_allowed_signers(
+        allowed_signers,
+        principal="dev",
+        public_key=Path(f"{key_path}.pub"),
+    )
+    manager, _planner = _build_manager(tmp_path, allowed_signers_path=allowed_signers)
+    artifact = _write_signed_skill_bundle(tmp_path / "skill-bundle", key_path=key_path)
+    (artifact / "payload" / "EXTRA.md").write_text("unexpected file\n", encoding="utf-8")
+
+    proposal = manager.propose(artifact)
+
+    assert proposal.valid is False
+    assert proposal.reason == "file_set_mismatch"
+
+
+def test_m1_selfmod_rejects_declared_capability_mismatch(tmp_path: Path) -> None:
+    key_path = _generate_ssh_keypair(tmp_path, name="dev-key")
+    allowed_signers = tmp_path / "allowed_signers"
+    _write_allowed_signers(
+        allowed_signers,
+        principal="dev",
+        public_key=Path(f"{key_path}.pub"),
+    )
+    manager, _planner = _build_manager(tmp_path, allowed_signers_path=allowed_signers)
+    artifact = _write_signed_skill_bundle(tmp_path / "skill-bundle", key_path=key_path)
+    _rewrite_manifest(
+        artifact,
+        key_path=key_path,
+        mutate=lambda manifest: manifest.update({"declared_capabilities": {"tools": []}}),
+    )
+
+    proposal = manager.propose(artifact)
+
+    assert proposal.valid is False
+    assert proposal.reason == "declared_capabilities_mismatch"
+
+
+def test_m1_selfmod_rejects_unsafe_artifact_identity_segments(tmp_path: Path) -> None:
+    key_path = _generate_ssh_keypair(tmp_path, name="dev-key")
+    allowed_signers = tmp_path / "allowed_signers"
+    _write_allowed_signers(
+        allowed_signers,
+        principal="dev",
+        public_key=Path(f"{key_path}.pub"),
+    )
+    manager, _planner = _build_manager(tmp_path, allowed_signers_path=allowed_signers)
+    artifact = _write_signed_skill_bundle(tmp_path / "skill-bundle", key_path=key_path)
+    _rewrite_manifest(
+        artifact,
+        key_path=key_path,
+        mutate=lambda manifest: manifest.update({"name": "../escape"}),
+    )
+
+    proposal = manager.propose(artifact)
+
+    assert proposal.valid is False
+    assert proposal.reason == "invalid_manifest_schema"
+
+
+def test_m1_selfmod_apply_rejects_proposal_artifact_swap(tmp_path: Path) -> None:
+    key_path = _generate_ssh_keypair(tmp_path, name="dev-key")
+    allowed_signers = tmp_path / "allowed_signers"
+    _write_allowed_signers(
+        allowed_signers,
+        principal="dev",
+        public_key=Path(f"{key_path}.pub"),
+    )
+    manager, _planner = _build_manager(tmp_path, allowed_signers_path=allowed_signers)
+    artifact = _write_signed_skill_bundle(tmp_path / "skill-bundle", key_path=key_path)
+    proposal = manager.propose(artifact)
+    _rewrite_manifest(
+        artifact,
+        key_path=key_path,
+        mutate=lambda manifest: manifest.update({"version": "2.0.0"}),
+    )
+
+    result = manager.apply(proposal.proposal_id, confirm=True)
+
+    assert result.applied is False
+    assert result.reason == "proposal_artifact_changed"
+    assert manager.status()["skills"] == {}
+
+
+def test_m1_selfmod_apply_keeps_inventory_when_skill_activation_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    key_path = _generate_ssh_keypair(tmp_path, name="dev-key")
+    allowed_signers = tmp_path / "allowed_signers"
+    _write_allowed_signers(
+        allowed_signers,
+        principal="dev",
+        public_key=Path(f"{key_path}.pub"),
+    )
+    manager, _planner = _build_manager(tmp_path, allowed_signers_path=allowed_signers)
+    artifact = _write_signed_skill_bundle(tmp_path / "skill-bundle", key_path=key_path)
+    proposal = manager.propose(artifact)
+    monkeypatch.setattr(manager._skill_manager, "activate_bundle", lambda *_args, **_kwargs: None)
+
+    result = manager.apply(proposal.proposal_id, confirm=True)
+
+    assert result.applied is False
+    assert result.reason == "skill_activation_failed"
+    assert manager.status()["skills"] == {}
+    assert list((tmp_path / "selfmod" / "changes").iterdir()) == []
+
+
+def test_m1_selfmod_apply_copy_failure_does_not_leave_partial_artifact_store(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    key_path = _generate_ssh_keypair(tmp_path, name="dev-key")
+    allowed_signers = tmp_path / "allowed_signers"
+    _write_allowed_signers(
+        allowed_signers,
+        principal="dev",
+        public_key=Path(f"{key_path}.pub"),
+    )
+    manager, _planner = _build_manager(tmp_path, allowed_signers_path=allowed_signers)
+    artifact = _write_signed_skill_bundle(tmp_path / "skill-bundle", key_path=key_path)
+    proposal = manager.propose(artifact)
+
+    def _copytree_broken(src: Path, dst: Path, *args: object, **kwargs: object) -> Path:
+        _ = (src, args, kwargs)
+        dst.mkdir(parents=True, exist_ok=True)
+        (dst / "partial.txt").write_text("partial copy", encoding="utf-8")
+        raise OSError("disk full")
+
+    monkeypatch.setattr(selfmod_manager_module.shutil, "copytree", _copytree_broken)
+
+    result = manager.apply(proposal.proposal_id, confirm=True)
+
+    assert result.applied is False
+    assert result.reason == "artifact_store_copy_failed"
+    artifact_root = tmp_path / "selfmod" / "artifacts"
+    assert not any(path.is_file() for path in artifact_root.rglob("*"))
+    assert manager.status()["skills"] == {}
 
 
 def test_m1_behavior_pack_apply_and_rollback_updates_planner_overlay(tmp_path: Path) -> None:
@@ -256,6 +504,61 @@ def test_m1_behavior_pack_apply_and_rollback_updates_planner_overlay(tmp_path: P
     assert planner.defaults[-2] == ("strict", "Keep responses terse.")
     assert rolled_back.rolled_back is True
     assert planner.defaults[-1] == ("neutral", "")
+
+
+def test_m1_selfmod_rollback_rechecks_previous_artifact_integrity(tmp_path: Path) -> None:
+    key_path = _generate_ssh_keypair(tmp_path, name="dev-key")
+    allowed_signers = tmp_path / "allowed_signers"
+    _write_allowed_signers(
+        allowed_signers,
+        principal="dev",
+        public_key=Path(f"{key_path}.pub"),
+    )
+    manager, planner = _build_manager(tmp_path, allowed_signers_path=allowed_signers)
+    stable = _write_signed_behavior_pack(
+        tmp_path / "behavior-pack-v1",
+        key_path=key_path,
+        version="1.0.0",
+        tone="friendly",
+        custom_text="Stay warm.",
+    )
+    applied_stable = manager.apply(manager.propose(stable).proposal_id, confirm=True)
+    candidate = _write_signed_behavior_pack(
+        tmp_path / "behavior-pack-v2",
+        key_path=key_path,
+        version="1.0.1",
+        tone="strict",
+        custom_text="Stay strict.",
+    )
+    applied_candidate = manager.apply(manager.propose(candidate).proposal_id, confirm=True)
+    assert applied_stable.applied is True
+    assert applied_candidate.applied is True
+
+    previous_store = (
+        tmp_path
+        / "selfmod"
+        / "artifacts"
+        / "behavior_packs"
+        / "operator-tone"
+        / "1.0.0"
+        / "instructions.yaml"
+    )
+    previous_store.write_text(
+        yaml.safe_dump(
+            {
+                "tone": "friendly",
+                "custom_persona_text": "tampered payload",
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+
+    rolled_back = manager.rollback(applied_candidate.change_id)
+
+    assert rolled_back.rolled_back is False
+    assert rolled_back.reason == "integrity_mismatch"
+    assert planner.defaults[-1] == ("strict", "Stay strict.")
 
 
 def test_m1_selfmod_integrity_mismatch_keeps_last_known_good(tmp_path: Path) -> None:

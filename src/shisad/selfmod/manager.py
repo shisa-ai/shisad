@@ -2,16 +2,23 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
+import re
 import shutil
 import subprocess
 import uuid
+from contextlib import suppress
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import Any, Literal
 
 import yaml
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field, ValidationError, field_validator
+
+_IDENTIFIER_RE = re.compile(r"^[a-f0-9]{32}$")
+_ARTIFACT_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+_ARTIFACT_VERSION_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]*$")
 
 
 class ArtifactFileRecord(BaseModel):
@@ -29,6 +36,20 @@ class ArtifactManifest(BaseModel):
     files: list[ArtifactFileRecord] = Field(default_factory=list)
     declared_capabilities: dict[str, list[str]] = Field(default_factory=dict)
     provenance: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("name")
+    @classmethod
+    def _validate_name(cls, value: str) -> str:
+        if not _ARTIFACT_NAME_RE.fullmatch(value):
+            raise ValueError("invalid artifact name")
+        return value
+
+    @field_validator("version")
+    @classmethod
+    def _validate_version(cls, value: str) -> str:
+        if not _ARTIFACT_VERSION_RE.fullmatch(value):
+            raise ValueError("invalid artifact version")
+        return value
 
 
 class BehaviorPackInstructions(BaseModel):
@@ -106,6 +127,12 @@ class _ArtifactInspection(BaseModel):
     instructions: BehaviorPackInstructions | None = None
 
 
+class _SelfModificationOperationError(RuntimeError):
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
+
+
 class SelfModificationManager:
     """Deterministic proposal/apply/rollback manager for signed artifacts."""
 
@@ -151,13 +178,19 @@ class SelfModificationManager:
             reason=inspection.reason,
             manifest=inspection.manifest,
         )
-        self._proposal_path(proposal.proposal_id).write_text(
+        _write_text_atomic(
+            self._proposal_path(proposal.proposal_id),
             proposal.model_dump_json(indent=2),
-            encoding="utf-8",
         )
         return SelfModificationProposal.model_validate(proposal.model_dump(mode="json"))
 
     def apply(self, proposal_id: str, *, confirm: bool) -> SelfModificationApplyResult:
+        if not _is_valid_identifier(proposal_id):
+            return SelfModificationApplyResult(
+                applied=False,
+                proposal_id=proposal_id,
+                reason="invalid_proposal_id",
+            )
         proposal = self._load_proposal(proposal_id)
         if proposal is None:
             return SelfModificationApplyResult(
@@ -189,9 +222,7 @@ class SelfModificationManager:
 
         inspection = self._inspect_artifact(Path(proposal.artifact_path))
         if not inspection.valid:
-            reason = inspection.reason or "integrity_mismatch"
-            if reason.startswith("file_"):
-                reason = "integrity_mismatch"
+            reason = _normalize_integrity_reason(inspection.reason)
             self._record_incident(
                 proposal_id=proposal.proposal_id,
                 artifact_path=proposal.artifact_path,
@@ -208,58 +239,108 @@ class SelfModificationManager:
                 ),
                 reason=reason,
             )
+        if inspection.manifest.model_dump(mode="json") != proposal.manifest.model_dump(mode="json"):
+            self._record_incident(
+                proposal_id=proposal.proposal_id,
+                artifact_path=proposal.artifact_path,
+                reason="proposal_artifact_changed",
+            )
+            return SelfModificationApplyResult(
+                applied=False,
+                proposal_id=proposal_id,
+                warnings=list(inspection.warnings),
+                capability_diff=dict(inspection.capability_diff),
+                active_version=self._active_version(
+                    proposal.artifact_type,
+                    proposal.name,
+                ),
+                reason="proposal_artifact_changed",
+            )
 
-        entry = self._inventory_entry(proposal.artifact_type, proposal.name)
-        previous_active = entry.active_version
-        previous_enabled = entry.enabled
-        stored_path = self._artifact_version_path(
+        previous_inventory = self._inventory.model_copy(deep=True)
+        previous_entry = self._inventory_entry_from(
+            previous_inventory,
             proposal.artifact_type,
             proposal.name,
-            proposal.version,
         )
-        if stored_path.exists():
-            shutil.rmtree(stored_path)
-        shutil.copytree(Path(proposal.artifact_path), stored_path)
-
-        updated_entry = _InventoryEntry(enabled=True, active_version=proposal.version)
-        self._set_inventory_entry(proposal.artifact_type, proposal.name, updated_entry)
-        self._persist_inventory()
-
-        tool_names: list[str] = []
-        if proposal.artifact_type == "skill_bundle":
-            installed = self._skill_manager.activate_bundle(stored_path / "payload")
-            if installed is not None:
-                tool_names = list(self._skill_manager.tool_names_for_skill(proposal.name))
-        else:
-            self._apply_behavior_overlay()
-
-        change_id = uuid.uuid4().hex
-        change = _ChangeRecord(
-            change_id=change_id,
-            proposal_id=proposal_id,
-            artifact_type=proposal.artifact_type,
-            name=proposal.name,
-            previous_active_version=previous_active,
-            previous_enabled=previous_enabled,
-            new_active_version=proposal.version,
-            applied_at=datetime.now(UTC).isoformat(),
+        candidate_inventory = previous_inventory.model_copy(deep=True)
+        self._set_inventory_entry_in(
+            candidate_inventory,
+            proposal.artifact_type,
+            proposal.name,
+            _InventoryEntry(enabled=True, active_version=proposal.version),
         )
-        self._change_path(change_id).write_text(
-            change.model_dump_json(indent=2),
-            encoding="utf-8",
-        )
+        try:
+            stored_path = self._stage_artifact_copy(
+                artifact_type=proposal.artifact_type,
+                name=proposal.name,
+                version=proposal.version,
+                source_path=Path(proposal.artifact_path),
+            )
+        except OSError:
+            return SelfModificationApplyResult(
+                applied=False,
+                proposal_id=proposal_id,
+                warnings=list(inspection.warnings),
+                capability_diff=dict(inspection.capability_diff),
+                active_version=self._active_version(
+                    proposal.artifact_type,
+                    proposal.name,
+                ),
+                reason="artifact_store_copy_failed",
+            )
+
+        copied_new_artifact = proposal.version != previous_entry.active_version
+        try:
+            tool_names = self._apply_runtime_for_inventory(
+                candidate_inventory,
+                proposal.artifact_type,
+                proposal.name,
+            )
+            change_id = uuid.uuid4().hex
+            change = _ChangeRecord(
+                change_id=change_id,
+                proposal_id=proposal_id,
+                artifact_type=proposal.artifact_type,
+                name=proposal.name,
+                previous_active_version=previous_entry.active_version,
+                previous_enabled=previous_entry.enabled,
+                new_active_version=proposal.version,
+                applied_at=datetime.now(UTC).isoformat(),
+            )
+            self._commit_inventory_and_change(candidate_inventory, change)
+        except _SelfModificationOperationError as exc:
+            self._restore_runtime(previous_inventory, proposal.artifact_type, proposal.name)
+            if copied_new_artifact:
+                self._discard_artifact_copy(stored_path)
+            return SelfModificationApplyResult(
+                applied=False,
+                proposal_id=proposal_id,
+                warnings=list(inspection.warnings),
+                capability_diff=dict(inspection.capability_diff),
+                active_version=previous_entry.active_version if previous_entry.enabled else "",
+                reason=exc.reason,
+            )
+
+        self._inventory = candidate_inventory
         return SelfModificationApplyResult(
             applied=True,
             proposal_id=proposal_id,
             change_id=change_id,
-            warnings=list(proposal.warnings),
-            capability_diff=dict(proposal.capability_diff),
+            warnings=list(inspection.warnings),
+            capability_diff=dict(inspection.capability_diff),
             active_version=proposal.version,
             tool_names=tool_names,
             reason="ok",
         )
 
     def rollback(self, change_id: str) -> SelfModificationRollbackResult:
+        if not _is_valid_identifier(change_id):
+            return SelfModificationRollbackResult(
+                rolled_back=False,
+                change_id=change_id,
+                reason="invalid_change_id",
+            )
         change = self._load_change(change_id)
         if change is None:
             return SelfModificationRollbackResult(
@@ -267,37 +348,79 @@ class SelfModificationManager:
                 change_id=change_id,
                 reason="change_not_found",
             )
+        current_inventory = self._inventory.model_copy(deep=True)
+        candidate_inventory = current_inventory.model_copy(deep=True)
         if change.previous_active_version:
+            if change.previous_enabled:
+                previous_path = self._artifact_version_path(
+                    change.artifact_type,
+                    change.name,
+                    change.previous_active_version,
+                )
+                inspection = self._inspect_artifact(previous_path)
+                if not inspection.valid:
+                    reason = _normalize_integrity_reason(inspection.reason)
+                    self._record_incident(
+                        proposal_id=change.proposal_id,
+                        artifact_path=str(previous_path),
+                        reason=reason,
+                    )
+                    return SelfModificationRollbackResult(
+                        rolled_back=False,
+                        change_id=change_id,
+                        artifact_type=change.artifact_type,
+                        name=change.name,
+                        active_version=self._active_version(change.artifact_type, change.name),
+                        reason=reason,
+                    )
             restored_entry = _InventoryEntry(
-                enabled=change.previous_enabled or True,
+                enabled=change.previous_enabled,
                 active_version=change.previous_active_version,
             )
-            self._set_inventory_entry(change.artifact_type, change.name, restored_entry)
-            self._persist_inventory()
-            previous_path = self._artifact_version_path(
+            self._set_inventory_entry_in(
+                candidate_inventory,
                 change.artifact_type,
                 change.name,
-                change.previous_active_version,
+                restored_entry,
             )
-            if change.artifact_type == "skill_bundle":
-                self._skill_manager.activate_bundle(previous_path / "payload")
-            else:
-                self._apply_behavior_overlay()
-            restored_version = change.previous_active_version
-            active_version = change.previous_active_version
+            restored_version = change.previous_active_version if change.previous_enabled else ""
         else:
-            self._set_inventory_entry(
+            self._set_inventory_entry_in(
+                candidate_inventory,
                 change.artifact_type,
                 change.name,
                 _InventoryEntry(enabled=False, active_version=""),
             )
-            self._persist_inventory()
-            if change.artifact_type == "skill_bundle":
-                self._skill_manager.revoke(skill_name=change.name, reason="rollback")
-            else:
-                self._apply_behavior_overlay()
             restored_version = ""
-            active_version = ""
+        try:
+            self._apply_runtime_for_inventory(
+                candidate_inventory,
+                change.artifact_type,
+                change.name,
+            )
+            self._persist_inventory_snapshot(candidate_inventory)
+        except OSError:
+            self._restore_runtime(current_inventory, change.artifact_type, change.name)
+            return SelfModificationRollbackResult(
+                rolled_back=False,
+                change_id=change_id,
+                artifact_type=change.artifact_type,
+                name=change.name,
+                active_version=self._active_version(change.artifact_type, change.name),
+                reason="inventory_persist_failed",
+            )
+        except _SelfModificationOperationError as exc:
+            self._restore_runtime(current_inventory, change.artifact_type, change.name)
+            return SelfModificationRollbackResult(
+                rolled_back=False,
+                change_id=change_id,
+                artifact_type=change.artifact_type,
+                name=change.name,
+                active_version=self._active_version(change.artifact_type, change.name),
+                reason=exc.reason,
+            )
+        self._inventory = candidate_inventory
+        active_version = restored_version
         return SelfModificationRollbackResult(
             rolled_back=True,
             change_id=change_id,
@@ -337,18 +460,18 @@ class SelfModificationManager:
                 valid=False,
                 reason="manifest_missing",
             )
-        if not signature_path.exists():
-            return _ArtifactInspection(
-                manifest=_load_manifest(manifest_path),
-                valid=False,
-                reason="signature_missing",
-            )
         manifest = _load_manifest(manifest_path)
         if manifest is None:
             return _ArtifactInspection(
                 manifest=_empty_manifest(),
                 valid=False,
                 reason="invalid_manifest_schema",
+            )
+        if not signature_path.exists():
+            return _ArtifactInspection(
+                manifest=manifest,
+                valid=False,
+                reason="signature_missing",
             )
         verified, signer, signature_reason = _verify_signature(
             manifest_path=manifest_path,
@@ -439,21 +562,28 @@ class SelfModificationManager:
         )
 
     def _apply_behavior_overlay(self) -> None:
+        self._apply_behavior_overlay_for_inventory(self._inventory)
+
+    def _apply_behavior_overlay_for_inventory(self, inventory: _Inventory) -> None:
         tone = self._default_persona_tone
         text_parts: list[str] = []
-        for name in sorted(self._inventory.behavior_packs):
-            entry = self._inventory.behavior_packs[name]
+        for name in sorted(inventory.behavior_packs):
+            entry = inventory.behavior_packs[name]
             if not entry.enabled or not entry.active_version:
                 continue
-            artifact_path = self._artifact_version_path(
-                "behavior_pack",
-                name,
-                entry.active_version,
-            )
+            try:
+                artifact_path = self._artifact_version_path(
+                    "behavior_pack",
+                    name,
+                    entry.active_version,
+                )
+            except ValueError:
+                continue
             instructions = _load_behavior_pack_instructions(artifact_path / "instructions.yaml")
             if instructions is None:
                 continue
             if instructions.tone:
+                # Deterministic precedence: alphabetical-last enabled pack wins on tone.
                 tone = instructions.tone
             if instructions.custom_persona_text.strip():
                 text_parts.append(instructions.custom_persona_text.strip())
@@ -487,9 +617,13 @@ class SelfModificationManager:
         active_version = self._active_version(artifact_type, name)
         if not active_version:
             return {}
-        manifest_path = (
-            self._artifact_version_path(artifact_type, name, active_version) / "manifest.json"
-        )
+        try:
+            manifest_path = (
+                self._artifact_version_path(artifact_type, name, active_version)
+                / "manifest.json"
+            )
+        except ValueError:
+            return {}
         manifest = _load_manifest(manifest_path)
         if manifest is None:
             return {}
@@ -500,20 +634,137 @@ class SelfModificationManager:
         return entry.active_version
 
     def _inventory_entry(self, artifact_type: str, name: str) -> _InventoryEntry:
+        return self._inventory_entry_from(self._inventory, artifact_type, name)
+
+    @staticmethod
+    def _inventory_entry_from(
+        inventory: _Inventory,
+        artifact_type: str,
+        name: str,
+    ) -> _InventoryEntry:
         bucket = (
-            self._inventory.skills
+            inventory.skills
             if artifact_type == "skill_bundle"
-            else self._inventory.behavior_packs
+            else inventory.behavior_packs
         )
         return bucket.get(name, _InventoryEntry())
 
     def _set_inventory_entry(self, artifact_type: str, name: str, entry: _InventoryEntry) -> None:
+        self._set_inventory_entry_in(self._inventory, artifact_type, name, entry)
+
+    @staticmethod
+    def _set_inventory_entry_in(
+        inventory: _Inventory,
+        artifact_type: str,
+        name: str,
+        entry: _InventoryEntry,
+    ) -> None:
         bucket = (
-            self._inventory.skills
+            inventory.skills
             if artifact_type == "skill_bundle"
-            else self._inventory.behavior_packs
+            else inventory.behavior_packs
         )
         bucket[name] = entry
+
+    def _apply_runtime_for_inventory(
+        self,
+        inventory: _Inventory,
+        artifact_type: str,
+        name: str,
+    ) -> list[str]:
+        entry = self._inventory_entry_from(inventory, artifact_type, name)
+        if artifact_type == "skill_bundle":
+            try:
+                if entry.enabled and entry.active_version:
+                    payload_root = (
+                        self._artifact_version_path(
+                            artifact_type,
+                            name,
+                            entry.active_version,
+                        )
+                        / "payload"
+                    )
+                    installed = self._skill_manager.activate_bundle(payload_root)
+                    if installed is None:
+                        raise _SelfModificationOperationError("skill_activation_failed")
+                    return list(self._skill_manager.tool_names_for_skill(name))
+                self._skill_manager.revoke(skill_name=name, reason="selfmod_inventory_transition")
+                return []
+            except _SelfModificationOperationError:
+                raise
+            except Exception as exc:
+                raise _SelfModificationOperationError("skill_activation_failed") from exc
+        try:
+            self._apply_behavior_overlay_for_inventory(inventory)
+        except Exception as exc:
+            raise _SelfModificationOperationError("behavior_overlay_failed") from exc
+        return []
+
+    def _restore_runtime(self, inventory: _Inventory, artifact_type: str, name: str) -> None:
+        try:
+            self._apply_runtime_for_inventory(inventory, artifact_type, name)
+        except _SelfModificationOperationError:
+            return None
+
+    def _persist_inventory_snapshot(self, inventory: _Inventory) -> None:
+        _write_text_atomic(
+            self._inventory_path,
+            yaml.safe_dump(inventory.model_dump(mode="json"), sort_keys=False),
+        )
+
+    def _commit_inventory_and_change(
+        self,
+        inventory: _Inventory,
+        change: _ChangeRecord,
+    ) -> None:
+        try:
+            self._persist_inventory_snapshot(inventory)
+        except OSError as exc:
+            raise _SelfModificationOperationError("inventory_persist_failed") from exc
+        try:
+            _write_text_atomic(
+                self._change_path(change.change_id),
+                change.model_dump_json(indent=2),
+            )
+        except OSError as exc:
+            with suppress(OSError):
+                self._persist_inventory_snapshot(self._inventory)
+            raise _SelfModificationOperationError("change_record_persist_failed") from exc
+
+    def _stage_artifact_copy(
+        self,
+        *,
+        artifact_type: str,
+        name: str,
+        version: str,
+        source_path: Path,
+    ) -> Path:
+        target_path = self._artifact_version_path(artifact_type, name, version)
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        staging_path = target_path.parent / f".{target_path.name}.tmp-{uuid.uuid4().hex}"
+        backup_path = target_path.parent / f".{target_path.name}.bak-{uuid.uuid4().hex}"
+        moved_existing = False
+        try:
+            shutil.copytree(source_path, staging_path)
+            if target_path.exists():
+                target_path.replace(backup_path)
+                moved_existing = True
+            staging_path.replace(target_path)
+            return target_path
+        except OSError:
+            if staging_path.exists():
+                shutil.rmtree(staging_path, ignore_errors=True)
+            if moved_existing and backup_path.exists() and not target_path.exists():
+                backup_path.replace(target_path)
+            raise
+        finally:
+            if backup_path.exists() and target_path.exists():
+                shutil.rmtree(backup_path, ignore_errors=True)
+
+    @staticmethod
+    def _discard_artifact_copy(path: Path) -> None:
+        if path.exists():
+            shutil.rmtree(path, ignore_errors=True)
 
     def _load_inventory(self) -> _Inventory:
         if not self._inventory_path.exists():
@@ -530,11 +781,7 @@ class SelfModificationManager:
             return _Inventory()
 
     def _persist_inventory(self) -> None:
-        self._inventory_path.parent.mkdir(parents=True, exist_ok=True)
-        self._inventory_path.write_text(
-            yaml.safe_dump(self._inventory.model_dump(mode="json"), sort_keys=False),
-            encoding="utf-8",
-        )
+        self._persist_inventory_snapshot(self._inventory)
 
     def _proposal_path(self, proposal_id: str) -> Path:
         return self._proposal_dir / f"{proposal_id}.json"
@@ -543,6 +790,8 @@ class SelfModificationManager:
         return self._change_dir / f"{change_id}.json"
 
     def _load_proposal(self, proposal_id: str) -> _ProposalRecord | None:
+        if not _is_valid_identifier(proposal_id):
+            return None
         path = self._proposal_path(proposal_id)
         if not path.exists():
             return None
@@ -552,6 +801,8 @@ class SelfModificationManager:
             return None
 
     def _load_change(self, change_id: str) -> _ChangeRecord | None:
+        if not _is_valid_identifier(change_id):
+            return None
         path = self._change_path(change_id)
         if not path.exists():
             return None
@@ -561,6 +812,8 @@ class SelfModificationManager:
             return None
 
     def _artifact_version_path(self, artifact_type: str, name: str, version: str) -> Path:
+        if not _ARTIFACT_NAME_RE.fullmatch(name) or not _ARTIFACT_VERSION_RE.fullmatch(version):
+            raise ValueError("unsafe_artifact_identity")
         bucket = "skills" if artifact_type == "skill_bundle" else "behavior_packs"
         return self._artifact_root / bucket / name / version
 
@@ -571,23 +824,49 @@ class SelfModificationManager:
             "reason": reason,
             "recorded_at": datetime.now(UTC).isoformat(),
         }
-        self._incident_path.parent.mkdir(parents=True, exist_ok=True)
-        self._incident_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        _write_text_atomic(self._incident_path, json.dumps(payload, indent=2))
+
+
+def _is_valid_identifier(value: str) -> bool:
+    return _IDENTIFIER_RE.fullmatch(value.strip()) is not None
+
+
+def _normalize_integrity_reason(reason: str) -> str:
+    normalized = reason.strip() or "integrity_mismatch"
+    if normalized.startswith("file_"):
+        return "integrity_mismatch"
+    return normalized
+
+
+def _write_text_atomic(path: Path, content: str) -> None:
+    tmp_path = path.parent / f".{path.name}.tmp-{uuid.uuid4().hex}"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        tmp_path.write_text(content, encoding="utf-8")
+        tmp_path.replace(path)
+    except OSError:
+        if tmp_path.exists():
+            tmp_path.unlink(missing_ok=True)
+        raise
 
 
 def _empty_manifest() -> ArtifactManifest:
-    return ArtifactManifest(
+    return ArtifactManifest.model_construct(
         schema_version="1",
         type="skill_bundle",
         name="",
         version="",
+        created_at="",
+        files=[],
+        declared_capabilities={},
+        provenance={},
     )
 
 
 def _load_manifest(path: Path) -> ArtifactManifest | None:
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         return None
     try:
         return ArtifactManifest.model_validate(payload)
@@ -625,8 +904,6 @@ def _validate_manifest_files(
         return False, "file_set_mismatch"
     for relative, record in declared.items():
         data = actual[relative].read_bytes()
-        import hashlib
-
         digest = hashlib.sha256(data).hexdigest()
         if digest != record.sha256:
             return False, "file_hash_mismatch"

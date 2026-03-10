@@ -12,6 +12,7 @@ import uuid
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
+from functools import lru_cache
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -1682,6 +1683,7 @@ class HandlerImplementation(
         )
 
     @staticmethod
+    @lru_cache(maxsize=1)
     def _structured_tool_registry() -> dict[
         str,
         tuple[Callable[[Any, Mapping[str, Any]], Mapping[str, Any]], str],
