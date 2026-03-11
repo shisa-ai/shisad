@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import uuid
 from contextlib import suppress
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import Any, Literal
@@ -131,6 +132,12 @@ class _SelfModificationOperationError(RuntimeError):
     def __init__(self, reason: str) -> None:
         super().__init__(reason)
         self.reason = reason
+
+
+@dataclass(frozen=True, slots=True)
+class _StagedArtifactCopy:
+    target_path: Path
+    backup_path: Path | None = None
 
 
 class SelfModificationManager:
@@ -271,7 +278,7 @@ class SelfModificationManager:
             _InventoryEntry(enabled=True, active_version=proposal.version),
         )
         try:
-            stored_path = self._stage_artifact_copy(
+            staged_copy = self._stage_artifact_copy(
                 artifact_type=proposal.artifact_type,
                 name=proposal.name,
                 version=proposal.version,
@@ -290,7 +297,6 @@ class SelfModificationManager:
                 reason="artifact_store_copy_failed",
             )
 
-        copied_new_artifact = proposal.version != previous_entry.active_version
         try:
             tool_names = self._apply_runtime_for_inventory(
                 candidate_inventory,
@@ -310,9 +316,23 @@ class SelfModificationManager:
             )
             self._commit_inventory_and_change(candidate_inventory, change)
         except _SelfModificationOperationError as exc:
+            try:
+                self._restore_staged_artifact(staged_copy)
+            except OSError:
+                self._record_incident(
+                    proposal_id=proposal.proposal_id,
+                    artifact_path=str(staged_copy.target_path),
+                    reason="artifact_store_restore_failed",
+                )
+                return SelfModificationApplyResult(
+                    applied=False,
+                    proposal_id=proposal_id,
+                    warnings=list(inspection.warnings),
+                    capability_diff=dict(inspection.capability_diff),
+                    active_version=previous_entry.active_version if previous_entry.enabled else "",
+                    reason="artifact_store_restore_failed",
+                )
             self._restore_runtime(previous_inventory, proposal.artifact_type, proposal.name)
-            if copied_new_artifact:
-                self._discard_artifact_copy(stored_path)
             return SelfModificationApplyResult(
                 applied=False,
                 proposal_id=proposal_id,
@@ -323,6 +343,7 @@ class SelfModificationManager:
             )
 
         self._inventory = candidate_inventory
+        self._finalize_staged_artifact(staged_copy)
         return SelfModificationApplyResult(
             applied=True,
             proposal_id=proposal_id,
@@ -738,33 +759,37 @@ class SelfModificationManager:
         name: str,
         version: str,
         source_path: Path,
-    ) -> Path:
+    ) -> _StagedArtifactCopy:
         target_path = self._artifact_version_path(artifact_type, name, version)
         target_path.parent.mkdir(parents=True, exist_ok=True)
         staging_path = target_path.parent / f".{target_path.name}.tmp-{uuid.uuid4().hex}"
         backup_path = target_path.parent / f".{target_path.name}.bak-{uuid.uuid4().hex}"
-        moved_existing = False
+        staged_backup: Path | None = None
         try:
             shutil.copytree(source_path, staging_path)
             if target_path.exists():
                 target_path.replace(backup_path)
-                moved_existing = True
+                staged_backup = backup_path
             staging_path.replace(target_path)
-            return target_path
+            return _StagedArtifactCopy(target_path=target_path, backup_path=staged_backup)
         except OSError:
             if staging_path.exists():
                 shutil.rmtree(staging_path, ignore_errors=True)
-            if moved_existing and backup_path.exists() and not target_path.exists():
+            if staged_backup is not None and staged_backup.exists() and not target_path.exists():
                 backup_path.replace(target_path)
             raise
-        finally:
-            if backup_path.exists() and target_path.exists():
-                shutil.rmtree(backup_path, ignore_errors=True)
 
     @staticmethod
-    def _discard_artifact_copy(path: Path) -> None:
-        if path.exists():
-            shutil.rmtree(path, ignore_errors=True)
+    def _restore_staged_artifact(staged_copy: _StagedArtifactCopy) -> None:
+        if staged_copy.target_path.exists():
+            shutil.rmtree(staged_copy.target_path, ignore_errors=True)
+        if staged_copy.backup_path is not None and staged_copy.backup_path.exists():
+            staged_copy.backup_path.replace(staged_copy.target_path)
+
+    @staticmethod
+    def _finalize_staged_artifact(staged_copy: _StagedArtifactCopy) -> None:
+        if staged_copy.backup_path is not None and staged_copy.backup_path.exists():
+            shutil.rmtree(staged_copy.backup_path, ignore_errors=True)
 
     def _load_inventory(self) -> _Inventory:
         if not self._inventory_path.exists():

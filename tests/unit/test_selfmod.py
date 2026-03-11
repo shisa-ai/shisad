@@ -476,6 +476,66 @@ def test_m1_selfmod_apply_copy_failure_does_not_leave_partial_artifact_store(
     assert manager.status()["skills"] == {}
 
 
+def test_m1_selfmod_same_version_reapply_restores_store_and_runtime_on_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    key_path = _generate_ssh_keypair(tmp_path, name="dev-key")
+    allowed_signers = tmp_path / "allowed_signers"
+    _write_allowed_signers(
+        allowed_signers,
+        principal="dev",
+        public_key=Path(f"{key_path}.pub"),
+    )
+    manager, planner = _build_manager(tmp_path, allowed_signers_path=allowed_signers)
+    stable = _write_signed_behavior_pack(
+        tmp_path / "behavior-pack-stable",
+        key_path=key_path,
+        version="1.0.0",
+        tone="friendly",
+        custom_text="Stay warm.",
+    )
+    applied_stable = manager.apply(manager.propose(stable).proposal_id, confirm=True)
+    assert applied_stable.applied is True
+
+    candidate = _write_signed_behavior_pack(
+        tmp_path / "behavior-pack-candidate",
+        key_path=key_path,
+        version="1.0.0",
+        tone="strict",
+        custom_text="Stay strict.",
+    )
+    proposal = manager.propose(candidate)
+
+    def _commit_broken(*_args: object, **_kwargs: object) -> None:
+        raise selfmod_manager_module._SelfModificationOperationError(
+            "change_record_persist_failed"
+        )
+
+    monkeypatch.setattr(manager, "_commit_inventory_and_change", _commit_broken)
+
+    result = manager.apply(proposal.proposal_id, confirm=True)
+
+    stored_instructions = (
+        tmp_path
+        / "selfmod"
+        / "artifacts"
+        / "behavior_packs"
+        / "operator-tone"
+        / "1.0.0"
+        / "instructions.yaml"
+    )
+    stored_payload = yaml.safe_load(stored_instructions.read_text(encoding="utf-8"))
+
+    assert result.applied is False
+    assert result.reason == "change_record_persist_failed"
+    assert stored_payload == {
+        "tone": "friendly",
+        "custom_persona_text": "Stay warm.",
+    }
+    assert planner.defaults[-1] == ("friendly", "Stay warm.")
+
+
 def test_m1_behavior_pack_apply_and_rollback_updates_planner_overlay(tmp_path: Path) -> None:
     key_path = _generate_ssh_keypair(tmp_path, name="dev-key")
     allowed_signers = tmp_path / "allowed_signers"
