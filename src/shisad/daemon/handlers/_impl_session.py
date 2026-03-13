@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import logging
 import re
 import time
 from collections.abc import Mapping, Sequence
+from contextlib import suppress
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
@@ -26,6 +28,7 @@ from shisad.core.context import (
 )
 from shisad.core.events import (
     AnomalyReported,
+    CommandContextDegraded,
     MonitorEvaluated,
     PlanCancelled,
     PlanCommitted,
@@ -36,6 +39,8 @@ from shisad.core.events import (
     SessionRolledBack,
     SessionTerminated,
     TaskDelegationAdvisory,
+    TaskSessionCompleted,
+    TaskSessionStarted,
     ToolProposed,
     ToolRejected,
 )
@@ -108,6 +113,11 @@ _CONTEXT_SCAFFOLD_DEGRADED_REASON_CODES_KEY = "context_scaffold_degraded_reason_
 _GENERIC_BLOCKED_ACTION_MESSAGE = (
     "I could not safely execute the proposed action(s) under current policy."
 )
+_TASK_HANDOFF_SUMMARY_ONLY = "summary_only"
+_TASK_HANDOFF_RAW_PASSTHROUGH = "raw_passthrough"
+_COMMAND_CONTEXT_STATUS_KEY = "command_context"
+_COMMAND_CONTEXT_RECOVERY_CHECKPOINT_KEY = "command_context_recovery_checkpoint_id"
+_COMMAND_CONTEXT_REASON_KEY = "command_context_reason"
 _IN_BAND_READ_ONLY_ACTION_KINDS: set[ActionKind] = {
     ActionKind.FS_READ,
     ActionKind.FS_LIST,
@@ -206,6 +216,35 @@ class SessionMessageExecutionResult:
     cleanroom_proposals: list[dict[str, Any]] = field(default_factory=list)
     cleanroom_block_reasons: list[str] = field(default_factory=list)
     trace_tool_calls: list[TraceToolCall] = field(default_factory=list)
+
+
+@dataclass(frozen=True, slots=True)
+class TaskSessionRequest:
+    task_description: str
+    file_refs: tuple[str, ...]
+    capabilities: frozenset[Capability]
+    timeout_sec: float | None
+    handoff_mode: str
+
+
+@dataclass(frozen=True, slots=True)
+class TaskSessionHandoff:
+    task_session_id: SessionId
+    success: bool
+    summary: str
+    response_text: str
+    files_changed: tuple[str, ...]
+    duration_ms: int
+    proposal_ref: str | None
+    raw_log_ref: str | None
+    handoff_mode: str
+    command_context: str
+    recovery_checkpoint_id: str | None
+    reason: str
+    plan_hash: str | None
+    blocked_actions: int = 0
+    confirmation_required_actions: int = 0
+    executed_actions: int = 0
 
 
 _CRC_POSITIVE_PATTERNS = {
@@ -358,6 +397,92 @@ def _normalize_assistant_tone(raw_tone: Any) -> AssistantTone | None:
     if normalized == "friendly":
         return "friendly"
     return None
+
+
+def _resolve_task_capability_scope(
+    *,
+    parent_capabilities: set[Capability],
+    requested_capabilities: Sequence[str] | None,
+) -> set[Capability]:
+    if not requested_capabilities:
+        return set(parent_capabilities)
+
+    scoped: set[Capability] = set()
+    for raw in requested_capabilities:
+        value = str(raw).strip()
+        if not value:
+            continue
+        try:
+            scoped.add(Capability(value))
+        except ValueError as exc:
+            raise ValueError(f"Unknown task capability: {value}") from exc
+
+    if not scoped:
+        return set(parent_capabilities)
+    if not scoped.issubset(parent_capabilities):
+        raise ValueError("requested task capabilities fall outside parent session scope")
+    return scoped
+
+
+def _compose_task_request_content(
+    *,
+    task_description: str,
+    file_refs: Sequence[str],
+) -> str:
+    description = task_description.strip() or "Complete the delegated task."
+    ordered_refs: list[str] = []
+    seen: set[str] = set()
+    for raw in file_refs:
+        value = str(raw).strip()
+        if not value or value in seen:
+            continue
+        seen.add(value)
+        ordered_refs.append(value)
+
+    lines = ["TASK REQUEST:", description]
+    if ordered_refs:
+        lines.append("")
+        lines.append("RELEVANT FILE REFS:")
+        lines.extend(f"- {item}" for item in ordered_refs)
+    return "\n".join(lines)
+
+
+def _task_command_context_status(session: Session) -> str:
+    raw = str(session.metadata.get(_COMMAND_CONTEXT_STATUS_KEY, "clean")).strip().lower()
+    if raw == "degraded":
+        return "degraded"
+    return "clean"
+
+
+def _task_recovery_checkpoint_id(session: Session) -> str | None:
+    value = str(session.metadata.get(_COMMAND_CONTEXT_RECOVERY_CHECKPOINT_KEY, "")).strip()
+    return value or None
+
+
+def _extract_files_changed_from_task_outputs(records: Sequence[dict[str, Any]]) -> tuple[str, ...]:
+    files: list[str] = []
+    for record in records:
+        payload = record.get("payload")
+        if not isinstance(payload, dict):
+            continue
+        for key in ("path", "file", "target_path"):
+            value = str(payload.get(key, "")).strip()
+            if value and value not in files:
+                files.append(value)
+        paths = payload.get("paths")
+        if isinstance(paths, list):
+            for item in paths:
+                value = str(item).strip()
+                if value and value not in files:
+                    files.append(value)
+    return tuple(files)
+
+
+def _looks_like_diff_content(text: str) -> bool:
+    normalized = text.strip()
+    if not normalized:
+        return False
+    return any(token in normalized for token in ("\n--- ", "\n+++ ", "\ndiff --git "))
 
 
 def _build_planner_tool_context(
@@ -1616,6 +1741,7 @@ class SessionImplMixin(HandlerMixinBase):
                 raise ValueError("admin_cleanroom mode is supported only for cli channel")
         metadata["trust_level"] = trust_level
         metadata["session_mode"] = session_mode.value
+        metadata.setdefault(_COMMAND_CONTEXT_STATUS_KEY, "clean")
         default_capabilities = set(self._policy_loader.policy.default_capabilities)
 
         session = self._session_manager.create(
@@ -1840,16 +1966,19 @@ class SessionImplMixin(HandlerMixinBase):
         sid = validated.sid
         session = validated.session
         firewall_result = validated.firewall_result
-        zero_context_cleanroom = validated.session_mode == SessionMode.ADMIN_CLEANROOM
+        zero_context_session = validated.session_mode in {
+            SessionMode.ADMIN_CLEANROOM,
+            SessionMode.TASK,
+        }
 
         transcript_entries = self._transcript_store.list_entries(sid)
         context_entries: list[TranscriptEntry]
-        if zero_context_cleanroom:
+        if zero_context_session:
             context_entries = []
         else:
             context_entries = transcript_entries[:-1] if transcript_entries else []
         episode_snapshot = _build_episode_snapshot(context_entries)
-        if episode_snapshot is None and not zero_context_cleanroom:
+        if episode_snapshot is None and not zero_context_session:
             logger.warning(
                 "episode snapshot degraded for session %s; falling back to flat context",
                 sid,
@@ -1876,7 +2005,7 @@ class SessionImplMixin(HandlerMixinBase):
             session.capabilities,
         )
         memory_context_taints: set[TaintLabel]
-        if zero_context_cleanroom:
+        if zero_context_session:
             memory_query = ""
             memory_context = ""
             memory_context_taints = set()
@@ -1978,7 +2107,7 @@ class SessionImplMixin(HandlerMixinBase):
             trust_level=validated.trust_level,
         )
         task_ledger_snapshot = None
-        if not zero_context_cleanroom:
+        if not zero_context_session:
             task_ledger_snapshot = self._build_task_ledger_snapshot(
                 user_id=session.user_id,
                 workspace_id=session.workspace_id,
@@ -2740,6 +2869,466 @@ class SessionImplMixin(HandlerMixinBase):
             "tool_outputs": serialized_tool_outputs,
         }
 
+    def _task_request_from_params(
+        self,
+        *,
+        params: Mapping[str, Any],
+        parent_capabilities: set[Capability],
+        default_description: str,
+    ) -> TaskSessionRequest | None:
+        raw_task = params.get("task")
+        if raw_task is None:
+            return None
+        if not isinstance(raw_task, Mapping):
+            raise ValueError("task must be an object")
+        if not bool(raw_task.get("enabled", False)):
+            return None
+
+        task_description = str(raw_task.get("task_description", "")).strip() or default_description
+        file_refs_raw = raw_task.get("file_refs", [])
+        file_refs: tuple[str, ...]
+        if isinstance(file_refs_raw, list):
+            file_refs = tuple(str(item).strip() for item in file_refs_raw if str(item).strip())
+        else:
+            file_refs = ()
+
+        requested_capabilities_raw = raw_task.get("capabilities")
+        requested_capabilities: list[str] | None = None
+        if isinstance(requested_capabilities_raw, list):
+            requested_capabilities = [
+                str(item).strip()
+                for item in requested_capabilities_raw
+                if str(item).strip()
+            ]
+        scoped_capabilities = _resolve_task_capability_scope(
+            parent_capabilities=parent_capabilities,
+            requested_capabilities=requested_capabilities,
+        )
+
+        timeout_sec: float | None = None
+        timeout_raw = raw_task.get("timeout_sec")
+        if timeout_raw is not None:
+            timeout_sec = float(timeout_raw)
+            if timeout_sec <= 0:
+                raise ValueError("task timeout_sec must be positive")
+
+        handoff_mode = (
+            str(raw_task.get("handoff_mode", _TASK_HANDOFF_SUMMARY_ONLY)).strip().lower()
+            or _TASK_HANDOFF_SUMMARY_ONLY
+        )
+        if handoff_mode not in {_TASK_HANDOFF_SUMMARY_ONLY, _TASK_HANDOFF_RAW_PASSTHROUGH}:
+            raise ValueError(f"Unsupported task handoff mode: {handoff_mode}")
+
+        return TaskSessionRequest(
+            task_description=task_description,
+            file_refs=file_refs,
+            capabilities=frozenset(scoped_capabilities),
+            timeout_sec=timeout_sec,
+            handoff_mode=handoff_mode,
+        )
+
+    def _effective_session_capabilities(
+        self,
+        *,
+        session_id: SessionId,
+        capabilities: set[Capability],
+    ) -> set[Capability]:
+        lockdown_manager = getattr(self, "_lockdown_manager", None)
+        if lockdown_manager is None:
+            return set(capabilities)
+        apply_restrictions = getattr(
+            lockdown_manager,
+            "apply_capability_restrictions",
+            None,
+        )
+        if callable(apply_restrictions):
+            return set(apply_restrictions(session_id, capabilities))
+        return set(capabilities)
+
+    def _write_task_artifact(
+        self,
+        *,
+        task_session_id: SessionId,
+        filename: str,
+        payload: str | Mapping[str, Any],
+    ) -> str:
+        artifact_root = self._config.data_dir / "task_artifacts" / str(task_session_id)
+        artifact_root.mkdir(parents=True, exist_ok=True)
+        artifact_path = artifact_root / filename
+        if isinstance(payload, str):
+            artifact_path.write_text(payload, encoding="utf-8")
+        else:
+            artifact_path.write_text(
+                json.dumps(payload, ensure_ascii=True, indent=2, sort_keys=True),
+                encoding="utf-8",
+            )
+        try:
+            artifact_path.chmod(0o600)
+        except OSError:
+            logger.warning("Failed to set task artifact permissions for %s", artifact_path)
+        return str(artifact_path)
+
+    async def _mark_command_context_degraded(
+        self,
+        *,
+        session: Session,
+        task_session_id: SessionId,
+        reason: str,
+        recovery_checkpoint_id: str,
+    ) -> None:
+        session.metadata[_COMMAND_CONTEXT_STATUS_KEY] = "degraded"
+        session.metadata[_COMMAND_CONTEXT_REASON_KEY] = reason
+        session.metadata[_COMMAND_CONTEXT_RECOVERY_CHECKPOINT_KEY] = recovery_checkpoint_id
+        self._session_manager.persist(session.id)
+        await self._event_bus.publish(
+            CommandContextDegraded(
+                session_id=session.id,
+                actor="task_session",
+                task_session_id=str(task_session_id),
+                reason=reason,
+                recovery_checkpoint_id=recovery_checkpoint_id,
+            )
+        )
+
+    async def _finalize_task_handoff_response(
+        self,
+        *,
+        validated: SessionMessageValidationResult,
+        handoff: TaskSessionHandoff,
+    ) -> dict[str, Any]:
+        sid = validated.sid
+        response_text = handoff.response_text
+        if not response_text.strip():
+            response_text = handoff.summary or "Delegated task completed."
+
+        output_result = self._output_firewall.inspect(
+            response_text,
+            context={"session_id": sid, "actor": "assistant"},
+        )
+        if output_result.blocked:
+            response_text = "Response blocked by output policy."
+        else:
+            response_text = output_result.sanitized_text
+            if output_result.require_confirmation:
+                response_text = f"[CONFIRMATION REQUIRED] {response_text}"
+
+        lockdown_notice = self._lockdown_manager.user_notification(sid)
+        if lockdown_notice:
+            response_text = f"{response_text}\n\n[LOCKDOWN NOTICE] {lockdown_notice}"
+
+        assistant_transcript_metadata = _transcript_metadata_for_channel(
+            channel=validated.channel,
+            session_mode=validated.session_mode,
+        )
+        assistant_transcript_metadata["task_result"] = {
+            "task_session_id": str(handoff.task_session_id),
+            "handoff_mode": handoff.handoff_mode,
+            "proposal_ref": handoff.proposal_ref,
+            "raw_log_ref": handoff.raw_log_ref,
+            "command_context": handoff.command_context,
+            "recovery_checkpoint_id": handoff.recovery_checkpoint_id or "",
+            "reason": handoff.reason,
+        }
+        self._transcript_store.append(
+            sid,
+            role="assistant",
+            content=response_text,
+            taint_labels={TaintLabel.UNTRUSTED},
+            metadata=assistant_transcript_metadata,
+        )
+
+        effective_caps = self._lockdown_manager.apply_capability_restrictions(
+            sid,
+            validated.session.capabilities,
+        )
+        await self._maybe_run_conversation_summarizer(
+            sid=sid,
+            session=validated.session,
+            session_mode=validated.session_mode,
+            capabilities=effective_caps,
+        )
+
+        await self._event_bus.publish(
+            SessionMessageResponded(
+                session_id=sid,
+                actor="assistant",
+                response_hash=_short_hash(response_text),
+                blocked_actions=handoff.blocked_actions + handoff.confirmation_required_actions,
+                executed_actions=handoff.executed_actions,
+                trust_level=validated.trust_level,
+                taint_labels=[TaintLabel.UNTRUSTED.value],
+                risk_score=validated.firewall_result.risk_score,
+            )
+        )
+
+        return {
+            "session_id": sid,
+            "response": response_text,
+            "plan_hash": handoff.plan_hash,
+            "risk_score": validated.firewall_result.risk_score,
+            "blocked_actions": handoff.blocked_actions,
+            "confirmation_required_actions": handoff.confirmation_required_actions,
+            "executed_actions": handoff.executed_actions,
+            "checkpoint_ids": [],
+            "checkpoints_created": 0,
+            "transcript_root": str(self._transcript_root),
+            "lockdown_level": self._lockdown_manager.state_for(sid).level.value,
+            "trust_level": validated.trust_level,
+            "session_mode": validated.session_mode.value,
+            "proposal_only": False,
+            "proposals": [],
+            "cleanroom_block_reasons": [],
+            "pending_confirmation_ids": [],
+            "output_policy": output_result.model_dump(mode="json"),
+            "planner_error": "",
+            "tool_outputs": [],
+            "delivery": {},
+            "task_result": {
+                "success": handoff.success,
+                "summary": handoff.summary,
+                "files_changed": list(handoff.files_changed),
+                "cost": None,
+                "duration_ms": handoff.duration_ms,
+                "proposal_ref": handoff.proposal_ref,
+                "raw_log_ref": handoff.raw_log_ref,
+                "task_session_id": str(handoff.task_session_id),
+                "task_session_mode": SessionMode.TASK.value,
+                "handoff_mode": handoff.handoff_mode,
+                "command_context": handoff.command_context,
+                "recovery_checkpoint_id": handoff.recovery_checkpoint_id,
+                "reason": handoff.reason,
+            },
+        }
+
+    async def _run_delegated_task_session(
+        self,
+        *,
+        validated: SessionMessageValidationResult,
+        task_request: TaskSessionRequest,
+    ) -> dict[str, Any]:
+        parent_session = validated.session
+        parent_sid = validated.sid
+        existing_recovery_checkpoint = _task_recovery_checkpoint_id(parent_session)
+
+        recovery_checkpoint_id = existing_recovery_checkpoint
+        if (
+            task_request.handoff_mode == _TASK_HANDOFF_RAW_PASSTHROUGH
+            and recovery_checkpoint_id is None
+        ):
+            checkpoint = self._checkpoint_store.create(
+                parent_session,
+                state={
+                    "session": parent_session.model_dump(mode="json"),
+                    "transcript_entry_count": len(self._transcript_store.list_entries(parent_sid)),
+                },
+            )
+            recovery_checkpoint_id = checkpoint.checkpoint_id
+
+        task_session = self._session_manager.create(
+            channel="task",
+            user_id=parent_session.user_id,
+            workspace_id=parent_session.workspace_id,
+            mode=SessionMode.TASK,
+            capabilities=set(task_request.capabilities),
+            metadata={
+                "capability_sync_mode": "manual_override",
+                "trust_level": "internal",
+                "session_mode": SessionMode.TASK.value,
+                _COMMAND_CONTEXT_STATUS_KEY: "clean",
+                "parent_session_id": str(parent_sid),
+                "task_file_refs": list(task_request.file_refs),
+            },
+        )
+        await self._event_bus.publish(
+            SessionCreated(
+                session_id=task_session.id,
+                user_id=task_session.user_id,
+                workspace_id=task_session.workspace_id,
+                actor="task_session",
+            )
+        )
+        await self._event_bus.publish(
+            TaskSessionStarted(
+                session_id=task_session.id,
+                actor="task_session",
+                parent_session_id=str(parent_sid),
+                task_description_hash=_short_hash(task_request.task_description),
+                file_refs=list(task_request.file_refs),
+                capabilities=sorted(cap.value for cap in task_request.capabilities),
+                handoff_mode=task_request.handoff_mode,
+            )
+        )
+
+        task_params = {
+            "session_id": task_session.id,
+            "content": _compose_task_request_content(
+                task_description=task_request.task_description,
+                file_refs=task_request.file_refs,
+            ),
+            "channel": task_session.channel,
+            "user_id": task_session.user_id,
+            "workspace_id": task_session.workspace_id,
+        }
+        task_t0 = time.monotonic()
+        task_response_payload: dict[str, Any]
+        failure_reason = ""
+
+        task_call = asyncio.create_task(self.do_session_message(task_params))
+        try:
+            if task_request.timeout_sec is not None:
+                task_response_payload = await asyncio.wait_for(
+                    task_call,
+                    timeout=task_request.timeout_sec,
+                )
+            else:
+                task_response_payload = await task_call
+        except TimeoutError:
+            failure_reason = "task_timeout"
+            task_call.cancel()
+            with suppress(asyncio.CancelledError):
+                await task_call
+            task_response_payload = {
+                "response": "Delegated task timed out before completion.",
+                "plan_hash": None,
+                "blocked_actions": 0,
+                "confirmation_required_actions": 0,
+                "executed_actions": 0,
+                "tool_outputs": [],
+            }
+        except Exception as exc:
+            failure_reason = f"task_error:{exc.__class__.__name__}"
+            logger.warning(
+                "Delegated task session %s failed",
+                task_session.id,
+                exc_info=True,
+            )
+            task_response_payload = {
+                "response": "Delegated task failed before completion.",
+                "plan_hash": None,
+                "blocked_actions": 0,
+                "confirmation_required_actions": 0,
+                "executed_actions": 0,
+                "tool_outputs": [],
+            }
+        finally:
+            terminated = self._session_manager.terminate(
+                task_session.id,
+                reason="task_session_complete",
+            )
+            if terminated:
+                await self._event_bus.publish(
+                    SessionTerminated(
+                        session_id=task_session.id,
+                        actor="task_session",
+                        reason="task_session_complete",
+                    )
+                )
+
+        raw_response_text = str(task_response_payload.get("response", "")).strip()
+        raw_plan_hash = task_response_payload.get("plan_hash")
+        serialized_tool_outputs = (
+            list(task_response_payload.get("tool_outputs", []))
+            if isinstance(task_response_payload.get("tool_outputs", []), list)
+            else []
+        )
+        raw_log_ref = self._write_task_artifact(
+            task_session_id=task_session.id,
+            filename="raw_log.json",
+            payload={
+                "task_session_id": str(task_session.id),
+                "parent_session_id": str(parent_sid),
+                "response": raw_response_text,
+                "tool_outputs": serialized_tool_outputs,
+                "plan_hash": task_response_payload.get("plan_hash"),
+                "reason": failure_reason,
+            },
+        )
+        proposal_ref: str | None = None
+        if serialized_tool_outputs or _looks_like_diff_content(raw_response_text):
+            proposal_ref = self._write_task_artifact(
+                task_session_id=task_session.id,
+                filename="proposal.json",
+                payload={
+                    "response": raw_response_text,
+                    "tool_outputs": serialized_tool_outputs,
+                },
+            )
+
+        summary_result = self._firewall.inspect(raw_response_text, trusted_input=False)
+        summary_text = summary_result.sanitized_text.strip()
+        if not summary_text:
+            summary_text = (
+                "Delegated task completed. Review the raw log artifact for details."
+                if not failure_reason
+                else "Delegated task failed. Review the raw log artifact for details."
+            )
+        summary_text = _compact_context_text(summary_text, max_chars=320)
+
+        command_context = _task_command_context_status(parent_session)
+        response_text = summary_text
+        if task_request.handoff_mode == _TASK_HANDOFF_RAW_PASSTHROUGH:
+            degrade_reason = "raw_task_content_passthrough"
+            if recovery_checkpoint_id is None:
+                raise RuntimeError("missing recovery checkpoint for raw task passthrough")
+            await self._mark_command_context_degraded(
+                session=parent_session,
+                task_session_id=task_session.id,
+                reason=degrade_reason,
+                recovery_checkpoint_id=recovery_checkpoint_id,
+            )
+            command_context = "degraded"
+            response_text = raw_response_text or summary_text
+
+        duration_ms = int((time.monotonic() - task_t0) * 1000)
+        success = failure_reason == ""
+        handoff = TaskSessionHandoff(
+            task_session_id=task_session.id,
+            success=success,
+            summary=summary_text,
+            response_text=response_text,
+            files_changed=_extract_files_changed_from_task_outputs(serialized_tool_outputs),
+            duration_ms=duration_ms,
+            proposal_ref=proposal_ref,
+            raw_log_ref=raw_log_ref,
+            handoff_mode=task_request.handoff_mode,
+            command_context=command_context,
+            recovery_checkpoint_id=(
+                recovery_checkpoint_id if command_context == "degraded" else None
+            ),
+            reason=failure_reason,
+            plan_hash=(
+                str(raw_plan_hash).strip()
+                if raw_plan_hash not in (None, "")
+                else None
+            ),
+            blocked_actions=int(task_response_payload.get("blocked_actions", 0) or 0),
+            confirmation_required_actions=int(
+                task_response_payload.get("confirmation_required_actions", 0) or 0
+            ),
+            executed_actions=int(task_response_payload.get("executed_actions", 0) or 0),
+        )
+
+        await self._event_bus.publish(
+            TaskSessionCompleted(
+                session_id=task_session.id,
+                actor="task_session",
+                parent_session_id=str(parent_sid),
+                success=handoff.success,
+                reason=handoff.reason,
+                duration_ms=handoff.duration_ms,
+                files_changed=list(handoff.files_changed),
+                proposal_ref=handoff.proposal_ref or "",
+                raw_log_ref=handoff.raw_log_ref or "",
+                handoff_mode=handoff.handoff_mode,
+                command_context=handoff.command_context,
+            )
+        )
+
+        return await self._finalize_task_handoff_response(
+            validated=validated,
+            handoff=handoff,
+        )
+
     async def do_session_message(self, params: Mapping[str, Any]) -> dict[str, Any]:
         rerouted = await self._maybe_run_rerouted_admin_cleanroom_message(params)
         if rerouted is not None:
@@ -2747,6 +3336,21 @@ class SessionImplMixin(HandlerMixinBase):
         validated = await self._validate_and_load_session(params)
         if validated.early_response is not None:
             return validated.early_response
+        task_request = self._task_request_from_params(
+            params=params,
+            parent_capabilities=self._effective_session_capabilities(
+                session_id=validated.sid,
+                capabilities=validated.session.capabilities,
+            ),
+            default_description=validated.firewall_result.sanitized_text,
+        )
+        if task_request is not None:
+            if validated.session_mode != SessionMode.DEFAULT:
+                raise ValueError("delegated task sessions require a default COMMAND session")
+            return await self._run_delegated_task_session(
+                validated=validated,
+                task_request=task_request,
+            )
         planner_context = await self._build_context_for_planner(validated)
         planner_dispatch = await self._dispatch_to_planner(planner_context)
         execution = await self._evaluate_and_execute_actions(planner_dispatch)
@@ -2765,7 +3369,7 @@ class SessionImplMixin(HandlerMixinBase):
         session = session_manager.get(sid)
         if session is None or session.state != SessionState.ACTIVE:
             return None
-        if session.mode == SessionMode.ADMIN_CLEANROOM:
+        if session.mode != SessionMode.DEFAULT:
             return None
         if session.channel not in _CLEANROOM_CHANNELS:
             return None
@@ -2836,7 +3440,7 @@ class SessionImplMixin(HandlerMixinBase):
         session_mode: SessionMode,
         capabilities: set[Capability],
     ) -> None:
-        if session_mode == SessionMode.ADMIN_CLEANROOM:
+        if session_mode in {SessionMode.ADMIN_CLEANROOM, SessionMode.TASK}:
             return
         if Capability.MEMORY_WRITE not in capabilities:
             return
@@ -2955,6 +3559,10 @@ class SessionImplMixin(HandlerMixinBase):
                     "session_key": s.session_key,
                     "created_at": s.created_at.isoformat(),
                     "lockdown_level": self._lockdown_manager.state_for(s.id).level.value,
+                    "command_context": _task_command_context_status(s),
+                    "recovery_checkpoint_id": _task_recovery_checkpoint_id(s),
+                    "parent_session_id": str(s.metadata.get("parent_session_id", "")).strip()
+                    or None,
                 }
                 for s in sessions
             ]
@@ -3011,6 +3619,26 @@ class SessionImplMixin(HandlerMixinBase):
             "session_id": restored.id,
         }
 
+    def _restore_transcript_from_checkpoint(
+        self,
+        *,
+        session_id: SessionId,
+        state: dict[str, Any],
+    ) -> int:
+        transcript_entry_count = state.get("transcript_entry_count")
+        if transcript_entry_count is None:
+            return 0
+        try:
+            normalized_count = max(0, int(transcript_entry_count))
+        except (TypeError, ValueError):
+            return 0
+        return int(
+            self._transcript_store.truncate(
+                session_id,
+                keep_entries=normalized_count,
+            )
+        )
+
     async def do_session_rollback(self, params: Mapping[str, Any]) -> dict[str, Any]:
         checkpoint_id = str(params.get("checkpoint_id", "")).strip()
         if not checkpoint_id:
@@ -3029,6 +3657,10 @@ class SessionImplMixin(HandlerMixinBase):
         files_restored, files_deleted, restore_errors = self._restore_filesystem_from_checkpoint(
             checkpoint.state
         )
+        transcript_entries_removed = self._restore_transcript_from_checkpoint(
+            session_id=restored.id,
+            state=checkpoint.state,
+        )
         await self._event_bus.publish(
             SessionRolledBack(
                 session_id=restored.id,
@@ -3042,6 +3674,7 @@ class SessionImplMixin(HandlerMixinBase):
             "session_id": restored.id,
             "files_restored": files_restored,
             "files_deleted": files_deleted,
+            "transcript_entries_removed": transcript_entries_removed,
             "restore_errors": restore_errors,
         }
 
@@ -3075,6 +3708,20 @@ class SessionImplMixin(HandlerMixinBase):
             raise ValueError(f"Unsupported session mode: {requested_mode}") from exc
 
         if mode == SessionMode.ADMIN_CLEANROOM:
+            if session.mode == SessionMode.TASK:
+                return {
+                    "session_id": sid,
+                    "mode": SessionMode.DEFAULT.value,
+                    "changed": False,
+                    "reason": "task_sessions_cannot_escalate",
+                }
+            if _task_command_context_status(session) == "degraded":
+                return {
+                    "session_id": sid,
+                    "mode": SessionMode.DEFAULT.value,
+                    "changed": False,
+                    "reason": "command_context_degraded",
+                }
             if not self._is_admin_rpc_peer(params):
                 raise ValueError("admin_cleanroom mode requires trusted admin ingress")
             if session.channel not in _CLEANROOM_CHANNELS:

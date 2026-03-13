@@ -266,6 +266,38 @@ class TaskDelegationAdvisory(BaseEvent):
     tools: list[str] = Field(default_factory=list)
 
 
+class TaskSessionStarted(BaseEvent):
+    """Ephemeral delegated TASK session started from a COMMAND session."""
+
+    parent_session_id: str = ""
+    task_description_hash: str = ""
+    file_refs: list[str] = Field(default_factory=list)
+    capabilities: list[str] = Field(default_factory=list)
+    handoff_mode: str = "summary_only"
+
+
+class TaskSessionCompleted(BaseEvent):
+    """Delegated TASK session completed and returned a structured handoff."""
+
+    parent_session_id: str = ""
+    success: bool = True
+    reason: str = ""
+    duration_ms: int = 0
+    files_changed: list[str] = Field(default_factory=list)
+    proposal_ref: str = ""
+    raw_log_ref: str = ""
+    handoff_mode: str = "summary_only"
+    command_context: str = "clean"
+
+
+class CommandContextDegraded(BaseEvent):
+    """COMMAND session ingested raw TASK content and entered degraded mode."""
+
+    task_session_id: str = ""
+    reason: str = ""
+    recovery_checkpoint_id: str = ""
+
+
 class OutputFirewallAlert(BaseEvent):
     """Outbound content triggered firewall controls."""
 
@@ -438,6 +470,9 @@ type AnyEvent = (
     | TaskScheduled
     | TaskTriggered
     | TaskDelegationAdvisory
+    | TaskSessionStarted
+    | TaskSessionCompleted
+    | CommandContextDegraded
     | OutputFirewallAlert
     | SandboxDegraded
     | SandboxEscapeDetected
@@ -480,6 +515,9 @@ EVENT_TYPES: dict[str, type[BaseEvent]] = {
     "TaskScheduled": TaskScheduled,
     "TaskTriggered": TaskTriggered,
     "TaskDelegationAdvisory": TaskDelegationAdvisory,
+    "TaskSessionStarted": TaskSessionStarted,
+    "TaskSessionCompleted": TaskSessionCompleted,
+    "CommandContextDegraded": CommandContextDegraded,
     "OutputFirewallAlert": OutputFirewallAlert,
     "SandboxDegraded": SandboxDegraded,
     "SandboxEscapeDetected": SandboxEscapeDetected,

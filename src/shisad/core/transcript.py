@@ -100,6 +100,25 @@ class TranscriptStore:
             entries.append(TranscriptEntry.model_validate_json(line))
         return entries
 
+    def truncate(self, session_id: SessionId, *, keep_entries: int) -> int:
+        """Keep only the first ``keep_entries`` transcript rows for a session."""
+        path = self._transcript_dir / f"{session_id}.jsonl"
+        if not path.exists():
+            return 0
+
+        entries = self.list_entries(session_id)
+        normalized_keep = max(0, int(keep_entries))
+        if normalized_keep >= len(entries):
+            return 0
+
+        kept = entries[:normalized_keep]
+        removed = len(entries) - len(kept)
+        with path.open("w", encoding="utf-8") as handle:
+            for entry in kept:
+                handle.write(entry.model_dump_json() + "\n")
+        self._ensure_file_permissions(path)
+        return removed
+
     def read_blob(self, content_hash: str) -> str | None:
         """Read a large blob by its content hash."""
         path = self._blob_dir / f"{content_hash}.txt"

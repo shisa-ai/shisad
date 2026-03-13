@@ -123,3 +123,4 @@ class SessionMode(StrEnum):
 
     DEFAULT = "default"
     ADMIN_CLEANROOM = "admin_cleanroom"
+    TASK = "task"

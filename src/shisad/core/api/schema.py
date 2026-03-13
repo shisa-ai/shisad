@@ -88,6 +88,36 @@ class SessionMessageParams(_StrictParams):
     channel: str = "cli"
     user_id: str | None = None
     workspace_id: str | None = None
+    task: SessionTaskParams | None = None
+
+
+class SessionTaskParams(_StrictParams):
+    """Optional delegated TASK-session request carried on session.message."""
+
+    enabled: bool = False
+    task_description: str = ""
+    file_refs: list[str] = Field(default_factory=list)
+    capabilities: list[str] | None = None
+    timeout_sec: float | None = None
+    handoff_mode: Literal["summary_only", "raw_passthrough"] = "summary_only"
+
+
+class SessionTaskResult(BaseModel):
+    """Structured TASK -> COMMAND handoff payload."""
+
+    success: bool
+    summary: str = ""
+    files_changed: list[str] = Field(default_factory=list)
+    cost: float | None = None
+    duration_ms: int = 0
+    proposal_ref: str | None = None
+    raw_log_ref: str | None = None
+    task_session_id: str = ""
+    task_session_mode: str = "task"
+    handoff_mode: str = "summary_only"
+    command_context: str = "clean"
+    recovery_checkpoint_id: str | None = None
+    reason: str = ""
 
 
 class SessionMessageResult(BaseModel):
@@ -114,6 +144,7 @@ class SessionMessageResult(BaseModel):
     planner_error: str = ""
     tool_outputs: list[dict[str, Any]] = Field(default_factory=list)
     delivery: dict[str, Any] = Field(default_factory=dict)
+    task_result: SessionTaskResult | None = None
 
 
 class SessionListEntry(BaseModel):
@@ -130,6 +161,9 @@ class SessionListEntry(BaseModel):
     session_key: str | None = None
     created_at: str | None = None
     lockdown_level: str | None = None
+    command_context: str = "clean"
+    recovery_checkpoint_id: str | None = None
+    parent_session_id: str | None = None
 
 
 class SessionListResult(BaseModel):
@@ -184,6 +218,7 @@ class SessionRollbackResult(BaseModel):
     session_id: str | None = None
     files_restored: int = 0
     files_deleted: int = 0
+    transcript_entries_removed: int = 0
     restore_errors: list[str] = Field(default_factory=list)
 
 

@@ -107,6 +107,21 @@ def test_m6_transcript_store_writes_secure_permissions(tmp_path: Path) -> None:
     assert blob_mode == 0o600
 
 
+def test_m2_transcript_store_truncate_discards_tail_entries(tmp_path: Path) -> None:
+    store = TranscriptStore(tmp_path / "sessions")
+    session_id = SessionId("m2-session")
+    store.append(session_id, role="user", content="first", taint_labels=set())
+    store.append(session_id, role="assistant", content="second", taint_labels=set())
+    store.append(session_id, role="user", content="third", taint_labels=set())
+
+    removed = store.truncate(session_id, keep_entries=1)
+    entries = store.list_entries(session_id)
+
+    assert removed == 2
+    assert len(entries) == 1
+    assert entries[0].content_preview == "first"
+
+
 @pytest.mark.asyncio
 async def test_m1_t15_report_anomaly_tool_always_succeeds_and_logs(tmp_path: Path) -> None:
     audit = AuditLog(tmp_path / "audit.jsonl")

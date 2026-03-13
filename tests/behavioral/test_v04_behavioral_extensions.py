@@ -40,9 +40,10 @@ async def _start_daemon(
     tmp_path: Path,
     *,
     allowed_signers_path: Path | None = None,
+    policy_text: str | None = None,
 ) -> tuple[asyncio.Task[None], ControlClient, DaemonConfig]:
     policy_path = tmp_path / "policy.yaml"
-    policy_path.write_text(_base_policy(), encoding="utf-8")
+    policy_path.write_text(policy_text or _base_policy(), encoding="utf-8")
     config_kwargs: dict[str, Any] = {
         "data_dir": tmp_path / "data",
         "socket_path": tmp_path / "control.sock",
@@ -684,5 +685,299 @@ async def test_behavioral_integrity_mismatch_blocks_apply_and_keeps_last_known_g
         assert operator_tone["enabled"] is True
         assert operator_tone["active_version"] == "1.0.0"
         assert status["selfmod"]["incident"]["reason"] == "integrity_mismatch"
+    finally:
+        await _shutdown_daemon(daemon_task, client)
+
+
+@pytest.mark.asyncio
+async def test_behavioral_task_handoff_returns_summary_and_artifact_refs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _task_only_planner(
+        self: Planner,
+        user_content: str,
+        context: object,
+        *,
+        tools: list[dict[str, object]] | None = None,
+        persona_tone_override: str | None = None,
+    ) -> PlannerResult:
+        _ = (self, context, tools, persona_tone_override)
+        if "TASK REQUEST:" in user_content:
+            return PlannerResult(
+                output=PlannerOutput(
+                    assistant_response=(
+                        "Reviewed README.md and prepared a patch. RAW DIFF stays in the task log."
+                    ),
+                    actions=[],
+                ),
+                evaluated=[],
+                attempts=1,
+                provider_response=None,
+                messages_sent=(),
+            )
+        return PlannerResult(
+            output=PlannerOutput(assistant_response="ok", actions=[]),
+            evaluated=[],
+            attempts=1,
+            provider_response=None,
+            messages_sent=(),
+        )
+
+    monkeypatch.setattr(Planner, "propose", _task_only_planner)
+    policy_text = (
+        'version: "1"\n'
+        "default_require_confirmation: false\n"
+        "default_capabilities:\n"
+        "  - file.read\n"
+    )
+    daemon_task, client, _config = await _start_daemon(tmp_path, policy_text=policy_text)
+    try:
+        created = await client.call("session.create", {"channel": "cli"})
+        sid = str(created["session_id"])
+        result = await client.call(
+            "session.message",
+            {
+                "session_id": sid,
+                "content": "delegate this review task",
+                "task": {
+                    "enabled": True,
+                    "task_description": "Review README.md and summarize the outcome.",
+                    "file_refs": ["README.md"],
+                    "capabilities": ["file.read"],
+                },
+            },
+        )
+
+        task_result = dict(result.get("task_result") or {})
+        assert result["session_id"] == sid
+        assert task_result["success"] is True
+        assert task_result["handoff_mode"] == "summary_only"
+        assert task_result["raw_log_ref"]
+        assert task_result["task_session_id"]
+        assert "RAW DIFF stays in the task log." in result["response"]
+        assert "task log" in task_result["summary"]
+    finally:
+        await _shutdown_daemon(daemon_task, client)
+
+
+@pytest.mark.asyncio
+async def test_behavioral_task_session_excludes_command_transcript_and_memory_from_prompt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured_inputs: list[str] = []
+
+    async def _capture_task_prompt(
+        self: Planner,
+        user_content: str,
+        context: object,
+        *,
+        tools: list[dict[str, object]] | None = None,
+        persona_tone_override: str | None = None,
+    ) -> PlannerResult:
+        _ = (self, context, tools, persona_tone_override)
+        captured_inputs.append(user_content)
+        return PlannerResult(
+            output=PlannerOutput(assistant_response="Task summary ready.", actions=[]),
+            evaluated=[],
+            attempts=1,
+            provider_response=None,
+            messages_sent=(),
+        )
+
+    monkeypatch.setattr(Planner, "propose", _capture_task_prompt)
+    policy_text = (
+        'version: "1"\n'
+        "default_require_confirmation: false\n"
+        "default_capabilities:\n"
+        "  - memory.read\n"
+        "  - file.read\n"
+    )
+    daemon_task, client, _config = await _start_daemon(tmp_path, policy_text=policy_text)
+    try:
+        created = await client.call(
+            "session.create",
+            {"channel": "cli", "user_id": "alice", "workspace_id": "ws1"},
+        )
+        sid = str(created["session_id"])
+
+        await client.call(
+            "session.message",
+            {"session_id": sid, "content": "hello from command history"},
+        )
+        await client.call(
+            "memory.ingest",
+            {
+                "source_id": "task-canary",
+                "source_type": "external",
+                "collection": "project_docs",
+                "content": "MEMORY CANARY: delegated tasks must not see this",
+            },
+        )
+
+        await client.call(
+            "session.message",
+            {
+                "session_id": sid,
+                "content": "run an isolated task",
+                "task": {
+                    "enabled": True,
+                    "task_description": "Review README.md in isolation.",
+                    "file_refs": ["README.md"],
+                    "capabilities": ["file.read"],
+                },
+            },
+        )
+
+        assert captured_inputs
+        assert "hello from command history" not in captured_inputs[-1]
+        assert "MEMORY CANARY" not in captured_inputs[-1]
+        assert "MEMORY CONTEXT" not in captured_inputs[-1]
+        assert "TASK LEDGER" not in captured_inputs[-1]
+        assert "README.md" in captured_inputs[-1]
+    finally:
+        await _shutdown_daemon(daemon_task, client)
+
+
+@pytest.mark.asyncio
+async def test_behavioral_raw_task_ingest_marks_command_degraded_and_allows_fresh_cleanroom(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _planner_with_raw_task_fallback(
+        self: Planner,
+        user_content: str,
+        context: object,
+        *,
+        tools: list[dict[str, object]] | None = None,
+        persona_tone_override: str | None = None,
+    ) -> PlannerResult:
+        _ = (self, context, tools, persona_tone_override)
+        if "TASK REQUEST:" in user_content:
+            return PlannerResult(
+                output=PlannerOutput(
+                    assistant_response="RAW DIFF\n--- a/README.md\n+++ b/README.md\n+secret",
+                    actions=[],
+                ),
+                evaluated=[],
+                attempts=1,
+                provider_response=None,
+                messages_sent=(),
+            )
+        return PlannerResult(
+            output=PlannerOutput(assistant_response="Admin proposal ready.", actions=[]),
+            evaluated=[],
+            attempts=1,
+            provider_response=None,
+            messages_sent=(),
+        )
+
+    monkeypatch.setattr(Planner, "propose", _planner_with_raw_task_fallback)
+    policy_text = (
+        'version: "1"\n'
+        "default_require_confirmation: false\n"
+        "default_capabilities:\n"
+        "  - file.read\n"
+    )
+    daemon_task, client, _config = await _start_daemon(tmp_path, policy_text=policy_text)
+    try:
+        created = await client.call(
+            "session.create",
+            {"channel": "cli", "user_id": "admin", "workspace_id": "ops"},
+        )
+        sid = str(created["session_id"])
+
+        delegated = await client.call(
+            "session.message",
+            {
+                "session_id": sid,
+                "content": "debug this delegated task",
+                "task": {
+                    "enabled": True,
+                    "task_description": "Return the raw diff for inspection.",
+                    "file_refs": ["README.md"],
+                    "capabilities": ["file.read"],
+                    "handoff_mode": "raw_passthrough",
+                },
+            },
+        )
+        sessions = await client.call("session.list")
+        row = next(item for item in sessions["sessions"] if item["id"] == sid)
+
+        assert "RAW DIFF" in delegated["response"]
+        assert delegated["task_result"]["command_context"] == "degraded"
+        assert row["command_context"] == "degraded"
+        assert row["recovery_checkpoint_id"]
+
+        follow_on = await client.call(
+            "session.message",
+            {
+                "session_id": sid,
+                "content": "install the signed behavior pack and update assistant behavior",
+            },
+        )
+        assert follow_on["session_mode"] == "admin_cleanroom"
+        assert follow_on["proposal_only"] is True
+    finally:
+        await _shutdown_daemon(daemon_task, client)
+
+
+@pytest.mark.asyncio
+async def test_behavioral_task_session_cannot_spawn_sudo(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _task_admin_like_prompt_stays_task(
+        self: Planner,
+        user_content: str,
+        context: object,
+        *,
+        tools: list[dict[str, object]] | None = None,
+        persona_tone_override: str | None = None,
+    ) -> PlannerResult:
+        _ = (self, context, tools, persona_tone_override)
+        return PlannerResult(
+            output=PlannerOutput(assistant_response="Task stayed in task mode.", actions=[]),
+            evaluated=[],
+            attempts=1,
+            provider_response=None,
+            messages_sent=(),
+        )
+
+    monkeypatch.setattr(Planner, "propose", _task_admin_like_prompt_stays_task)
+    policy_text = (
+        'version: "1"\n'
+        "default_require_confirmation: false\n"
+        "default_capabilities:\n"
+        "  - file.read\n"
+    )
+    daemon_task, client, _config = await _start_daemon(tmp_path, policy_text=policy_text)
+    try:
+        created = await client.call(
+            "session.create",
+            {"channel": "cli", "user_id": "admin", "workspace_id": "ops"},
+        )
+        sid = str(created["session_id"])
+        result = await client.call(
+            "session.message",
+            {
+                "session_id": sid,
+                "content": "delegate admin-like task",
+                "task": {
+                    "enabled": True,
+                    "task_description": (
+                        "install the signed behavior pack and update assistant behavior"
+                    ),
+                    "file_refs": ["README.md"],
+                    "capabilities": ["file.read"],
+                },
+            },
+        )
+
+        task_result = dict(result.get("task_result") or {})
+        assert task_result["task_session_mode"] == "task"
+        assert result["session_mode"] == "default"
+        assert result["proposal_only"] is False
     finally:
         await _shutdown_daemon(daemon_task, client)
