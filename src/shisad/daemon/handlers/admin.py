@@ -15,6 +15,14 @@ from shisad.core.api.schema import (
     ChannelPairingProposalResult,
     DaemonShutdownResult,
     DaemonStatusResult,
+    DevCloseParams,
+    DevCloseResult,
+    DevImplementParams,
+    DevImplementResult,
+    DevRemediateParams,
+    DevRemediateResult,
+    DevReviewParams,
+    DevReviewResult,
     DoctorCheckParams,
     DoctorCheckResult,
     LockdownSetParams,
@@ -163,3 +171,51 @@ class AdminHandlers:
         return AdminSelfModRollbackResult.model_validate(
             await self._impl.do_admin_selfmod_rollback(payload)
         )
+
+    async def handle_dev_implement(
+        self,
+        params: DevImplementParams,
+        ctx: RequestContext,
+    ) -> DevImplementResult:
+        payload = build_params_payload(
+            params,
+            ctx,
+            internal_ingress_marker=self._internal_ingress_marker,
+        )
+        return DevImplementResult.model_validate(await self._impl.do_dev_implement(payload))
+
+    async def handle_dev_review(
+        self,
+        params: DevReviewParams,
+        ctx: RequestContext,
+    ) -> DevReviewResult:
+        payload = build_params_payload(
+            params,
+            ctx,
+            internal_ingress_marker=self._internal_ingress_marker,
+        )
+        return DevReviewResult.model_validate(await self._impl.do_dev_review(payload))
+
+    async def handle_dev_remediate(
+        self,
+        params: DevRemediateParams,
+        ctx: RequestContext,
+    ) -> DevRemediateResult:
+        payload = build_params_payload(
+            params,
+            ctx,
+            internal_ingress_marker=self._internal_ingress_marker,
+        )
+        return DevRemediateResult.model_validate(await self._impl.do_dev_remediate(payload))
+
+    async def handle_dev_close(
+        self,
+        params: DevCloseParams,
+        ctx: RequestContext,
+    ) -> DevCloseResult:
+        payload = build_params_payload(
+            params,
+            ctx,
+            internal_ingress_marker=self._internal_ingress_marker,
+        )
+        return DevCloseResult.model_validate(await self._impl.do_dev_close(payload))

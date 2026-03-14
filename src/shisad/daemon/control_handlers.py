@@ -32,6 +32,14 @@ from shisad.core.api.schema import (
     DashboardMarkFalsePositiveResult,
     DashboardQueryParams,
     DashboardQueryResult,
+    DevCloseParams,
+    DevCloseResult,
+    DevImplementParams,
+    DevImplementResult,
+    DevRemediateParams,
+    DevRemediateResult,
+    DevReviewParams,
+    DevReviewResult,
     DoctorCheckParams,
     DoctorCheckResult,
     FsListParams,
@@ -262,6 +270,26 @@ class DaemonControlHandlers:
         self, params: AdminSelfModRollbackParams, ctx: RequestContext
     ) -> AdminSelfModRollbackResult:
         return await self._admin.handle_admin_selfmod_rollback(params, ctx)
+
+    async def handle_dev_implement(
+        self, params: DevImplementParams, ctx: RequestContext
+    ) -> DevImplementResult:
+        return await self._admin.handle_dev_implement(params, ctx)
+
+    async def handle_dev_review(
+        self, params: DevReviewParams, ctx: RequestContext
+    ) -> DevReviewResult:
+        return await self._admin.handle_dev_review(params, ctx)
+
+    async def handle_dev_remediate(
+        self, params: DevRemediateParams, ctx: RequestContext
+    ) -> DevRemediateResult:
+        return await self._admin.handle_dev_remediate(params, ctx)
+
+    async def handle_dev_close(
+        self, params: DevCloseParams, ctx: RequestContext
+    ) -> DevCloseResult:
+        return await self._admin.handle_dev_close(params, ctx)
 
     async def handle_audit_query(
         self, params: AuditQueryParams, ctx: RequestContext

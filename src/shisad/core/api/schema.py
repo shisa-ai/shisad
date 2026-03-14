@@ -823,6 +823,51 @@ class AdminSelfModRollbackParams(_StrictParams):
     change_id: str
 
 
+class DevImplementParams(_StrictParams):
+    task: str = Field(min_length=1)
+    agent: str | None = None
+    file_refs: list[str] = Field(default_factory=list)
+    fallback_agents: list[str] = Field(default_factory=list)
+    capabilities: list[str] | None = None
+    max_turns: int | None = None
+    max_budget_usd: float | None = None
+    model: str | None = None
+    reasoning_effort: str | None = None
+    timeout_sec: float | None = None
+
+
+class DevReviewParams(_StrictParams):
+    scope: str = Field(min_length=1)
+    agent: str | None = None
+    mode: Literal["readonly"] = "readonly"
+    file_refs: list[str] = Field(default_factory=list)
+    fallback_agents: list[str] = Field(default_factory=list)
+    capabilities: list[str] | None = None
+    max_turns: int | None = None
+    max_budget_usd: float | None = None
+    model: str | None = None
+    reasoning_effort: str | None = None
+    timeout_sec: float | None = None
+
+
+class DevRemediateParams(_StrictParams):
+    findings: str = Field(min_length=1)
+    agent: str | None = None
+    file_refs: list[str] = Field(default_factory=list)
+    fallback_agents: list[str] = Field(default_factory=list)
+    capabilities: list[str] | None = None
+    max_turns: int | None = None
+    max_budget_usd: float | None = None
+    model: str | None = None
+    reasoning_effort: str | None = None
+    timeout_sec: float | None = None
+
+
+class DevCloseParams(_StrictParams):
+    milestone: str = Field(min_length=1)
+    implementation_path: str | None = None
+
+
 class AdminSelfModProposeResult(BaseModel):
     proposal_id: str
     artifact_type: str
@@ -856,6 +901,36 @@ class AdminSelfModRollbackResult(BaseModel):
     restored_version: str = ""
     active_version: str = ""
     reason: str = ""
+
+
+class DevImplementResult(SessionTaskResult):
+    operation: Literal["implement"] = "implement"
+
+
+class DevReviewResult(SessionTaskResult):
+    operation: Literal["review"] = "review"
+    findings: list[str] = Field(default_factory=list)
+
+
+class DevRemediateResult(SessionTaskResult):
+    operation: Literal["remediate"] = "remediate"
+
+
+class DevCloseResult(BaseModel):
+    milestone: str
+    implementation_path: str
+    ready: bool
+    section_found: bool = False
+    runtime_wiring_recorded: bool = False
+    validation_recorded: bool = False
+    docs_parity_recorded: bool = False
+    worklog_updated: bool = False
+    review_status_recorded: bool = False
+    punchlist_complete: bool = False
+    acceptance_checklist_complete: bool = False
+    missing_evidence: list[str] = Field(default_factory=list)
+    unchecked_items: list[str] = Field(default_factory=list)
+    open_finding_ids: list[str] = Field(default_factory=list)
 
 
 class DaemonStatusResult(BaseModel):

@@ -21,6 +21,7 @@ from shisad.core.events import (
 from shisad.core.tools.names import canonical_tool_name_typed
 from shisad.core.types import SessionId, UserId, WorkspaceId
 from shisad.daemon.handlers._mixin_typing import HandlerMixinBase
+from shisad.devloop import assess_milestone_readiness
 from shisad.executors.sandbox import SandboxType
 from shisad.governance.scopes import ScopedPolicy, ScopedPolicyCompiler, ScopeLevel
 
@@ -36,7 +37,125 @@ _DOCTOR_COMPONENTS: tuple[str, ...] = (
 )
 
 
+def _normalized_text_sequence(raw_values: Any) -> tuple[str, ...]:
+    if not isinstance(raw_values, list):
+        return ()
+    values: list[str] = []
+    for item in raw_values:
+        normalized = str(item).strip()
+        if normalized:
+            values.append(normalized)
+    return tuple(values)
+
+
+def _review_findings_from_summary(summary: str) -> list[str]:
+    findings: list[str] = []
+    for raw_line in summary.splitlines():
+        candidate = raw_line.strip().lstrip("-* ").strip()
+        if candidate:
+            findings.append(candidate)
+    return findings
+
+
 class AdminImplMixin(HandlerMixinBase):
+    async def _run_dev_coding_task(
+        self,
+        *,
+        params: Mapping[str, Any],
+        operation: str,
+        task_description: str,
+        file_refs: tuple[str, ...],
+        task_kind: str,
+        read_only: bool,
+    ) -> dict[str, Any]:
+        rpc_peer = params.get("_rpc_peer")
+        session_payload: dict[str, Any] = {
+            "channel": "cli",
+            "user_id": "ops",
+            "workspace_id": "default",
+        }
+        if isinstance(rpc_peer, Mapping):
+            session_payload["_rpc_peer"] = dict(rpc_peer)
+
+        created = await self.do_session_create(session_payload)
+        command_session_id = str(created.get("session_id", "")).strip()
+        if not command_session_id:
+            raise RuntimeError(f"dev.{operation} failed to create a command session")
+
+        try:
+            delegated_task: dict[str, Any] = {
+                "enabled": True,
+                "executor": "coding_agent",
+                "task_description": task_description,
+                "file_refs": list(file_refs),
+                "task_kind": task_kind,
+                "read_only": read_only,
+                "handoff_mode": "summary_only",
+            }
+            preferred_agent = str(params.get("agent", "")).strip()
+            if preferred_agent:
+                delegated_task["preferred_agent"] = preferred_agent
+            fallback_agents = _normalized_text_sequence(params.get("fallback_agents"))
+            if fallback_agents:
+                delegated_task["fallback_agents"] = list(fallback_agents)
+            capabilities = _normalized_text_sequence(params.get("capabilities"))
+            if capabilities:
+                delegated_task["capabilities"] = list(capabilities)
+            max_turns = params.get("max_turns")
+            if max_turns is not None:
+                delegated_task["max_turns"] = int(max_turns)
+            max_budget = params.get("max_budget_usd")
+            if max_budget is not None:
+                delegated_task["max_budget_usd"] = float(max_budget)
+            model = str(params.get("model", "")).strip()
+            if model:
+                delegated_task["model"] = model
+            reasoning_effort = str(params.get("reasoning_effort", "")).strip()
+            if reasoning_effort:
+                delegated_task["reasoning_effort"] = reasoning_effort
+            timeout_sec = params.get("timeout_sec")
+            if timeout_sec is not None:
+                delegated_task["timeout_sec"] = float(timeout_sec)
+
+            message_payload: dict[str, Any] = {
+                "session_id": command_session_id,
+                "content": f"Run dev.{operation} through a delegated coding-agent task.",
+                "channel": "cli",
+                "user_id": session_payload["user_id"],
+                "workspace_id": session_payload["workspace_id"],
+                "task": delegated_task,
+            }
+            if isinstance(rpc_peer, Mapping):
+                message_payload["_rpc_peer"] = dict(rpc_peer)
+
+            response = await self.do_session_message(message_payload)
+        finally:
+            terminate_payload: dict[str, Any] = {
+                "session_id": command_session_id,
+                "reason": f"dev_{operation}_complete",
+                "channel": "cli",
+                "user_id": session_payload["user_id"],
+                "workspace_id": session_payload["workspace_id"],
+            }
+            if isinstance(rpc_peer, Mapping):
+                terminate_payload["_rpc_peer"] = dict(rpc_peer)
+            try:
+                await self.do_session_terminate(terminate_payload)
+            except Exception:
+                logger.warning(
+                    "Failed to terminate dev.%s command session %s",
+                    operation,
+                    command_session_id,
+                    exc_info=True,
+                )
+
+        task_result = response.get("task_result")
+        if not isinstance(task_result, Mapping):
+            raise RuntimeError(f"dev.{operation} did not return a delegated task result")
+        result = dict(task_result)
+        result["operation"] = operation
+        return result
+
     async def do_daemon_status(self, params: Mapping[str, Any]) -> dict[str, Any]:
         _ = params
         return {
@@ -158,6 +277,81 @@ class AdminImplMixin(HandlerMixinBase):
             raise ValueError("change_id is required")
         result = self._selfmod_manager.rollback(change_id)
         return cast(dict[str, Any], result.model_dump(mode="json"))
+
+    async def do_dev_implement(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        task = str(params.get("task", "")).strip()
+        if not task:
+            raise ValueError("task is required")
+        return await self._run_dev_coding_task(
+            params=params,
+            operation="implement",
+            task_description=task,
+            file_refs=_normalized_text_sequence(params.get("file_refs")),
+            task_kind="implement",
+            read_only=False,
+        )
+
+    async def do_dev_review(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        scope = str(params.get("scope", "")).strip()
+        if not scope:
+            raise ValueError("scope is required")
+        result = await self._run_dev_coding_task(
+            params=params,
+            operation="review",
+            task_description=scope,
+            file_refs=_normalized_text_sequence(params.get("file_refs")),
+            task_kind="review",
+            read_only=True,
+        )
+        result["findings"] = _review_findings_from_summary(str(result.get("summary", "")))
+        return result
+
+    async def do_dev_remediate(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        findings = str(params.get("findings", "")).strip()
+        if not findings:
+            raise ValueError("findings is required")
+        return await self._run_dev_coding_task(
+            params=params,
+            operation="remediate",
+            task_description=f"Remediate the following findings:\n{findings}",
+            file_refs=_normalized_text_sequence(params.get("file_refs")),
+            task_kind="implement",
+            read_only=False,
+        )
+
+    async def do_dev_close(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        milestone = str(params.get("milestone", "")).strip()
+        if not milestone:
+            raise ValueError("milestone is required")
+        implementation_path_raw = str(params.get("implementation_path", "")).strip()
+        if implementation_path_raw:
+            implementation_path = Path(implementation_path_raw)
+            if not implementation_path.is_absolute():
+                implementation_path = self._config.coding_repo_root / implementation_path
+        else:
+            implementation_path = (
+                self._config.coding_repo_root / "docs" / "v0.4" / "IMPLEMENTATION.md"
+            )
+        report = assess_milestone_readiness(
+            implementation_path=implementation_path,
+            milestone=milestone,
+        )
+        return {
+            "milestone": report.milestone,
+            "implementation_path": str(report.implementation_path),
+            "ready": report.ready,
+            "section_found": report.section_found,
+            "runtime_wiring_recorded": report.runtime_wiring_recorded,
+            "validation_recorded": report.validation_recorded,
+            "docs_parity_recorded": report.docs_parity_recorded,
+            "worklog_updated": report.worklog_updated,
+            "review_status_recorded": report.review_status_recorded,
+            "punchlist_complete": report.punchlist_complete,
+            "acceptance_checklist_complete": report.acceptance_checklist_complete,
+            "missing_evidence": list(report.missing_evidence),
+            "unchecked_items": list(report.unchecked_items),
+            "open_finding_ids": list(report.open_finding_ids),
+        }
 
     async def do_doctor_check(self, params: Mapping[str, Any]) -> dict[str, Any]:
         component = str(params.get("component", "all")).strip().lower() or "all"

@@ -141,6 +141,74 @@ def test_cli_commands_route_through_rpc_wrapper(
             "active_version": "0.9.0",
             "reason": "",
         },
+        "dev.implement": {
+            "operation": "implement",
+            "success": True,
+            "summary": "codex completed mode=build",
+            "files_changed": ["README.md"],
+            "cost": 0.42,
+            "agent": "codex",
+            "duration_ms": 1200,
+            "proposal_ref": "/tmp/proposal.json",
+            "raw_log_ref": "/tmp/raw-log.json",
+            "task_session_id": "task-1",
+            "task_session_mode": "task",
+            "handoff_mode": "summary_only",
+            "command_context": "clean",
+            "reason": "",
+        },
+        "dev.review": {
+            "operation": "review",
+            "success": True,
+            "summary": "claude completed mode=plan",
+            "findings": ["claude completed mode=plan"],
+            "files_changed": ["README.md"],
+            "cost": 0.42,
+            "agent": "claude",
+            "duration_ms": 900,
+            "proposal_ref": "/tmp/review-proposal.json",
+            "raw_log_ref": "/tmp/review-raw-log.json",
+            "task_session_id": "task-2",
+            "task_session_mode": "task",
+            "handoff_mode": "summary_only",
+            "command_context": "clean",
+            "reason": "",
+        },
+        "dev.remediate": {
+            "operation": "remediate",
+            "success": True,
+            "summary": "codex completed mode=build",
+            "files_changed": ["README.md"],
+            "cost": 0.42,
+            "agent": "codex",
+            "duration_ms": 1000,
+            "proposal_ref": "/tmp/remediate-proposal.json",
+            "raw_log_ref": "/tmp/remediate-raw-log.json",
+            "task_session_id": "task-3",
+            "task_session_mode": "task",
+            "handoff_mode": "summary_only",
+            "command_context": "clean",
+            "reason": "",
+        },
+        "dev.close": {
+            "milestone": "M4",
+            "implementation_path": "/tmp/IMPLEMENTATION.md",
+            "ready": False,
+            "section_found": True,
+            "runtime_wiring_recorded": True,
+            "validation_recorded": False,
+            "docs_parity_recorded": False,
+            "worklog_updated": False,
+            "review_status_recorded": False,
+            "punchlist_complete": False,
+            "acceptance_checklist_complete": False,
+            "missing_evidence": [
+                "validation_evidence_missing",
+                "docs_parity_evidence_missing",
+            ],
+            "unchecked_items": ["Validation evidence recorded."],
+            "open_finding_ids": [],
+        },
         "dashboard.audit_explorer": {
             "events": [
                 {
@@ -343,6 +411,76 @@ def test_cli_commands_route_through_rpc_wrapper(
         runner,
         ["admin", "selfmod", "rollback", "change-1"],
     ).output
+    _invoke_ok(
+        runner,
+        [
+            "dev",
+            "implement",
+            "Add",
+            "a",
+            "README",
+            "note",
+            "--agent",
+            "codex",
+            "--file-ref",
+            "README.md",
+            "--fallback-agent",
+            "claude",
+            "--capability",
+            "file.read",
+            "--capability",
+            "file.write",
+            "--max-turns",
+            "4",
+            "--max-budget-usd",
+            "2.5",
+            "--model",
+            "fast-model",
+            "--reasoning-effort",
+            "medium",
+            "--timeout-sec",
+            "30",
+        ],
+    )
+    _invoke_ok(
+        runner,
+        [
+            "dev",
+            "review",
+            "Review",
+            "README.md",
+            "--agent",
+            "claude",
+            "--mode",
+            "readonly",
+            "--file-ref",
+            "README.md",
+        ],
+    )
+    _invoke_ok(
+        runner,
+        [
+            "dev",
+            "remediate",
+            "Fix",
+            "README",
+            "issues",
+            "--agent",
+            "codex",
+            "--file-ref",
+            "README.md",
+        ],
+    )
+    _invoke_ok(
+        runner,
+        [
+            "dev",
+            "close",
+            "M4",
+            "--implementation-doc",
+            "/tmp/IMPLEMENTATION.md",
+        ],
+    )
     assert "hash_chain valid=True checked=1" in _invoke_ok(
         runner,
         ["dashboard", "audit", "--limit", "1"],
@@ -472,6 +610,42 @@ def test_cli_commands_route_through_rpc_wrapper(
         {"proposal_id": "selfmod-proposal-1", "confirm": True},
     ) in calls
     assert ("admin.selfmod.rollback", {"change_id": "change-1"}) in calls
+    assert (
+        "dev.implement",
+        {
+            "task": "Add a README note",
+            "file_refs": ["README.md"],
+            "agent": "codex",
+            "fallback_agents": ["claude"],
+            "capabilities": ["file.read", "file.write"],
+            "max_turns": 4,
+            "max_budget_usd": 2.5,
+            "model": "fast-model",
+            "reasoning_effort": "medium",
+            "timeout_sec": 30.0,
+        },
+    ) in calls
+    assert (
+        "dev.review",
+        {
+            "scope": "Review README.md",
+            "file_refs": ["README.md"],
+            "agent": "claude",
+            "mode": "readonly",
+        },
+    ) in calls
+    assert (
+        "dev.remediate",
+        {
+            "findings": "Fix README issues",
+            "file_refs": ["README.md"],
+            "agent": "codex",
+        },
+    ) in calls
+    assert (
+        "dev.close",
+        {"milestone": "M4", "implementation_path": "/tmp/IMPLEMENTATION.md"},
+    ) in calls
 
 
 def test_events_subscribe_uses_rpc_run_wrapper(

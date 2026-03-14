@@ -35,6 +35,10 @@ from shisad.core.api.schema import (
     DaemonStatusResult,
     DashboardMarkFalsePositiveResult,
     DashboardQueryResult,
+    DevCloseResult,
+    DevImplementResult,
+    DevRemediateResult,
+    DevReviewResult,
     DoctorCheckResult,
     FsListResult,
     FsReadResult,
@@ -98,6 +102,53 @@ def _echo(message: str, *, fg: str | None = None, bold: bool = False, err: bool 
 
 def _dump_model(model: BaseModel) -> str:
     return json.dumps(model.model_dump(mode="json", exclude_unset=True), indent=2)
+
+
+def _joined_text_arg(values: tuple[str, ...], *, field_name: str) -> str:
+    text = " ".join(part.strip() for part in values if part.strip()).strip()
+    if not text:
+        raise click.ClickException(f"{field_name} is required.")
+    return text
+
+
+def _dev_task_payload(
+    *,
+    text_key: str,
+    text_value: str,
+    agent: str,
+    file_refs: tuple[Path, ...],
+    fallback_agents: tuple[str, ...],
+    capabilities: tuple[str, ...],
+    max_turns: int | None,
+    max_budget_usd: float | None,
+    model: str,
+    reasoning_effort: str,
+    timeout_sec: float | None,
+    extra: dict[str, object] | None = None,
+) -> dict[str, object]:
+    payload: dict[str, object] = {
+        text_key: text_value,
+        "file_refs": [str(path) for path in file_refs if str(path).strip()],
+    }
+    if agent.strip():
+        payload["agent"] = agent.strip()
+    if fallback_agents:
+        payload["fallback_agents"] = [item.strip() for item in fallback_agents if item.strip()]
+    if capabilities:
+        payload["capabilities"] = [item.strip() for item in capabilities if item.strip()]
+    if max_turns is not None:
+        payload["max_turns"] = max_turns
+    if max_budget_usd is not None:
+        payload["max_budget_usd"] = max_budget_usd
+    if model.strip():
+        payload["model"] = model.strip()
+    if reasoning_effort.strip():
+        payload["reasoning_effort"] = reasoning_effort.strip()
+    if timeout_sec is not None:
+        payload["timeout_sec"] = timeout_sec
+    if extra:
+        payload.update(extra)
+    return payload
 
 
 def _parse_relative_duration(value: str) -> timedelta:
@@ -578,6 +629,176 @@ def admin_selfmod_rollback(change_id: str) -> None:
             ]
         )
     )
+
+
+@cli.group()
+def dev() -> None:
+    """Developer workflow orchestration helpers."""
+
+
+@dev.command("implement")
+@click.argument("task", nargs=-1, required=True)
+@click.option("--agent", default="", help="Preferred coding agent.")
+@click.option("--file-ref", "file_refs", multiple=True, type=click.Path(path_type=Path))
+@click.option("--fallback-agent", "fallback_agents", multiple=True, help="Fallback coding agent.")
+@click.option("--capability", "capabilities", multiple=True, help="Optional TASK capability scope.")
+@click.option("--max-turns", type=int, default=None)
+@click.option("--max-budget-usd", type=float, default=None)
+@click.option("--model", default="")
+@click.option("--reasoning-effort", default="")
+@click.option("--timeout-sec", type=float, default=None)
+def dev_implement(
+    task: tuple[str, ...],
+    agent: str,
+    file_refs: tuple[Path, ...],
+    fallback_agents: tuple[str, ...],
+    capabilities: tuple[str, ...],
+    max_turns: int | None,
+    max_budget_usd: float | None,
+    model: str,
+    reasoning_effort: str,
+    timeout_sec: float | None,
+) -> None:
+    """Dispatch a coding implementation task through the daemon."""
+    config = _get_config()
+    result = rpc_call(
+        config,
+        "dev.implement",
+        _dev_task_payload(
+            text_key="task",
+            text_value=_joined_text_arg(task, field_name="task"),
+            agent=agent,
+            file_refs=file_refs,
+            fallback_agents=fallback_agents,
+            capabilities=capabilities,
+            max_turns=max_turns,
+            max_budget_usd=max_budget_usd,
+            model=model,
+            reasoning_effort=reasoning_effort,
+            timeout_sec=timeout_sec,
+        ),
+        response_model=DevImplementResult,
+    )
+    click.echo(_dump_model(result))
+
+
+@dev.command("review")
+@click.argument("scope", nargs=-1, required=True)
+@click.option("--agent", default="", help="Preferred coding agent.")
+@click.option("--mode", default="readonly", type=click.Choice(["readonly"]))
+@click.option("--file-ref", "file_refs", multiple=True, type=click.Path(path_type=Path))
+@click.option("--fallback-agent", "fallback_agents", multiple=True, help="Fallback coding agent.")
+@click.option("--capability", "capabilities", multiple=True, help="Optional TASK capability scope.")
+@click.option("--max-turns", type=int, default=None)
+@click.option("--max-budget-usd", type=float, default=None)
+@click.option("--model", default="")
+@click.option("--reasoning-effort", default="")
+@click.option("--timeout-sec", type=float, default=None)
+def dev_review(
+    scope: tuple[str, ...],
+    agent: str,
+    mode: str,
+    file_refs: tuple[Path, ...],
+    fallback_agents: tuple[str, ...],
+    capabilities: tuple[str, ...],
+    max_turns: int | None,
+    max_budget_usd: float | None,
+    model: str,
+    reasoning_effort: str,
+    timeout_sec: float | None,
+) -> None:
+    """Dispatch a read-only review task through the daemon."""
+    config = _get_config()
+    result = rpc_call(
+        config,
+        "dev.review",
+        _dev_task_payload(
+            text_key="scope",
+            text_value=_joined_text_arg(scope, field_name="scope"),
+            agent=agent,
+            file_refs=file_refs,
+            fallback_agents=fallback_agents,
+            capabilities=capabilities,
+            max_turns=max_turns,
+            max_budget_usd=max_budget_usd,
+            model=model,
+            reasoning_effort=reasoning_effort,
+            timeout_sec=timeout_sec,
+            extra={"mode": mode},
+        ),
+        response_model=DevReviewResult,
+    )
+    click.echo(_dump_model(result))
+
+
+@dev.command("remediate")
+@click.argument("findings", nargs=-1, required=True)
+@click.option("--agent", default="", help="Preferred coding agent.")
+@click.option("--file-ref", "file_refs", multiple=True, type=click.Path(path_type=Path))
+@click.option("--fallback-agent", "fallback_agents", multiple=True, help="Fallback coding agent.")
+@click.option("--capability", "capabilities", multiple=True, help="Optional TASK capability scope.")
+@click.option("--max-turns", type=int, default=None)
+@click.option("--max-budget-usd", type=float, default=None)
+@click.option("--model", default="")
+@click.option("--reasoning-effort", default="")
+@click.option("--timeout-sec", type=float, default=None)
+def dev_remediate(
+    findings: tuple[str, ...],
+    agent: str,
+    file_refs: tuple[Path, ...],
+    fallback_agents: tuple[str, ...],
+    capabilities: tuple[str, ...],
+    max_turns: int | None,
+    max_budget_usd: float | None,
+    model: str,
+    reasoning_effort: str,
+    timeout_sec: float | None,
+) -> None:
+    """Dispatch remediation against a findings bundle through the daemon."""
+    config = _get_config()
+    result = rpc_call(
+        config,
+        "dev.remediate",
+        _dev_task_payload(
+            text_key="findings",
+            text_value=_joined_text_arg(findings, field_name="findings"),
+            agent=agent,
+            file_refs=file_refs,
+            fallback_agents=fallback_agents,
+            capabilities=capabilities,
+            max_turns=max_turns,
+            max_budget_usd=max_budget_usd,
+            model=model,
+            reasoning_effort=reasoning_effort,
+            timeout_sec=timeout_sec,
+        ),
+        response_model=DevRemediateResult,
+    )
+    click.echo(_dump_model(result))
+
+
+@dev.command("close")
+@click.argument("milestone")
+@click.option(
+    "--implementation-doc",
+    "implementation_path",
+    type=click.Path(path_type=Path, dir_okay=False),
+    default=None,
+    help="Override the implementation punchlist used for readiness checks.",
+)
+def dev_close(milestone: str, implementation_path: Path | None) -> None:
+    """Report whether a milestone has the recorded evidence required for closure."""
+    config = _get_config()
+    payload: dict[str, object] = {"milestone": milestone}
+    if implementation_path is not None:
+        payload["implementation_path"] = str(implementation_path)
+    result = rpc_call(
+        config,
+        "dev.close",
+        payload,
+        response_model=DevCloseResult,
+    )
+    click.echo(_dump_model(result))
 
 
 # --- Session commands ---

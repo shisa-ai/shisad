@@ -1279,3 +1279,203 @@ async def test_behavioral_agent_fallback_chain_uses_next_available_agent(
         assert selected["data"]["fallback_used"] is True
     finally:
         await _shutdown_daemon(daemon_task, client)
+
+
+@pytest.mark.asyncio
+async def test_behavioral_dev_loop_implement_review_remediate_close_smoke(
+    tmp_path: Path,
+) -> None:
+    readme_before = Path("README.md").read_text(encoding="utf-8")
+    implementation = tmp_path / "IMPLEMENTATION.md"
+    implementation.write_text(
+        """
+## M4 — Minimal Dev Loop Orchestration
+
+### M4 Punchlist
+- [x] dev.implement works
+
+### M4 Acceptance Criteria
+- [x] Runtime wiring evidence recorded.
+- [x] Validation evidence recorded.
+- [x] Docs parity evidence recorded.
+- [x] Review loop complete or deferrals explicitly recorded.
+
+### M4 Review Findings Status (Round 1)
+- [x] M4.R-open.1: closed.
+
+### M4 Runtime Wiring Evidence
+- Wired.
+
+### M4 Validation Evidence
+- `uv run pytest tests/behavioral/ -q` -> `ok`
+
+## Worklog
+
+- **2026-03-14**: **M4 implementation**
+  - Summary: docs updated.
+""".strip(),
+        encoding="utf-8",
+    )
+    policy_text = (
+        'version: "1"\n'
+        "default_require_confirmation: false\n"
+        "default_capabilities:\n"
+        "  - file.read\n"
+        "  - file.write\n"
+        "  - shell.exec\n"
+        "  - http.request\n"
+    )
+    daemon_task, client, _config = await _start_daemon(
+        tmp_path,
+        policy_text=policy_text,
+        config_overrides={
+            "coding_repo_root": Path.cwd(),
+            "coding_agent_registry_overrides": {
+                "codex": _fake_coding_agent_command("codex"),
+                "claude": _fake_coding_agent_command("claude"),
+            },
+        },
+    )
+    try:
+        implement = await client.call(
+            "dev.implement",
+            {
+                "task": "Add a tiny implementation note to README.md.",
+                "file_refs": ["README.md"],
+                "agent": "codex",
+            },
+        )
+        assert implement["success"] is True
+        assert implement["proposal_ref"]
+        assert "mode=build" in implement["summary"]
+
+        review = await client.call(
+            "dev.review",
+            {
+                "scope": "Review README.md for issues. OPPORTUNISTIC_EDIT if needed.",
+                "file_refs": ["README.md"],
+                "agent": "claude",
+            },
+        )
+        assert review["success"] is True
+        assert review["findings"]
+        assert "mode=plan" in review["summary"]
+
+        remediate = await client.call(
+            "dev.remediate",
+            {
+                "findings": "Fix the README issue and keep the change proposal-first.",
+                "file_refs": ["README.md"],
+                "agent": "codex",
+            },
+        )
+        assert remediate["success"] is True
+        assert remediate["proposal_ref"]
+        assert "mode=build" in remediate["summary"]
+
+        close_result = await client.call(
+            "dev.close",
+            {"milestone": "M4", "implementation_path": str(implementation)},
+        )
+        assert close_result["ready"] is True
+        assert close_result["missing_evidence"] == []
+        assert Path("README.md").read_text(encoding="utf-8") == readme_before
+    finally:
+        await _shutdown_daemon(daemon_task, client)
+
+
+@pytest.mark.asyncio
+async def test_behavioral_dev_commands_are_admin_only_but_do_not_lockdown_untrusted_sessions(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _planner_echo(
+        self: Planner,
+        *args: Any,
+        **kwargs: Any,
+    ) -> PlannerResult:
+        _ = args, kwargs
+        return PlannerResult(
+            output=PlannerOutput(
+                assistant_response="Dev commands require the trusted admin CLI surface.",
+                actions=[],
+            ),
+            evaluated=[],
+            attempts=1,
+            provider_response=None,
+            messages_sent=(),
+        )
+
+    monkeypatch.setattr(Planner, "propose", _planner_echo)
+    daemon_task, client, _config = await _start_daemon(tmp_path)
+    try:
+        created = await client.call(
+            "session.create",
+            {"channel": "matrix", "user_id": "alice", "workspace_id": "ops"},
+        )
+        sid = str(created["session_id"])
+        result = await client.call(
+            "session.message",
+            {
+                "session_id": sid,
+                "channel": "matrix",
+                "user_id": "alice",
+                "workspace_id": "ops",
+                "content": "dev implement a README.md change for me",
+            },
+        )
+
+        assert result["response"] == "Dev commands require the trusted admin CLI surface."
+        assert result["session_mode"] == "default"
+        assert result["proposal_only"] is False
+        assert not result.get("task_result")
+        assert result["lockdown_level"] in {"off", "none", "", "normal"}
+
+        audits = await client.call("audit.query", {"event_type": "TaskSessionStarted", "limit": 20})
+        task_events = [
+            event
+            for event in audits.get("events", [])
+            if str(event.get("data", {}).get("parent_session_id", "")) == sid
+        ]
+        assert task_events == []
+    finally:
+        await _shutdown_daemon(daemon_task, client)
+
+
+@pytest.mark.asyncio
+async def test_behavioral_dev_close_reports_not_ready_until_evidence_exists(
+    tmp_path: Path,
+) -> None:
+    implementation = tmp_path / "IMPLEMENTATION.md"
+    implementation.write_text(
+        """
+## M4 — Minimal Dev Loop Orchestration
+
+### M4 Punchlist
+- [ ] dev.implement works
+
+### M4 Acceptance Criteria
+- [ ] Runtime wiring evidence recorded.
+- [ ] Validation evidence recorded.
+- [ ] Docs parity evidence recorded.
+- [ ] Review loop complete or deferrals explicitly recorded.
+
+## Worklog
+""".strip(),
+        encoding="utf-8",
+    )
+    daemon_task, client, _config = await _start_daemon(tmp_path)
+    try:
+        result = await client.call(
+            "dev.close",
+            {"milestone": "M4", "implementation_path": str(implementation)},
+        )
+
+        assert result["ready"] is False
+        assert "runtime_wiring_evidence_missing" in result["missing_evidence"]
+        assert "validation_evidence_missing" in result["missing_evidence"]
+        assert "docs_parity_evidence_missing" in result["missing_evidence"]
+        assert "worklog_entry_missing" in result["missing_evidence"]
+        assert "punchlist_incomplete" in result["missing_evidence"]
+    finally:
+        await _shutdown_daemon(daemon_task, client)
