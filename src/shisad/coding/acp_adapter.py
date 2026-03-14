@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 from contextlib import suppress
 from pathlib import Path
@@ -33,6 +34,8 @@ from .adapter import CodingAgentAdapter
 from .models import CodingAgentConfig, CodingAgentResult, CodingAgentRunOutput
 from .registry import AgentCommandSpec
 
+logger = logging.getLogger(__name__)
+
 
 def _extract_summary(notifications: tuple[dict[str, Any], ...]) -> str:
     messages: list[str] = []
@@ -49,10 +52,10 @@ def _extract_summary(notifications: tuple[dict[str, Any], ...]) -> str:
         content = update.get("content")
         if not isinstance(content, dict):
             continue
-        text = str(content.get("text", "")).strip()
-        if text:
+        text = str(content.get("text", ""))
+        if text.strip():
             messages.append(text)
-    return messages[-1] if messages else ""
+    return "".join(messages).strip() if messages else ""
 
 
 def _extract_files_changed(notifications: tuple[dict[str, Any], ...]) -> tuple[str, ...]:
@@ -146,6 +149,14 @@ class _AcpRecordingClient(Client):
             kind = str(getattr(option, "kind", "")).strip().lower()
             option_id = str(getattr(option, "option_id", "")).strip()
             if kind.startswith("allow") and option_id:
+                logger.debug(
+                    "ACP permission auto-approved session_id=%s tool_call_id=%s title=%s "
+                    "option_id=%s",
+                    session_id,
+                    str(getattr(tool_call, "tool_call_id", "")).strip(),
+                    str(getattr(tool_call, "title", "")).strip(),
+                    option_id,
+                )
                 return RequestPermissionResponse(
                     outcome=AllowedOutcome(option_id=option_id, outcome="selected")
                 )
@@ -262,13 +273,19 @@ class AcpAdapter(CodingAgentAdapter):
         session_id = ""
         selected_mode: str | None = None
         applied_config: dict[str, str] = {}
-        try:
+        conn: Any | None = None
+        process: Any | None = None
+
+        async def _run_session() -> CodingAgentRunOutput:
+            nonlocal applied_config, conn, process, selected_mode, session_id
             async with spawn_agent_process(
                 recorder,
                 *self._spec.command,
                 env=env,
                 cwd=str(workdir),
-            ) as (conn, process):
+            ) as (inner_conn, inner_process):
+                conn = inner_conn
+                process = inner_process
                 await conn.initialize(
                     PROTOCOL_VERSION,
                     client_info=Implementation(name="shisad", version="0.4.0"),
@@ -297,42 +314,16 @@ class AcpAdapter(CodingAgentAdapter):
                     config=config,
                 )
 
-                prompt_coro = conn.prompt([text_block(prompt_text)], session_id=session_id)
-                try:
-                    if config.timeout_sec is not None:
-                        prompt_response = await asyncio.wait_for(
-                            prompt_coro,
-                            timeout=config.timeout_sec,
-                        )
-                    else:
-                        prompt_response = await prompt_coro
-                except TimeoutError:
-                    with suppress(Exception):
-                        await conn.cancel(session_id=session_id)
-                    with suppress(ProcessLookupError):
-                        process.kill()
-                    with suppress(Exception):
-                        await process.wait()
-                    duration_ms = int((time.monotonic() - start) * 1000)
-                    return CodingAgentRunOutput(
-                        result=CodingAgentResult(
-                            agent=self._spec.name,
-                            task=prompt_text,
-                            success=False,
-                            summary="Coding agent timed out before completion.",
-                            cost=recorder.cost_usd,
-                            duration_ms=duration_ms,
-                            files_changed=_extract_files_changed(tuple(recorder.notifications)),
-                        ),
-                        error_code="timeout",
-                        session_id=session_id,
-                        raw_updates=tuple(recorder.notifications),
-                        selected_mode=recorder.current_mode or selected_mode,
-                        applied_config={**applied_config, **recorder.applied_config},
-                    )
-
+                prompt_response = await conn.prompt(
+                    [text_block(prompt_text)],
+                    session_id=session_id,
+                )
+                await asyncio.sleep(0)
                 duration_ms = int((time.monotonic() - start) * 1000)
                 raw_updates = tuple(recorder.notifications)
+                if not _extract_summary(raw_updates):
+                    await asyncio.sleep(0.05)
+                    raw_updates = tuple(recorder.notifications)
                 cost_usd = recorder.cost_usd
                 if cost_usd is None:
                     cost_usd = _extract_cost_usd(getattr(prompt_response, "field_meta", None))
@@ -352,6 +343,39 @@ class AcpAdapter(CodingAgentAdapter):
                     selected_mode=recorder.current_mode or selected_mode,
                     applied_config={**applied_config, **recorder.applied_config},
                 )
+
+        try:
+            if config.timeout_sec is not None:
+                async with asyncio.timeout(config.timeout_sec):
+                    return await _run_session()
+            return await _run_session()
+        except TimeoutError:
+            with suppress(Exception):
+                if conn is not None and session_id:
+                    await conn.cancel(session_id=session_id)
+            with suppress(ProcessLookupError):
+                if process is not None:
+                    process.kill()
+            with suppress(Exception):
+                if process is not None:
+                    await process.wait()
+            duration_ms = int((time.monotonic() - start) * 1000)
+            return CodingAgentRunOutput(
+                result=CodingAgentResult(
+                    agent=self._spec.name,
+                    task=prompt_text,
+                    success=False,
+                    summary="Coding agent timed out before completion.",
+                    cost=recorder.cost_usd,
+                    duration_ms=duration_ms,
+                    files_changed=_extract_files_changed(tuple(recorder.notifications)),
+                ),
+                error_code="timeout",
+                session_id=session_id,
+                raw_updates=tuple(recorder.notifications),
+                selected_mode=recorder.current_mode or selected_mode,
+                applied_config={**applied_config, **recorder.applied_config},
+            )
         except FileNotFoundError:
             duration_ms = int((time.monotonic() - start) * 1000)
             return CodingAgentRunOutput(

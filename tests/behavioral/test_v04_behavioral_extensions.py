@@ -1169,6 +1169,56 @@ async def test_behavioral_unavailable_agent_returns_actionable_error_without_loc
 
 
 @pytest.mark.asyncio
+async def test_behavioral_coding_agent_respects_task_capability_scope(
+    tmp_path: Path,
+) -> None:
+    readme_before = Path("README.md").read_text(encoding="utf-8")
+    policy_text = (
+        'version: "1"\n'
+        "default_require_confirmation: false\n"
+        "default_capabilities:\n"
+        "  - file.read\n"
+    )
+    daemon_task, client, _config = await _start_daemon(
+        tmp_path,
+        policy_text=policy_text,
+        config_overrides={
+            "coding_repo_root": Path.cwd(),
+            "coding_agent_registry_overrides": {
+                "codex": _fake_coding_agent_command("codex"),
+            },
+        },
+    )
+    try:
+        created = await client.call("session.create", {"channel": "cli"})
+        sid = str(created["session_id"])
+        result = await client.call(
+            "session.message",
+            {
+                "session_id": sid,
+                "content": "respect the coding-agent capability ceiling",
+                "task": {
+                    "enabled": True,
+                    "executor": "coding_agent",
+                    "task_description": "Implement a README.md change.",
+                    "file_refs": ["README.md"],
+                    "capabilities": ["file.read"],
+                    "preferred_agent": "codex",
+                    "task_kind": "implement",
+                },
+            },
+        )
+
+        task_result = dict(result.get("task_result") or {})
+        assert task_result["success"] is False
+        assert task_result["reason"] == "coding_agent_capability_denied"
+        assert "missing capabilities" in task_result["summary"].lower()
+        assert Path("README.md").read_text(encoding="utf-8") == readme_before
+    finally:
+        await _shutdown_daemon(daemon_task, client)
+
+
+@pytest.mark.asyncio
 async def test_behavioral_agent_fallback_chain_uses_next_available_agent(
     tmp_path: Path,
 ) -> None:

@@ -90,6 +90,13 @@ def _fake_coding_agent_command(agent_name: str) -> str:
     return f"{sys.executable} {script} --agent-name {agent_name}"
 
 
+def _broken_protocol_agent_command() -> str:
+    script = Path(__file__).resolve().parents[1] / "fixtures" / "fake_acp_agent.py"
+    return (
+        f"{sys.executable} {script} --agent-name broken --fail-initialize"
+    )
+
+
 @pytest.mark.asyncio
 async def test_m3_coding_task_runs_in_worktree_and_emits_coding_audit_events(
     tmp_path: Path,
@@ -210,5 +217,150 @@ async def test_m3_coding_task_timeout_returns_partial_failure_without_repo_mutat
         assert task_result["reason"] == "task_timeout"
         assert "timed out" in task_result["summary"].lower()
         assert Path("README.md").read_text(encoding="utf-8") == readme_before
+    finally:
+        await _shutdown_daemon(daemon_task, client)
+
+
+@pytest.mark.asyncio
+async def test_m3_coding_task_denies_missing_capability_scope(tmp_path: Path) -> None:
+    readme_before = Path("README.md").read_text(encoding="utf-8")
+    daemon_task, client, _config = await _start_daemon(
+        tmp_path,
+        policy_text=_policy_with_caps("file.read"),
+        config_overrides={
+            "coding_repo_root": Path.cwd(),
+            "coding_agent_registry_overrides": {
+                "codex": _fake_coding_agent_command("codex"),
+            },
+        },
+    )
+    try:
+        created = await client.call("session.create", {"channel": "cli"})
+        sid = str(created["session_id"])
+        result = await client.call(
+            "session.message",
+            {
+                "session_id": sid,
+                "content": "run a coding task without write or shell scope",
+                "task": {
+                    "enabled": True,
+                    "executor": "coding_agent",
+                    "task_description": "Implement a README.md change.",
+                    "file_refs": ["README.md"],
+                    "capabilities": ["file.read"],
+                    "preferred_agent": "codex",
+                    "task_kind": "implement",
+                },
+            },
+        )
+
+        task_result = dict(result.get("task_result") or {})
+        assert task_result["success"] is False
+        assert task_result["reason"] == "coding_agent_capability_denied"
+        assert "missing capabilities" in task_result["summary"].lower()
+        assert Path("README.md").read_text(encoding="utf-8") == readme_before
+    finally:
+        await _shutdown_daemon(daemon_task, client)
+
+
+@pytest.mark.asyncio
+async def test_m3_coding_task_falls_back_after_runtime_protocol_failure(
+    tmp_path: Path,
+) -> None:
+    daemon_task, client, _config = await _start_daemon(
+        tmp_path,
+        policy_text=_policy_with_caps("file.read", "file.write", "shell.exec"),
+        config_overrides={
+            "coding_repo_root": Path.cwd(),
+            "coding_agent_registry_overrides": {
+                "codex": _broken_protocol_agent_command(),
+                "claude": _fake_coding_agent_command("claude"),
+            },
+        },
+    )
+    try:
+        created = await client.call("session.create", {"channel": "cli"})
+        sid = str(created["session_id"])
+        result = await client.call(
+            "session.message",
+            {
+                "session_id": sid,
+                "content": "fallback if the selected adapter exits during handshake",
+                "task": {
+                    "enabled": True,
+                    "executor": "coding_agent",
+                    "task_description": "Implement a tiny README.md tweak.",
+                    "file_refs": ["README.md"],
+                    "capabilities": ["file.read", "file.write", "shell.exec"],
+                    "preferred_agent": "codex",
+                    "fallback_agents": ["claude"],
+                    "task_kind": "implement",
+                },
+            },
+        )
+
+        task_result = dict(result.get("task_result") or {})
+        assert task_result["success"] is True
+        assert task_result["agent"] == "claude"
+        assert task_result["proposal_ref"]
+    finally:
+        await _shutdown_daemon(daemon_task, client)
+
+
+@pytest.mark.asyncio
+async def test_m3_coding_task_worktree_failure_is_actionable_and_emits_completion(
+    tmp_path: Path,
+) -> None:
+    daemon_task, client, _config = await _start_daemon(
+        tmp_path,
+        policy_text=_policy_with_caps("file.read", "file.write", "shell.exec"),
+        config_overrides={
+            "coding_repo_root": tmp_path,
+            "coding_agent_registry_overrides": {
+                "codex": _fake_coding_agent_command("codex"),
+            },
+        },
+    )
+    try:
+        created = await client.call("session.create", {"channel": "cli"})
+        sid = str(created["session_id"])
+        result = await client.call(
+            "session.message",
+            {
+                "session_id": sid,
+                "content": "run the coding agent against a bad repo root",
+                "task": {
+                    "enabled": True,
+                    "executor": "coding_agent",
+                    "task_description": "Implement a README.md change.",
+                    "file_refs": ["README.md"],
+                    "capabilities": ["file.read", "file.write", "shell.exec"],
+                    "preferred_agent": "codex",
+                    "task_kind": "implement",
+                },
+            },
+        )
+
+        task_result = dict(result.get("task_result") or {})
+        assert task_result["success"] is False
+        assert task_result["reason"] == "worktree_setup_failed"
+        assert "git repository" in task_result["summary"].lower()
+
+        started_event = await _wait_for_event(
+            client,
+            event_type="CodingAgentSessionStarted",
+            predicate=lambda item: str(item.get("session_id", "")).strip()
+            == str(task_result["task_session_id"]),
+        )
+        completed_event = await _wait_for_event(
+            client,
+            event_type="CodingAgentSessionCompleted",
+            predicate=lambda item: str(item.get("session_id", "")).strip()
+            == str(task_result["task_session_id"])
+            and item["data"].get("reason") == "worktree_setup_failed",
+        )
+
+        assert started_event["data"]["worktree_path"]
+        assert completed_event["data"]["success"] is False
     finally:
         await _shutdown_daemon(daemon_task, client)

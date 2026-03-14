@@ -12,6 +12,7 @@ from acp import (
     LoadSessionResponse,
     NewSessionResponse,
     PromptResponse,
+    RequestError,
     SetSessionConfigOptionResponse,
     SetSessionModeResponse,
     default_environment,
@@ -82,10 +83,16 @@ class FakeAcpAgent(Agent):
         agent_name: str,
         default_mode: str = "auto",
         read_only_modes: tuple[str, ...] = ("plan", "read-only"),
+        initialize_sleep: float = 0.0,
+        new_session_sleep: float = 0.0,
+        fail_initialize: bool = False,
     ) -> None:
         self._agent_name = agent_name
         self._default_mode = default_mode
         self._read_only_modes = set(read_only_modes)
+        self._initialize_sleep = initialize_sleep
+        self._new_session_sleep = new_session_sleep
+        self._fail_initialize = fail_initialize
         self._client: Client | None = None
         self._sessions: dict[str, dict[str, Any]] = {}
 
@@ -100,6 +107,10 @@ class FakeAcpAgent(Agent):
         **kwargs: Any,
     ) -> InitializeResponse:
         _ = (client_capabilities, client_info, kwargs)
+        if self._initialize_sleep > 0:
+            await asyncio.sleep(self._initialize_sleep)
+        if self._fail_initialize:
+            raise RequestError.invalid_request("configured initialize failure")
         return InitializeResponse(
             protocol_version=min(protocol_version, PROTOCOL_VERSION),
             agent_info=Implementation(name=f"fake-{self._agent_name}", version="0.1.0"),
@@ -113,6 +124,8 @@ class FakeAcpAgent(Agent):
         **kwargs: Any,
     ) -> NewSessionResponse:
         _ = (mcp_servers, kwargs)
+        if self._new_session_sleep > 0:
+            await asyncio.sleep(self._new_session_sleep)
         session_id = f"{self._agent_name}-{uuid.uuid4().hex}"
         config = {
             "mode": self._default_mode,
@@ -256,10 +269,25 @@ class FakeAcpAgent(Agent):
                 f"model={config.get('model', '')} "
                 f"permission_mode={config.get('permission_mode', '')}"
             )
-            await self._client.session_update(
-                session_id=session_id,
-                update=update_agent_message_text(summary),
-            )
+            if "MULTI_CHUNK_SUMMARY" in prompt_text:
+                await self._client.session_update(
+                    session_id=session_id,
+                    update=update_agent_message_text(
+                        f"{self._agent_name} completed mode={mode} "
+                    ),
+                )
+                await self._client.session_update(
+                    session_id=session_id,
+                    update=update_agent_message_text(
+                        f"model={config.get('model', '')} "
+                        f"permission_mode={config.get('permission_mode', '')}"
+                    ),
+                )
+            else:
+                await self._client.session_update(
+                    session_id=session_id,
+                    update=update_agent_message_text(summary),
+                )
             if do_edit:
                 tool_call_id = f"edit-{uuid.uuid4().hex}"
                 await self._client.session_update(
@@ -393,9 +421,19 @@ class FakeAcpAgent(Agent):
 async def _main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--agent-name", default="codex")
+    parser.add_argument("--initialize-sleep", type=float, default=0.0)
+    parser.add_argument("--new-session-sleep", type=float, default=0.0)
+    parser.add_argument("--fail-initialize", action="store_true")
     args = parser.parse_args()
     _ = default_environment()
-    await run_agent(FakeAcpAgent(agent_name=args.agent_name))
+    await run_agent(
+        FakeAcpAgent(
+            agent_name=args.agent_name,
+            initialize_sleep=args.initialize_sleep,
+            new_session_sleep=args.new_session_sleep,
+            fail_initialize=args.fail_initialize,
+        )
+    )
 
 
 if __name__ == "__main__":

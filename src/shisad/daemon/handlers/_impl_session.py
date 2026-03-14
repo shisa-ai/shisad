@@ -10,7 +10,7 @@ import re
 import time
 from collections.abc import Mapping, Sequence
 from contextlib import suppress
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
 from urllib.parse import urlparse
@@ -371,6 +371,74 @@ def _coerce_optional_float(value: object) -> float | None:
         return _parse_optional_float(value, field_name="value")
     except ValueError:
         return None
+
+
+def _coding_agent_allowed_tools(
+    *,
+    capabilities: frozenset[Capability],
+    read_only: bool,
+    task_kind: str,
+) -> tuple[str, ...]:
+    if read_only or task_kind == "review" or Capability.FILE_WRITE not in capabilities:
+        return ("read-only",)
+    return ()
+
+
+def _missing_coding_agent_capabilities(
+    *,
+    capabilities: frozenset[Capability],
+    read_only: bool,
+    task_kind: str,
+) -> tuple[str, ...]:
+    required = {Capability.FILE_READ, Capability.SHELL_EXEC}
+    if not read_only and task_kind != "review":
+        required.add(Capability.FILE_WRITE)
+    return tuple(sorted(cap.value for cap in required if cap not in capabilities))
+
+
+def _merge_coding_selection_attempts(
+    existing: list[dict[str, Any]],
+    attempts: Sequence[Any],
+) -> list[dict[str, Any]]:
+    merged = [dict(item) for item in existing]
+    index_by_agent = {
+        str(item.get("agent", "")).strip(): index
+        for index, item in enumerate(merged)
+        if str(item.get("agent", "")).strip()
+    }
+    for attempt in attempts:
+        agent = str(getattr(attempt, "agent", "")).strip()
+        if not agent:
+            continue
+        payload = {
+            "agent": agent,
+            "available": bool(getattr(attempt, "available", False)),
+            "reason": str(getattr(attempt, "reason", "")).strip(),
+        }
+        existing_index = index_by_agent.get(agent)
+        if existing_index is None:
+            index_by_agent[agent] = len(merged)
+            merged.append(payload)
+        else:
+            merged[existing_index] = payload
+    return merged
+
+
+def _update_coding_selection_attempt_reason(
+    attempts: list[dict[str, Any]],
+    *,
+    agent: str,
+    reason: str,
+) -> list[dict[str, Any]]:
+    if not agent or not reason:
+        return [dict(item) for item in attempts]
+    updated = [dict(item) for item in attempts]
+    for item in updated:
+        if str(item.get("agent", "")).strip() != agent:
+            continue
+        item["reason"] = reason
+        break
+    return updated
 
 
 def _tool_available_in_session(
@@ -3053,6 +3121,11 @@ class SessionImplMixin(HandlerMixinBase):
                     str(raw_task.get("reasoning_effort", "")).strip()
                     or None
                 ),
+                allowed_tools=_coding_agent_allowed_tools(
+                    capabilities=frozenset(scoped_capabilities),
+                    read_only=bool(raw_task.get("read_only", False)),
+                    task_kind=task_kind,
+                ),
             )
 
         return TaskSessionRequest(
@@ -3327,7 +3400,7 @@ class SessionImplMixin(HandlerMixinBase):
         )
 
         task_t0 = time.monotonic()
-        task_response_payload: dict[str, Any]
+        task_response_payload: dict[str, Any] = {}
         failure_reason = ""
         selected_agent: str | None = None
         selected_cost: float | None = None
@@ -3337,80 +3410,197 @@ class SessionImplMixin(HandlerMixinBase):
                 coding_config = task_request.coding_config or CodingAgentConfig(
                     timeout_sec=self._config.coding_agent_timeout_seconds
                 )
-                selection = self._coding_manager.select_agent(coding_config)
-                await self._event_bus.publish(
-                    CodingAgentSelected(
-                        session_id=task_session.id,
-                        actor="coding_agent",
-                        preferred_agent=coding_config.preferred_agent or "",
-                        fallback_agents=list(coding_config.fallback_agents),
-                        selected_agent=selection.spec.name if selection.spec is not None else "",
-                        fallback_used=selection.fallback_used,
-                        attempts=[
-                            {
-                                "agent": attempt.agent,
-                                "available": attempt.available,
-                                "reason": attempt.reason,
-                            }
-                            for attempt in selection.attempts
-                        ],
-                    )
+                missing_capabilities = _missing_coding_agent_capabilities(
+                    capabilities=task_request.capabilities,
+                    read_only=coding_config.read_only,
+                    task_kind=coding_config.task_kind,
                 )
-                if selection.spec is not None:
-                    await self._event_bus.publish(
-                        CodingAgentSessionStarted(
-                            session_id=task_session.id,
-                            actor="coding_agent",
-                            agent=selection.spec.name,
-                            task_kind=coding_config.task_kind,
-                            read_only=coding_config.read_only,
-                            worktree_path="",
+                if missing_capabilities:
+                    failure_reason = "coding_agent_capability_denied"
+                    task_response_payload = {
+                        "response": (
+                            "Coding-agent TASK denied by TASK capability scope. "
+                            f"Missing capabilities: {', '.join(missing_capabilities)}."
+                        ),
+                        "plan_hash": None,
+                        "blocked_actions": 0,
+                        "confirmation_required_actions": 0,
+                        "executed_actions": 0,
+                        "tool_outputs": [],
+                    }
+                else:
+                    selection_attempts: list[dict[str, Any]] = []
+                    exhausted_agents: set[str] = set()
+                    coding_record = None
+                    worktree_path = str(
+                        self._coding_manager.worktree_path_for(str(task_session.id))
+                    )
+
+                    while True:
+                        remaining_agents = tuple(
+                            agent
+                            for agent in coding_config.selection_chain()
+                            if agent not in exhausted_agents
                         )
-                    )
-                coding_record = await self._coding_manager.execute(
-                    task_session_id=str(task_session.id),
-                    task_description=task_request.task_description,
-                    file_refs=task_request.file_refs,
-                    config=coding_config,
-                    selection=selection,
-                )
-                selected_agent = coding_record.selected_agent or None
-                selected_cost = coding_record.result.cost
-                if coding_record.error_code == "timeout":
-                    failure_reason = "task_timeout"
-                elif coding_record.error_code:
-                    failure_reason = coding_record.error_code
-                elif not coding_record.result.success:
-                    failure_reason = "coding_agent_failed"
-                task_response_payload = {
-                    "response": coding_record.result.summary,
-                    "plan_hash": None,
-                    "blocked_actions": 0,
-                    "confirmation_required_actions": 0,
-                    "executed_actions": 0,
-                    "tool_outputs": [],
-                    "raw_log_payload": coding_record.raw_log_payload or {},
-                    "proposal_payload": coding_record.proposal_payload,
-                    "files_changed": list(coding_record.result.files_changed),
-                    "agent": coding_record.selected_agent,
-                    "cost": coding_record.result.cost,
-                    "stop_reason": coding_record.stop_reason,
-                    "worktree_path": coding_record.worktree_path,
-                }
-                await self._event_bus.publish(
-                    CodingAgentSessionCompleted(
-                        session_id=task_session.id,
-                        actor="coding_agent",
-                        agent=coding_record.selected_agent,
-                        task_kind=coding_config.task_kind,
-                        success=coding_record.result.success,
-                        reason=failure_reason,
-                        stop_reason=coding_record.stop_reason,
-                        duration_ms=coding_record.result.duration_ms,
-                        cost=coding_record.result.cost,
-                        files_changed=list(coding_record.result.files_changed),
-                    )
-                )
+                        if not remaining_agents:
+                            break
+
+                        current_config = replace(
+                            coding_config,
+                            preferred_agent=remaining_agents[0],
+                            fallback_agents=tuple(remaining_agents[1:]),
+                        )
+                        selection = self._coding_manager.select_agent(current_config)
+                        selection_attempts = _merge_coding_selection_attempts(
+                            selection_attempts,
+                            selection.attempts,
+                        )
+                        await self._event_bus.publish(
+                            CodingAgentSelected(
+                                session_id=task_session.id,
+                                actor="coding_agent",
+                                preferred_agent=current_config.preferred_agent or "",
+                                fallback_agents=list(current_config.fallback_agents),
+                                selected_agent=(
+                                    selection.spec.name if selection.spec is not None else ""
+                                ),
+                                fallback_used=selection.fallback_used,
+                                attempts=selection_attempts,
+                            )
+                        )
+                        if selection.spec is None:
+                            coding_record = await self._coding_manager.execute(
+                                task_session_id=str(task_session.id),
+                                task_description=task_request.task_description,
+                                file_refs=task_request.file_refs,
+                                config=current_config,
+                                selection=selection,
+                            )
+                            break
+
+                        await self._event_bus.publish(
+                            CodingAgentSessionStarted(
+                                session_id=task_session.id,
+                                actor="coding_agent",
+                                agent=selection.spec.name,
+                                task_kind=current_config.task_kind,
+                                read_only=current_config.read_only,
+                                worktree_path=worktree_path,
+                            )
+                        )
+                        try:
+                            coding_record = await self._coding_manager.execute(
+                                task_session_id=str(task_session.id),
+                                task_description=task_request.task_description,
+                                file_refs=task_request.file_refs,
+                                config=current_config,
+                                selection=selection,
+                            )
+                        except Exception as exc:
+                            failure_reason = f"task_error:{exc.__class__.__name__}"
+                            logger.warning(
+                                "Delegated coding-agent task session %s failed",
+                                task_session.id,
+                                exc_info=True,
+                            )
+                            duration_ms = int((time.monotonic() - task_t0) * 1000)
+                            await self._event_bus.publish(
+                                CodingAgentSessionCompleted(
+                                    session_id=task_session.id,
+                                    actor="coding_agent",
+                                    agent=selection.spec.name,
+                                    task_kind=current_config.task_kind,
+                                    success=False,
+                                    reason=failure_reason,
+                                    stop_reason="",
+                                    duration_ms=duration_ms,
+                                    cost=None,
+                                    files_changed=[],
+                                )
+                            )
+                            task_response_payload = {
+                                "response": "Delegated task failed before completion.",
+                                "plan_hash": None,
+                                "blocked_actions": 0,
+                                "confirmation_required_actions": 0,
+                                "executed_actions": 0,
+                                "tool_outputs": [],
+                            }
+                            break
+
+                        exhausted_agents.update(
+                            str(attempt.agent).strip()
+                            for attempt in selection.attempts
+                            if str(attempt.agent).strip()
+                        )
+                        selected_agent = coding_record.selected_agent or None
+                        selected_cost = coding_record.result.cost
+                        if coding_record.error_code == "timeout":
+                            failure_reason = "task_timeout"
+                        elif coding_record.error_code:
+                            failure_reason = coding_record.error_code
+                        elif not coding_record.result.success:
+                            failure_reason = "coding_agent_failed"
+                        else:
+                            failure_reason = ""
+                        await self._event_bus.publish(
+                            CodingAgentSessionCompleted(
+                                session_id=task_session.id,
+                                actor="coding_agent",
+                                agent=coding_record.selected_agent,
+                                task_kind=current_config.task_kind,
+                                success=coding_record.result.success,
+                                reason=failure_reason,
+                                stop_reason=coding_record.stop_reason,
+                                duration_ms=coding_record.result.duration_ms,
+                                cost=coding_record.result.cost,
+                                files_changed=list(coding_record.result.files_changed),
+                            )
+                        )
+                        if coding_record.error_code in {"agent_unavailable", "protocol_error"}:
+                            selection_attempts = _update_coding_selection_attempt_reason(
+                                selection_attempts,
+                                agent=coding_record.selected_agent,
+                                reason=coding_record.error_code,
+                            )
+                            continue
+                        break
+
+                    if coding_record is not None and not failure_reason:
+                        if coding_record.error_code == "timeout":
+                            failure_reason = "task_timeout"
+                        elif coding_record.error_code:
+                            failure_reason = coding_record.error_code
+                        elif not coding_record.result.success:
+                            failure_reason = "coding_agent_failed"
+
+                    if not task_response_payload:
+                        if coding_record is None:
+                            failure_reason = "agent_unavailable"
+                            task_response_payload = {
+                                "response": "Requested coding agent is not available.",
+                                "plan_hash": None,
+                                "blocked_actions": 0,
+                                "confirmation_required_actions": 0,
+                                "executed_actions": 0,
+                                "tool_outputs": [],
+                            }
+                        else:
+                            task_response_payload = {
+                                "response": coding_record.result.summary,
+                                "plan_hash": None,
+                                "blocked_actions": 0,
+                                "confirmation_required_actions": 0,
+                                "executed_actions": 0,
+                                "tool_outputs": [],
+                                "raw_log_payload": coding_record.raw_log_payload or {},
+                                "proposal_payload": coding_record.proposal_payload,
+                                "files_changed": list(coding_record.result.files_changed),
+                                "agent": coding_record.selected_agent,
+                                "cost": coding_record.result.cost,
+                                "stop_reason": coding_record.stop_reason,
+                                "worktree_path": coding_record.worktree_path,
+                            }
             else:
                 task_params = {
                     "session_id": task_session.id,

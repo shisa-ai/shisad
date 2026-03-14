@@ -258,7 +258,10 @@ class DaemonConfig(BaseSettings):
     )
     coding_agent_default_preference: list[str] = Field(
         default_factory=lambda: ["codex", "claude", "opencode"],
-        description="Default coding-agent preference chain when a task does not specify one.",
+        description=(
+            "Default coding-agent preference chain when a task does not specify one. "
+            "Shipped default order: codex -> claude -> opencode."
+        ),
     )
     coding_agent_default_fallbacks: list[str] = Field(
         default_factory=list,
@@ -266,7 +269,10 @@ class DaemonConfig(BaseSettings):
     )
     coding_agent_registry_overrides: dict[str, str] = Field(
         default_factory=dict,
-        description="Optional agent-command overrides for the coding-agent registry.",
+        description=(
+            "Optional trusted operator overrides for the coding-agent registry "
+            "commands."
+        ),
     )
     coding_agent_timeout_seconds: float = Field(
         default=900.0,

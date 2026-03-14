@@ -10,11 +10,11 @@ from shisad.coding.models import CodingAgentConfig
 from shisad.coding.registry import AgentCommandSpec
 
 
-def _fake_agent_spec(agent_name: str) -> AgentCommandSpec:
+def _fake_agent_spec(agent_name: str, *extra_args: str) -> AgentCommandSpec:
     script = Path(__file__).resolve().parents[1] / "fixtures" / "fake_acp_agent.py"
     return AgentCommandSpec(
         name=agent_name,
-        command=(sys.executable, str(script), "--agent-name", agent_name),
+        command=(sys.executable, str(script), "--agent-name", agent_name, *extra_args),
         read_only_modes=("plan", "read-only"),
         write_modes=("build", "auto"),
     )
@@ -27,7 +27,7 @@ async def test_m3_acp_adapter_collects_summary_mode_cost_and_raw_updates(
     adapter = AcpAdapter(spec=_fake_agent_spec("codex"))
 
     result = await adapter.run(
-        prompt_text="TASK KIND: implement\nFILES:\n- README.md\n",
+        prompt_text="TASK KIND: implement\nFILES:\n- README.md\nMULTI_CHUNK_SUMMARY\n",
         workdir=tmp_path,
         config=CodingAgentConfig(
             preferred_agent="codex",
@@ -78,6 +78,27 @@ async def test_m3_acp_adapter_timeout_maps_to_clean_failure(tmp_path: Path) -> N
         config=CodingAgentConfig(
             preferred_agent="opencode",
             timeout_sec=0.05,
+        ),
+    )
+
+    assert result.result.success is False
+    assert result.error_code == "timeout"
+    assert "timed out" in result.result.summary.lower()
+
+
+@pytest.mark.asyncio
+async def test_m3_acp_adapter_timeout_covers_initialize_handshake(tmp_path: Path) -> None:
+    adapter = AcpAdapter(
+        spec=_fake_agent_spec("claude", "--initialize-sleep", "0.25")
+    )
+
+    result = await adapter.run(
+        prompt_text="TASK KIND: review\nFILES:\n- README.md\n",
+        workdir=tmp_path,
+        config=CodingAgentConfig(
+            preferred_agent="claude",
+            timeout_sec=0.05,
+            read_only=True,
         ),
     )
 

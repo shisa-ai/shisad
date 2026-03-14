@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import subprocess
 from collections.abc import Callable, Mapping
-from contextlib import asynccontextmanager, suppress
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -20,6 +21,8 @@ from .registry import (
     build_default_agent_registry,
     select_coding_agent,
 )
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -111,6 +114,9 @@ class CodingAgentManager:
     def select_agent(self, config: CodingAgentConfig) -> AgentSelectionResult:
         return select_coding_agent(registry=self._registry, config=config)
 
+    def worktree_path_for(self, task_session_id: str) -> Path:
+        return self._worktree_root / task_session_id
+
     async def execute(
         self,
         *,
@@ -144,73 +150,164 @@ class CodingAgentManager:
             file_refs=file_refs,
             config=config,
         )
-        async with self._managed_worktree(task_session_id) as worktree_path:
-            adapter = self._adapter_factory(resolved_selection.spec)
-            adapter_output = await adapter.run(
-                prompt_text=prompt_text,
-                workdir=worktree_path,
-                config=config,
-            )
-            files_changed = await asyncio.to_thread(self._files_changed, worktree_path)
-            diff_text = await asyncio.to_thread(self._proposal_diff, worktree_path)
-            proposal_payload: dict[str, Any] | None = None
-            if diff_text:
-                proposal_payload = {
+        worktree_path = self.worktree_path_for(task_session_id)
+        try:
+            async with self._managed_worktree(task_session_id) as managed_worktree:
+                adapter = self._adapter_factory(resolved_selection.spec)
+                adapter_output = await adapter.run(
+                    prompt_text=prompt_text,
+                    workdir=managed_worktree,
+                    config=config,
+                )
+                files_changed, diff_text = await asyncio.to_thread(
+                    self._collect_worktree_changes,
+                    managed_worktree,
+                )
+                proposal_payload: dict[str, Any] | None = None
+                if diff_text:
+                    proposal_payload = {
+                        "agent": resolved_selection.spec.name,
+                        "task": task_description,
+                        "files_changed": files_changed,
+                        "diff": diff_text,
+                        "read_only": config.read_only,
+                        "task_kind": config.task_kind,
+                    }
+                attempts = self._result_attempts(
+                    attempts=resolved_selection.attempts,
+                    selected_agent=resolved_selection.spec.name,
+                    error_code=adapter_output.error_code,
+                )
+                budget_warning = self._budget_warning(
+                    cost_usd=adapter_output.result.cost,
+                    config=config,
+                    agent_name=resolved_selection.spec.name,
+                )
+                raw_log_payload = {
                     "agent": resolved_selection.spec.name,
                     "task": task_description,
-                    "files_changed": files_changed,
-                    "diff": diff_text,
-                    "read_only": config.read_only,
-                    "task_kind": config.task_kind,
+                    "file_refs": list(file_refs),
+                    "selected_mode": adapter_output.selected_mode,
+                    "applied_config": dict(adapter_output.applied_config),
+                    "stop_reason": adapter_output.stop_reason,
+                    "error_code": adapter_output.error_code,
+                    "updates": list(adapter_output.raw_updates),
+                    "worktree_path": str(managed_worktree),
+                    "attempts": [
+                        {
+                            "agent": attempt.agent,
+                            "available": attempt.available,
+                            "reason": attempt.reason,
+                        }
+                        for attempt in attempts
+                    ],
                 }
-            raw_log_payload = {
-                "agent": resolved_selection.spec.name,
-                "task": task_description,
-                "file_refs": list(file_refs),
-                "selected_mode": adapter_output.selected_mode,
-                "applied_config": dict(adapter_output.applied_config),
-                "stop_reason": adapter_output.stop_reason,
-                "error_code": adapter_output.error_code,
-                "updates": list(adapter_output.raw_updates),
-                "attempts": [
-                    {
-                        "agent": attempt.agent,
-                        "available": attempt.available,
-                        "reason": attempt.reason,
-                    }
-                    for attempt in resolved_selection.attempts
-                ],
-            }
-            result = CodingAgentResult(
-                agent=resolved_selection.spec.name,
-                task=adapter_output.result.task,
-                success=adapter_output.result.success,
-                summary=adapter_output.result.summary,
-                files_changed=tuple(files_changed),
-                cost=adapter_output.result.cost,
-                duration_ms=adapter_output.result.duration_ms,
+                if budget_warning:
+                    raw_log_payload["budget_warning"] = budget_warning
+                result = CodingAgentResult(
+                    agent=resolved_selection.spec.name,
+                    task=adapter_output.result.task,
+                    success=adapter_output.result.success,
+                    summary=adapter_output.result.summary,
+                    files_changed=tuple(files_changed),
+                    cost=adapter_output.result.cost,
+                    duration_ms=adapter_output.result.duration_ms,
+                )
+                return CodingAgentExecutionRecord(
+                    result=result,
+                    error_code=adapter_output.error_code,
+                    stop_reason=adapter_output.stop_reason,
+                    selected_agent=resolved_selection.spec.name,
+                    attempts=attempts,
+                    fallback_used=resolved_selection.fallback_used,
+                    worktree_path=str(managed_worktree),
+                    raw_log_payload=raw_log_payload,
+                    proposal_payload=proposal_payload,
+                )
+        except subprocess.CalledProcessError as exc:
+            logger.warning(
+                "Coding-agent worktree setup failed for %s",
+                worktree_path,
+                exc_info=True,
             )
+            detail = self._error_detail(exc)
+            summary = (
+                "Coding agent could not create or inspect the isolated worktree. "
+                "Verify coding_repo_root points to a valid git repository."
+            )
+            if detail:
+                summary = f"{summary} Git reported: {detail}"
             return CodingAgentExecutionRecord(
-                result=result,
-                error_code=adapter_output.error_code,
-                stop_reason=adapter_output.stop_reason,
+                result=CodingAgentResult(
+                    agent=resolved_selection.spec.name,
+                    task=task_description,
+                    success=False,
+                    summary=summary,
+                ),
+                error_code="worktree_setup_failed",
                 selected_agent=resolved_selection.spec.name,
                 attempts=resolved_selection.attempts,
                 fallback_used=resolved_selection.fallback_used,
                 worktree_path=str(worktree_path),
-                raw_log_payload=raw_log_payload,
-                proposal_payload=proposal_payload,
+                raw_log_payload={
+                    "agent": resolved_selection.spec.name,
+                    "task": task_description,
+                    "file_refs": list(file_refs),
+                    "error_code": "worktree_setup_failed",
+                    "error_detail": detail,
+                    "worktree_path": str(worktree_path),
+                    "attempts": [
+                        {
+                            "agent": attempt.agent,
+                            "available": attempt.available,
+                            "reason": attempt.reason,
+                        }
+                        for attempt in resolved_selection.attempts
+                    ],
+                },
+            )
+        except OSError as exc:
+            logger.warning(
+                "Coding-agent worktree setup failed for %s",
+                worktree_path,
+                exc_info=True,
+            )
+            summary = (
+                "Coding agent could not create or inspect the isolated worktree. "
+                "Verify coding_repo_root points to a valid git repository."
+            )
+            detail = str(exc).strip()
+            if detail:
+                summary = f"{summary} System reported: {detail}"
+            return CodingAgentExecutionRecord(
+                result=CodingAgentResult(
+                    agent=resolved_selection.spec.name,
+                    task=task_description,
+                    success=False,
+                    summary=summary,
+                ),
+                error_code="worktree_setup_failed",
+                selected_agent=resolved_selection.spec.name,
+                attempts=resolved_selection.attempts,
+                fallback_used=resolved_selection.fallback_used,
+                worktree_path=str(worktree_path),
             )
 
     @asynccontextmanager
     async def _managed_worktree(self, task_session_id: str) -> Any:
-        worktree_path = self._worktree_root / task_session_id
+        worktree_path = self.worktree_path_for(task_session_id)
         await asyncio.to_thread(self._create_worktree, worktree_path)
         try:
             yield worktree_path
         finally:
-            with suppress(Exception):
+            try:
                 await asyncio.to_thread(self._remove_worktree, worktree_path)
+            except Exception:
+                logger.warning(
+                    "Failed to remove coding-agent worktree %s",
+                    worktree_path,
+                    exc_info=True,
+                )
 
     def _create_worktree(self, worktree_path: Path) -> None:
         if worktree_path.exists():
@@ -265,21 +362,8 @@ class CodingAgentManager:
         return "\n".join(lines).strip()
 
     @staticmethod
-    def _files_changed(worktree_path: Path) -> list[str]:
-        result = _run_subprocess(
-            [
-                "git",
-                "status",
-                "--porcelain=v1",
-                "--untracked-files=all",
-            ],
-            cwd=worktree_path,
-        )
-        return _status_paths(result.stdout)
-
-    @staticmethod
-    def _proposal_diff(worktree_path: Path) -> str:
-        status_output = _run_subprocess(
+    def _status_output(worktree_path: Path) -> str:
+        return _run_subprocess(
             [
                 "git",
                 "status",
@@ -288,6 +372,10 @@ class CodingAgentManager:
             ],
             cwd=worktree_path,
         ).stdout
+
+    @staticmethod
+    def _collect_worktree_changes(worktree_path: Path) -> tuple[list[str], str]:
+        status_output = CodingAgentManager._status_output(worktree_path)
         changed_files = _status_paths(status_output)
         tracked_diff = _run_subprocess(
             [
@@ -310,4 +398,53 @@ class CodingAgentManager:
             diff = _diff_untracked_file(worktree_path, path)
             if diff:
                 diff_parts.append(diff)
-        return "\n".join(part for part in diff_parts if part).strip()
+        return changed_files, "\n".join(part for part in diff_parts if part).strip()
+
+    @staticmethod
+    def _result_attempts(
+        *,
+        attempts: tuple[AgentSelectionAttempt, ...],
+        selected_agent: str,
+        error_code: str,
+    ) -> tuple[AgentSelectionAttempt, ...]:
+        if not error_code:
+            return attempts
+        updated = list(attempts)
+        for index in range(len(updated) - 1, -1, -1):
+            attempt = updated[index]
+            if attempt.agent != selected_agent:
+                continue
+            updated[index] = AgentSelectionAttempt(
+                agent=attempt.agent,
+                available=attempt.available,
+                reason=error_code,
+            )
+            break
+        return tuple(updated)
+
+    @staticmethod
+    def _error_detail(exc: subprocess.CalledProcessError) -> str:
+        raw_detail = exc.stderr or exc.output or ""
+        detail = raw_detail.strip().splitlines()
+        return detail[0].strip() if detail else ""
+
+    @staticmethod
+    def _budget_warning(
+        *,
+        cost_usd: float | None,
+        config: CodingAgentConfig,
+        agent_name: str,
+    ) -> str | None:
+        if (
+            cost_usd is None
+            or config.max_budget_usd is None
+            or cost_usd <= config.max_budget_usd
+        ):
+            return None
+        warning = (
+            f"Coding agent '{agent_name}' reported ${cost_usd:.2f} cost against "
+            f"requested max_budget_usd ${config.max_budget_usd:.2f}. "
+            "No hard spend stop is enforced by the ACP adapter."
+        )
+        logger.warning(warning)
+        return warning
