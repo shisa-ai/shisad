@@ -308,6 +308,112 @@ async def test_m3_coding_task_falls_back_after_runtime_protocol_failure(
 
 
 @pytest.mark.asyncio
+async def test_m3_review_task_kind_implies_read_only_without_flag(
+    tmp_path: Path,
+) -> None:
+    readme_before = Path("README.md").read_text(encoding="utf-8")
+    daemon_task, client, _config = await _start_daemon(
+        tmp_path,
+        policy_text=_policy_with_caps("file.read", "shell.exec"),
+        config_overrides={
+            "coding_repo_root": Path.cwd(),
+            "coding_agent_registry_overrides": {
+                "codex": _fake_coding_agent_command("codex"),
+            },
+        },
+    )
+    try:
+        created = await client.call("session.create", {"channel": "cli"})
+        sid = str(created["session_id"])
+        result = await client.call(
+            "session.message",
+            {
+                "session_id": sid,
+                "content": "review this coding task without an explicit read_only flag",
+                "task": {
+                    "enabled": True,
+                    "executor": "coding_agent",
+                    "task_description": "Review README.md for issues only.",
+                    "file_refs": ["README.md"],
+                    "capabilities": ["file.read", "shell.exec"],
+                    "preferred_agent": "codex",
+                    "task_kind": "review",
+                },
+            },
+        )
+
+        task_result = dict(result.get("task_result") or {})
+        assert task_result["success"] is True
+        assert task_result["agent"] == "codex"
+        assert "mode=plan" in task_result["summary"]
+        assert not task_result["proposal_ref"]
+        assert Path("README.md").read_text(encoding="utf-8") == readme_before
+
+        started_event = await _wait_for_event(
+            client,
+            event_type="CodingAgentSessionStarted",
+            predicate=lambda item: str(item.get("session_id", "")).strip()
+            == str(task_result["task_session_id"]),
+        )
+        assert started_event["data"]["read_only"] is True
+    finally:
+        await _shutdown_daemon(daemon_task, client)
+
+
+@pytest.mark.asyncio
+async def test_m3_terminal_protocol_failure_updates_selection_attempt_reason(
+    tmp_path: Path,
+) -> None:
+    daemon_task, client, _config = await _start_daemon(
+        tmp_path,
+        policy_text=_policy_with_caps("file.read", "file.write", "shell.exec"),
+        config_overrides={
+            "coding_repo_root": Path.cwd(),
+            "coding_agent_registry_overrides": {
+                "codex": _broken_protocol_agent_command(),
+            },
+        },
+    )
+    try:
+        created = await client.call("session.create", {"channel": "cli"})
+        sid = str(created["session_id"])
+        result = await client.call(
+            "session.message",
+            {
+                "session_id": sid,
+                "content": "run the broken single-agent coding task",
+                "task": {
+                    "enabled": True,
+                    "executor": "coding_agent",
+                    "task_description": "Implement a README.md change.",
+                    "file_refs": ["README.md"],
+                    "capabilities": ["file.read", "file.write", "shell.exec"],
+                    "preferred_agent": "codex",
+                    "task_kind": "implement",
+                },
+            },
+        )
+
+        task_result = dict(result.get("task_result") or {})
+        assert task_result["success"] is False
+        assert task_result["reason"] == "protocol_error"
+
+        selected_event = await _wait_for_event(
+            client,
+            event_type="CodingAgentSelected",
+            predicate=lambda item: str(item.get("session_id", "")).strip()
+            == str(task_result["task_session_id"])
+            and any(
+                attempt.get("agent") == "codex" and attempt.get("reason") == "protocol_error"
+                for attempt in item["data"].get("attempts", [])
+            ),
+        )
+        assert selected_event["data"]["selected_agent"] == "codex"
+    finally:
+        await _shutdown_daemon(daemon_task, client)
+
+
+@pytest.mark.asyncio
 async def test_m3_coding_task_worktree_failure_is_actionable_and_emits_completion(
     tmp_path: Path,
 ) -> None:

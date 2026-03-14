@@ -1101,7 +1101,6 @@ async def test_behavioral_review_mode_signals_read_only_and_preserves_opportunis
                     ],
                     "preferred_agent": "claude",
                     "task_kind": "review",
-                    "read_only": True,
                 },
             },
         )

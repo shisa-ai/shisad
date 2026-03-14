@@ -377,9 +377,8 @@ def _coding_agent_allowed_tools(
     *,
     capabilities: frozenset[Capability],
     read_only: bool,
-    task_kind: str,
 ) -> tuple[str, ...]:
-    if read_only or task_kind == "review" or Capability.FILE_WRITE not in capabilities:
+    if read_only or Capability.FILE_WRITE not in capabilities:
         return ("read-only",)
     return ()
 
@@ -388,12 +387,15 @@ def _missing_coding_agent_capabilities(
     *,
     capabilities: frozenset[Capability],
     read_only: bool,
-    task_kind: str,
 ) -> tuple[str, ...]:
     required = {Capability.FILE_READ, Capability.SHELL_EXEC}
-    if not read_only and task_kind != "review":
+    if not read_only:
         required.add(Capability.FILE_WRITE)
     return tuple(sorted(cap.value for cap in required if cap not in capabilities))
+
+
+def _coding_agent_effective_read_only(*, read_only: bool, task_kind: str) -> bool:
+    return read_only or task_kind == "review"
 
 
 def _merge_coding_selection_attempts(
@@ -3070,6 +3072,10 @@ class SessionImplMixin(HandlerMixinBase):
             task_kind = str(raw_task.get("task_kind", "implement")).strip().lower() or "implement"
             if task_kind not in {"generic", "implement", "review"}:
                 raise ValueError(f"Unsupported coding task_kind: {task_kind}")
+            effective_read_only = _coding_agent_effective_read_only(
+                read_only=bool(raw_task.get("read_only", False)),
+                task_kind=task_kind,
+            )
             max_turns = raw_task.get("max_turns")
             max_turns_value = int(max_turns) if max_turns is not None else None
             if max_turns_value is not None and max_turns_value <= 0:
@@ -3110,7 +3116,7 @@ class SessionImplMixin(HandlerMixinBase):
                 ),
                 timeout_sec=timeout_sec or self._config.coding_agent_timeout_seconds,
                 max_budget_usd=max_budget_value,
-                read_only=bool(raw_task.get("read_only", False)),
+                read_only=effective_read_only,
                 task_kind=task_kind,
                 max_turns=max_turns_value,
                 model=(
@@ -3123,8 +3129,7 @@ class SessionImplMixin(HandlerMixinBase):
                 ),
                 allowed_tools=_coding_agent_allowed_tools(
                     capabilities=frozenset(scoped_capabilities),
-                    read_only=bool(raw_task.get("read_only", False)),
-                    task_kind=task_kind,
+                    read_only=effective_read_only,
                 ),
             )
 
@@ -3413,7 +3418,6 @@ class SessionImplMixin(HandlerMixinBase):
                 missing_capabilities = _missing_coding_agent_capabilities(
                     capabilities=task_request.capabilities,
                     read_only=coding_config.read_only,
-                    task_kind=coding_config.task_kind,
                 )
                 if missing_capabilities:
                     failure_reason = "coding_agent_capability_denied"
@@ -3436,6 +3440,27 @@ class SessionImplMixin(HandlerMixinBase):
                         self._coding_manager.worktree_path_for(str(task_session.id))
                     )
 
+                    async def _publish_coding_selected(
+                        *,
+                        current_config: CodingAgentConfig,
+                        selection_result: Any,
+                    ) -> None:
+                        await self._event_bus.publish(
+                            CodingAgentSelected(
+                                session_id=task_session.id,
+                                actor="coding_agent",
+                                preferred_agent=current_config.preferred_agent or "",
+                                fallback_agents=list(current_config.fallback_agents),
+                                selected_agent=(
+                                    selection_result.spec.name
+                                    if selection_result.spec is not None
+                                    else ""
+                                ),
+                                fallback_used=selection_result.fallback_used,
+                                attempts=selection_attempts,
+                            )
+                        )
+
                     while True:
                         remaining_agents = tuple(
                             agent
@@ -3455,18 +3480,9 @@ class SessionImplMixin(HandlerMixinBase):
                             selection_attempts,
                             selection.attempts,
                         )
-                        await self._event_bus.publish(
-                            CodingAgentSelected(
-                                session_id=task_session.id,
-                                actor="coding_agent",
-                                preferred_agent=current_config.preferred_agent or "",
-                                fallback_agents=list(current_config.fallback_agents),
-                                selected_agent=(
-                                    selection.spec.name if selection.spec is not None else ""
-                                ),
-                                fallback_used=selection.fallback_used,
-                                attempts=selection_attempts,
-                            )
+                        await _publish_coding_selected(
+                            current_config=current_config,
+                            selection_result=selection,
                         )
                         if selection.spec is None:
                             coding_record = await self._coding_manager.execute(
@@ -3488,6 +3504,7 @@ class SessionImplMixin(HandlerMixinBase):
                                 worktree_path=worktree_path,
                             )
                         )
+                        attempt_t0 = time.monotonic()
                         try:
                             coding_record = await self._coding_manager.execute(
                                 task_session_id=str(task_session.id),
@@ -3503,7 +3520,16 @@ class SessionImplMixin(HandlerMixinBase):
                                 task_session.id,
                                 exc_info=True,
                             )
-                            duration_ms = int((time.monotonic() - task_t0) * 1000)
+                            selection_attempts = _update_coding_selection_attempt_reason(
+                                selection_attempts,
+                                agent=selection.spec.name,
+                                reason=failure_reason,
+                            )
+                            await _publish_coding_selected(
+                                current_config=current_config,
+                                selection_result=selection,
+                            )
+                            duration_ms = int((time.monotonic() - attempt_t0) * 1000)
                             await self._event_bus.publish(
                                 CodingAgentSessionCompleted(
                                     session_id=task_session.id,
@@ -3560,8 +3586,12 @@ class SessionImplMixin(HandlerMixinBase):
                         if coding_record.error_code in {"agent_unavailable", "protocol_error"}:
                             selection_attempts = _update_coding_selection_attempt_reason(
                                 selection_attempts,
-                                agent=coding_record.selected_agent,
+                                agent=coding_record.selected_agent or selection.spec.name,
                                 reason=coding_record.error_code,
+                            )
+                            await _publish_coding_selected(
+                                current_config=current_config,
+                                selection_result=selection,
                             )
                             continue
                         break
