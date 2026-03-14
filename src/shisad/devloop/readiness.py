@@ -11,15 +11,25 @@ _TOP_LEVEL_HEADING_RE = re.compile(r"^## (?P<title>.+)$", re.MULTILINE)
 _THIRD_LEVEL_HEADING_RE = re.compile(r"^### (?P<title>.+)$", re.MULTILINE)
 _FINDING_ID_RE = re.compile(r"\b(?P<id>(?:G|M)\d+\.(?:R-open\.\d+|RR\d+\.\d+))\b")
 _UNCHECKED_CHECKBOX_RE = re.compile(r"^\s*-\s+\[\s\]\s+(?P<item>.+)$", re.MULTILINE)
-_RESOLVED_FINDING_MARKERS = (
-    "[x]",
-    "closed",
-    "resolved",
-    "green",
-    "accepted",
-    "deferred",
-    "remediated",
-    "fixed",
+_OPEN_CHECKBOX_RE = re.compile(r"\[\s\]")
+_RESOLVED_CHECKBOX_RE = re.compile(r"\[\s*x\s*\]", re.IGNORECASE)
+_OPEN_FINDING_PATTERNS = (
+    re.compile(r"\bopen\b", re.IGNORECASE),
+    re.compile(r"\breopened\b", re.IGNORECASE),
+    re.compile(r"\bunresolved\b", re.IGNORECASE),
+    re.compile(r"\bstill open\b", re.IGNORECASE),
+    re.compile(r"\bneeds changes\b", re.IGNORECASE),
+    re.compile(r"\bnot closed\b", re.IGNORECASE),
+    re.compile(r"\bnot resolved\b", re.IGNORECASE),
+)
+_RESOLVED_FINDING_PATTERNS = (
+    re.compile(r"\bclosed\b", re.IGNORECASE),
+    re.compile(r"\bresolved\b", re.IGNORECASE),
+    re.compile(r"\bgreen\b", re.IGNORECASE),
+    re.compile(r"\baccepted(?:-no-change)?\b", re.IGNORECASE),
+    re.compile(r"\bdeferred\b", re.IGNORECASE),
+    re.compile(r"\bremediated\b", re.IGNORECASE),
+    re.compile(r"\bfixed\b", re.IGNORECASE),
 )
 
 
@@ -184,7 +194,7 @@ def _extract_top_level_section(text: str, title_prefix: str) -> str | None:
     matches = list(_TOP_LEVEL_HEADING_RE.finditer(text))
     for index, match in enumerate(matches):
         title = str(match.group("title")).strip()
-        if not title.startswith(title_prefix):
+        if not _title_matches_prefix(title=title, prefix=title_prefix):
             continue
         start = match.start()
         end = matches[index + 1].start() if index + 1 < len(matches) else len(text)
@@ -198,12 +208,21 @@ def _extract_subsection(section: str | None, *, prefixes: tuple[str, ...]) -> st
     matches = list(_THIRD_LEVEL_HEADING_RE.finditer(section))
     for index, match in enumerate(matches):
         title = str(match.group("title")).strip()
-        if not any(title.startswith(prefix) for prefix in prefixes):
+        if not any(_title_matches_prefix(title=title, prefix=prefix) for prefix in prefixes):
             continue
         start = match.start()
         end = matches[index + 1].start() if index + 1 < len(matches) else len(section)
         return section[start:end].strip()
     return None
+
+
+def _title_matches_prefix(*, title: str, prefix: str) -> bool:
+    if not title.startswith(prefix):
+        return False
+    if len(title) == len(prefix):
+        return True
+    next_char = title[len(prefix)]
+    return not next_char.isalnum()
 
 
 def _section_has_body(section: str | None) -> bool:
@@ -227,20 +246,38 @@ def _worklog_updated(*, text: str, milestone_key: str) -> bool:
     return pattern.search(worklog) is not None
 
 
+def _finding_resolution_state(line: str) -> bool | None:
+    status_text = _FINDING_ID_RE.sub("", line)
+    if _OPEN_CHECKBOX_RE.search(status_text) is not None:
+        return False
+    if any(pattern.search(status_text) is not None for pattern in _OPEN_FINDING_PATTERNS):
+        return False
+    if _RESOLVED_CHECKBOX_RE.search(status_text) is not None:
+        return True
+    if any(pattern.search(status_text) is not None for pattern in _RESOLVED_FINDING_PATTERNS):
+        return True
+    return None
+
+
 def _open_finding_ids(*, text: str, milestone_key: str) -> tuple[str, ...]:
     statuses: dict[str, bool] = {}
     for raw_line in text.splitlines():
         line = raw_line.strip()
         if not line:
             continue
-        normalized = line.lower()
-        resolved = any(marker in normalized for marker in _RESOLVED_FINDING_MARKERS)
+        state = _finding_resolution_state(line)
         for match in _FINDING_ID_RE.finditer(line):
             finding_id = str(match.group("id"))
             if not finding_id.startswith(f"{milestone_key}."):
                 continue
-            if resolved:
-                statuses[finding_id] = True
-            else:
+            if state is None:
                 statuses.setdefault(finding_id, False)
+                continue
+            if finding_id not in statuses:
+                statuses[finding_id] = state
+                continue
+            if state is False:
+                statuses[finding_id] = False
+                continue
+            statuses[finding_id] = True
     return tuple(sorted(finding_id for finding_id, closed in statuses.items() if not closed))
