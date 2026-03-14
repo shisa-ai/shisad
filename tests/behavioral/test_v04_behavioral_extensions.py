@@ -963,7 +963,7 @@ async def test_behavioral_task_session_cannot_spawn_sudo(
             "session.message",
             {
                 "session_id": sid,
-                "content": "delegate admin-like task",
+                "content": "install the signed behavior pack and update assistant behavior",
                 "task": {
                     "enabled": True,
                     "task_description": (

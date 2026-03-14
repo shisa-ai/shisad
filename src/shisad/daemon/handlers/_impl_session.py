@@ -118,6 +118,7 @@ _TASK_HANDOFF_RAW_PASSTHROUGH = "raw_passthrough"
 _COMMAND_CONTEXT_STATUS_KEY = "command_context"
 _COMMAND_CONTEXT_RECOVERY_CHECKPOINT_KEY = "command_context_recovery_checkpoint_id"
 _COMMAND_CONTEXT_REASON_KEY = "command_context_reason"
+_TASK_REPORTED_PATH_MAX_CHARS = 512
 _IN_BAND_READ_ONLY_ACTION_KINDS: set[ActionKind] = {
     ActionKind.FS_READ,
     ActionKind.FS_LIST,
@@ -399,6 +400,17 @@ def _normalize_assistant_tone(raw_tone: Any) -> AssistantTone | None:
     return None
 
 
+def _task_payload_requests_delegation(params: Mapping[str, Any]) -> bool:
+    if "task" not in params:
+        return False
+    raw_task = params.get("task")
+    if raw_task is None:
+        return False
+    if not isinstance(raw_task, Mapping):
+        return True
+    return bool(raw_task.get("enabled", False))
+
+
 def _resolve_task_capability_scope(
     *,
     parent_capabilities: set[Capability],
@@ -429,6 +441,8 @@ def _compose_task_request_content(
     task_description: str,
     file_refs: Sequence[str],
 ) -> str:
+    # task_description is authenticated COMMAND input and stays inside a fixed
+    # TASK envelope so marker-like user text cannot become runtime scaffold.
     description = task_description.strip() or "Complete the delegated task."
     ordered_refs: list[str] = []
     seen: set[str] = set()
@@ -460,19 +474,27 @@ def _task_recovery_checkpoint_id(session: Session) -> str | None:
 
 
 def _extract_files_changed_from_task_outputs(records: Sequence[dict[str, Any]]) -> tuple[str, ...]:
+    def _normalized_path(raw: Any) -> str | None:
+        value = str(raw).strip()
+        if not value or len(value) > _TASK_REPORTED_PATH_MAX_CHARS:
+            return None
+        if any(token in value for token in ("\x00", "\n", "\r")):
+            return None
+        return value
+
     files: list[str] = []
     for record in records:
         payload = record.get("payload")
         if not isinstance(payload, dict):
             continue
         for key in ("path", "file", "target_path"):
-            value = str(payload.get(key, "")).strip()
+            value = _normalized_path(payload.get(key, ""))
             if value and value not in files:
                 files.append(value)
         paths = payload.get("paths")
         if isinstance(paths, list):
             for item in paths:
-                value = str(item).strip()
+                value = _normalized_path(item)
                 if value and value not in files:
                     files.append(value)
     return tuple(files)
@@ -2909,6 +2931,9 @@ class SessionImplMixin(HandlerMixinBase):
         timeout_raw = raw_task.get("timeout_sec")
         if timeout_raw is not None:
             timeout_sec = float(timeout_raw)
+            # M2 keeps TASK timeouts caller-directed with no hard ceiling so
+            # authorized long-running delegations remain possible; broader
+            # daemon/operator concurrency controls stay responsible for load.
             if timeout_sec <= 0:
                 raise ValueError("task timeout_sec must be positive")
 
@@ -3016,6 +3041,18 @@ class SessionImplMixin(HandlerMixinBase):
         if lockdown_notice:
             response_text = f"{response_text}\n\n[LOCKDOWN NOTICE] {lockdown_notice}"
 
+        summary_text = handoff.summary or "Delegated task completed."
+        summary_output_result = self._output_firewall.inspect(
+            summary_text,
+            context={"session_id": sid, "actor": "assistant_task_summary"},
+        )
+        if summary_output_result.blocked:
+            summary_text = "Summary blocked by output policy."
+        else:
+            summary_text = summary_output_result.sanitized_text
+            if summary_output_result.require_confirmation:
+                summary_text = f"[CONFIRMATION REQUIRED] {summary_text}"
+
         assistant_transcript_metadata = _transcript_metadata_for_channel(
             channel=validated.channel,
             session_mode=validated.session_mode,
@@ -3085,7 +3122,7 @@ class SessionImplMixin(HandlerMixinBase):
             "delivery": {},
             "task_result": {
                 "success": handoff.success,
-                "summary": handoff.summary,
+                "summary": summary_text,
                 "files_changed": list(handoff.files_changed),
                 "cost": None,
                 "duration_ms": handoff.duration_ms,
@@ -3124,20 +3161,26 @@ class SessionImplMixin(HandlerMixinBase):
             )
             recovery_checkpoint_id = checkpoint.checkpoint_id
 
+        task_metadata: dict[str, Any] = {
+            "capability_sync_mode": "manual_override",
+            "trust_level": "internal",
+            "session_mode": SessionMode.TASK.value,
+            _COMMAND_CONTEXT_STATUS_KEY: "clean",
+            "parent_session_id": str(parent_sid),
+            "task_file_refs": list(task_request.file_refs),
+        }
+        if validated.tool_allowlist is not None:
+            task_metadata["tool_allowlist"] = sorted(
+                str(tool) for tool in validated.tool_allowlist
+            )
+
         task_session = self._session_manager.create(
             channel="task",
             user_id=parent_session.user_id,
             workspace_id=parent_session.workspace_id,
             mode=SessionMode.TASK,
             capabilities=set(task_request.capabilities),
-            metadata={
-                "capability_sync_mode": "manual_override",
-                "trust_level": "internal",
-                "session_mode": SessionMode.TASK.value,
-                _COMMAND_CONTEXT_STATUS_KEY: "clean",
-                "parent_session_id": str(parent_sid),
-                "task_file_refs": list(task_request.file_refs),
-            },
+            metadata=task_metadata,
         )
         await self._event_bus.publish(
             SessionCreated(
@@ -3254,7 +3297,10 @@ class SessionImplMixin(HandlerMixinBase):
                 },
             )
 
-        summary_result = self._firewall.inspect(raw_response_text, trusted_input=False)
+        # TASK output is daemon-internal planner output, but it can reflect
+        # tool-returned content; keep the content firewall barrier while
+        # avoiding external-ingress taint semantics at the TASK->COMMAND seam.
+        summary_result = self._firewall.inspect(raw_response_text, trusted_input=True)
         summary_text = summary_result.sanitized_text.strip()
         if not summary_text:
             summary_text = (
@@ -3270,12 +3316,13 @@ class SessionImplMixin(HandlerMixinBase):
             degrade_reason = "raw_task_content_passthrough"
             if recovery_checkpoint_id is None:
                 raise RuntimeError("missing recovery checkpoint for raw task passthrough")
-            await self._mark_command_context_degraded(
-                session=parent_session,
-                task_session_id=task_session.id,
-                reason=degrade_reason,
-                recovery_checkpoint_id=recovery_checkpoint_id,
-            )
+            if command_context != "degraded":
+                await self._mark_command_context_degraded(
+                    session=parent_session,
+                    task_session_id=task_session.id,
+                    reason=degrade_reason,
+                    recovery_checkpoint_id=recovery_checkpoint_id,
+                )
             command_context = "degraded"
             response_text = raw_response_text or summary_text
 
@@ -3360,6 +3407,8 @@ class SessionImplMixin(HandlerMixinBase):
         self,
         params: Mapping[str, Any],
     ) -> dict[str, Any] | None:
+        if _task_payload_requests_delegation(params):
+            return None
         session_manager = getattr(self, "_session_manager", None)
         if session_manager is None:
             return None

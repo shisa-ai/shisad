@@ -70,13 +70,19 @@ async def _wait_for_event(
     raise AssertionError(f"Timed out waiting for {event_type}: {latest}")
 
 
-def _policy_with_caps(*caps: str) -> str:
+def _policy_with_caps(
+    *caps: str,
+    tool_allowlist: tuple[str, ...] = (),
+) -> str:
     lines = [
         'version: "1"',
         "default_require_confirmation: false",
         "default_capabilities:",
         *[f"  - {cap}" for cap in caps],
     ]
+    if tool_allowlist:
+        lines.append("session_tool_allowlist:")
+        lines.extend(f"  - {tool}" for tool in tool_allowlist)
     return "\n".join(lines) + "\n"
 
 
@@ -243,6 +249,34 @@ async def test_m2_raw_task_handoff_marks_command_degraded_and_recovery_checkpoin
         assert set_mode["changed"] is False
         assert set_mode["reason"] == "command_context_degraded"
 
+        delegated_again = await client.call(
+            "session.message",
+            {
+                "session_id": sid,
+                "content": "debug the raw task output again",
+                "task": {
+                    "enabled": True,
+                    "task_description": "Return the raw task log again.",
+                    "file_refs": ["README.md"],
+                    "capabilities": ["file.read"],
+                    "handoff_mode": "raw_passthrough",
+                },
+            },
+        )
+        task_result_again = dict(delegated_again.get("task_result") or {})
+        assert task_result_again["recovery_checkpoint_id"] == checkpoint_id
+
+        degraded_events = await client.call(
+            "audit.query",
+            {"event_type": "CommandContextDegraded", "session_id": sid, "limit": 10},
+        )
+        matching_events = [
+            event
+            for event in degraded_events.get("events", [])
+            if str(event.get("session_id", "")).strip() == sid
+        ]
+        assert len(matching_events) == 1
+
         rolled_back = await client.call("session.rollback", {"checkpoint_id": checkpoint_id})
         assert rolled_back["rolled_back"] is True
 
@@ -310,6 +344,157 @@ async def test_m2_task_session_timeout_cleans_up_ephemeral_state(
 
 
 @pytest.mark.asyncio
+async def test_m2_task_session_inherits_parent_allowlist_and_has_distinct_session_key(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    planner_entered = asyncio.Event()
+    release_task = asyncio.Event()
+    observed_tool_names: list[str] = []
+
+    async def _planner(
+        self: Planner,
+        user_content: str,
+        context: object,
+        *,
+        tools: list[dict[str, object]] | None = None,
+        persona_tone_override: str | None = None,
+    ) -> PlannerResult:
+        _ = (self, user_content, context, persona_tone_override)
+        observed_tool_names[:] = [
+            str(item.get("function", {}).get("name", ""))
+            for item in (tools or [])
+        ]
+        planner_entered.set()
+        await release_task.wait()
+        return PlannerResult(
+            output=PlannerOutput(assistant_response="task finished", actions=[]),
+            evaluated=[],
+            attempts=1,
+            provider_response=None,
+            messages_sent=(),
+        )
+
+    monkeypatch.setattr(Planner, "propose", _planner)
+    daemon_task, client = await _start_daemon(
+        tmp_path,
+        policy_text=_policy_with_caps(
+            "file.read",
+            "http.request",
+            tool_allowlist=("fs.read",),
+        ),
+    )
+    observer = ControlClient(tmp_path / "control.sock")
+    await observer.connect()
+    try:
+        created = await client.call(
+            "session.create",
+            {"channel": "cli", "user_id": "alice", "workspace_id": "ws1"},
+        )
+        sid = str(created["session_id"])
+
+        message_task = asyncio.create_task(
+            client.call(
+                "session.message",
+                {
+                    "session_id": sid,
+                    "content": "run delegated review",
+                    "task": {
+                        "enabled": True,
+                        "task_description": "Review README.md in isolation.",
+                        "file_refs": ["README.md"],
+                        "capabilities": ["file.read", "http.request"],
+                    },
+                },
+            )
+        )
+
+        started = await _wait_for_event(
+            observer,
+            event_type="TaskSessionStarted",
+            predicate=lambda item: str(item.get("data", {}).get("parent_session_id", "")).strip()
+            == sid,
+        )
+        task_sid = str(started.get("session_id", "")).strip()
+        await asyncio.wait_for(planner_entered.wait(), timeout=2.0)
+
+        sessions = await observer.call("session.list")
+        parent_row = next(item for item in sessions["sessions"] if item["id"] == sid)
+        task_row = next(item for item in sessions["sessions"] if item["id"] == task_sid)
+
+        assert task_row["parent_session_id"] == sid
+        assert task_row["session_key"] != parent_row["session_key"]
+        assert set(observed_tool_names) == {"fs_read"}
+
+        release_task.set()
+        result = await message_task
+        task_result = dict(result.get("task_result") or {})
+        assert task_result["success"] is True
+    finally:
+        release_task.set()
+        await observer.close()
+        await _shutdown_daemon(daemon_task, client)
+
+
+@pytest.mark.asyncio
+async def test_m2_task_summary_obeys_output_firewall(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _planner(
+        self: Planner,
+        user_content: str,
+        context: object,
+        *,
+        tools: list[dict[str, object]] | None = None,
+        persona_tone_override: str | None = None,
+    ) -> PlannerResult:
+        _ = (self, user_content, context, tools, persona_tone_override)
+        return PlannerResult(
+            output=PlannerOutput(
+                assistant_response="See https://docs.python.org/3/ for details.",
+                actions=[],
+            ),
+            evaluated=[],
+            attempts=1,
+            provider_response=None,
+            messages_sent=(),
+        )
+
+    monkeypatch.setattr(Planner, "propose", _planner)
+    daemon_task, client = await _start_daemon(
+        tmp_path,
+        policy_text=_policy_with_caps("file.read"),
+    )
+    try:
+        created = await client.call(
+            "session.create",
+            {"channel": "cli", "user_id": "alice", "workspace_id": "ws1"},
+        )
+        sid = str(created["session_id"])
+        result = await client.call(
+            "session.message",
+            {
+                "session_id": sid,
+                "content": "run delegated summary",
+                "task": {
+                    "enabled": True,
+                    "task_description": "Summarize README.md with a link.",
+                    "file_refs": ["README.md"],
+                    "capabilities": ["file.read"],
+                },
+            },
+        )
+
+        task_result = dict(result.get("task_result") or {})
+        assert result["response"].startswith("[CONFIRMATION REQUIRED] ")
+        assert task_result["summary"].startswith("[CONFIRMATION REQUIRED] ")
+        assert "https://docs.python.org/3/" in task_result["summary"]
+    finally:
+        await _shutdown_daemon(daemon_task, client)
+
+
+@pytest.mark.asyncio
 async def test_m2_task_session_cannot_reroute_to_admin_cleanroom(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -346,7 +531,7 @@ async def test_m2_task_session_cannot_reroute_to_admin_cleanroom(
             "session.message",
             {
                 "session_id": sid,
-                "content": "delegate admin-looking task",
+                "content": "install the signed behavior pack and update assistant behavior",
                 "task": {
                     "enabled": True,
                     "task_description": (
@@ -361,5 +546,6 @@ async def test_m2_task_session_cannot_reroute_to_admin_cleanroom(
         assert task_result["task_session_mode"] == "task"
         assert result["session_mode"] == "default"
         assert result["proposal_only"] is False
+        assert task_result["success"] is True
     finally:
         await _shutdown_daemon(daemon_task, client)
