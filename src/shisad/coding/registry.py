@@ -1,0 +1,135 @@
+"""Coding-agent command registry and selection helpers."""
+
+from __future__ import annotations
+
+import shlex
+import shutil
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass
+from pathlib import Path
+
+from .models import CodingAgentConfig
+
+
+@dataclass(frozen=True, slots=True)
+class AgentCommandSpec:
+    """Pinned command and transport hints for a coding-agent adapter."""
+
+    name: str
+    command: tuple[str, ...]
+    read_only_modes: tuple[str, ...] = ("plan", "read-only")
+    write_modes: tuple[str, ...] = ("build", "auto")
+    skill_name: str = ""
+
+    def __post_init__(self) -> None:
+        if not self.skill_name:
+            object.__setattr__(self, "skill_name", f"coding.{self.name}")
+
+
+@dataclass(frozen=True, slots=True)
+class AgentAvailability:
+    available: bool
+    reason: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class AgentSelectionAttempt:
+    agent: str
+    available: bool
+    reason: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class AgentSelectionResult:
+    spec: AgentCommandSpec | None
+    attempts: tuple[AgentSelectionAttempt, ...]
+    fallback_used: bool = False
+
+
+def _parse_command(command: str) -> tuple[str, ...]:
+    parsed = tuple(shlex.split(command))
+    if not parsed:
+        raise ValueError("coding-agent command override must not be empty")
+    return parsed
+
+
+def build_default_agent_registry(
+    overrides: Mapping[str, str] | None = None,
+) -> dict[str, AgentCommandSpec]:
+    registry = {
+        "claude": AgentCommandSpec(
+            name="claude",
+            command=("npx", "-y", "@zed-industries/claude-agent-acp@0.21.0"),
+        ),
+        "codex": AgentCommandSpec(
+            name="codex",
+            command=("npx", "@zed-industries/codex-acp@0.9.5"),
+        ),
+        "opencode": AgentCommandSpec(
+            name="opencode",
+            command=("npx", "-y", "opencode-ai", "acp"),
+        ),
+    }
+    for raw_name, raw_command in (overrides or {}).items():
+        name = str(raw_name).strip().lower()
+        command = str(raw_command).strip()
+        if not name or not command:
+            continue
+        base = registry.get(name)
+        registry[name] = AgentCommandSpec(
+            name=name,
+            command=_parse_command(command),
+            read_only_modes=base.read_only_modes if base is not None else ("plan", "read-only"),
+            write_modes=base.write_modes if base is not None else ("build", "auto"),
+        )
+    return registry
+
+
+def default_agent_availability(spec: AgentCommandSpec) -> AgentAvailability:
+    executable = spec.command[0]
+    if Path(executable).is_absolute():
+        return AgentAvailability(
+            available=Path(executable).exists(),
+            reason="ok" if Path(executable).exists() else "binary_not_found",
+        )
+    return AgentAvailability(
+        available=shutil.which(executable) is not None,
+        reason="ok" if shutil.which(executable) is not None else "binary_not_found",
+    )
+
+
+def select_coding_agent(
+    *,
+    registry: Mapping[str, AgentCommandSpec],
+    config: CodingAgentConfig,
+    availability_checker: Callable[[AgentCommandSpec], AgentAvailability] | None = None,
+) -> AgentSelectionResult:
+    checker = availability_checker or default_agent_availability
+    attempts: list[AgentSelectionAttempt] = []
+    chain = config.selection_chain()
+    for index, agent_name in enumerate(chain):
+        spec = registry.get(agent_name)
+        if spec is None:
+            attempts.append(
+                AgentSelectionAttempt(
+                    agent=agent_name,
+                    available=False,
+                    reason="unknown_agent",
+                )
+            )
+            continue
+        availability = checker(spec)
+        attempts.append(
+            AgentSelectionAttempt(
+                agent=agent_name,
+                available=availability.available,
+                reason=availability.reason,
+            )
+        )
+        if availability.available:
+            return AgentSelectionResult(
+                spec=spec,
+                attempts=tuple(attempts),
+                fallback_used=index > 0,
+            )
+    return AgentSelectionResult(spec=None, attempts=tuple(attempts), fallback_used=False)

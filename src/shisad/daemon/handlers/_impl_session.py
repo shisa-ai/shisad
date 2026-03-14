@@ -18,6 +18,7 @@ from urllib.parse import urlparse
 from pydantic import ValidationError
 
 from shisad.channels.base import DeliveryTarget
+from shisad.coding.models import CodingAgentConfig
 from shisad.core.context import (
     DEFAULT_EPISODE_GAP_THRESHOLD,
     DEFAULT_INTERNAL_TIER_TOKEN_BUDGET,
@@ -28,6 +29,9 @@ from shisad.core.context import (
 )
 from shisad.core.events import (
     AnomalyReported,
+    CodingAgentSelected,
+    CodingAgentSessionCompleted,
+    CodingAgentSessionStarted,
     CommandContextDegraded,
     MonitorEvaluated,
     PlanCancelled,
@@ -226,6 +230,8 @@ class TaskSessionRequest:
     capabilities: frozenset[Capability]
     timeout_sec: float | None
     handoff_mode: str
+    executor: str = "planner"
+    coding_config: CodingAgentConfig | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -235,6 +241,8 @@ class TaskSessionHandoff:
     summary: str
     response_text: str
     files_changed: tuple[str, ...]
+    agent: str | None
+    cost: float | None
     duration_ms: int
     proposal_ref: str | None
     raw_log_ref: str | None
@@ -338,6 +346,31 @@ def _resolve_chat_confirmation_indexes(
     if tainted_session:
         return []
     return [0]
+
+
+def _parse_optional_float(value: object, *, field_name: str) -> float | None:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        stripped = value.strip()
+        if not stripped:
+            return None
+        try:
+            return float(stripped)
+        except ValueError as exc:
+            raise ValueError(f"{field_name} must be numeric") from exc
+    if isinstance(value, bool):
+        raise ValueError(f"{field_name} must be numeric")
+    if isinstance(value, (int, float)):
+        return float(value)
+    raise ValueError(f"{field_name} must be numeric")
+
+
+def _coerce_optional_float(value: object) -> float | None:
+    try:
+        return _parse_optional_float(value, field_name="value")
+    except ValueError:
+        return None
 
 
 def _tool_available_in_session(
@@ -2930,11 +2963,14 @@ class SessionImplMixin(HandlerMixinBase):
         timeout_sec: float | None = None
         timeout_raw = raw_task.get("timeout_sec")
         if timeout_raw is not None:
-            timeout_sec = float(timeout_raw)
+            timeout_sec = _parse_optional_float(
+                timeout_raw,
+                field_name="task timeout_sec",
+            )
             # M2 keeps TASK timeouts caller-directed with no hard ceiling so
             # authorized long-running delegations remain possible; broader
             # daemon/operator concurrency controls stay responsible for load.
-            if timeout_sec <= 0:
+            if timeout_sec is None or timeout_sec <= 0:
                 raise ValueError("task timeout_sec must be positive")
 
         handoff_mode = (
@@ -2944,12 +2980,89 @@ class SessionImplMixin(HandlerMixinBase):
         if handoff_mode not in {_TASK_HANDOFF_SUMMARY_ONLY, _TASK_HANDOFF_RAW_PASSTHROUGH}:
             raise ValueError(f"Unsupported task handoff mode: {handoff_mode}")
 
+        executor = str(raw_task.get("executor", "planner")).strip().lower() or "planner"
+        if executor not in {"planner", "coding_agent"}:
+            raise ValueError(f"Unsupported task executor: {executor}")
+
+        coding_config: CodingAgentConfig | None = None
+        if executor == "coding_agent":
+            if handoff_mode != _TASK_HANDOFF_SUMMARY_ONLY:
+                raise ValueError("coding_agent tasks require summary_only handoff")
+            preferred_agent = str(raw_task.get("preferred_agent", "")).strip().lower() or None
+            fallback_agents_raw = raw_task.get("fallback_agents", [])
+            fallback_agents = (
+                tuple(
+                    str(item).strip().lower()
+                    for item in fallback_agents_raw
+                    if str(item).strip()
+                )
+                if isinstance(fallback_agents_raw, list)
+                else ()
+            )
+            task_kind = str(raw_task.get("task_kind", "implement")).strip().lower() or "implement"
+            if task_kind not in {"generic", "implement", "review"}:
+                raise ValueError(f"Unsupported coding task_kind: {task_kind}")
+            max_turns = raw_task.get("max_turns")
+            max_turns_value = int(max_turns) if max_turns is not None else None
+            if max_turns_value is not None and max_turns_value <= 0:
+                raise ValueError("coding_agent max_turns must be positive")
+            max_budget_raw = raw_task.get("max_budget_usd")
+            max_budget_value = _parse_optional_float(
+                max_budget_raw,
+                field_name="coding_agent max_budget_usd",
+            )
+            if max_budget_value is not None and max_budget_value <= 0:
+                raise ValueError("coding_agent max_budget_usd must be positive")
+
+            default_preference = tuple(
+                agent.strip().lower()
+                for agent in self._config.coding_agent_default_preference
+                if agent.strip()
+            )
+            if preferred_agent is None and default_preference:
+                preferred_agent = default_preference[0]
+                fallback_agents = tuple(
+                    item
+                    for item in [*default_preference[1:], *fallback_agents]
+                    if item and item != preferred_agent
+                )
+            elif not fallback_agents:
+                fallback_agents = tuple(
+                    agent.strip().lower()
+                    for agent in self._config.coding_agent_default_fallbacks
+                    if agent.strip()
+                )
+
+            coding_config = CodingAgentConfig(
+                preferred_agent=preferred_agent,
+                fallback_agents=tuple(
+                    item
+                    for item in fallback_agents
+                    if item and item != preferred_agent
+                ),
+                timeout_sec=timeout_sec or self._config.coding_agent_timeout_seconds,
+                max_budget_usd=max_budget_value,
+                read_only=bool(raw_task.get("read_only", False)),
+                task_kind=task_kind,
+                max_turns=max_turns_value,
+                model=(
+                    str(raw_task.get("model", "")).strip()
+                    or None
+                ),
+                reasoning_effort=(
+                    str(raw_task.get("reasoning_effort", "")).strip()
+                    or None
+                ),
+            )
+
         return TaskSessionRequest(
             task_description=task_description,
             file_refs=file_refs,
             capabilities=frozenset(scoped_capabilities),
             timeout_sec=timeout_sec,
             handoff_mode=handoff_mode,
+            executor=executor,
+            coding_config=coding_config,
         )
 
     def _effective_session_capabilities(
@@ -3060,6 +3173,8 @@ class SessionImplMixin(HandlerMixinBase):
         assistant_transcript_metadata["task_result"] = {
             "task_session_id": str(handoff.task_session_id),
             "handoff_mode": handoff.handoff_mode,
+            "agent": handoff.agent or "",
+            "cost": handoff.cost,
             "proposal_ref": handoff.proposal_ref,
             "raw_log_ref": handoff.raw_log_ref,
             "command_context": handoff.command_context,
@@ -3124,7 +3239,8 @@ class SessionImplMixin(HandlerMixinBase):
                 "success": handoff.success,
                 "summary": summary_text,
                 "files_changed": list(handoff.files_changed),
-                "cost": None,
+                "cost": handoff.cost,
+                "agent": handoff.agent,
                 "duration_ms": handoff.duration_ms,
                 "proposal_ref": handoff.proposal_ref,
                 "raw_log_ref": handoff.raw_log_ref,
@@ -3168,6 +3284,7 @@ class SessionImplMixin(HandlerMixinBase):
             _COMMAND_CONTEXT_STATUS_KEY: "clean",
             "parent_session_id": str(parent_sid),
             "task_file_refs": list(task_request.file_refs),
+            "task_executor": task_request.executor,
         }
         if validated.tool_allowlist is not None:
             task_metadata["tool_allowlist"] = sorted(
@@ -3198,46 +3315,135 @@ class SessionImplMixin(HandlerMixinBase):
                 task_description_hash=_short_hash(task_request.task_description),
                 file_refs=list(task_request.file_refs),
                 capabilities=sorted(cap.value for cap in task_request.capabilities),
+                executor=task_request.executor,
+                agent=(
+                    task_request.coding_config.preferred_agent
+                    if task_request.coding_config is not None
+                    else ""
+                )
+                or "",
                 handoff_mode=task_request.handoff_mode,
             )
         )
 
-        task_params = {
-            "session_id": task_session.id,
-            "content": _compose_task_request_content(
-                task_description=task_request.task_description,
-                file_refs=task_request.file_refs,
-            ),
-            "channel": task_session.channel,
-            "user_id": task_session.user_id,
-            "workspace_id": task_session.workspace_id,
-        }
         task_t0 = time.monotonic()
         task_response_payload: dict[str, Any]
         failure_reason = ""
+        selected_agent: str | None = None
+        selected_cost: float | None = None
 
-        task_call = asyncio.create_task(self.do_session_message(task_params))
         try:
-            if task_request.timeout_sec is not None:
-                task_response_payload = await asyncio.wait_for(
-                    task_call,
-                    timeout=task_request.timeout_sec,
+            if task_request.executor == "coding_agent":
+                coding_config = task_request.coding_config or CodingAgentConfig(
+                    timeout_sec=self._config.coding_agent_timeout_seconds
+                )
+                selection = self._coding_manager.select_agent(coding_config)
+                await self._event_bus.publish(
+                    CodingAgentSelected(
+                        session_id=task_session.id,
+                        actor="coding_agent",
+                        preferred_agent=coding_config.preferred_agent or "",
+                        fallback_agents=list(coding_config.fallback_agents),
+                        selected_agent=selection.spec.name if selection.spec is not None else "",
+                        fallback_used=selection.fallback_used,
+                        attempts=[
+                            {
+                                "agent": attempt.agent,
+                                "available": attempt.available,
+                                "reason": attempt.reason,
+                            }
+                            for attempt in selection.attempts
+                        ],
+                    )
+                )
+                if selection.spec is not None:
+                    await self._event_bus.publish(
+                        CodingAgentSessionStarted(
+                            session_id=task_session.id,
+                            actor="coding_agent",
+                            agent=selection.spec.name,
+                            task_kind=coding_config.task_kind,
+                            read_only=coding_config.read_only,
+                            worktree_path="",
+                        )
+                    )
+                coding_record = await self._coding_manager.execute(
+                    task_session_id=str(task_session.id),
+                    task_description=task_request.task_description,
+                    file_refs=task_request.file_refs,
+                    config=coding_config,
+                    selection=selection,
+                )
+                selected_agent = coding_record.selected_agent or None
+                selected_cost = coding_record.result.cost
+                if coding_record.error_code == "timeout":
+                    failure_reason = "task_timeout"
+                elif coding_record.error_code:
+                    failure_reason = coding_record.error_code
+                elif not coding_record.result.success:
+                    failure_reason = "coding_agent_failed"
+                task_response_payload = {
+                    "response": coding_record.result.summary,
+                    "plan_hash": None,
+                    "blocked_actions": 0,
+                    "confirmation_required_actions": 0,
+                    "executed_actions": 0,
+                    "tool_outputs": [],
+                    "raw_log_payload": coding_record.raw_log_payload or {},
+                    "proposal_payload": coding_record.proposal_payload,
+                    "files_changed": list(coding_record.result.files_changed),
+                    "agent": coding_record.selected_agent,
+                    "cost": coding_record.result.cost,
+                    "stop_reason": coding_record.stop_reason,
+                    "worktree_path": coding_record.worktree_path,
+                }
+                await self._event_bus.publish(
+                    CodingAgentSessionCompleted(
+                        session_id=task_session.id,
+                        actor="coding_agent",
+                        agent=coding_record.selected_agent,
+                        task_kind=coding_config.task_kind,
+                        success=coding_record.result.success,
+                        reason=failure_reason,
+                        stop_reason=coding_record.stop_reason,
+                        duration_ms=coding_record.result.duration_ms,
+                        cost=coding_record.result.cost,
+                        files_changed=list(coding_record.result.files_changed),
+                    )
                 )
             else:
-                task_response_payload = await task_call
-        except TimeoutError:
-            failure_reason = "task_timeout"
-            task_call.cancel()
-            with suppress(asyncio.CancelledError):
-                await task_call
-            task_response_payload = {
-                "response": "Delegated task timed out before completion.",
-                "plan_hash": None,
-                "blocked_actions": 0,
-                "confirmation_required_actions": 0,
-                "executed_actions": 0,
-                "tool_outputs": [],
-            }
+                task_params = {
+                    "session_id": task_session.id,
+                    "content": _compose_task_request_content(
+                        task_description=task_request.task_description,
+                        file_refs=task_request.file_refs,
+                    ),
+                    "channel": task_session.channel,
+                    "user_id": task_session.user_id,
+                    "workspace_id": task_session.workspace_id,
+                }
+                task_call = asyncio.create_task(self.do_session_message(task_params))
+                try:
+                    if task_request.timeout_sec is not None:
+                        task_response_payload = await asyncio.wait_for(
+                            task_call,
+                            timeout=task_request.timeout_sec,
+                        )
+                    else:
+                        task_response_payload = await task_call
+                except TimeoutError:
+                    failure_reason = "task_timeout"
+                    task_call.cancel()
+                    with suppress(asyncio.CancelledError):
+                        await task_call
+                    task_response_payload = {
+                        "response": "Delegated task timed out before completion.",
+                        "plan_hash": None,
+                        "blocked_actions": 0,
+                        "confirmation_required_actions": 0,
+                        "executed_actions": 0,
+                        "tool_outputs": [],
+                    }
         except Exception as exc:
             failure_reason = f"task_error:{exc.__class__.__name__}"
             logger.warning(
@@ -3277,17 +3483,28 @@ class SessionImplMixin(HandlerMixinBase):
         raw_log_ref = self._write_task_artifact(
             task_session_id=task_session.id,
             filename="raw_log.json",
-            payload={
-                "task_session_id": str(task_session.id),
-                "parent_session_id": str(parent_sid),
-                "response": raw_response_text,
-                "tool_outputs": serialized_tool_outputs,
-                "plan_hash": task_response_payload.get("plan_hash"),
-                "reason": failure_reason,
-            },
+            payload=(
+                dict(task_response_payload.get("raw_log_payload", {}))
+                if isinstance(task_response_payload.get("raw_log_payload"), Mapping)
+                else {
+                    "task_session_id": str(task_session.id),
+                    "parent_session_id": str(parent_sid),
+                    "response": raw_response_text,
+                    "tool_outputs": serialized_tool_outputs,
+                    "plan_hash": task_response_payload.get("plan_hash"),
+                    "reason": failure_reason,
+                }
+            ),
         )
         proposal_ref: str | None = None
-        if serialized_tool_outputs or _looks_like_diff_content(raw_response_text):
+        proposal_payload = task_response_payload.get("proposal_payload")
+        if isinstance(proposal_payload, Mapping):
+            proposal_ref = self._write_task_artifact(
+                task_session_id=task_session.id,
+                filename="proposal.json",
+                payload=dict(proposal_payload),
+            )
+        elif serialized_tool_outputs or _looks_like_diff_content(raw_response_text):
             proposal_ref = self._write_task_artifact(
                 task_session_id=task_session.id,
                 filename="proposal.json",
@@ -3328,12 +3545,30 @@ class SessionImplMixin(HandlerMixinBase):
 
         duration_ms = int((time.monotonic() - task_t0) * 1000)
         success = failure_reason == ""
+        task_files_changed = (
+            tuple(
+                str(item).strip()
+                for item in task_response_payload.get("files_changed", [])
+                if str(item).strip()
+            )
+            if isinstance(task_response_payload.get("files_changed"), list)
+            else _extract_files_changed_from_task_outputs(serialized_tool_outputs)
+        )
+        task_cost = _coerce_optional_float(task_response_payload.get("cost"))
+        if task_cost is None:
+            task_cost = selected_cost
+        task_agent = (
+            str(task_response_payload.get("agent", "")).strip()
+            or selected_agent
+        )
         handoff = TaskSessionHandoff(
             task_session_id=task_session.id,
             success=success,
             summary=summary_text,
             response_text=response_text,
-            files_changed=_extract_files_changed_from_task_outputs(serialized_tool_outputs),
+            files_changed=task_files_changed,
+            agent=task_agent,
+            cost=task_cost,
             duration_ms=duration_ms,
             proposal_ref=proposal_ref,
             raw_log_ref=raw_log_ref,
@@ -3364,6 +3599,9 @@ class SessionImplMixin(HandlerMixinBase):
                 reason=handoff.reason,
                 duration_ms=handoff.duration_ms,
                 files_changed=list(handoff.files_changed),
+                executor=task_request.executor,
+                agent=handoff.agent or "",
+                cost=handoff.cost,
                 proposal_ref=handoff.proposal_ref or "",
                 raw_log_ref=handoff.raw_log_ref or "",
                 handoff_mode=handoff.handoff_mode,

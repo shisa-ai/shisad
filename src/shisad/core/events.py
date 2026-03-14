@@ -273,6 +273,8 @@ class TaskSessionStarted(BaseEvent):
     task_description_hash: str = ""
     file_refs: list[str] = Field(default_factory=list)
     capabilities: list[str] = Field(default_factory=list)
+    executor: str = "planner"
+    agent: str = ""
     handoff_mode: str = "summary_only"
 
 
@@ -284,10 +286,45 @@ class TaskSessionCompleted(BaseEvent):
     reason: str = ""
     duration_ms: int = 0
     files_changed: list[str] = Field(default_factory=list)
+    executor: str = "planner"
+    agent: str = ""
+    cost: float | None = None
     proposal_ref: str = ""
     raw_log_ref: str = ""
     handoff_mode: str = "summary_only"
     command_context: str = "clean"
+
+
+class CodingAgentSelected(BaseEvent):
+    """Coding-agent selection result for an isolated TASK invocation."""
+
+    preferred_agent: str = ""
+    fallback_agents: list[str] = Field(default_factory=list)
+    selected_agent: str = ""
+    fallback_used: bool = False
+    attempts: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class CodingAgentSessionStarted(BaseEvent):
+    """ACP-backed coding-agent task started inside an isolated worktree."""
+
+    agent: str = ""
+    task_kind: str = ""
+    read_only: bool = False
+    worktree_path: str = ""
+
+
+class CodingAgentSessionCompleted(BaseEvent):
+    """ACP-backed coding-agent task finished and returned a proposal/log summary."""
+
+    agent: str = ""
+    task_kind: str = ""
+    success: bool = True
+    reason: str = ""
+    stop_reason: str = ""
+    duration_ms: int = 0
+    cost: float | None = None
+    files_changed: list[str] = Field(default_factory=list)
 
 
 class CommandContextDegraded(BaseEvent):
@@ -472,6 +509,9 @@ type AnyEvent = (
     | TaskDelegationAdvisory
     | TaskSessionStarted
     | TaskSessionCompleted
+    | CodingAgentSelected
+    | CodingAgentSessionStarted
+    | CodingAgentSessionCompleted
     | CommandContextDegraded
     | OutputFirewallAlert
     | SandboxDegraded
@@ -517,6 +557,9 @@ EVENT_TYPES: dict[str, type[BaseEvent]] = {
     "TaskDelegationAdvisory": TaskDelegationAdvisory,
     "TaskSessionStarted": TaskSessionStarted,
     "TaskSessionCompleted": TaskSessionCompleted,
+    "CodingAgentSelected": CodingAgentSelected,
+    "CodingAgentSessionStarted": CodingAgentSessionStarted,
+    "CodingAgentSessionCompleted": CodingAgentSessionCompleted,
     "CommandContextDegraded": CommandContextDegraded,
     "OutputFirewallAlert": OutputFirewallAlert,
     "SandboxDegraded": SandboxDegraded,

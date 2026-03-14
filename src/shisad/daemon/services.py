@@ -22,6 +22,7 @@ from shisad.channels.matrix import MatrixChannel, MatrixConfig
 from shisad.channels.slack import SlackChannel, SlackConfig
 from shisad.channels.state import ChannelStateStore
 from shisad.channels.telegram import TelegramChannel, TelegramConfig
+from shisad.coding.manager import CodingAgentManager
 from shisad.core.api.transport import ControlServer
 from shisad.core.audit import AuditLog
 from shisad.core.config import DaemonConfig, ModelConfig
@@ -141,6 +142,7 @@ class DaemonServices:
     memory_manager: MemoryManager
     scheduler: SchedulerManager
     skill_manager: SkillManager
+    coding_manager: CodingAgentManager
     selfmod_manager: SelfModificationManager
     realitycheck_toolkit: RealityCheckToolkit
     realitycheck_status: dict[str, Any]
@@ -443,6 +445,11 @@ class DaemonServices:
                 policy=policy_loader.policy.skills,
                 tool_registry=registry,
             )
+            coding_manager = CodingAgentManager(
+                repo_root=config.coding_repo_root,
+                data_dir=config.data_dir,
+                registry_overrides=config.coding_agent_registry_overrides,
+            )
             selfmod_manager = SelfModificationManager(
                 root=config.data_dir / "selfmod",
                 allowed_signers_path=config.selfmod_allowed_signers_path,
@@ -495,6 +502,7 @@ class DaemonServices:
                 memory_manager=memory_manager,
                 scheduler=scheduler,
                 skill_manager=skill_manager,
+                coding_manager=coding_manager,
                 selfmod_manager=selfmod_manager,
                 realitycheck_toolkit=realitycheck_toolkit,
                 realitycheck_status=realitycheck_status,

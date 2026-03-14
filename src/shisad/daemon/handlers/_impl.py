@@ -317,6 +317,7 @@ class HandlerImplementation(
         self._conversation_summarizer = ConversationSummarizer(provider=services.provider)
         self._scheduler = services.scheduler
         self._skill_manager = services.skill_manager
+        self._coding_manager = services.coding_manager
         self._selfmod_manager = services.selfmod_manager
         self._realitycheck_toolkit = services.realitycheck_toolkit
         self._sandbox = services.sandbox

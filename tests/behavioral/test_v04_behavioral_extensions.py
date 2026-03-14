@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 import json
 import subprocess
+import sys
 from collections.abc import Callable
 from contextlib import suppress
 from pathlib import Path
@@ -41,6 +42,7 @@ async def _start_daemon(
     *,
     allowed_signers_path: Path | None = None,
     policy_text: str | None = None,
+    config_overrides: dict[str, Any] | None = None,
 ) -> tuple[asyncio.Task[None], ControlClient, DaemonConfig]:
     policy_path = tmp_path / "policy.yaml"
     policy_path.write_text(policy_text or _base_policy(), encoding="utf-8")
@@ -52,6 +54,8 @@ async def _start_daemon(
     }
     if allowed_signers_path is not None:
         config_kwargs["selfmod_allowed_signers_path"] = allowed_signers_path
+    if config_overrides:
+        config_kwargs.update(config_overrides)
     config = DaemonConfig(**config_kwargs)
     daemon_task = asyncio.create_task(run_daemon(config))
     client = ControlClient(config.socket_path)
@@ -125,6 +129,11 @@ async def _wait_for_task_pending_confirmation(
     raise AssertionError(
         f"Timed out waiting for pending confirmation for task {task_id}: {latest}"
     )
+
+
+def _fake_coding_agent_command(agent_name: str) -> str:
+    script = Path(__file__).resolve().parents[1] / "fixtures" / "fake_acp_agent.py"
+    return f"{sys.executable} {script} --agent-name {agent_name}"
 
 
 def _generate_ssh_keypair(tmp_path: Path, *, name: str) -> Path:
@@ -979,5 +988,245 @@ async def test_behavioral_task_session_cannot_spawn_sudo(
         assert task_result["task_session_mode"] == "task"
         assert result["session_mode"] == "default"
         assert result["proposal_only"] is False
+    finally:
+        await _shutdown_daemon(daemon_task, client)
+
+
+@pytest.mark.asyncio
+async def test_behavioral_dev_implement_returns_summary_and_proposal_ref_not_inline_diff(
+    tmp_path: Path,
+) -> None:
+    readme_before = Path("README.md").read_text(encoding="utf-8")
+    policy_text = (
+        'version: "1"\n'
+        "default_require_confirmation: false\n"
+        "default_capabilities:\n"
+        "  - file.read\n"
+        "  - file.write\n"
+        "  - shell.exec\n"
+        "  - http.request\n"
+    )
+    daemon_task, client, _config = await _start_daemon(
+        tmp_path,
+        policy_text=policy_text,
+        config_overrides={
+            "coding_repo_root": Path.cwd(),
+            "coding_agent_registry_overrides": {
+                "codex": _fake_coding_agent_command("codex"),
+            },
+        },
+    )
+    try:
+        created = await client.call("session.create", {"channel": "cli"})
+        sid = str(created["session_id"])
+        result = await client.call(
+            "session.message",
+            {
+                "session_id": sid,
+                "content": "implement this coding task",
+                "task": {
+                    "enabled": True,
+                    "executor": "coding_agent",
+                    "task_description": "Add a small implementation note to README.md.",
+                    "file_refs": ["README.md"],
+                    "capabilities": [
+                        "file.read",
+                        "file.write",
+                        "shell.exec",
+                        "http.request",
+                    ],
+                    "preferred_agent": "codex",
+                    "task_kind": "implement",
+                },
+            },
+        )
+
+        task_result = dict(result.get("task_result") or {})
+        assert task_result["success"] is True
+        assert task_result["proposal_ref"]
+        assert task_result["raw_log_ref"]
+        assert task_result["agent"] == "codex"
+        assert "mode=build" in task_result["summary"]
+        assert "--- a/" not in result["response"]
+        proposal_payload = json.loads(Path(task_result["proposal_ref"]).read_text(encoding="utf-8"))
+        assert "Fake ACP edit from codex" in proposal_payload["diff"]
+        assert Path("README.md").read_text(encoding="utf-8") == readme_before
+    finally:
+        await _shutdown_daemon(daemon_task, client)
+
+
+@pytest.mark.asyncio
+async def test_behavioral_review_mode_signals_read_only_and_preserves_opportunistic_proposals(
+    tmp_path: Path,
+) -> None:
+    policy_text = (
+        'version: "1"\n'
+        "default_require_confirmation: false\n"
+        "default_capabilities:\n"
+        "  - file.read\n"
+        "  - file.write\n"
+        "  - shell.exec\n"
+        "  - http.request\n"
+    )
+    daemon_task, client, _config = await _start_daemon(
+        tmp_path,
+        policy_text=policy_text,
+        config_overrides={
+            "coding_repo_root": Path.cwd(),
+            "coding_agent_registry_overrides": {
+                "claude": _fake_coding_agent_command("claude"),
+            },
+        },
+    )
+    try:
+        created = await client.call("session.create", {"channel": "cli"})
+        sid = str(created["session_id"])
+        result = await client.call(
+            "session.message",
+            {
+                "session_id": sid,
+                "content": "review this coding task",
+                "task": {
+                    "enabled": True,
+                    "executor": "coding_agent",
+                    "task_description": (
+                        "Review README.md for issues. OPPORTUNISTIC_EDIT if needed."
+                    ),
+                    "file_refs": ["README.md"],
+                    "capabilities": [
+                        "file.read",
+                        "file.write",
+                        "shell.exec",
+                        "http.request",
+                    ],
+                    "preferred_agent": "claude",
+                    "task_kind": "review",
+                    "read_only": True,
+                },
+            },
+        )
+
+        task_result = dict(result.get("task_result") or {})
+        assert task_result["success"] is True
+        assert task_result["proposal_ref"]
+        assert task_result["agent"] == "claude"
+        assert "mode=plan" in task_result["summary"]
+        proposal_payload = json.loads(Path(task_result["proposal_ref"]).read_text(encoding="utf-8"))
+        assert "Fake ACP edit from claude" in proposal_payload["diff"]
+    finally:
+        await _shutdown_daemon(daemon_task, client)
+
+
+@pytest.mark.asyncio
+async def test_behavioral_unavailable_agent_returns_actionable_error_without_lockdown(
+    tmp_path: Path,
+) -> None:
+    policy_text = (
+        'version: "1"\n'
+        "default_require_confirmation: false\n"
+        "default_capabilities:\n"
+        "  - file.read\n"
+        "  - file.write\n"
+        "  - shell.exec\n"
+    )
+    daemon_task, client, _config = await _start_daemon(
+        tmp_path,
+        policy_text=policy_text,
+        config_overrides={
+            "coding_repo_root": Path.cwd(),
+            "coding_agent_registry_overrides": {
+                "codex": "definitely-missing-acp-adapter",
+            },
+        },
+    )
+    try:
+        created = await client.call("session.create", {"channel": "cli"})
+        sid = str(created["session_id"])
+        result = await client.call(
+            "session.message",
+            {
+                "session_id": sid,
+                "content": "try the unavailable coding agent",
+                "task": {
+                    "enabled": True,
+                    "executor": "coding_agent",
+                    "task_description": "Attempt a coding task.",
+                    "file_refs": ["README.md"],
+                    "capabilities": ["file.read", "file.write", "shell.exec"],
+                    "preferred_agent": "codex",
+                    "task_kind": "implement",
+                },
+            },
+        )
+
+        task_result = dict(result.get("task_result") or {})
+        assert task_result["success"] is False
+        assert task_result["reason"] == "agent_unavailable"
+        assert "not available" in task_result["summary"].lower()
+        assert result["lockdown_level"] in {"off", "none", "", "normal"}
+    finally:
+        await _shutdown_daemon(daemon_task, client)
+
+
+@pytest.mark.asyncio
+async def test_behavioral_agent_fallback_chain_uses_next_available_agent(
+    tmp_path: Path,
+) -> None:
+    policy_text = (
+        'version: "1"\n'
+        "default_require_confirmation: false\n"
+        "default_capabilities:\n"
+        "  - file.read\n"
+        "  - file.write\n"
+        "  - shell.exec\n"
+        "  - http.request\n"
+    )
+    daemon_task, client, _config = await _start_daemon(
+        tmp_path,
+        policy_text=policy_text,
+        config_overrides={
+            "coding_repo_root": Path.cwd(),
+            "coding_agent_registry_overrides": {
+                "codex": "definitely-missing-acp-adapter",
+                "claude": _fake_coding_agent_command("claude"),
+            },
+        },
+    )
+    try:
+        created = await client.call("session.create", {"channel": "cli"})
+        sid = str(created["session_id"])
+        result = await client.call(
+            "session.message",
+            {
+                "session_id": sid,
+                "content": "fallback to the next coding agent",
+                "task": {
+                    "enabled": True,
+                    "executor": "coding_agent",
+                    "task_description": "Implement a tiny README.md tweak.",
+                    "file_refs": ["README.md"],
+                    "capabilities": [
+                        "file.read",
+                        "file.write",
+                        "shell.exec",
+                        "http.request",
+                    ],
+                    "preferred_agent": "codex",
+                    "fallback_agents": ["claude"],
+                    "task_kind": "implement",
+                },
+            },
+        )
+
+        task_result = dict(result.get("task_result") or {})
+        assert task_result["success"] is True
+        assert task_result["agent"] == "claude"
+        selected = await _wait_for_audit_event(
+            client,
+            event_type="CodingAgentSelected",
+            predicate=lambda item: str(item.get("data", {}).get("selected_agent", "")) == "claude",
+            session_id=str(task_result["task_session_id"]),
+        )
+        assert selected["data"]["fallback_used"] is True
     finally:
         await _shutdown_daemon(daemon_task, client)

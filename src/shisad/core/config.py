@@ -252,6 +252,27 @@ class DaemonConfig(BaseSettings):
         ge=1,
         description="Maximum number of local Reality Check files scanned per search.",
     )
+    coding_repo_root: Path = Field(
+        default_factory=Path.cwd,
+        description="Git repository root used for coding-agent worktree isolation.",
+    )
+    coding_agent_default_preference: list[str] = Field(
+        default_factory=lambda: ["codex", "claude", "opencode"],
+        description="Default coding-agent preference chain when a task does not specify one.",
+    )
+    coding_agent_default_fallbacks: list[str] = Field(
+        default_factory=list,
+        description="Default fallback agents appended after explicit task preference.",
+    )
+    coding_agent_registry_overrides: dict[str, str] = Field(
+        default_factory=dict,
+        description="Optional agent-command overrides for the coding-agent registry.",
+    )
+    coding_agent_timeout_seconds: float = Field(
+        default=900.0,
+        ge=0.1,
+        description="Default timeout for coding-agent TASK invocations.",
+    )
 
     @staticmethod
     def _parse_list_field(value: object, *, field_name: str) -> object:
@@ -380,6 +401,42 @@ class DaemonConfig(BaseSettings):
     @classmethod
     def _parse_assistant_fs_roots(cls, value: object) -> object:
         return cls._parse_path_list_field(value, field_name="SHISAD_ASSISTANT_FS_ROOTS")
+
+    @field_validator("coding_repo_root", mode="before")
+    @classmethod
+    def _parse_coding_repo_root(cls, value: object) -> object:
+        if isinstance(value, str):
+            stripped = value.strip()
+            if not stripped:
+                return Path.cwd()
+            return Path(stripped).expanduser()
+        if isinstance(value, Path):
+            return value.expanduser()
+        return value
+
+    @field_validator("coding_agent_default_preference", mode="before")
+    @classmethod
+    def _parse_coding_agent_default_preference(cls, value: object) -> object:
+        return cls._parse_list_field(
+            value,
+            field_name="SHISAD_CODING_AGENT_DEFAULT_PREFERENCE",
+        )
+
+    @field_validator("coding_agent_default_fallbacks", mode="before")
+    @classmethod
+    def _parse_coding_agent_default_fallbacks(cls, value: object) -> object:
+        return cls._parse_list_field(
+            value,
+            field_name="SHISAD_CODING_AGENT_DEFAULT_FALLBACKS",
+        )
+
+    @field_validator("coding_agent_registry_overrides", mode="before")
+    @classmethod
+    def _parse_coding_agent_registry_overrides(cls, value: object) -> object:
+        return cls._parse_map_field(
+            value,
+            field_name="SHISAD_CODING_AGENT_REGISTRY_OVERRIDES",
+        )
 
     @field_validator("realitycheck_repo_root", mode="before")
     @classmethod

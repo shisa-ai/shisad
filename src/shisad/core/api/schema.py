@@ -98,6 +98,15 @@ class SessionTaskParams(_StrictParams):
     task_description: str = ""
     file_refs: list[str] = Field(default_factory=list)
     capabilities: list[str] | None = None
+    executor: Literal["planner", "coding_agent"] = "planner"
+    preferred_agent: str | None = None
+    fallback_agents: list[str] = Field(default_factory=list)
+    read_only: bool = False
+    task_kind: Literal["generic", "implement", "review"] = "generic"
+    max_turns: int | None = None
+    max_budget_usd: float | None = None
+    model: str | None = None
+    reasoning_effort: str | None = None
     timeout_sec: float | None = None
     handoff_mode: Literal["summary_only", "raw_passthrough"] = "summary_only"
 
@@ -109,6 +118,7 @@ class SessionTaskResult(BaseModel):
     summary: str = ""
     files_changed: list[str] = Field(default_factory=list)
     cost: float | None = None
+    agent: str | None = None
     duration_ms: int = 0
     proposal_ref: str | None = None
     raw_log_ref: str | None = None
