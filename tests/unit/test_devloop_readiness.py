@@ -288,3 +288,89 @@ def test_assess_milestone_readiness_does_not_match_other_subsection_prefixes(
     assert report.ready is False
     assert report.review_status_recorded is False
     assert "review_status_missing" in report.missing_evidence
+
+
+def test_assess_milestone_readiness_tracks_mixed_statuses_per_clause(
+    tmp_path: Path,
+) -> None:
+    implementation = tmp_path / "IMPLEMENTATION.md"
+    implementation.write_text(
+        """
+## M4 — Minimal Dev Loop Orchestration
+
+### M4 Punchlist
+- [x] dev.implement works
+
+### M4 Acceptance Criteria
+- [x] Runtime wiring evidence recorded.
+- [x] Validation evidence recorded.
+- [x] Docs parity evidence recorded.
+- [x] Review loop complete or deferrals explicitly recorded.
+
+### M4 Review Findings Status (Round 1)
+- [x] M4.R-open.1: closed; [ ] M4.R-open.2: reopened after regression.
+
+### M4 Runtime Wiring Evidence
+- Wired on the live daemon path.
+
+### M4 Validation Evidence
+- `uv run pytest tests/behavioral/ -q` -> `ok`
+
+## Worklog
+
+- **2026-03-15**: **M4 remediation**
+  - Findings: mixed-status line coverage.
+""".strip(),
+        encoding="utf-8",
+    )
+
+    report = assess_milestone_readiness(
+        implementation_path=implementation,
+        milestone="M4",
+    )
+
+    assert report.ready is False
+    assert report.open_finding_ids == ("M4.R-open.2",)
+
+
+def test_assess_milestone_readiness_preserves_shared_status_for_multi_id_clause(
+    tmp_path: Path,
+) -> None:
+    implementation = tmp_path / "IMPLEMENTATION.md"
+    implementation.write_text(
+        """
+## M4 — Minimal Dev Loop Orchestration
+
+### M4 Punchlist
+- [x] dev.implement works
+
+### M4 Acceptance Criteria
+- [x] Runtime wiring evidence recorded.
+- [x] Validation evidence recorded.
+- [x] Docs parity evidence recorded.
+- [x] Review loop complete or deferrals explicitly recorded.
+
+### M4 Review Findings Status (Round 1)
+- [x] M4.R-open.1 / M4.R-open.2: closed.
+
+### M4 Runtime Wiring Evidence
+- Wired on the live daemon path.
+
+### M4 Validation Evidence
+- `uv run pytest tests/behavioral/ -q` -> `ok`
+
+## Worklog
+
+- **2026-03-15**: **M4 remediation**
+  - Findings: shared-status clause coverage.
+""".strip(),
+        encoding="utf-8",
+    )
+
+    report = assess_milestone_readiness(
+        implementation_path=implementation,
+        milestone="M4",
+    )
+
+    assert report.ready is True
+    assert report.open_finding_ids == ()

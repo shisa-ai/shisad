@@ -11,6 +11,11 @@ _TOP_LEVEL_HEADING_RE = re.compile(r"^## (?P<title>.+)$", re.MULTILINE)
 _THIRD_LEVEL_HEADING_RE = re.compile(r"^### (?P<title>.+)$", re.MULTILINE)
 _FINDING_ID_RE = re.compile(r"\b(?P<id>(?:G|M)\d+\.(?:R-open\.\d+|RR\d+\.\d+))\b")
 _UNCHECKED_CHECKBOX_RE = re.compile(r"^\s*-\s+\[\s\]\s+(?P<item>.+)$", re.MULTILINE)
+_FINDING_CLAUSE_SPLIT_RE = re.compile(
+    r"\s*(?:;|,|\band\b|\bbut\b|\bwhile\b)\s*"
+    r"(?=(?:\[\s*[x ]\s*\]\s*)?(?:G|M)\d+\.(?:R-open\.\d+|RR\d+\.\d+)\b)",
+    re.IGNORECASE,
+)
 _OPEN_CHECKBOX_RE = re.compile(r"\[\s\]")
 _RESOLVED_CHECKBOX_RE = re.compile(r"\[\s*x\s*\]", re.IGNORECASE)
 _OPEN_FINDING_PATTERNS = (
@@ -259,25 +264,31 @@ def _finding_resolution_state(line: str) -> bool | None:
     return None
 
 
+def _finding_clauses(line: str) -> tuple[str, ...]:
+    parts = _FINDING_CLAUSE_SPLIT_RE.split(line)
+    return tuple(part.strip() for part in parts if part.strip())
+
+
 def _open_finding_ids(*, text: str, milestone_key: str) -> tuple[str, ...]:
     statuses: dict[str, bool] = {}
     for raw_line in text.splitlines():
         line = raw_line.strip()
         if not line:
             continue
-        state = _finding_resolution_state(line)
-        for match in _FINDING_ID_RE.finditer(line):
-            finding_id = str(match.group("id"))
-            if not finding_id.startswith(f"{milestone_key}."):
-                continue
-            if state is None:
-                statuses.setdefault(finding_id, False)
-                continue
-            if finding_id not in statuses:
-                statuses[finding_id] = state
-                continue
-            if state is False:
-                statuses[finding_id] = False
-                continue
-            statuses[finding_id] = True
+        for clause in _finding_clauses(line):
+            state = _finding_resolution_state(clause)
+            for match in _FINDING_ID_RE.finditer(clause):
+                finding_id = str(match.group("id"))
+                if not finding_id.startswith(f"{milestone_key}."):
+                    continue
+                if state is None:
+                    statuses.setdefault(finding_id, False)
+                    continue
+                if finding_id not in statuses:
+                    statuses[finding_id] = state
+                    continue
+                if state is False:
+                    statuses[finding_id] = False
+                    continue
+                statuses[finding_id] = True
     return tuple(sorted(finding_id for finding_id, closed in statuses.items() if not closed))
