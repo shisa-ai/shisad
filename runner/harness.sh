@@ -29,6 +29,8 @@ Commands:
 Notes:
   - Private overrides: runner/.env (gitignored). Start from runner/.env.example.
   - Defaults match the v0.4 M5 runbook + ./run.sh where possible.
+  - By default, the harness clears inherited SHISAD_* env (channels, socket paths, etc.)
+    to keep runs deterministic and local-only. Set RUNNER_INHERIT_SHISAD_ENV=1 to opt out.
 EOF
 }
 
@@ -78,13 +80,43 @@ _load_dotenv() {
   done <"${DOTENV_PATH}"
 }
 
+_clear_inherited_shisad_env() {
+  # The runner harness is intentionally deterministic: it should not pick up a
+  # previously-configured operator daemon environment (channels, sockets, etc.)
+  # unless explicitly requested.
+  unset SHISAD_ENV_FILE || true
+  unset SHISAD_CHANNEL_IDENTITY_ALLOWLIST || true
+
+  unset SHISAD_DATA_DIR SHISAD_SOCKET_PATH SHISAD_POLICY_PATH SHISAD_LOG_LEVEL || true
+  unset SHISAD_CODING_REPO_ROOT SHISAD_ASSISTANT_FS_ROOTS || true
+  unset SHISAD_CODING_AGENT_DEFAULT_PREFERENCE SHISAD_CODING_AGENT_DEFAULT_FALLBACKS || true
+  unset SHISAD_CODING_AGENT_TIMEOUT_SECONDS || true
+
+  unset SHISAD_MODEL_REMOTE_ENABLED SHISAD_MODEL_PLANNER_REMOTE_ENABLED || true
+  unset SHISAD_MODEL_EMBEDDINGS_REMOTE_ENABLED SHISAD_MODEL_MONITOR_REMOTE_ENABLED || true
+  unset SHISAD_MODEL_PLANNER_PROVIDER_PRESET SHISAD_MODEL_PLANNER_MODEL_ID || true
+  unset SHISAD_MODEL_ENFORCE_SECURITY_ROUTE_PINNING || true
+
+  # External channels (disabled by default).
+  unset SHISAD_DISCORD_ENABLED SHISAD_DISCORD_BOT_TOKEN SHISAD_DISCORD_DEFAULT_CHANNEL_ID || true
+  unset SHISAD_DISCORD_TRUSTED_USERS SHISAD_DISCORD_GUILD_WORKSPACE_MAP || true
+  unset SHISAD_TELEGRAM_ENABLED SHISAD_TELEGRAM_BOT_TOKEN SHISAD_TELEGRAM_DEFAULT_CHAT_ID || true
+  unset SHISAD_TELEGRAM_TRUSTED_USERS SHISAD_TELEGRAM_CHAT_WORKSPACE_MAP || true
+  unset SHISAD_SLACK_ENABLED SHISAD_SLACK_BOT_TOKEN SHISAD_SLACK_APP_TOKEN || true
+  unset SHISAD_SLACK_DEFAULT_CHANNEL_ID SHISAD_SLACK_TRUSTED_USERS || true
+  unset SHISAD_SLACK_TEAM_WORKSPACE_MAP || true
+  unset SHISAD_MATRIX_ENABLED SHISAD_MATRIX_HOMESERVER SHISAD_MATRIX_USER_ID || true
+  unset SHISAD_MATRIX_ACCESS_TOKEN SHISAD_MATRIX_ROOM_ID SHISAD_MATRIX_E2EE || true
+  unset SHISAD_MATRIX_TRUSTED_USERS SHISAD_MATRIX_ROOM_WORKSPACE_MAP || true
+}
+
 _export_defaults() {
   export SHISAD_DATA_DIR="${SHISAD_DATA_DIR:-$REPO_ROOT/.local/shisad-m5}"
   export SHISAD_SOCKET_PATH="${SHISAD_SOCKET_PATH:-/tmp/shisad-m5.sock}"
   export SHISAD_POLICY_PATH="${SHISAD_POLICY_PATH:-$REPO_ROOT/.local/policy.yaml}"
   export SHISAD_LOG_LEVEL="${SHISAD_LOG_LEVEL:-INFO}"
   export SHISAD_CODING_REPO_ROOT="${SHISAD_CODING_REPO_ROOT:-$REPO_ROOT}"
-  export SHISAD_ASSISTANT_FS_ROOTS="${SHISAD_ASSISTANT_FS_ROOTS:-$REPO_ROOT}"
+  export SHISAD_ASSISTANT_FS_ROOTS="${SHISAD_ASSISTANT_FS_ROOTS:-[\"$REPO_ROOT\"]}"
   export SHISAD_CODING_AGENT_DEFAULT_PREFERENCE="${SHISAD_CODING_AGENT_DEFAULT_PREFERENCE:-[\"codex\",\"claude\"]}"
   export SHISAD_CODING_AGENT_DEFAULT_FALLBACKS="${SHISAD_CODING_AGENT_DEFAULT_FALLBACKS:-[\"claude\"]}"
   export SHISAD_CODING_AGENT_TIMEOUT_SECONDS="${SHISAD_CODING_AGENT_TIMEOUT_SECONDS:-1800}"
@@ -98,6 +130,12 @@ _export_defaults() {
   export SHISAD_MODEL_PLANNER_MODEL_ID="${SHISAD_MODEL_PLANNER_MODEL_ID:-gpt-5.2-2025-12-11}"
   # Local M5/bootstrap route: allow planner model override without SHISA-default pin mismatch.
   export SHISAD_MODEL_ENFORCE_SECURITY_ROUTE_PINNING="${SHISAD_MODEL_ENFORCE_SECURITY_ROUTE_PINNING:-false}"
+
+  # Keep runner starts local-only by default (no external channel connections).
+  export SHISAD_MATRIX_ENABLED="${SHISAD_MATRIX_ENABLED:-false}"
+  export SHISAD_DISCORD_ENABLED="${SHISAD_DISCORD_ENABLED:-false}"
+  export SHISAD_TELEGRAM_ENABLED="${SHISAD_TELEGRAM_ENABLED:-false}"
+  export SHISAD_SLACK_ENABLED="${SHISAD_SLACK_ENABLED:-false}"
 }
 
 _daemon_log_path() {
@@ -191,6 +229,10 @@ _preflight_planner_credential() {
 }
 
 _runner_env() {
+  local inherit="${RUNNER_INHERIT_SHISAD_ENV:-}"
+  if [[ "${inherit}" != "1" ]] && [[ "${inherit}" != "true" ]] && [[ "${inherit}" != "yes" ]]; then
+    _clear_inherited_shisad_env
+  fi
   _load_dotenv
   _export_defaults
 }
@@ -200,11 +242,25 @@ _shisad() {
   uv run shisad "$@"
 }
 
+_tmux_socket_name() {
+  printf '%s\n' "${RUNNER_TMUX_SOCKET_NAME:-shisad-runner}"
+}
+
+_tmux_session_name() {
+  printf '%s\n' "${RUNNER_TMUX_SESSION_NAME:-shisad-m5}"
+}
+
+_tmux() {
+  tmux -L "$(_tmux_socket_name)" "$@"
+}
+
 _cmd_env() {
   _runner_env
   cat <<EOF
 REPO_ROOT=${REPO_ROOT}
 DOTENV_PATH=${DOTENV_PATH}
+RUNNER_TMUX_SOCKET_NAME=$(_tmux_socket_name)
+RUNNER_TMUX_SESSION_NAME=$(_tmux_session_name)
 
 SHISAD_DATA_DIR=${SHISAD_DATA_DIR}
 SHISAD_SOCKET_PATH=${SHISAD_SOCKET_PATH}
@@ -280,15 +336,28 @@ _cmd_start() {
   rm -f "${pid_path}" || true
   rm -f "${log_path}" || true
 
-  local start_args=(start)
-  if [[ "${debug}" == true ]]; then
-    start_args+=(--debug)
-  else
-    start_args+=(--foreground)
+  if ! command -v tmux >/dev/null 2>&1; then
+    _die "tmux is required for background start. Install tmux or run: bash runner/harness.sh start --fg"
   fi
 
-  nohup uv run shisad "${start_args[@]}" >"${log_path}" 2>&1 &
-  printf '%s\n' "$!" >"${pid_path}"
+  local session
+  session="$(_tmux_session_name)"
+
+  if _tmux has-session -t "${session}" >/dev/null 2>&1; then
+    printf '%s\n' "tmux session already exists: ${session}"
+    printf '%s\n' "Use: tmux -L $(_tmux_socket_name) attach -t ${session}"
+    return 0
+  fi
+
+  local daemon_args=""
+  if [[ "${debug}" == true ]]; then
+    daemon_args="--debug"
+  else
+    daemon_args="--foreground"
+  fi
+
+  # Run in tmux so the daemon survives across non-interactive shells.
+  _tmux new-session -d -s "${session}" -c "${REPO_ROOT}" "bash runner/daemon_entrypoint.sh ${daemon_args}"
 
   # Wait for socket + status to succeed.
   local i
@@ -313,24 +382,15 @@ _cmd_stop() {
 
   uv run shisad stop >/dev/null 2>&1 || true
 
-  if [[ -f "${pid_path}" ]]; then
-    local pid
-    pid="$(cat "${pid_path}" 2>/dev/null || true)"
-    if [[ -n "${pid}" ]] && kill -0 "${pid}" 2>/dev/null; then
-      local i
-      for i in {1..100}; do
-        if ! kill -0 "${pid}" 2>/dev/null; then
-          break
-        fi
-        sleep 0.1
-      done
-      if kill -0 "${pid}" 2>/dev/null; then
-        _warn "daemon pid ${pid} still running; sending TERM"
-        kill -TERM "${pid}" 2>/dev/null || true
-      fi
+  if command -v tmux >/dev/null 2>&1; then
+    local session
+    session="$(_tmux_session_name)"
+    if _tmux has-session -t "${session}" >/dev/null 2>&1; then
+      _tmux kill-session -t "${session}" >/dev/null 2>&1 || true
     fi
-    rm -f "${pid_path}" || true
   fi
+
+  rm -f "${pid_path}" || true
 
   if [[ -e "${SHISAD_SOCKET_PATH}" ]]; then
     rm -f "${SHISAD_SOCKET_PATH}" || true
@@ -407,7 +467,15 @@ _cmd_session() {
       _runner_env
       local out session_id
       out="$(uv run shisad session create "$@" 2>&1)"
-      session_id="$(printf '%s\n' "${out}" | sed -n 's/^Session created: \\([^ ]*\\) .*/\\1/p')"
+      session_id=""
+      while IFS= read -r line; do
+        line="${line//$'\r'/}"
+        if [[ "${line}" == *"Session created:"* ]]; then
+          line="${line#*Session created: }"
+          session_id="${line%% *}"
+          break
+        fi
+      done <<<"${out}"
       if [[ -z "${session_id}" ]]; then
         printf '%s\n' "${out}" >&2
         _die "failed to parse session id"
@@ -476,4 +544,3 @@ main() {
 }
 
 main "$@"
-

@@ -44,6 +44,12 @@ bash runner/harness.sh start
 bash runner/harness.sh logs --follow
 ```
 
+Background start uses `tmux` so the daemon survives across non-interactive shells. You can attach:
+
+```bash
+tmux -L shisad-runner attach -t shisad-m5
+```
+
 Verify connectivity and basic runtime diagnostics:
 
 ```bash
@@ -93,6 +99,14 @@ If you want to avoid remote planner calls (local/offline runs), set:
 
 ```bash
 SHISAD_MODEL_PLANNER_REMOTE_ENABLED=false
+```
+
+If your shell already has `SHISAD_*` configured for a separate "operator" daemon (Discord/Telegram/etc),
+the runner harness will clear those inherited settings by default to keep runs local-only and deterministic.
+To opt out (not recommended), set:
+
+```bash
+RUNNER_INHERIT_SHISAD_ENV=1
 ```
 
 ## Command Reference

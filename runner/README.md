@@ -10,6 +10,8 @@ bash runner/harness.sh status
 bash runner/harness.sh logs --follow
 ```
 
+Background start uses `tmux` so the daemon survives across non-interactive shells.
+
 Talk to the daemon:
 
 ```bash
@@ -22,3 +24,5 @@ Full mechanics (env/config, log locations, and all commands): see [`runner/SKILL
 Private local overrides (API keys, model presets, custom paths) go in `runner/.env` (gitignored). Start from `runner/.env.example`.
 
 Current runbook: [`runner/RUNBOOK.md`](RUNBOOK.md) (symlink to the active M5 operator runbook).
+
+Note: the harness clears inherited `SHISAD_*` env by default so it does not accidentally start with a preconfigured operator daemon (Discord/Telegram/etc). Set `RUNNER_INHERIT_SHISAD_ENV=1` to opt out.
