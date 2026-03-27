@@ -35,6 +35,8 @@ The harness treats `runner/.env` as data (no `source`); it only exports `KEY=VAL
 
 ## Quickstart
 
+Runbook (M5 operator path): [`runner/RUNBOOK.md`](RUNBOOK.md).
+
 Start a daemon and follow logs:
 
 ```bash
