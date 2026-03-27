@@ -140,6 +140,31 @@ def _structured_rpc_templates() -> dict[str, dict[str, Any]]:
     }
 
 
+def _message_send_template(
+    status: dict[str, Any],
+) -> tuple[dict[str, Any] | None, str | None]:
+    channels = status.get("channels")
+    if not isinstance(channels, dict):
+        return None, "no_delivery_channels_configured"
+    for channel_name, channel_status in channels.items():
+        if not isinstance(channel_status, dict):
+            continue
+        if channel_status.get("enabled") is not True:
+            continue
+        return (
+            {
+                "command": [sys.executable, "-c", "print('live-tool-matrix-ok')"],
+                "arguments": {
+                    "channel": str(channel_name),
+                    "recipient": "live-matrix",
+                    "message": "live tool matrix probe",
+                },
+            },
+            None,
+        )
+    return None, "no_delivery_channels_configured"
+
+
 async def _confirm_if_required(
     client: ControlClient,
     result: dict[str, Any],
@@ -272,6 +297,7 @@ async def _run_tool_checks(
     session_id: str,
     tools: list[str],
     execute_templates: dict[str, dict[str, Any]],
+    disabled_tools: dict[str, str],
     structured_templates: dict[str, dict[str, Any]],
     strict_disabled: bool,
 ) -> list[MatrixRow]:
@@ -301,7 +327,12 @@ async def _run_tool_checks(
 
         payload_template = execute_templates.get(tool_name)
         if payload_template is None:
-            rows.append(MatrixRow(f"tool.{tool_name}", "fail", "missing_payload_template"))
+            disabled_reason = disabled_tools.get(tool_name, "").strip()
+            if disabled_reason:
+                status = "fail" if strict_disabled else "pass_disabled"
+                rows.append(MatrixRow(f"tool.{tool_name}", status, disabled_reason))
+            else:
+                rows.append(MatrixRow(f"tool.{tool_name}", "fail", "missing_payload_template"))
             continue
         payload = {
             "session_id": session_id,
@@ -370,6 +401,14 @@ async def _run_matrix(*, strict_disabled: bool, tool_status: bool = False) -> in
 
         repo_root = Path.cwd()
         execute_templates = _tool_payload_templates(repo_root)
+        disabled_tools: dict[str, str] = {}
+        message_send_template, message_send_disabled_reason = _message_send_template(
+            cast(dict[str, Any], status)
+        )
+        if message_send_template is not None:
+            execute_templates["message.send"] = message_send_template
+        elif message_send_disabled_reason:
+            disabled_tools["message.send"] = message_send_disabled_reason
         structured_templates = _structured_rpc_templates()
         prompt_rows = await _run_prompt_checks(client=client, session_id=session_id)
         tool_rows = await _run_tool_checks(
@@ -377,6 +416,7 @@ async def _run_matrix(*, strict_disabled: bool, tool_status: bool = False) -> in
             session_id=session_id,
             tools=tools,
             execute_templates=execute_templates,
+            disabled_tools=disabled_tools,
             structured_templates=structured_templates,
             strict_disabled=strict_disabled,
         )
