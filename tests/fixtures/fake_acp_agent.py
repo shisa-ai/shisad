@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import os
 import uuid
 from pathlib import Path
 from typing import Any
@@ -86,6 +87,8 @@ class FakeAcpAgent(Agent):
         initialize_sleep: float = 0.0,
         new_session_sleep: float = 0.0,
         fail_initialize: bool = False,
+        large_single_line_summary_bytes: int = 0,
+        required_env_keys: tuple[str, ...] = (),
     ) -> None:
         self._agent_name = agent_name
         self._default_mode = default_mode
@@ -93,6 +96,8 @@ class FakeAcpAgent(Agent):
         self._initialize_sleep = initialize_sleep
         self._new_session_sleep = new_session_sleep
         self._fail_initialize = fail_initialize
+        self._large_single_line_summary_bytes = max(0, large_single_line_summary_bytes)
+        self._required_env_keys = tuple(required_env_keys)
         self._client: Client | None = None
         self._sessions: dict[str, dict[str, Any]] = {}
 
@@ -111,6 +116,9 @@ class FakeAcpAgent(Agent):
             await asyncio.sleep(self._initialize_sleep)
         if self._fail_initialize:
             raise RequestError.invalid_request("configured initialize failure")
+        missing_env = [key for key in self._required_env_keys if not os.getenv(key, "").strip()]
+        if missing_env:
+            raise RequestError.auth_required({"missing_env": missing_env})
         return InitializeResponse(
             protocol_version=min(protocol_version, PROTOCOL_VERSION),
             agent_info=Implementation(name=f"fake-{self._agent_name}", version="0.1.0"),
@@ -269,7 +277,16 @@ class FakeAcpAgent(Agent):
                 f"model={config.get('model', '')} "
                 f"permission_mode={config.get('permission_mode', '')}"
             )
-            if "MULTI_CHUNK_SUMMARY" in prompt_text:
+            if self._large_single_line_summary_bytes > 0:
+                payload = (
+                    f"{self._agent_name} large-response mode={mode} "
+                    + ("x" * self._large_single_line_summary_bytes)
+                )
+                await self._client.session_update(
+                    session_id=session_id,
+                    update=update_agent_message_text(payload),
+                )
+            elif "MULTI_CHUNK_SUMMARY" in prompt_text:
                 await self._client.session_update(
                     session_id=session_id,
                     update=update_agent_message_text(
@@ -421,17 +438,23 @@ class FakeAcpAgent(Agent):
 async def _main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--agent-name", default="codex")
+    parser.add_argument("--default-mode", default="auto")
     parser.add_argument("--initialize-sleep", type=float, default=0.0)
     parser.add_argument("--new-session-sleep", type=float, default=0.0)
     parser.add_argument("--fail-initialize", action="store_true")
+    parser.add_argument("--large-single-line-summary-bytes", type=int, default=0)
+    parser.add_argument("--require-env", action="append", default=[])
     args = parser.parse_args()
     _ = default_environment()
     await run_agent(
         FakeAcpAgent(
             agent_name=args.agent_name,
+            default_mode=args.default_mode,
             initialize_sleep=args.initialize_sleep,
             new_session_sleep=args.new_session_sleep,
             fail_initialize=args.fail_initialize,
+            large_single_line_summary_bytes=args.large_single_line_summary_bytes,
+            required_env_keys=tuple(str(item) for item in args.require_env),
         )
     )
 

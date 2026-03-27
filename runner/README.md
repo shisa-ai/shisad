@@ -5,12 +5,15 @@
 Quickstart (from repo root):
 
 ```bash
-bash runner/harness.sh start
+bash runner/harness.sh start       # background; requires tmux
+bash runner/harness.sh start --fg  # foreground; no tmux required
 bash runner/harness.sh status
 bash runner/harness.sh logs --follow
 ```
 
 Background start uses `tmux` so the daemon survives across non-interactive shells.
+For long live `dev.*` drives after repo edits, prefer `bash runner/harness.sh start --no-debug`
+so autoreload does not restart the daemon mid-run.
 
 Talk to the daemon:
 

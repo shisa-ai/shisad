@@ -84,9 +84,11 @@ def _policy_with_caps(*caps: str) -> str:
     return "\n".join(lines) + "\n"
 
 
-def _fake_coding_agent_command(agent_name: str) -> str:
+def _fake_coding_agent_command(agent_name: str, *extra_args: str) -> str:
     script = Path(__file__).resolve().parents[1] / "fixtures" / "fake_acp_agent.py"
-    return f"{sys.executable} {script} --agent-name {agent_name}"
+    extra = " ".join(extra_args)
+    suffix = f" {extra}" if extra else ""
+    return f"{sys.executable} {script} --agent-name {agent_name}{suffix}"
 
 
 @pytest.mark.asyncio
@@ -212,5 +214,75 @@ async def test_m4_dev_close_reports_requested_doc_readiness(tmp_path: Path) -> N
         )
         assert missing["ready"] is False
         assert missing["missing_evidence"] == ["implementation_doc_missing"]
+    finally:
+        await _shutdown_daemon(daemon_task, client)
+
+
+@pytest.mark.asyncio
+async def test_m4_dev_review_handles_large_acp_messages(tmp_path: Path) -> None:
+    daemon_task, client = await _start_daemon(
+        tmp_path,
+        policy_text=_policy_with_caps("file.read", "shell.exec"),
+        config_overrides={
+            "coding_repo_root": Path.cwd(),
+            "coding_agent_registry_overrides": {
+                "codex": _fake_coding_agent_command(
+                    "codex",
+                    "--large-single-line-summary-bytes",
+                    "70000",
+                ),
+            },
+        },
+    )
+    try:
+        review = await client.call(
+            "dev.review",
+            {
+                "scope": "Review README.md and keep the response short.",
+                "file_refs": ["README.md"],
+                "agent": "codex",
+            },
+        )
+        assert review["success"] is True
+        assert review["operation"] == "review"
+        assert review["summary"].startswith("codex large-response mode=plan ")
+        assert len(review["summary"]) <= 320
+    finally:
+        await _shutdown_daemon(daemon_task, client)
+
+
+@pytest.mark.asyncio
+async def test_m4_dev_review_passes_agent_auth_env(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-anthropic-key")
+    daemon_task, client = await _start_daemon(
+        tmp_path,
+        policy_text=_policy_with_caps("file.read", "shell.exec"),
+        config_overrides={
+            "coding_repo_root": Path.cwd(),
+            "coding_agent_registry_overrides": {
+                "claude": _fake_coding_agent_command(
+                    "claude",
+                    "--require-env",
+                    "ANTHROPIC_API_KEY",
+                ),
+            },
+        },
+    )
+    try:
+        review = await client.call(
+            "dev.review",
+            {
+                "scope": "Review README.md and keep the response short.",
+                "file_refs": ["README.md"],
+                "agent": "claude",
+            },
+        )
+        assert review["success"] is True
+        assert review["operation"] == "review"
+        assert review["agent"] == "claude"
+        assert "mode=plan" in review["summary"]
     finally:
         await _shutdown_daemon(daemon_task, client)

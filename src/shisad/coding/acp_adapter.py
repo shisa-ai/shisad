@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import time
 from contextlib import suppress
 from pathlib import Path
@@ -12,12 +13,12 @@ from typing import Any
 from acp import (
     PROTOCOL_VERSION,
     RequestError,
-    default_environment,
     spawn_agent_process,
     text_block,
 )
 from acp.contrib import SessionAccumulator
 from acp.contrib.session_state import SessionNotificationMismatchError
+from acp.core import DEFAULT_STDIO_BUFFER_LIMIT_BYTES
 from acp.interfaces import Agent, Client
 from acp.schema import (
     AllowedOutcome,
@@ -29,12 +30,69 @@ from acp.schema import (
     SessionConfigOption,
     SessionNotification,
 )
+from acp.transports import default_environment
 
 from .adapter import CodingAgentAdapter
 from .models import CodingAgentConfig, CodingAgentResult, CodingAgentRunOutput
 from .registry import AgentCommandSpec
 
 logger = logging.getLogger(__name__)
+
+_CODING_AGENT_ENV_KEYS = frozenset(
+    {
+        "CLOUD_ML_REGION",
+        "GOOGLE_APPLICATION_CREDENTIALS",
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "NO_PROXY",
+        "NODE_OPTIONS",
+        "NPM_CONFIG_USERCONFIG",
+        "NPM_TOKEN",
+        "REQUESTS_CA_BUNDLE",
+        "SSL_CERT_DIR",
+        "SSL_CERT_FILE",
+        "XDG_CACHE_HOME",
+        "XDG_CONFIG_HOME",
+        "XDG_STATE_HOME",
+        "http_proxy",
+        "https_proxy",
+        "no_proxy",
+    }
+)
+_CODING_AGENT_ENV_PREFIXES = (
+    "ANTHROPIC_",
+    "AWS_",
+    "AZURE_",
+    "CLAUDE_CODE_",
+    "GEMINI_",
+    "GOOGLE_",
+    "OPENAI_",
+    "OPENROUTER_",
+)
+_CODING_AGENT_SUMMARY_MAX_CHARS = 4000
+
+
+def _coding_agent_environment() -> dict[str, str]:
+    """Preserve the minimal env needed for real coding-agent auth and transport."""
+
+    env = default_environment()
+    for key, value in os.environ.items():
+        if not value or value.startswith("()"):
+            continue
+        if key in _CODING_AGENT_ENV_KEYS or any(
+            key.startswith(prefix) for prefix in _CODING_AGENT_ENV_PREFIXES
+        ):
+            env[key] = value
+    return env
+
+
+def _bounded_summary(text: str, *, max_chars: int = _CODING_AGENT_SUMMARY_MAX_CHARS) -> str:
+    normalized = text.strip()
+    if len(normalized) <= max_chars:
+        return normalized
+    if max_chars <= 16:
+        return normalized[:max_chars]
+    return f"{normalized[: max_chars - 15].rstrip()}... [truncated]"
 
 
 def _extract_summary(notifications: tuple[dict[str, Any], ...]) -> str:
@@ -269,7 +327,7 @@ class AcpAdapter(CodingAgentAdapter):
     ) -> CodingAgentRunOutput:
         start = time.monotonic()
         recorder = _AcpRecordingClient()
-        env = default_environment()
+        env = _coding_agent_environment()
         session_id = ""
         selected_mode: str | None = None
         applied_config: dict[str, str] = {}
@@ -283,6 +341,7 @@ class AcpAdapter(CodingAgentAdapter):
                 *self._spec.command,
                 env=env,
                 cwd=str(workdir),
+                transport_kwargs={"limit": DEFAULT_STDIO_BUFFER_LIMIT_BYTES},
             ) as (inner_conn, inner_process):
                 conn = inner_conn
                 process = inner_process
@@ -332,7 +391,9 @@ class AcpAdapter(CodingAgentAdapter):
                         agent=self._spec.name,
                         task=prompt_text,
                         success=True,
-                        summary=_extract_summary(raw_updates) or "Coding agent completed.",
+                        summary=_bounded_summary(
+                            _extract_summary(raw_updates) or "Coding agent completed."
+                        ),
                         cost=cost_usd,
                         duration_ms=duration_ms,
                         files_changed=_extract_files_changed(raw_updates),
@@ -411,6 +472,26 @@ class AcpAdapter(CodingAgentAdapter):
                 selected_mode=selected_mode,
                 applied_config=applied_config,
             )
+        except Exception as exc:
+            duration_ms = int((time.monotonic() - start) * 1000)
+            detail = str(exc).strip()
+            summary = f"Coding agent '{self._spec.name}' failed during ACP transport."
+            if detail:
+                summary = f"{summary} {detail}"
+            return CodingAgentRunOutput(
+                result=CodingAgentResult(
+                    agent=self._spec.name,
+                    task=prompt_text,
+                    success=False,
+                    summary=_bounded_summary(summary),
+                    duration_ms=duration_ms,
+                ),
+                error_code="protocol_error",
+                session_id=session_id,
+                raw_updates=tuple(recorder.notifications),
+                selected_mode=recorder.current_mode or selected_mode,
+                applied_config={**applied_config, **recorder.applied_config},
+            )
 
     async def _apply_mode(
         self,
@@ -423,8 +504,10 @@ class AcpAdapter(CodingAgentAdapter):
     ) -> str | None:
         desired_modes = self._spec.read_only_modes if config.read_only else self._spec.write_modes
         for candidate in desired_modes:
-            if candidate not in available_modes or candidate == current_mode:
+            if candidate not in available_modes:
                 continue
+            if candidate == current_mode:
+                return current_mode
             try:
                 await conn.set_session_mode(candidate, session_id=session_id)
                 return candidate
