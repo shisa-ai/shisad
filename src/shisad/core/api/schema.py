@@ -400,6 +400,11 @@ class NoteListParams(_StrictParams):
     limit: int = 100
 
 
+class NoteSearchParams(_StrictParams):
+    query: str
+    limit: int = 20
+
+
 class NoteEntryParams(_StrictParams):
     entry_id: str
 
@@ -415,6 +420,12 @@ class NoteListResult(BaseModel):
 
 class NoteGetResult(BaseModel):
     entry: dict[str, Any] | None = None
+
+
+class NoteSearchResult(BaseModel):
+    query: str = ""
+    entries: list[dict[str, Any]] = Field(default_factory=list)
+    count: int = 0
 
 
 class NoteDeleteResult(BaseModel):
@@ -451,6 +462,10 @@ class TodoEntryParams(_StrictParams):
     entry_id: str
 
 
+class TodoCompleteParams(_StrictParams):
+    selector: str
+
+
 class TodoExportParams(_StrictParams):
     format: str = "json"
 
@@ -462,6 +477,14 @@ class TodoListResult(BaseModel):
 
 class TodoGetResult(BaseModel):
     entry: dict[str, Any] | None = None
+
+
+class TodoCompleteResult(BaseModel):
+    completed: bool
+    entry_id: str = ""
+    entry: dict[str, Any] | None = None
+    reason: str = ""
+    matches: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class TodoDeleteResult(BaseModel):
@@ -637,6 +660,7 @@ class TaskCreateParams(_StrictParams):
     allowed_recipients: list[str] = Field(default_factory=list)
     allowed_domains: list[str] = Field(default_factory=list)
     delivery_target: dict[str, str] = Field(default_factory=dict)
+    max_runs: int = Field(default=0, ge=0)
 
 
 class TaskDisableParams(_StrictParams):
@@ -666,6 +690,10 @@ class TaskCreateResult(BaseModel):
     workspace_id: str = ""
     created_at: datetime | str | None = None
     last_triggered_at: datetime | str | None = None
+    trigger_count: int = 0
+    success_count: int = 0
+    failure_count: int = 0
+    max_runs: int = 0
     enabled: bool = True
 
 

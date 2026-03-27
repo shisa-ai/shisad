@@ -27,7 +27,11 @@ from shisad.core.api.schema import (
     NoteGetResult,
     NoteListParams,
     NoteListResult,
+    NoteSearchParams,
+    NoteSearchResult,
     NoteVerifyResult,
+    TodoCompleteParams,
+    TodoCompleteResult,
     TodoCreateParams,
     TodoDeleteResult,
     TodoEntryParams,
@@ -182,6 +186,18 @@ class MemoryHandlers:
         )
         return NoteListResult.model_validate(await self._impl.do_note_list(payload))
 
+    async def handle_note_search(
+        self,
+        params: NoteSearchParams,
+        ctx: RequestContext,
+    ) -> NoteSearchResult:
+        payload = build_params_payload(
+            params,
+            ctx,
+            internal_ingress_marker=self._internal_ingress_marker,
+        )
+        return NoteSearchResult.model_validate(await self._impl.do_note_search(payload))
+
     async def handle_note_get(
         self,
         params: NoteEntryParams,
@@ -253,6 +269,18 @@ class MemoryHandlers:
             internal_ingress_marker=self._internal_ingress_marker,
         )
         return TodoListResult.model_validate(await self._impl.do_todo_list(payload))
+
+    async def handle_todo_complete(
+        self,
+        params: TodoCompleteParams,
+        ctx: RequestContext,
+    ) -> TodoCompleteResult:
+        payload = build_params_payload(
+            params,
+            ctx,
+            internal_ingress_marker=self._internal_ingress_marker,
+        )
+        return TodoCompleteResult.model_validate(await self._impl.do_todo_complete(payload))
 
     async def handle_todo_get(
         self,

@@ -98,7 +98,7 @@ class ToolRegistry:
 
         # Check for missing required arguments
         for req in required:
-            if req not in arguments:
+            if req not in arguments or arguments.get(req) is None:
                 errors.append(f"Missing required argument: {req}")
 
         # Check for extra arguments (additionalProperties: false)
@@ -109,6 +109,8 @@ class ToolRegistry:
         # Basic type checking
         for key, value in arguments.items():
             if key not in properties:
+                continue
+            if value is None:
                 continue
             expected_type = properties[key].get("type")
             if expected_type is not None and not self._check_type(value, expected_type):

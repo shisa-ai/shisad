@@ -103,6 +103,25 @@ _TOOL_KIND_MAP: dict[str, ActionKind] = {
     "retrieve_rag": ActionKind.MEMORY_READ,
     "memory.retrieve": ActionKind.MEMORY_READ,
     "memory.write": ActionKind.MEMORY_WRITE,
+    "note.create": ActionKind.MEMORY_WRITE,
+    "note.list": ActionKind.MEMORY_READ,
+    "note.search": ActionKind.MEMORY_READ,
+    "note.get": ActionKind.MEMORY_READ,
+    "note.delete": ActionKind.MEMORY_WRITE,
+    "note.verify": ActionKind.MEMORY_WRITE,
+    "note.export": ActionKind.MEMORY_READ,
+    "todo.create": ActionKind.MEMORY_WRITE,
+    "todo.list": ActionKind.MEMORY_READ,
+    "todo.complete": ActionKind.MEMORY_WRITE,
+    "todo.get": ActionKind.MEMORY_READ,
+    "todo.delete": ActionKind.MEMORY_WRITE,
+    "todo.verify": ActionKind.MEMORY_WRITE,
+    "todo.export": ActionKind.MEMORY_READ,
+    "task.create": ActionKind.MEMORY_WRITE,
+    "task.list": ActionKind.MEMORY_READ,
+    "task.disable": ActionKind.MEMORY_WRITE,
+    "reminder.create": ActionKind.MEMORY_WRITE,
+    "reminder.list": ActionKind.MEMORY_READ,
     "fs.list": ActionKind.FS_LIST,
     "fs.read": ActionKind.FS_READ,
     "fs.write": ActionKind.FS_WRITE,
@@ -335,7 +354,7 @@ def normalize_resource_ids(*, action_kind: ActionKind, arguments: dict[str, Any]
         elif recipient:
             resources.append(recipient)
     elif action_kind in {ActionKind.MEMORY_READ, ActionKind.MEMORY_WRITE}:
-        for key in ("key", "entry_id", "memory_id"):
+        for key in ("key", "entry_id", "memory_id", "query", "selector", "task_id", "name"):
             value = arguments.get(key)
             if isinstance(value, str) and value.strip():
                 resources.append(value.strip())

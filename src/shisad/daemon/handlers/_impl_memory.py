@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping
+from datetime import UTC, datetime
 from typing import Any, cast
 
 from shisad.core.types import Capability
@@ -103,6 +104,27 @@ class MemoryImplMixin(HandlerMixinBase):
         notes = [entry.model_dump(mode="json") for entry in rows]
         return {"entries": notes, "count": len(notes)}
 
+    async def do_note_search(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        query = str(params.get("query", "")).strip()
+        limit = max(1, int(params.get("limit", 20)))
+        lowered_terms = [term for term in query.lower().split() if term]
+        rows = self._memory_manager.list_entries(entry_type="note", limit=200)
+        matches: list[dict[str, Any]] = []
+        for entry in rows:
+            haystack = " ".join(
+                [
+                    str(entry.key),
+                    str(entry.value),
+                    str(getattr(entry.source, "source_id", "")),
+                ]
+            ).lower()
+            if lowered_terms and not all(term in haystack for term in lowered_terms):
+                continue
+            matches.append(entry.model_dump(mode="json"))
+            if len(matches) >= limit:
+                break
+        return {"query": query, "entries": matches, "count": len(matches)}
+
     async def do_note_get(self, params: Mapping[str, Any]) -> dict[str, Any]:
         entry = self._memory_manager.get_entry(str(params.get("entry_id", "")))
         if entry is None or str(entry.entry_type) != "note":
@@ -182,6 +204,69 @@ class MemoryImplMixin(HandlerMixinBase):
         rows = self._memory_manager.list_entries(entry_type="todo", limit=limit)
         todos = [entry.model_dump(mode="json") for entry in rows]
         return {"entries": todos, "count": len(todos)}
+
+    def _resolve_todo_matches(self, selector: str) -> list[Any]:
+        normalized = selector.strip().lower()
+        if not normalized:
+            return []
+        direct = self._memory_manager.get_entry(selector)
+        if direct is not None and str(direct.entry_type) == "todo":
+            return [direct]
+        exact: list[Any] = []
+        partial: list[Any] = []
+        for entry in self._memory_manager.list_entries(entry_type="todo", limit=200):
+            value = entry.value if isinstance(entry.value, dict) else {}
+            title = str(value.get("title", "")).strip()
+            if normalized == entry.id.lower() or (title and normalized == title.lower()):
+                exact.append(entry)
+                continue
+            haystacks = [entry.id.lower(), str(entry.key).lower(), title.lower()]
+            if any(normalized in item for item in haystacks if item):
+                partial.append(entry)
+        return exact or partial
+
+    async def do_todo_complete(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        selector = str(params.get("selector", "")).strip()
+        matches = self._resolve_todo_matches(selector)
+        if not matches:
+            return {
+                "completed": False,
+                "entry_id": "",
+                "entry": None,
+                "reason": "todo_not_found",
+                "matches": [],
+            }
+        if len(matches) > 1:
+            preview = [entry.model_dump(mode="json") for entry in matches[:10]]
+            return {
+                "completed": False,
+                "entry_id": "",
+                "entry": None,
+                "reason": "todo_selector_ambiguous",
+                "matches": preview,
+            }
+        entry = matches[0]
+        value = entry.value if isinstance(entry.value, dict) else {}
+        updated_value = dict(value)
+        updated_value["status"] = "done"
+        updated_value["completed_at"] = datetime.now(UTC).isoformat()
+        entry.value = updated_value
+        entry.user_verified = True
+        self._memory_manager._persist_entry(entry)
+        self._memory_manager._audit(
+            "memory.todo_complete",
+            {
+                "entry_id": entry.id,
+                "selector": selector,
+            },
+        )
+        return {
+            "completed": True,
+            "entry_id": entry.id,
+            "entry": entry.model_dump(mode="json"),
+            "reason": "",
+            "matches": [],
+        }
 
     async def do_todo_get(self, params: Mapping[str, Any]) -> dict[str, Any]:
         entry = self._memory_manager.get_entry(str(params.get("entry_id", "")))

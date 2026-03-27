@@ -53,6 +53,7 @@ class SchedulerManager:
         allowed_recipients: list[str] | None = None,
         allowed_domains: list[str] | None = None,
         delivery_target: dict[str, str] | None = None,
+        max_runs: int = 0,
     ) -> ScheduledTask:
         self._validate_schedule(schedule)
         task = ScheduledTask(
@@ -66,10 +67,11 @@ class SchedulerManager:
             delivery_target=dict(delivery_target or {}),
             created_by=created_by,
             workspace_id=workspace_id or WorkspaceId(""),
+            max_runs=max(0, int(max_runs)),
         )
         self._tasks[task.id] = task
         self._persist_tasks()
-        self._audit("task.create", {"task_id": task.id, "name": name})
+        self._audit("task.create", {"task_id": task.id, "name": name, "max_runs": task.max_runs})
         return task
 
     def list_tasks(self) -> list[ScheduledTask]:
@@ -275,6 +277,8 @@ class SchedulerManager:
                 "failure_count": task.failure_count,
             },
         )
+        if success and task.max_runs > 0 and task.success_count >= task.max_runs and task.enabled:
+            self.disable_task(task_id)
         return True
 
     def task_status_snapshot(
@@ -318,6 +322,7 @@ class SchedulerManager:
                     "trigger_count": int(task.trigger_count),
                     "success_count": int(task.success_count),
                     "failure_count": int(task.failure_count),
+                    "max_runs": int(task.max_runs),
                     "created_by": str(task.created_by),
                     "workspace_id": str(task.workspace_id),
                 }

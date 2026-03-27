@@ -14,7 +14,7 @@ import asyncio
 import json
 import re
 import threading
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from contextlib import suppress
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -74,6 +74,51 @@ def _tool_call(tool_name: str, arguments: dict[str, Any], *, call_id: str) -> di
     }
 
 
+def _slugify_note_key(content: str) -> str:
+    words = [token for token in re.findall(r"[a-z0-9]+", content.lower()) if token]
+    return "note:" + "-".join(words[:6]) if words else "note:untitled"
+
+
+def _extract_after_colon(goal: str) -> str:
+    _head, sep, tail = goal.partition(":")
+    return tail.strip() if sep else goal.strip()
+
+
+def _extract_note_search_query(goal: str) -> str:
+    match = re.search(r"search my notes(?: for)? (?P<query>.+)$", goal, flags=re.IGNORECASE)
+    if match:
+        return match.group("query").strip()
+    return goal.strip()
+
+
+def _extract_todo_complete_selector(goal: str) -> str:
+    match = re.search(r"mark (?:the )?(?P<selector>.+?) todo complete$", goal, flags=re.IGNORECASE)
+    if match:
+        return match.group("selector").strip()
+    match = re.search(r"complete todo (?P<selector>.+)$", goal, flags=re.IGNORECASE)
+    if match:
+        return match.group("selector").strip()
+    return goal.strip()
+
+
+def _extract_reminder_arguments(goal: str) -> tuple[str, str] | None:
+    match = re.search(
+        r"remind me to (?P<message>.+?) (?P<when>in \d+ (?:seconds?|minutes?|hours?))$",
+        goal,
+        flags=re.IGNORECASE,
+    )
+    if match:
+        return match.group("message").strip(), match.group("when").strip()
+    match = re.search(
+        r"remind me(?: to)? (?P<message>.+?) at (?P<when>.+)$",
+        goal,
+        flags=re.IGNORECASE,
+    )
+    if match:
+        return match.group("message").strip(), f"at {match.group('when').strip()}"
+    return None
+
+
 async def _stub_complete(
     self: LocalPlannerProvider,
     messages: list[Message],
@@ -96,7 +141,7 @@ async def _stub_complete(
     goal = _extract_user_goal(planner_input)
     goal_lower = goal.lower()
 
-    if "remember" in goal_lower:
+    if goal_lower.startswith("remember that"):
         return ProviderResponse(
             message=Message(role="assistant", content="Got it — I'll remember that."),
             model="behavioral-stub",
@@ -119,6 +164,65 @@ async def _stub_complete(
         )
 
     tool_calls: list[dict[str, Any]] = []
+    note_create_call = None
+    if "add a note" in goal_lower or goal_lower.startswith("note:"):
+        content = _extract_after_colon(goal)
+        note_create_call = _tool_call(
+            "note.create",
+            {"content": content, "key": _slugify_note_key(content)},
+            call_id="t-note-create",
+        )
+    note_list_call = (
+        _tool_call("note.list", {"limit": 10}, call_id="t-note-list")
+        if "list my notes" in goal_lower
+        else None
+    )
+    note_search_call = (
+        _tool_call(
+            "note.search",
+            {"query": _extract_note_search_query(goal), "limit": 10},
+            call_id="t-note-search",
+        )
+        if "search my notes" in goal_lower
+        else None
+    )
+    todo_create_call = None
+    if "add todo" in goal_lower or "add a todo" in goal_lower:
+        title = _extract_after_colon(goal)
+        todo_create_call = _tool_call(
+            "todo.create",
+            {"title": title},
+            call_id="t-todo-create",
+        )
+    todo_list_call = (
+        _tool_call("todo.list", {"limit": 10}, call_id="t-todo-list")
+        if "list my todos" in goal_lower
+        else None
+    )
+    todo_complete_call = (
+        _tool_call(
+            "todo.complete",
+            {"selector": _extract_todo_complete_selector(goal)},
+            call_id="t-todo-complete",
+        )
+        if ("todo complete" in goal_lower or goal_lower.startswith("complete todo"))
+        else None
+    )
+    reminder_args = _extract_reminder_arguments(goal)
+    reminder_create_call = (
+        _tool_call(
+            "reminder.create",
+            {"message": reminder_args[0], "when": reminder_args[1]},
+            call_id="t-reminder-create",
+        )
+        if reminder_args is not None
+        else None
+    )
+    reminder_list_call = (
+        _tool_call("reminder.list", {"limit": 10}, call_id="t-reminder-list")
+        if ("list my reminders" in goal_lower or "what reminders" in goal_lower)
+        else None
+    )
     search_call = (
         _tool_call(
             "web.search",
@@ -148,6 +252,22 @@ async def _stub_complete(
     )
     if unknown_probe_call is not None:
         tool_calls.append(unknown_probe_call)
+    elif note_create_call is not None:
+        tool_calls.append(note_create_call)
+    elif note_search_call is not None:
+        tool_calls.append(note_search_call)
+    elif note_list_call is not None:
+        tool_calls.append(note_list_call)
+    elif todo_create_call is not None:
+        tool_calls.append(todo_create_call)
+    elif todo_complete_call is not None:
+        tool_calls.append(todo_complete_call)
+    elif todo_list_call is not None:
+        tool_calls.append(todo_list_call)
+    elif reminder_create_call is not None:
+        tool_calls.append(reminder_create_call)
+    elif reminder_list_call is not None:
+        tool_calls.append(reminder_list_call)
     elif search_call is not None and read_call is not None:
         read_pos = goal_lower.find("read")
         search_pos = goal_lower.find("search")
@@ -373,6 +493,29 @@ async def _create_session(client: ControlClient) -> str:
         {"channel": "cli", "user_id": "alice", "workspace_id": "ws1"},
     )
     return str(created["session_id"])
+
+
+async def _wait_for_audit_event(
+    client: ControlClient,
+    *,
+    event_type: str,
+    predicate: Callable[[dict[str, Any]], bool],
+    session_id: str = "",
+    timeout: float = 4.0,
+) -> dict[str, Any]:
+    end = asyncio.get_running_loop().time() + timeout
+    latest: list[dict[str, Any]] = []
+    while asyncio.get_running_loop().time() < end:
+        payload: dict[str, Any] = {"event_type": event_type, "limit": 50}
+        if session_id:
+            payload["session_id"] = session_id
+        result = await client.call("audit.query", payload)
+        latest = [dict(event) for event in result.get("events", [])]
+        for event in latest:
+            if predicate(event):
+                return event
+        await asyncio.sleep(0.1)
+    raise AssertionError(f"Timed out waiting for {event_type}: {latest}")
 
 
 @pytest.mark.asyncio
@@ -606,6 +749,153 @@ async def test_contract_memory_remember_persists_and_is_used_later(
     )
     assert reply.get("lockdown_level") == "normal"
     assert "blue" in str(reply.get("response", "")).lower()
+
+
+@pytest.mark.asyncio
+async def test_contract_note_create_and_search_executes_without_lockdown(
+    contract_harness: ContractHarness,
+) -> None:
+    sid = await _create_session(contract_harness.client)
+
+    created = await contract_harness.client.call(
+        "session.message",
+        {"session_id": sid, "content": "add a note: remember to buy groceries"},
+    )
+    assert created.get("lockdown_level") == "normal"
+    assert int(created.get("blocked_actions", 0)) == 0
+    assert int(created.get("confirmation_required_actions", 0)) == 0
+    assert int(created.get("executed_actions", 0)) == 1
+    created_outputs = _extract_tool_outputs(created)
+    assert "note.create" in created_outputs
+    created_payload = created_outputs["note.create"][0]
+    assert created_payload.get("ok") is True
+    assert created_payload.get("kind") == "allow"
+
+    searched = await contract_harness.client.call(
+        "session.message",
+        {"session_id": sid, "content": "search my notes for groceries"},
+    )
+    assert searched.get("lockdown_level") == "normal"
+    assert int(searched.get("blocked_actions", 0)) == 0
+    assert int(searched.get("confirmation_required_actions", 0)) == 0
+    assert int(searched.get("executed_actions", 0)) == 1
+    search_outputs = _extract_tool_outputs(searched)
+    assert "note.search" in search_outputs
+    search_payload = search_outputs["note.search"][0]
+    assert search_payload.get("ok") is True
+    assert int(search_payload.get("count", 0)) >= 1
+    assert any(
+        "groceries" in json.dumps(item, ensure_ascii=True).lower()
+        for item in search_payload["entries"]
+    )
+
+
+@pytest.mark.asyncio
+async def test_contract_todo_create_list_and_complete_executes_without_lockdown(
+    contract_harness: ContractHarness,
+) -> None:
+    sid = await _create_session(contract_harness.client)
+
+    created = await contract_harness.client.call(
+        "session.message",
+        {"session_id": sid, "content": "add todo: buy milk"},
+    )
+    assert created.get("lockdown_level") == "normal"
+    assert int(created.get("blocked_actions", 0)) == 0
+    assert int(created.get("confirmation_required_actions", 0)) == 0
+    assert int(created.get("executed_actions", 0)) == 1
+    created_outputs = _extract_tool_outputs(created)
+    assert "todo.create" in created_outputs
+    created_payload = created_outputs["todo.create"][0]
+    assert created_payload.get("ok") is True
+    assert created_payload.get("kind") == "allow"
+
+    listed = await contract_harness.client.call(
+        "session.message",
+        {"session_id": sid, "content": "list my todos"},
+    )
+    assert listed.get("lockdown_level") == "normal"
+    assert int(listed.get("executed_actions", 0)) == 1
+    list_outputs = _extract_tool_outputs(listed)
+    assert "todo.list" in list_outputs
+    list_payload = list_outputs["todo.list"][0]
+    assert list_payload.get("ok") is True
+    assert any(
+        "buy milk" in json.dumps(item, ensure_ascii=True).lower()
+        for item in list_payload["entries"]
+    )
+
+    completed = await contract_harness.client.call(
+        "session.message",
+        {"session_id": sid, "content": "mark the buy milk todo complete"},
+    )
+    assert completed.get("lockdown_level") == "normal"
+    assert int(completed.get("blocked_actions", 0)) == 0
+    assert int(completed.get("confirmation_required_actions", 0)) == 0
+    assert int(completed.get("executed_actions", 0)) == 1
+    complete_outputs = _extract_tool_outputs(completed)
+    assert "todo.complete" in complete_outputs
+    complete_payload = complete_outputs["todo.complete"][0]
+    assert complete_payload.get("ok") is True
+    assert complete_payload.get("completed") is True
+    entry = complete_payload.get("entry") or {}
+    value = entry.get("value") if isinstance(entry, dict) else {}
+    assert isinstance(value, dict)
+    assert value.get("status") == "done"
+
+
+@pytest.mark.asyncio
+async def test_contract_reminder_create_executes_and_due_run_delivers_without_lockdown(
+    contract_harness: ContractHarness,
+) -> None:
+    sid = await _create_session(contract_harness.client)
+
+    created = await contract_harness.client.call(
+        "session.message",
+        {"session_id": sid, "content": "remind me to check email in 1 second"},
+    )
+    assert created.get("lockdown_level") == "normal"
+    assert int(created.get("blocked_actions", 0)) == 0
+    assert int(created.get("confirmation_required_actions", 0)) == 0
+    assert int(created.get("executed_actions", 0)) == 1
+    outputs = _extract_tool_outputs(created)
+    assert "reminder.create" in outputs
+    payload = outputs["reminder.create"][0]
+    assert payload.get("ok") is True
+    reminder = payload.get("task") or {}
+    task_id = str(reminder.get("id", "")).strip()
+    assert task_id
+
+    task_triggered = await _wait_for_audit_event(
+        contract_harness.client,
+        event_type="TaskTriggered",
+        predicate=lambda event: str(event.get("data", {}).get("task_id", "")) == task_id,
+        timeout=5.0,
+    )
+    background_sid = str(task_triggered.get("session_id", "")).strip()
+    assert background_sid
+
+    await _wait_for_audit_event(
+        contract_harness.client,
+        event_type="ToolExecuted",
+        session_id=background_sid,
+        predicate=lambda event: str(event.get("data", {}).get("tool_name", "")) == "message.send"
+        and bool(event.get("data", {}).get("success")) is True,
+        timeout=5.0,
+    )
+
+    reminders = await contract_harness.client.call(
+        "session.message",
+        {"session_id": sid, "content": "list my reminders"},
+    )
+    reminder_outputs = _extract_tool_outputs(reminders)
+    assert "reminder.list" in reminder_outputs
+    reminder_list_payload = reminder_outputs["reminder.list"][0]
+    assert reminder_list_payload.get("ok") is True
+    assert any(
+        str(item.get("id", "")) == task_id
+        for item in reminder_list_payload.get("tasks", [])
+    )
 
 
 @pytest.mark.asyncio

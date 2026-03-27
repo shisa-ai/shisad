@@ -34,6 +34,11 @@ BASE_SYSTEM_PROMPT = (
     "Tool-name alias formatting differences (for example fs.list vs fs_list "
     "or functions.fs_list) are expected and are not anomalies. "
     "If a tool is needed, use the runtime-supported tool-calling format. "
+    "When using a tool, emit the tool call directly; do not narrate the intended "
+    "tool call, do not wrap it in Markdown or XML, and do not say 'here is the "
+    "function call'. "
+    "For note, todo, and reminder requests, call the corresponding tool instead of "
+    "only acknowledging, paraphrasing, or answering from memory. "
     "If no tool is needed, answer conversationally. "
     "Never describe planner internals or formatting mechanics to the user."
 )
@@ -276,6 +281,8 @@ class Planner:
                 "structured request",
                 "structured json",
                 "tool call",
+                "no tool call is needed",
+                "does not require action beyond a conversational response",
                 "cannot directly call",
                 "if available in your environment",
             )

@@ -30,6 +30,15 @@ def test_s9_canonical_tool_name_maps_legacy_aliases() -> None:
     assert canonical_tool_name("git_log") == "git.log"
     assert canonical_tool_name("realitycheck_search") == "realitycheck.search"
     assert canonical_tool_name("realitycheck_read") == "realitycheck.read"
+    assert canonical_tool_name("note_create") == "note.create"
+    assert canonical_tool_name("note_list") == "note.list"
+    assert canonical_tool_name("note_search") == "note.search"
+    assert canonical_tool_name("todo_create") == "todo.create"
+    assert canonical_tool_name("todo_list") == "todo.list"
+    assert canonical_tool_name("todo_complete") == "todo.complete"
+    assert canonical_tool_name("reminder_create") == "reminder.create"
+    assert canonical_tool_name("reminder_list") == "reminder.list"
+    assert canonical_tool_name("message_send") == "message.send"
 
 
 def test_s9_canonical_tool_name_accepts_functions_namespace_aliases() -> None:

@@ -53,6 +53,7 @@ class ScheduledTask(BaseModel):
     trigger_count: int = 0
     success_count: int = 0
     failure_count: int = 0
+    max_runs: int = 0
     enabled: bool = True
 
     def commitment_hash(self) -> str:
@@ -69,6 +70,7 @@ class ScheduledTask(BaseModel):
             "created_by": str(self.created_by),
             "workspace_id": str(self.workspace_id),
             "created_at": self.created_at.isoformat(),
+            "max_runs": int(self.max_runs),
         }
         encoded = json.dumps(payload, sort_keys=True)
         return hashlib.sha256(encoded.encode("utf-8")).hexdigest()

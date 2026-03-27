@@ -494,6 +494,7 @@ class TasksImplMixin(HandlerMixinBase):
             allowed_recipients=list(params.get("allowed_recipients", [])),
             allowed_domains=list(params.get("allowed_domains", [])),
             delivery_target=delivery_target,
+            max_runs=int(params.get("max_runs", 0)),
         )
         await self._event_bus.publish(
             TaskScheduled(

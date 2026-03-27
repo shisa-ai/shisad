@@ -831,6 +831,155 @@ def _build_tool_registry(
     )
     registry.register(
         ToolDefinition(
+            name=ToolName("note.create"),
+            description=(
+                "Store a user note for later retrieval. "
+                "Use this when the user asks to remember, save, or add a note."
+            ),
+            parameters=[
+                ToolParameter(
+                    name="content",
+                    type="string",
+                    description="Full note text to store.",
+                    required=True,
+                ),
+                ToolParameter(
+                    name="key",
+                    type="string",
+                    description="Optional short label for the note.",
+                    required=False,
+                ),
+            ],
+            capabilities_required=[Capability.MEMORY_WRITE],
+            require_confirmation=False,
+        )
+    )
+    registry.register(
+        ToolDefinition(
+            name=ToolName("note.list"),
+            description=(
+                "List the user's saved notes. "
+                "Use this when the user asks to list or show notes instead of "
+                "answering from memory."
+            ),
+            parameters=[
+                ToolParameter(name="limit", type="integer", required=False),
+            ],
+            capabilities_required=[Capability.MEMORY_READ],
+            require_confirmation=False,
+        )
+    )
+    registry.register(
+        ToolDefinition(
+            name=ToolName("note.search"),
+            description=(
+                "Search saved notes by keyword. "
+                "Use this when the user asks to find or search notes instead of "
+                "answering from memory."
+            ),
+            parameters=[
+                ToolParameter(
+                    name="query",
+                    type="string",
+                    description="Keyword or phrase to look for in saved notes.",
+                    required=True,
+                ),
+                ToolParameter(name="limit", type="integer", required=False),
+            ],
+            capabilities_required=[Capability.MEMORY_READ],
+            require_confirmation=False,
+        )
+    )
+    registry.register(
+        ToolDefinition(
+            name=ToolName("todo.create"),
+            description="Create a todo item the user can track later.",
+            parameters=[
+                ToolParameter(name="title", type="string", required=True),
+                ToolParameter(name="details", type="string", required=False),
+                ToolParameter(name="due_date", type="string", required=False),
+            ],
+            capabilities_required=[Capability.MEMORY_WRITE],
+            require_confirmation=False,
+        )
+    )
+    registry.register(
+        ToolDefinition(
+            name=ToolName("todo.list"),
+            description=(
+                "List the user's tracked todo items. "
+                "Use this when the user asks to list or show todos instead of "
+                "answering from memory."
+            ),
+            parameters=[
+                ToolParameter(name="limit", type="integer", required=False),
+            ],
+            capabilities_required=[Capability.MEMORY_READ],
+            require_confirmation=False,
+        )
+    )
+    registry.register(
+        ToolDefinition(
+            name=ToolName("todo.complete"),
+            description=(
+                "Mark a todo as done by id or title. "
+                "Use this when the user asks to mark, complete, or finish a todo."
+            ),
+            parameters=[
+                ToolParameter(
+                    name="selector",
+                    type="string",
+                    description="Todo id or title text that identifies the item to complete.",
+                    required=True,
+                ),
+            ],
+            capabilities_required=[Capability.MEMORY_WRITE],
+            require_confirmation=False,
+        )
+    )
+    registry.register(
+        ToolDefinition(
+            name=ToolName("reminder.create"),
+            description=(
+                "Schedule a one-time reminder. Use this when the user asks to remind them later. "
+                "Use `when` like `in 2 minutes`, `in 30 seconds`, or `at 3pm`."
+            ),
+            parameters=[
+                ToolParameter(
+                    name="message",
+                    type="string",
+                    description="Reminder text to deliver back to the user.",
+                    required=True,
+                ),
+                ToolParameter(
+                    name="when",
+                    type="string",
+                    description="Natural-language delivery time such as `in 2 minutes`.",
+                    required=True,
+                ),
+                ToolParameter(name="name", type="string", required=False),
+            ],
+            capabilities_required=[Capability.MEMORY_WRITE, Capability.MESSAGE_SEND],
+            require_confirmation=False,
+        )
+    )
+    registry.register(
+        ToolDefinition(
+            name=ToolName("reminder.list"),
+            description=(
+                "List the user's scheduled reminders. "
+                "Use this when the user asks to list or show reminders instead of "
+                "answering from memory."
+            ),
+            parameters=[
+                ToolParameter(name="limit", type="integer", required=False),
+            ],
+            capabilities_required=[Capability.MEMORY_READ],
+            require_confirmation=False,
+        )
+    )
+    registry.register(
+        ToolDefinition(
             name=ToolName("message.send"),
             description="Background/runtime message delivery primitive.",
             parameters=[

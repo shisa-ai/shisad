@@ -86,6 +86,11 @@ _PRESET_DEFAULT_PROFILES: dict[ProviderPreset, str] = {
 }
 
 _PRESET_DEFAULT_MODEL_IDS: dict[ProviderPreset, dict[ModelComponent, str]] = {
+    ProviderPreset.SHISA_DEFAULT: {
+        ModelComponent.PLANNER: "shisa-ai/shisa-v2.1-unphi4-14b",
+        ModelComponent.EMBEDDINGS: "shisa-ai/shisa-v2.1-unphi4-14b",
+        ModelComponent.MONITOR: "shisa-ai/shisa-v2.1-unphi4-14b",
+    },
     ProviderPreset.OPENAI_DEFAULT: {
         ModelComponent.PLANNER: "gpt-5.2-2025-12-11",
         ModelComponent.EMBEDDINGS: "text-embedding-3-small",

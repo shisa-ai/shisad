@@ -592,6 +592,14 @@ def test_s9_infer_action_kind_treats_git_status_as_fs_read() -> None:
     assert infer_action_kind("git.status", {}) == ActionKind.FS_READ
 
 
+def test_m1_infer_action_kind_covers_note_todo_and_reminder_tools() -> None:
+    assert infer_action_kind("note.search", {"query": "groceries"}) == ActionKind.MEMORY_READ
+    assert infer_action_kind("todo.complete", {"selector": "buy milk"}) == ActionKind.MEMORY_WRITE
+    assert infer_action_kind("reminder.create", {"message": "stand up", "when": "in 1 minute"}) == (
+        ActionKind.MEMORY_WRITE
+    )
+
+
 def test_m5_rt9_command_filename_token_is_not_misclassified_as_egress() -> None:
     kind = infer_action_kind(
         "shell.exec",
@@ -836,6 +844,31 @@ async def test_m1_rlc7_action_monitor_voter_flags_tainted_side_effect() -> None:
     assert decision.decision == VoteKind.FLAG
     assert decision.risk_tier == RiskTier.HIGH
     assert "action_monitor:side_effect_on_tainted_session" in decision.reason_codes
+
+
+@pytest.mark.asyncio
+async def test_m1_action_monitor_allows_explicit_tainted_memory_write() -> None:
+    voter = ActionMonitorVoter()
+    action = build_action(
+        tool_name="todo.complete",
+        arguments={"selector": "review PRs"},
+        origin=_origin("s-action-monitor-tainted-memory-write"),
+    )
+    decision = await voter.cast_vote(
+        ConsensusInput(
+            action=action,
+            trace_result=PlanVerificationResult(allowed=True, reason_code="trace:allowed"),
+            metadata_payload={
+                "session_tainted": True,
+                "trusted_input": True,
+                "raw_user_text": "mark the review PRs todo complete",
+                "action_arguments": {"selector": "review PRs"},
+            },
+        )
+    )
+    assert decision.decision == VoteKind.ALLOW
+    assert decision.risk_tier == RiskTier.LOW
+    assert "action_monitor:deterministic_intent_match" in decision.reason_codes
 
 
 @pytest.mark.asyncio

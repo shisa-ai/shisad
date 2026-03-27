@@ -81,6 +81,8 @@ from shisad.core.api.schema import (
     NoteGetResult,
     NoteListParams,
     NoteListResult,
+    NoteSearchParams,
+    NoteSearchResult,
     NoteVerifyResult,
     PolicyExplainParams,
     PolicyExplainResult,
@@ -122,6 +124,8 @@ from shisad.core.api.schema import (
     TaskPendingConfirmationsResult,
     TaskTriggerEventParams,
     TaskTriggerEventResult,
+    TodoCompleteParams,
+    TodoCompleteResult,
     TodoCreateParams,
     TodoDeleteResult,
     TodoEntryParams,
@@ -383,6 +387,11 @@ class DaemonControlHandlers:
     ) -> NoteListResult:
         return await self._memory.handle_note_list(params, ctx)
 
+    async def handle_note_search(
+        self, params: NoteSearchParams, ctx: RequestContext
+    ) -> NoteSearchResult:
+        return await self._memory.handle_note_search(params, ctx)
+
     async def handle_note_get(
         self, params: NoteEntryParams, ctx: RequestContext
     ) -> NoteGetResult:
@@ -412,6 +421,11 @@ class DaemonControlHandlers:
         self, params: TodoListParams, ctx: RequestContext
     ) -> TodoListResult:
         return await self._memory.handle_todo_list(params, ctx)
+
+    async def handle_todo_complete(
+        self, params: TodoCompleteParams, ctx: RequestContext
+    ) -> TodoCompleteResult:
+        return await self._memory.handle_todo_complete(params, ctx)
 
     async def handle_todo_get(
         self, params: TodoEntryParams, ctx: RequestContext

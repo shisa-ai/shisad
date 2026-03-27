@@ -126,8 +126,8 @@ _export_defaults() {
   export SHISAD_MODEL_EMBEDDINGS_REMOTE_ENABLED="${SHISAD_MODEL_EMBEDDINGS_REMOTE_ENABLED:-false}"
   export SHISAD_MODEL_MONITOR_REMOTE_ENABLED="${SHISAD_MODEL_MONITOR_REMOTE_ENABLED:-false}"
 
-  export SHISAD_MODEL_PLANNER_PROVIDER_PRESET="${SHISAD_MODEL_PLANNER_PROVIDER_PRESET:-openai_default}"
-  export SHISAD_MODEL_PLANNER_MODEL_ID="${SHISAD_MODEL_PLANNER_MODEL_ID:-gpt-5.2-2025-12-11}"
+  export SHISAD_MODEL_PLANNER_PROVIDER_PRESET="${SHISAD_MODEL_PLANNER_PROVIDER_PRESET:-shisa_default}"
+  export SHISAD_MODEL_PLANNER_MODEL_ID="${SHISAD_MODEL_PLANNER_MODEL_ID:-shisa-ai/shisa-v2.1-unphi4-14b}"
   # Local M5/bootstrap route: allow planner model override without SHISA-default pin mismatch.
   export SHISAD_MODEL_ENFORCE_SECURITY_ROUTE_PINNING="${SHISAD_MODEL_ENFORCE_SECURITY_ROUTE_PINNING:-false}"
 
@@ -166,14 +166,17 @@ default_capabilities:
   - file.read
   - file.write
   - http.request
+  - memory.read
+  - memory.write
+  - message.send
   - shell.exec
 
 tools:
   report_anomaly: {}
-  web_search:
+  web.search:
     capabilities_required:
       - http.request
-  web_fetch:
+  web.fetch:
     capabilities_required:
       - http.request
   fs.list:
@@ -195,6 +198,34 @@ tools:
   git.log:
     capabilities_required:
       - file.read
+  note.create:
+    capabilities_required:
+      - memory.write
+  note.list:
+    capabilities_required:
+      - memory.read
+  note.search:
+    capabilities_required:
+      - memory.read
+  todo.create:
+    capabilities_required:
+      - memory.write
+  todo.list:
+    capabilities_required:
+      - memory.read
+  todo.complete:
+    capabilities_required:
+      - memory.write
+  reminder.create:
+    capabilities_required:
+      - memory.write
+      - message.send
+  reminder.list:
+    capabilities_required:
+      - memory.read
+  message.send:
+    capabilities_required:
+      - message.send
 EOF
   chmod 600 "${SHISAD_POLICY_PATH}" || true
 }

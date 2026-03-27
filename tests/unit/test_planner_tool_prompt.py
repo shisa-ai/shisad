@@ -6,7 +6,7 @@ from typing import Any
 
 import pytest
 
-from shisad.core.planner import Planner
+from shisad.core.planner import Planner, PlannerOutput
 from shisad.core.providers.base import Message, ProviderResponse
 from shisad.core.providers.capabilities import ProviderCapabilities
 from shisad.core.tools.names import canonical_tool_name
@@ -90,6 +90,8 @@ async def test_m2_tool_prompt_fragment_is_injected_for_content_tool_routes() -> 
     assert "echo" in system_prompt
     assert "Echo text" in system_prompt
     assert "web.search" not in system_prompt
+    assert "do not narrate the intended tool call" in system_prompt.lower()
+    assert "for note, todo, and reminder requests" in system_prompt.lower()
 
 
 @pytest.mark.asyncio
@@ -143,3 +145,15 @@ async def test_m2_tool_prompt_fragment_is_not_injected_when_content_fallback_dis
     system_prompt = provider.messages[0][0].content
     assert "CONTENT TOOL-CALLING RUNTIME MANIFEST" not in system_prompt
     assert "TOOL CALLING IS DISABLED ON THIS ROUTE" in system_prompt
+
+
+def test_m1_trusted_conversation_repair_flags_no_tool_call_meta_commentary() -> None:
+    output = PlannerOutput(
+        assistant_response=(
+            "Hello there. No tool call is needed for this request because it is only "
+            "a greeting."
+        ),
+        actions=[],
+    )
+
+    assert Planner._needs_trusted_conversation_repair(output) is True

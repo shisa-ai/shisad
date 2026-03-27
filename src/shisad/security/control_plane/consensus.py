@@ -258,6 +258,75 @@ class ActionMonitorVoter:
         self._intent_provider = intent_provider
 
     @staticmethod
+    def _token_set(text: str) -> set[str]:
+        return {
+            token
+            for token in re.findall(r"[a-z0-9]+", text.lower())
+            if len(token) >= 3
+        }
+
+    @classmethod
+    def _arguments_match_user_text(
+        cls,
+        *,
+        user_text: str,
+        values: list[Any],
+    ) -> bool:
+        user_tokens = cls._token_set(user_text)
+        if not user_tokens:
+            return False
+        matched = False
+        for value in values:
+            raw = str(value or "").strip()
+            if not raw:
+                continue
+            candidate_tokens = cls._token_set(raw)
+            if not candidate_tokens:
+                continue
+            if candidate_tokens.issubset(user_tokens):
+                matched = True
+        return matched or not any(str(value or "").strip() for value in values)
+
+    @classmethod
+    def _deterministic_memory_write_intent_match(
+        cls,
+        *,
+        user_text: str,
+        tool_name: str,
+        action_arguments: dict[str, Any],
+    ) -> bool:
+        lowered = user_text.lower()
+        if tool_name == "note.create":
+            if "note" not in lowered and "remember" not in lowered:
+                return False
+            return cls._arguments_match_user_text(
+                user_text=user_text,
+                values=[action_arguments.get("content"), action_arguments.get("key")],
+            )
+        if tool_name == "todo.create":
+            if "todo" not in lowered and "task" not in lowered:
+                return False
+            return cls._arguments_match_user_text(
+                user_text=user_text,
+                values=[action_arguments.get("title"), action_arguments.get("details")],
+            )
+        if tool_name == "todo.complete":
+            if not any(token in lowered for token in ("complete", "done", "mark")):
+                return False
+            return cls._arguments_match_user_text(
+                user_text=user_text,
+                values=[action_arguments.get("selector")],
+            )
+        if tool_name == "reminder.create":
+            if "remind" not in lowered and "reminder" not in lowered:
+                return False
+            return cls._arguments_match_user_text(
+                user_text=user_text,
+                values=[action_arguments.get("message"), action_arguments.get("when")],
+            )
+        return False
+
+    @staticmethod
     def _build_classifier_messages(
         *,
         user_text: str,
@@ -332,6 +401,22 @@ class ActionMonitorVoter:
             action_arguments = data.metadata_payload.get("action_arguments", {})
             if not isinstance(action_arguments, dict):
                 action_arguments = {}
+            if (
+                trusted_input
+                and action.action_kind == ActionKind.MEMORY_WRITE
+                and user_text
+                and self._deterministic_memory_write_intent_match(
+                    user_text=user_text,
+                    tool_name=str(action.tool_name),
+                    action_arguments=action_arguments,
+                )
+            ):
+                return VoterDecision(
+                    voter="ActionMonitorVoter",
+                    decision=VoteKind.ALLOW,
+                    risk_tier=RiskTier.LOW,
+                    reason_codes=["action_monitor:deterministic_intent_match"],
+                )
             if self._intent_provider is None or not user_text:
                 return VoterDecision(
                     voter="ActionMonitorVoter",

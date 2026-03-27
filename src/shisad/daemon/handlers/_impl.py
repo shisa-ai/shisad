@@ -5,11 +5,13 @@ from __future__ import annotations
 import base64
 import binascii
 import hashlib
+import inspect
 import json
 import logging
 import os
+import re
 import uuid
-from collections.abc import Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from functools import lru_cache
@@ -134,22 +136,58 @@ def _should_checkpoint(trigger: str, tool: ToolDefinition | None) -> bool:
 
 
 def _optional_int(value: Any) -> int | None:
-    return int(value) if value is not None else None
+    if value in {None, ""}:
+        return None
+    return int(value)
 
 
-def _structured_web_search(handler: Any, arguments: Mapping[str, Any]) -> Mapping[str, Any]:
+def _argument_string(
+    arguments: Mapping[str, Any],
+    key: str,
+    *,
+    default: str = "",
+) -> str:
+    value = arguments.get(key, default)
+    if value is None:
+        return default
+    return str(value).strip()
+
+
+def _argument_int(
+    arguments: Mapping[str, Any],
+    key: str,
+    *,
+    default: int,
+    minimum: int | None = None,
+) -> int:
+    value = arguments.get(key, default)
+    resolved = int(default) if value in {None, ""} else int(value)
+    if minimum is not None:
+        resolved = max(int(minimum), resolved)
+    return resolved
+
+
+def _structured_web_search(
+    handler: Any,
+    arguments: Mapping[str, Any],
+    _context: StructuredToolContext | None = None,
+) -> Mapping[str, Any]:
     return dict(
         handler._web_toolkit.search(
-            query=str(arguments.get("query", "")),
-            limit=int(arguments.get("limit", 5)),
+            query=_argument_string(arguments, "query"),
+            limit=_argument_int(arguments, "limit", default=5, minimum=1),
         )
     )
 
 
-def _structured_web_fetch(handler: Any, arguments: Mapping[str, Any]) -> Mapping[str, Any]:
+def _structured_web_fetch(
+    handler: Any,
+    arguments: Mapping[str, Any],
+    _context: StructuredToolContext | None = None,
+) -> Mapping[str, Any]:
     return dict(
         handler._web_toolkit.fetch(
-            url=str(arguments.get("url", "")),
+            url=_argument_string(arguments, "url"),
             snapshot=bool(arguments.get("snapshot", False)),
             max_bytes=_optional_int(arguments.get("max_bytes")),
         )
@@ -159,79 +197,373 @@ def _structured_web_fetch(handler: Any, arguments: Mapping[str, Any]) -> Mapping
 def _structured_realitycheck_search(
     handler: Any,
     arguments: Mapping[str, Any],
+    _context: StructuredToolContext | None = None,
 ) -> Mapping[str, Any]:
     return dict(
         handler._realitycheck_toolkit.search(
-            query=str(arguments.get("query", "")),
-            limit=int(arguments.get("limit", 5)),
-            mode=str(arguments.get("mode", "auto")),
+            query=_argument_string(arguments, "query"),
+            limit=_argument_int(arguments, "limit", default=5, minimum=1),
+            mode=_argument_string(arguments, "mode", default="auto") or "auto",
         )
     )
 
 
-def _structured_realitycheck_read(handler: Any, arguments: Mapping[str, Any]) -> Mapping[str, Any]:
+def _structured_realitycheck_read(
+    handler: Any,
+    arguments: Mapping[str, Any],
+    _context: StructuredToolContext | None = None,
+) -> Mapping[str, Any]:
     return dict(
         handler._realitycheck_toolkit.read_source(
-            path=str(arguments.get("path", "")),
+            path=_argument_string(arguments, "path"),
             max_bytes=_optional_int(arguments.get("max_bytes")),
         )
     )
 
 
-def _structured_fs_list(handler: Any, arguments: Mapping[str, Any]) -> Mapping[str, Any]:
+def _structured_fs_list(
+    handler: Any,
+    arguments: Mapping[str, Any],
+    _context: StructuredToolContext | None = None,
+) -> Mapping[str, Any]:
     return dict(
         handler._fs_git_toolkit.list_dir(
-            path=str(arguments.get("path", ".")),
+            path=_argument_string(arguments, "path", default=".") or ".",
             recursive=bool(arguments.get("recursive", False)),
-            limit=int(arguments.get("limit", 200)),
+            limit=_argument_int(arguments, "limit", default=200, minimum=1),
         )
     )
 
 
-def _structured_fs_read(handler: Any, arguments: Mapping[str, Any]) -> Mapping[str, Any]:
+def _structured_fs_read(
+    handler: Any,
+    arguments: Mapping[str, Any],
+    _context: StructuredToolContext | None = None,
+) -> Mapping[str, Any]:
     return dict(
         handler._fs_git_toolkit.read_file(
-            path=str(arguments.get("path", "")),
+            path=_argument_string(arguments, "path"),
             max_bytes=_optional_int(arguments.get("max_bytes")),
         )
     )
 
 
-def _structured_fs_write(handler: Any, arguments: Mapping[str, Any]) -> Mapping[str, Any]:
+def _structured_fs_write(
+    handler: Any,
+    arguments: Mapping[str, Any],
+    _context: StructuredToolContext | None = None,
+) -> Mapping[str, Any]:
     return dict(
         handler._fs_git_toolkit.write_file(
-            path=str(arguments.get("path", "")),
-            content=str(arguments.get("content", "")),
+            path=_argument_string(arguments, "path"),
+            content=_argument_string(arguments, "content"),
             confirm=bool(arguments.get("confirm", False)),
         )
     )
 
 
-def _structured_git_status(handler: Any, arguments: Mapping[str, Any]) -> Mapping[str, Any]:
+def _structured_git_status(
+    handler: Any,
+    arguments: Mapping[str, Any],
+    _context: StructuredToolContext | None = None,
+) -> Mapping[str, Any]:
     return dict(
         handler._fs_git_toolkit.git_status(
-            repo_path=str(arguments.get("repo_path", ".")),
+            repo_path=_argument_string(arguments, "repo_path", default=".") or ".",
         )
     )
 
 
-def _structured_git_diff(handler: Any, arguments: Mapping[str, Any]) -> Mapping[str, Any]:
+def _structured_git_diff(
+    handler: Any,
+    arguments: Mapping[str, Any],
+    _context: StructuredToolContext | None = None,
+) -> Mapping[str, Any]:
     return dict(
         handler._fs_git_toolkit.git_diff(
-            repo_path=str(arguments.get("repo_path", ".")),
-            ref=str(arguments.get("ref", "")),
-            max_lines=int(arguments.get("max_lines", 400)),
+            repo_path=_argument_string(arguments, "repo_path", default=".") or ".",
+            ref=_argument_string(arguments, "ref"),
+            max_lines=_argument_int(arguments, "max_lines", default=400, minimum=1),
         )
     )
 
 
-def _structured_git_log(handler: Any, arguments: Mapping[str, Any]) -> Mapping[str, Any]:
+def _structured_git_log(
+    handler: Any,
+    arguments: Mapping[str, Any],
+    _context: StructuredToolContext | None = None,
+) -> Mapping[str, Any]:
     return dict(
         handler._fs_git_toolkit.git_log(
-            repo_path=str(arguments.get("repo_path", ".")),
-            limit=int(arguments.get("limit", 20)),
+            repo_path=_argument_string(arguments, "repo_path", default=".") or ".",
+            limit=_argument_int(arguments, "limit", default=20, minimum=1),
         )
     )
+
+
+_REMINDER_IN_RE = re.compile(
+    r"^in (?P<value>\d+) (?P<unit>seconds?|minutes?|hours?)$",
+    flags=re.IGNORECASE,
+)
+_REMINDER_AT_RE = re.compile(
+    r"^at (?P<hour>\d{1,2})(?::(?P<minute>\d{2}))?\s*(?P<ampm>am|pm)?$",
+    flags=re.IGNORECASE,
+)
+
+
+@dataclass(frozen=True, slots=True)
+class StructuredToolContext:
+    session_id: SessionId
+    user_id: UserId
+    workspace_id: WorkspaceId
+    session: Session
+
+
+StructuredPayloadBuilder = Callable[
+    [Any, Mapping[str, Any], StructuredToolContext],
+    Mapping[str, Any] | Awaitable[Mapping[str, Any]],
+]
+
+
+def _slugify_memory_key(prefix: str, text: str, *, max_words: int = 6) -> str:
+    words = [token for token in re.findall(r"[a-z0-9]+", text.lower()) if token]
+    suffix = "-".join(words[:max_words]) if words else "item"
+    return f"{prefix}:{suffix}"
+
+
+def _wrap_structured_payload(payload: Mapping[str, Any], *, ok: bool = True) -> dict[str, Any]:
+    structured = dict(payload)
+    structured["ok"] = ok
+    return structured
+
+
+def _resolve_session_delivery_target(
+    session: Session,
+    *,
+    session_id: SessionId,
+) -> dict[str, str]:
+    raw_target = session.metadata.get("delivery_target")
+    if isinstance(raw_target, dict):
+        channel = str(raw_target.get("channel", "")).strip()
+        recipient = str(raw_target.get("recipient", "")).strip()
+        if channel and recipient:
+            return {
+                key: str(value)
+                for key, value in raw_target.items()
+                if str(key).strip() and str(value).strip()
+            }
+    return {"channel": "session", "recipient": str(session_id)}
+
+
+def _parse_reminder_delay_seconds(when: str, *, now: datetime) -> int:
+    normalized = when.strip()
+    if not normalized:
+        raise ValueError("reminder_when_required")
+    relative = _REMINDER_IN_RE.match(normalized)
+    if relative is not None:
+        value = max(1, int(relative.group("value")))
+        unit = relative.group("unit").lower()
+        multiplier = 1
+        if unit.startswith("minute"):
+            multiplier = 60
+        elif unit.startswith("hour"):
+            multiplier = 3600
+        return max(1, value * multiplier)
+
+    at_match = _REMINDER_AT_RE.match(normalized)
+    if at_match is not None:
+        hour = int(at_match.group("hour"))
+        minute = int(at_match.group("minute") or 0)
+        ampm = str(at_match.group("ampm") or "").lower()
+        if ampm:
+            if hour < 1 or hour > 12:
+                raise ValueError("reminder_time_invalid")
+            hour %= 12
+            if ampm == "pm":
+                hour += 12
+        elif hour > 23:
+            raise ValueError("reminder_time_invalid")
+        if minute > 59:
+            raise ValueError("reminder_time_invalid")
+        target = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        if target <= now:
+            target += timedelta(days=1)
+        return max(1, int((target - now).total_seconds()))
+
+    iso_candidate = normalized[:-1] + "+00:00" if normalized.endswith("Z") else normalized
+    try:
+        parsed = datetime.fromisoformat(iso_candidate)
+    except ValueError as exc:  # pragma: no cover - exercised through reminder behavior tests
+        raise ValueError("reminder_time_unsupported") from exc
+    parsed = (
+        parsed.replace(tzinfo=UTC)
+        if parsed.tzinfo is None
+        else parsed.astimezone(UTC)
+    )
+    return max(1, int((parsed - now).total_seconds()))
+
+
+async def _structured_note_create(
+    handler: Any,
+    arguments: Mapping[str, Any],
+    context: StructuredToolContext,
+) -> Mapping[str, Any]:
+    content = _argument_string(arguments, "content")
+    if not content:
+        return {"ok": False, "error": "note_content_required"}
+    payload = await handler.do_note_create(
+        {
+            "key": _argument_string(arguments, "key")
+            or _slugify_memory_key("note", content),
+            "content": content,
+            "origin": "user",
+            "source_id": str(context.session_id),
+            "user_confirmed": True,
+        }
+    )
+    return _wrap_structured_payload(payload, ok=str(payload.get("kind", "")) == "allow")
+
+
+async def _structured_note_list(
+    handler: Any,
+    arguments: Mapping[str, Any],
+    _context: StructuredToolContext,
+) -> Mapping[str, Any]:
+    payload = await handler.do_note_list(
+        {"limit": _argument_int(arguments, "limit", default=20, minimum=1)}
+    )
+    return _wrap_structured_payload(payload)
+
+
+async def _structured_note_search(
+    handler: Any,
+    arguments: Mapping[str, Any],
+    _context: StructuredToolContext,
+) -> Mapping[str, Any]:
+    query = _argument_string(arguments, "query")
+    if not query:
+        return {
+            "ok": False,
+            "error": "note_search_query_required",
+            "query": "",
+            "entries": [],
+            "count": 0,
+        }
+    payload = await handler.do_note_search(
+        {
+            "query": query,
+            "limit": _argument_int(arguments, "limit", default=20, minimum=1),
+        }
+    )
+    return _wrap_structured_payload(payload)
+
+
+async def _structured_todo_create(
+    handler: Any,
+    arguments: Mapping[str, Any],
+    context: StructuredToolContext,
+) -> Mapping[str, Any]:
+    title = _argument_string(arguments, "title")
+    if not title:
+        return {"ok": False, "error": "todo_title_required"}
+    payload = await handler.do_todo_create(
+        {
+            "title": title,
+            "details": _argument_string(arguments, "details"),
+            "due_date": _argument_string(arguments, "due_date"),
+            "origin": "user",
+            "source_id": str(context.session_id),
+            "user_confirmed": True,
+        }
+    )
+    return _wrap_structured_payload(payload, ok=str(payload.get("kind", "")) == "allow")
+
+
+async def _structured_todo_list(
+    handler: Any,
+    arguments: Mapping[str, Any],
+    _context: StructuredToolContext,
+) -> Mapping[str, Any]:
+    payload = await handler.do_todo_list(
+        {"limit": _argument_int(arguments, "limit", default=20, minimum=1)}
+    )
+    return _wrap_structured_payload(payload)
+
+
+async def _structured_todo_complete(
+    handler: Any,
+    arguments: Mapping[str, Any],
+    _context: StructuredToolContext,
+) -> Mapping[str, Any]:
+    selector = _argument_string(arguments, "selector")
+    if not selector:
+        return {
+            "ok": False,
+            "completed": False,
+            "entry_id": "",
+            "entry": None,
+            "reason": "todo_selector_required",
+            "matches": [],
+        }
+    payload = await handler.do_todo_complete({"selector": selector})
+    return _wrap_structured_payload(payload, ok=bool(payload.get("completed", False)))
+
+
+async def _structured_reminder_create(
+    handler: Any,
+    arguments: Mapping[str, Any],
+    context: StructuredToolContext,
+) -> Mapping[str, Any]:
+    message = _argument_string(arguments, "message")
+    when = _argument_string(arguments, "when")
+    if not message:
+        return {"ok": False, "error": "reminder_message_required"}
+    try:
+        delay_seconds = _parse_reminder_delay_seconds(when, now=datetime.now(UTC))
+    except ValueError as exc:
+        return {"ok": False, "error": str(exc)}
+    delivery_target = _resolve_session_delivery_target(
+        context.session,
+        session_id=context.session_id,
+    )
+    recipient = str(delivery_target.get("recipient", "")).strip()
+    task_payload = await handler.do_task_create(
+        {
+            "schedule": {"kind": "interval", "expression": f"{delay_seconds}s"},
+            "name": _argument_string(arguments, "name")
+            or _slugify_memory_key("reminder", message),
+            "goal": f"Reminder: {message}",
+            "capability_snapshot": [Capability.MESSAGE_SEND.value],
+            "policy_snapshot_ref": "planner:reminder.create",
+            "created_by": str(context.user_id),
+            "workspace_id": str(context.workspace_id),
+            "allowed_recipients": [recipient] if recipient else [],
+            "allowed_domains": [],
+            "delivery_target": delivery_target,
+            "max_runs": 1,
+        }
+    )
+    return {"ok": True, "task": task_payload}
+
+
+async def _structured_reminder_list(
+    handler: Any,
+    arguments: Mapping[str, Any],
+    context: StructuredToolContext,
+) -> Mapping[str, Any]:
+    limit = _argument_int(arguments, "limit", default=20, minimum=1)
+    rows: list[dict[str, Any]] = []
+    for task in handler._scheduler.list_tasks():
+        if str(getattr(task, "created_by", "")).strip() != str(context.user_id).strip():
+            continue
+        if str(getattr(task, "workspace_id", "")).strip() != str(context.workspace_id).strip():
+            continue
+        if not str(getattr(task, "goal", "")).startswith("Reminder: "):
+            continue
+        rows.append(task.model_dump(mode="json"))
+        if len(rows) >= limit:
+            break
+    return {"ok": True, "tasks": rows, "count": len(rows)}
 
 @dataclass(slots=True)
 class PendingAction:
@@ -1520,9 +1852,118 @@ class HandlerImplementation(
                 workspace_hint=str(arguments.get("workspace_hint", "")).strip(),
                 thread_id=str(arguments.get("thread_id", "")).strip(),
             )
+            message_text = str(arguments.get("message", ""))
+            if target.channel == "session":
+                reason = ""
+                target_session = (
+                    self._session_manager.get(SessionId(target.recipient))
+                    if target.recipient
+                    else None
+                )
+                if approval_actor != "scheduler":
+                    reason = "session_delivery_requires_scheduler_actor"
+                elif target_session is None:
+                    reason = "session_delivery_session_not_found"
+                if reason:
+                    delivery_payload = {
+                        "attempted": True,
+                        "sent": False,
+                        "reason": reason,
+                        "target": {
+                            "channel": target.channel,
+                            "recipient": target.recipient,
+                            "workspace_hint": target.workspace_hint,
+                            "thread_id": target.thread_id,
+                        },
+                    }
+                    await self._event_bus.publish(
+                        ToolRejected(
+                            session_id=sid,
+                            actor="tool_runtime",
+                            tool_name=tool_name,
+                            reason=reason,
+                        )
+                    )
+                    await self._event_bus.publish(
+                        ToolExecuted(
+                            session_id=sid,
+                            actor="tool_runtime",
+                            tool_name=tool_name,
+                            success=False,
+                        )
+                    )
+                    self._control_plane.record_execution(action=executed_action, success=False)
+                    return ApprovedToolExecutionResult(
+                        success=False,
+                        checkpoint_id=checkpoint_id,
+                        tool_output=ToolOutputRecord(
+                            tool_name=str(tool_name),
+                            content=self._sanitize_tool_output_text(
+                                json.dumps(delivery_payload, ensure_ascii=True)
+                            ),
+                            success=False,
+                            taint_labels=set(),
+                        ),
+                    )
+
+                transcript_metadata: dict[str, Any] = {
+                    "channel": "session",
+                    "timestamp_utc": datetime.now(UTC).isoformat(),
+                    "session_mode": (target_session or session).mode.value,
+                    "delivered_by": approval_actor,
+                    "delivery_target": {
+                        "channel": target.channel,
+                        "recipient": target.recipient,
+                        "workspace_hint": target.workspace_hint,
+                        "thread_id": target.thread_id,
+                    },
+                }
+                task_id = str(executed_action.origin.task_id).strip()
+                if task_id:
+                    transcript_metadata["task_id"] = task_id
+                self._transcript_store.append(
+                    SessionId(target.recipient),
+                    role="assistant",
+                    content=message_text,
+                    taint_labels=set(),
+                    metadata=transcript_metadata,
+                )
+                delivery_payload = {
+                    "attempted": True,
+                    "sent": True,
+                    "reason": "session_transcript_appended",
+                    "target": {
+                        "channel": target.channel,
+                        "recipient": target.recipient,
+                        "workspace_hint": target.workspace_hint,
+                        "thread_id": target.thread_id,
+                    },
+                }
+                await self._event_bus.publish(
+                    ToolExecuted(
+                        session_id=sid,
+                        actor="tool_runtime",
+                        tool_name=tool_name,
+                        success=True,
+                    )
+                )
+                self._control_plane.record_execution(action=executed_action, success=True)
+                return ApprovedToolExecutionResult(
+                    success=True,
+                    checkpoint_id=checkpoint_id,
+                    tool_output=ToolOutputRecord(
+                        tool_name=str(tool_name),
+                        content=self._sanitize_tool_output_text(
+                            json.dumps(delivery_payload, ensure_ascii=True)
+                        ),
+                        success=True,
+                        taint_labels=set(),
+                    ),
+                )
+
             delivery_result = await self._delivery.send(
                 target=target,
-                message=str(arguments.get("message", "")),
+                message=message_text,
             )
             as_dict = getattr(delivery_result, "as_dict", None)
             if callable(as_dict):
@@ -1606,7 +2047,34 @@ class HandlerImplementation(
         )
         if structured_handler is not None:
             payload_builder, default_error = structured_handler
-            structured_payload = payload_builder(self, arguments)
+            structured_context = StructuredToolContext(
+                session_id=sid,
+                user_id=user_id,
+                workspace_id=session.workspace_id,
+                session=session,
+            )
+            try:
+                structured_payload_result = payload_builder(
+                    self,
+                    arguments,
+                    structured_context,
+                )
+                if inspect.isawaitable(structured_payload_result):
+                    structured_payload = await structured_payload_result
+                else:
+                    structured_payload = structured_payload_result
+                if not isinstance(structured_payload, Mapping):
+                    raise TypeError("structured tool payload must be a mapping")
+            except Exception as exc:
+                logger.exception(
+                    "Structured tool payload build failed: tool=%s error=%s",
+                    tool_name,
+                    exc,
+                )
+                structured_payload = {
+                    "ok": False,
+                    "error": str(exc).strip() or default_error,
+                }
             return await _execute_structured_payload_tool(
                 structured_payload,
                 default_error=default_error,
@@ -1687,7 +2155,7 @@ class HandlerImplementation(
     @lru_cache(maxsize=1)
     def _structured_tool_registry() -> dict[
         str,
-        tuple[Callable[[Any, Mapping[str, Any]], Mapping[str, Any]], str],
+        tuple[StructuredPayloadBuilder, str],
     ]:
         return {
             "web.search": (_structured_web_search, "web_search_failed"),
@@ -1703,6 +2171,14 @@ class HandlerImplementation(
             "git.status": (_structured_git_status, "git_status_failed"),
             "git.diff": (_structured_git_diff, "git_diff_failed"),
             "git.log": (_structured_git_log, "git_log_failed"),
+            "note.create": (_structured_note_create, "note_create_failed"),
+            "note.list": (_structured_note_list, "note_list_failed"),
+            "note.search": (_structured_note_search, "note_search_failed"),
+            "todo.create": (_structured_todo_create, "todo_create_failed"),
+            "todo.list": (_structured_todo_list, "todo_list_failed"),
+            "todo.complete": (_structured_todo_complete, "todo_complete_failed"),
+            "reminder.create": (_structured_reminder_create, "reminder_create_failed"),
+            "reminder.list": (_structured_reminder_list, "reminder_list_failed"),
         }
 
     def _sanitize_tool_output_text(self, raw: str) -> str:

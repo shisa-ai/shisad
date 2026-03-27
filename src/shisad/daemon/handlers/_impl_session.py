@@ -48,7 +48,13 @@ from shisad.core.events import (
     ToolProposed,
     ToolRejected,
 )
-from shisad.core.planner import PlannerOutput, PlannerOutputError, PlannerResult
+from shisad.core.planner import (
+    ActionProposal,
+    EvaluatedProposal,
+    PlannerOutput,
+    PlannerOutputError,
+    PlannerResult,
+)
 from shisad.core.session import Session
 from shisad.core.tools.names import canonical_tool_name, canonical_tool_name_typed
 from shisad.core.tools.schema import (
@@ -698,6 +704,185 @@ def _build_planner_tool_context(
         )
     lines.append("If no tool is needed, respond conversationally without calling tools.")
     return "\n".join(lines)
+
+
+def _normalize_explicit_memory_intent_text(text: str) -> str:
+    return re.sub(r"\s+", " ", str(text or "")).strip()
+
+
+def _is_plain_greeting(user_text: str) -> bool:
+    normalized = _normalize_explicit_memory_intent_text(user_text).lower().strip()
+    normalized = normalized.rstrip("!?.")
+    return normalized in {"hello", "hello there", "hi", "hi there", "hey", "hey there"}
+
+
+def _rewrite_plain_greeting_planner_result(
+    *,
+    user_text: str,
+    planner_result: PlannerResult,
+) -> PlannerResult:
+    if not _is_plain_greeting(user_text):
+        return planner_result
+    return PlannerResult(
+        output=PlannerOutput(
+            assistant_response="Hello. How can I help?",
+            actions=[],
+        ),
+        evaluated=[],
+        attempts=planner_result.attempts,
+        provider_response=planner_result.provider_response,
+        messages_sent=planner_result.messages_sent,
+    )
+
+
+def _build_explicit_memory_intent_proposal(user_text: str) -> ActionProposal | None:
+    normalized = _normalize_explicit_memory_intent_text(user_text)
+    if not normalized:
+        return None
+
+    note_match = re.match(r"^(?:add|save) (?:a )?note:\s*(.+)$", normalized, flags=re.IGNORECASE)
+    if note_match is None:
+        note_match = re.match(r"^remember(?: that)?\s+(.+)$", normalized, flags=re.IGNORECASE)
+    if note_match is not None:
+        content = note_match.group(1).strip()
+        if content:
+            return ActionProposal(
+                action_id="explicit-note-create",
+                tool_name=ToolName("note.create"),
+                arguments={"content": content},
+                reasoning="Execute the user's explicit note-creation request.",
+                data_sources=["user_text:explicit_memory_intent"],
+            )
+
+    note_search_match = re.match(
+        r"^search (?:my )?notes for\s+(.+)$",
+        normalized,
+        flags=re.IGNORECASE,
+    )
+    if note_search_match is not None:
+        query = note_search_match.group(1).strip()
+        if query:
+            return ActionProposal(
+                action_id="explicit-note-search",
+                tool_name=ToolName("note.search"),
+                arguments={"query": query},
+                reasoning="Execute the user's explicit note-search request.",
+                data_sources=["user_text:explicit_memory_intent"],
+            )
+
+    if re.fullmatch(r"(?:list|show) (?:my )?notes", normalized, flags=re.IGNORECASE):
+        return ActionProposal(
+            action_id="explicit-note-list",
+            tool_name=ToolName("note.list"),
+            arguments={},
+            reasoning="Execute the user's explicit note-list request.",
+            data_sources=["user_text:explicit_memory_intent"],
+        )
+
+    todo_create_match = re.match(
+        r"^(?:add|create) (?:a )?(?:todo|task):\s*(.+)$",
+        normalized,
+        flags=re.IGNORECASE,
+    )
+    if todo_create_match is not None:
+        title = todo_create_match.group(1).strip()
+        if title:
+            return ActionProposal(
+                action_id="explicit-todo-create",
+                tool_name=ToolName("todo.create"),
+                arguments={"title": title},
+                reasoning="Execute the user's explicit todo-creation request.",
+                data_sources=["user_text:explicit_memory_intent"],
+            )
+
+    if re.fullmatch(r"(?:list|show) (?:my )?(?:todos|tasks)", normalized, flags=re.IGNORECASE):
+        return ActionProposal(
+            action_id="explicit-todo-list",
+            tool_name=ToolName("todo.list"),
+            arguments={},
+            reasoning="Execute the user's explicit todo-list request.",
+            data_sources=["user_text:explicit_memory_intent"],
+        )
+
+    todo_complete_match = re.match(
+        r"^(?:mark|complete|finish)\s+(?:the\s+)?(.+?)(?:\s+todo)?\s+(?:complete|done)$",
+        normalized,
+        flags=re.IGNORECASE,
+    )
+    if todo_complete_match is not None:
+        selector = todo_complete_match.group(1).strip()
+        if selector:
+            return ActionProposal(
+                action_id="explicit-todo-complete",
+                tool_name=ToolName("todo.complete"),
+                arguments={"selector": selector},
+                reasoning="Execute the user's explicit todo-completion request.",
+                data_sources=["user_text:explicit_memory_intent"],
+            )
+
+    reminder_match = re.match(
+        r"^remind me(?: to)?\s+(.+?)\s+((?:in|at|on)\s+.+)$",
+        normalized,
+        flags=re.IGNORECASE,
+    )
+    if reminder_match is not None:
+        message = reminder_match.group(1).strip()
+        when = reminder_match.group(2).strip()
+        if message and when:
+            return ActionProposal(
+                action_id="explicit-reminder-create",
+                tool_name=ToolName("reminder.create"),
+                arguments={"message": message, "when": when},
+                reasoning="Execute the user's explicit reminder-creation request.",
+                data_sources=["user_text:explicit_memory_intent"],
+            )
+
+    if re.fullmatch(r"(?:list|show) (?:my )?reminders", normalized, flags=re.IGNORECASE):
+        return ActionProposal(
+            action_id="explicit-reminder-list",
+            tool_name=ToolName("reminder.list"),
+            arguments={},
+            reasoning="Execute the user's explicit reminder-list request.",
+            data_sources=["user_text:explicit_memory_intent"],
+        )
+
+    return None
+
+
+def _rewrite_explicit_memory_intent_planner_result(
+    *,
+    user_text: str,
+    planner_result: PlannerResult,
+    pep: Any,
+    context: PolicyContext,
+) -> PlannerResult:
+    explicit_proposal = _build_explicit_memory_intent_proposal(user_text)
+    if explicit_proposal is None:
+        return planner_result
+
+    if (
+        len(planner_result.evaluated) == 1
+        and planner_result.evaluated[0].proposal.tool_name == explicit_proposal.tool_name
+        and planner_result.evaluated[0].proposal.arguments == explicit_proposal.arguments
+        and planner_result.output.assistant_response == ""
+    ):
+        return planner_result
+
+    evaluated = EvaluatedProposal(
+        proposal=explicit_proposal,
+        decision=pep.evaluate(
+            explicit_proposal.tool_name,
+            explicit_proposal.arguments,
+            context,
+        ),
+    )
+    return PlannerResult(
+        output=PlannerOutput(assistant_response="", actions=[explicit_proposal]),
+        evaluated=[evaluated],
+        attempts=planner_result.attempts,
+        provider_response=planner_result.provider_response,
+        messages_sent=planner_result.messages_sent,
+    )
 
 
 def _short_hash(value: str) -> str:
@@ -2412,6 +2597,17 @@ class SessionImplMixin(HandlerMixinBase):
                 provider_response=None,
                 messages_sent=(),
             )
+
+        planner_result = _rewrite_plain_greeting_planner_result(
+            user_text=validated.content,
+            planner_result=planner_result,
+        )
+        planner_result = _rewrite_explicit_memory_intent_planner_result(
+            user_text=validated.content,
+            planner_result=planner_result,
+            pep=self._pep,
+            context=planner_context.context,
+        )
 
         delegation_advisory = should_delegate_to_task(
             proposals=[item.proposal for item in planner_result.evaluated]

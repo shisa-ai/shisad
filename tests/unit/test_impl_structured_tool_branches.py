@@ -10,7 +10,13 @@ import pytest
 from shisad.core.events import ToolApproved, ToolExecuted, ToolRejected
 from shisad.core.session import Session, SessionManager
 from shisad.core.types import SessionId, TaintLabel, ToolName, UserId, WorkspaceId
-from shisad.daemon.handlers._impl import HandlerImplementation
+from shisad.daemon.handlers._impl import (
+    HandlerImplementation,
+    StructuredToolContext,
+    _structured_note_create,
+    _structured_reminder_create,
+    _structured_reminder_list,
+)
 from shisad.security.control_plane.schema import Origin
 
 
@@ -67,6 +73,40 @@ class _DeliveryStub:
         return SimpleNamespace(sent=self._sent, reason=self._reason, target=target)
 
 
+class _TranscriptStoreStub:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, Any]] = []
+
+    def append(
+        self,
+        session_id: SessionId,
+        *,
+        role: str,
+        content: str,
+        taint_labels: set[TaintLabel] | None = None,
+        metadata: dict[str, Any] | None = None,
+        timestamp: Any = None,
+    ) -> None:
+        self.calls.append(
+            {
+                "session_id": str(session_id),
+                "role": role,
+                "content": content,
+                "taint_labels": set(taint_labels or set()),
+                "metadata": dict(metadata or {}),
+                "timestamp": timestamp,
+            }
+        )
+
+
+class _SchedulerStub:
+    def __init__(self) -> None:
+        self.tasks: list[Any] = []
+
+    def list_tasks(self) -> list[Any]:
+        return list(self.tasks)
+
+
 class _StructuredBranchHarness:
     def __init__(
         self,
@@ -91,6 +131,8 @@ class _StructuredBranchHarness:
         self._web_toolkit = _WebToolkitStub(web_payload)
         self._fs_git_toolkit = _FsGitToolkitStub(git_status_payload)
         self._delivery = _DeliveryStub(sent=delivery_sent, reason=delivery_reason)
+        self._transcript_store = _TranscriptStoreStub()
+        self._scheduler = _SchedulerStub()
 
     @property
     def session_id(self) -> SessionId:
@@ -133,7 +175,100 @@ def test_m1_rf014_structured_tool_registry_lists_expected_handlers() -> None:
         "git.status",
         "git.diff",
         "git.log",
+        "note.create",
+        "note.list",
+        "note.search",
+        "todo.create",
+        "todo.list",
+        "todo.complete",
+        "reminder.create",
+        "reminder.list",
     }.issubset(set(registry))
+
+
+@pytest.mark.asyncio
+async def test_m1_structured_note_create_tolerates_null_optional_key() -> None:
+    captured: dict[str, Any] = {}
+
+    class _Handler:
+        async def do_note_create(self, payload: dict[str, Any]) -> dict[str, Any]:
+            captured.update(payload)
+            return {"kind": "allow"}
+
+    context = StructuredToolContext(
+        session_id=SessionId("s-1"),
+        user_id=UserId("user-1"),
+        workspace_id=WorkspaceId("ws-1"),
+        session=Session(
+            id=SessionId("s-1"),
+            channel="cli",
+            user_id=UserId("user-1"),
+            workspace_id=WorkspaceId("ws-1"),
+        ),
+    )
+
+    payload = await _structured_note_create(
+        _Handler(),
+        {"content": "remember to buy groceries", "key": None},
+        context,
+    )
+
+    assert payload["ok"] is True
+    assert captured["key"] == "note:remember-to-buy-groceries"
+
+
+@pytest.mark.asyncio
+async def test_m1_structured_reminder_create_tolerates_null_optional_name() -> None:
+    captured: dict[str, Any] = {}
+
+    class _Handler:
+        async def do_task_create(self, payload: dict[str, Any]) -> dict[str, Any]:
+            captured.update(payload)
+            return {"id": "task-1", "name": payload["name"]}
+
+    session = Session(
+        id=SessionId("s-1"),
+        channel="cli",
+        user_id=UserId("user-1"),
+        workspace_id=WorkspaceId("ws-1"),
+    )
+    context = StructuredToolContext(
+        session_id=SessionId("s-1"),
+        user_id=UserId("user-1"),
+        workspace_id=WorkspaceId("ws-1"),
+        session=session,
+    )
+
+    payload = await _structured_reminder_create(
+        _Handler(),
+        {"message": "check email", "when": "in 5 seconds", "name": None},
+        context,
+    )
+
+    assert payload["ok"] is True
+    assert captured["name"] == "reminder:check-email"
+    assert captured["max_runs"] == 1
+
+
+@pytest.mark.asyncio
+async def test_m1_structured_reminder_list_tolerates_null_limit() -> None:
+    session = Session(
+        id=SessionId("s-1"),
+        channel="cli",
+        user_id=UserId("user-1"),
+        workspace_id=WorkspaceId("ws-1"),
+    )
+    context = StructuredToolContext(
+        session_id=SessionId("s-1"),
+        user_id=UserId("user-1"),
+        workspace_id=WorkspaceId("ws-1"),
+        session=session,
+    )
+    handler = SimpleNamespace(_scheduler=_SchedulerStub())
+
+    payload = await _structured_reminder_list(handler, {"limit": None}, context)
+
+    assert payload == {"ok": True, "tasks": [], "count": 0}
 
 
 @pytest.mark.asyncio
@@ -237,3 +372,68 @@ async def test_g3_impl_message_send_branch_uses_delivery_service_and_records_suc
         isinstance(event, ToolExecuted) and event.success
         for event in harness._event_bus.events
     )
+
+
+@pytest.mark.asyncio
+async def test_m1_message_send_session_branch_appends_transcript_for_scheduler_delivery() -> None:
+    harness = _StructuredBranchHarness(
+        web_payload={"ok": True, "results": []},
+        git_status_payload={"ok": True, "status": "clean"},
+        delivery_sent=True,
+    )
+    result = await HandlerImplementation._execute_approved_action(
+        harness,  # type: ignore[arg-type]
+        sid=harness.session_id,
+        user_id=UserId("user-1"),
+        tool_name=ToolName("message.send"),
+        arguments={
+            "channel": "session",
+            "recipient": str(harness.session_id),
+            "message": "Reminder: standup",
+        },
+        capabilities=set(),
+        approval_actor="scheduler",
+    )
+
+    assert result.success is True
+    assert result.tool_output is not None
+    payload = result.tool_output.content
+    assert '"sent": true' in payload
+    assert harness._delivery.calls == []
+    assert len(harness._transcript_store.calls) == 1
+    appended = harness._transcript_store.calls[0]
+    assert appended["session_id"] == str(harness.session_id)
+    assert appended["role"] == "assistant"
+    assert appended["content"] == "Reminder: standup"
+    assert appended["metadata"]["channel"] == "session"
+    assert appended["metadata"]["delivered_by"] == "scheduler"
+    assert harness._control_plane.results == [True]
+
+
+@pytest.mark.asyncio
+async def test_m1_message_send_session_branch_rejects_non_scheduler_actor() -> None:
+    harness = _StructuredBranchHarness(
+        web_payload={"ok": True, "results": []},
+        git_status_payload={"ok": True, "status": "clean"},
+    )
+    result = await HandlerImplementation._execute_approved_action(
+        harness,  # type: ignore[arg-type]
+        sid=harness.session_id,
+        user_id=UserId("user-1"),
+        tool_name=ToolName("message.send"),
+        arguments={
+            "channel": "session",
+            "recipient": str(harness.session_id),
+            "message": "Reminder: standup",
+        },
+        capabilities=set(),
+        approval_actor="planner",
+    )
+
+    assert result.success is False
+    assert result.tool_output is not None
+    assert "session_delivery_requires_scheduler_actor" in result.tool_output.content
+    assert harness._delivery.calls == []
+    assert harness._transcript_store.calls == []
+    assert harness._control_plane.results == [False]
+    assert any(isinstance(event, ToolRejected) for event in harness._event_bus.events)
