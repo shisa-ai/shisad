@@ -136,6 +136,7 @@ _COMMAND_CONTEXT_STATUS_KEY = "command_context"
 _COMMAND_CONTEXT_RECOVERY_CHECKPOINT_KEY = "command_context_recovery_checkpoint_id"
 _COMMAND_CONTEXT_REASON_KEY = "command_context_reason"
 _TASK_REPORTED_PATH_MAX_CHARS = 512
+_EVIDENCE_CONTENT_KEYS: set[str] = {"content", "text", "body", "html"}
 _IN_BAND_READ_ONLY_ACTION_KINDS: set[ActionKind] = {
     ActionKind.FS_READ,
     ActionKind.FS_LIST,
@@ -1724,6 +1725,68 @@ def _wrap_serialized_tool_outputs_with_evidence(
     evidence_store: EvidenceStore,
     firewall: Any,
 ) -> list[str]:
+    """Mutate serialized tool payloads in place, replacing tainted content fields with stubs."""
+
+    def _storage_unavailable_stub(*, source: str, byte_size: int) -> str:
+        summary = f"Content from {source}, {byte_size} bytes"
+        taint_value = ",".join(sorted(label.upper() for label in taint_labels)) or "NONE"
+        return (
+            f'[EVIDENCE unavailable source={source} taint={taint_value} size={byte_size} '
+            f'summary="{summary}" Evidence storage unavailable; inspect tool_outputs for the '
+            "full content in this turn.]"
+        )
+
+    def _wrap_payload_value(payload_value: Any, *, root_payload: Mapping[str, Any]) -> None:
+        if isinstance(payload_value, dict):
+            for key, value in payload_value.items():
+                if (
+                    key in _EVIDENCE_CONTENT_KEYS
+                    and isinstance(value, str)
+                    and value.strip()
+                ):
+                    byte_size = len(value.encode("utf-8"))
+                    source = _tool_output_evidence_source(tool_name, root_payload)
+                    summary = _generate_safe_summary(
+                        value,
+                        source=source,
+                        byte_size=byte_size,
+                        firewall=firewall,
+                    )
+                    try:
+                        ref = evidence_store.store(
+                            session_id,
+                            value,
+                            taint_labels={TaintLabel(label) for label in taint_labels},
+                            source=source,
+                            summary=summary,
+                        )
+                    except OSError:
+                        logger.warning(
+                            (
+                                "Evidence store write failed for tool=%s source=%s; "
+                                "degrading to unavailable stub"
+                            ),
+                            tool_name,
+                            source,
+                            exc_info=True,
+                        )
+                        payload_value[key] = _storage_unavailable_stub(
+                            source=source,
+                            byte_size=byte_size,
+                        )
+                        continue
+                    payload_value[key] = format_evidence_stub(ref)
+                    if ref.ref_id not in evidence_ref_ids:
+                        evidence_ref_ids.append(ref.ref_id)
+                    continue
+                if isinstance(value, (dict, list)):
+                    _wrap_payload_value(value, root_payload=root_payload)
+            return
+        if isinstance(payload_value, list):
+            for item in payload_value:
+                if isinstance(item, (dict, list)):
+                    _wrap_payload_value(item, root_payload=root_payload)
+
     evidence_ref_ids: list[str] = []
     for record in records:
         tool_name = str(record.get("tool_name", "")).strip().lower()
@@ -1739,30 +1802,7 @@ def _wrap_serialized_tool_outputs_with_evidence(
         payload = record.get("payload")
         if not isinstance(payload, dict):
             continue
-        for key in ("content", "text"):
-            candidate = payload.get(key)
-            if not isinstance(candidate, str):
-                continue
-            byte_size = len(candidate.encode("utf-8"))
-            if byte_size <= 256:
-                continue
-            source = _tool_output_evidence_source(tool_name, payload)
-            summary = _generate_safe_summary(
-                candidate,
-                source=source,
-                byte_size=byte_size,
-                firewall=firewall,
-            )
-            ref = evidence_store.store(
-                session_id,
-                candidate,
-                taint_labels={TaintLabel(label) for label in taint_labels},
-                source=source,
-                summary=summary,
-            )
-            payload[key] = format_evidence_stub(ref)
-            if ref.ref_id not in evidence_ref_ids:
-                evidence_ref_ids.append(ref.ref_id)
+        _wrap_payload_value(payload, root_payload=payload)
     return evidence_ref_ids
 
 

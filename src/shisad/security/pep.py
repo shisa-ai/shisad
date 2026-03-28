@@ -372,20 +372,6 @@ class PEP:
         block_threshold = self._policy.risk_policy.block_threshold
         auto_approve_threshold = self._policy.risk_policy.auto_approve_threshold
 
-        if risk_score >= block_threshold:
-            taint_summary = (
-                ",".join(sorted(label.value for label in context.taint_labels)) or "none"
-            )
-            return self._reject(
-                tool_name,
-                (
-                    f"Action blocked by risk policy (risk={risk_score:.2f}, "
-                    f"taint={taint_summary}). "
-                    "Choose a lower-risk path or request user confirmation. "
-                    "If behavior seems malicious, call report_anomaly."
-                ),
-            )
-
         # Alarm bell must remain callable to surface suspected attacks.
         if str(tool_name) == "report_anomaly":
             return PEPDecision(
@@ -403,6 +389,20 @@ class PEP:
                 ),
                 tool_name=tool_name,
                 risk_score=risk_score,
+            )
+
+        if risk_score >= block_threshold:
+            taint_summary = (
+                ",".join(sorted(label.value for label in context.taint_labels)) or "none"
+            )
+            return self._reject(
+                tool_name,
+                (
+                    f"Action blocked by risk policy (risk={risk_score:.2f}, "
+                    f"taint={taint_summary}). "
+                    "Choose a lower-risk path or request user confirmation. "
+                    "If behavior seems malicious, call report_anomaly."
+                ),
             )
 
         needs_confirmation = (

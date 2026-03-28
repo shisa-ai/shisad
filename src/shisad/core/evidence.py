@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import hmac
 import os
@@ -23,6 +24,7 @@ _SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+|\n+")
 _COOKIE_HINTS = ("cookie", "consent", "privacy", "gdpr", "banner")
 _SKIP_TAGS = {"nav", "header", "footer", "script", "style", "noscript"}
 _SEMANTIC_TAGS = {"article", "main", "p"}
+_DEFAULT_EVIDENCE_MAX_AGE_SECONDS = 3600
 
 
 class EvidenceRef(BaseModel):
@@ -168,7 +170,12 @@ def _generate_safe_summary(
 def format_evidence_stub(ref: EvidenceRef) -> str:
     """Render a single-line evidence stub for transcript/context use."""
 
-    summary = ref.summary.replace("\\", "\\\\").replace('"', '\\"')
+    summary = (
+        ref.summary
+        .replace("\\", "\\\\")
+        .replace("]", "\\]")
+        .replace('"', '\\"')
+    )
     taint_value = ",".join(sorted(label.value.upper() for label in ref.taint_labels)) or "NONE"
     return (
         f'[EVIDENCE ref={ref.ref_id} source={ref.source} taint={taint_value} '
@@ -181,13 +188,22 @@ def format_evidence_stub(ref: EvidenceRef) -> str:
 class EvidenceStore:
     """Out-of-band blob store + metadata index for evidence references."""
 
-    def __init__(self, root_dir: Path, *, salt: bytes | None = None) -> None:
+    def __init__(
+        self,
+        root_dir: Path,
+        *,
+        salt: bytes | None = None,
+        default_max_age_seconds: int = _DEFAULT_EVIDENCE_MAX_AGE_SECONDS,
+    ) -> None:
         self._root_dir = root_dir
         self._blob_dir = root_dir / "blobs"
         self._salt_path = root_dir / "evidence_salt"
+        self._default_max_age_seconds = max(1, int(default_max_age_seconds))
         self._refs: dict[str, dict[str, EvidenceRef]] = {}
         self._root_dir.mkdir(parents=True, exist_ok=True)
         self._blob_dir.mkdir(parents=True, exist_ok=True)
+        self._ensure_dir_permissions(self._root_dir)
+        self._ensure_dir_permissions(self._blob_dir)
         self._salt = self._load_or_create_salt(salt)
 
     def store(
@@ -200,17 +216,27 @@ class EvidenceStore:
         summary: str,
         ttl_seconds: int | None = None,
     ) -> EvidenceRef:
+        self._evict_for_session(session_id)
         raw = content.encode("utf-8")
         content_hash = hashlib.sha256(raw).hexdigest()
         ref_id = self._make_ref_id(session_id=session_id, content_hash=content_hash)
         session_key = self._session_key(session_id)
         existing = self._refs.setdefault(session_key, {}).get(ref_id)
         if existing is not None:
-            return existing
+            return self._merge_existing_ref(
+                session_key=session_key,
+                ref_id=ref_id,
+                existing=existing,
+                taint_labels=set(taint_labels),
+                source=source,
+                summary=summary,
+                ttl_seconds=ttl_seconds,
+            )
 
         blob_path = self._blob_path(content_hash)
         if not blob_path.exists():
             blob_path.write_text(content, encoding="utf-8")
+        self._ensure_file_permissions(blob_path)
         ref = EvidenceRef(
             ref_id=ref_id,
             content_hash=content_hash,
@@ -233,6 +259,7 @@ class EvidenceStore:
         return path.read_text(encoding="utf-8")
 
     def get_ref(self, session_id: SessionId, ref_id: str) -> EvidenceRef | None:
+        self._evict_for_session(session_id)
         return self._refs.get(self._session_key(session_id), {}).get(ref_id)
 
     def validate_ref_id(self, session_id: SessionId, ref_id: str) -> bool:
@@ -248,7 +275,7 @@ class EvidenceStore:
         self,
         session_id: SessionId,
         *,
-        max_age_seconds: int = 3600,
+        max_age_seconds: int = _DEFAULT_EVIDENCE_MAX_AGE_SECONDS,
     ) -> list[str]:
         session_key = self._session_key(session_id)
         refs = self._refs.get(session_key)
@@ -259,9 +286,11 @@ class EvidenceStore:
         evicted: list[str] = []
         for ref_id, ref in list(refs.items()):
             age_seconds = max(0.0, (now - ref.created_at).total_seconds())
-            if age_seconds <= float(max_age_seconds):
-                continue
-            if ref.ttl_seconds is not None and age_seconds <= float(ref.ttl_seconds):
+            effective_max_age = self._effective_max_age_seconds(
+                max_age_seconds=max_age_seconds,
+                ttl_seconds=ref.ttl_seconds,
+            )
+            if age_seconds <= float(effective_max_age):
                 continue
             refs.pop(ref_id, None)
             evicted.append(ref_id)
@@ -279,13 +308,16 @@ class EvidenceStore:
         if salt is not None:
             if not self._salt_path.exists():
                 self._salt_path.write_bytes(salt)
+            self._ensure_file_permissions(self._salt_path)
             return salt
         if self._salt_path.exists():
+            self._ensure_file_permissions(self._salt_path)
             data = self._salt_path.read_bytes()
             if len(data) == 32:
                 return data
         generated = os.urandom(32)
         self._salt_path.write_bytes(generated)
+        self._ensure_file_permissions(self._salt_path)
         return generated
 
     def _delete_blob_if_unreferenced(self, content_hash: str) -> None:
@@ -295,10 +327,64 @@ class EvidenceStore:
                     return
         path = self._blob_path(content_hash)
         if path.exists():
-            path.unlink()
+            with contextlib.suppress(OSError):
+                path.unlink()
 
     def _blob_path(self, content_hash: str) -> Path:
         return self._blob_dir / f"{content_hash}.txt"
+
+    def _evict_for_session(self, session_id: SessionId) -> None:
+        self.evict_expired(
+            session_id,
+            max_age_seconds=self._default_max_age_seconds,
+        )
+
+    def _merge_existing_ref(
+        self,
+        *,
+        session_key: str,
+        ref_id: str,
+        existing: EvidenceRef,
+        taint_labels: set[TaintLabel],
+        source: str,
+        summary: str,
+        ttl_seconds: int | None,
+    ) -> EvidenceRef:
+        merged = existing.model_copy(
+            update={
+                "taint_labels": sorted({*existing.taint_labels, *taint_labels}),
+                "source": source or existing.source,
+                "summary": summary or existing.summary,
+                "ttl_seconds": self._merge_ttl_seconds(existing.ttl_seconds, ttl_seconds),
+            }
+        )
+        self._refs[session_key][ref_id] = merged
+        return merged
+
+    @staticmethod
+    def _effective_max_age_seconds(*, max_age_seconds: int, ttl_seconds: int | None) -> int:
+        effective = max(1, int(max_age_seconds))
+        if ttl_seconds is None:
+            return effective
+        return min(effective, max(1, int(ttl_seconds)))
+
+    @staticmethod
+    def _merge_ttl_seconds(existing: int | None, new: int | None) -> int | None:
+        if existing is None:
+            return new
+        if new is None:
+            return existing
+        return min(existing, new)
+
+    @staticmethod
+    def _ensure_dir_permissions(path: Path) -> None:
+        with contextlib.suppress(OSError):
+            os.chmod(path, 0o700)
+
+    @staticmethod
+    def _ensure_file_permissions(path: Path) -> None:
+        with contextlib.suppress(OSError):
+            os.chmod(path, 0o600)
 
     @staticmethod
     def _session_key(session_id: SessionId) -> str:

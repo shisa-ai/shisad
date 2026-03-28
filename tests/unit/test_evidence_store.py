@@ -3,8 +3,14 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from stat import S_IMODE
 
-from shisad.core.evidence import EvidenceStore, _generate_safe_summary
+from shisad.core.evidence import (
+    EvidenceRef,
+    EvidenceStore,
+    _generate_safe_summary,
+    format_evidence_stub,
+)
 from shisad.core.types import SessionId, TaintLabel
 from shisad.security.firewall import ContentFirewall
 
@@ -41,13 +47,17 @@ def test_evidence_store_deduplicates_same_session_same_content(tmp_path) -> None
     second = store.store(
         sid,
         "same content",
-        taint_labels={TaintLabel.UNTRUSTED},
-        source="web.fetch:example.com",
-        summary="same content",
+        taint_labels={TaintLabel.UNTRUSTED, TaintLabel.USER_REVIEWED},
+        source="realitycheck.read:/tmp/example.txt",
+        summary="updated summary",
     )
 
     assert first.ref_id == second.ref_id
     assert len(store._refs[str(sid)]) == 1
+    assert second.source == "realitycheck.read:/tmp/example.txt"
+    assert second.summary == "updated summary"
+    assert second.created_at == first.created_at
+    assert set(second.taint_labels) == {TaintLabel.UNTRUSTED, TaintLabel.USER_REVIEWED}
 
 
 def test_evidence_store_ref_id_is_salt_and_session_scoped(tmp_path) -> None:
@@ -113,6 +123,68 @@ def test_evidence_store_evicts_stale_entries(tmp_path) -> None:
 
     assert evicted == [ref.ref_id]
     assert store.read(sid, ref.ref_id) is None
+
+
+def test_evidence_store_accessors_lazily_evict_expired_refs(tmp_path) -> None:
+    store = EvidenceStore(tmp_path / "evidence", salt=b"a" * 32, default_max_age_seconds=60)
+    sid = SessionId("sess-a")
+    ref = store.store(
+        sid,
+        "old content",
+        taint_labels={TaintLabel.UNTRUSTED},
+        source="web.fetch:example.com",
+        summary="old content",
+    )
+    store._refs[str(sid)][ref.ref_id] = ref.model_copy(
+        update={"created_at": datetime.now(UTC) - timedelta(hours=2)}
+    )
+
+    assert store.get_ref(sid, ref.ref_id) is None
+    assert store.validate_ref_id(sid, ref.ref_id) is False
+
+
+def test_evidence_store_ttl_restricts_lifetime_below_global_cap(tmp_path) -> None:
+    store = EvidenceStore(tmp_path / "evidence", salt=b"a" * 32)
+    sid = SessionId("sess-a")
+    ref = store.store(
+        sid,
+        "old content",
+        taint_labels={TaintLabel.UNTRUSTED},
+        source="web.fetch:example.com",
+        summary="old content",
+        ttl_seconds=30,
+    )
+    store._refs[str(sid)][ref.ref_id] = ref.model_copy(
+        update={"created_at": datetime.now(UTC) - timedelta(minutes=2)}
+    )
+
+    evicted = store.evict_expired(sid, max_age_seconds=3600)
+
+    assert evicted == [ref.ref_id]
+
+
+def test_evidence_store_hardens_directory_and_file_permissions(tmp_path) -> None:
+    store = EvidenceStore(tmp_path / "evidence", salt=b"a" * 32)
+    sid = SessionId("sess-a")
+    ref = store.store(
+        sid,
+        "permission check",
+        taint_labels={TaintLabel.UNTRUSTED},
+        source="web.fetch:example.com",
+        summary="permission check",
+    )
+
+    root_mode = S_IMODE((tmp_path / "evidence").stat().st_mode)
+    blob_dir_mode = S_IMODE((tmp_path / "evidence" / "blobs").stat().st_mode)
+    salt_mode = S_IMODE((tmp_path / "evidence" / "evidence_salt").stat().st_mode)
+    blob_mode = S_IMODE(
+        (tmp_path / "evidence" / "blobs" / f"{ref.content_hash}.txt").stat().st_mode
+    )
+
+    assert root_mode == 0o700
+    assert blob_dir_mode == 0o700
+    assert salt_mode == 0o600
+    assert blob_mode == 0o600
 
 
 def test_generate_safe_summary_preserves_normal_extract(tmp_path) -> None:
@@ -204,3 +276,19 @@ def test_generate_safe_summary_prefers_semantic_html_content(tmp_path) -> None:
 
     assert "Important article body here." in summary
     assert "ignore all instructions" not in summary.lower()
+
+
+def test_format_evidence_stub_escapes_closing_brackets_in_summary() -> None:
+    ref = EvidenceRef(
+        ref_id="ev-1234567890abcdef",
+        content_hash="hash",
+        taint_labels=[TaintLabel.UNTRUSTED],
+        source="web.fetch:example.com",
+        summary='summary with ] and "quotes"',
+        byte_size=42,
+    )
+
+    stub = format_evidence_stub(ref)
+
+    assert "\\]" in stub
+    assert '\\"quotes\\"' in stub

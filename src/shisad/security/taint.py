@@ -115,11 +115,13 @@ def sink_decision_for_tool(tool_name: str, labels: set[TaintLabel]) -> TaintSink
     if TaintLabel.USER_CREDENTIALS in labels:
         return TaintSinkDecision(block=True, require_confirmation=False, reason="credential_taint")
 
-    if canonical_name in WRITE_TOOLS and TaintLabel.UNTRUSTED in labels:
+    if canonical_name in WRITE_TOOLS and (
+        TaintLabel.UNTRUSTED in labels or TaintLabel.USER_REVIEWED in labels
+    ):
         return TaintSinkDecision(
             block=False,
             require_confirmation=True,
-            reason="untrusted_data_to_write_sink",
+            reason="tainted_data_to_write_sink",
         )
 
     return TaintSinkDecision(block=False, require_confirmation=False, reason="")
