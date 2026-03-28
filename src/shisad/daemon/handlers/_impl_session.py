@@ -136,7 +136,8 @@ _COMMAND_CONTEXT_STATUS_KEY = "command_context"
 _COMMAND_CONTEXT_RECOVERY_CHECKPOINT_KEY = "command_context_recovery_checkpoint_id"
 _COMMAND_CONTEXT_REASON_KEY = "command_context_reason"
 _TASK_REPORTED_PATH_MAX_CHARS = 512
-_EVIDENCE_CONTENT_KEYS: set[str] = {"content", "text", "body", "html"}
+_EVIDENCE_CONTENT_PREVIEW_KEYS: tuple[str, ...] = ("content", "text", "body", "html")
+_EVIDENCE_CONTENT_KEYS: set[str] = set(_EVIDENCE_CONTENT_PREVIEW_KEYS)
 _IN_BAND_READ_ONLY_ACTION_KINDS: set[ActionKind] = {
     ActionKind.FS_READ,
     ActionKind.FS_LIST,
@@ -1806,6 +1807,25 @@ def _wrap_serialized_tool_outputs_with_evidence(
     return evidence_ref_ids
 
 
+def _find_tool_output_preview_text(payload_value: Any) -> str:
+    if isinstance(payload_value, dict):
+        for key in _EVIDENCE_CONTENT_PREVIEW_KEYS:
+            candidate = payload_value.get(key)
+            if isinstance(candidate, str) and candidate.strip():
+                return candidate
+        for value in payload_value.values():
+            preview = _find_tool_output_preview_text(value)
+            if preview:
+                return preview
+        return ""
+    if isinstance(payload_value, list):
+        for item in payload_value:
+            preview = _find_tool_output_preview_text(item)
+            if preview:
+                return preview
+    return ""
+
+
 def _taint_labels_from_payload(payload: Mapping[str, Any]) -> set[TaintLabel]:
     raw = payload.get("taint_labels")
     if not isinstance(raw, list):
@@ -1911,12 +1931,7 @@ def _summarize_tool_outputs_for_chat(records: list[dict[str, Any]]) -> str:
             summary_parts.append(f"{key}={compact}")
         lines.append(f"- {tool_name}: {', '.join(summary_parts)}")
 
-        output_text = ""
-        for candidate_key in ("content", "text"):
-            candidate = payload.get(candidate_key)
-            if isinstance(candidate, str) and candidate.strip():
-                output_text = candidate
-                break
+        output_text = _find_tool_output_preview_text(payload)
         if output_text:
             preview_lines, truncated = _preview_multiline_output(output_text)
             if preview_lines:
