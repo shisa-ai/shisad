@@ -28,7 +28,7 @@ Commands:
 
 Notes:
   - Private overrides: runner/.env (gitignored). Start from runner/.env.example.
-  - Defaults match the v0.4 M5 runbook + ./run.sh where possible.
+  - Defaults are version-agnostic and match runner/RUNBOOK.md.
   - By default, the harness clears inherited SHISAD_* env (channels, socket paths, etc.)
     to keep runs deterministic and local-only. Set RUNNER_INHERIT_SHISAD_ENV=1 to opt out.
 EOF
@@ -144,7 +144,7 @@ _export_defaults() {
 
   export SHISAD_MODEL_PLANNER_PROVIDER_PRESET="${SHISAD_MODEL_PLANNER_PROVIDER_PRESET:-shisa_default}"
   export SHISAD_MODEL_PLANNER_MODEL_ID="${SHISAD_MODEL_PLANNER_MODEL_ID:-shisa-ai/shisa-v2.1-unphi4-14b}"
-  # Local M5/bootstrap route: allow planner model override without SHISA-default pin mismatch.
+  # Dev route: allow planner model override without SHISA-default pin mismatch.
   export SHISAD_MODEL_ENFORCE_SECURITY_ROUTE_PINNING="${SHISAD_MODEL_ENFORCE_SECURITY_ROUTE_PINNING:-false}"
 
   # Keep runner starts local-only by default (no external channel connections).
