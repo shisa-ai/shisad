@@ -53,6 +53,9 @@ Thumbs.db
 .local/
 *.local.*
 
+# Runner private env (explicit; do not rely on .env glob alone)
+runner/.env
+
 # Secrets
 .env.local
 *.secret

@@ -37,8 +37,13 @@ EOF
 _warn() { printf '%s\n' "warning: $*" >&2; }
 _die() { printf '%s\n' "error: $*" >&2; exit 1; }
 
-_load_dotenv() {
-  if [[ ! -f "${DOTENV_PATH}" ]]; then
+_parse_env_file() {
+  # Parse a KEY=VALUE env file safely (no shell sourcing).
+  # Usage: _parse_env_file <path> <label>
+  local path="$1"
+  local label="${2:-${path}}"
+
+  if [[ ! -f "${path}" ]]; then
     return 0
   fi
 
@@ -56,7 +61,7 @@ _load_dotenv() {
     fi
 
     if [[ "${line}" != *=* ]]; then
-      _warn "ignoring invalid runner/.env line (no '='): ${line}"
+      _warn "ignoring invalid ${label} line (no '='): ${line}"
       continue
     fi
 
@@ -65,7 +70,7 @@ _load_dotenv() {
 
     # Validate key.
     if ! [[ "${key}" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
-      _warn "ignoring invalid runner/.env key: ${key}"
+      _warn "ignoring invalid ${label} key: ${key}"
       continue
     fi
 
@@ -77,7 +82,18 @@ _load_dotenv() {
     fi
 
     export "${key}=${val}"
-  done <"${DOTENV_PATH}"
+  done <"${path}"
+}
+
+_load_env_files() {
+  # Load order (later files override earlier):
+  #   1. SHISAD_ENV_FILE (canonical system/user env, e.g. ~/.config/shisad/runtime.env)
+  #   2. runner/.env      (repo-local dev overrides)
+  local sys_env="${SHISAD_ENV_FILE:-}"
+  if [[ -n "${sys_env}" ]]; then
+    _parse_env_file "${sys_env}" "SHISAD_ENV_FILE (${sys_env})"
+  fi
+  _parse_env_file "${DOTENV_PATH}" "runner/.env"
 }
 
 _clear_inherited_shisad_env() {
@@ -111,8 +127,8 @@ _clear_inherited_shisad_env() {
 }
 
 _export_defaults() {
-  export SHISAD_DATA_DIR="${SHISAD_DATA_DIR:-$REPO_ROOT/.local/shisad-m5}"
-  export SHISAD_SOCKET_PATH="${SHISAD_SOCKET_PATH:-/tmp/shisad-m5.sock}"
+  export SHISAD_DATA_DIR="${SHISAD_DATA_DIR:-$REPO_ROOT/.local/shisad-dev}"
+  export SHISAD_SOCKET_PATH="${SHISAD_SOCKET_PATH:-/tmp/shisad-dev.sock}"
   export SHISAD_POLICY_PATH="${SHISAD_POLICY_PATH:-$REPO_ROOT/.local/policy.yaml}"
   export SHISAD_LOG_LEVEL="${SHISAD_LOG_LEVEL:-INFO}"
   export SHISAD_CODING_REPO_ROOT="${SHISAD_CODING_REPO_ROOT:-$REPO_ROOT}"
@@ -157,76 +173,12 @@ _ensure_policy_file() {
     return 0
   fi
 
-  cat >"${SHISAD_POLICY_PATH}" <<'EOF'
-version: "1"
-default_deny: false
-default_require_confirmation: false
+  local template="${RUNNER_DIR}/policy.default.yaml"
+  if [[ ! -f "${template}" ]]; then
+    _die "policy template not found: ${template}"
+  fi
 
-default_capabilities:
-  - file.read
-  - file.write
-  - http.request
-  - memory.read
-  - memory.write
-  - message.send
-  - shell.exec
-
-tools:
-  report_anomaly: {}
-  web.search:
-    capabilities_required:
-      - http.request
-  web.fetch:
-    capabilities_required:
-      - http.request
-  fs.list:
-    capabilities_required:
-      - file.read
-  fs.read:
-    capabilities_required:
-      - file.read
-  fs.write:
-    capabilities_required:
-      - file.write
-    require_confirmation: true
-  git.status:
-    capabilities_required:
-      - file.read
-  git.diff:
-    capabilities_required:
-      - file.read
-  git.log:
-    capabilities_required:
-      - file.read
-  note.create:
-    capabilities_required:
-      - memory.write
-  note.list:
-    capabilities_required:
-      - memory.read
-  note.search:
-    capabilities_required:
-      - memory.read
-  todo.create:
-    capabilities_required:
-      - memory.write
-  todo.list:
-    capabilities_required:
-      - memory.read
-  todo.complete:
-    capabilities_required:
-      - memory.write
-  reminder.create:
-    capabilities_required:
-      - memory.write
-      - message.send
-  reminder.list:
-    capabilities_required:
-      - memory.read
-  message.send:
-    capabilities_required:
-      - message.send
-EOF
+  cp "${template}" "${SHISAD_POLICY_PATH}"
   chmod 600 "${SHISAD_POLICY_PATH}" || true
 }
 
@@ -264,7 +216,7 @@ _runner_env() {
   if [[ "${inherit}" != "1" ]] && [[ "${inherit}" != "true" ]] && [[ "${inherit}" != "yes" ]]; then
     _clear_inherited_shisad_env
   fi
-  _load_dotenv
+  _load_env_files
   _export_defaults
 }
 
@@ -278,7 +230,7 @@ _tmux_socket_name() {
 }
 
 _tmux_session_name() {
-  printf '%s\n' "${RUNNER_TMUX_SESSION_NAME:-shisad-m5}"
+  printf '%s\n' "${RUNNER_TMUX_SESSION_NAME:-shisad-dev}"
 }
 
 _tmux() {

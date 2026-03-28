@@ -1,0 +1,76 @@
+# Default development policy for the runner harness.
+#
+# This file is the single source of truth for the bootstrap policy.
+# runner/harness.sh copies it to SHISAD_POLICY_PATH when no policy file exists.
+#
+# For production / operator deployments, create a purpose-built policy
+# at the configured SHISAD_POLICY_PATH instead.
+
+version: "1"
+default_deny: false
+default_require_confirmation: false
+
+default_capabilities:
+  - file.read
+  - file.write
+  - http.request
+  - memory.read
+  - memory.write
+  - message.send
+  - shell.exec
+
+tools:
+  report_anomaly: {}
+  web.search:
+    capabilities_required:
+      - http.request
+  web.fetch:
+    capabilities_required:
+      - http.request
+  fs.list:
+    capabilities_required:
+      - file.read
+  fs.read:
+    capabilities_required:
+      - file.read
+  fs.write:
+    capabilities_required:
+      - file.write
+    require_confirmation: true
+  git.status:
+    capabilities_required:
+      - file.read
+  git.diff:
+    capabilities_required:
+      - file.read
+  git.log:
+    capabilities_required:
+      - file.read
+  note.create:
+    capabilities_required:
+      - memory.write
+  note.list:
+    capabilities_required:
+      - memory.read
+  note.search:
+    capabilities_required:
+      - memory.read
+  todo.create:
+    capabilities_required:
+      - memory.write
+  todo.list:
+    capabilities_required:
+      - memory.read
+  todo.complete:
+    capabilities_required:
+      - memory.write
+  reminder.create:
+    capabilities_required:
+      - memory.write
+      - message.send
+  reminder.list:
+    capabilities_required:
+      - memory.read
+  message.send:
+    capabilities_required:
+      - message.send
