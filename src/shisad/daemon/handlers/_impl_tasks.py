@@ -24,6 +24,7 @@ from shisad.core.types import (
     WorkspaceId,
 )
 from shisad.daemon.handlers._mixin_typing import HandlerMixinBase
+from shisad.daemon.handlers._string_utils import optional_string
 from shisad.scheduler.schema import Schedule
 from shisad.security.control_plane.consensus import TRACE_VOTER_NAME
 from shisad.security.control_plane.schema import ControlDecision, Origin, RiskTier
@@ -102,17 +103,22 @@ class TasksImplMixin(HandlerMixinBase):
         delivery_target = getattr(task, "delivery_target", {}) or {}
         if not isinstance(delivery_target, Mapping):
             return None
-        channel = str(delivery_target.get("channel", "")).strip()
-        recipient = str(delivery_target.get("recipient", "")).strip()
+        channel = optional_string(delivery_target.get("channel", ""))
+        recipient = optional_string(delivery_target.get("recipient", ""))
         if not channel or not recipient:
             return None
-        return {
+        payload: dict[str, Any] = {
             "channel": channel,
             "recipient": recipient,
-            "workspace_hint": str(delivery_target.get("workspace_hint", "")).strip(),
-            "thread_id": str(delivery_target.get("thread_id", "")).strip(),
-            "message": str(getattr(task, "goal", "")),
+            "message": optional_string(getattr(task, "goal", "")),
         }
+        workspace_hint = optional_string(delivery_target.get("workspace_hint", ""))
+        thread_id = optional_string(delivery_target.get("thread_id", ""))
+        if workspace_hint:
+            payload["workspace_hint"] = workspace_hint
+        if thread_id:
+            payload["thread_id"] = thread_id
+        return payload
 
     @staticmethod
     def _task_scope_mismatch_reason(task: Any, arguments: Mapping[str, Any]) -> str:
@@ -451,6 +457,7 @@ class TasksImplMixin(HandlerMixinBase):
             capabilities=effective_capabilities,
             approval_actor="scheduler",
             execution_action=cp_eval.action,
+            user_confirmed=False,
         )
         self._scheduler.record_run_outcome(task.id, success=execution.success)
         if not execution.success:
@@ -470,26 +477,27 @@ class TasksImplMixin(HandlerMixinBase):
 
     async def do_task_create(self, params: Mapping[str, Any]) -> dict[str, Any]:
         schedule = Schedule.model_validate(params.get("schedule", {}))
-        workspace_raw = str(params.get("workspace_id", "")).strip()
+        workspace_raw = optional_string(params.get("workspace_id", ""))
         if not workspace_raw:
             raise ValueError("workspace_id is required")
         raw_delivery_target = params.get("delivery_target", {})
         delivery_target: dict[str, str]
         if isinstance(raw_delivery_target, Mapping):
-            delivery_target = {
-                str(key): str(value)
-                for key, value in raw_delivery_target.items()
-                if str(key).strip() and str(value).strip()
-            }
+            delivery_target = {}
+            for key, value in raw_delivery_target.items():
+                key_name = optional_string(key)
+                value_text = optional_string(value)
+                if key_name and value_text:
+                    delivery_target[key_name] = value_text
         else:
             delivery_target = {}
         task = self._scheduler.create_task(
-            name=str(params.get("name", "")),
-            goal=str(params.get("goal", "")),
+            name=optional_string(params.get("name", "")),
+            goal=optional_string(params.get("goal", "")),
             schedule=schedule,
             capability_snapshot={Capability(cap) for cap in params.get("capability_snapshot", [])},
-            policy_snapshot_ref=str(params.get("policy_snapshot_ref", "")),
-            created_by=UserId(str(params.get("created_by", ""))),
+            policy_snapshot_ref=optional_string(params.get("policy_snapshot_ref", "")),
+            created_by=UserId(optional_string(params.get("created_by", ""))),
             workspace_id=WorkspaceId(workspace_raw),
             allowed_recipients=list(params.get("allowed_recipients", [])),
             allowed_domains=list(params.get("allowed_domains", [])),

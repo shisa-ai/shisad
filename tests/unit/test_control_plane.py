@@ -872,6 +872,78 @@ async def test_m1_action_monitor_allows_explicit_tainted_memory_write() -> None:
 
 
 @pytest.mark.asyncio
+async def test_m1_rr1_action_monitor_does_not_allow_note_create_for_note_search_text() -> None:
+    voter = ActionMonitorVoter()
+    action = build_action(
+        tool_name="note.create",
+        arguments={"key": "note:groceries"},
+        origin=_origin("s-action-monitor-note-search-mismatch"),
+    )
+    decision = await voter.cast_vote(
+        ConsensusInput(
+            action=action,
+            trace_result=PlanVerificationResult(allowed=True, reason_code="trace:allowed"),
+            metadata_payload={
+                "session_tainted": True,
+                "trusted_input": True,
+                "raw_user_text": "search my notes for groceries",
+                "action_arguments": {"key": "note:groceries"},
+            },
+        )
+    )
+    assert decision.decision == VoteKind.FLAG
+    assert "action_monitor:deterministic_intent_match" not in decision.reason_codes
+
+
+@pytest.mark.asyncio
+async def test_m1_rr1_action_monitor_does_not_allow_negated_todo_completion() -> None:
+    voter = ActionMonitorVoter()
+    action = build_action(
+        tool_name="todo.complete",
+        arguments={"selector": "review PRs"},
+        origin=_origin("s-action-monitor-negated-complete"),
+    )
+    decision = await voter.cast_vote(
+        ConsensusInput(
+            action=action,
+            trace_result=PlanVerificationResult(allowed=True, reason_code="trace:allowed"),
+            metadata_payload={
+                "session_tainted": True,
+                "trusted_input": True,
+                "raw_user_text": "don't mark the review PRs todo complete",
+                "action_arguments": {"selector": "review PRs"},
+            },
+        )
+    )
+    assert decision.decision == VoteKind.FLAG
+    assert "action_monitor:deterministic_intent_match" not in decision.reason_codes
+
+
+@pytest.mark.asyncio
+async def test_m1_rr1_action_monitor_matches_only_primary_note_fields() -> None:
+    voter = ActionMonitorVoter()
+    action = build_action(
+        tool_name="note.create",
+        arguments={"key": "note:groceries"},
+        origin=_origin("s-action-monitor-note-primary-fields"),
+    )
+    decision = await voter.cast_vote(
+        ConsensusInput(
+            action=action,
+            trace_result=PlanVerificationResult(allowed=True, reason_code="trace:allowed"),
+            metadata_payload={
+                "session_tainted": True,
+                "trusted_input": True,
+                "raw_user_text": "add a note: groceries",
+                "action_arguments": {"key": "note:groceries"},
+            },
+        )
+    )
+    assert decision.decision == VoteKind.FLAG
+    assert "action_monitor:deterministic_intent_match" not in decision.reason_codes
+
+
+@pytest.mark.asyncio
 async def test_m1_rlc7_action_monitor_voter_flags_untrusted_clean_side_effect() -> None:
     voter = ActionMonitorVoter()
     action = build_action(

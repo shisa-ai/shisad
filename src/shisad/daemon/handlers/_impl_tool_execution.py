@@ -380,6 +380,7 @@ class ToolExecutionImplMixin(HandlerMixinBase):
             approval_actor="control_api",
             execution_action=cp_eval.action,
             merged_policy=merged_policy,
+            user_confirmed=True,
         )
         return cast(
             dict[str, Any],

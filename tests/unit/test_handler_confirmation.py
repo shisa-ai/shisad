@@ -142,8 +142,18 @@ class _ConfirmationImplHarness(ConfirmationImplMixin):
         approval_actor: str,
         execution_action: object | None = None,
         merged_policy: object | None = None,
+        user_confirmed: bool = False,
     ) -> object:
-        _ = (sid, user_id, tool_name, arguments, capabilities, approval_actor, execution_action)
+        _ = (
+            sid,
+            user_id,
+            tool_name,
+            arguments,
+            capabilities,
+            approval_actor,
+            execution_action,
+            user_confirmed,
+        )
         self.execution_merged_policies.append(merged_policy)
         return SimpleNamespace(success=True, checkpoint_id=None)
 

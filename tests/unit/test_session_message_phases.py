@@ -382,3 +382,76 @@ async def test_m1_planner_confirmation_persists_queue_time_merged_policy_snapsho
     assert result.pending_confirmation == 1
     assert harness.captured_merged_policy is not None
     assert getattr(harness.captured_merged_policy, "snapshot", "") == "queue-time"
+
+
+class _DispatchRewriteHarness(SessionImplMixin):
+    def __init__(self) -> None:
+        self._trace_recorder = None
+        self._event_bus = SimpleNamespace(publish=self._noop_publish)
+        self._planner = SimpleNamespace(propose=self._propose)
+        self._pep = SimpleNamespace(evaluate=self._evaluate)
+
+    async def _noop_publish(self, _event: object) -> None:
+        return None
+
+    async def _propose(self, *_args: object, **_kwargs: object) -> PlannerResult:
+        return PlannerResult(
+            output=PlannerOutput(actions=[], assistant_response=""),
+            evaluated=[],
+            attempts=1,
+            provider_response=None,
+            messages_sent=(),
+        )
+
+    def _evaluate(
+        self,
+        tool_name: ToolName,
+        _arguments: dict[str, object],
+        _context: object,
+    ) -> object:
+        return PEPDecision(
+            kind=PEPDecisionKind.ALLOW,
+            reason="allow",
+            tool_name=tool_name,
+            risk_score=0.0,
+        )
+
+
+@pytest.mark.asyncio
+async def test_m1_dispatch_to_planner_uses_sanitized_text_for_intent_rewrite() -> None:
+    harness = _DispatchRewriteHarness()
+    validated = _validation_result(
+        params={"session_id": "sess-g1", "content": "add todo: raw-secret"}
+    )
+    validated.firewall_result = FirewallResult(
+        sanitized_text="add todo: safe-title",
+        original_hash="0" * 64,
+    )
+    planner_context = SessionMessagePlannerContextResult(
+        validated=validated,
+        conversation_context="",
+        transcript_context_taints=set(),
+        effective_caps={Capability.MEMORY_WRITE},
+        memory_query="",
+        memory_context="",
+        memory_context_taints=set(),
+        memory_context_tainted_for_amv=False,
+        user_goal_host_patterns=set(),
+        untrusted_current_turn="",
+        untrusted_host_patterns=set(),
+        policy_egress_host_patterns=set(),
+        context=PolicyContext(capabilities={Capability.MEMORY_WRITE}),
+        planner_origin="planner-origin",
+        committed_plan_hash="plan-g1",
+        active_plan_hash="plan-g1",
+        planner_tools_payload=[],
+        planner_input="planner input",
+        assistant_tone_override=None,
+    )
+
+    dispatch = await SessionImplMixin._dispatch_to_planner(harness, planner_context)
+
+    assert len(dispatch.planner_result.evaluated) == 1
+    proposal = dispatch.planner_result.evaluated[0].proposal
+    assert proposal.tool_name == ToolName("todo.create")
+    assert proposal.arguments == {"title": "safe-title"}

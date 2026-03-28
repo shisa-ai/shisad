@@ -258,34 +258,45 @@ class ActionMonitorVoter:
         self._intent_provider = intent_provider
 
     @staticmethod
-    def _token_set(text: str) -> set[str]:
-        return {
-            token
-            for token in re.findall(r"[a-z0-9]+", text.lower())
-            if len(token) >= 3
-        }
+    def _normalize_intent_text(text: str) -> str:
+        return re.sub(r"\s+", " ", str(text or "")).strip()
 
     @classmethod
-    def _arguments_match_user_text(
-        cls,
-        *,
-        user_text: str,
-        values: list[Any],
-    ) -> bool:
-        user_tokens = cls._token_set(user_text)
-        if not user_tokens:
-            return False
-        matched = False
-        for value in values:
-            raw = str(value or "").strip()
-            if not raw:
-                continue
-            candidate_tokens = cls._token_set(raw)
-            if not candidate_tokens:
-                continue
-            if candidate_tokens.issubset(user_tokens):
-                matched = True
-        return matched or not any(str(value or "").strip() for value in values)
+    def _strip_optional_greeting_prefix(cls, text: str) -> str:
+        normalized = cls._normalize_intent_text(text)
+        match = re.match(
+            r"^(?:hello|hi|hey)(?: there)?(?:[,!:.]+)?\s+(.+)$",
+            normalized,
+            flags=re.IGNORECASE,
+        )
+        if match is None:
+            return normalized
+        return match.group(1).strip()
+
+    @classmethod
+    def _has_follow_on_command(cls, text: str) -> bool:
+        normalized = cls._normalize_intent_text(text)
+        return (
+            re.search(
+                (
+                    r"\b(?:and|then|also)\s+"
+                    r"(?:(?:list|show)\s+(?:my\s+)?(?:notes|todos|tasks|reminders)\b"
+                    r"|search\s+(?:my\s+)?notes\b"
+                    r"|(?:add|save)\s+(?:a\s+)?note:"
+                    r"|(?:add|create)\s+(?:a\s+)?(?:todo|task):"
+                    r"|(?:mark|complete|finish)\b"
+                    r"|remind me\b)"
+                ),
+                normalized,
+                flags=re.IGNORECASE,
+            )
+            is not None
+        )
+
+    @classmethod
+    def _matches_argument(cls, value: Any, expected: str) -> bool:
+        candidate = cls._normalize_intent_text(value)
+        return bool(candidate) and candidate.casefold() == expected.casefold()
 
     @classmethod
     def _deterministic_memory_write_intent_match(
@@ -295,35 +306,57 @@ class ActionMonitorVoter:
         tool_name: str,
         action_arguments: dict[str, Any],
     ) -> bool:
-        lowered = user_text.lower()
+        normalized = cls._strip_optional_greeting_prefix(user_text)
+        if not normalized or cls._has_follow_on_command(normalized):
+            return False
         if tool_name == "note.create":
-            if "note" not in lowered and "remember" not in lowered:
-                return False
-            return cls._arguments_match_user_text(
-                user_text=user_text,
-                values=[action_arguments.get("content"), action_arguments.get("key")],
+            note_match = re.match(
+                r"^(?:add|save) (?:a )?note:\s*(.+)$",
+                normalized,
+                flags=re.IGNORECASE,
             )
+            if note_match is None:
+                note_match = re.match(
+                    r"^remember(?: that)?\s+(.+)$",
+                    normalized,
+                    flags=re.IGNORECASE,
+                )
+            if note_match is None:
+                return False
+            return cls._matches_argument(action_arguments.get("content"), note_match.group(1))
         if tool_name == "todo.create":
-            if "todo" not in lowered and "task" not in lowered:
-                return False
-            return cls._arguments_match_user_text(
-                user_text=user_text,
-                values=[action_arguments.get("title"), action_arguments.get("details")],
+            todo_create_match = re.match(
+                r"^(?:add|create) (?:a )?(?:todo|task):\s*(.+)$",
+                normalized,
+                flags=re.IGNORECASE,
             )
-        if tool_name == "todo.complete":
-            if not any(token in lowered for token in ("complete", "done", "mark")):
+            if todo_create_match is None:
                 return False
-            return cls._arguments_match_user_text(
-                user_text=user_text,
-                values=[action_arguments.get("selector")],
+            return cls._matches_argument(action_arguments.get("title"), todo_create_match.group(1))
+        if tool_name == "todo.complete":
+            todo_complete_match = re.match(
+                r"^(?:mark|complete|finish)\s+(?:the\s+)?(.+?)(?:\s+todo)?\s+(?:complete|done)$",
+                normalized,
+                flags=re.IGNORECASE,
+            )
+            if todo_complete_match is None:
+                return False
+            return cls._matches_argument(
+                action_arguments.get("selector"),
+                todo_complete_match.group(1),
             )
         if tool_name == "reminder.create":
-            if "remind" not in lowered and "reminder" not in lowered:
-                return False
-            return cls._arguments_match_user_text(
-                user_text=user_text,
-                values=[action_arguments.get("message"), action_arguments.get("when")],
+            reminder_match = re.match(
+                r"^remind me(?: to)?\s+(.+?)\s+((?:in|at)\s+.+)$",
+                normalized,
+                flags=re.IGNORECASE,
             )
+            if reminder_match is None:
+                return False
+            return cls._matches_argument(
+                action_arguments.get("message"),
+                reminder_match.group(1),
+            ) and cls._matches_argument(action_arguments.get("when"), reminder_match.group(2))
         return False
 
     @staticmethod

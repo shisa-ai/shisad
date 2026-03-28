@@ -66,6 +66,7 @@ from shisad.daemon.handlers._impl_skills import SkillsImplMixin
 from shisad.daemon.handlers._impl_tasks import TasksImplMixin
 from shisad.daemon.handlers._impl_tool_execution import ToolExecutionImplMixin
 from shisad.daemon.handlers._side_effects import is_side_effect_tool
+from shisad.daemon.handlers._string_utils import optional_string
 from shisad.daemon.handlers._tool_exec_helpers import execute_structured_tool
 from shisad.executors.mounts import FilesystemPolicy
 from shisad.executors.proxy import NetworkPolicy
@@ -147,10 +148,7 @@ def _argument_string(
     *,
     default: str = "",
 ) -> str:
-    value = arguments.get(key, default)
-    if value is None:
-        return default
-    return str(value).strip()
+    return optional_string(arguments.get(key, default), default=default)
 
 
 def _argument_int(
@@ -317,6 +315,7 @@ class StructuredToolContext:
     user_id: UserId
     workspace_id: WorkspaceId
     session: Session
+    user_confirmed: bool = False
 
 
 StructuredPayloadBuilder = Callable[
@@ -344,14 +343,16 @@ def _resolve_session_delivery_target(
 ) -> dict[str, str]:
     raw_target = session.metadata.get("delivery_target")
     if isinstance(raw_target, dict):
-        channel = str(raw_target.get("channel", "")).strip()
-        recipient = str(raw_target.get("recipient", "")).strip()
+        channel = optional_string(raw_target.get("channel", ""))
+        recipient = optional_string(raw_target.get("recipient", ""))
         if channel and recipient:
-            return {
-                key: str(value)
-                for key, value in raw_target.items()
-                if str(key).strip() and str(value).strip()
-            }
+            normalized: dict[str, str] = {}
+            for key, value in raw_target.items():
+                key_name = optional_string(key)
+                value_text = optional_string(value)
+                if key_name and value_text:
+                    normalized[key_name] = value_text
+            return normalized
     return {"channel": "session", "recipient": str(session_id)}
 
 
@@ -418,7 +419,7 @@ async def _structured_note_create(
             "content": content,
             "origin": "user",
             "source_id": str(context.session_id),
-            "user_confirmed": True,
+            "user_confirmed": context.user_confirmed,
         }
     )
     return _wrap_structured_payload(payload, ok=str(payload.get("kind", "")) == "allow")
@@ -473,7 +474,7 @@ async def _structured_todo_create(
             "due_date": _argument_string(arguments, "due_date"),
             "origin": "user",
             "source_id": str(context.session_id),
-            "user_confirmed": True,
+            "user_confirmed": context.user_confirmed,
         }
     )
     return _wrap_structured_payload(payload, ok=str(payload.get("kind", "")) == "allow")
@@ -1725,6 +1726,7 @@ class HandlerImplementation(
         approval_actor: str,
         execution_action: ControlPlaneAction | None = None,
         merged_policy: ToolExecutionPolicy | None = None,
+        user_confirmed: bool = False,
     ) -> ApprovedToolExecutionResult:
         session = self._session_manager.get(sid)
         if session is None:
@@ -1847,12 +1849,12 @@ class HandlerImplementation(
 
         if tool_name == "message.send":
             target = DeliveryTarget(
-                channel=str(arguments.get("channel", "")).strip(),
-                recipient=str(arguments.get("recipient", "")).strip(),
-                workspace_hint=str(arguments.get("workspace_hint", "")).strip(),
-                thread_id=str(arguments.get("thread_id", "")).strip(),
+                channel=optional_string(arguments.get("channel", "")),
+                recipient=optional_string(arguments.get("recipient", "")),
+                workspace_hint=optional_string(arguments.get("workspace_hint", "")),
+                thread_id=optional_string(arguments.get("thread_id", "")),
             )
-            message_text = str(arguments.get("message", ""))
+            message_text = optional_string(arguments.get("message", ""))
             if target.channel == "session":
                 reason = ""
                 target_session = (
@@ -2052,6 +2054,7 @@ class HandlerImplementation(
                 user_id=user_id,
                 workspace_id=session.workspace_id,
                 session=session,
+                user_confirmed=user_confirmed,
             )
             try:
                 structured_payload_result = payload_builder(

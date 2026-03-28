@@ -206,3 +206,95 @@ def test_m1_plain_greeting_rewrite_drops_spurious_tool_actions() -> None:
     assert rewritten.output.actions == []
     assert rewritten.evaluated == []
     assert rewritten.output.assistant_response == "Hello. How can I help?"
+
+
+def test_m1_plain_greeting_rewrite_ignores_greeting_prefixed_commands() -> None:
+    planner_result = PlannerResult(
+        output=PlannerOutput(assistant_response="", actions=[]),
+        evaluated=[],
+        attempts=1,
+        provider_response=None,
+        messages_sent=(),
+    )
+
+    rewritten = _rewrite_plain_greeting_planner_result(
+        user_text="hello, add a note: test",
+        planner_result=planner_result,
+    )
+
+    assert rewritten is planner_result
+
+
+def test_m1_explicit_memory_intent_parser_allows_greeting_prefix_before_command() -> None:
+    proposal = _build_explicit_memory_intent_proposal("hello, add a note: test")
+
+    assert proposal is not None
+    assert proposal.tool_name == ToolName("note.create")
+    assert proposal.arguments == {"content": "test"}
+
+
+@pytest.mark.parametrize(
+    "user_text",
+    [
+        "add todo: review PRs and list my todos",
+        "remind me to check email on 2026-03-30T12:00:00Z",
+    ],
+)
+def test_m1_explicit_memory_intent_parser_rejects_ambiguous_or_unsupported_forms(
+    user_text: str,
+) -> None:
+    assert _build_explicit_memory_intent_proposal(user_text) is None
+
+
+def test_m1_explicit_memory_intent_rewrite_preserves_multi_action_planner_results() -> None:
+    registry = _memory_registry()
+    pep = PEP(PolicyBundle(default_require_confirmation=False), registry)
+    first = ActionProposal(
+        action_id="a-1",
+        tool_name=ToolName("todo.create"),
+        arguments={"title": "review PRs"},
+        reasoning="Create todo.",
+        data_sources=[],
+    )
+    second = ActionProposal(
+        action_id="a-2",
+        tool_name=ToolName("todo.list"),
+        arguments={},
+        reasoning="List todos.",
+        data_sources=[],
+    )
+    planner_result = PlannerResult(
+        output=PlannerOutput(assistant_response="", actions=[first, second]),
+        evaluated=[
+            EvaluatedProposal(
+                proposal=first,
+                decision=PEPDecision(
+                    kind=PEPDecisionKind.ALLOW,
+                    reason="allow",
+                    tool_name=first.tool_name,
+                    risk_score=0.0,
+                ),
+            ),
+            EvaluatedProposal(
+                proposal=second,
+                decision=PEPDecision(
+                    kind=PEPDecisionKind.ALLOW,
+                    reason="allow",
+                    tool_name=second.tool_name,
+                    risk_score=0.0,
+                ),
+            ),
+        ],
+        attempts=1,
+        provider_response=None,
+        messages_sent=(),
+    )
+
+    rewritten = _rewrite_explicit_memory_intent_planner_result(
+        user_text="add todo: review PRs and list my todos",
+        planner_result=planner_result,
+        pep=pep,
+        context=PolicyContext(capabilities={Capability.MEMORY_READ, Capability.MEMORY_WRITE}),
+    )
+
+    assert rewritten is planner_result

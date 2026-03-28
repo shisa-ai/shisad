@@ -710,6 +710,38 @@ def _normalize_explicit_memory_intent_text(text: str) -> str:
     return re.sub(r"\s+", " ", str(text or "")).strip()
 
 
+def _strip_explicit_memory_intent_greeting_prefix(text: str) -> str:
+    normalized = _normalize_explicit_memory_intent_text(text)
+    match = re.match(
+        r"^(?:hello|hi|hey)(?: there)?(?:[,!:.]+)?\s+(.+)$",
+        normalized,
+        flags=re.IGNORECASE,
+    )
+    if match is None:
+        return normalized
+    return match.group(1).strip()
+
+
+def _has_explicit_memory_follow_on_command(text: str) -> bool:
+    normalized = _normalize_explicit_memory_intent_text(text)
+    return (
+        re.search(
+            (
+                r"\b(?:and|then|also)\s+"
+                r"(?:(?:list|show)\s+(?:my\s+)?(?:notes|todos|tasks|reminders)\b"
+                r"|search\s+(?:my\s+)?notes\b"
+                r"|(?:add|save)\s+(?:a\s+)?note:"
+                r"|(?:add|create)\s+(?:a\s+)?(?:todo|task):"
+                r"|(?:mark|complete|finish)\b"
+                r"|remind me\b)"
+            ),
+            normalized,
+            flags=re.IGNORECASE,
+        )
+        is not None
+    )
+
+
 def _is_plain_greeting(user_text: str) -> bool:
     normalized = _normalize_explicit_memory_intent_text(user_text).lower().strip()
     normalized = normalized.rstrip("!?.")
@@ -736,8 +768,10 @@ def _rewrite_plain_greeting_planner_result(
 
 
 def _build_explicit_memory_intent_proposal(user_text: str) -> ActionProposal | None:
-    normalized = _normalize_explicit_memory_intent_text(user_text)
+    normalized = _strip_explicit_memory_intent_greeting_prefix(user_text)
     if not normalized:
+        return None
+    if _has_explicit_memory_follow_on_command(normalized):
         return None
 
     note_match = re.match(r"^(?:add|save) (?:a )?note:\s*(.+)$", normalized, flags=re.IGNORECASE)
@@ -821,7 +855,7 @@ def _build_explicit_memory_intent_proposal(user_text: str) -> ActionProposal | N
             )
 
     reminder_match = re.match(
-        r"^remind me(?: to)?\s+(.+?)\s+((?:in|at|on)\s+.+)$",
+        r"^remind me(?: to)?\s+(.+?)\s+((?:in|at)\s+.+)$",
         normalized,
         flags=re.IGNORECASE,
     )
@@ -2599,11 +2633,11 @@ class SessionImplMixin(HandlerMixinBase):
             )
 
         planner_result = _rewrite_plain_greeting_planner_result(
-            user_text=validated.content,
+            user_text=validated.firewall_result.sanitized_text,
             planner_result=planner_result,
         )
         planner_result = _rewrite_explicit_memory_intent_planner_result(
-            user_text=validated.content,
+            user_text=validated.firewall_result.sanitized_text,
             planner_result=planner_result,
             pep=self._pep,
             context=planner_context.context,
@@ -2985,6 +3019,7 @@ class SessionImplMixin(HandlerMixinBase):
                 capabilities=planner_context.effective_caps,
                 approval_actor="policy_loop",
                 execution_action=cp_eval.action,
+                user_confirmed="user_text:explicit_memory_intent" in proposal.data_sources,
             )
             success = execution_result.success
             checkpoint_id = execution_result.checkpoint_id
