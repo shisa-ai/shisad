@@ -391,7 +391,8 @@ def _parse_reminder_delay_seconds(when: str, *, now: datetime) -> int:
             target += timedelta(days=1)
         return max(1, int((target - now).total_seconds()))
 
-    iso_candidate = normalized[:-1] + "+00:00" if normalized.endswith("Z") else normalized
+    iso_source = normalized[3:].strip() if normalized.lower().startswith("at ") else normalized
+    iso_candidate = iso_source[:-1] + "+00:00" if iso_source.endswith("Z") else iso_source
     try:
         parsed = datetime.fromisoformat(iso_candidate)
     except ValueError as exc:  # pragma: no cover - exercised through reminder behavior tests

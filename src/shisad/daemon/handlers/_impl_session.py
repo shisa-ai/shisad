@@ -87,6 +87,11 @@ from shisad.security.control_plane.schema import (
 )
 from shisad.security.firewall import FirewallResult
 from shisad.security.host_extraction import extract_hosts_from_text, host_patterns
+from shisad.security.intent_matching import (
+    has_follow_on_command,
+    normalize_intent_text,
+    strip_optional_greeting_prefix,
+)
 from shisad.security.monitor import MonitorDecisionType, combine_monitor_with_policy
 from shisad.security.pep import PolicyContext
 from shisad.security.risk import RiskObservation
@@ -707,39 +712,15 @@ def _build_planner_tool_context(
 
 
 def _normalize_explicit_memory_intent_text(text: str) -> str:
-    return re.sub(r"\s+", " ", str(text or "")).strip()
+    return normalize_intent_text(text)
 
 
 def _strip_explicit_memory_intent_greeting_prefix(text: str) -> str:
-    normalized = _normalize_explicit_memory_intent_text(text)
-    match = re.match(
-        r"^(?:hello|hi|hey)(?: there)?(?:[,!:.]+)?\s+(.+)$",
-        normalized,
-        flags=re.IGNORECASE,
-    )
-    if match is None:
-        return normalized
-    return match.group(1).strip()
+    return strip_optional_greeting_prefix(text)
 
 
 def _has_explicit_memory_follow_on_command(text: str) -> bool:
-    normalized = _normalize_explicit_memory_intent_text(text)
-    return (
-        re.search(
-            (
-                r"\b(?:and|then|also)\s+"
-                r"(?:(?:list|show)\s+(?:my\s+)?(?:notes|todos|tasks|reminders)\b"
-                r"|search\s+(?:my\s+)?notes\b"
-                r"|(?:add|save)\s+(?:a\s+)?note:"
-                r"|(?:add|create)\s+(?:a\s+)?(?:todo|task):"
-                r"|(?:mark|complete|finish)\b"
-                r"|remind me\b)"
-            ),
-            normalized,
-            flags=re.IGNORECASE,
-        )
-        is not None
-    )
+    return has_follow_on_command(text)
 
 
 def _is_plain_greeting(user_text: str) -> bool:
@@ -754,6 +735,12 @@ def _rewrite_plain_greeting_planner_result(
     planner_result: PlannerResult,
 ) -> PlannerResult:
     if not _is_plain_greeting(user_text):
+        return planner_result
+    if (
+        not planner_result.output.actions
+        and not planner_result.evaluated
+        and planner_result.output.assistant_response.strip()
+    ):
         return planner_result
     return PlannerResult(
         output=PlannerOutput(

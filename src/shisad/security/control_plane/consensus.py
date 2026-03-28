@@ -29,6 +29,11 @@ from shisad.security.control_plane.schema import (
 )
 from shisad.security.control_plane.sequence import BehavioralSequenceAnalyzer
 from shisad.security.control_plane.trace import PlanVerificationResult
+from shisad.security.intent_matching import (
+    has_follow_on_command,
+    normalize_intent_text,
+    strip_optional_greeting_prefix,
+)
 
 TRACE_VOTER_NAME = "ExecutionTraceVerifier"
 
@@ -259,39 +264,15 @@ class ActionMonitorVoter:
 
     @staticmethod
     def _normalize_intent_text(text: str) -> str:
-        return re.sub(r"\s+", " ", str(text or "")).strip()
+        return normalize_intent_text(text)
 
     @classmethod
     def _strip_optional_greeting_prefix(cls, text: str) -> str:
-        normalized = cls._normalize_intent_text(text)
-        match = re.match(
-            r"^(?:hello|hi|hey)(?: there)?(?:[,!:.]+)?\s+(.+)$",
-            normalized,
-            flags=re.IGNORECASE,
-        )
-        if match is None:
-            return normalized
-        return match.group(1).strip()
+        return strip_optional_greeting_prefix(text)
 
     @classmethod
     def _has_follow_on_command(cls, text: str) -> bool:
-        normalized = cls._normalize_intent_text(text)
-        return (
-            re.search(
-                (
-                    r"\b(?:and|then|also)\s+"
-                    r"(?:(?:list|show)\s+(?:my\s+)?(?:notes|todos|tasks|reminders)\b"
-                    r"|search\s+(?:my\s+)?notes\b"
-                    r"|(?:add|save)\s+(?:a\s+)?note:"
-                    r"|(?:add|create)\s+(?:a\s+)?(?:todo|task):"
-                    r"|(?:mark|complete|finish)\b"
-                    r"|remind me\b)"
-                ),
-                normalized,
-                flags=re.IGNORECASE,
-            )
-            is not None
-        )
+        return has_follow_on_command(text)
 
     @classmethod
     def _matches_argument(cls, value: Any, expected: str) -> bool:

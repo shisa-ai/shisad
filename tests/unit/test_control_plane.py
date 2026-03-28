@@ -920,6 +920,39 @@ async def test_m1_rr1_action_monitor_does_not_allow_negated_todo_completion() ->
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "raw_user_text",
+    [
+        "add todo: review PRs; list my todos",
+        "add todo: review PRs, list my todos",
+    ],
+)
+async def test_m1_rr2_action_monitor_rejects_punctuation_separated_follow_on_commands(
+    raw_user_text: str,
+) -> None:
+    voter = ActionMonitorVoter()
+    action = build_action(
+        tool_name="todo.create",
+        arguments={"title": "review PRs"},
+        origin=_origin("s-action-monitor-follow-on-punctuation"),
+    )
+    decision = await voter.cast_vote(
+        ConsensusInput(
+            action=action,
+            trace_result=PlanVerificationResult(allowed=True, reason_code="trace:allowed"),
+            metadata_payload={
+                "session_tainted": True,
+                "trusted_input": True,
+                "raw_user_text": raw_user_text,
+                "action_arguments": {"title": "review PRs"},
+            },
+        )
+    )
+    assert decision.decision == VoteKind.FLAG
+    assert "action_monitor:deterministic_intent_match" not in decision.reason_codes
+
+
+@pytest.mark.asyncio
 async def test_m1_rr1_action_monitor_matches_only_primary_note_fields() -> None:
     voter = ActionMonitorVoter()
     action = build_action(
@@ -941,6 +974,33 @@ async def test_m1_rr1_action_monitor_matches_only_primary_note_fields() -> None:
     )
     assert decision.decision == VoteKind.FLAG
     assert "action_monitor:deterministic_intent_match" not in decision.reason_codes
+
+
+@pytest.mark.asyncio
+async def test_m1_rr2_action_monitor_allows_at_iso_reminder_datetime() -> None:
+    voter = ActionMonitorVoter()
+    action = build_action(
+        tool_name="reminder.create",
+        arguments={"message": "check email", "when": "at 2026-03-30T12:00:00Z"},
+        origin=_origin("s-action-monitor-reminder-at-iso"),
+    )
+    decision = await voter.cast_vote(
+        ConsensusInput(
+            action=action,
+            trace_result=PlanVerificationResult(allowed=True, reason_code="trace:allowed"),
+            metadata_payload={
+                "session_tainted": True,
+                "trusted_input": True,
+                "raw_user_text": "remind me to check email at 2026-03-30T12:00:00Z",
+                "action_arguments": {
+                    "message": "check email",
+                    "when": "at 2026-03-30T12:00:00Z",
+                },
+            },
+        )
+    )
+    assert decision.decision == VoteKind.ALLOW
+    assert "action_monitor:deterministic_intent_match" in decision.reason_codes
 
 
 @pytest.mark.asyncio

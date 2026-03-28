@@ -421,6 +421,39 @@ async def test_m1_structured_reminder_create_treats_shell_metacharacters_as_lite
 
 
 @pytest.mark.asyncio
+async def test_m1_structured_reminder_create_accepts_at_iso_datetime() -> None:
+    captured: dict[str, Any] = {}
+
+    class _Handler:
+        async def do_task_create(self, payload: dict[str, Any]) -> dict[str, Any]:
+            captured.update(payload)
+            return {"id": "task-1", "schedule": payload["schedule"]}
+
+    session = Session(
+        id=SessionId("s-reminder-at-iso"),
+        channel="cli",
+        user_id=UserId("user-1"),
+        workspace_id=WorkspaceId("ws-1"),
+    )
+    context = StructuredToolContext(
+        session_id=SessionId("s-reminder-at-iso"),
+        user_id=UserId("user-1"),
+        workspace_id=WorkspaceId("ws-1"),
+        session=session,
+    )
+
+    payload = await _structured_reminder_create(
+        _Handler(),
+        {"message": "check email", "when": "at 2026-03-30T12:00:00Z"},
+        context,
+    )
+
+    assert payload["ok"] is True
+    assert captured["schedule"]["kind"] == "interval"
+    assert str(captured["schedule"]["expression"]).endswith("s")
+
+
+@pytest.mark.asyncio
 async def test_m7_impl_web_search_branch_records_success_with_structured_helper() -> None:
     harness = _StructuredBranchHarness(
         web_payload={"ok": True, "results": [{"title": "roadmap"}]},
