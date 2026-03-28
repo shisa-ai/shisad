@@ -12,6 +12,11 @@ _FOLLOW_ON_COMMAND_FRAGMENT = (
     r"|(?:mark|complete|finish)\b"
     r"|remind me\b)"
 )
+_PUNCTUATION_FOLLOW_ON_VERB_FRAGMENT = (
+    r"(?:(?:please\s+)?(?:read|open|view|list|show|check|inspect|search|find|fetch|get"
+    r"|look\s+up|browse|visit|write|send|message|email|run|execute|edit|update|delete"
+    r"|remove|summarize|explain)\b)"
+)
 
 
 def normalize_intent_text(text: str) -> str:
@@ -34,7 +39,10 @@ def has_follow_on_command(text: str) -> bool:
     normalized = normalize_intent_text(text)
     return (
         re.search(
-            rf"(?:\b(?:and|then|also)\s+|[;,]\s*)(?:{_FOLLOW_ON_COMMAND_FRAGMENT})",
+            (
+                rf"\b(?:and|then|also)\s+(?:{_FOLLOW_ON_COMMAND_FRAGMENT})"
+                rf"|[;,]\s+(?:{_FOLLOW_ON_COMMAND_FRAGMENT}|{_PUNCTUATION_FOLLOW_ON_VERB_FRAGMENT})"
+            ),
             normalized,
             flags=re.IGNORECASE,
         )

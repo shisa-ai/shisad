@@ -256,6 +256,8 @@ def test_m1_explicit_memory_intent_parser_allows_greeting_prefix_before_command(
         "add todo: review PRs and list my todos",
         "add todo: review PRs; list my todos",
         "add todo: review PRs, list my todos",
+        "add todo: review PRs; read README.md",
+        "add todo: review PRs, read README.md",
         "remind me to check email on 2026-03-30T12:00:00Z",
     ],
 )
@@ -276,6 +278,14 @@ def test_m1_explicit_memory_intent_parser_allows_at_iso_reminder_datetime() -> N
         "message": "check email",
         "when": "at 2026-03-30T12:00:00Z",
     }
+
+
+def test_m1_explicit_memory_intent_parser_keeps_comma_separated_note_content() -> None:
+    proposal = _build_explicit_memory_intent_proposal("add a note: buy milk, eggs, bread")
+
+    assert proposal is not None
+    assert proposal.tool_name == ToolName("note.create")
+    assert proposal.arguments == {"content": "buy milk, eggs, bread"}
 
 
 @pytest.mark.parametrize(
@@ -327,6 +337,56 @@ def test_m1_explicit_memory_intent_rewrite_preserves_multi_action_planner_result
                 ),
             ),
         ],
+        attempts=1,
+        provider_response=None,
+        messages_sent=(),
+    )
+
+    rewritten = _rewrite_explicit_memory_intent_planner_result(
+        user_text=user_text,
+        planner_result=planner_result,
+        pep=pep,
+        context=PolicyContext(capabilities={Capability.MEMORY_READ, Capability.MEMORY_WRITE}),
+    )
+
+    assert rewritten is planner_result
+
+
+@pytest.mark.parametrize(
+    "user_text",
+    [
+        "add todo: review PRs; read README.md",
+        "add todo: review PRs, read README.md",
+    ],
+)
+def test_m1_explicit_memory_intent_rewrite_preserves_non_memory_follow_on_results(
+    user_text: str,
+) -> None:
+    registry = _memory_registry()
+    pep = PEP(PolicyBundle(default_require_confirmation=False), registry)
+    planner_result = PlannerResult(
+        output=PlannerOutput(
+            assistant_response=(
+                "Tool results summary: - todo.create: success=True - fs.read: success=True"
+            ),
+            actions=[
+                ActionProposal(
+                    action_id="todo-create",
+                    tool_name=ToolName("todo.create"),
+                    arguments={"title": "review PRs"},
+                    reasoning="Create the todo.",
+                    data_sources=[],
+                ),
+                ActionProposal(
+                    action_id="fs-read",
+                    tool_name=ToolName("fs.read"),
+                    arguments={"path": "README.md"},
+                    reasoning="Read the requested file.",
+                    data_sources=[],
+                ),
+            ],
+        ),
+        evaluated=[],
         attempts=1,
         provider_response=None,
         messages_sent=(),

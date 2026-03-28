@@ -925,6 +925,8 @@ async def test_m1_rr1_action_monitor_does_not_allow_negated_todo_completion() ->
     [
         "add todo: review PRs; list my todos",
         "add todo: review PRs, list my todos",
+        "add todo: review PRs; read README.md",
+        "add todo: review PRs, read README.md",
     ],
 )
 async def test_m1_rr2_action_monitor_rejects_punctuation_separated_follow_on_commands(
