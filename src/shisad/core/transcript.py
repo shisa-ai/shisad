@@ -27,6 +27,7 @@ class TranscriptEntry(BaseModel):
     timestamp: datetime = Field(default_factory=lambda: datetime.now(UTC))
     blob_ref: str | None = None
     content_preview: str = ""
+    evidence_ref_id: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -51,6 +52,7 @@ class TranscriptStore:
         content: str,
         taint_labels: set[TaintLabel] | None = None,
         metadata: dict[str, Any] | None = None,
+        evidence_ref_id: str | None = None,
         timestamp: datetime | None = None,
     ) -> TranscriptEntry:
         """Append a transcript entry for a session."""
@@ -59,6 +61,8 @@ class TranscriptStore:
         entry_timestamp = self._normalize_timestamp(timestamp)
         entry_metadata = dict(metadata or {})
         entry_metadata["timestamp_utc"] = entry_timestamp.isoformat()
+        if evidence_ref_id:
+            entry_metadata.setdefault("evidence_ref_id", evidence_ref_id)
 
         blob_ref: str | None = None
         preview = content
@@ -77,6 +81,7 @@ class TranscriptStore:
             timestamp=entry_timestamp,
             blob_ref=blob_ref,
             content_preview=preview,
+            evidence_ref_id=evidence_ref_id,
             metadata=entry_metadata,
         )
 

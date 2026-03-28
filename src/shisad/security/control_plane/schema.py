@@ -122,6 +122,8 @@ _TOOL_KIND_MAP: dict[str, ActionKind] = {
     "task.disable": ActionKind.MEMORY_WRITE,
     "reminder.create": ActionKind.MEMORY_WRITE,
     "reminder.list": ActionKind.MEMORY_READ,
+    "evidence.read": ActionKind.MEMORY_READ,
+    "evidence.promote": ActionKind.MEMORY_READ,
     "fs.list": ActionKind.FS_LIST,
     "fs.read": ActionKind.FS_READ,
     "fs.write": ActionKind.FS_WRITE,

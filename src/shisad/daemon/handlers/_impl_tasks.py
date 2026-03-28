@@ -366,6 +366,7 @@ class TasksImplMixin(HandlerMixinBase):
             PolicyContext(
                 capabilities=effective_capabilities,
                 taint_labels=_payload_taints(str(getattr(run, "payload_taint", ""))),
+                session_id=sid,
                 workspace_id=WorkspaceId(str(getattr(task, "workspace_id", ""))),
                 user_id=UserId(str(getattr(task, "created_by", ""))),
                 trust_level=trust_level,

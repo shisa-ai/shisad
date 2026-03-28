@@ -27,6 +27,7 @@ from shisad.core.api.transport import ControlServer
 from shisad.core.audit import AuditLog
 from shisad.core.config import DaemonConfig, ModelConfig
 from shisad.core.events import EventBus
+from shisad.core.evidence import EvidenceStore
 from shisad.core.planner import Planner
 from shisad.core.providers.base import validate_endpoint
 from shisad.core.providers.capabilities import AuthMode
@@ -113,6 +114,7 @@ class DaemonServices:
     router: ModelRouter
     transcript_root: Path
     transcript_store: TranscriptStore
+    evidence_store: EvidenceStore
     trace_recorder: TraceRecorder | None
     checkpoint_store: CheckpointStore
     risk_calibrator: RiskCalibrator
@@ -178,6 +180,7 @@ class DaemonServices:
 
         transcript_root = config.data_dir / "sessions"
         transcript_store = TranscriptStore(transcript_root)
+        evidence_store = EvidenceStore(transcript_root / "evidence")
         trace_recorder: TraceRecorder | None = None
         if config.trace_enabled:
             trace_recorder = TraceRecorder(config.data_dir / "traces")
@@ -428,6 +431,8 @@ class DaemonServices:
             pep = PEP(
                 policy_loader.policy,
                 registry,
+                evidence_store=evidence_store,
+                credential_store=credential_store,
                 credential_audit_hook=event_wiring.audit_credential_use,
             )
             planner_route = router.route_for(ModelComponent.PLANNER)
@@ -473,6 +478,7 @@ class DaemonServices:
                 router=router,
                 transcript_root=transcript_root,
                 transcript_store=transcript_store,
+                evidence_store=evidence_store,
                 trace_recorder=trace_recorder,
                 checkpoint_store=checkpoint_store,
                 risk_calibrator=risk_calibrator,
@@ -990,6 +996,32 @@ def _build_tool_registry(
                 ToolParameter(name="thread_id", type="string", required=False),
             ],
             capabilities_required=[Capability.MESSAGE_SEND],
+            require_confirmation=False,
+        )
+    )
+    registry.register(
+        ToolDefinition(
+            name=ToolName("evidence.read"),
+            description=(
+                "Read the full content of a stored evidence reference for the current turn."
+            ),
+            parameters=[
+                ToolParameter(name="ref_id", type="string", required=True),
+            ],
+            capabilities_required=[Capability.MEMORY_READ],
+            require_confirmation=False,
+        )
+    )
+    registry.register(
+        ToolDefinition(
+            name=ToolName("evidence.promote"),
+            description=(
+                "Promote stored evidence into persistent conversation context after user approval."
+            ),
+            parameters=[
+                ToolParameter(name="ref_id", type="string", required=True),
+            ],
+            capabilities_required=[Capability.MEMORY_READ],
             require_confirmation=False,
         )
     )

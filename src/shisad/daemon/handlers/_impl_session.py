@@ -10,6 +10,7 @@ import re
 import time
 from collections.abc import Mapping, Sequence
 from contextlib import suppress
+from copy import deepcopy
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
@@ -48,6 +49,7 @@ from shisad.core.events import (
     ToolProposed,
     ToolRejected,
 )
+from shisad.core.evidence import EvidenceStore, _generate_safe_summary, format_evidence_stub
 from shisad.core.planner import (
     ActionProposal,
     EvaluatedProposal,
@@ -707,6 +709,12 @@ def _build_planner_tool_context(
         lines.append(
             "Enabled tools: " + ", ".join(str(tool.name) for tool in enabled_tools)
         )
+    if any(str(tool.name) in {"evidence.read", "evidence.promote"} for tool in enabled_tools):
+        lines.append(
+            "If a tool result includes an [EVIDENCE ref=...] stub, call evidence.read(ref_id) "
+            "to inspect it. Use evidence.promote(ref_id) only when the user wants that "
+            "content to persist in conversation context."
+        )
     lines.append("If no tool is needed, respond conversationally without calling tools.")
     return "\n".join(lines)
 
@@ -1051,8 +1059,26 @@ def _transcript_metadata_for_channel(*, channel: str, session_mode: SessionMode)
     }
 
 
-def _transcript_entry_content(*, entry: TranscriptEntry) -> str:
+def _entry_is_ephemeral_evidence_read(entry: TranscriptEntry) -> bool:
+    metadata = entry.metadata if isinstance(entry.metadata, dict) else {}
+    return bool(metadata.get("ephemeral_evidence_read"))
+
+
+def _transcript_entry_content(
+    *,
+    entry: TranscriptEntry,
+    transcript_store: TranscriptStore | None = None,
+) -> str:
     # Use inlined transcript previews to avoid per-turn full-blob reads.
+    metadata = entry.metadata if isinstance(entry.metadata, dict) else {}
+    if (
+        metadata.get("promoted_evidence") is True
+        and transcript_store is not None
+        and entry.blob_ref
+    ):
+        blob = transcript_store.read_blob(entry.blob_ref)
+        if isinstance(blob, str) and blob.strip():
+            return blob
     return entry.content_preview
 
 
@@ -1099,7 +1125,7 @@ def _build_planner_conversation_context(
         resolved_entries = transcript_store.list_entries(session_id)
     if entries is None and exclude_latest_turn and resolved_entries:
         resolved_entries = resolved_entries[:-1]
-    entries = resolved_entries
+    entries = [entry for entry in resolved_entries if not _entry_is_ephemeral_evidence_read(entry)]
     if not entries:
         return "", set()
 
@@ -1122,7 +1148,10 @@ def _build_planner_conversation_context(
 
     for entry in visible_entries:
         role = _normalize_context_role(entry.role)
-        raw_content = _transcript_entry_content(entry=entry)
+        raw_content = _transcript_entry_content(
+            entry=entry,
+            transcript_store=transcript_store,
+        )
         compact = _compact_context_text(raw_content, max_chars=_CONTEXT_ENTRY_MAX_CHARS)
         if compact:
             lines.append(f"- [{_relative_time_ago(entry.timestamp)}] {role}: {compact}")
@@ -1665,6 +1694,155 @@ def _serialize_tool_outputs(records: list[Any]) -> list[dict[str, Any]]:
             }
         )
     return serialized
+
+
+def _tool_output_evidence_source(tool_name: str, payload: Mapping[str, Any]) -> str:
+    for key in ("url", "backend"):
+        value = payload.get(key)
+        if isinstance(value, str) and value.strip():
+            host = (urlparse(value).hostname or "").strip().lower()
+            if host:
+                return f"{tool_name}:{host}"
+    evidence = payload.get("evidence")
+    if isinstance(evidence, Mapping):
+        for key in ("url", "backend_url", "final_url"):
+            value = evidence.get(key)
+            if isinstance(value, str) and value.strip():
+                host = (urlparse(value).hostname or "").strip().lower()
+                if host:
+                    return f"{tool_name}:{host}"
+    path = payload.get("path")
+    if isinstance(path, str) and path.strip():
+        return f"{tool_name}:{path.strip()}"
+    return tool_name
+
+
+def _wrap_serialized_tool_outputs_with_evidence(
+    *,
+    session_id: SessionId,
+    records: list[dict[str, Any]],
+    evidence_store: EvidenceStore,
+    firewall: Any,
+) -> list[str]:
+    evidence_ref_ids: list[str] = []
+    for record in records:
+        tool_name = str(record.get("tool_name", "")).strip().lower()
+        if tool_name in {"evidence.read", "evidence.promote"}:
+            continue
+        taint_labels = {
+            str(value).strip().lower()
+            for value in record.get("taint_labels", [])
+            if str(value).strip()
+        }
+        if TaintLabel.UNTRUSTED.value not in taint_labels:
+            continue
+        payload = record.get("payload")
+        if not isinstance(payload, dict):
+            continue
+        for key in ("content", "text"):
+            candidate = payload.get(key)
+            if not isinstance(candidate, str):
+                continue
+            byte_size = len(candidate.encode("utf-8"))
+            if byte_size <= 256:
+                continue
+            source = _tool_output_evidence_source(tool_name, payload)
+            summary = _generate_safe_summary(
+                candidate,
+                source=source,
+                byte_size=byte_size,
+                firewall=firewall,
+            )
+            ref = evidence_store.store(
+                session_id,
+                candidate,
+                taint_labels={TaintLabel(label) for label in taint_labels},
+                source=source,
+                summary=summary,
+            )
+            payload[key] = format_evidence_stub(ref)
+            if ref.ref_id not in evidence_ref_ids:
+                evidence_ref_ids.append(ref.ref_id)
+    return evidence_ref_ids
+
+
+def _taint_labels_from_payload(payload: Mapping[str, Any]) -> set[TaintLabel]:
+    raw = payload.get("taint_labels")
+    if not isinstance(raw, list):
+        return set()
+    labels: set[TaintLabel] = set()
+    for item in raw:
+        try:
+            labels.add(TaintLabel(str(item)))
+        except ValueError:
+            continue
+    return labels
+
+
+def _build_evidence_supplemental_entries(
+    *,
+    records: list[dict[str, Any]],
+    channel: str,
+    session_mode: SessionMode,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    supplemental: list[dict[str, Any]] = []
+    chat_records = deepcopy(records)
+    for index, record in enumerate(records):
+        tool_name = str(record.get("tool_name", "")).strip()
+        payload = record.get("payload")
+        if not isinstance(payload, dict) or not bool(payload.get("ok", False)):
+            continue
+        ref_id = str(payload.get("ref_id", "")).strip()
+        content = payload.get("content")
+        if tool_name == "evidence.read" and isinstance(content, str) and content.strip():
+            taint_labels = _taint_labels_from_payload(payload) or {TaintLabel.UNTRUSTED}
+            supplemental.append(
+                {
+                    "role": "assistant",
+                    "content": content,
+                    "taint_labels": taint_labels,
+                    "metadata": {
+                        **_transcript_metadata_for_channel(
+                            channel=channel,
+                            session_mode=session_mode,
+                        ),
+                        "ephemeral_evidence_read": True,
+                        "evidence_read_ref_id": ref_id,
+                    },
+                }
+            )
+            chat_records[index]["payload"] = {
+                "ok": True,
+                "ref_id": ref_id,
+                "source": str(payload.get("source", "")).strip(),
+                "status": "ephemeral_read",
+                "note": f"Evidence {ref_id} was read for this turn only.",
+            }
+        elif tool_name == "evidence.promote" and isinstance(content, str) and content.strip():
+            taint_labels = _taint_labels_from_payload(payload) or {TaintLabel.USER_REVIEWED}
+            supplemental.append(
+                {
+                    "role": "assistant",
+                    "content": content,
+                    "taint_labels": taint_labels,
+                    "metadata": {
+                        **_transcript_metadata_for_channel(
+                            channel=channel,
+                            session_mode=session_mode,
+                        ),
+                        "promoted_evidence": True,
+                        "promoted_ref_id": ref_id,
+                    },
+                }
+            )
+            chat_records[index]["payload"] = {
+                "ok": True,
+                "ref_id": ref_id,
+                "source": str(payload.get("source", "")).strip(),
+                "status": "promoted",
+                "note": f"Evidence {ref_id} was promoted into persistent conversation context.",
+            }
+    return supplemental, chat_records
 
 
 def _summarize_tool_outputs_for_chat(records: list[dict[str, Any]]) -> str:
@@ -2308,6 +2486,9 @@ class SessionImplMixin(HandlerMixinBase):
             context_entries = []
         else:
             context_entries = transcript_entries[:-1] if transcript_entries else []
+            context_entries = [
+                entry for entry in context_entries if not _entry_is_ephemeral_evidence_read(entry)
+            ]
         episode_snapshot = _build_episode_snapshot(context_entries)
         if episode_snapshot is None and not zero_context_session:
             logger.warning(
@@ -2387,6 +2568,7 @@ class SessionImplMixin(HandlerMixinBase):
             taint_labels=policy_taint_labels,
             user_goal_host_patterns=user_goal_host_patterns,
             untrusted_host_patterns=untrusted_host_patterns,
+            session_id=sid,
             workspace_id=session.workspace_id,
             user_id=session.user_id,
             tool_allowlist=validated.tool_allowlist,
@@ -3054,10 +3236,25 @@ class SessionImplMixin(HandlerMixinBase):
         validated = planner_context.validated
         sid = validated.sid
 
-        serialized_tool_outputs = _serialize_tool_outputs(execution.executed_tool_outputs)
+        raw_serialized_tool_outputs = _serialize_tool_outputs(execution.executed_tool_outputs)
+        chat_serialized_tool_outputs = deepcopy(raw_serialized_tool_outputs)
+        evidence_ref_ids: list[str] = []
+        evidence_store = getattr(self, "_evidence_store", None)
+        if chat_serialized_tool_outputs and evidence_store is not None:
+            evidence_ref_ids = _wrap_serialized_tool_outputs_with_evidence(
+                session_id=sid,
+                records=chat_serialized_tool_outputs,
+                evidence_store=evidence_store,
+                firewall=self._firewall,
+            )
+        supplemental_entries, chat_serialized_tool_outputs = _build_evidence_supplemental_entries(
+            records=chat_serialized_tool_outputs,
+            channel=validated.channel,
+            session_mode=validated.session_mode,
+        )
         response_text = planner_dispatch.planner_result.output.assistant_response
-        if serialized_tool_outputs:
-            summary = _summarize_tool_outputs_for_chat(serialized_tool_outputs)
+        if chat_serialized_tool_outputs:
+            summary = _summarize_tool_outputs_for_chat(chat_serialized_tool_outputs)
             if summary:
                 response_text = (
                     f"{response_text}\n\n{summary}" if response_text.strip() else summary
@@ -3119,6 +3316,8 @@ class SessionImplMixin(HandlerMixinBase):
             channel=validated.channel,
             session_mode=validated.session_mode,
         )
+        if evidence_ref_ids:
+            assistant_transcript_metadata["evidence_ref_ids"] = list(evidence_ref_ids)
         if validated.delivery_target is not None:
             assistant_transcript_metadata["delivery_target"] = validated.delivery_target.model_dump(
                 mode="json"
@@ -3129,7 +3328,19 @@ class SessionImplMixin(HandlerMixinBase):
             content=response_text,
             taint_labels=response_taint_labels,
             metadata=assistant_transcript_metadata,
+            evidence_ref_id=evidence_ref_ids[0] if evidence_ref_ids else None,
         )
+        for entry in supplemental_entries:
+            self._transcript_store.append(
+                sid,
+                role=str(entry.get("role", "assistant")),
+                content=str(entry.get("content", "")),
+                taint_labels=set(entry.get("taint_labels", set())),
+                metadata=dict(entry.get("metadata", {})),
+                evidence_ref_id=str(entry.get("metadata", {}).get("promoted_ref_id", "")).strip()
+                or str(entry.get("metadata", {}).get("evidence_read_ref_id", "")).strip()
+                or None,
+            )
         await self._maybe_run_conversation_summarizer(
             sid=sid,
             session=validated.session,
@@ -3209,7 +3420,7 @@ class SessionImplMixin(HandlerMixinBase):
             "pending_confirmation_ids": execution.pending_confirmation_ids,
             "output_policy": output_result.model_dump(mode="json"),
             "planner_error": planner_dispatch.planner_failure_code,
-            "tool_outputs": serialized_tool_outputs,
+            "tool_outputs": raw_serialized_tool_outputs,
         }
 
     def _task_request_from_params(
@@ -4177,6 +4388,7 @@ class SessionImplMixin(HandlerMixinBase):
             entry
             for entry in entries
             if _normalize_context_role(entry.role) in {"user", "assistant"}
+            and not _entry_is_ephemeral_evidence_read(entry)
         ]
         if not conversational_entries:
             return

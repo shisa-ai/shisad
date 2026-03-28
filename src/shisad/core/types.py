@@ -66,6 +66,7 @@ class TaintLabel(StrEnum):
     """
 
     UNTRUSTED = "untrusted"
+    USER_REVIEWED = "user_reviewed"
     SENSITIVE_EMAIL = "email"
     SENSITIVE_FILE = "file"
     SENSITIVE_CALENDAR = "calendar"

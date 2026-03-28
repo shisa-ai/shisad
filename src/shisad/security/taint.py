@@ -18,6 +18,39 @@ WRITE_TOOLS = {
     "message.send",
 }
 
+_INTERNAL_TOOL_OUTPUTS = {
+    "shell.exec",
+    "file.read",
+    "file.write",
+    "fs.list",
+    "fs.read",
+    "fs.write",
+    "git.status",
+    "git.diff",
+    "git.log",
+    "note.create",
+    "note.list",
+    "note.search",
+    "note.get",
+    "note.delete",
+    "note.verify",
+    "note.export",
+    "todo.create",
+    "todo.list",
+    "todo.complete",
+    "todo.get",
+    "todo.delete",
+    "todo.verify",
+    "todo.export",
+    "reminder.create",
+    "reminder.list",
+    "message.send",
+    "task.create",
+    "task.list",
+    "task.disable",
+    "report_anomaly",
+}
+
 
 @dataclass(frozen=True)
 class TaintSinkDecision:
@@ -59,17 +92,13 @@ def normalize_retrieval_taints(
 def label_tool_output(tool_name: str) -> set[TaintLabel]:
     """Label tool output by trust characteristics."""
     canonical_name = canonical_tool_name(tool_name)
-    external_tools = {
-        "http.request",
-        "web.search",
-        "web.fetch",
-        "retrieve_rag",
-        "realitycheck.search",
-        "realitycheck.read",
-    }
-    if canonical_name in external_tools:
+    if canonical_name == "evidence.promote":
+        return {TaintLabel.USER_REVIEWED}
+    if canonical_name == "evidence.read":
         return {TaintLabel.UNTRUSTED}
-    return set()
+    if canonical_name in _INTERNAL_TOOL_OUTPUTS:
+        return set()
+    return {TaintLabel.UNTRUSTED}
 
 
 def propagate_taint(*label_sets: set[TaintLabel]) -> set[TaintLabel]:

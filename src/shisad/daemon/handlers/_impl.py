@@ -567,6 +567,62 @@ async def _structured_reminder_list(
             break
     return {"ok": True, "tasks": rows, "count": len(rows)}
 
+
+async def _structured_evidence_read(
+    handler: Any,
+    arguments: Mapping[str, Any],
+    context: StructuredToolContext,
+) -> Mapping[str, Any]:
+    ref_id = _argument_string(arguments, "ref_id")
+    if not ref_id:
+        return {"ok": False, "error": "invalid or unknown evidence reference"}
+    store = getattr(handler, "_evidence_store", None)
+    if store is None:
+        return {"ok": False, "error": "invalid or unknown evidence reference"}
+    ref = store.get_ref(context.session_id, ref_id)
+    content = store.read(context.session_id, ref_id)
+    if ref is None or content is None:
+        return {"ok": False, "error": "invalid or unknown evidence reference", "ref_id": ref_id}
+    return {
+        "ok": True,
+        "ref_id": ref_id,
+        "source": ref.source,
+        "summary": ref.summary,
+        "content": content,
+        "taint_labels": [label.value for label in ref.taint_labels],
+    }
+
+
+async def _structured_evidence_promote(
+    handler: Any,
+    arguments: Mapping[str, Any],
+    context: StructuredToolContext,
+) -> Mapping[str, Any]:
+    ref_id = _argument_string(arguments, "ref_id")
+    if not ref_id:
+        return {"ok": False, "error": "invalid or unknown evidence reference"}
+    store = getattr(handler, "_evidence_store", None)
+    if store is None:
+        return {"ok": False, "error": "invalid or unknown evidence reference"}
+    ref = store.get_ref(context.session_id, ref_id)
+    content = store.read(context.session_id, ref_id)
+    if ref is None or content is None:
+        return {"ok": False, "error": "invalid or unknown evidence reference", "ref_id": ref_id}
+    taint_labels = sorted(
+        {
+            *[label.value for label in ref.taint_labels if label != TaintLabel.UNTRUSTED],
+            TaintLabel.USER_REVIEWED.value,
+        }
+    )
+    return {
+        "ok": True,
+        "ref_id": ref_id,
+        "source": ref.source,
+        "summary": ref.summary,
+        "content": content,
+        "taint_labels": taint_labels,
+    }
+
 @dataclass(slots=True)
 class PendingAction:
     confirmation_id: str
@@ -629,6 +685,7 @@ class HandlerImplementation(
         self._alarm_tool = services.alarm_tool
         self._session_manager = services.session_manager
         self._transcript_store = services.transcript_store
+        self._evidence_store = services.evidence_store
         self._trace_recorder = services.trace_recorder
         self._transcript_root = services.transcript_root
         self._checkpoint_store = services.checkpoint_store
@@ -2183,6 +2240,8 @@ class HandlerImplementation(
             "todo.complete": (_structured_todo_complete, "todo_complete_failed"),
             "reminder.create": (_structured_reminder_create, "reminder_create_failed"),
             "reminder.list": (_structured_reminder_list, "reminder_list_failed"),
+            "evidence.read": (_structured_evidence_read, "evidence_read_failed"),
+            "evidence.promote": (_structured_evidence_promote, "evidence_promote_failed"),
         }
 
     def _sanitize_tool_output_text(self, raw: str) -> str:

@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from typing import Any
 
 from shisad.core.events import PlanAmended, ToolRejected
+from shisad.core.types import TaintLabel
 from shisad.daemon.handlers._mixin_typing import HandlerMixinBase
 from shisad.security.control_plane.schema import RiskTier, build_action
 
@@ -237,6 +239,34 @@ class ConfirmationImplMixin(HandlerMixinBase):
         )
         success = execution_result.success
         checkpoint_id = execution_result.checkpoint_id
+        tool_output = getattr(execution_result, "tool_output", None)
+        if (
+            success
+            and tool_output is not None
+            and str(pending.tool_name) == "evidence.promote"
+        ):
+            try:
+                payload = json.loads(str(getattr(tool_output, "content", "")))
+            except json.JSONDecodeError:
+                payload = {}
+            content = str(payload.get("content", ""))
+            ref_id = str(payload.get("ref_id", "")).strip()
+            if content.strip():
+                self._transcript_store.append(
+                    pending.session_id,
+                    role="assistant",
+                    content=content,
+                    taint_labels=set(getattr(tool_output, "taint_labels", set()))
+                    or {TaintLabel.USER_REVIEWED},
+                    metadata={
+                        "channel": str(session.channel),
+                        "timestamp_utc": datetime.now(UTC).isoformat(),
+                        "session_mode": session.mode.value,
+                        "promoted_evidence": True,
+                        "promoted_ref_id": ref_id,
+                    },
+                    evidence_ref_id=ref_id or None,
+                )
         pending.status = "approved" if success else "failed"
         pending.status_reason = str(params.get("reason", "")).strip() or pending.status
         self._sync_task_confirmation_status(pending)

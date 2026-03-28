@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from typing import Any, ClassVar
 from urllib.parse import urlparse
 
+from shisad.core.evidence import EvidenceStore
 from shisad.core.host_matching import host_matches
 from shisad.core.tools.names import canonical_tool_name_typed
 from shisad.core.tools.registry import ToolRegistry
@@ -21,6 +22,7 @@ from shisad.core.types import (
     CredentialRef,
     PEPDecision,
     PEPDecisionKind,
+    SessionId,
     TaintLabel,
     ToolName,
     UserId,
@@ -75,6 +77,7 @@ class PolicyContext:
         taint_labels: set[TaintLabel] | None = None,
         user_goal_host_patterns: set[str] | None = None,
         untrusted_host_patterns: set[str] | None = None,
+        session_id: SessionId | None = None,
         workspace_id: WorkspaceId | None = None,
         user_id: UserId | None = None,
         action_count: int = 0,
@@ -86,6 +89,7 @@ class PolicyContext:
         self.taint_labels: set[TaintLabel] = taint_labels or set()
         self.user_goal_host_patterns: set[str] = user_goal_host_patterns or set()
         self.untrusted_host_patterns: set[str] = untrusted_host_patterns or set()
+        self.session_id: SessionId = session_id or SessionId("")
         self.workspace_id: WorkspaceId = workspace_id or WorkspaceId("")
         self.user_id: UserId = user_id or UserId("")
         self.action_count = action_count
@@ -115,11 +119,13 @@ class PEP:
         policy: PolicyBundle,
         tool_registry: ToolRegistry,
         *,
+        evidence_store: EvidenceStore | None = None,
         credential_store: CredentialStore | None = None,
         credential_audit_hook: Callable[[CredentialUseAttempt], None] | None = None,
     ) -> None:
         self._policy = policy
         self._tool_registry = tool_registry
+        self._evidence_store = evidence_store
         self._credential_store = credential_store
         self._credential_audit_hook = credential_audit_hook
         self.egress_attempts: list[EgressAttempt] = []
@@ -185,6 +191,10 @@ class PEP:
                 tool_name,
                 "Resource authorization failed: " + "; ".join(auth_issues),
             )
+
+        evidence_ref_error = self._check_evidence_ref(tool_name, arguments, context)
+        if evidence_ref_error is not None:
+            return evidence_ref_error
 
         # 6. Egress allowlist enforcement
         destination_declared_by_tool = False
@@ -384,6 +394,17 @@ class PEP:
                 risk_score=risk_score,
             )
 
+        if str(tool_name) == "evidence.promote":
+            return PEPDecision(
+                kind=PEPDecisionKind.REQUIRE_CONFIRMATION,
+                reason=(
+                    "Tool 'evidence.promote' requires explicit user confirmation before "
+                    "tainted evidence can be promoted into persistent conversation context."
+                ),
+                tool_name=tool_name,
+                risk_score=risk_score,
+            )
+
         needs_confirmation = (
             egress_requires_confirmation
             or taint_decision.require_confirmation
@@ -427,6 +448,26 @@ class PEP:
             return {canonical_tool_name_typed(item) for item in self._policy.session_tool_allowlist}
         if self._policy.default_deny and self._policy.tools:
             return {canonical_tool_name_typed(item) for item in self._policy.tools}
+        return None
+
+    def _check_evidence_ref(
+        self,
+        tool_name: ToolName,
+        arguments: dict[str, Any],
+        context: PolicyContext,
+    ) -> PEPDecision | None:
+        if str(tool_name) not in {"evidence.read", "evidence.promote"}:
+            return None
+        ref_id = str(arguments.get("ref_id", "")).strip()
+        if not ref_id:
+            return self._reject(tool_name, "invalid or unknown evidence reference")
+        if self._evidence_store is None:
+            return self._reject(
+                tool_name,
+                "invalid or unknown evidence reference",
+            )
+        if not self._evidence_store.validate_ref_id(context.session_id, ref_id):
+            return self._reject(tool_name, "invalid or unknown evidence reference")
         return None
 
     def _check_allowed_args(

@@ -18,6 +18,19 @@ class StructuredToolExecutionResult:
     taint_labels: set[TaintLabel]
 
 
+def _payload_taint_labels(payload: Mapping[str, Any]) -> set[TaintLabel]:
+    raw = payload.get("taint_labels")
+    if not isinstance(raw, list):
+        return set()
+    labels: set[TaintLabel] = set()
+    for item in raw:
+        try:
+            labels.add(TaintLabel(str(item)))
+        except ValueError:
+            continue
+    return labels
+
+
 async def execute_structured_tool(
     *,
     session_id: SessionId,
@@ -52,5 +65,5 @@ async def execute_structured_tool(
     return StructuredToolExecutionResult(
         success=success,
         content=sanitize_output(json.dumps(payload, ensure_ascii=True)),
-        taint_labels=set(taint_labels),
+        taint_labels=_payload_taint_labels(payload) or set(taint_labels),
     )
