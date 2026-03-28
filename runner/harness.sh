@@ -212,10 +212,20 @@ _preflight_planner_credential() {
 }
 
 _runner_env() {
+  # Preserve SHISAD_ENV_FILE across the clear — it is the user's pointer to
+  # their canonical credentials file and must survive env isolation.
+  local saved_env_file="${SHISAD_ENV_FILE:-}"
+
   local inherit="${RUNNER_INHERIT_SHISAD_ENV:-}"
   if [[ "${inherit}" != "1" ]] && [[ "${inherit}" != "true" ]] && [[ "${inherit}" != "yes" ]]; then
     _clear_inherited_shisad_env
   fi
+
+  # Restore the pointer so _load_env_files can use it.
+  if [[ -n "${saved_env_file}" ]]; then
+    export SHISAD_ENV_FILE="${saved_env_file}"
+  fi
+
   _load_env_files
   _export_defaults
 }
@@ -226,7 +236,7 @@ _shisad() {
 }
 
 _tmux_socket_name() {
-  printf '%s\n' "${RUNNER_TMUX_SOCKET_NAME:-shisad-runner}"
+  printf '%s\n' "${RUNNER_TMUX_SOCKET_NAME:-shisad-dev}"
 }
 
 _tmux_session_name() {

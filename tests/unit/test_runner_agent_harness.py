@@ -189,3 +189,53 @@ def test_dotenv_parser_rejects_invalid_keys() -> None:
     assert "123BAD" not in result
     assert "bad-key" not in result
     assert result["TEST_GOOD"] == "yes"
+
+
+# ---------------------------------------------------------------------------
+# Harness integration tests (exercise harness.sh env command directly)
+# ---------------------------------------------------------------------------
+
+
+def _harness_env(
+    extra_env: dict[str, str] | None = None,
+) -> dict[str, str]:
+    """Run ``bash runner/harness.sh env`` and return the output as a dict."""
+    import os
+
+    env = {k: v for k, v in os.environ.items()}
+    if extra_env:
+        env.update(extra_env)
+
+    result = subprocess.run(
+        ["bash", "runner/harness.sh", "env"],
+        capture_output=True,
+        text=True,
+        cwd=str(Path.cwd()),
+        env=env,
+    )
+    assert result.returncode == 0, result.stderr
+    out: dict[str, str] = {}
+    for line in result.stdout.strip().splitlines():
+        if "=" in line:
+            k, v = line.split("=", 1)
+            out[k] = v
+    return out
+
+
+def test_harness_env_file_survives_default_clear() -> None:
+    """SHISAD_ENV_FILE must be loaded even when env clearing is active."""
+    with tempfile.NamedTemporaryFile(
+        mode="w", suffix=".env", delete=False,
+    ) as f:
+        f.write("SHISAD_DATA_DIR=/tmp/shisad-envfile-test\n")
+        env_path = f.name
+
+    result = _harness_env({"SHISAD_ENV_FILE": env_path})
+    assert result["SHISAD_DATA_DIR"] == "/tmp/shisad-envfile-test"
+
+
+def test_harness_tmux_socket_matches_session_default() -> None:
+    """Default tmux socket and session should both be shisad-dev."""
+    result = _harness_env()
+    assert result["RUNNER_TMUX_SOCKET_NAME"] == "shisad-dev"
+    assert result["RUNNER_TMUX_SESSION_NAME"] == "shisad-dev"
