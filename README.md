@@ -23,21 +23,17 @@ Rather than ignoring the elephant in the room, our design targets the [lethal tr
 
 ## Status
 
-Initial development release (pre-alpha). This repo is being made public as of v0.5.
+This repo is currently an initial development release (pre-alpha). This repo is being made public as of v0.5.
 
 | Version | Focus |
 |---------|-------|
-| v0.1 | Core daemon, PEP security pipeline, control API |
-| v0.2 | Structural refactor (typed handlers, decomposed runtime, coverage) |
-| v0.3 | Provider routing, channels, assistant tools, destructive command protection |
-| v0.4 | Self-modification, coding-agent runtime, COMMAND/TASK isolation |
 | **v0.5** | **First public release — evidence references, repo split, zero-config SHISA provider** |
-| v0.6 | Orchestration foundation, multi-agent delegation, MCP/A2A interop |
-| v0.7 | Tool-surface expansion (email, calendar, browser, attachments) |
-| v0.8 | Long-term memory foundation |
-| v0.9 | Operator Web UI, multi-tenant |
+| v0.4 | Self-modification, coding-agent runtime, COMMAND/TASK isolation |
+| v0.3 | Provider routing, channels, assistant tools, destructive command protection |
+| v0.2 | Structural refactor (typed handlers, decomposed runtime, coverage) |
+| v0.1 | Core daemon, PEP security pipeline, control API |
 
-See `docs/ROADMAP.md` for details.
+See [`docs/ROADMAP.md`](docs/ROADMAP.md) for more details.
 
 ## Getting Started
 
@@ -76,7 +72,7 @@ export SHISAD_LOG_LEVEL="INFO"
 
 ### Provider routing
 
-Default (Shisa):
+Default (Shisa.AI):
 
 ```bash
 # Planner route remote-enables implicitly when SHISA key resolves.
@@ -306,6 +302,9 @@ See `AGENTS.md` for full development process, validation matrix, and commit conv
 | `docs/analysis/` | Security case studies and supply chain analysis |
 | `docs/runbooks/` | Operator runbooks (incident response, key rotation, rollback, skill revocation) |
 | `runner/RUNBOOK.md` | Dev harness operator runbook |
+
+- [agentic-security](https://github.com/lhl/agentic-security) — literature survey on LLM agent security (78 papers, defense taxonomy, production readiness assessment)
+- [agentic-memory](https://github.com/lhl/agentic-memory) — literature survey on agent memory architectures and poisoning defenses (29+ references, attack taxonomy, defense recommendations)
 
 ## License
 
