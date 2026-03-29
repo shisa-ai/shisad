@@ -363,7 +363,7 @@ Supply-chain risk is moving upstream too: not just skills and installer flows, b
   - LiteLLM issue `#24512`: `[Security]: CRITICAL: Malicious litellm_init.pth in litellm 1.82.8 — credential stealer` (2026-03-24): `https://github.com/BerriAI/litellm/issues/24512`
   - LiteLLM issue `#24518`: `[Security]: litellm PyPI package (v1.82.7 + v1.82.8) compromised — full timeline and status` (2026-03-24): `https://github.com/BerriAI/litellm/issues/24518`
   - PyPI project page / file metadata: `https://pypi.org/project/litellm/`
-  - Shisad-specific analysis: `docs/ANALYSIS-supply-chain.md`
+  - Shisad-specific analysis: `docs/analysis/ANALYSIS-supply-chain.md`
 - **Observed behavior**:
   - Malicious LiteLLM versions `1.82.7` and `1.82.8` appeared on PyPI on **March 24, 2026** outside the project's expected GitHub release path; the LiteLLM team's status issue notes GitHub releases stopped at `v1.82.6.dev1`.
   - `1.82.7` reportedly embedded payload in `litellm/proxy/proxy_server.py`; `1.82.8` escalated the attack by adding `litellm_init.pth`, which executes automatically at Python interpreter startup without requiring `import litellm`.
@@ -386,7 +386,7 @@ Supply-chain risk is moving upstream too: not just skills and installer flows, b
   - Supply-chain blast radius beyond the immediate package: stolen cloud/git/registry credentials can enable repo compromise, further malicious publishes, and lateral movement.
   - Operational blind spot: teams that "pinned versions" are still compromised if the exact pinned version is the malicious one.
 - **Shisad defenses (expected)**:
-  - **Lockfile discipline is necessary but not sufficient**: use lockfiles to constrain drift, but treat publish provenance, registry/source parity, and artifact signing as separate controls. `docs/ANALYSIS-supply-chain.md`
+  - **Lockfile discipline is necessary but not sufficient**: use lockfiles to constrain drift, but treat publish provenance, registry/source parity, and artifact signing as separate controls. `docs/analysis/ANALYSIS-supply-chain.md`
   - **Trusted publishing + release provenance**: public package publishing should be bound to OIDC/signed release workflows rather than long-lived upload tokens; registry artifacts should match signed tags/releases.
   - **Minimize runtime registry fetches**: production paths should not depend on live `npx`/registry resolution for agent adapters or tool helpers when preinstalled or mirrored artifacts can be used instead.
   - **Split low-trust CI from publish CI**: analysis/scanning jobs triggered by low-trust inputs must not share caches, mutable state, or credentials with release/publish jobs.
@@ -426,7 +426,7 @@ Supply-chain risk is moving upstream too: not just skills and installer flows, b
 ### OpenClaw: prompt extraction + high injection compliance (ZeroLeaks report)
 
 - **Sources**:
-  - `reference/openclaw-analysis.pdf` (ZeroLeaks report, 2026-01-31)
+  - `external ZeroLeaks report` (ZeroLeaks report, 2026-01-31)
   - https://github.com/ZeroLeaks/zeroleaks
 - **Observed behavior**:
   - System prompt/config extraction succeeded in most attempts (multi-turn crescendo, many-shot/example priming, “schema/architecture” framing, YAML “policy puppetry”, and context-window overflow patterns).
@@ -924,7 +924,7 @@ Supply-chain risk is moving upstream too: not just skills and installer flows, b
   - Blog post: `https://fistfulayen.com/2026/02/07/agent-payments-with-ledger/`
   - Ledger Key Ring Protocol (LKRP): agent cryptographic identity bound to hardware
   - x402 Protocol (Coinbase): HTTP 402 payment standard with EIP-3009 TransferWithAuthorization
-  - ZKP integration proposal: `docs/internal ZKP identity notes`
+  - ZKP integration proposal: `internal ledger/ZKP design notes`
 - **Observed behavior**:
   - A hackathon project demonstrates agent-initiated financial transactions where a hardware wallet (Ledger) creates an irreversible security boundary between agent proposals and actual execution.
   - The architecture enforces strict separation: **"Who can decide ≠ Who can sign."**
@@ -998,8 +998,8 @@ Supply-chain risk is moving upstream too: not just skills and installer flows, b
   - DefectDojo: `https://defectdojo.com/blog/hackers-paradise-compromising-open-claw-for-fun-profit` (14+ malicious crypto skills)
   - Moltbook wallet drain payload: see case study above
   - Agent payments + Ledger: `https://fistfulayen.com/2026/02/07/agent-payments-with-ledger/`
-  - shisad Ledger integration plan: `docs/internal ledger design notes`
-  - shisad ZKP identity brief: `docs/internal ZKP identity notes`
+  - shisad Ledger integration plan: `internal ledger/payment design notes`
+  - shisad ZKP identity brief: `internal ledger/ZKP design notes`
   - Simon Willison "Lethal Trifecta": `https://simonwillison.net/2025/Jun/16/the-lethal-trifecta/`
 - **Observed behavior**:
   - **API cost drain ("API Wallet Assassin")**: OpenClaw agents on unmonitored VPS instances routinely drain hundreds to thousands of dollars in API costs overnight due to runaway loops, context compounding, and uncapped automation. Documented incidents:

@@ -7,11 +7,11 @@
 This note reviews the LiteLLM supply-chain compromise disclosed on March 24, 2026, maps the broader attack patterns that matter for AI-agent systems, and evaluates shisad's own supply-chain posture.
 
 Related:
-- Security model: `docs/docs/SECURITY.md`
-- Security case studies: `docs/ANALYSIS-security-casestudies.md`
+- Security model: `docs/SECURITY.md`
+- Security case studies: `docs/analysis/ANALYSIS-security-casestudies.md`
 - Skill-registry attack research: `docs/private research archive`
 - Signatures and integrity analysis: `internal signatures/integrity notes`
-- Future supply-chain hardening backlog: `docs/PLAN-FUTURE.md` (`PF.21`, `PF.42`, `PF.43`, `PF.70`)
+- Future supply-chain hardening backlog: `docs/ROADMAP.md` (`PF.21`, `PF.42`, `PF.43`, `PF.70`)
 
 ---
 
@@ -74,7 +74,7 @@ The LiteLLM case is one instance of a broader family:
 | Developer endpoint compromise -> repo/package compromise | ForceMemo / GlassWorm-style repo rewrites | A compromised maintainer workstation can bypass normal repo trust signals. |
 | Security-tooling compromise in CI | LiteLLM maintainer's current Trivy-in-CI attribution | "Defensive" tooling must be treated as privileged code, not as inherently trustworthy. |
 
-The repo already tracks many adjacent case studies in `docs/ANALYSIS-security-casestudies.md`, especially:
+The repo already tracks many adjacent case studies in `docs/analysis/ANALYSIS-security-casestudies.md`, especially:
 - ClawdHub skill-registry poisoning
 - Clinejection / unauthorized CLI publish
 - OpenClaw ecosystem malware and skill marketplace abuse
@@ -384,8 +384,8 @@ External:
 - Google Cloud KMS / HSM FAQ: <https://cloud.google.com/kms/docs/faq>
 
 Internal:
-- `docs/docs/SECURITY.md`
-- `docs/ANALYSIS-security-casestudies.md`
+- `docs/SECURITY.md`
+- `docs/analysis/ANALYSIS-security-casestudies.md`
 - `docs/private research archive`
 - `internal signatures/integrity notes`
-- `docs/PLAN-FUTURE.md`
+- `docs/ROADMAP.md`

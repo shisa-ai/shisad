@@ -101,7 +101,7 @@ def test_m5_rt1_sequence_detects_fs_read_then_egress_with_intervening_action() -
     history.append_action(
         build_action(
             tool_name="file.read",
-            arguments={"path": "docs/PLAN.md"},
+            arguments={"path": "docs/ROADMAP.md"},
             origin=origin,
         ),
         decision_status="allow",

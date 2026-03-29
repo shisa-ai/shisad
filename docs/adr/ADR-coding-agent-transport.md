@@ -34,7 +34,7 @@ The transport layer needs to:
 Three options were evaluated:
 
 1. **Independent native integrations** (original M3 plan)
-2. **acpx** — TypeScript/Node.js ACP CLI client (`reference/acpx`, v0.3.0)
+2. **acpx** — TypeScript/Node.js ACP CLI client (upstream `acpx`, v0.3.0)
 3. **Python ACP SDK** (`agent-client-protocol` on PyPI, v0.8.1)
 
 A fourth protocol, **Google A2A** (Agent-to-Agent), was also considered and rejected as out of scope (see §"A2A evaluation" below).
@@ -43,7 +43,7 @@ A fourth protocol, **Google A2A** (Agent-to-Agent), was also considered and reje
 
 ## Decision
 
-**Use the Python ACP SDK (`agent-client-protocol`) as the transport layer for M3 coding agent integrations.** Use `acpx` (`reference/acpx`) as reference material for adapter quirks, agent command registry, and error-handling patterns — not as a runtime dependency.
+**Use the Python ACP SDK (`agent-client-protocol`) as the transport layer for M3 coding agent integrations.** Use upstream `acpx` as reference material for adapter quirks, agent command registry, and error-handling patterns — not as a runtime dependency.
 
 Pin `agent-client-protocol==0.8.1` in project dependencies. Vendoring decision deferred to M3 implementation phase based on stability experience.
 
@@ -221,12 +221,12 @@ ACP adapter packages (`@zed-industries/claude-agent-acp`, `@zed-industries/codex
 
 ## References
 
-- `reference/acpx/` — acpx source (v0.3.0), used as reference for agent registry and adapter workarounds
-- `reference/acpx/VISION.md` — acpx design principles
-- `reference/acpx/conformance/spec/v1.md` — ACP v1 conformance profile
-- `reference/acpx/agents/` — per-agent documentation and quirks
+- `acpx/` — upstream acpx source (v0.3.0), used as reference for agent registry and adapter workarounds
+- `acpx/VISION.md` — upstream acpx design principles
+- `acpx/conformance/spec/v1.md` — upstream ACP v1 conformance profile
+- `acpx/agents/` — upstream per-agent documentation and quirks
 - `agent-client-protocol` PyPI: https://pypi.org/project/agent-client-protocol/
 - `agentclientprotocol/python-sdk` GitHub: https://github.com/agentclientprotocol/python-sdk
 - `original v0.4 M3 design notes` §M3 — original coding agent skills specification
-- `docs/ADR-command-task-architecture.md` — COMMAND/TASK privilege model
+- `docs/adr/ADR-command-task-architecture.md` — COMMAND/TASK privilege model
 - `docs/DESIGN-PHILOSOPHY.md` — governing design principles

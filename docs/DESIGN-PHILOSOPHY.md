@@ -176,7 +176,7 @@ If you are an AI coding agent reading this document:
 
 This document is referenced by:
 - `CLAUDE.md` / `AGENTS.md` (development process)
-- `docs/README.md` (documentation index)
-- `docs/docs/SECURITY.md` (detailed security model)
+- `README.md` (documentation index)
+- `docs/SECURITY.md` (detailed security model)
 
 When these documents conflict on philosophy, this document wins. When they add process detail that doesn't conflict, follow both.
