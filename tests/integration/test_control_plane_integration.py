@@ -62,6 +62,9 @@ async def _start_daemon_with_policy(
         "socket_path": tmp_path / "control.sock",
         "policy_path": tmp_path / "policy.yaml",
         "log_level": "INFO",
+        # Make fs/git helper tools deterministic in CI and avoid depending on the
+        # host environment's SHISAD_ASSISTANT_FS_ROOTS value.
+        "assistant_fs_roots": [Path.cwd()],
     }
     if checkpoint_trigger is not None:
         config_kwargs["checkpoint_trigger"] = checkpoint_trigger

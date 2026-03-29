@@ -1,0 +1,5 @@
+{
+  "created_at": "2026-02-10T00:00:00Z",
+  "floor_percent": 80.0,
+  "note": "M6 ratchet: baseline floor now enforced alongside per-module coverage gates."
+}

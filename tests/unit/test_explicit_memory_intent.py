@@ -122,6 +122,26 @@ def _memory_registry() -> ToolRegistry:
             "reminder.list",
             {},
         ),
+        (
+            "fetch https://example.com",
+            "web.fetch",
+            {"url": "https://example.com"},
+        ),
+        (
+            "read evidence ev_test_123",
+            "evidence.read",
+            {"ref_id": "ev_test_123"},
+        ),
+        (
+            "evidence.read ev_test_123",
+            "evidence.read",
+            {"ref_id": "ev_test_123"},
+        ),
+        (
+            'evidence.read("ev_test_456")',
+            "evidence.read",
+            {"ref_id": "ev_test_456"},
+        ),
     ],
 )
 def test_m1_explicit_memory_intent_parser_covers_weekend_sprint_commands(
