@@ -138,6 +138,7 @@ _COMMAND_CONTEXT_REASON_KEY = "command_context_reason"
 _TASK_REPORTED_PATH_MAX_CHARS = 512
 _EVIDENCE_CONTENT_PREVIEW_KEYS: tuple[str, ...] = ("content", "text", "body", "html")
 _EVIDENCE_CONTENT_KEYS: set[str] = set(_EVIDENCE_CONTENT_PREVIEW_KEYS)
+_EVIDENCE_REF_ID_RE = re.compile(r"\bev-[0-9a-f]{16}\b")
 _IN_BAND_READ_ONLY_ACTION_KINDS: set[ActionKind] = {
     ActionKind.FS_READ,
     ActionKind.FS_LIST,
@@ -1987,8 +1988,16 @@ def _summarize_tool_outputs_for_chat(records: list[dict[str, Any]]) -> str:
 
         output_text = _find_tool_output_preview_text(payload)
         if output_text:
+            # Ensure evidence ref IDs remain visible even if the output preview is truncated.
+            evidence_ref_id = ""
+            if "[EVIDENCE ref=" in output_text:
+                match = _EVIDENCE_REF_ID_RE.search(output_text)
+                if match:
+                    evidence_ref_id = match.group(0)
             preview_lines, truncated = _preview_multiline_output(output_text)
             if preview_lines:
+                if evidence_ref_id and not any(evidence_ref_id in line for line in preview_lines):
+                    lines.append(f"  evidence_ref_id={evidence_ref_id}")
                 lines.append("  output:")
                 lines.extend(f"  {line}" for line in preview_lines)
                 if truncated:
