@@ -426,8 +426,7 @@ Supply-chain risk is moving upstream too: not just skills and installer flows, b
 ### OpenClaw: prompt extraction + high injection compliance (ZeroLeaks report)
 
 - **Sources**:
-  - `external ZeroLeaks report` (ZeroLeaks report, 2026-01-31)
-  - https://github.com/ZeroLeaks/zeroleaks
+  - ZeroLeaks project/reporting on OpenClaw: https://github.com/ZeroLeaks/zeroleaks
 - **Observed behavior**:
   - System prompt/config extraction succeeded in most attempts (multi-turn crescendo, many-shot/example priming, “schema/architecture” framing, YAML “policy puppetry”, and context-window overflow patterns).
   - Prompt injection probes succeeded at high rates, including indirect injection payloads embedded in “documents” (and similar hidden-instruction tricks), authority/system impersonation, and encoded/reversed instruction decoding.
