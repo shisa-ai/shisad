@@ -19,8 +19,8 @@ Since LLMs won't separate instructions from data, the surrounding architecture m
 ```
                        ┌─────────────────┐
                        │   LLM (Planner) │
-   Untrusted ─────────▶│   [tokens mix]  │─────────▶ Proposed
-   Content             │                 │           Actions
+   Untrusted ────────▶│   [tokens mix]  │─────────▶ Proposed
+   Content             │                 │            Actions
                        └─────────────────┘
                                                        │
    ═══════════════════════════════════════════════════════════
