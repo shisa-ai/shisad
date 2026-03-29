@@ -877,6 +877,60 @@ def _build_explicit_memory_intent_proposal(user_text: str) -> ActionProposal | N
             data_sources=["user_text:explicit_memory_intent"],
         )
 
+    fetch_match = re.fullmatch(
+        r"(?:web\s+)?fetch\s+(https?://\S+)",
+        normalized,
+        flags=re.IGNORECASE,
+    )
+    if fetch_match is not None:
+        url = fetch_match.group(1).strip()
+        if url:
+            return ActionProposal(
+                action_id="explicit-web-fetch",
+                tool_name=ToolName("web.fetch"),
+                arguments={"url": url},
+                reasoning="Execute the user's explicit web fetch request.",
+                data_sources=["user_text:explicit_memory_intent"],
+            )
+
+    read_evidence_match = re.fullmatch(
+        r"read\s+evidence\s+(?P<ref_id>\S+)",
+        normalized,
+        flags=re.IGNORECASE,
+    )
+    if read_evidence_match is not None:
+        ref_id = str(read_evidence_match.group("ref_id") or "").strip()
+        if ref_id:
+            return ActionProposal(
+                action_id="explicit-evidence-read",
+                tool_name=ToolName("evidence.read"),
+                arguments={"ref_id": ref_id},
+                reasoning="Execute the user's explicit evidence-read request.",
+                data_sources=["user_text:explicit_memory_intent"],
+            )
+
+    evidence_read_match = re.fullmatch(
+        r"evidence\.read\s+(?P<ref_id>\S+)",
+        normalized,
+        flags=re.IGNORECASE,
+    )
+    if evidence_read_match is None:
+        evidence_read_match = re.fullmatch(
+            r"evidence\.read\((?P<quote>[\"'])?(?P<ref_id>[^\"')\s]+)(?P=quote)?\)",
+            normalized,
+            flags=re.IGNORECASE,
+        )
+    if evidence_read_match is not None:
+        ref_id = str(evidence_read_match.group("ref_id") or "").strip()
+        if ref_id:
+            return ActionProposal(
+                action_id="explicit-evidence-read",
+                tool_name=ToolName("evidence.read"),
+                arguments={"ref_id": ref_id},
+                reasoning="Execute the user's explicit evidence-read request.",
+                data_sources=["user_text:explicit_memory_intent"],
+            )
+
     return None
 
 
