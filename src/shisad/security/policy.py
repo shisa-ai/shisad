@@ -244,7 +244,7 @@ class SkillPolicy(BaseModel):
 
 
 class PolicyBundle(BaseModel):
-    """Top-level policy bundle matching docs/SECURITY.md Section 4.2."""
+    """Top-level policy bundle matching the public security architecture docs."""
 
     version: str = "1"
 

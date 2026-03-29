@@ -4,10 +4,10 @@ This is the default operator runbook for the `runner/` harness. It covers
 the common bring-up, verification, and teardown workflow that applies to
 **any** version of shisad during local development.
 
-For milestone- or version-specific procedures, see the versioned runbooks:
+For current public operator guidance, see:
 
-- `docs/DEPLOY.md` — v0.4 self-improving agent bootstrap (M5)
-- `docs/ROADMAP.md` — v0.5 ClawCon sprint execution
+- `docs/DEPLOY.md` — bring-up, credentials, and local daemon workflow
+- `docs/ROADMAP.md` — current public milestone framing
 
 ---
 

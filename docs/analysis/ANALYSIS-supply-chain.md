@@ -9,9 +9,9 @@ This note reviews the LiteLLM supply-chain compromise disclosed on March 24, 202
 Related:
 - Security model: `docs/SECURITY.md`
 - Security case studies: `docs/analysis/ANALYSIS-security-casestudies.md`
-- Skill-registry attack research: `docs/private research archive`
-- Signatures and integrity analysis: `internal signatures/integrity notes`
-- Future supply-chain hardening backlog: `docs/ROADMAP.md` (`PF.21`, `PF.42`, `PF.43`, `PF.70`)
+- Skill-registry attack research: private research archive
+- Signatures and integrity analysis: internal signatures/integrity notes
+- Future supply-chain hardening backlog: `docs/ROADMAP.md`
 
 ---
 
@@ -386,6 +386,6 @@ External:
 Internal:
 - `docs/SECURITY.md`
 - `docs/analysis/ANALYSIS-security-casestudies.md`
-- `docs/private research archive`
-- `internal signatures/integrity notes`
+- private skill-registry research archive
+- internal signatures/integrity notes
 - `docs/ROADMAP.md`

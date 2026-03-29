@@ -1,7 +1,7 @@
 # Evidence References — Tainted Content Isolation Primitive
 
 *Created: 2026-03-27*
-*Status: Design draft (pre-ClawCon)*
+*Status: Design draft*
 *Updated: 2026-03-28 — aligned ref ID scheme (HMAC), summary policy (extractive-only), and fetch-turn isolation with v0.5 PLAN M2 design decisions*
 
 ## Problem

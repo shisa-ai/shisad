@@ -109,4 +109,4 @@ When an orchestrator legitimately needs wider access than global policy defaults
 - `src/shisad/security/policy.py` — `PolicyBundle`, `SandboxPolicy`
 - `src/shisad/core/tools/schema.py` — `ToolDefinition` (destinations, sandbox_type)
 - `src/shisad/daemon/control_handlers.py` — `handle_tool_execute` (caller-declared path)
-- `early implementation notes` — M4.7 (policy merge foundation), M4.9 (policy compiler)
+- Early implementation notes — M4.7 (policy merge foundation), M4.9 (policy compiler)

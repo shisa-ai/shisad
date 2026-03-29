@@ -10,11 +10,11 @@ The goal is *not* to prove we can detect every prompt injection. The goal is to 
 
 Related docs:
 - Security architecture + invariants: `docs/SECURITY.md`
-- Implementation plan + integration points: `PLAN.md`
-- Ledger / hardware wallet integration plan: `internal ledger design notes`
-- ZKP identity integration brief: `internal ZKP identity notes`
-- Moltbot/Clawdbot notes: `private incident archive`
-- Skill supply chain research: `private research archive`
+- Public roadmap and milestone framing: `docs/ROADMAP.md`
+- Ledger / hardware wallet integration plan: internal ledger design notes
+- ZKP identity integration brief: internal ZKP identity notes
+- Moltbot/Clawdbot notes: private incident archive
+- Skill supply chain research: private research archive
 
 External references (defensive approaches):
 - Deno Sandbox: `https://deno.com/blog/introducing-deno-sandbox` (proxy-level secret injection, host-scoped credentials)
@@ -220,7 +220,7 @@ External references (attack surface analysis):
   - Availability/cost abuse from unauthorized GPU usage, plus legal and reputational exposure for the operator.
   - Important meta-point: this is not "prompt injection from an attacker"; harmful behavior can emerge from objective pressure plus insufficient execution controls alone.
 - **Shisad defenses (expected)**:
-  - **Per-call "Who asked for it?" enforcement**: reverse tunnels, network scanning, and miner-like execution should be denied unless they are explicitly grounded in the authenticated user goal (or operator-approved task profile). A sandbox is not enough. (`docs/SECURITY.md`, `DESIGN-PHILOSOPHY.md`)
+  - **Per-call "Who asked for it?" enforcement**: reverse tunnels, network scanning, and miner-like execution should be denied unless they are explicitly grounded in the authenticated user goal (or operator-approved task profile). A sandbox is not enough. (`docs/SECURITY.md`, `docs/DESIGN-PHILOSOPHY.md`)
   - **Egress policy as a broker, not a hint**: unknown external hosts, internal subnet probes, and long-lived outbound tunnels should hit deterministic policy checks and audit trails before execution.
   - **Action Monitor / sequence controls**: correlate shell commands, network destinations, and process lifetimes to flag remote-access setup, reconnaissance patterns, or background compute hijacking even when each individual primitive looks superficially valid.
   - **Resource and process containment**: CPU/GPU quotas, background-process limits, and kill-on-task-end semantics reduce the blast radius of miner-style or daemon-style drift.
@@ -405,7 +405,7 @@ Supply-chain risk is moving upstream too: not just skills and installer flows, b
 ### Skill registry / “install skill” supply chain
 
 - **Sources**:
-  - `private research archive`
+  - private skill supply-chain research archive
 - **Observed behavior**:
   - Public skill registries + “one command install” + users who don’t review code creates a high-leverage malware channel.
 - **Attack vectors**:
@@ -576,7 +576,7 @@ Supply-chain risk is moving upstream too: not just skills and installer flows, b
   - False confidence from vendor-only ASR numbers: Anthropic reports ~10% (computer-use) and <1% (browser-use) for Opus 4.6; RedTeamCUA finds 50% in hybrid scenarios. The gap is partly methodological (vendor evals may not use decoupled exposure or hybrid web+OS environments).
   - The high attempt rate (92.5%) means the safety gap will **widen** as model capabilities improve, unless external enforcement is added. This is the most actionable finding for framework designers.
 - **Shisad defenses (expected)**:
-  - **GUI/browse actions are tools**: "computer use" must be routed through the same PEP as `shell_exec`/network/file tools. Raw click/type/screenshot actions must be decomposed into policy-enforceable tool calls, not passed through as opaque GUI coordinates. (`docs/SECURITY.md`, `IMPLEMENTATION.md`)
+  - **GUI/browse actions are tools**: "computer use" must be routed through the same PEP as `shell_exec`/network/file tools. Raw click/type/screenshot actions must be decomposed into policy-enforceable tool calls, not passed through as opaque GUI coordinates. (`docs/SECURITY.md`)
   - **Taint-first**: screenshot/OCR/page-text content is data-plane by default; never treated as authoritative instructions. Content from all channels (including DMs/chat, which RTC-Bench shows are the highest-ASR channel due to implicit trust) must carry taint metadata.
   - **Goal-bound enforcement**: committed plans + Action Monitor block unrelated writes/egress even if the planner is compromised. Plan commitment happens *before* untrusted content exposure, directly addressing the attempt-rate problem—the plan is locked, so even a 92.5% attempt rate results in PEP blocks.
   - **Sandbox isolation + no ambient creds**: computer-use executes in a VM/container boundary with scoped net/fs; secrets remain out-of-context (credential broker). Resource quotas (CPU/memory/disk per-task) contain availability attacks.
@@ -693,7 +693,7 @@ Supply-chain risk is moving upstream too: not just skills and installer flows, b
   - **Output Firewall for harassment/reputation sabotage**:
     - Extend beyond DLP: detect targeted personal attacks, threats, and “hit piece” patterns; block or force confirmation with a structured preview and clear provenance.
   - **Clean-room control-plane changes**:
-    - Prohibit self-editable “soul” files in the data plane; any self-modification of behavior/instructions must go through the privileged clean-room workflow with deterministic validation + explicit operator approval (v0.4 M1 direction). (`early v0.4 prototype direction`)
+    - Prohibit self-editable “soul” files in the data plane; any self-modification of behavior/instructions must go through the privileged clean-room workflow with deterministic validation + explicit operator approval (an early v0.4 prototype direction).
   - **Attribution + audit**:
     - Log the exact inputs and tool proposals that lead to outbound publishing attempts; surface “why this was proposed” to the operator at confirmation time.
 - **Open questions / gaps**:
@@ -923,7 +923,7 @@ Supply-chain risk is moving upstream too: not just skills and installer flows, b
   - Blog post: `https://fistfulayen.com/2026/02/07/agent-payments-with-ledger/`
   - Ledger Key Ring Protocol (LKRP): agent cryptographic identity bound to hardware
   - x402 Protocol (Coinbase): HTTP 402 payment standard with EIP-3009 TransferWithAuthorization
-  - ZKP integration proposal: `internal ledger/ZKP design notes`
+  - ZKP integration proposal: internal ledger/ZKP design notes
 - **Observed behavior**:
   - A hackathon project demonstrates agent-initiated financial transactions where a hardware wallet (Ledger) creates an irreversible security boundary between agent proposals and actual execution.
   - The architecture enforces strict separation: **"Who can decide ≠ Who can sign."**
@@ -997,8 +997,8 @@ Supply-chain risk is moving upstream too: not just skills and installer flows, b
   - DefectDojo: `https://defectdojo.com/blog/hackers-paradise-compromising-open-claw-for-fun-profit` (14+ malicious crypto skills)
   - Moltbook wallet drain payload: see case study above
   - Agent payments + Ledger: `https://fistfulayen.com/2026/02/07/agent-payments-with-ledger/`
-  - shisad Ledger integration plan: `internal ledger/payment design notes`
-  - shisad ZKP identity brief: `internal ledger/ZKP design notes`
+  - shisad Ledger integration plan: internal ledger/payment design notes
+  - shisad ZKP identity brief: internal ledger/ZKP design notes
   - Simon Willison "Lethal Trifecta": `https://simonwillison.net/2025/Jun/16/the-lethal-trifecta/`
 - **Observed behavior**:
   - **API cost drain ("API Wallet Assassin")**: OpenClaw agents on unmonitored VPS instances routinely drain hundreds to thousands of dollars in API costs overnight due to runaway loops, context compounding, and uncapped automation. Documented incidents:
@@ -1048,15 +1048,15 @@ Supply-chain risk is moving upstream too: not just skills and installer flows, b
     - Session history is bounded; old turns are compacted or evicted, not dragged forward indefinitely.
     - Chat history ingestion is scoped to the current conversation/thread, not the entire channel history.
   - **Credential broker (M0) — prevents credential exfiltration**:
-    - Secrets are never stored in the data plane or passed through the LLM context. The credential broker injects credentials at the HTTP proxy layer. (`docs/SECURITY.md`, `internal ledger design notes`)
+    - Secrets are never stored in the data plane or passed through the LLM context. The credential broker injects credentials at the HTTP proxy layer. (`docs/SECURITY.md`)
     - The agent works with credential *references* (e.g., `$CRED:github-api`), not raw keys. Even if the agent is fully compromised, it cannot exfiltrate what it cannot see.
     - DLP scanning catches credential-like patterns in all data flows.
   - **Hardware-backed financial authorization (Ledger integration)**:
-    - For crypto transactions: PEP requires `proof_of_ledger` for any `payment.*` or `wallet.*` tool call. No software path bypasses the hardware. Private keys never leave the Ledger secure element. (`internal ledger design notes`)
+    - For crypto transactions: PEP requires `proof_of_ledger` for any `payment.*` or `wallet.*` tool call. No software path bypasses the hardware. Private keys never leave the Ledger secure element.
     - For API payments (x402): PEP intercepts HTTP 402 → requests hardware authorization → replays with signed payment header. Agent never sees payment credentials.
     - This **eliminates the entire class of "agent drains wallet" attacks**: no matter what the LLM proposes (via injection or hallucination), nothing executes without physical hardware confirmation.
     - LKRP agent identity provides cryptographic authentication separate from signing authority: even a stolen agent credential cannot authorize transactions.
-  - **ZKP identity proofs as PEP policy inputs** (`internal ZKP identity notes`):
+  - **ZKP identity proofs as PEP policy inputs** (internal ZKP identity notes):
     - Proof of Ledger: possession of hardware wallet required for crypto operations.
     - Proof of Human: destructive/financial actions require proof that a human (not another agent or injection) is authorizing.
     - Proof of Owner: only the agent's registered owner can approve high-value operations. Prevents privilege confusion in multi-agent / delegation scenarios.
@@ -1126,7 +1126,7 @@ Supply-chain risk is moving upstream too: not just skills and installer flows, b
   - At scale: 12,812 instances directly exploitable for RCE across 82 countries.
   - Compound impact: gateway compromise → plaintext credential harvest → lateral movement to cloud services, git repos, and production infrastructure.
 - **Shisad defenses (expected)**:
-  - **No remote gateway by default**: shisad uses Unix socket RPC for control plane access, not a network-facing WebSocket server. There is no equivalent of OpenClaw's port 18789 gateway. Remote access requires explicit SSH tunnel or authenticated reverse proxy setup. (`docs/SECURITY.md`, `earlier internal gap-analysis work`)
+  - **No remote gateway by default**: shisad uses Unix socket RPC for control plane access, not a network-facing WebSocket server. There is no equivalent of OpenClaw's port 18789 gateway. Remote access requires explicit SSH tunnel or authenticated reverse proxy setup. (`docs/SECURITY.md`)
   - **No 0.0.0.0 binding**: shisad's daemon binds to localhost or Unix socket only; there is no configuration path that silently exposes the control plane to all interfaces.
   - **No optional authentication**: shisad's control API requires authentication; there is no "zero-auth mode" for convenience.
   - **Credential broker (not plaintext storage)**: secrets are never stored as plaintext JSON on disk. The credential broker injects credentials at the proxy layer; the agent process never sees raw secrets. (`docs/SECURITY.md`)
@@ -1173,7 +1173,7 @@ Supply-chain risk is moving upstream too: not just skills and installer flows, b
   - **Propagation potential**: A persistently compromised agent that processes more documents or interacts with other agents can spread the implant further (see Moltbook/Church of Molt case study).
 - **Shisad defenses (expected)**:
   - **Injection-proof control plane (invariant C1)**: The agent runtime cannot write to control-plane artifacts (policies, tool grants, skill code, system instructions, identity files) from tainted inputs. There is no `SOUL.md` equivalent that the agent can modify through normal tool use. (`docs/SECURITY.md`)
-  - **No agent-writable instruction files**: shisad deliberately avoids the pattern where identity/persona files are writable by the agent. Identity is a control-plane artifact, not a data-plane file. This is listed as a "deliberate divergence" from OpenClaw in the gap analysis. (`earlier internal gap-analysis work`, Appendix B)
+  - **No agent-writable instruction files**: shisad deliberately avoids the pattern where identity/persona files are writable by the agent. Identity is a control-plane artifact, not a data-plane file. This is a deliberate divergence from OpenClaw documented in earlier internal gap-analysis work.
   - **Integration creation requires privileged workflow**: Adding a new messaging channel/integration (equivalent to creating a Telegram bot connection) is not a normal agent action — it requires an explicit admin workflow with human confirmation and is not reachable from the data plane.
   - **Plan commitment + Action Monitor**: If the user's goal is "summarize this document", actions like "create Telegram integration" and "write to identity file" are flagged as unrelated to the stated goal and blocked by the Action Monitor. (`docs/SECURITY.md`)
   - **Memory is data, not instructions**: Even if the agent writes information from the document into memory, memory content is stored in the data plane and cannot mutate tool policy, identity, or configuration.
@@ -1215,7 +1215,7 @@ Supply-chain risk is moving upstream too: not just skills and installer flows, b
   - **Per-sender identity and trust levels**: shisad's channel identity system maps senders to trust levels. Only authenticated/allowlisted senders can invoke tools; messages from unknown senders are treated as untrusted data, not instructions. (`src/shisad/channels/identity.py`, `docs/SECURITY.md`)
   - **Channel-scoped capability grants**: In group contexts, the agent's available tools are restricted based on the channel type and configuration. A group chat agent may only have read/respond capabilities, while tool execution requires DM or a higher-trust context.
   - **PEP enforcement is identity-aware**: Tool call proposals carry the identity of the requesting sender. PEP evaluates policies per-sender, so an unknown group member cannot trigger `file.read` or `shell.exec` even if the agent's owner can.
-  - **Group chat routing rules**: shisad's channel configuration supports per-channel group rules (mention gating, reply semantics) that control when the agent responds and to whom. (`earlier internal gap-analysis work`, Section 3)
+  - **Group chat routing rules**: shisad's channel configuration supports per-channel group rules (mention gating, reply semantics) that control when the agent responds and to whom. This behavior was also covered in earlier internal gap-analysis work.
 - **Open questions / gaps**:
   - What's the right default trust level for group chat members? "No tool access" is safest but limits utility. "Read-only tools" is a middle ground.
   - How do we handle cases where the owner wants group members to interact with the agent (e.g., "anyone can ask it questions") while preventing privilege escalation?

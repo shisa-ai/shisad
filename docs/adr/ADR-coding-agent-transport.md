@@ -6,7 +6,7 @@ Accepted (2026-03-14) — transport is locked for v0.4 M3 implementation.
 
 ## Context
 
-v0.4 M3 ("Coding Agent Skills") requires shisad to invoke external coding agents (Claude Code, Codex, OpenCode) as TASK-scoped subtasks. The original M3 plan (`original v0.4 M3 design notes`) specified three independent native integrations:
+v0.4 M3 ("Coding Agent Skills") requires shisad to invoke external coding agents (Claude Code, Codex, OpenCode) as TASK-scoped subtasks. The original v0.4 M3 design specified three independent native integrations:
 
 - **Claude Code**: `claude-agent-sdk` Python async API
 - **Codex**: `subprocess.Popen` with `codex exec --full-auto --json`, parse JSONL events
@@ -227,6 +227,6 @@ ACP adapter packages (`@zed-industries/claude-agent-acp`, `@zed-industries/codex
 - `acpx/agents/` — upstream per-agent documentation and quirks
 - `agent-client-protocol` PyPI: https://pypi.org/project/agent-client-protocol/
 - `agentclientprotocol/python-sdk` GitHub: https://github.com/agentclientprotocol/python-sdk
-- `original v0.4 M3 design notes` §M3 — original coding agent skills specification
+- Original v0.4 M3 design notes — coding agent skills specification
 - `docs/adr/ADR-command-task-architecture.md` — COMMAND/TASK privilege model
 - `docs/DESIGN-PHILOSOPHY.md` — governing design principles
