@@ -1,12 +1,12 @@
-# Shisa D (`shisad`)
+# ShisaD (`shisad`)
 
 Security-first AI agent daemon framework.
 
-shisad is a long-running daemon that sits between an LLM and external systems (tools, files, network, messaging channels). The model proposes actions; the runtime decides what actually executes — every tool call passes through policy enforcement, taint tracking, and audit before anything happens.
+ShisaD is a long-running daemon that sits between an LLM and external systems (tools, files, network, messaging channels). The model proposes actions; the runtime decides what actually executes — every tool call passes through policy enforcement, taint tracking, and audit before anything happens.
 
-The core question at every action is: **who asked for it?** shisad is the user's agent — it exists to do what the user asks with the highest possible fidelity, and to prevent anything else (prompt injection, hallucination, attacker-controlled input) from taking control.
+The core question at every action is: **who asked for it?** ShisaD is the user's agent — it exists to do what the user asks with the highest possible fidelity, and to prevent anything else (prompt injection, hallucination, attacker-controlled input) from taking control.
 
-Rather than ignoring the elephant in the room, our design targets the [lethal trifecta](https://simonwillison.net/2025/Jun/16/the-lethal-trifecta/) head-on: agents that access private data, process untrusted content, and take consequential actions are inherently high-risk. Most agent security research solves this by removing capabilities until the agent is safe but useless. shisad takes the [opposite approach](docs/DESIGN-PHILOSOPHY.md): keep the agent fully capable and build enforcement infrastructure that makes each capability safe to use at runtime. If a tool is insecure, the goal is to fix the enforcement, not disable the tool.
+Rather than ignoring the elephant in the room, our design targets the [lethal trifecta](https://simonwillison.net/2025/Jun/16/the-lethal-trifecta/) head-on: agents that access private data, process untrusted content, and take consequential actions are inherently high-risk. Most agent security research solves this by removing capabilities until the agent is safe but useless. ShisaD takes the [opposite approach](docs/DESIGN-PHILOSOPHY.md): keep the agent fully capable and build enforcement infrastructure that makes each capability safe to use at runtime. If a tool is insecure, the goal is to fix the enforcement, not disable the tool.
 
 ## Features
 
@@ -41,7 +41,7 @@ See `docs/ROADMAP.md` for details.
 
 ## Getting Started
 
-Users and agents looking to set up shisad on their own system should see [`docs/DEPLOY.md`](docs/DEPLOY.md) for the full bring-up guide — host bootstrap, provider configuration, channel setup (Discord, Telegram, Slack), and troubleshooting. shisad is designed to run on a dedicated instance or container, not inside your development environment.
+Users and agents looking to set up ShisaD on their own system should see [`docs/DEPLOY.md`](docs/DEPLOY.md) for the full bring-up guide — host bootstrap, provider configuration, channel setup (Discord, Telegram, Slack), and troubleshooting. ShisaD is designed to run on a dedicated instance or container, not inside your development environment.
 
 ### Quick Start
 
