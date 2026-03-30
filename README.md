@@ -8,6 +8,28 @@ The core question at every action is: **who asked for it?** ShisaD is the user's
 
 Rather than ignoring the elephant in the room, our design targets the [lethal trifecta](https://simonwillison.net/2025/Jun/16/the-lethal-trifecta/) head-on: agents that access private data, process untrusted content, and take consequential actions are inherently high-risk. Most agent security research solves this by removing capabilities until the agent is safe but useless. ShisaD takes the [opposite approach](docs/DESIGN-PHILOSOPHY.md): keep the agent fully capable and build enforcement infrastructure that makes each capability safe to use at runtime. If a tool is insecure, the goal is to fix the enforcement, not disable the tool.
 
+```
+                       ┌─────────────────┐
+                       │   LLM (Planner) │
+   Untrusted ────────▶│   [tokens mix]  │─────────▶ Proposed
+   Content             │                 │            Actions
+                       └─────────────────┘
+                                                       │
+   ═══════════════════════════════════════════════════════════
+   ║               ARCHITECTURAL BOUNDARY                    ║
+   ═══════════════════════════════════════════════════════════
+                                                       │
+                                                       ▼
+                        ┌─────────────────┐     ┌─────────────┐
+                        │ Trusted Config  │     │  Security   │
+                        │ (policies,      │     │  Analyzers  │
+                        │  goals)         │     │ (metadata   │
+                        └─────────────────┘     │  only)      │
+                                                └──────┬──────┘
+                                                       ▼
+                                                APPROVE / REJECT
+```
+
 ## Features
 
 - **Per-call policy enforcement** — 8-layer PEP pipeline (registry, schema, capability, DLP, resource authorization, egress allowlisting, credential scoping, taint sink enforcement) runs on every tool call, not just at session start
