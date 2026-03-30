@@ -1,6 +1,6 @@
 # ShisaD (`shisad`)
 
-Security-first AI agent daemon framework.
+[Security-first](docs/SECURITY.md) AI agent daemon framework.
 
 ShisaD is a long-running daemon that sits between an LLM and external systems (tools, files, network, messaging channels). The model proposes actions; the runtime decides what actually executes — every tool call passes through policy enforcement, taint tracking, and audit before anything happens.
 
