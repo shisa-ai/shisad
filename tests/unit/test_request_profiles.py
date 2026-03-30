@@ -19,7 +19,7 @@ def test_s0_openai_profile_accepts_reasoning_fields() -> None:
     evaluation = apply_request_profile(
         profile_name="openai_chat_general",
         endpoint_family=EndpointFamily.CHAT_COMPLETIONS,
-        model_id="gpt-5.2-2025-12-11",
+        model_id="gpt-5.4-2026-03-05",
         request_parameters=RequestParameters(reasoning_effort="high", max_tokens=256),
     )
 
@@ -35,7 +35,7 @@ def test_s0_openai_profile_rejects_conflicting_max_token_fields() -> None:
         apply_request_profile(
             profile_name="openai_chat_general",
             endpoint_family=EndpointFamily.CHAT_COMPLETIONS,
-            model_id="gpt-5.2-2025-12-11",
+            model_id="gpt-5.4-2026-03-05",
             request_parameters=RequestParameters(
                 max_tokens=256,
                 max_completion_tokens=128,

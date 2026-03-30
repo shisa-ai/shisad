@@ -107,7 +107,7 @@ OpenAI:
 export SHISAD_MODEL_REMOTE_ENABLED=true
 export OPENAI_API_KEY="<openai-api-key>"
 export SHISAD_MODEL_PLANNER_PROVIDER_PRESET="openai_default"
-export SHISAD_MODEL_PLANNER_MODEL_ID="gpt-5.2-2025-12-11"
+export SHISAD_MODEL_PLANNER_MODEL_ID="gpt-5.4-2026-03-05"
 # Optional: export SHISAD_MODEL_PLANNER_REQUEST_PARAMETERS='{"max_completion_tokens":512}'
 ```
 
@@ -156,7 +156,7 @@ export SHISAD_MODEL_EMBEDDINGS_MODEL_ID="text-embedding-3-small"
 
 export SHISAD_MODEL_MONITOR_PROVIDER_PRESET="openai_default"
 export SHISAD_MODEL_MONITOR_API_KEY="<monitor-openai-key>"
-export SHISAD_MODEL_MONITOR_MODEL_ID="gpt-5.2-2025-12-11"
+export SHISAD_MODEL_MONITOR_MODEL_ID="gpt-5.4-2026-03-05"
 ```
 
 Verify provider setup:

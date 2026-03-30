@@ -1102,7 +1102,7 @@ def _key_gated_acceptance_matrix() -> dict[str, dict[str, str]]:
     rows = {
         "openai": {
             "key_env": "OPENAI_API_KEY",
-            "model_id": "gpt-5.2-2025-12-11",
+            "model_id": "gpt-5.4-2026-03-05",
             "scope": "route_configurable",
         },
         "openrouter": {

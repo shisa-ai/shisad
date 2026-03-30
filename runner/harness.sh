@@ -206,8 +206,46 @@ _preflight_planner_credential() {
       ;;
   esac
 
-  if [[ "${SHISAD_MODEL_PLANNER_REMOTE_ENABLED}" == "true" ]] && [[ -n "${required}" ]] && [[ -z "${!required:-}" ]]; then
+  if [[ "${SHISAD_MODEL_PLANNER_REMOTE_ENABLED}" != "true" ]] || [[ -z "${required}" ]]; then
+    return 0
+  fi
+
+  # Key present for the configured preset — nothing to do.
+  if [[ -n "${!required:-}" ]]; then
+    return 0
+  fi
+
+  # Key missing. If the user explicitly chose a non-default preset, fail immediately.
+  if [[ "${SHISAD_MODEL_PLANNER_PROVIDER_PRESET}" != "shisa_default" ]]; then
     _die "${required} is required for planner preset '${SHISAD_MODEL_PLANNER_PROVIDER_PRESET}'. Set it in your shell or runner/.env."
+  fi
+
+  # Default preset (shisa_default) and SHISA_API_KEY is missing — try to
+  # auto-detect an alternative API key.  Order mirrors the Python-side
+  # ModelRouter._auto_detect_preset_from_api_key() priority.
+  local fallback_key="" fallback_preset="" fallback_model=""
+  if [[ -n "${OPENAI_API_KEY:-}" ]]; then
+    fallback_key="OPENAI_API_KEY"
+    fallback_preset="openai_default"
+    fallback_model="gpt-5.4-2026-03-05"
+  elif [[ -n "${GEMINI_API_KEY:-}" ]]; then
+    fallback_key="GEMINI_API_KEY"
+    fallback_preset="google_openai_default"
+    fallback_model="gemini-3.1-pro-preview"
+  elif [[ -n "${OPENROUTER_API_KEY:-}" ]]; then
+    fallback_key="OPENROUTER_API_KEY"
+    fallback_preset="openrouter_default"
+    fallback_model=""  # no default override; uses Python-side defaults
+  fi
+
+  if [[ -z "${fallback_key}" ]]; then
+    _die "No API key found. Set SHISA_API_KEY, OPENAI_API_KEY, GEMINI_API_KEY, or OPENROUTER_API_KEY in your shell or runner/.env."
+  fi
+
+  _warn "SHISA_API_KEY not set; falling back to ${fallback_key} (preset: ${fallback_preset})"
+  export SHISAD_MODEL_PLANNER_PROVIDER_PRESET="${fallback_preset}"
+  if [[ -n "${fallback_model}" ]]; then
+    export SHISAD_MODEL_PLANNER_MODEL_ID="${fallback_model}"
   fi
 }
 

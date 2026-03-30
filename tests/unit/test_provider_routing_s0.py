@@ -31,7 +31,7 @@ def test_s0_openai_preset_resolves_route_defaults_and_global_remote(
     config = ModelConfig(
         remote_enabled=True,
         planner_provider_preset="openai_default",
-        planner_model_id="gpt-5.2-2025-12-11",
+        planner_model_id="gpt-5.4-2026-03-05",
     )
     route = ModelRouter(config).route_for(ModelComponent.PLANNER)
 
@@ -242,7 +242,7 @@ def test_s0_auto_detected_preset_uses_preset_default_model_id(
 
     route = ModelRouter(ModelConfig()).route_for(ModelComponent.PLANNER)
 
-    assert route.model_id == "gpt-5.2-2025-12-11"
+    assert route.model_id == "gpt-5.4-2026-03-05"
 
 
 def test_s0_auto_detected_preset_uses_preset_base_url(
@@ -307,5 +307,5 @@ def test_s0_gemini_key_auto_detects_google_preset(
     assert route.provider_preset == "google_openai_default"
     assert route.provider_preset_source == "auto_detected"
     assert route.base_url == "https://generativelanguage.googleapis.com/v1beta/openai"
-    assert route.model_id == "gemini-2.5-flash"
+    assert route.model_id == "gemini-3.1-pro-preview"
     assert route.remote_enabled is True

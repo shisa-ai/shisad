@@ -92,14 +92,14 @@ _PRESET_DEFAULT_MODEL_IDS: dict[ProviderPreset, dict[ModelComponent, str]] = {
         ModelComponent.MONITOR: "shisa-ai/shisa-v2.1-unphi4-14b",
     },
     ProviderPreset.OPENAI_DEFAULT: {
-        ModelComponent.PLANNER: "gpt-5.2-2025-12-11",
+        ModelComponent.PLANNER: "gpt-5.4-2026-03-05",
         ModelComponent.EMBEDDINGS: "text-embedding-3-small",
-        ModelComponent.MONITOR: "gpt-5.2-2025-12-11",
+        ModelComponent.MONITOR: "gpt-5.4-2026-03-05",
     },
     ProviderPreset.GOOGLE_OPENAI_DEFAULT: {
-        ModelComponent.PLANNER: "gemini-2.5-flash",
+        ModelComponent.PLANNER: "gemini-3.1-pro-preview",
         ModelComponent.EMBEDDINGS: "text-embedding-004",
-        ModelComponent.MONITOR: "gemini-2.5-flash",
+        ModelComponent.MONITOR: "gemini-3.1-pro-preview",
     },
 }
 
