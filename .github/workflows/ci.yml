@@ -34,7 +34,7 @@ jobs:
         run: uv python install ${{ matrix.python-version }}
 
       - name: Install dependencies (default profile)
-        run: uv sync --dev
+        run: uv sync --exclude-newer "$(date -u -d '7 days ago' +%Y-%m-%dT%H:%M:%SZ)" --frozen --dev
 
       - name: Lint with ruff
         run: uv run ruff check src/ tests/ scripts/
@@ -65,7 +65,7 @@ jobs:
         run: uv python install 3.12
 
       - name: Install dependencies (security-runtime + coverage + channels-runtime)
-        run: uv sync --dev --group security-runtime --group coverage --group channels-runtime
+        run: uv sync --exclude-newer "$(date -u -d '7 days ago' +%Y-%m-%dT%H:%M:%SZ)" --frozen --dev --group security-runtime --group coverage --group channels-runtime
 
       - name: Verify security asset provenance
         run: uv run python scripts/security_assets.py verify
@@ -108,7 +108,7 @@ jobs:
         run: uv python install 3.12
 
       - name: Install dependencies (default profile)
-        run: uv sync --dev
+        run: uv sync --exclude-newer "$(date -u -d '7 days ago' +%Y-%m-%dT%H:%M:%SZ)" --frozen --dev
 
       - name: Detect CAP_NET_ADMIN availability
         id: capcheck
@@ -140,7 +140,7 @@ jobs:
         run: uv python install 3.12
 
       - name: Install dependencies (default profile)
-        run: uv sync --dev
+        run: uv sync --exclude-newer "$(date -u -d '7 days ago' +%Y-%m-%dT%H:%M:%SZ)" --frozen --dev
 
       - name: Run deterministic core adversarial subset
         run: |
@@ -207,7 +207,7 @@ jobs:
         run: uv python install 3.12
 
       - name: Install dependencies (default profile)
-        run: uv sync --dev
+        run: uv sync --exclude-newer "$(date -u -d '7 days ago' +%Y-%m-%dT%H:%M:%SZ)" --frozen --dev
 
       - name: Run full M6 adversarial suites
         run: uv run pytest -q tests/adversarial/test_adversarial_hardening.py tests/integration/test_security_hardening_integration.py

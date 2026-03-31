@@ -1,6 +1,7 @@
 # shisad Supply Chain Audit
 
 *Created: 2026-03-31*  
+*Updated: 2026-03-31 (immediate hardening pass)*  
 *Status: Draft*  
 *Snapshot basis: repository state on `main` at audit time (clean tree)*
 
@@ -20,9 +21,24 @@ Goals:
 - Threat hotspots for supply chain in this repo today:
   - runtime `npx` adapter resolution,
   - mutable CI action tags,
-  - unpinned build backend dependency,
+  - workflow-level coverage gaps in CI security checks and release-path controls,
   - installer/bootstrap paths that depend on mutable upstream endpoints.
 - Accepted risk decision: Python interpreter version remains `>=3.12` and is not treated as a primary attack vector for this audit lane.
+
+## Immediate Hardening Applied (2026-03-31)
+
+The following low-friction controls were implemented immediately:
+
+1. Pinned `opencode` adapter version:
+   - `opencode-ai@1.3.10` in `src/shisad/coding/registry.py`.
+2. Enforced frozen lock usage in CI dependency installs:
+   - all `uv sync` calls in `.github/workflows/ci.yml` now include `--frozen`.
+3. Pinned build backend dependency:
+   - `[build-system].requires` now uses `hatchling==1.29.0` in `pyproject.toml`.
+4. Enabled minimum-age cooldown for uv resolution:
+   - CI `uv sync` calls now pass `--exclude-newer "$(date -u -d '7 days ago' +%Y-%m-%dT%H:%M:%SZ)"`.
+
+These changes improve lock determinism and reduce same-day package ingestion risk without changing user-facing runtime capabilities.
 
 ## Evidence and Commands (Snapshot Reproducibility)
 
@@ -344,34 +360,34 @@ Note: packages with no `# via` comments in this export are direct dependencies o
    - `uv lock --check` is currently clean.
    - The lockfile is committed and used in normal workflows.
 
+3. **Build backend dependency pinning**
+   - `build-system.requires` is now explicitly pinned to `hatchling==1.29.0`.
+
+4. **CI lock consistency on install**
+   - CI now runs `uv sync --frozen ...` across dependency-install steps.
+
+5. **Minimum-age dependency cooldown (uv)**
+   - CI resolution now uses a rolling 7-day cutoff timestamp via `--exclude-newer "$(date -u -d '7 days ago' +%Y-%m-%dT%H:%M:%SZ)"`.
+
 ### Partially locked / weak points
 
 1. **`pyproject.toml` direct dependency specs are mostly ranges**
    - Only 1 direct runtime dep is exact-pinned (`agent-client-protocol`).
    - Remaining direct deps and group deps are range-pinned and rely on `uv.lock` for exactness.
 
-2. **Build backend dependency is not version pinned**
-   - `build-system.requires = ["hatchling"]` is unbounded in `pyproject.toml`.
-   - This is outside the regular app dependency lock graph and should be treated as a supply-chain surface.
-
-3. **Runtime npm adapter path is not fully immutable**
+2. **Runtime npm adapter path is not fully immutable**
    - `src/shisad/coding/registry.py` uses `npx` at runtime.
-   - `claude` and `codex` adapters include explicit package versions.
-   - `opencode` adapter currently does not include a version (`opencode-ai` unpinned).
+   - `claude`, `codex`, and `opencode` adapters now all include explicit package versions.
    - None of these runtime npm resolves are hash-pinned in-repo.
 
-4. **CI action references are mutable tags**
+3. **CI action references are mutable tags**
    - `.github/workflows/ci.yml` uses tags such as:
      - `actions/checkout@v4`
      - `astral-sh/setup-uv@v4`
      - `actions/upload-artifact@v4`
    - Tags are not immutable trust anchors compared to full commit SHAs.
 
-5. **CI install commands do not assert frozen lock usage**
-   - CI uses `uv sync ...` without `--frozen`.
-   - Using `--frozen` hardens against accidental lock drift in CI execution.
-
-6. **Bootstrap/install path includes mutable upstream installers**
+4. **Bootstrap/install path includes mutable upstream installers**
    - `docs/DEPLOY.md` bootstrap includes:
      - `apt-get install ...` with no package version pinning.
      - `curl -LsSf https://astral.sh/uv/install.sh | sh`.
@@ -384,14 +400,44 @@ Note: packages with no `# via` comments in this export are direct dependencies o
    - `.python-version` pins major/minor (`3.12`) but not patch.
    - This audit treats interpreter patch-level drift as an accepted, lower-priority risk per project stance.
 
+## Minimum-Age Controls (uv + pip fallback note)
+
+- **Implemented now (uv):**
+  - CI now applies:
+
+```bash
+uv sync --exclude-newer "$(date -u -d '7 days ago' +%Y-%m-%dT%H:%M:%SZ)" --frozen ...
+```
+
+  - This gives a rolling cooldown window for newly published versions without hardcoding a stale date.
+
+- **pip fallback reminder (absolute timestamp model):**
+  - pip uses `--uploaded-prior-to <timestamp>` / `PIP_UPLOADED_PRIOR_TO`.
+  - Because that value is absolute, do not hardcode a static date in scripts.
+  - Generate it dynamically per run to avoid manual reset drift, for example:
+
+```bash
+export PIP_UPLOADED_PRIOR_TO="$(date -u -d '7 days ago' +%Y-%m-%dT%H:%M:%SZ)"
+python -m pip install -r requirements.txt
+```
+
+## CI / Workflow Coverage Gaps (Dedicated Lane)
+
+Current GitHub Actions coverage is useful but not complete for supply-chain assurance. Treat this as a distinct improvement lane:
+
+1. Pin all third-party actions to immutable commit SHAs.
+2. Add a workflow guard that fails when lockfile or dependency policy drifts unexpectedly.
+3. Add dependency-review / advisories checks for dependency PRs.
+4. Add release-path checks (attestation/SBOM/signing) once release workflows are introduced.
+5. Add a periodic “supply-chain hygiene” job to emit inventory diffs and newly introduced package alerts.
+
 ## Prioritized Hardening Plan
 
 ### Priority 0 (fast, high-value)
 
-1. Pin `opencode` adapter version in `src/shisad/coding/registry.py`.
-2. Add CI `--frozen` to all `uv sync` steps.
-3. Pin GitHub Actions to immutable commit SHAs (keep a small process for scheduled SHA refresh).
-4. Pin `build-system.requires` to an explicit `hatchling` version range or exact version.
+1. Pin GitHub Actions to immutable commit SHAs (keep a small process for scheduled SHA refresh).
+2. Add explicit lock/policy drift guard jobs for dependency metadata.
+3. Keep the uv cooldown (`exclude-newer`) and set/maintain an equivalent cutoff for any pip fallback paths.
 
 ### Priority 1 (next release lane)
 
@@ -425,6 +471,6 @@ Note: packages with no `# via` comments in this export are direct dependencies o
 - The largest practical gaps are outside that layer:
   - runtime npm fetch path,
   - mutable CI action pins,
-  - unpinned build backend,
+  - incomplete CI/release supply-chain coverage lane,
   - mutable bootstrap installers.
-- Addressing those four items gives the highest near-term reduction in supply-chain risk without reducing product functionality.
+- Immediate hardening closed several easy gaps today (adapter version pin, frozen CI sync, build backend pin, uv cooldown), and the next best gains are CI/workflow integrity controls.

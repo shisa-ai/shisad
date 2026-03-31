@@ -67,7 +67,7 @@ def build_default_agent_registry(
         ),
         "opencode": AgentCommandSpec(
             name="opencode",
-            command=("npx", "-y", "opencode-ai", "acp"),
+            command=("npx", "-y", "opencode-ai@1.3.10", "acp"),
         ),
     }
     for raw_name, raw_command in (overrides or {}).items():

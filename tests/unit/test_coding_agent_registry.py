@@ -23,7 +23,12 @@ def test_m3_default_agent_registry_contains_pinned_acp_commands() -> None:
         "npx",
         "@zed-industries/codex-acp@0.9.5",
     )
-    assert registry["opencode"].command[:3] == ("npx", "-y", "opencode-ai")
+    assert registry["opencode"].command == (
+        "npx",
+        "-y",
+        "opencode-ai@1.3.10",
+        "acp",
+    )
 
 
 def test_m3_agent_selection_uses_fallback_chain_when_preferred_agent_unavailable() -> None:
