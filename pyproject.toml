@@ -11,7 +11,7 @@ dependencies = [
     "agent-client-protocol==0.8.1",
     "click>=8.1,<9",
     "pyyaml>=6.0,<7",
-    "cryptography>=44.0,<46",
+    "cryptography>=46.0.6,<47",
     "loguru>=0.7,<1",
 ]
 

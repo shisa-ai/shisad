@@ -1,7 +1,7 @@
 # shisad Supply Chain Audit
 
 *Created: 2026-03-31*  
-*Updated: 2026-03-31 (immediate hardening pass)*  
+*Updated: 2026-04-01 (cryptography 46.0.6 upgrade review + lock refresh)*  
 *Status: Draft*  
 *Snapshot basis: repository state on `main` at audit time (clean tree)*
 
@@ -24,6 +24,113 @@ Goals:
   - workflow-level coverage gaps in CI security checks and release-path controls,
   - installer/bootstrap paths that depend on mutable upstream endpoints.
 - Accepted risk decision: Python interpreter version remains `>=3.12` and is not treated as a primary attack vector for this audit lane.
+
+## Follow-up Worklog
+
+### 2026-04-01 — `cryptography` 46.0.6 upgrade lane
+
+- Scope: review and apply a focused bump of direct runtime dependency `cryptography` from locked `45.0.7` to `46.0.6`; defer `Pygments`.
+- Behavioral contract impact: expected none; the repo uses `AESGCM`, `PBKDF2HMAC`, `hashes`, `InvalidTag`, `InvalidSignature`, and Ed25519 APIs only.
+- Threat/risk read before implementation:
+  - staying on `45.0.7` misses `CVE-2026-34073` fixed in `46.0.6`,
+  - staying on `45.0.7` misses `CVE-2026-26007` fixed in `46.0.5`,
+  - `46.0.0` is a major-version boundary, so compatibility validation must cover memory encryption and signature verification flows.
+- Validation scope planned: targeted tests for the touched cryptography call sites, then static checks, then `uv run pytest tests/behavioral/ -q`.
+- Execution and outcomes:
+  - `uv lock --check` → success.
+  - `uv lock --upgrade-package cryptography==46.0.6` → `Updated cryptography v45.0.7 -> v46.0.6`.
+  - `uv run --group dev python -m pytest tests/unit/test_skills.py -k 'signature' -q` → `3 passed, 22 deselected`.
+  - `uv run --group dev python -m pytest tests/unit/test_retrieval_routing.py tests/unit/test_memory_manager.py -q` → `17 passed`.
+  - `uv run --group dev python -m pytest tests/integration/test_security_loop_core.py -q` → `3 passed`.
+  - `uv run --group dev python -m ruff check src/ tests/ scripts/` → `All checks passed!`.
+  - `uv run --group dev python -m mypy src/shisad/` → `Success: no issues found in 171 source files`.
+  - `uv run --group dev python -m pytest tests/behavioral/ -q` → `41 passed, 6 skipped`.
+
+## 2026-04-01 Review Summary — `cryptography`
+
+### Current state at review start
+
+- Declared spec: `cryptography>=44.0,<46`
+- Locked version: `45.0.7`
+- Dependency class: direct runtime dependency
+- Local usage surface:
+  - `src/shisad/memory/ingestion.py`
+  - `src/shisad/skills/signatures.py`
+
+### Upstream release review
+
+- Current target: `46.0.6`
+- Target release date: `2026-03-25`
+- Current locked release date: `2025-09-01`
+- Provenance signal reviewed: PyPI shows verified project details and consistent upstream project ownership; useful but not sufficient alone for supply-chain trust.
+- Relevant upstream fixes missed by staying on `45.0.7`:
+  - `46.0.6`: fixes `CVE-2026-34073` in X.509 name-constraint verification for certain wildcard-DNS SAN leaf-certificate cases.
+  - `46.0.5`: fixes `CVE-2026-26007`, where malformed binary-curve public keys could expose portions of a private key.
+- Compatibility read before bump:
+  - `46.0.0` removes Python 3.7 support and deprecates OpenSSL `<3.0`.
+  - `46.0.0` removes legacy cipher classes from the main cipher module (`CAST5`, `SEED`, `IDEA`, `Blowfish`).
+  - No local usage of those removed legacy APIs was found during pre-bump grep review.
+
+### Decision
+
+- Proceed with the `cryptography` bump to `46.0.6`.
+- Applied lock update: `pyproject.toml` now declares `cryptography>=46.0.6,<47` and `uv.lock` resolves `46.0.6`.
+- Defer `Pygments`; it is transitive in this repo and lower urgency than the direct runtime/security delta in `cryptography`.
+
+## Dependency Change-Control Plan
+
+Going forward, dependency upgrades/additions should use this review lane by default.
+
+### Review gate for upgrades
+
+1. Identify whether the package is:
+   - direct runtime,
+   - optional runtime,
+   - dev/test only,
+   - transitive only.
+2. Record the current locked version, proposed target version, and exact release dates.
+3. Read the upstream changelog/release notes and classify the change:
+   - security fix,
+   - bug fix,
+   - feature-only,
+   - compatibility break / major release.
+4. Review provenance signals before bumping:
+   - PyPI verified details,
+   - maintainer/owner continuity,
+   - source/changelog linkage,
+   - whether the release is old enough to pass the project cooldown preference.
+5. Check local blast radius:
+   - grep for direct imports/APIs used,
+   - note removed/deprecated APIs in the new version,
+   - identify the narrowest regression tests.
+6. Upgrade with exact lockfile regeneration and review:
+   - inspect `pyproject.toml` constraint changes,
+   - inspect `uv.lock` artifact/hash changes for the package and any transitive churn,
+   - reject unrelated lock churn unless intentionally required.
+7. Validate in this order:
+   - targeted tests,
+   - static checks,
+   - behavioral tests,
+   - focused broader suites only when the blast radius warrants them.
+8. Record the decision and residual risk in this audit/worklog.
+
+### Review gate for new dependencies
+
+New packages should meet a higher bar than upgrades:
+
+1. Justify why stdlib or an existing dependency is insufficient.
+2. Prefer mature packages with stable maintainership and clear release provenance.
+3. Record the smallest acceptable version range in `pyproject.toml` and exact resolution in `uv.lock`.
+4. Review new transitive dependencies introduced by the package.
+5. Add or extend tests that cover both the intended capability and the failure mode if the dependency is missing or misbehaves.
+6. Treat new runtime dependencies as security-relevant by default and document the attack-surface change.
+
+## DEFERRALS
+
+- `SC-2026-04-01-1` — `Pygments` review/upgrade deferred
+  - Rationale: `Pygments` is transitive/dev-tooling in this repo and lower priority than `cryptography`.
+  - Risk: medium-low; deferred churn in syntax-highlighting tooling, but no known direct runtime/security dependency in the current product path.
+  - Target milestone: next supply-chain hygiene pass.
 
 ## Immediate Hardening Applied (2026-03-31)
 
@@ -80,7 +187,7 @@ sed -n '1,140p' docs/DEPLOY.md
 | --- | --- | --- | --- |
 | `agent-client-protocol` | `==0.8.1` | `0.8.1` | Exact |
 | `click` | `>=8.1,<9` | `8.3.1` | Range in spec, exact in lock |
-| `cryptography` | `>=44.0,<46` | `45.0.7` | Range in spec, exact in lock |
+| `cryptography` | `>=46.0.6,<47` | `46.0.6` | Range in spec, exact in lock |
 | `loguru` | `>=0.7,<1` | `0.7.3` | Range in spec, exact in lock |
 | `pydantic` | `>=2.10,<3` | `2.12.5` | Range in spec, exact in lock |
 | `pydantic-settings` | `>=2.7,<3` | `2.12.0` | Range in spec, exact in lock |
@@ -117,7 +224,7 @@ cffi==2.0.0
 click==8.3.1
 colorama==0.4.6 ; sys_platform == 'win32'
 coverage==7.13.4
-cryptography==45.0.7
+cryptography==46.0.6
 discord-py==2.6.4
 frozenlist==1.8.0
 h11==0.16.0
@@ -229,7 +336,7 @@ colorama==0.4.6 ; sys_platform == 'win32'
     #   pytest
 coverage==7.13.4
     # via pytest-cov
-cryptography==45.0.7
+cryptography==46.0.6
     # via shisad
 frozenlist==1.8.0
     # via
