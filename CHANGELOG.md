@@ -8,6 +8,14 @@ release tag. There is no standing "Unreleased" section.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Versioning follows semver (see `docs/PUBLISH.md` for policy).
 
+## [0.5.2] - 2026-04-01
+
+### Fixed
+
+- Added `[project.urls]` to `pyproject.toml` so PyPI links to the GitHub repo,
+  issues, and changelog.
+- Added `license` field (Apache-2.0) to `pyproject.toml`.
+
 ## [0.5.1] - 2026-04-01
 
 ### Added
@@ -48,5 +56,6 @@ Initial public release.
   recorder.
 - **End-to-end demo** script and runner harness for live verification.
 
+[0.5.2]: https://github.com/shisa-ai/shisad/compare/v0.5.1...v0.5.2
 [0.5.1]: https://github.com/shisa-ai/shisad/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/shisa-ai/shisad/releases/tag/v0.5.0

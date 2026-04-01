@@ -1,7 +1,8 @@
 [project]
 name = "shisad"
-version = "0.5.1"
+version = "0.5.2"
 description = "Security-first AI agent daemon"
+license = {text = "Apache-2.0"}
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
@@ -13,6 +14,12 @@ dependencies = [
     "cryptography>=44.0,<46",
     "loguru>=0.7,<1",
 ]
+
+[project.urls]
+Homepage = "https://github.com/shisa-ai/shisad"
+Repository = "https://github.com/shisa-ai/shisad"
+Issues = "https://github.com/shisa-ai/shisad/issues"
+Changelog = "https://github.com/shisa-ai/shisad/blob/main/CHANGELOG.md"
 
 [project.scripts]
 shisad = "shisad.cli.main:cli"
