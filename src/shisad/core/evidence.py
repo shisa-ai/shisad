@@ -5,13 +5,15 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import hmac
+import json
+import logging
 import os
 import re
 from datetime import UTC, datetime
 from html.parser import HTMLParser
 from pathlib import Path
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 from shisad.core.types import SessionId, TaintLabel
 from shisad.security.firewall import ContentFirewall, SanitizationMode
@@ -25,6 +27,10 @@ _COOKIE_HINTS = ("cookie", "consent", "privacy", "gdpr", "banner")
 _SKIP_TAGS = {"nav", "header", "footer", "script", "style", "noscript"}
 _SEMANTIC_TAGS = {"article", "main", "p"}
 _DEFAULT_EVIDENCE_MAX_AGE_SECONDS = 3600
+_DEFAULT_ORPHAN_RETENTION_SECONDS = 7 * 24 * 3600
+_EVIDENCE_METADATA_FILENAME = "refs_index.json"
+
+logger = logging.getLogger(__name__)
 
 
 class EvidenceRef(BaseModel):
@@ -194,17 +200,25 @@ class EvidenceStore:
         *,
         salt: bytes | None = None,
         default_max_age_seconds: int = _DEFAULT_EVIDENCE_MAX_AGE_SECONDS,
+        orphan_retention_seconds: int = _DEFAULT_ORPHAN_RETENTION_SECONDS,
     ) -> None:
         self._root_dir = root_dir
         self._blob_dir = root_dir / "blobs"
+        self._quarantine_dir = root_dir / "quarantine"
+        self._metadata_path = root_dir / _EVIDENCE_METADATA_FILENAME
         self._salt_path = root_dir / "evidence_salt"
         self._default_max_age_seconds = max(1, int(default_max_age_seconds))
-        self._refs: dict[str, dict[str, EvidenceRef]] = {}
+        self._orphan_retention_seconds = max(1, int(orphan_retention_seconds))
         self._root_dir.mkdir(parents=True, exist_ok=True)
         self._blob_dir.mkdir(parents=True, exist_ok=True)
+        self._quarantine_dir.mkdir(parents=True, exist_ok=True)
         self._ensure_dir_permissions(self._root_dir)
         self._ensure_dir_permissions(self._blob_dir)
+        self._ensure_dir_permissions(self._quarantine_dir)
         self._salt = self._load_or_create_salt(salt)
+        self._refs = self._load_metadata_index()
+        self._quarantine_orphaned_blobs()
+        self._prune_quarantine()
 
     def store(
         self,
@@ -223,7 +237,7 @@ class EvidenceStore:
         session_key = self._session_key(session_id)
         existing = self._refs.setdefault(session_key, {}).get(ref_id)
         if existing is not None:
-            return self._merge_existing_ref(
+            merged = self._merge_existing_ref(
                 session_key=session_key,
                 ref_id=ref_id,
                 existing=existing,
@@ -232,6 +246,8 @@ class EvidenceStore:
                 summary=summary,
                 ttl_seconds=ttl_seconds,
             )
+            self._persist_metadata_index()
+            return merged
 
         blob_path = self._blob_path(content_hash)
         if not blob_path.exists():
@@ -247,6 +263,7 @@ class EvidenceStore:
             ttl_seconds=ttl_seconds,
         )
         self._refs[session_key][ref_id] = ref
+        self._persist_metadata_index()
         return ref
 
     def read(self, session_id: SessionId, ref_id: str) -> str | None:
@@ -297,6 +314,8 @@ class EvidenceStore:
             self._delete_blob_if_unreferenced(ref.content_hash)
         if not refs:
             self._refs.pop(session_key, None)
+        if evicted:
+            self._persist_metadata_index()
         return evicted
 
     def _make_ref_id(self, *, session_id: SessionId, content_hash: str) -> str:
@@ -332,6 +351,105 @@ class EvidenceStore:
 
     def _blob_path(self, content_hash: str) -> Path:
         return self._blob_dir / f"{content_hash}.txt"
+
+    def _load_metadata_index(self) -> dict[str, dict[str, EvidenceRef]]:
+        if not self._metadata_path.exists():
+            return {}
+        try:
+            raw = json.loads(self._metadata_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            logger.warning("Failed to load persisted evidence metadata index", exc_info=True)
+            return {}
+        if not isinstance(raw, dict):
+            logger.warning("Ignoring malformed evidence metadata index")
+            return {}
+
+        loaded: dict[str, dict[str, EvidenceRef]] = {}
+        for session_key, session_refs_raw in raw.items():
+            if not isinstance(session_key, str) or not isinstance(session_refs_raw, dict):
+                continue
+            session_refs: dict[str, EvidenceRef] = {}
+            for ref_id, ref_raw in session_refs_raw.items():
+                if not isinstance(ref_id, str):
+                    continue
+                try:
+                    ref = EvidenceRef.model_validate(ref_raw)
+                except ValidationError:
+                    logger.warning(
+                        "Ignoring malformed persisted evidence ref %s for session %s",
+                        ref_id,
+                        session_key,
+                        exc_info=True,
+                    )
+                    continue
+                if ref.ref_id != ref_id:
+                    logger.warning(
+                        "Ignoring persisted evidence ref with mismatched id %s for session %s",
+                        ref_id,
+                        session_key,
+                    )
+                    continue
+                session_refs[ref_id] = ref
+            if session_refs:
+                loaded[session_key] = session_refs
+        return loaded
+
+    def _persist_metadata_index(self) -> None:
+        serialized = {
+            session_key: {
+                ref_id: ref.model_dump(mode="json")
+                for ref_id, ref in session_refs.items()
+            }
+            for session_key, session_refs in self._refs.items()
+            if session_refs
+        }
+        temp_path = self._metadata_path.with_suffix(".json.tmp")
+        temp_path.write_text(
+            json.dumps(serialized, ensure_ascii=True, sort_keys=True),
+            encoding="utf-8",
+        )
+        self._ensure_file_permissions(temp_path)
+        temp_path.replace(self._metadata_path)
+        self._ensure_file_permissions(self._metadata_path)
+
+    def _quarantine_orphaned_blobs(self) -> None:
+        referenced_hashes = {
+            ref.content_hash
+            for session_refs in self._refs.values()
+            for ref in session_refs.values()
+        }
+        for blob_path in self._blob_dir.glob("*.txt"):
+            if blob_path.stem in referenced_hashes:
+                continue
+            self._quarantine_blob(blob_path)
+
+    def _quarantine_blob(self, blob_path: Path) -> None:
+        destination = self._quarantine_dir / blob_path.name
+        if destination.exists():
+            with contextlib.suppress(OSError):
+                destination.unlink()
+        try:
+            blob_path.replace(destination)
+        except OSError:
+            logger.warning(
+                "Failed to quarantine orphaned evidence blob %s",
+                blob_path,
+                exc_info=True,
+            )
+            return
+        self._ensure_file_permissions(destination)
+
+    def _prune_quarantine(self) -> None:
+        now = datetime.now(UTC).timestamp()
+        for blob_path in self._quarantine_dir.glob("*.txt"):
+            try:
+                age_seconds = max(0.0, now - blob_path.stat().st_mtime)
+            except OSError:
+                continue
+            if age_seconds <= float(self._orphan_retention_seconds):
+                continue
+            with contextlib.suppress(OSError):
+                blob_path.unlink()
 
     def _evict_for_session(self, session_id: SessionId) -> None:
         self.evict_expired(

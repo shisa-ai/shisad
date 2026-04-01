@@ -131,6 +131,35 @@ def test_wrap_serialized_tool_outputs_wraps_nested_body_fields(tmp_path) -> None
     assert store.read(SessionId("sess-a"), ref_ids[0]) == "Nested content that should be wrapped."
 
 
+def test_wrap_serialized_tool_outputs_wraps_large_unknown_string_fields(tmp_path) -> None:
+    store = EvidenceStore(tmp_path / "evidence", salt=b"a" * 32)
+    records = [
+        {
+            "tool_name": "web.fetch",
+            "success": True,
+            "payload": {
+                "ok": True,
+                "url": "https://example.com/article",
+                "markdown": "Untrusted novel-key content. " * 20,
+            },
+            "taint_labels": ["untrusted"],
+        }
+    ]
+
+    ref_ids = _wrap_serialized_tool_outputs_with_evidence(
+        session_id=SessionId("sess-a"),
+        records=records,
+        evidence_store=store,
+        firewall=ContentFirewall(),
+    )
+
+    assert len(ref_ids) == 1
+    wrapped_markdown = records[0]["payload"]["markdown"]
+    assert isinstance(wrapped_markdown, str)
+    assert wrapped_markdown.startswith("[EVIDENCE ref=ev-")
+    assert store.read(SessionId("sess-a"), ref_ids[0]) == "Untrusted novel-key content. " * 20
+
+
 def test_summarize_tool_outputs_for_chat_surfaces_nested_evidence_stub(tmp_path) -> None:
     store = EvidenceStore(tmp_path / "evidence", salt=b"a" * 32)
     records = [

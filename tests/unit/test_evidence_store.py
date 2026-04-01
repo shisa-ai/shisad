@@ -33,6 +33,27 @@ def test_evidence_store_round_trips_content_and_metadata(tmp_path) -> None:
     assert store.validate_ref_id(sid, ref.ref_id) is True
 
 
+def test_evidence_store_restores_metadata_after_restart(tmp_path) -> None:
+    evidence_root = tmp_path / "evidence"
+    sid = SessionId("sess-a")
+
+    first = EvidenceStore(evidence_root)
+    created = first.store(
+        sid,
+        "restart-stable evidence",
+        taint_labels={TaintLabel.UNTRUSTED},
+        source="web.fetch:example.com",
+        summary="restart-stable evidence",
+    )
+
+    restarted = EvidenceStore(evidence_root)
+    loaded = restarted.get_ref(sid, created.ref_id)
+
+    assert loaded == created
+    assert restarted.read(sid, created.ref_id) == "restart-stable evidence"
+    assert restarted.validate_ref_id(sid, created.ref_id) is True
+
+
 def test_evidence_store_deduplicates_same_session_same_content(tmp_path) -> None:
     store = EvidenceStore(tmp_path / "evidence", salt=b"a" * 32)
     sid = SessionId("sess-a")
@@ -185,6 +206,23 @@ def test_evidence_store_hardens_directory_and_file_permissions(tmp_path) -> None
     assert blob_dir_mode == 0o700
     assert salt_mode == 0o600
     assert blob_mode == 0o600
+
+
+def test_evidence_store_quarantines_orphan_blobs_on_startup(tmp_path) -> None:
+    evidence_root = tmp_path / "evidence"
+    blob_dir = evidence_root / "blobs"
+    blob_dir.mkdir(parents=True)
+    orphan_hash = "deadbeef" * 8
+    orphan_blob = blob_dir / f"{orphan_hash}.txt"
+    orphan_blob.write_text("orphaned evidence", encoding="utf-8")
+
+    store = EvidenceStore(evidence_root, salt=b"a" * 32)
+
+    quarantined = evidence_root / "quarantine" / f"{orphan_hash}.txt"
+    assert orphan_blob.exists() is False
+    assert quarantined.exists() is True
+    assert quarantined.read_text(encoding="utf-8") == "orphaned evidence"
+    assert store._refs == {}
 
 
 def test_generate_safe_summary_preserves_normal_extract(tmp_path) -> None:

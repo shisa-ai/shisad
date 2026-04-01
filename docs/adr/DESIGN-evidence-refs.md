@@ -2,7 +2,7 @@
 
 *Created: 2026-03-27*
 *Status: Design draft*
-*Updated: 2026-03-28 — aligned ref ID scheme (HMAC), summary policy (extractive-only), and fetch-turn isolation with v0.5 PLAN M2 design decisions*
+*Updated: 2026-04-01 — v0.6.0 G0 shipped restart-stable metadata reload, orphan-blob quarantine, and generic unknown-key wrapping fallback*
 
 ## Problem
 
@@ -33,7 +33,9 @@ class EvidenceRef(BaseModel):
 ```
 
 v0.5 scope note: the salt persists across daemon restarts, but the ref metadata
-index is in-memory only. Restart-stable metadata reload is deferred beyond M2.
+index was originally in-memory only. v0.6.0 G0 closes that gap with a durable
+`refs_index.json` metadata reload path plus orphan-blob quarantine, before the
+broader ArtifactLedger work in v0.6.0 M4.
 
 ### Flow
 

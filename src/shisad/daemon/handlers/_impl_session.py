@@ -138,6 +138,7 @@ _COMMAND_CONTEXT_REASON_KEY = "command_context_reason"
 _TASK_REPORTED_PATH_MAX_CHARS = 512
 _EVIDENCE_CONTENT_PREVIEW_KEYS: tuple[str, ...] = ("content", "text", "body", "html")
 _EVIDENCE_CONTENT_KEYS: set[str] = set(_EVIDENCE_CONTENT_PREVIEW_KEYS)
+_EVIDENCE_GENERIC_WRAP_MIN_BYTES = 256
 _EVIDENCE_REF_ID_RE = re.compile(r"\bev-[0-9a-f]{16}\b")
 _IN_BAND_READ_ONLY_ACTION_KINDS: set[ActionKind] = {
     ActionKind.FS_READ,
@@ -1792,54 +1793,64 @@ def _wrap_serialized_tool_outputs_with_evidence(
             "full content in this turn.]"
         )
 
+    def _should_wrap_value(*, key: str | None, value: str) -> bool:
+        if not value.strip():
+            return False
+        if key in _EVIDENCE_CONTENT_KEYS:
+            return True
+        return len(value.encode("utf-8")) >= _EVIDENCE_GENERIC_WRAP_MIN_BYTES
+
+    def _wrap_text_value(value: str, *, source: str) -> tuple[str, str | None]:
+        byte_size = len(value.encode("utf-8"))
+        summary = _generate_safe_summary(
+            value,
+            source=source,
+            byte_size=byte_size,
+            firewall=firewall,
+        )
+        try:
+            ref = evidence_store.store(
+                session_id,
+                value,
+                taint_labels={TaintLabel(label) for label in taint_labels},
+                source=source,
+                summary=summary,
+            )
+        except OSError:
+            logger.warning(
+                (
+                    "Evidence store write failed for tool=%s source=%s; "
+                    "degrading to unavailable stub"
+                ),
+                tool_name,
+                source,
+                exc_info=True,
+            )
+            return _storage_unavailable_stub(source=source, byte_size=byte_size), None
+        return format_evidence_stub(ref), ref.ref_id
+
     def _wrap_payload_value(payload_value: Any, *, root_payload: Mapping[str, Any]) -> None:
         if isinstance(payload_value, dict):
             for key, value in payload_value.items():
-                if (
-                    key in _EVIDENCE_CONTENT_KEYS
-                    and isinstance(value, str)
-                    and value.strip()
-                ):
-                    byte_size = len(value.encode("utf-8"))
+                if isinstance(value, str) and _should_wrap_value(key=key, value=value):
                     source = _tool_output_evidence_source(tool_name, root_payload)
-                    summary = _generate_safe_summary(
-                        value,
-                        source=source,
-                        byte_size=byte_size,
-                        firewall=firewall,
-                    )
-                    try:
-                        ref = evidence_store.store(
-                            session_id,
-                            value,
-                            taint_labels={TaintLabel(label) for label in taint_labels},
-                            source=source,
-                            summary=summary,
-                        )
-                    except OSError:
-                        logger.warning(
-                            (
-                                "Evidence store write failed for tool=%s source=%s; "
-                                "degrading to unavailable stub"
-                            ),
-                            tool_name,
-                            source,
-                            exc_info=True,
-                        )
-                        payload_value[key] = _storage_unavailable_stub(
-                            source=source,
-                            byte_size=byte_size,
-                        )
-                        continue
-                    payload_value[key] = format_evidence_stub(ref)
-                    if ref.ref_id not in evidence_ref_ids:
-                        evidence_ref_ids.append(ref.ref_id)
+                    wrapped, ref_id = _wrap_text_value(value, source=source)
+                    payload_value[key] = wrapped
+                    if ref_id is not None and ref_id not in evidence_ref_ids:
+                        evidence_ref_ids.append(ref_id)
                     continue
                 if isinstance(value, (dict, list)):
                     _wrap_payload_value(value, root_payload=root_payload)
             return
         if isinstance(payload_value, list):
-            for item in payload_value:
+            for index, item in enumerate(payload_value):
+                if isinstance(item, str) and _should_wrap_value(key=None, value=item):
+                    source = _tool_output_evidence_source(tool_name, root_payload)
+                    wrapped, ref_id = _wrap_text_value(item, source=source)
+                    payload_value[index] = wrapped
+                    if ref_id is not None and ref_id not in evidence_ref_ids:
+                        evidence_ref_ids.append(ref_id)
+                    continue
                 if isinstance(item, (dict, list)):
                     _wrap_payload_value(item, root_payload=root_payload)
 
@@ -1863,6 +1874,11 @@ def _wrap_serialized_tool_outputs_with_evidence(
 
 
 def _find_tool_output_preview_text(payload_value: Any) -> str:
+    if isinstance(payload_value, str):
+        stripped = payload_value.strip()
+        if stripped.startswith("[EVIDENCE "):
+            return stripped
+        return ""
     if isinstance(payload_value, dict):
         for key in _EVIDENCE_CONTENT_PREVIEW_KEYS:
             candidate = payload_value.get(key)
