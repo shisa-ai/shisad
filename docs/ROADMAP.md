@@ -49,7 +49,7 @@ Exit criteria:
 - Credential scoping across delegated execution boundaries
 - Type-restricted task/tool boundary schemas
 - Summary firewall barrier and approval provenance
-- Current execution status: G0 evidence-store gate is closed; active work has moved to the v0.6.0 M1 foundation slice that formalizes orchestrator/subagent session roles, immutable task envelopes, and trust-aware `report_anomaly` exposure.
+- Current execution status: G0 evidence-store gate is closed and v0.6.0 M1 is now implementation-complete. The live runtime has formal orchestrator/subagent session roles, immutable task envelopes, trust-aware `report_anomaly` exposure, taint-safe COMMAND↔TASK handoffs, and a TASK close-gate self-check before handoff.
 
 ### v0.6.1 — Interop and remote tool trust
 

@@ -86,6 +86,23 @@ def _policy_with_caps(
     return "\n".join(lines) + "\n"
 
 
+def _complete_close_gate_result() -> PlannerResult:
+    return PlannerResult(
+        output=PlannerOutput(
+            assistant_response=(
+                "SELF_CHECK_STATUS: COMPLETE\n"
+                "SELF_CHECK_REASON: complete\n"
+                "SELF_CHECK_NOTES: The task output completed the delegated request."
+            ),
+            actions=[],
+        ),
+        evaluated=[],
+        attempts=1,
+        provider_response=None,
+        messages_sent=(),
+    )
+
+
 @pytest.mark.asyncio
 async def test_m2_task_session_isolates_command_context_and_returns_structured_handoff(
     tmp_path: Path,
@@ -102,6 +119,8 @@ async def test_m2_task_session_isolates_command_context_and_returns_structured_h
         persona_tone_override: str | None = None,
     ) -> PlannerResult:
         _ = (self, context, tools, persona_tone_override)
+        if "TASK CLOSE-GATE SELF-CHECK" in user_content:
+            return _complete_close_gate_result()
         captured_inputs.append(user_content)
         return PlannerResult(
             output=PlannerOutput(assistant_response="Task summary ready.", actions=[]),
@@ -189,6 +208,8 @@ async def test_m2_raw_task_handoff_marks_command_degraded_and_recovery_checkpoin
         persona_tone_override: str | None = None,
     ) -> PlannerResult:
         _ = (self, context, tools, persona_tone_override)
+        if "TASK CLOSE-GATE SELF-CHECK" in user_content:
+            return _complete_close_gate_result()
         return PlannerResult(
             output=PlannerOutput(
                 assistant_response="RAW TASK LOG\n--- a/README.md\n+++ b/README.md\n+secret",
@@ -344,6 +365,172 @@ async def test_m2_task_session_timeout_cleans_up_ephemeral_state(
 
 
 @pytest.mark.asyncio
+async def test_m1_task_close_gate_blocks_incomplete_handoff_before_task_session_returns(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _planner(
+        self: Planner,
+        user_content: str,
+        context: object,
+        *,
+        tools: list[dict[str, object]] | None = None,
+        persona_tone_override: str | None = None,
+    ) -> PlannerResult:
+        _ = (self, context, tools, persona_tone_override)
+        if "TASK CLOSE-GATE SELF-CHECK" in user_content:
+            return PlannerResult(
+                output=PlannerOutput(
+                    assistant_response=(
+                        "SELF_CHECK_STATUS: INCOMPLETE\n"
+                        "SELF_CHECK_REASON: incomplete_work\n"
+                        "SELF_CHECK_NOTES: The task response says it only reviewed the file."
+                    ),
+                    actions=[],
+                ),
+                evaluated=[],
+                attempts=1,
+                provider_response=None,
+                messages_sent=(),
+            )
+        return PlannerResult(
+            output=PlannerOutput(
+                assistant_response="I reviewed README.md but did not make the requested update.",
+                actions=[],
+            ),
+            evaluated=[],
+            attempts=1,
+            provider_response=None,
+            messages_sent=(),
+        )
+
+    monkeypatch.setattr(Planner, "propose", _planner)
+    daemon_task, client = await _start_daemon(
+        tmp_path,
+        policy_text=_policy_with_caps("file.read"),
+    )
+    try:
+        created = await client.call(
+            "session.create",
+            {"channel": "cli", "user_id": "alice", "workspace_id": "ws1"},
+        )
+        sid = str(created["session_id"])
+        result = await client.call(
+            "session.message",
+            {
+                "session_id": sid,
+                "content": "delegate the README update",
+                "task": {
+                    "enabled": True,
+                    "task_description": "Add a tiny implementation note to README.md.",
+                    "file_refs": ["README.md"],
+                    "capabilities": ["file.read"],
+                },
+            },
+        )
+
+        task_result = dict(result.get("task_result") or {})
+        completed_event = await _wait_for_event(
+            client,
+            event_type="TaskSessionCompleted",
+            predicate=lambda item: str(item.get("session_id", "")).strip()
+            == str(task_result.get("task_session_id", "")).strip(),
+        )
+
+        assert task_result["success"] is False
+        assert task_result["reason"] == "task_self_check_incomplete"
+        assert task_result["self_check_status"] == "incomplete"
+        assert task_result["self_check_ref"]
+        assert "self-check" in task_result["summary"].lower()
+        assert completed_event["data"]["reason"] == "task_self_check_incomplete"
+        assert completed_event["data"]["self_check_status"] == "incomplete"
+    finally:
+        await _shutdown_daemon(daemon_task, client)
+
+
+@pytest.mark.asyncio
+async def test_m1_task_close_gate_flags_goal_drift_before_handoff(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _planner(
+        self: Planner,
+        user_content: str,
+        context: object,
+        *,
+        tools: list[dict[str, object]] | None = None,
+        persona_tone_override: str | None = None,
+    ) -> PlannerResult:
+        _ = (self, context, tools, persona_tone_override)
+        if "TASK CLOSE-GATE SELF-CHECK" in user_content:
+            return PlannerResult(
+                output=PlannerOutput(
+                    assistant_response=(
+                        "SELF_CHECK_STATUS: MISMATCH\n"
+                        "SELF_CHECK_REASON: goal_drift\n"
+                        "SELF_CHECK_NOTES: "
+                        "The task output changed scope and did not review README.md."
+                    ),
+                    actions=[],
+                ),
+                evaluated=[],
+                attempts=1,
+                provider_response=None,
+                messages_sent=(),
+            )
+        return PlannerResult(
+            output=PlannerOutput(
+                assistant_response=(
+                    "I ignored the README review and instead drafted a shell-based "
+                    "exfiltration plan."
+                ),
+                actions=[],
+            ),
+            evaluated=[],
+            attempts=1,
+            provider_response=None,
+            messages_sent=(),
+        )
+
+    monkeypatch.setattr(Planner, "propose", _planner)
+    daemon_task, client = await _start_daemon(
+        tmp_path,
+        policy_text=_policy_with_caps("file.read"),
+    )
+    try:
+        created = await client.call(
+            "session.create",
+            {"channel": "cli", "user_id": "alice", "workspace_id": "ws1"},
+        )
+        sid = str(created["session_id"])
+        result = await client.call(
+            "session.message",
+            {
+                "session_id": sid,
+                "content": "delegate the README review",
+                "task": {
+                    "enabled": True,
+                    "task_description": "Review README.md and summarize only that file.",
+                    "file_refs": ["README.md"],
+                    "capabilities": ["file.read"],
+                },
+            },
+        )
+
+        task_result = dict(result.get("task_result") or {})
+        assert task_result["success"] is False
+        assert task_result["reason"] == "task_self_check_mismatch"
+        assert task_result["self_check_status"] == "mismatch"
+        assert (
+            "goal drift" in task_result["summary"].lower()
+            or "mismatch" in task_result["summary"].lower()
+            or "changed scope" in task_result["summary"].lower()
+        )
+    finally:
+        await _shutdown_daemon(daemon_task, client)
+
+
+@pytest.mark.asyncio
 async def test_m2_task_session_inherits_parent_allowlist_and_has_distinct_session_key(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -361,6 +548,8 @@ async def test_m2_task_session_inherits_parent_allowlist_and_has_distinct_sessio
         persona_tone_override: str | None = None,
     ) -> PlannerResult:
         _ = (self, user_content, context, persona_tone_override)
+        if "TASK CLOSE-GATE SELF-CHECK" in user_content:
+            return _complete_close_gate_result()
         observed_tool_names[:] = [
             str(item.get("function", {}).get("name", ""))
             for item in (tools or [])
@@ -455,6 +644,8 @@ async def test_m1_report_anomaly_manifest_tracks_orchestrator_vs_subagent_contex
         persona_tone_override: str | None = None,
     ) -> PlannerResult:
         _ = (self, context, persona_tone_override)
+        if "TASK CLOSE-GATE SELF-CHECK" in user_content:
+            return _complete_close_gate_result()
         observed_tool_names = [
             str(item.get("function", {}).get("name", ""))
             for item in (tools or [])
@@ -550,6 +741,8 @@ async def test_m2_task_summary_obeys_output_firewall(
         persona_tone_override: str | None = None,
     ) -> PlannerResult:
         _ = (self, user_content, context, tools, persona_tone_override)
+        if "TASK CLOSE-GATE SELF-CHECK" in user_content:
+            return _complete_close_gate_result()
         return PlannerResult(
             output=PlannerOutput(
                 assistant_response="See https://docs.python.org/3/ for details.",
@@ -608,6 +801,8 @@ async def test_m2_task_session_cannot_reroute_to_admin_cleanroom(
         persona_tone_override: str | None = None,
     ) -> PlannerResult:
         _ = (self, context, tools, persona_tone_override)
+        if "TASK CLOSE-GATE SELF-CHECK" in user_content:
+            return _complete_close_gate_result()
         return PlannerResult(
             output=PlannerOutput(assistant_response="task stayed isolated", actions=[]),
             evaluated=[],

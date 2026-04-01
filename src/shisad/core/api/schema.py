@@ -129,6 +129,9 @@ class SessionTaskResult(BaseModel):
     command_context: str = "clean"
     recovery_checkpoint_id: str | None = None
     reason: str = ""
+    taint_labels: list[str] = Field(default_factory=list)
+    self_check_status: str = ""
+    self_check_ref: str | None = None
 
 
 class SessionMessageResult(BaseModel):

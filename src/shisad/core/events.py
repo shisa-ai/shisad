@@ -293,6 +293,9 @@ class TaskSessionCompleted(BaseEvent):
     raw_log_ref: str = ""
     handoff_mode: str = "summary_only"
     command_context: str = "clean"
+    taint_labels: list[str] = Field(default_factory=list)
+    self_check_status: str = ""
+    self_check_ref: str = ""
 
 
 class CodingAgentSelected(BaseEvent):

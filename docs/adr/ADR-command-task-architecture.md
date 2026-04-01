@@ -4,12 +4,14 @@
 
 Draft (2026-03-02)
 
-Implementation note (2026-04-01): the first v0.6.0 M1 runtime slice has landed
-in the codebase. The live runtime now distinguishes orchestrator vs subagent
-sessions with immutable roles, carries frozen task-envelope metadata across
-delegated and scheduler-owned task sessions, and omits `report_anomaly` from
-clean orchestrator planner manifests while keeping it available in tainted or
-split subagent contexts.
+Implementation note (2026-04-01): v0.6.0 M1 is now implementation-complete in
+the codebase. The live runtime distinguishes orchestrator vs subagent sessions
+with immutable roles, carries frozen task-envelope metadata across delegated
+and scheduler-owned task sessions, omits `report_anomaly` from clean
+orchestrator planner manifests while keeping it available in tainted or split
+subagent contexts, forces COMMAND→TASK handoff through an UNTRUSTED
+internal-ingress seam, and runs a TASK close-gate self-check before any
+successful TASK→COMMAND handoff completes.
 
 ## Core premise
 

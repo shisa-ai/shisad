@@ -9,6 +9,7 @@ from shisad.core.types import Capability
 from shisad.daemon.handlers._impl_session import (
     _compose_task_request_content,
     _extract_files_changed_from_task_outputs,
+    _parse_task_close_gate_response,
     _resolve_task_capability_scope,
 )
 from shisad.scheduler.schema import TaskEnvelope
@@ -98,3 +99,27 @@ def test_m1_task_envelope_is_frozen_and_tracks_parent_provenance() -> None:
 
     with pytest.raises((TypeError, ValidationError)):
         envelope.parent_session_id = "other-parent"
+
+
+def test_m1_task_close_gate_parser_accepts_marker_format() -> None:
+    parsed = _parse_task_close_gate_response(
+        "SELF_CHECK_STATUS: COMPLETE\n"
+        "SELF_CHECK_REASON: complete\n"
+        "SELF_CHECK_NOTES: The task output matches the request.\n"
+    )
+
+    assert parsed.status == "complete"
+    assert parsed.reason == "complete"
+    assert parsed.notes == "The task output matches the request."
+    assert parsed.passed is True
+
+
+def test_m1_task_close_gate_parser_treats_mismatch_as_failure() -> None:
+    parsed = _parse_task_close_gate_response(
+        '{"status":"mismatch","reason":"goal_drift","notes":"Output changed scope."}'
+    )
+
+    assert parsed.status == "mismatch"
+    assert parsed.reason == "goal_drift"
+    assert parsed.notes == "Output changed scope."
+    assert parsed.passed is False

@@ -136,6 +136,39 @@ def _fake_coding_agent_command(agent_name: str) -> str:
     return f"{sys.executable} {script} --agent-name {agent_name}"
 
 
+def _complete_close_gate_result() -> PlannerResult:
+    return PlannerResult(
+        output=PlannerOutput(
+            assistant_response=(
+                "SELF_CHECK_STATUS: COMPLETE\n"
+                "SELF_CHECK_REASON: complete\n"
+                "SELF_CHECK_NOTES: The task output completed the delegated request."
+            ),
+            actions=[],
+        ),
+        evaluated=[],
+        attempts=1,
+        provider_response=None,
+        messages_sent=(),
+    )
+
+
+@pytest.fixture(autouse=True)
+def _default_complete_task_close_gate(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def _planner(
+        self: Planner,
+        user_content: str,
+        context: object,
+        *,
+        tools: list[dict[str, object]] | None = None,
+        persona_tone_override: str | None = None,
+    ) -> PlannerResult:
+        _ = (self, user_content, context, tools, persona_tone_override)
+        return _complete_close_gate_result()
+
+    monkeypatch.setattr(Planner, "propose", _planner)
+
+
 def _generate_ssh_keypair(tmp_path: Path, *, name: str) -> Path:
     key_path = tmp_path / name
     subprocess.run(
@@ -712,6 +745,8 @@ async def test_behavioral_task_handoff_returns_summary_and_artifact_refs(
         persona_tone_override: str | None = None,
     ) -> PlannerResult:
         _ = (self, context, tools, persona_tone_override)
+        if "TASK CLOSE-GATE SELF-CHECK" in user_content:
+            return _complete_close_gate_result()
         if "TASK REQUEST:" in user_content:
             return PlannerResult(
                 output=PlannerOutput(
@@ -786,6 +821,8 @@ async def test_behavioral_task_session_excludes_command_transcript_and_memory_fr
         persona_tone_override: str | None = None,
     ) -> PlannerResult:
         _ = (self, context, tools, persona_tone_override)
+        if "TASK CLOSE-GATE SELF-CHECK" in user_content:
+            return _complete_close_gate_result()
         captured_inputs.append(user_content)
         return PlannerResult(
             output=PlannerOutput(assistant_response="Task summary ready.", actions=[]),
@@ -863,6 +900,8 @@ async def test_behavioral_raw_task_ingest_marks_command_degraded_and_allows_fres
         persona_tone_override: str | None = None,
     ) -> PlannerResult:
         _ = (self, context, tools, persona_tone_override)
+        if "TASK CLOSE-GATE SELF-CHECK" in user_content:
+            return _complete_close_gate_result()
         if "TASK REQUEST:" in user_content:
             return PlannerResult(
                 output=PlannerOutput(
@@ -946,6 +985,8 @@ async def test_behavioral_task_session_cannot_spawn_sudo(
         persona_tone_override: str | None = None,
     ) -> PlannerResult:
         _ = (self, context, tools, persona_tone_override)
+        if "TASK CLOSE-GATE SELF-CHECK" in user_content:
+            return _complete_close_gate_result()
         return PlannerResult(
             output=PlannerOutput(assistant_response="Task stayed in task mode.", actions=[]),
             evaluated=[],
@@ -1395,6 +1436,9 @@ async def test_behavioral_dev_commands_are_admin_only_but_do_not_lockdown_untrus
         **kwargs: Any,
     ) -> PlannerResult:
         _ = args, kwargs
+        user_content = str(args[1]) if len(args) > 1 else ""
+        if "TASK CLOSE-GATE SELF-CHECK" in user_content:
+            return _complete_close_gate_result()
         return PlannerResult(
             output=PlannerOutput(
                 assistant_response="Dev commands require the trusted admin CLI surface.",

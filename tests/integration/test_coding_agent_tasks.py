@@ -13,6 +13,7 @@ import pytest
 
 from shisad.core.api.transport import ControlClient
 from shisad.core.config import DaemonConfig
+from shisad.core.planner import Planner, PlannerOutput, PlannerResult
 from shisad.daemon.runner import run_daemon
 
 
@@ -95,6 +96,35 @@ def _broken_protocol_agent_command() -> str:
     return (
         f"{sys.executable} {script} --agent-name broken --fail-initialize"
     )
+
+
+@pytest.fixture(autouse=True)
+def _complete_task_close_gate(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def _planner(
+        self: Planner,
+        user_content: str,
+        context: object,
+        *,
+        tools: list[dict[str, object]] | None = None,
+        persona_tone_override: str | None = None,
+    ) -> PlannerResult:
+        _ = (self, user_content, context, tools, persona_tone_override)
+        return PlannerResult(
+            output=PlannerOutput(
+                assistant_response=(
+                    "SELF_CHECK_STATUS: COMPLETE\n"
+                    "SELF_CHECK_REASON: complete\n"
+                    "SELF_CHECK_NOTES: The task output completed the delegated request."
+                ),
+                actions=[],
+            ),
+            evaluated=[],
+            attempts=1,
+            provider_response=None,
+            messages_sent=(),
+        )
+
+    monkeypatch.setattr(Planner, "propose", _planner)
 
 
 @pytest.mark.asyncio
