@@ -226,9 +226,14 @@ class EvidenceStore:
         self._salt = self._load_or_create_salt(salt)
         metadata_load = self._load_metadata_index()
         self._refs = metadata_load.refs
-        if metadata_load.loaded_ok:
-            if metadata_load.dirty:
-                self._persist_metadata_index()
+        metadata_ready_for_cleanup = metadata_load.loaded_ok
+        if metadata_load.dirty:
+            metadata_ready_for_cleanup = metadata_ready_for_cleanup and (
+                self._try_persist_metadata_index(
+                    "sanitizing persisted evidence metadata index"
+                )
+            )
+        if metadata_ready_for_cleanup:
             self._quarantine_orphaned_blobs()
             self._prune_quarantine()
 
@@ -321,6 +326,7 @@ class EvidenceStore:
         session_id: SessionId,
         *,
         max_age_seconds: int = _DEFAULT_EVIDENCE_MAX_AGE_SECONDS,
+        best_effort_persist: bool = False,
     ) -> list[str]:
         session_key = self._session_key(session_id)
         refs = self._refs.get(session_key)
@@ -343,7 +349,10 @@ class EvidenceStore:
         if not refs:
             self._refs.pop(session_key, None)
         if evicted:
-            self._persist_metadata_index()
+            if best_effort_persist:
+                self._try_persist_metadata_index("persisting implicit evidence eviction")
+            else:
+                self._persist_metadata_index()
         return evicted
 
     def _make_ref_id(self, *, session_id: SessionId, content_hash: str) -> str:
@@ -397,19 +406,16 @@ class EvidenceStore:
         loaded: dict[str, dict[str, EvidenceRef]] = {}
         for session_key, session_refs_raw in raw.items():
             if not isinstance(session_key, str) or not isinstance(session_refs_raw, dict):
-                loaded_ok = False
                 dirty = True
                 continue
             session_refs: dict[str, EvidenceRef] = {}
             for ref_id, ref_raw in session_refs_raw.items():
                 if not isinstance(ref_id, str):
-                    loaded_ok = False
                     dirty = True
                     continue
                 try:
                     ref = EvidenceRef.model_validate(ref_raw)
                 except ValidationError:
-                    loaded_ok = False
                     dirty = True
                     logger.warning(
                         "Ignoring malformed persisted evidence ref %s for session %s",
@@ -419,7 +425,6 @@ class EvidenceStore:
                     )
                     continue
                 if ref.ref_id != ref_id:
-                    loaded_ok = False
                     dirty = True
                     logger.warning(
                         "Ignoring persisted evidence ref with mismatched id %s for session %s",
@@ -461,6 +466,14 @@ class EvidenceStore:
         self._ensure_file_permissions(temp_path)
         temp_path.replace(self._metadata_path)
         self._ensure_file_permissions(self._metadata_path)
+
+    def _try_persist_metadata_index(self, reason: str) -> bool:
+        try:
+            self._persist_metadata_index()
+        except OSError:
+            logger.warning("Failed to persist evidence metadata while %s", reason, exc_info=True)
+            return False
+        return True
 
     def _quarantine_orphaned_blobs(self) -> None:
         referenced_hashes = {
@@ -509,12 +522,13 @@ class EvidenceStore:
         refs.pop(ref_id, None)
         if not refs:
             self._refs.pop(session_key, None)
-        self._persist_metadata_index()
+        self._try_persist_metadata_index("dropping missing-blob evidence ref")
 
     def _evict_for_session(self, session_id: SessionId) -> None:
         self.evict_expired(
             session_id,
             max_age_seconds=self._default_max_age_seconds,
+            best_effort_persist=True,
         )
 
     def _merge_existing_ref(

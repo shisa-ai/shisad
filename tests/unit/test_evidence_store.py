@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 from datetime import UTC, datetime, timedelta
 from stat import S_IMODE
@@ -100,6 +101,68 @@ def test_evidence_store_drops_refs_with_missing_blobs_on_restart(tmp_path) -> No
     assert recreated.ref_id == created.ref_id
     assert blob_path.exists() is True
     assert restarted.read(sid, recreated.ref_id) == "restart-stable evidence"
+
+
+def test_evidence_store_missing_blob_self_heal_degrades_when_index_rewrite_fails(tmp_path) -> None:
+    evidence_root = tmp_path / "evidence"
+    sid = SessionId("sess-a")
+
+    first = EvidenceStore(evidence_root, salt=b"a" * 32)
+    created = first.store(
+        sid,
+        "restart-stable evidence",
+        taint_labels={TaintLabel.UNTRUSTED},
+        source="web.fetch:example.com",
+        summary="restart-stable evidence",
+    )
+    (evidence_root / "blobs" / f"{created.content_hash}.txt").unlink()
+
+    restarted = EvidenceStore(evidence_root, salt=b"a" * 32)
+
+    def _fail_persist() -> None:
+        raise PermissionError("readonly evidence root")
+
+    restarted._persist_metadata_index = _fail_persist  # type: ignore[method-assign]
+
+    assert restarted.get_ref(sid, created.ref_id) is None
+    assert restarted.validate_ref_id(sid, created.ref_id) is False
+    assert restarted.read(sid, created.ref_id) is None
+
+
+def test_evidence_store_sanitizes_partial_index_and_still_runs_cleanup(tmp_path) -> None:
+    evidence_root = tmp_path / "evidence"
+    sid = SessionId("sess-a")
+
+    first = EvidenceStore(evidence_root, salt=b"a" * 32, orphan_retention_seconds=60)
+    created = first.store(
+        sid,
+        "restart-stable evidence",
+        taint_labels={TaintLabel.UNTRUSTED},
+        source="web.fetch:example.com",
+        summary="restart-stable evidence",
+    )
+    orphan_hash = "deadbeef" * 8
+    orphan_blob = evidence_root / "blobs" / f"{orphan_hash}.txt"
+    orphan_blob.write_text("orphaned evidence", encoding="utf-8")
+    old_quarantined = evidence_root / "quarantine" / ("feedface" * 8 + ".txt")
+    old_quarantined.write_text("old quarantined evidence", encoding="utf-8")
+    old = datetime.now(UTC).timestamp() - 3600
+    os.utime(old_quarantined, (old, old))
+
+    index_path = evidence_root / "refs_index.json"
+    raw_index = json.loads(index_path.read_text(encoding="utf-8"))
+    raw_index["bad-session"] = "not-a-dict"
+    index_path.write_text(json.dumps(raw_index), encoding="utf-8")
+
+    restarted = EvidenceStore(evidence_root, salt=b"a" * 32, orphan_retention_seconds=60)
+
+    assert restarted.get_ref(sid, created.ref_id) == created
+    assert orphan_blob.exists() is False
+    assert (evidence_root / "quarantine" / f"{orphan_hash}.txt").exists() is True
+    assert old_quarantined.exists() is False
+
+    sanitized_index = json.loads(index_path.read_text(encoding="utf-8"))
+    assert "bad-session" not in sanitized_index
 
 
 def test_evidence_store_deduplicates_same_session_same_content(tmp_path) -> None:

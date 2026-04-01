@@ -36,9 +36,11 @@ v0.5 scope note: the salt persists across daemon restarts, but the ref metadata
 index was originally in-memory only. v0.6.0 G0 closes that gap with a durable
 `refs_index.json` metadata reload path plus orphan-blob quarantine, before the
 broader ArtifactLedger work in v0.6.0 M4.
-Startup cleanup is non-destructive on malformed metadata: quarantine/prune only
-run after a readable metadata load, and refs whose backing blobs are missing
-are dropped during reload instead of remaining as phantom handles.
+Startup cleanup is non-destructive on unreadable metadata: quarantine/prune only
+run after a readable top-level metadata load. Readable but partially malformed
+metadata is sanitized and rewritten before cleanup proceeds, and refs whose
+backing blobs are missing are dropped during reload instead of remaining as
+phantom handles.
 
 ### Flow
 
