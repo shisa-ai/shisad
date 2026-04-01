@@ -444,27 +444,42 @@ This ADR informs implementation across multiple releases, aligned with the futur
 
 ---
 
-## Unresolved prerequisite: Credential scope across the COMMAND/TASK boundary
+## Resolved prerequisite: Credential scope across the COMMAND/TASK boundary
 
-**Status: Unresolved. Must be decided during v0.5 orchestration work before v0.6 tool surfaces land.**
+**Status: Resolved (2026-04-01).**
 
-This ADR defines how policy flows across the COMMAND→TASK boundary (task envelope as PolicyPatch, §"Interaction with ADR-policy-source-authority"). It defines how taint and endorsement flow back (ArtifactLedger, §3). But it does not decide how **credentials** flow.
+This ADR's credential-scope prerequisite is now locked to **Option B
+(per-task-envelope explicit credential refs)** for the v0.6.0 orchestration
+gate (`M3`).
 
-Today, credentials are tool-level: the `email.*` tools have access to Gmail OAuth, the `calendar.*` tools have Calendar OAuth (`docs/SECURITY.md`). When COMMAND dispatches a TASK agent with `tools: ["email.read"]`, does the TASK agent automatically get the credential that `email.read` uses? Or is credential access separately scoped?
+### Decision
 
-This matters because a TASK agent that only needs to *read* email should not get the credential that lets it *send* email — but today both are tied to the same `email.*` tool family's OAuth token.
+1. Task envelopes carry explicit `credential_refs` alongside tool/capability
+   scope.
+2. Tool grants do **not** imply credential grants.
+3. Credential checks are **fail-closed**: missing, invalid, or out-of-scope
+   refs are denied.
+4. `credential_refs` are immutable for a task envelope after creation.
 
-### Options under consideration
+### Options considered
 
-| Option | How it works | Pros | Cons |
-|---|---|---|---|
-| **A: Tool-level (implicit)** | Granting a tool in the task envelope implicitly grants its credential. Credential scope = tool scope. | Simple; no new config needed; matches current model | Least-privilege violation: `email.read` TASK gets the same OAuth token as `email.send` TASK |
-| **B: Per-task-envelope (explicit)** | Task envelope lists `credential_refs` separately from `tools`. COMMAND must explicitly grant each credential. | Better least-privilege; operator can restrict credentials per-task | More config burden; operator must maintain tool-to-credential mappings |
-| **C: Capability-scoped** | Credentials are split by capability (e.g., `EMAIL_READ` gets a read-only OAuth scope, `EMAIL_SEND` gets a send-capable scope). Tool→credential binding goes through capability check. | Best least-privilege; aligns with OAuth scope model | Requires OAuth scope splitting; not all providers support fine-grained scopes; adds credential management complexity |
+| Option | Summary | Decision |
+|---|---|---|
+| **A: Tool-level (implicit)** | Tool grant implies credential access | Rejected (least-privilege violation) |
+| **B: Per-task-envelope (explicit)** | Explicit `credential_refs` granted per task | **Adopted for v0.6.0** |
+| **C: Capability-scoped** | Separate credentials/scopes per capability | Deferred follow-on (provider/OAuth-dependent) |
 
-**Why this is a v0.5 gate**: v0.5 now owns the delegated-execution architecture itself. If credential scope is not decided there, v0.6's email/calendar/browser tool surfaces will inherit Option A (implicit, least-privilege-violating credential access) by default and make it harder to correct later.
+### Rationale
 
-**Tracked as**: future orchestration backlog work. Exit criteria should be captured in the public roadmap or successor design notes.
+- Closes the immediate least-privilege gap before connector/browser growth.
+- Avoids blocking v0.6.0 on provider-specific OAuth scope granularity.
+- Preserves a clean upgrade path to Option C where providers support finer
+  capability-scoped credentials.
+
+### Follow-on
+
+Option C remains tracked as a hardening enhancement after v0.6.0. It should
+layer on top of Option B, not replace fail-closed explicit envelope scoping.
 
 ---
 
