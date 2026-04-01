@@ -278,6 +278,16 @@ When asked to close a milestone, review remediation, or release-readiness pass:
    - verify `README.md` and the top-level public docs under `docs/` match current architecture/runtime behavior and release status, and
    - update them in the same closure scope when drift is found.
 
+### Release Publishing
+
+**Follow `docs/PUBLISH.md`** for the full version-bump, build, and publish
+checklist. Key points:
+
+- Version must be updated in both `pyproject.toml` and `src/shisad/__init__.py`.
+- `CHANGELOG.md` gets a new topmost section per release (no "Unreleased" section).
+- Run the full validation gate before building artifacts.
+- Never publish from a dirty tree or reuse stale `dist/` artifacts.
+
 ## Code Quality
 
 ### Before Submitting Code
