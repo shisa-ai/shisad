@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from datetime import UTC, datetime, timedelta
 from stat import S_IMODE
 
@@ -52,6 +53,53 @@ def test_evidence_store_restores_metadata_after_restart(tmp_path) -> None:
     assert loaded == created
     assert restarted.read(sid, created.ref_id) == "restart-stable evidence"
     assert restarted.validate_ref_id(sid, created.ref_id) is True
+
+
+def test_evidence_store_ignores_malformed_index_without_quarantining_blobs(tmp_path) -> None:
+    evidence_root = tmp_path / "evidence"
+    blob_dir = evidence_root / "blobs"
+    blob_dir.mkdir(parents=True)
+    orphan_hash = "deadbeef" * 8
+    blob_path = blob_dir / f"{orphan_hash}.txt"
+    blob_path.write_text("recoverable orphan", encoding="utf-8")
+    (evidence_root / "refs_index.json").write_text("{not json", encoding="utf-8")
+
+    store = EvidenceStore(evidence_root, salt=b"a" * 32)
+
+    assert store._refs == {}
+    assert blob_path.exists() is True
+    assert (evidence_root / "quarantine" / f"{orphan_hash}.txt").exists() is False
+
+
+def test_evidence_store_drops_refs_with_missing_blobs_on_restart(tmp_path) -> None:
+    evidence_root = tmp_path / "evidence"
+    sid = SessionId("sess-a")
+
+    first = EvidenceStore(evidence_root, salt=b"a" * 32)
+    created = first.store(
+        sid,
+        "restart-stable evidence",
+        taint_labels={TaintLabel.UNTRUSTED},
+        source="web.fetch:example.com",
+        summary="restart-stable evidence",
+    )
+    blob_path = evidence_root / "blobs" / f"{created.content_hash}.txt"
+    blob_path.unlink()
+
+    restarted = EvidenceStore(evidence_root, salt=b"a" * 32)
+
+    assert restarted.get_ref(sid, created.ref_id) is None
+    assert restarted.validate_ref_id(sid, created.ref_id) is False
+    recreated = restarted.store(
+        sid,
+        "restart-stable evidence",
+        taint_labels={TaintLabel.UNTRUSTED},
+        source="web.fetch:example.com",
+        summary="restart-stable evidence",
+    )
+    assert recreated.ref_id == created.ref_id
+    assert blob_path.exists() is True
+    assert restarted.read(sid, recreated.ref_id) == "restart-stable evidence"
 
 
 def test_evidence_store_deduplicates_same_session_same_content(tmp_path) -> None:
@@ -197,14 +245,18 @@ def test_evidence_store_hardens_directory_and_file_permissions(tmp_path) -> None
 
     root_mode = S_IMODE((tmp_path / "evidence").stat().st_mode)
     blob_dir_mode = S_IMODE((tmp_path / "evidence" / "blobs").stat().st_mode)
+    quarantine_dir_mode = S_IMODE((tmp_path / "evidence" / "quarantine").stat().st_mode)
     salt_mode = S_IMODE((tmp_path / "evidence" / "evidence_salt").stat().st_mode)
+    metadata_mode = S_IMODE((tmp_path / "evidence" / "refs_index.json").stat().st_mode)
     blob_mode = S_IMODE(
         (tmp_path / "evidence" / "blobs" / f"{ref.content_hash}.txt").stat().st_mode
     )
 
     assert root_mode == 0o700
     assert blob_dir_mode == 0o700
+    assert quarantine_dir_mode == 0o700
     assert salt_mode == 0o600
+    assert metadata_mode == 0o600
     assert blob_mode == 0o600
 
 
@@ -223,6 +275,37 @@ def test_evidence_store_quarantines_orphan_blobs_on_startup(tmp_path) -> None:
     assert quarantined.exists() is True
     assert quarantined.read_text(encoding="utf-8") == "orphaned evidence"
     assert store._refs == {}
+    assert S_IMODE(quarantined.stat().st_mode) == 0o600
+
+
+def test_evidence_store_quarantine_retention_starts_at_quarantine_time(tmp_path) -> None:
+    evidence_root = tmp_path / "evidence"
+    blob_dir = evidence_root / "blobs"
+    blob_dir.mkdir(parents=True)
+    orphan_hash = "deadbeef" * 8
+    orphan_blob = blob_dir / f"{orphan_hash}.txt"
+    orphan_blob.write_text("orphaned evidence", encoding="utf-8")
+    old = datetime.now(UTC).timestamp() - 3600
+    os.utime(orphan_blob, (old, old))
+
+    EvidenceStore(evidence_root, salt=b"a" * 32, orphan_retention_seconds=60)
+
+    quarantined = evidence_root / "quarantine" / f"{orphan_hash}.txt"
+    assert quarantined.exists() is True
+
+
+def test_evidence_store_prunes_old_quarantined_blobs(tmp_path) -> None:
+    evidence_root = tmp_path / "evidence"
+    quarantine_dir = evidence_root / "quarantine"
+    quarantine_dir.mkdir(parents=True)
+    old_quarantined = quarantine_dir / ("deadbeef" * 8 + ".txt")
+    old_quarantined.write_text("old quarantined evidence", encoding="utf-8")
+    old = datetime.now(UTC).timestamp() - 3600
+    os.utime(old_quarantined, (old, old))
+
+    EvidenceStore(evidence_root, salt=b"a" * 32, orphan_retention_seconds=60)
+
+    assert old_quarantined.exists() is False
 
 
 def test_generate_safe_summary_preserves_normal_extract(tmp_path) -> None:

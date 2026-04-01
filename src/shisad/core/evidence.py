@@ -9,6 +9,7 @@ import json
 import logging
 import os
 import re
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from html.parser import HTMLParser
 from pathlib import Path
@@ -44,6 +45,13 @@ class EvidenceRef(BaseModel):
     summary: str
     byte_size: int
     ttl_seconds: int | None = None
+
+
+@dataclass(frozen=True)
+class _MetadataLoadResult:
+    refs: dict[str, dict[str, EvidenceRef]]
+    loaded_ok: bool
+    dirty: bool = False
 
 
 class _HTMLSummaryParser(HTMLParser):
@@ -216,9 +224,13 @@ class EvidenceStore:
         self._ensure_dir_permissions(self._blob_dir)
         self._ensure_dir_permissions(self._quarantine_dir)
         self._salt = self._load_or_create_salt(salt)
-        self._refs = self._load_metadata_index()
-        self._quarantine_orphaned_blobs()
-        self._prune_quarantine()
+        metadata_load = self._load_metadata_index()
+        self._refs = metadata_load.refs
+        if metadata_load.loaded_ok:
+            if metadata_load.dirty:
+                self._persist_metadata_index()
+            self._quarantine_orphaned_blobs()
+            self._prune_quarantine()
 
     def store(
         self,
@@ -235,8 +247,12 @@ class EvidenceStore:
         content_hash = hashlib.sha256(raw).hexdigest()
         ref_id = self._make_ref_id(session_id=session_id, content_hash=content_hash)
         session_key = self._session_key(session_id)
+        blob_path = self._blob_path(content_hash)
         existing = self._refs.setdefault(session_key, {}).get(ref_id)
         if existing is not None:
+            if not blob_path.exists():
+                blob_path.write_text(content, encoding="utf-8")
+                self._ensure_file_permissions(blob_path)
             merged = self._merge_existing_ref(
                 session_key=session_key,
                 ref_id=ref_id,
@@ -249,7 +265,6 @@ class EvidenceStore:
             self._persist_metadata_index()
             return merged
 
-        blob_path = self._blob_path(content_hash)
         if not blob_path.exists():
             blob_path.write_text(content, encoding="utf-8")
         self._ensure_file_permissions(blob_path)
@@ -277,7 +292,20 @@ class EvidenceStore:
 
     def get_ref(self, session_id: SessionId, ref_id: str) -> EvidenceRef | None:
         self._evict_for_session(session_id)
-        return self._refs.get(self._session_key(session_id), {}).get(ref_id)
+        session_key = self._session_key(session_id)
+        ref = self._refs.get(session_key, {}).get(ref_id)
+        if ref is None:
+            return None
+        if not self._blob_path(ref.content_hash).exists():
+            logger.warning(
+                "Dropping evidence ref %s for session %s because blob %s is missing",
+                ref_id,
+                session_key,
+                ref.content_hash,
+            )
+            self._drop_ref(session_key, ref_id)
+            return None
+        return ref
 
     def validate_ref_id(self, session_id: SessionId, ref_id: str) -> bool:
         ref = self.get_ref(session_id, ref_id)
@@ -352,29 +380,37 @@ class EvidenceStore:
     def _blob_path(self, content_hash: str) -> Path:
         return self._blob_dir / f"{content_hash}.txt"
 
-    def _load_metadata_index(self) -> dict[str, dict[str, EvidenceRef]]:
+    def _load_metadata_index(self) -> _MetadataLoadResult:
         if not self._metadata_path.exists():
-            return {}
+            return _MetadataLoadResult(refs={}, loaded_ok=True)
         try:
             raw = json.loads(self._metadata_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             logger.warning("Failed to load persisted evidence metadata index", exc_info=True)
-            return {}
+            return _MetadataLoadResult(refs={}, loaded_ok=False)
         if not isinstance(raw, dict):
             logger.warning("Ignoring malformed evidence metadata index")
-            return {}
+            return _MetadataLoadResult(refs={}, loaded_ok=False)
 
+        loaded_ok = True
+        dirty = False
         loaded: dict[str, dict[str, EvidenceRef]] = {}
         for session_key, session_refs_raw in raw.items():
             if not isinstance(session_key, str) or not isinstance(session_refs_raw, dict):
+                loaded_ok = False
+                dirty = True
                 continue
             session_refs: dict[str, EvidenceRef] = {}
             for ref_id, ref_raw in session_refs_raw.items():
                 if not isinstance(ref_id, str):
+                    loaded_ok = False
+                    dirty = True
                     continue
                 try:
                     ref = EvidenceRef.model_validate(ref_raw)
                 except ValidationError:
+                    loaded_ok = False
+                    dirty = True
                     logger.warning(
                         "Ignoring malformed persisted evidence ref %s for session %s",
                         ref_id,
@@ -383,16 +419,30 @@ class EvidenceStore:
                     )
                     continue
                 if ref.ref_id != ref_id:
+                    loaded_ok = False
+                    dirty = True
                     logger.warning(
                         "Ignoring persisted evidence ref with mismatched id %s for session %s",
                         ref_id,
                         session_key,
                     )
                     continue
+                if not self._blob_path(ref.content_hash).exists():
+                    dirty = True
+                    logger.warning(
+                        (
+                            "Dropping persisted evidence ref %s for session %s "
+                            "because blob %s is missing"
+                        ),
+                        ref_id,
+                        session_key,
+                        ref.content_hash,
+                    )
+                    continue
                 session_refs[ref_id] = ref
             if session_refs:
                 loaded[session_key] = session_refs
-        return loaded
+        return _MetadataLoadResult(refs=loaded, loaded_ok=loaded_ok, dirty=dirty)
 
     def _persist_metadata_index(self) -> None:
         serialized = {
@@ -430,6 +480,7 @@ class EvidenceStore:
                 destination.unlink()
         try:
             blob_path.replace(destination)
+            os.utime(destination, None)
         except OSError:
             logger.warning(
                 "Failed to quarantine orphaned evidence blob %s",
@@ -450,6 +501,15 @@ class EvidenceStore:
                 continue
             with contextlib.suppress(OSError):
                 blob_path.unlink()
+
+    def _drop_ref(self, session_key: str, ref_id: str) -> None:
+        refs = self._refs.get(session_key)
+        if not refs or ref_id not in refs:
+            return
+        refs.pop(ref_id, None)
+        if not refs:
+            self._refs.pop(session_key, None)
+        self._persist_metadata_index()
 
     def _evict_for_session(self, session_id: SessionId) -> None:
         self.evict_expired(

@@ -189,6 +189,35 @@ def test_summarize_tool_outputs_for_chat_surfaces_nested_evidence_stub(tmp_path)
     assert 'Use evidence.read("' in summary
 
 
+def test_summarize_tool_outputs_for_chat_surfaces_all_wrapped_evidence_refs(tmp_path) -> None:
+    store = EvidenceStore(tmp_path / "evidence", salt=b"a" * 32)
+    records = [
+        {
+            "tool_name": "web.fetch",
+            "success": True,
+            "payload": {
+                "ok": True,
+                "url": "https://example.com/article",
+                "content": "short visible preview",
+                "markdown": "hidden unknown-key content " * 20,
+            },
+            "taint_labels": ["untrusted"],
+        }
+    ]
+
+    ref_ids = _wrap_serialized_tool_outputs_with_evidence(
+        session_id=SessionId("sess-a"),
+        records=records,
+        evidence_store=store,
+        firewall=ContentFirewall(),
+    )
+    summary = _summarize_tool_outputs_for_chat(records)
+
+    assert len(ref_ids) == 2
+    assert ref_ids[0] in summary
+    assert ref_ids[1] in summary
+
+
 def test_wrap_serialized_tool_outputs_degrades_to_unavailable_stub_on_store_error() -> None:
     class _BrokenStore:
         def store(self, *args, **kwargs):
@@ -335,6 +364,35 @@ def test_pep_allows_valid_evidence_read_and_rejects_forged_ref(tmp_path) -> None
     )
 
     assert allowed.kind.value == "allow"
+    assert rejected.kind.value == "reject"
+    assert rejected.reason == "invalid or unknown evidence reference"
+
+
+def test_pep_rejects_evidence_read_when_blob_is_missing_after_restart(tmp_path) -> None:
+    evidence_root = tmp_path / "evidence"
+    sid = SessionId("sess-a")
+    first = EvidenceStore(evidence_root, salt=b"a" * 32)
+    ref = first.store(
+        sid,
+        "hello",
+        taint_labels={TaintLabel.UNTRUSTED},
+        source="web.fetch:example.com",
+        summary="hello",
+    )
+    (evidence_root / "blobs" / f"{ref.content_hash}.txt").unlink()
+    restarted = EvidenceStore(evidence_root, salt=b"a" * 32)
+    pep = PEP(
+        PolicyBundle(default_require_confirmation=False),
+        _registry_for_evidence(),
+        evidence_store=restarted,
+    )
+
+    rejected = pep.evaluate(
+        ToolName("evidence.read"),
+        {"ref_id": ref.ref_id},
+        PolicyContext(capabilities={Capability.MEMORY_READ}, session_id=sid),
+    )
+
     assert rejected.kind.value == "reject"
     assert rejected.reason == "invalid or unknown evidence reference"
 

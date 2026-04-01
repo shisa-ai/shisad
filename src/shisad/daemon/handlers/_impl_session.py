@@ -1897,6 +1897,33 @@ def _find_tool_output_preview_text(payload_value: Any) -> str:
     return ""
 
 
+def _collect_tool_output_evidence_ref_ids(payload_value: Any) -> list[str]:
+    ref_ids: list[str] = []
+
+    def _append_from(value: Any) -> None:
+        if isinstance(value, str):
+            stripped = value.strip()
+            if not stripped.startswith("[EVIDENCE "):
+                return
+            match = _EVIDENCE_REF_ID_RE.search(stripped)
+            if match is None:
+                return
+            ref_id = match.group(0)
+            if ref_id not in ref_ids:
+                ref_ids.append(ref_id)
+            return
+        if isinstance(value, dict):
+            for nested in value.values():
+                _append_from(nested)
+            return
+        if isinstance(value, list):
+            for nested in value:
+                _append_from(nested)
+
+    _append_from(payload_value)
+    return ref_ids
+
+
 def _taint_labels_from_payload(payload: Mapping[str, Any]) -> set[TaintLabel]:
     raw = payload.get("taint_labels")
     if not isinstance(raw, list):
@@ -1986,6 +2013,7 @@ def _summarize_tool_outputs_for_chat(records: list[dict[str, Any]]) -> str:
         if not isinstance(payload, dict):
             lines.append(f"- {tool_name}: completed.")
             continue
+        all_evidence_ref_ids = _collect_tool_output_evidence_ref_ids(payload)
         summary_parts: list[str] = []
         summary_parts.append(f"success={bool(record.get('success', False))}")
         if "ok" in payload:
@@ -2012,13 +2040,27 @@ def _summarize_tool_outputs_for_chat(records: list[dict[str, Any]]) -> str:
                     evidence_ref_id = match.group(0)
             preview_lines, truncated = _preview_multiline_output(output_text)
             if preview_lines:
+                visible_ref_ids = {
+                    ref_id
+                    for ref_id in all_evidence_ref_ids
+                    if any(ref_id in line for line in preview_lines)
+                }
+                if evidence_ref_id:
+                    visible_ref_ids.add(evidence_ref_id)
                 if evidence_ref_id and not any(evidence_ref_id in line for line in preview_lines):
                     lines.append(f"  evidence_ref_id={evidence_ref_id}")
+                hidden_ref_ids = [
+                    ref_id for ref_id in all_evidence_ref_ids if ref_id not in visible_ref_ids
+                ]
+                if hidden_ref_ids:
+                    lines.append(
+                        f"  additional_evidence_ref_ids={', '.join(hidden_ref_ids)}"
+                    )
                 lines.append("  output:")
                 lines.extend(f"  {line}" for line in preview_lines)
                 if truncated:
                     lines.append("  ... (truncated)")
-            continue
+                continue
 
         if summary_parts == [f"success={bool(record.get('success', False))}"]:
             compact = _compact_context_text(
