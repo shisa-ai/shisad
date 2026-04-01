@@ -10,7 +10,15 @@ import pytest
 
 import shisad.core.session as session_module
 from shisad.core.session import Session, SessionManager
-from shisad.core.types import Capability, SessionId, SessionMode, SessionState, UserId, WorkspaceId
+from shisad.core.types import (
+    Capability,
+    SessionId,
+    SessionMode,
+    SessionRole,
+    SessionState,
+    UserId,
+    WorkspaceId,
+)
 
 
 def _session_state_path(root: Path, session_id: str) -> Path:
@@ -83,6 +91,50 @@ def test_m3_session_manager_persist_supports_external_metadata_updates(
     restored = reloaded.get(session.id)
     assert restored is not None
     assert restored.metadata.get("delivery_target") == {"channel": "cli", "recipient": "ops"}
+
+
+def test_m1_session_role_is_immutable_after_creation() -> None:
+    session = Session(role=SessionRole.ORCHESTRATOR)
+
+    with pytest.raises(TypeError, match="immutable"):
+        session.role = SessionRole.SUBAGENT
+
+
+def test_m1_session_manager_create_subagent_session_snapshots_parent_scope(
+    tmp_path: Path,
+) -> None:
+    state_dir = tmp_path / "sessions" / "state"
+    manager = SessionManager(state_dir=state_dir)
+    parent = manager.create(
+        channel="cli",
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws1"),
+        capabilities={Capability.FILE_READ, Capability.HTTP_REQUEST},
+    )
+
+    child = manager.create_subagent_session(
+        channel="task",
+        user_id=parent.user_id,
+        workspace_id=parent.workspace_id,
+        parent_session_id=parent.id,
+        mode=SessionMode.TASK,
+        capabilities={Capability.FILE_READ},
+        metadata={"trust_level": "internal"},
+    )
+
+    assert child.role == SessionRole.SUBAGENT
+    assert child.mode == SessionMode.TASK
+    assert child.metadata["parent_session_id"] == str(parent.id)
+    assert child.metadata["capability_sync_mode"] == "manual_override"
+    assert child.metadata["inherited_context_taint"] == "untrusted"
+    assert child.capabilities == {Capability.FILE_READ}
+    assert child.session_key != parent.session_key
+
+    reloaded = SessionManager(state_dir=state_dir)
+    restored = reloaded.get(child.id)
+    assert restored is not None
+    assert restored.role == SessionRole.SUBAGENT
+    assert restored.metadata["parent_session_id"] == str(parent.id)
 
 
 def test_m1_pf46_session_persistence_calls_fsync_for_file_and_parent_dir(
@@ -344,3 +396,27 @@ def test_m6_session_manager_logs_restore_migration_updates_and_skips(
         "Session restore migration decision for manual-log" in message
         for message in debug_messages
     )
+
+
+def test_m1_session_manager_backfills_subagent_role_for_legacy_task_sessions(
+    tmp_path: Path,
+) -> None:
+    state_dir = tmp_path / "sessions" / "state"
+    state_dir.mkdir(parents=True, exist_ok=True)
+    legacy = Session(
+        id=SessionId("legacy-task"),
+        channel="task",
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws1"),
+        mode=SessionMode.TASK,
+        metadata={"parent_session_id": "parent-1"},
+    )
+    _session_state_path(state_dir, str(legacy.id)).write_text(
+        legacy.model_dump_json(indent=2),
+        encoding="utf-8",
+    )
+
+    restored_manager = SessionManager(state_dir=state_dir)
+    restored = restored_manager.get(legacy.id)
+    assert restored is not None
+    assert restored.role == SessionRole.SUBAGENT

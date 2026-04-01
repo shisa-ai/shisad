@@ -70,6 +70,7 @@ from shisad.core.types import (
     Capability,
     SessionId,
     SessionMode,
+    SessionRole,
     SessionState,
     TaintLabel,
     ToolName,
@@ -80,6 +81,7 @@ from shisad.daemon.handlers._mixin_typing import HandlerMixinBase
 from shisad.governance.merge import PolicyMergeError
 from shisad.memory.ingestion import IngestionPipeline
 from shisad.memory.schema import MemorySource
+from shisad.scheduler.schema import TaskEnvelope
 from shisad.security.control_plane.consensus import TRACE_VOTER_NAME
 from shisad.security.control_plane.schema import (
     ActionKind,
@@ -245,6 +247,7 @@ class TaskSessionRequest:
     task_description: str
     file_refs: tuple[str, ...]
     capabilities: frozenset[Capability]
+    envelope: TaskEnvelope
     timeout_sec: float | None
     handoff_mode: str
     executor: str = "planner"
@@ -721,6 +724,50 @@ def _build_planner_tool_context(
         )
     lines.append("If no tool is needed, respond conversationally without calling tools.")
     return "\n".join(lines)
+
+
+def _planner_manifest_includes_report_anomaly(
+    *,
+    session: Session,
+    trust_level: str,
+    policy_taint_labels: set[TaintLabel],
+) -> bool:
+    if session.role == SessionRole.SUBAGENT or session.mode == SessionMode.TASK:
+        return True
+    if not _is_trusted_level(trust_level):
+        return True
+    if TaintLabel.UNTRUSTED in policy_taint_labels:
+        return True
+    return _task_command_context_status(session) != "clean"
+
+
+def _planner_runtime_tool_allowlist(
+    *,
+    registry_tools: list[ToolDefinition],
+    base_allowlist: set[ToolName] | None,
+    session: Session,
+    trust_level: str,
+    policy_taint_labels: set[TaintLabel],
+) -> set[ToolName] | None:
+    if _planner_manifest_includes_report_anomaly(
+        session=session,
+        trust_level=trust_level,
+        policy_taint_labels=policy_taint_labels,
+    ):
+        return base_allowlist
+
+    report_tool = canonical_tool_name_typed("report_anomaly")
+    if base_allowlist is None:
+        return {
+            tool.name
+            for tool in registry_tools
+            if canonical_tool_name_typed(str(tool.name)) != report_tool
+        }
+    return {
+        tool_name
+        for tool_name in base_allowlist
+        if canonical_tool_name_typed(str(tool_name)) != report_tool
+    }
 
 
 def _normalize_explicit_memory_intent_text(text: str) -> str:
@@ -1547,12 +1594,16 @@ def _build_session_frontmatter(
     session_mode = _sanitize_frontmatter_value(
         getattr(getattr(session, "mode", SessionMode.DEFAULT), "value", "default")
     )
+    session_role = _sanitize_frontmatter_value(
+        getattr(getattr(session, "role", SessionRole.ORCHESTRATOR), "value", "orchestrator")
+    )
     lines = [
         f"session_id={_sanitize_frontmatter_value(session_id)}",
         f"channel={_sanitize_frontmatter_value(getattr(session, 'channel', 'cli'))}",
         f"user_id={_sanitize_frontmatter_value(getattr(session, 'user_id', ''))}",
         f"workspace_id={_sanitize_frontmatter_value(getattr(session, 'workspace_id', ''))}",
         f"session_mode={session_mode}",
+        f"session_role={session_role}",
         f"trust_level={_sanitize_frontmatter_value(trust_level)}",
         f"session_created_at={_sanitize_frontmatter_value(created_at_text)}",
         f"active_capabilities={_sanitize_frontmatter_value(active_capabilities)}",
@@ -2445,7 +2496,7 @@ class SessionImplMixin(HandlerMixinBase):
                 actor="control_api",
             )
         )
-        return {"session_id": session.id, "mode": session_mode.value}
+        return {"session_id": session.id, "mode": session_mode.value, "role": session.role.value}
 
     async def _validate_and_load_session(
         self, params: Mapping[str, Any]
@@ -2739,6 +2790,14 @@ class SessionImplMixin(HandlerMixinBase):
         policy_taint_labels = set(validated.incoming_taint_labels)
         policy_taint_labels.update(transcript_context_taints)
         policy_taint_labels.update(memory_context_taints)
+        registry_tools = self._registry.list_tools()
+        planner_tool_allowlist = _planner_runtime_tool_allowlist(
+            registry_tools=registry_tools,
+            base_allowlist=validated.tool_allowlist,
+            session=session,
+            trust_level=validated.trust_level,
+            policy_taint_labels=policy_taint_labels,
+        )
         context = PolicyContext(
             capabilities=effective_caps,
             taint_labels=policy_taint_labels,
@@ -2747,7 +2806,7 @@ class SessionImplMixin(HandlerMixinBase):
             session_id=sid,
             workspace_id=session.workspace_id,
             user_id=session.user_id,
-            tool_allowlist=validated.tool_allowlist,
+            tool_allowlist=planner_tool_allowlist,
             trust_level=validated.trust_level,
         )
 
@@ -2782,17 +2841,16 @@ class SessionImplMixin(HandlerMixinBase):
             )
         )
 
-        registry_tools = self._registry.list_tools()
         planner_enabled_tool_defs = _planner_enabled_tools(
             registry_tools=registry_tools,
             capabilities=effective_caps,
-            tool_allowlist=validated.tool_allowlist,
+            tool_allowlist=planner_tool_allowlist,
         )
         planner_tools_payload = tool_definitions_to_openai(planner_enabled_tool_defs)
         planner_trusted_context = _build_planner_tool_context(
             registry_tools=registry_tools,
             capabilities=effective_caps,
-            tool_allowlist=validated.tool_allowlist,
+            tool_allowlist=planner_tool_allowlist,
             trust_level=validated.trust_level,
         )
         task_ledger_snapshot = None
@@ -3603,6 +3661,7 @@ class SessionImplMixin(HandlerMixinBase):
         self,
         *,
         params: Mapping[str, Any],
+        parent_session: Session,
         parent_capabilities: set[Capability],
         default_description: str,
     ) -> TaskSessionRequest | None:
@@ -3738,10 +3797,20 @@ class SessionImplMixin(HandlerMixinBase):
                 ),
             )
 
+        task_envelope = TaskEnvelope(
+            capability_snapshot=frozenset(scoped_capabilities),
+            parent_session_id=str(parent_session.id),
+            orchestrator_provenance=f"session:{parent_session.id}",
+            audit_trail_ref=f"task-session:{parent_session.id}:{_short_hash(task_description)}",
+            policy_snapshot_ref="",
+            lockdown_state_inheritance="inherit_runtime_restrictions",
+        )
+
         return TaskSessionRequest(
             task_description=task_description,
             file_refs=file_refs,
             capabilities=frozenset(scoped_capabilities),
+            envelope=task_envelope,
             timeout_sec=timeout_sec,
             handoff_mode=handoff_mode,
             executor=executor,
@@ -3961,23 +4030,23 @@ class SessionImplMixin(HandlerMixinBase):
             recovery_checkpoint_id = checkpoint.checkpoint_id
 
         task_metadata: dict[str, Any] = {
-            "capability_sync_mode": "manual_override",
             "trust_level": "internal",
             "session_mode": SessionMode.TASK.value,
             _COMMAND_CONTEXT_STATUS_KEY: "clean",
-            "parent_session_id": str(parent_sid),
             "task_file_refs": list(task_request.file_refs),
             "task_executor": task_request.executor,
+            "task_envelope": task_request.envelope.model_dump(mode="json"),
         }
         if validated.tool_allowlist is not None:
             task_metadata["tool_allowlist"] = sorted(
                 str(tool) for tool in validated.tool_allowlist
             )
 
-        task_session = self._session_manager.create(
+        task_session = self._session_manager.create_subagent_session(
             channel="task",
             user_id=parent_session.user_id,
             workspace_id=parent_session.workspace_id,
+            parent_session_id=parent_sid,
             mode=SessionMode.TASK,
             capabilities=set(task_request.capabilities),
             metadata=task_metadata,
@@ -4448,6 +4517,7 @@ class SessionImplMixin(HandlerMixinBase):
             return validated.early_response
         task_request = self._task_request_from_params(
             params=params,
+            parent_session=validated.session,
             parent_capabilities=self._effective_session_capabilities(
                 session_id=validated.sid,
                 capabilities=validated.session.capabilities,
@@ -4663,6 +4733,7 @@ class SessionImplMixin(HandlerMixinBase):
                 {
                     "id": s.id,
                     "state": s.state,
+                    "role": s.role.value,
                     "user_id": s.user_id,
                     "workspace_id": s.workspace_id,
                     "channel": s.channel,
@@ -4821,7 +4892,7 @@ class SessionImplMixin(HandlerMixinBase):
             raise ValueError(f"Unsupported session mode: {requested_mode}") from exc
 
         if mode == SessionMode.ADMIN_CLEANROOM:
-            if session.mode == SessionMode.TASK:
+            if session.role == SessionRole.SUBAGENT or session.mode == SessionMode.TASK:
                 return {
                     "session_id": sid,
                     "mode": SessionMode.DEFAULT.value,

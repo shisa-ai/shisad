@@ -13,7 +13,13 @@ from typing import Any
 from pydantic import ValidationError
 
 from shisad.core.types import Capability, UserId, WorkspaceId
-from shisad.scheduler.schema import Schedule, ScheduledTask, ScheduleKind, TaskRunRequest
+from shisad.scheduler.schema import (
+    Schedule,
+    ScheduledTask,
+    ScheduleKind,
+    TaskEnvelope,
+    TaskRunRequest,
+)
 
 _MAX_RESOLVED_CONFIRMATIONS_PER_TASK = 32
 
@@ -56,12 +62,24 @@ class SchedulerManager:
         max_runs: int = 0,
     ) -> ScheduledTask:
         self._validate_schedule(schedule)
+        capability_snapshot_frozen = frozenset(capability_snapshot)
+        owner = str(created_by or "unknown")
+        workspace = str(workspace_id or WorkspaceId(""))
+        orchestrator_provenance = f"scheduler:{owner}:{workspace}"
         task = ScheduledTask(
             name=name,
             goal=goal,
             schedule=schedule,
-            capability_snapshot=set(capability_snapshot),
+            capability_snapshot=capability_snapshot_frozen,
             policy_snapshot_ref=policy_snapshot_ref,
+            task_envelope=TaskEnvelope(
+                capability_snapshot=capability_snapshot_frozen,
+                parent_session_id="",
+                orchestrator_provenance=orchestrator_provenance,
+                audit_trail_ref="",
+                policy_snapshot_ref=policy_snapshot_ref,
+                lockdown_state_inheritance="inherit_runtime_restrictions",
+            ),
             allowed_recipients=allowed_recipients or [],
             allowed_domains=allowed_domains or [],
             delivery_target=dict(delivery_target or {}),

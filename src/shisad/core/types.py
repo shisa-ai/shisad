@@ -125,3 +125,10 @@ class SessionMode(StrEnum):
     DEFAULT = "default"
     ADMIN_CLEANROOM = "admin_cleanroom"
     TASK = "task"
+
+
+class SessionRole(StrEnum):
+    """Session trust-boundary role."""
+
+    ORCHESTRATOR = "orchestrator"
+    SUBAGENT = "subagent"

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pytest
+from pydantic import ValidationError
 
 from shisad.core.types import Capability
 from shisad.daemon.handlers._impl_session import (
@@ -10,6 +11,7 @@ from shisad.daemon.handlers._impl_session import (
     _extract_files_changed_from_task_outputs,
     _resolve_task_capability_scope,
 )
+from shisad.scheduler.schema import TaskEnvelope
 
 
 def test_m2_task_capability_scope_defaults_to_parent_capabilities() -> None:
@@ -77,3 +79,22 @@ def test_m2_extract_files_changed_ignores_invalid_path_metadata() -> None:
         "original v0.4 M3 design notes",
         "early v0.4 prototype direction",
     )
+
+
+def test_m1_task_envelope_is_frozen_and_tracks_parent_provenance() -> None:
+    envelope = TaskEnvelope(
+        capability_snapshot=frozenset({Capability.FILE_READ}),
+        parent_session_id="sess-parent",
+        orchestrator_provenance="session:sess-parent",
+        audit_trail_ref="audit:plan-1",
+        policy_snapshot_ref="policy:task",
+        lockdown_state_inheritance="inherit_runtime_restrictions",
+    )
+
+    assert envelope.capability_snapshot == frozenset({Capability.FILE_READ})
+    assert envelope.parent_session_id == "sess-parent"
+    assert envelope.orchestrator_provenance == "session:sess-parent"
+    assert envelope.audit_trail_ref == "audit:plan-1"
+
+    with pytest.raises((TypeError, ValidationError)):
+        envelope.parent_session_id = "other-parent"

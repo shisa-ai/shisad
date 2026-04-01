@@ -8,7 +8,7 @@ import uuid
 from datetime import UTC, datetime
 from enum import StrEnum
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from shisad.core.types import Capability, UserId, WorkspaceId
 
@@ -35,13 +35,27 @@ class Schedule(BaseModel):
         )
 
 
+class TaskEnvelope(BaseModel):
+    """Immutable task-execution boundary metadata."""
+
+    capability_snapshot: frozenset[Capability] = Field(default_factory=frozenset)
+    parent_session_id: str = ""
+    orchestrator_provenance: str = ""
+    audit_trail_ref: str = ""
+    policy_snapshot_ref: str = ""
+    lockdown_state_inheritance: str = "inherit_runtime_restrictions"
+
+    model_config = {"frozen": True}
+
+
 class ScheduledTask(BaseModel):
     id: str = Field(default_factory=lambda: uuid.uuid4().hex)
     name: str
     schedule: Schedule
     goal: str
-    capability_snapshot: set[Capability] = Field(default_factory=set)
+    capability_snapshot: frozenset[Capability] = Field(default_factory=frozenset)
     policy_snapshot_ref: str
+    task_envelope: TaskEnvelope = Field(default_factory=TaskEnvelope)
     allowed_recipients: list[str] = Field(default_factory=list)
     allowed_domains: list[str] = Field(default_factory=list)
     delivery_target: dict[str, str] = Field(default_factory=dict)
@@ -56,6 +70,28 @@ class ScheduledTask(BaseModel):
     max_runs: int = 0
     enabled: bool = True
 
+    @model_validator(mode="before")
+    @classmethod
+    def _backfill_task_envelope(cls, value: object) -> object:
+        if not isinstance(value, dict):
+            return value
+        payload = dict(value)
+        if "task_envelope" not in payload:
+            created_by = str(payload.get("created_by", "")).strip()
+            workspace_id = str(payload.get("workspace_id", "")).strip()
+            provenance = "scheduler"
+            if created_by or workspace_id:
+                provenance = f"scheduler:{created_by or 'unknown'}:{workspace_id or 'default'}"
+            payload["task_envelope"] = {
+                "capability_snapshot": list(payload.get("capability_snapshot", [])),
+                "parent_session_id": "",
+                "orchestrator_provenance": provenance,
+                "audit_trail_ref": "",
+                "policy_snapshot_ref": str(payload.get("policy_snapshot_ref", "")).strip(),
+                "lockdown_state_inheritance": "inherit_runtime_restrictions",
+            }
+        return payload
+
     def commitment_hash(self) -> str:
         payload = {
             "id": self.id,
@@ -64,6 +100,16 @@ class ScheduledTask(BaseModel):
             "schedule": self.schedule.model_dump(mode="json"),
             "capability_snapshot": sorted(cap.value for cap in self.capability_snapshot),
             "policy_snapshot_ref": self.policy_snapshot_ref,
+            "task_envelope": {
+                "capability_snapshot": sorted(
+                    cap.value for cap in self.task_envelope.capability_snapshot
+                ),
+                "parent_session_id": self.task_envelope.parent_session_id,
+                "orchestrator_provenance": self.task_envelope.orchestrator_provenance,
+                "audit_trail_ref": self.task_envelope.audit_trail_ref,
+                "policy_snapshot_ref": self.task_envelope.policy_snapshot_ref,
+                "lockdown_state_inheritance": self.task_envelope.lockdown_state_inheritance,
+            },
             "allowed_recipients": sorted(self.allowed_recipients),
             "allowed_domains": sorted(self.allowed_domains),
             "delivery_target": dict(self.delivery_target),

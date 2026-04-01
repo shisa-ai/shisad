@@ -6,6 +6,8 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from shisad.core.types import Capability, SessionId, UserId, WorkspaceId
 from shisad.scheduler.manager import SchedulerManager
 from shisad.scheduler.schema import Schedule
@@ -272,6 +274,34 @@ def test_g3_scheduler_persists_execution_session_and_filters_resolved_confirmati
     )
     assert rows[0]["pending_confirmation_count"] == 0
     assert rows[0]["confirmation_needed"] is False
+
+
+def test_m1_scheduler_persists_task_envelope_snapshot(tmp_path: Path) -> None:
+    storage = tmp_path / "tasks"
+    first = SchedulerManager(storage_dir=storage)
+    created = first.create_task(
+        name="reminder",
+        goal="ping ops",
+        schedule=Schedule(kind="interval", expression="60s"),
+        capability_snapshot={Capability.MESSAGE_SEND},
+        policy_snapshot_ref="p1",
+        created_by=UserId("alice"),
+        workspace_id=WorkspaceId("ws1"),
+    )
+
+    assert created.task_envelope.capability_snapshot == frozenset({Capability.MESSAGE_SEND})
+    assert created.task_envelope.policy_snapshot_ref == "p1"
+    assert created.task_envelope.orchestrator_provenance == "scheduler:alice:ws1"
+
+    with pytest.raises((TypeError, ValueError)):
+        created.task_envelope.policy_snapshot_ref = "changed"
+
+    restarted = SchedulerManager(storage_dir=storage)
+    loaded = restarted.get_task(created.id)
+    assert loaded is not None
+    assert loaded.task_envelope.capability_snapshot == frozenset({Capability.MESSAGE_SEND})
+    assert loaded.task_envelope.policy_snapshot_ref == "p1"
+    assert loaded.task_envelope.orchestrator_provenance == "scheduler:alice:ws1"
 
 
 def test_g3_scheduler_prunes_resolved_confirmation_backlog(tmp_path: Path) -> None:

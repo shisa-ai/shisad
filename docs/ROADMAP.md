@@ -1,7 +1,7 @@
 # shisad Roadmap
 
-*Created: 2026-02-26*  
-*Updated: 2026-03-29*  
+*Created: 2026-02-26*
+*Updated: 2026-04-01*
 *Status: Active*
 
 ## Goal
@@ -49,6 +49,7 @@ Exit criteria:
 - Credential scoping across delegated execution boundaries
 - Type-restricted task/tool boundary schemas
 - Summary firewall barrier and approval provenance
+- Current execution status: G0 evidence-store gate is closed; active work has moved to the v0.6.0 M1 foundation slice that formalizes orchestrator/subagent session roles, immutable task envelopes, and trust-aware `report_anomaly` exposure.
 
 ### v0.6.1 — Interop and remote tool trust
 

@@ -18,6 +18,7 @@ from shisad.core.types import (
     Capability,
     PEPDecisionKind,
     SessionId,
+    SessionMode,
     TaintLabel,
     ToolName,
     UserId,
@@ -153,15 +154,28 @@ class TasksImplMixin(HandlerMixinBase):
             if existing is not None:
                 return existing
 
-        session = self._session_manager.create(
+        task_envelope = getattr(task, "task_envelope", None)
+        parent_session_id = None
+        if task_envelope is not None:
+            raw_parent_session_id = str(getattr(task_envelope, "parent_session_id", "")).strip()
+            if raw_parent_session_id:
+                parent_session_id = SessionId(raw_parent_session_id)
+
+        session = self._session_manager.create_subagent_session(
             channel="scheduler",
             user_id=UserId(str(getattr(task, "created_by", ""))),
             workspace_id=WorkspaceId(str(getattr(task, "workspace_id", ""))),
+            parent_session_id=parent_session_id,
+            mode=SessionMode.DEFAULT,
             capabilities=set(getattr(task, "capability_snapshot", set())),
             metadata={
-                "capability_sync_mode": "manual_override",
                 "trust_level": "internal",
                 "background_task_id": str(getattr(task, "id", "")),
+                "task_envelope": (
+                    task_envelope.model_dump(mode="json")
+                    if task_envelope is not None
+                    else {}
+                ),
             },
         )
         self._scheduler.attach_execution_session(str(getattr(task, "id", "")), str(session.id))

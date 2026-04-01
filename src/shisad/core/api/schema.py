@@ -78,6 +78,7 @@ class SessionCreateResult(BaseModel):
 
     session_id: str
     mode: str = "default"
+    role: str = "orchestrator"
 
 
 class SessionMessageParams(_StrictParams):
@@ -162,6 +163,7 @@ class SessionListEntry(BaseModel):
 
     id: str
     state: str = ""
+    role: str = "orchestrator"
     user_id: str = ""
     workspace_id: str = ""
     channel: str = ""
@@ -683,6 +685,7 @@ class TaskCreateResult(BaseModel):
     goal: str = ""
     capability_snapshot: list[str] = Field(default_factory=list)
     policy_snapshot_ref: str = ""
+    task_envelope: dict[str, Any] = Field(default_factory=dict)
     allowed_recipients: list[str] = Field(default_factory=list)
     allowed_domains: list[str] = Field(default_factory=list)
     delivery_target: dict[str, str] = Field(default_factory=dict)

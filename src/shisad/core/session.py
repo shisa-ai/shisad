@@ -18,12 +18,13 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field, PrivateAttr, ValidationError
 
 from shisad.core.types import (
     Capability,
     SessionId,
     SessionMode,
+    SessionRole,
     SessionState,
     UserId,
     WorkspaceId,
@@ -58,10 +59,37 @@ class Session(BaseModel):
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     state: SessionState = SessionState.ACTIVE
     mode: SessionMode = SessionMode.DEFAULT
+    role: SessionRole = SessionRole.ORCHESTRATOR
     capabilities: set[Capability] = Field(default_factory=set)
     metadata: dict[str, Any] = Field(default_factory=dict)
+    _role_locked: bool = PrivateAttr(default=False)
 
-    model_config = {"arbitrary_types_allowed": True}
+    model_config = {"arbitrary_types_allowed": True, "validate_assignment": True}
+
+    def model_post_init(self, __context: Any) -> None:
+        self._role_locked = True
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        if name == "role" and getattr(self, "_role_locked", False):
+            current = getattr(self, "role", None)
+            normalized = value
+            if not isinstance(value, SessionRole):
+                with contextlib.suppress(ValueError, TypeError):
+                    normalized = SessionRole(str(value))
+            if current is not None and normalized != current:
+                raise TypeError("session role is immutable")
+        super().__setattr__(name, value)
+
+    def migrate_role(self, role: SessionRole) -> bool:
+        """Adjust role during trusted migration/restore flows only."""
+        if self.role == role:
+            return False
+        object.__setattr__(self, "_role_locked", False)
+        try:
+            self.role = role
+        finally:
+            object.__setattr__(self, "_role_locked", True)
+        return True
 
 
 class SessionManager:
@@ -93,6 +121,7 @@ class SessionManager:
         user_id: UserId | None = None,
         workspace_id: WorkspaceId | None = None,
         mode: SessionMode = SessionMode.DEFAULT,
+        role: SessionRole = SessionRole.ORCHESTRATOR,
         capabilities: set[Capability] | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> Session:
@@ -106,6 +135,7 @@ class SessionManager:
             user_id=user,
             workspace_id=workspace,
             mode=mode,
+            role=role,
             session_key=session_key,
             capabilities=capabilities or set(),
             metadata=metadata or {},
@@ -123,6 +153,33 @@ class SessionManager:
             session.workspace_id,
         )
         return session
+
+    def create_subagent_session(
+        self,
+        *,
+        channel: str,
+        user_id: UserId,
+        workspace_id: WorkspaceId,
+        parent_session_id: SessionId | None,
+        mode: SessionMode,
+        capabilities: set[Capability] | frozenset[Capability],
+        metadata: dict[str, Any] | None = None,
+    ) -> Session:
+        """Create an ephemeral subagent session with an immutable role boundary."""
+        payload = dict(metadata or {})
+        payload["capability_sync_mode"] = "manual_override"
+        payload.setdefault("inherited_context_taint", "untrusted")
+        if parent_session_id is not None:
+            payload["parent_session_id"] = str(parent_session_id)
+        return self.create(
+            channel=channel,
+            user_id=user_id,
+            workspace_id=workspace_id,
+            mode=mode,
+            role=SessionRole.SUBAGENT,
+            capabilities=set(capabilities),
+            metadata=payload,
+        )
 
     def get(self, session_id: SessionId) -> Session | None:
         """Get a session by ID."""
@@ -380,6 +437,17 @@ class SessionManager:
 
     def _migrate_loaded_session(self, session: Session) -> _SessionMigrationOutcome:
         before_caps = set(session.capabilities)
+        role_changed = False
+        if (
+            session.role == SessionRole.ORCHESTRATOR
+            and (
+                session.mode == SessionMode.TASK
+                or str(session.channel).strip().lower() in {"task", "scheduler"}
+                or str(session.metadata.get("parent_session_id", "")).strip()
+                or str(session.metadata.get("background_task_id", "")).strip()
+            )
+        ):
+            role_changed = session.migrate_role(SessionRole.SUBAGENT)
         raw_mode = str(session.metadata.get("capability_sync_mode", "")).strip().lower()
         sync_mode_before = (
             raw_mode if raw_mode in {"policy_default", "manual_override"} else "legacy"
@@ -422,6 +490,7 @@ class SessionManager:
         changed = (
             before_caps != after_caps
             or sync_mode_before != sync_mode_after
+            or role_changed
         )
         return _SessionMigrationOutcome(
             changed=changed,

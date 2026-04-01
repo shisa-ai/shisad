@@ -8,9 +8,12 @@ from typing import Any
 import pytest
 
 from shisad.channels.identity import ChannelIdentityMap
-from shisad.core.session import SessionManager
-from shisad.core.types import SessionId, ToolName
-from shisad.daemon.handlers._impl_session import SessionImplMixin
+from shisad.core.session import Session, SessionManager
+from shisad.core.types import SessionId, SessionRole, TaintLabel, ToolName
+from shisad.daemon.handlers._impl_session import (
+    SessionImplMixin,
+    _planner_manifest_includes_report_anomaly,
+)
 from shisad.security.policy import PolicyBundle, ToolPolicy
 
 
@@ -110,3 +113,41 @@ async def test_m2_session_create_rejects_tone_override_for_non_admin_peer() -> N
             harness,
             {"channel": "cli", "tone": "friendly"},
         )  # type: ignore[arg-type]
+
+
+def test_m1_clean_orchestrator_manifest_omits_report_anomaly() -> None:
+    session = Session(role=SessionRole.ORCHESTRATOR)
+
+    assert (
+        _planner_manifest_includes_report_anomaly(
+            session=session,
+            trust_level="trusted",
+            policy_taint_labels=set(),
+        )
+        is False
+    )
+
+
+@pytest.mark.parametrize(
+    ("role", "trust_level", "taints"),
+    [
+        (SessionRole.ORCHESTRATOR, "untrusted", set()),
+        (SessionRole.ORCHESTRATOR, "trusted", {TaintLabel.UNTRUSTED}),
+        (SessionRole.SUBAGENT, "trusted", set()),
+    ],
+)
+def test_m1_nonclean_or_split_contexts_keep_report_anomaly(
+    role: SessionRole,
+    trust_level: str,
+    taints: set[TaintLabel],
+) -> None:
+    session = Session(role=role)
+
+    assert (
+        _planner_manifest_includes_report_anomaly(
+            session=session,
+            trust_level=trust_level,
+            policy_taint_labels=taints,
+        )
+        is True
+    )
