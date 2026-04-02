@@ -24,7 +24,7 @@ Goals:
 | Lockfile | `uv.lock` |
 | CI install path | `uv sync --exclude-newer P7D --frozen --dev` |
 | Release path | GitHub Actions workflow (`publish.yml`) via OIDC trusted publishing |
-| Current risk summary | Medium (runtime npx adapter surface remains mutable) |
+| Current risk summary | Low (all major surfaces hardened; npx lockdown available) |
 
 ## Pre-analysis Notes
 
@@ -571,13 +571,13 @@ Current GitHub Actions coverage is useful but not complete for supply-chain assu
 
 ## Findings
 
-1. **Runtime npx adapter execution remains a mutable supply-chain surface**
-   - Evidence: `src/shisad/coding/registry.py` uses `npx` with versioned but
-     unhashed package specs at runtime.
-   - Risk: Medium. Adapter versions are pinned but npm resolution is still
-     mutable — a compromised registry or MITM could serve different code.
-   - Recommended action: Add a production mode that disallows live `npx`
-     registry fetches and requires preinstalled adapters. Deferred to v0.6.x.
+1. **Runtime npx adapter execution is lockable via env var** (CLOSED v0.5.3)
+   - Evidence: `src/shisad/coding/registry.py` supports
+     `SHISAD_REQUIRE_LOCAL_ADAPTERS=1` which replaces `npx` commands with
+     bare binary names requiring pre-installed adapters on `$PATH`.
+   - Risk: Low when lockdown is enabled. Default mode still uses `npx` with
+     pinned versions for ease of use.
+   - Residual: operators must opt in via the env var; default remains `npx`.
 
 2. **No periodic dependency-audit CI job**
    - Evidence: No scheduled workflow emits inventory diffs or newly introduced
@@ -606,7 +606,7 @@ Current GitHub Actions coverage is useful but not complete for supply-chain assu
 
 ### Priority 1 (next release lane)
 
-1. Add a production mode that disallows live runtime `npx` registry fetches and requires preinstalled adapters. (Deferred to v0.6.x.)
+1. ~~Add a production mode that disallows live runtime `npx` registry fetches and requires preinstalled adapters.~~ Done (`SHISAD_REQUIRE_LOCAL_ADAPTERS=1`).
 2. Define and document a standard "approved internal package mirror/proxy" pattern for Python and npm. (Deferred to post-v1.0.)
 3. Add a periodic dependency-audit job that emits:
    - full package inventory,
@@ -637,8 +637,8 @@ Current GitHub Actions coverage is useful but not complete for supply-chain assu
 - All CI actions are SHA-pinned, GITHUB_TOKEN is read-only by default,
   dependency review and workflow linting are active, and the publish path
   uses OIDC trusted publishing with SBOM and attestations.
-- The remaining practical gap is the runtime npx adapter surface, which is
-  deferred to v0.6.x.
+- The runtime npx adapter surface is now lockable via
+  `SHISAD_REQUIRE_LOCAL_ADAPTERS=1`.
 - Bootstrap/installer paths (apt-get, curl-pipe-sh) remain mutable but are
   operationally standard and accepted risk at this scale.
 

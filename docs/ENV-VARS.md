@@ -38,6 +38,7 @@ This surface is large. That is now documented, but it should be simplified in a 
 | `SHISAD_LOG_LEVEL` | Daemon log level |
 | `SHISAD_CHECKPOINT_TRIGGER` | Checkpoint creation strategy |
 | `SHISAD_TRACE_ENABLED` | Enable trace recording |
+| `SHISAD_REQUIRE_LOCAL_ADAPTERS` | Require pre-installed coding-agent binaries; disallow runtime `npx` fetches (`1`/`true`/`yes`) |
 
 ## Channel and Identity Settings
 
