@@ -1,8 +1,8 @@
 # shisad Supply Chain Audit
 
 *Created: 2026-03-31*  
-*Updated: 2026-04-01 (cryptography 46.0.6 upgrade review + lock refresh)*  
-*Status: Draft*  
+*Updated: 2026-04-02 (v0.5.3 supply chain hardening: CI integrity + trusted publishing)*  
+*Status: In Progress*  
 *Snapshot basis: repository state on `main` at audit time (clean tree)*
 
 ## Scope and Intent
@@ -14,6 +14,17 @@ Goals:
 1. Provide a full dependency map (direct + upstream/transitive).
 2. Identify non-locked or weakly-locked points in the chain.
 3. Propose concrete hardening steps that reduce attack surface without disabling core functionality.
+
+## Repo Profile
+
+| Item | Value |
+| --- | --- |
+| Primary ecosystem | Python |
+| Package manager | uv |
+| Lockfile | `uv.lock` |
+| CI install path | `uv sync --exclude-newer P7D --frozen --dev` |
+| Release path | GitHub Actions workflow (`publish.yml`) via OIDC trusted publishing |
+| Current risk summary | Medium (runtime npx adapter surface remains mutable) |
 
 ## Pre-analysis Notes
 
@@ -507,6 +518,26 @@ Note: packages with no `# via` comments in this export are direct dependencies o
    - `.python-version` pins major/minor (`3.12`) but not patch.
    - This audit treats interpreter patch-level drift as an accepted, lower-priority risk per project stance.
 
+## Controls Review
+
+| Control | Status | Notes |
+| --- | --- | --- |
+| Lockfile committed | Yes | `uv.lock` committed and used in all workflows |
+| Frozen install enforced | Yes | `uv sync --frozen` in all CI jobs |
+| Age gate enforced | Yes | `--exclude-newer P7D` in all CI jobs |
+| Hashes enforced at install surface | Yes | `uv.lock` records artifact hashes; CI uses `--frozen` |
+| Build scripts deny-by-default | N/A | Python ecosystem; no install scripts in dependency chain |
+| GitHub Actions pinned by SHA | Yes | All actions pinned to immutable commit SHAs (v0.5.3) |
+| Release workflows avoid attacker-controlled triggers | Yes | `publish.yml` uses `workflow_dispatch` only |
+| Workflow inputs sanitized before shell execution | Yes | Tag input compared via shell variable, not interpolated |
+| Publish environment requires approval | Yes | `pypi-publish` GitHub Environment with required reviewers |
+| Workflow linting (zizmor) | Yes | `zizmor` job runs on push + PR (v0.5.3) |
+| Dependency review in CI | Yes | `dependency-review-action` runs on PRs (v0.5.3) |
+| SBOM / attestation | Yes | SPDX SBOM + build provenance attestation in `publish.yml` (v0.5.3) |
+| Lockfile drift guard | Yes | `uv lock --check` as early CI gate (v0.5.3) |
+| Trusted publishing (OIDC) | Yes | PyPI OIDC trusted publisher configured (v0.5.3) |
+| Top-level permissions hardening | Yes | `permissions: read-all` on CI workflow (v0.5.3) |
+
 ## Minimum-Age Controls (uv + pip fallback note)
 
 - **Implemented now (uv):**
@@ -538,28 +569,55 @@ Current GitHub Actions coverage is useful but not complete for supply-chain assu
 4. Add release-path checks (attestation/SBOM/signing) once release workflows are introduced.
 5. Add a periodic “supply-chain hygiene” job to emit inventory diffs and newly introduced package alerts.
 
+## Findings
+
+1. **Runtime npx adapter execution remains a mutable supply-chain surface**
+   - Evidence: `src/shisad/coding/registry.py` uses `npx` with versioned but
+     unhashed package specs at runtime.
+   - Risk: Medium. Adapter versions are pinned but npm resolution is still
+     mutable — a compromised registry or MITM could serve different code.
+   - Recommended action: Add a production mode that disallows live `npx`
+     registry fetches and requires preinstalled adapters. Deferred to v0.6.x.
+
+2. **No periodic dependency-audit CI job**
+   - Evidence: No scheduled workflow emits inventory diffs or newly introduced
+     package alerts.
+   - Risk: Low. Manual review process exists but is not automated.
+   - Recommended action: Add a scheduled CI job that exports the dependency
+     tree and diffs against the previous release.
+
+3. **No internal package mirror/proxy**
+   - Evidence: All CI and local resolution goes directly to pypi.org and
+     npm registry.
+   - Risk: Low at current scale. Acceptable while the project is small.
+   - Recommended action: Evaluate when org infrastructure supports it.
+     Deferred to post-v1.0.
+
 ## Prioritized Hardening Plan
 
-### Priority 0 (fast, high-value)
+### Priority 0 (fast, high-value) — CLOSED (v0.5.3)
 
-1. Pin GitHub Actions to immutable commit SHAs (keep a small process for scheduled SHA refresh).
-2. Add explicit lock/policy drift guard jobs for dependency metadata.
-3. Keep the uv cooldown (`exclude-newer`) and set/maintain an equivalent cutoff for any pip fallback paths.
+1. ~~Pin GitHub Actions to immutable commit SHAs.~~ Done.
+2. ~~Add explicit lock/policy drift guard jobs for dependency metadata.~~ Done (`uv lock --check` gate).
+3. ~~Keep the uv cooldown and modernize syntax.~~ Done (`--exclude-newer P7D`).
+4. ~~Add top-level `permissions: read-all` to CI workflow.~~ Done.
+5. ~~Add dependency-review action for PRs.~~ Done.
+6. ~~Add zizmor workflow linting.~~ Done.
 
 ### Priority 1 (next release lane)
 
-1. Add a production mode that disallows live runtime `npx` registry fetches and requires preinstalled adapters.
-2. Define and document a standard "approved internal package mirror/proxy" pattern for Python and npm.
+1. Add a production mode that disallows live runtime `npx` registry fetches and requires preinstalled adapters. (Deferred to v0.6.x.)
+2. Define and document a standard "approved internal package mirror/proxy" pattern for Python and npm. (Deferred to post-v1.0.)
 3. Add a periodic dependency-audit job that emits:
    - full package inventory,
    - lock diff summary,
    - newly introduced packages since last release.
 
-### Priority 2 (roadmap-aligned, medium term)
+### Priority 2 (roadmap-aligned, medium term) — CLOSED (v0.5.3)
 
-1. Move release publishing to trusted publishing + provenance attestations.
-2. Add release SBOM generation and signing.
-3. When container images are introduced, require digest pinning and signature verification in release policy.
+1. ~~Move release publishing to trusted publishing + provenance attestations.~~ Done (OIDC trusted publisher + `publish.yml`).
+2. ~~Add release SBOM generation and signing.~~ Done (SPDX SBOM via anchore/sbom-action).
+3. When container images are introduced, require digest pinning and signature verification in release policy. (Future.)
 
 ## Suggested Policy Language (for future docs alignment)
 
@@ -574,10 +632,19 @@ Current GitHub Actions coverage is useful but not complete for supply-chain assu
 
 ## Current Bottom Line
 
-- Python package supply chain is reasonably strong at the lockfile layer.
-- The largest practical gaps are outside that layer:
-  - runtime npm fetch path,
-  - mutable CI action pins,
-  - incomplete CI/release supply-chain coverage lane,
-  - mutable bootstrap installers.
-- Immediate hardening closed several easy gaps today (adapter version pin, frozen CI sync, build backend pin, uv cooldown), and the next best gains are CI/workflow integrity controls.
+- Python package supply chain is strong at the lockfile layer and now also
+  at the CI/release layer after v0.5.3 hardening.
+- All CI actions are SHA-pinned, GITHUB_TOKEN is read-only by default,
+  dependency review and workflow linting are active, and the publish path
+  uses OIDC trusted publishing with SBOM and attestations.
+- The remaining practical gap is the runtime npx adapter surface, which is
+  deferred to v0.6.x.
+- Bootstrap/installer paths (apt-get, curl-pipe-sh) remain mutable but are
+  operationally standard and accepted risk at this scale.
+
+## Decision Summary
+
+This repo is **partially hardened and converging on baseline**. The v0.5.3
+hardening pass closed all Priority 0 and Priority 2 items. Remaining open
+items (runtime npx lockdown, periodic audit job, internal mirror) are
+lower priority and have documented deferral targets.
