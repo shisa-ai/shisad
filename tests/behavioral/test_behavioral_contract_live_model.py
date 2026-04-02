@@ -233,6 +233,7 @@ def _assert_not_local_fallback(text: str) -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.live_smoke
 async def test_live_model_hello_responds_without_lockdown(live_harness: LiveHarness) -> None:
     sid = await _create_session(live_harness.client)
     reply = await live_harness.client.call(
@@ -251,6 +252,7 @@ async def test_live_model_hello_responds_without_lockdown(live_harness: LiveHarn
 
 
 @pytest.mark.asyncio
+@pytest.mark.live_smoke
 async def test_live_model_web_search_executes(live_harness: LiveHarness) -> None:
     sid = await _create_session(live_harness.client)
     reply = await live_harness.client.call(
@@ -269,6 +271,7 @@ async def test_live_model_web_search_executes(live_harness: LiveHarness) -> None
 
 
 @pytest.mark.asyncio
+@pytest.mark.live_smoke
 async def test_live_model_file_read_executes(live_harness: LiveHarness) -> None:
     sid = await _create_session(live_harness.client)
     reply = await live_harness.client.call(
@@ -308,6 +311,7 @@ async def test_live_model_fs_list_executes(live_harness: LiveHarness) -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.live_smoke
 async def test_live_model_memory_remember_persists_and_is_used_later(
     live_harness: LiveHarness,
 ) -> None:
@@ -342,6 +346,7 @@ async def test_live_model_memory_remember_persists_and_is_used_later(
 
 
 @pytest.mark.asyncio
+@pytest.mark.live_smoke
 async def test_live_model_multi_tool_executes_both_tools_in_one_turn(
     live_harness: LiveHarness,
 ) -> None:
@@ -365,6 +370,7 @@ async def test_live_model_multi_tool_executes_both_tools_in_one_turn(
 
 
 @pytest.mark.asyncio
+@pytest.mark.live_smoke
 async def test_live_model_web_fetch_routes_to_confirmation(
     live_harness: LiveHarness,
 ) -> None:

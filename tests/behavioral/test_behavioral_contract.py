@@ -289,6 +289,11 @@ async def _stub_complete(
         if "git log" in goal_lower
         else None
     )
+    git_diff_call = (
+        _tool_call("git.diff", {"max_lines": 100}, call_id="t-git-diff")
+        if "git diff" in goal_lower
+        else None
+    )
     fs_write_call = (
         _tool_call(
             "fs.write",
@@ -340,6 +345,8 @@ async def _stub_complete(
         tool_calls.append(git_status_call)
     elif git_log_call is not None:
         tool_calls.append(git_log_call)
+    elif git_diff_call is not None:
+        tool_calls.append(git_diff_call)
     elif fs_write_call is not None:
         tool_calls.append(fs_write_call)
 
@@ -564,7 +571,42 @@ async def _confirm_pending_action(
     client: ControlClient,
     confirmation_id: str,
 ) -> dict[str, Any]:
-    """Fetch decision nonce for a pending action and confirm it."""
+    """Fetch decision nonce for a pending action and confirm it (with cooldown retry)."""
+    end = asyncio.get_running_loop().time() + 5.0
+    latest: dict[str, Any] = {
+        "confirmed": False,
+        "confirmation_id": confirmation_id,
+        "reason": "unknown",
+    }
+    while asyncio.get_running_loop().time() < end:
+        pending = await client.call(
+            "action.pending",
+            {"confirmation_id": confirmation_id},
+        )
+        actions = pending.get("actions", [])
+        assert actions, f"No pending action found for {confirmation_id}"
+        nonce = str(actions[0].get("decision_nonce", "")).strip()
+        assert nonce, f"Missing decision_nonce for {confirmation_id}"
+        latest = dict(
+            await client.call(
+                "action.confirm",
+                {"confirmation_id": confirmation_id, "decision_nonce": nonce},
+            )
+        )
+        if latest.get("confirmed") is True:
+            return latest
+        if latest.get("reason") != "cooldown_active":
+            return latest
+        retry_after = float(latest.get("retry_after_seconds", 0.1) or 0.1)
+        await asyncio.sleep(max(0.05, retry_after))
+    raise AssertionError(f"Timed out confirming pending action {confirmation_id}: {latest}")
+
+
+async def _reject_pending_action(
+    client: ControlClient,
+    confirmation_id: str,
+) -> dict[str, Any]:
+    """Fetch decision nonce for a pending action and reject it."""
     pending = await client.call(
         "action.pending",
         {"confirmation_id": confirmation_id},
@@ -574,7 +616,7 @@ async def _confirm_pending_action(
     nonce = str(actions[0].get("decision_nonce", "")).strip()
     assert nonce, f"Missing decision_nonce for {confirmation_id}"
     result = await client.call(
-        "action.confirm",
+        "action.reject",
         {"confirmation_id": confirmation_id, "decision_nonce": nonce},
     )
     return dict(result)
@@ -1080,6 +1122,39 @@ async def test_contract_git_log_executes_and_returns_entries(
 
 
 @pytest.mark.asyncio
+async def test_contract_git_diff_executes_and_returns_output(
+    contract_harness: ContractHarness,
+) -> None:
+    ws = contract_harness.workspace_root
+    subprocess.run(["git", "init", str(ws)], check=True, capture_output=True)
+    subprocess.run(
+        ["git", "-C", str(ws), "commit", "--allow-empty", "-m", "init"],
+        check=True,
+        capture_output=True,
+        env={
+            **os.environ,
+            "GIT_AUTHOR_NAME": "test",
+            "GIT_AUTHOR_EMAIL": "t@t",
+            "GIT_COMMITTER_NAME": "test",
+            "GIT_COMMITTER_EMAIL": "t@t",
+        },
+    )
+    (ws / "README.md").write_text("behavioral-readme-updated\n", encoding="utf-8")
+    sid = await _create_session(contract_harness.client)
+    reply = await contract_harness.client.call(
+        "session.message",
+        {"session_id": sid, "content": "show me the git diff"},
+    )
+    assert reply.get("lockdown_level") == "normal"
+    assert int(reply.get("blocked_actions", 0)) == 0
+    assert int(reply.get("executed_actions", 0)) == 1
+    outputs = _extract_tool_outputs(reply)
+    assert "git.diff" in outputs
+    payload = outputs["git.diff"][0]
+    assert payload.get("ok") is True
+
+
+@pytest.mark.asyncio
 async def test_contract_fs_write_routes_to_confirmation_not_lockdown(
     contract_harness: ContractHarness,
 ) -> None:
@@ -1093,6 +1168,57 @@ async def test_contract_fs_write_routes_to_confirmation_not_lockdown(
     assert int(reply.get("blocked_actions", 0)) == 0
     # fs.write is confirmation-gated (side_effect_action), not blocked
     assert int(reply.get("confirmation_required_actions", 0)) >= 1
+
+
+@pytest.mark.asyncio
+async def test_contract_web_fetch_confirmation_approve_executes_after_confirmation(
+    contract_harness: ContractHarness,
+) -> None:
+    sid = await _create_session(contract_harness.client)
+    fetch_url = f"{contract_harness.web_search_backend_url}/page"
+    proposed = await contract_harness.client.call(
+        "session.message",
+        {"session_id": sid, "content": f"fetch the URL {fetch_url}"},
+    )
+    assert proposed.get("lockdown_level") == "normal"
+    assert int(proposed.get("blocked_actions", 0)) == 0
+    assert int(proposed.get("executed_actions", 0)) == 0
+    pending_ids = proposed.get("pending_confirmation_ids")
+    assert isinstance(pending_ids, list)
+    assert pending_ids
+
+    confirmed = await _confirm_pending_action(contract_harness.client, str(pending_ids[0]))
+    assert confirmed.get("confirmed") is True
+    await _wait_for_audit_event(
+        contract_harness.client,
+        event_type="ToolExecuted",
+        session_id=sid,
+        predicate=lambda event: str(event.get("data", {}).get("tool_name", "")) == "web.fetch"
+        and bool(event.get("data", {}).get("success")) is True,
+    )
+
+
+@pytest.mark.asyncio
+async def test_contract_fs_write_confirmation_reject_does_not_write_file(
+    contract_harness: ContractHarness,
+) -> None:
+    sid = await _create_session(contract_harness.client)
+    proposed = await contract_harness.client.call(
+        "session.message",
+        {"session_id": sid, "content": "write a file called test-output.txt"},
+    )
+    assert proposed.get("lockdown_level") == "normal"
+    assert int(proposed.get("blocked_actions", 0)) == 0
+    assert int(proposed.get("executed_actions", 0)) == 0
+    pending_ids = proposed.get("pending_confirmation_ids")
+    assert isinstance(pending_ids, list)
+    assert pending_ids
+
+    rejected = await _reject_pending_action(contract_harness.client, str(pending_ids[0]))
+    assert rejected.get("rejected") is True
+
+    target = contract_harness.workspace_root / "test-output.txt"
+    assert not target.exists()
 
 
 @pytest.mark.asyncio
