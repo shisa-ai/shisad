@@ -12,7 +12,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import re
+import subprocess
 import threading
 from collections.abc import Callable, Mapping
 from contextlib import suppress
@@ -163,6 +165,28 @@ async def _stub_complete(
             usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
         )
 
+    if "my name is" in goal_lower:
+        return ProviderResponse(
+            message=Message(role="assistant", content="Nice to meet you!"),
+            model="behavioral-stub",
+            finish_reason="stop",
+            usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+        )
+
+    if "what is my name" in goal_lower or "what's my name" in goal_lower:
+        normalized_input = planner_input.replace("^", "").lower()
+        response = (
+            "Your name is Alice."
+            if "my name is alice" in normalized_input
+            else "I don't know your name."
+        )
+        return ProviderResponse(
+            message=Message(role="assistant", content=response),
+            model="behavioral-stub",
+            finish_reason="stop",
+            usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+        )
+
     tool_calls: list[dict[str, Any]] = []
     note_create_call = None
     if "add a note" in goal_lower or goal_lower.startswith("note:"):
@@ -245,6 +269,35 @@ async def _stub_complete(
         )
         else None
     )
+    fetch_url_match = re.search(r"https?://\S+", goal) if "fetch" in goal_lower else None
+    fetch_call = (
+        _tool_call(
+            "web.fetch",
+            {"url": fetch_url_match.group(0), "max_bytes": 65536},
+            call_id="t-fetch",
+        )
+        if fetch_url_match is not None
+        else None
+    )
+    git_status_call = (
+        _tool_call("git.status", {}, call_id="t-git-status")
+        if "git status" in goal_lower
+        else None
+    )
+    git_log_call = (
+        _tool_call("git.log", {"limit": 5}, call_id="t-git-log")
+        if "git log" in goal_lower
+        else None
+    )
+    fs_write_call = (
+        _tool_call(
+            "fs.write",
+            {"path": "test-output.txt", "content": "hello from behavioral test"},
+            call_id="t-fs-write",
+        )
+        if "write" in goal_lower and "file" in goal_lower
+        else None
+    )
     unknown_probe_call = (
         _tool_call("unknown.tool", {"probe": True}, call_id="t-unknown")
         if "unknown tool probe" in goal_lower
@@ -281,6 +334,14 @@ async def _stub_complete(
         tool_calls.append(search_call)
     elif list_call is not None:
         tool_calls.append(list_call)
+    elif fetch_call is not None:
+        tool_calls.append(fetch_call)
+    elif git_status_call is not None:
+        tool_calls.append(git_status_call)
+    elif git_log_call is not None:
+        tool_calls.append(git_log_call)
+    elif fs_write_call is not None:
+        tool_calls.append(fs_write_call)
 
     assistant_response = (
         "Working on it." if tool_calls else "Hello! How can I help?"
@@ -323,8 +384,12 @@ class _StubSearchHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
         if parsed.path != "/search":
-            self.send_response(404)
+            body = b"stub page content for behavioral test"
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain")
+            self.send_header("Content-Length", str(len(body)))
             self.end_headers()
+            self.wfile.write(body)
             return
         qs = parse_qs(parsed.query)
         query = (qs.get("q") or [""])[0]
@@ -493,6 +558,26 @@ async def _create_session(client: ControlClient) -> str:
         {"channel": "cli", "user_id": "alice", "workspace_id": "ws1"},
     )
     return str(created["session_id"])
+
+
+async def _confirm_pending_action(
+    client: ControlClient,
+    confirmation_id: str,
+) -> dict[str, Any]:
+    """Fetch decision nonce for a pending action and confirm it."""
+    pending = await client.call(
+        "action.pending",
+        {"confirmation_id": confirmation_id},
+    )
+    actions = pending.get("actions", [])
+    assert actions, f"No pending action found for {confirmation_id}"
+    nonce = str(actions[0].get("decision_nonce", "")).strip()
+    assert nonce, f"Missing decision_nonce for {confirmation_id}"
+    result = await client.call(
+        "action.confirm",
+        {"confirmation_id": confirmation_id, "decision_nonce": nonce},
+    )
+    return dict(result)
 
 
 async def _wait_for_audit_event(
@@ -921,6 +1006,114 @@ async def test_contract_multi_tool_executes_both_tools_in_one_turn(
     outputs = _extract_tool_outputs(reply)
     assert "fs.read" in outputs
     assert "web.search" in outputs
+
+
+@pytest.mark.asyncio
+async def test_contract_web_fetch_routes_to_confirmation_not_lockdown(
+    contract_harness: ContractHarness,
+) -> None:
+    """web.fetch is a side-effect action that requires confirmation, not lockdown."""
+    sid = await _create_session(contract_harness.client)
+    fetch_url = f"{contract_harness.web_search_backend_url}/page"
+    reply = await contract_harness.client.call(
+        "session.message",
+        {"session_id": sid, "content": f"fetch the URL {fetch_url}"},
+    )
+    assert reply.get("lockdown_level") == "normal"
+    assert int(reply.get("blocked_actions", 0)) == 0
+    # web.fetch is confirmation-gated (side_effect_action), not blocked
+    assert int(reply.get("confirmation_required_actions", 0)) >= 1
+
+
+@pytest.mark.asyncio
+async def test_contract_git_status_executes_and_returns_output(
+    contract_harness: ContractHarness,
+) -> None:
+    ws = contract_harness.workspace_root
+    subprocess.run(["git", "init", str(ws)], check=True, capture_output=True)
+    subprocess.run(
+        ["git", "-C", str(ws), "commit", "--allow-empty", "-m", "init"],
+        check=True,
+        capture_output=True,
+        env={**os.environ, "GIT_AUTHOR_NAME": "test", "GIT_AUTHOR_EMAIL": "t@t",
+             "GIT_COMMITTER_NAME": "test", "GIT_COMMITTER_EMAIL": "t@t"},
+    )
+    sid = await _create_session(contract_harness.client)
+    reply = await contract_harness.client.call(
+        "session.message",
+        {"session_id": sid, "content": "show me the git status"},
+    )
+    assert reply.get("lockdown_level") == "normal"
+    assert int(reply.get("blocked_actions", 0)) == 0
+    assert int(reply.get("executed_actions", 0)) == 1
+    outputs = _extract_tool_outputs(reply)
+    assert "git.status" in outputs
+    payload = outputs["git.status"][0]
+    assert payload.get("ok") is True
+
+
+@pytest.mark.asyncio
+async def test_contract_git_log_executes_and_returns_entries(
+    contract_harness: ContractHarness,
+) -> None:
+    ws = contract_harness.workspace_root
+    subprocess.run(["git", "init", str(ws)], check=True, capture_output=True)
+    subprocess.run(
+        ["git", "-C", str(ws), "commit", "--allow-empty", "-m", "init"],
+        check=True,
+        capture_output=True,
+        env={**os.environ, "GIT_AUTHOR_NAME": "test", "GIT_AUTHOR_EMAIL": "t@t",
+             "GIT_COMMITTER_NAME": "test", "GIT_COMMITTER_EMAIL": "t@t"},
+    )
+    sid = await _create_session(contract_harness.client)
+    reply = await contract_harness.client.call(
+        "session.message",
+        {"session_id": sid, "content": "show me the git log"},
+    )
+    assert reply.get("lockdown_level") == "normal"
+    assert int(reply.get("blocked_actions", 0)) == 0
+    assert int(reply.get("executed_actions", 0)) == 1
+    outputs = _extract_tool_outputs(reply)
+    assert "git.log" in outputs
+    payload = outputs["git.log"][0]
+    assert payload.get("ok") is True
+
+
+@pytest.mark.asyncio
+async def test_contract_fs_write_routes_to_confirmation_not_lockdown(
+    contract_harness: ContractHarness,
+) -> None:
+    """fs.write is a side-effect action that requires confirmation, not lockdown."""
+    sid = await _create_session(contract_harness.client)
+    reply = await contract_harness.client.call(
+        "session.message",
+        {"session_id": sid, "content": "write a file called test-output.txt"},
+    )
+    assert reply.get("lockdown_level") == "normal"
+    assert int(reply.get("blocked_actions", 0)) == 0
+    # fs.write is confirmation-gated (side_effect_action), not blocked
+    assert int(reply.get("confirmation_required_actions", 0)) >= 1
+
+
+@pytest.mark.asyncio
+async def test_contract_multi_turn_context_persists_without_memory(
+    contract_harness: ContractHarness,
+) -> None:
+    """Conversation context (not memory/RAG) is visible to the planner on subsequent turns."""
+    sid = await _create_session(contract_harness.client)
+    intro = await contract_harness.client.call(
+        "session.message",
+        {"session_id": sid, "content": "my name is Alice"},
+    )
+    assert intro.get("lockdown_level") == "normal"
+    assert int(intro.get("blocked_actions", 0)) == 0
+
+    recall = await contract_harness.client.call(
+        "session.message",
+        {"session_id": sid, "content": "what is my name"},
+    )
+    assert recall.get("lockdown_level") == "normal"
+    assert "alice" in str(recall.get("response", "")).lower()
 
 
 @pytest.fixture

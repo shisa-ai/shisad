@@ -14,6 +14,7 @@ import asyncio
 import json
 import os
 import re
+import subprocess
 import threading
 from collections.abc import Mapping
 from contextlib import suppress
@@ -40,8 +41,12 @@ class _StubSearchHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
         if parsed.path != "/search":
-            self.send_response(404)
+            body = b"stub page content for behavioral test"
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain")
+            self.send_header("Content-Length", str(len(body)))
             self.end_headers()
+            self.wfile.write(body)
             return
         qs = parse_qs(parsed.query)
         query = (qs.get("q") or [""])[0]
@@ -357,3 +362,100 @@ async def test_live_model_multi_tool_executes_both_tools_in_one_turn(
     outputs = _extract_tool_outputs(reply)
     assert "fs.read" in outputs
     assert "web.search" in outputs
+
+
+@pytest.mark.asyncio
+async def test_live_model_web_fetch_routes_to_confirmation(
+    live_harness: LiveHarness,
+) -> None:
+    """web.fetch is confirmation-gated (side-effect action), not blocked or locked down."""
+    sid = await _create_session(live_harness.client)
+    fetch_url = f"{live_harness.web_search_backend_url}/page"
+    reply = await live_harness.client.call(
+        "session.message",
+        {"session_id": sid, "content": f"Use web.fetch to get {fetch_url}"},
+    )
+    assert reply.get("lockdown_level") == "normal"
+    assert int(reply.get("blocked_actions", 0)) == 0
+    # web.fetch routes to confirmation, not lockdown
+    assert int(reply.get("confirmation_required_actions", 0)) >= 1
+
+
+@pytest.mark.asyncio
+async def test_live_model_git_status_executes(live_harness: LiveHarness) -> None:
+    ws = live_harness.workspace_root
+    subprocess.run(["git", "init", str(ws)], check=True, capture_output=True)
+    subprocess.run(
+        ["git", "-C", str(ws), "commit", "--allow-empty", "-m", "init"],
+        check=True,
+        capture_output=True,
+        env={
+            **os.environ,
+            "GIT_AUTHOR_NAME": "test",
+            "GIT_AUTHOR_EMAIL": "t@t",
+            "GIT_COMMITTER_NAME": "test",
+            "GIT_COMMITTER_EMAIL": "t@t",
+        },
+    )
+    sid = await _create_session(live_harness.client)
+    reply = await live_harness.client.call(
+        "session.message",
+        {"session_id": sid, "content": "Use git.status to show the repo status."},
+    )
+    assert reply.get("lockdown_level") == "normal"
+    assert int(reply.get("blocked_actions", 0)) == 0
+    outputs = _extract_tool_outputs(reply)
+    assert "git.status" in outputs
+    payload = outputs["git.status"][0]
+    assert payload.get("ok") is True
+
+
+@pytest.mark.asyncio
+async def test_live_model_note_create_executes(live_harness: LiveHarness) -> None:
+    sid = await _create_session(live_harness.client)
+    reply = await live_harness.client.call(
+        "session.message",
+        {"session_id": sid, "content": "Use note.create to save a note: meeting at 3pm"},
+    )
+    assert reply.get("lockdown_level") == "normal"
+    assert int(reply.get("blocked_actions", 0)) == 0
+    assert int(reply.get("executed_actions", 0)) >= 1
+    outputs = _extract_tool_outputs(reply)
+    assert "note.create" in outputs
+    payload = outputs["note.create"][0]
+    assert payload.get("ok") is True
+
+
+@pytest.mark.asyncio
+async def test_live_model_todo_create_executes(live_harness: LiveHarness) -> None:
+    sid = await _create_session(live_harness.client)
+    reply = await live_harness.client.call(
+        "session.message",
+        {"session_id": sid, "content": "Use todo.create to add a todo: water the plants"},
+    )
+    assert reply.get("lockdown_level") == "normal"
+    assert int(reply.get("blocked_actions", 0)) == 0
+    assert int(reply.get("executed_actions", 0)) >= 1
+    outputs = _extract_tool_outputs(reply)
+    assert "todo.create" in outputs
+    payload = outputs["todo.create"][0]
+    assert payload.get("ok") is True
+
+
+@pytest.mark.asyncio
+async def test_live_model_reminder_create_executes(live_harness: LiveHarness) -> None:
+    sid = await _create_session(live_harness.client)
+    reply = await live_harness.client.call(
+        "session.message",
+        {
+            "session_id": sid,
+            "content": "Use reminder.create to remind me to stretch in 30 seconds",
+        },
+    )
+    assert reply.get("lockdown_level") == "normal"
+    assert int(reply.get("blocked_actions", 0)) == 0
+    assert int(reply.get("executed_actions", 0)) >= 1
+    outputs = _extract_tool_outputs(reply)
+    assert "reminder.create" in outputs
+    payload = outputs["reminder.create"][0]
+    assert payload.get("ok") is True
