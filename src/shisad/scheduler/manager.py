@@ -59,6 +59,10 @@ class SchedulerManager:
         allowed_recipients: list[str] | None = None,
         allowed_domains: list[str] | None = None,
         delivery_target: dict[str, str] | None = None,
+        credential_refs: list[str] | None = None,
+        resource_scope_ids: list[str] | None = None,
+        resource_scope_prefixes: list[str] | None = None,
+        untrusted_payload_action: str = "require_confirmation",
         max_runs: int = 0,
     ) -> ScheduledTask:
         self._validate_schedule(schedule)
@@ -79,6 +83,10 @@ class SchedulerManager:
                 audit_trail_ref="",
                 policy_snapshot_ref=policy_snapshot_ref,
                 lockdown_state_inheritance="inherit_runtime_restrictions",
+                credential_refs=tuple(credential_refs or ()),
+                resource_scope_ids=tuple(resource_scope_ids or ()),
+                resource_scope_prefixes=tuple(resource_scope_prefixes or ()),
+                untrusted_payload_action=untrusted_payload_action,
             ),
             allowed_recipients=allowed_recipients or [],
             allowed_domains=allowed_domains or [],

@@ -720,8 +720,20 @@ def _build_tool_registry(
             name=ToolName("http.request"),
             description="HTTP request runtime tool for sandbox egress policy testing.",
             parameters=[
-                ToolParameter(name="command", type="array", required=True),
-                ToolParameter(name="network_urls", type="array", required=False),
+                ToolParameter(
+                    name="command",
+                    type="array",
+                    required=True,
+                    items_type="string",
+                    items_semantic_type="command_token",
+                ),
+                ToolParameter(
+                    name="network_urls",
+                    type="array",
+                    required=False,
+                    items_type="string",
+                    items_semantic_type="url",
+                ),
                 ToolParameter(name="request_headers", type="object", required=False),
                 ToolParameter(name="request_body", type="string", required=False),
             ],
@@ -735,8 +747,20 @@ def _build_tool_registry(
             name=ToolName("file.read"),
             description="File read runtime tool for sandbox filesystem policy testing.",
             parameters=[
-                ToolParameter(name="command", type="array", required=True),
-                ToolParameter(name="read_paths", type="array", required=False),
+                ToolParameter(
+                    name="command",
+                    type="array",
+                    required=True,
+                    items_type="string",
+                    items_semantic_type="command_token",
+                ),
+                ToolParameter(
+                    name="read_paths",
+                    type="array",
+                    required=False,
+                    items_type="string",
+                    items_semantic_type="workspace_path",
+                ),
             ],
             capabilities_required=[Capability.FILE_READ],
             sandbox_type="nsjail",
@@ -748,8 +772,20 @@ def _build_tool_registry(
             name=ToolName("file.write"),
             description="File write runtime tool for sandbox filesystem policy testing.",
             parameters=[
-                ToolParameter(name="command", type="array", required=True),
-                ToolParameter(name="write_paths", type="array", required=False),
+                ToolParameter(
+                    name="command",
+                    type="array",
+                    required=True,
+                    items_type="string",
+                    items_semantic_type="command_token",
+                ),
+                ToolParameter(
+                    name="write_paths",
+                    type="array",
+                    required=False,
+                    items_type="string",
+                    items_semantic_type="workspace_path",
+                ),
             ],
             capabilities_required=[Capability.FILE_WRITE],
             sandbox_type="nsjail",
@@ -777,7 +813,7 @@ def _build_tool_registry(
             name=ToolName("web.fetch"),
             description="Fetch URL with structured evidence payload.",
             parameters=[
-                ToolParameter(name="url", type="string", required=True),
+                ToolParameter(name="url", type="string", required=True, semantic_type="url"),
                 ToolParameter(name="snapshot", type="boolean", required=False),
                 ToolParameter(name="max_bytes", type="integer", required=False),
             ],
@@ -1014,10 +1050,20 @@ def _build_tool_registry(
             description="Background/runtime message delivery primitive.",
             parameters=[
                 ToolParameter(name="channel", type="string", required=True),
-                ToolParameter(name="recipient", type="string", required=True),
+                ToolParameter(
+                    name="recipient",
+                    type="string",
+                    required=True,
+                    semantic_type="recipient",
+                ),
                 ToolParameter(name="message", type="string", required=True),
                 ToolParameter(name="workspace_hint", type="string", required=False),
-                ToolParameter(name="thread_id", type="string", required=False),
+                ToolParameter(
+                    name="thread_id",
+                    type="string",
+                    required=False,
+                    semantic_type="thread_id",
+                ),
             ],
             capabilities_required=[Capability.MESSAGE_SEND],
             require_confirmation=False,
@@ -1030,7 +1076,12 @@ def _build_tool_registry(
                 "Read the full content of a stored evidence reference for the current turn."
             ),
             parameters=[
-                ToolParameter(name="ref_id", type="string", required=True),
+                ToolParameter(
+                    name="ref_id",
+                    type="string",
+                    required=True,
+                    semantic_type="evidence_ref",
+                ),
             ],
             capabilities_required=[Capability.MEMORY_READ],
             require_confirmation=False,
@@ -1043,7 +1094,12 @@ def _build_tool_registry(
                 "Promote stored evidence into persistent conversation context after user approval."
             ),
             parameters=[
-                ToolParameter(name="ref_id", type="string", required=True),
+                ToolParameter(
+                    name="ref_id",
+                    type="string",
+                    required=True,
+                    semantic_type="evidence_ref",
+                ),
             ],
             capabilities_required=[Capability.MEMORY_READ],
             require_confirmation=False,

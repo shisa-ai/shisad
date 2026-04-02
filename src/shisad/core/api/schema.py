@@ -110,6 +110,9 @@ class SessionTaskParams(_StrictParams):
     reasoning_effort: str | None = None
     timeout_sec: float | None = None
     handoff_mode: Literal["summary_only", "raw_passthrough"] = "summary_only"
+    credential_refs: list[str] = Field(default_factory=list)
+    resource_scope_ids: list[str] = Field(default_factory=list)
+    resource_scope_prefixes: list[str] = Field(default_factory=list)
 
 
 class SessionTaskResult(BaseModel):
@@ -705,6 +708,12 @@ class TaskCreateParams(_StrictParams):
     allowed_recipients: list[str] = Field(default_factory=list)
     allowed_domains: list[str] = Field(default_factory=list)
     delivery_target: dict[str, str] = Field(default_factory=dict)
+    credential_refs: list[str] = Field(default_factory=list)
+    resource_scope_ids: list[str] = Field(default_factory=list)
+    resource_scope_prefixes: list[str] = Field(default_factory=list)
+    untrusted_payload_action: Literal["require_confirmation", "reject"] = (
+        "require_confirmation"
+    )
     max_runs: int = Field(default=0, ge=0)
 
 

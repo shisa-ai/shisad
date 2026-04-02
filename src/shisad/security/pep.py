@@ -84,6 +84,8 @@ class PolicyContext:
         resource_authorizer: Callable[[str, WorkspaceId, UserId], bool] | None = None,
         tool_allowlist: set[ToolName] | None = None,
         trust_level: str = "untrusted",
+        credential_refs: set[CredentialRef] | None = None,
+        enforce_explicit_credential_refs: bool = False,
     ) -> None:
         self.capabilities: set[Capability] = capabilities or set()
         self.taint_labels: set[TaintLabel] = taint_labels or set()
@@ -96,6 +98,8 @@ class PolicyContext:
         self.resource_authorizer = resource_authorizer
         self.tool_allowlist = tool_allowlist
         self.trust_level = trust_level
+        self.credential_refs: set[CredentialRef] = credential_refs or set()
+        self.enforce_explicit_credential_refs = enforce_explicit_credential_refs
 
 
 class PEP:
@@ -213,7 +217,13 @@ class PEP:
             )
 
         # 6.5 Credential reference checks (host-scoped binding)
-        credential_error = self._check_credential_refs(tool_name, tool, arguments, destination)
+        credential_error = self._check_credential_refs(
+            tool_name,
+            tool,
+            arguments,
+            destination,
+            context,
+        )
         if credential_error is not None:
             return credential_error
 
@@ -569,10 +579,30 @@ class PEP:
         tool: Any,
         arguments: dict[str, Any],
         destination: EgressDestination | None,
+        context: PolicyContext,
     ) -> PEPDecision | None:
         credential_refs = self._extract_credential_refs(arguments)
         if not credential_refs:
             return None
+
+        if context.enforce_explicit_credential_refs:
+            allowed_refs = set(context.credential_refs)
+            for credential_ref in credential_refs:
+                if credential_ref in allowed_refs:
+                    continue
+                self._record_credential_attempt(
+                    CredentialUseAttempt(
+                        tool_name=tool_name,
+                        credential_ref=credential_ref,
+                        destination_host=destination.host if destination is not None else "",
+                        allowed=False,
+                        reason="credential_ref_out_of_scope",
+                    )
+                )
+                return self._reject(
+                    tool_name,
+                    f"credential_ref '{credential_ref}' is out of scope for this task/session",
+                )
 
         if destination is None:
             for credential_ref in credential_refs:

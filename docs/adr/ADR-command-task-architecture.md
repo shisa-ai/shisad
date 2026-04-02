@@ -493,6 +493,22 @@ gate (`M3`).
 Option C remains tracked as a hardening enhancement after v0.6.0. It should
 layer on top of Option B, not replace fail-closed explicit envelope scoping.
 
+### v0.6.0 implementation note
+
+The current M3 runtime carries four concrete envelope controls through live
+TASK and scheduler execution paths:
+
+1. Explicit `credential_refs`
+2. Explicit `resource_scope_ids` / `resource_scope_prefixes`
+3. Typed sink validation for current runtime tool arguments (URLs, command
+   tokens, workspace paths, evidence refs, thread ids)
+4. `untrusted_payload_action` for background/event-triggered runs
+
+This is intentionally the smallest viable enforcement surface for v0.6.0. It
+locks least-privilege credential grants and object-scope enforcement now,
+without pretending that every future connector/provider-specific scope is
+already modeled.
+
 ---
 
 ## Related

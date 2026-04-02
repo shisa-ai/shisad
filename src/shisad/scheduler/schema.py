@@ -44,6 +44,44 @@ class TaskEnvelope(BaseModel):
     audit_trail_ref: str = ""
     policy_snapshot_ref: str = ""
     lockdown_state_inheritance: str = "inherit_runtime_restrictions"
+    credential_refs: tuple[str, ...] = ()
+    resource_scope_ids: tuple[str, ...] = ()
+    resource_scope_prefixes: tuple[str, ...] = ()
+    untrusted_payload_action: str = "require_confirmation"
+
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_scope_fields(cls, value: object) -> object:
+        if not isinstance(value, dict):
+            return value
+        payload = dict(value)
+
+        def _normalized_sequence(raw: object) -> tuple[str, ...]:
+            if not isinstance(raw, (list, tuple)):
+                return ()
+            items: list[str] = []
+            for item in raw:
+                normalized = str(item).strip()
+                if normalized and normalized not in items:
+                    items.append(normalized)
+            return tuple(items)
+
+        payload["credential_refs"] = _normalized_sequence(payload.get("credential_refs", ()))
+        payload["resource_scope_ids"] = _normalized_sequence(
+            payload.get("resource_scope_ids", ())
+        )
+        payload["resource_scope_prefixes"] = _normalized_sequence(
+            payload.get("resource_scope_prefixes", ())
+        )
+        action = (
+            str(payload.get("untrusted_payload_action", "require_confirmation"))
+            .strip()
+            .lower()
+        )
+        if action not in {"require_confirmation", "reject"}:
+            action = "require_confirmation"
+        payload["untrusted_payload_action"] = action
+        return payload
 
     model_config = {"frozen": True}
 
@@ -89,6 +127,10 @@ class ScheduledTask(BaseModel):
                 "audit_trail_ref": "",
                 "policy_snapshot_ref": str(payload.get("policy_snapshot_ref", "")).strip(),
                 "lockdown_state_inheritance": "inherit_runtime_restrictions",
+                "credential_refs": [],
+                "resource_scope_ids": [],
+                "resource_scope_prefixes": [],
+                "untrusted_payload_action": "require_confirmation",
             }
         return payload
 
@@ -109,6 +151,10 @@ class ScheduledTask(BaseModel):
                 "audit_trail_ref": self.task_envelope.audit_trail_ref,
                 "policy_snapshot_ref": self.task_envelope.policy_snapshot_ref,
                 "lockdown_state_inheritance": self.task_envelope.lockdown_state_inheritance,
+                "credential_refs": sorted(self.task_envelope.credential_refs),
+                "resource_scope_ids": sorted(self.task_envelope.resource_scope_ids),
+                "resource_scope_prefixes": sorted(self.task_envelope.resource_scope_prefixes),
+                "untrusted_payload_action": self.task_envelope.untrusted_payload_action,
             },
             "allowed_recipients": sorted(self.allowed_recipients),
             "allowed_domains": sorted(self.allowed_domains),

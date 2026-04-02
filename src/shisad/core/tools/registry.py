@@ -8,8 +8,10 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 import yaml
 
@@ -18,6 +20,9 @@ from shisad.core.tools.schema import ToolDefinition
 from shisad.core.types import ToolName
 
 logger = logging.getLogger(__name__)
+
+_OPAQUE_HANDLE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
+_CREDENTIAL_REF_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 
 
 class ToolRegistry:
@@ -118,6 +123,32 @@ class ToolRegistry:
                     f"Argument '{key}': expected type '{expected_type}', "
                     f"got '{type(value).__name__}'"
                 )
+                continue
+
+            semantic_type = properties[key].get("x-shisad-semantic-type")
+            if semantic_type is not None and not self._check_semantic_value(
+                value,
+                str(semantic_type),
+            ):
+                errors.append(
+                    f"Argument '{key}': expected validated atom '{semantic_type}'"
+                )
+                continue
+
+            item_schema = properties[key].get("items", {})
+            items_semantic_type = item_schema.get("x-shisad-semantic-type")
+            if (
+                items_semantic_type is not None
+                and isinstance(value, list)
+                and not all(
+                    self._check_semantic_value(item, str(items_semantic_type))
+                    for item in value
+                )
+            ):
+                errors.append(
+                    f"Argument '{key}': expected validated atoms '{items_semantic_type}'"
+                )
+                continue
 
             # Enum validation
             allowed = properties[key].get("enum")
@@ -170,3 +201,29 @@ class ToolRegistry:
         if expected_type is None:
             return True  # Unknown type, don't reject
         return isinstance(value, expected_type)
+
+    @staticmethod
+    def _check_semantic_value(value: Any, expected: str) -> bool:
+        if not isinstance(value, str):
+            return False
+        candidate = value.strip()
+        if candidate != value or not candidate:
+            return False
+        if any(token in candidate for token in ("\x00", "\n", "\r")):
+            return False
+        if expected == "url":
+            parsed = urlparse(candidate)
+            return parsed.scheme in {"http", "https"} and bool(parsed.hostname)
+        if expected == "workspace_path":
+            return True
+        if expected == "command_token":
+            return True
+        if expected == "credential_ref":
+            return bool(_CREDENTIAL_REF_RE.fullmatch(candidate))
+        if expected in {"evidence_ref", "artifact_ref", "thread_id"}:
+            return bool(_OPAQUE_HANDLE_RE.fullmatch(candidate))
+        if expected == "recipient":
+            return True
+        if expected == "email_address":
+            return bool(re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", candidate))
+        return True

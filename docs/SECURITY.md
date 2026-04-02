@@ -177,9 +177,19 @@ Three-tier prompt layout: trusted instructions, internal state, untrusted conten
 
 Secrets never enter the LLM context. Tools reference credentials by opaque handle; the credential broker resolves handles to real secrets at the HTTP proxy layer on the outbound hop. The LLM sees `credential_ref: "gmail_oauth"`, not the actual token. Even if the model is fully compromised and tries to exfiltrate credentials, it has nothing to exfiltrate — the secret exists only in the proxy's memory, scoped to the specific tool and destination host that needs it.
 
+For delegated TASK sessions and persisted scheduler/background tasks, credential
+use is narrowed again by the immutable task envelope: the envelope carries an
+explicit `credential_refs` allowlist, and the PEP denies missing or
+out-of-scope refs fail closed. Tool grants do not imply credential grants.
+
 ### Evidence References (context isolation)
 
 Large untrusted content is stored out-of-band in a content-addressed evidence store. The LLM context receives only a short reference stub with metadata (`[EVIDENCE ref=ev-a1b2c3d4 source=web.fetch:nytimes.com taint=untrusted size=14832 summary="..."]`). The raw tainted content never enters the conversation transcript, eliminating persistent injection surface. When the model needs to re-examine content, it calls `evidence.read(ref_id)` — which goes through PEP enforcement and returns content into a single-turn isolated context. This dramatically reduces the token-budget cost of tainted content and limits each injection payload to a single exposure window.
+
+Structured cross-boundary fields are also constrained by semantic tool-schema
+types. Sink-critical arguments such as URLs, command tokens, workspace paths,
+evidence refs, and thread ids are validated as atoms or opaque handles instead
+of being accepted as arbitrary free text.
 
 ### Output Firewall (egress)
 
@@ -212,6 +222,12 @@ shisad's defense is **preventive write gating** — making poisoned entries hard
 | Tool boundary | Approved proposals → actual execution | PEP pipeline; sandboxed executors |
 | Egress boundary | Anything leaving the system | Output firewall + provenance-aware taint sink rules |
 | Persistence boundary | Memory / vector DB / logs | Gated writes; taint preserved; append-only audit |
+
+For TASK and background sessions, the task envelope is itself part of the trust
+boundary. It carries capability scope, credential refs, resource-scope ids /
+prefixes, and untrusted-trigger policy. Background runs still go through the
+same PEP pipeline, but the envelope can force confirmation or rejection when an
+untrusted event payload tries to drive autonomous execution.
 
 ---
 

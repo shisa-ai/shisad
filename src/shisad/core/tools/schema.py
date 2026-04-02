@@ -26,6 +26,8 @@ class ToolParameter(BaseModel):
     required: bool = True
     enum: list[str] | None = None
     items_type: str | None = None
+    semantic_type: str | None = None
+    items_semantic_type: str | None = None
 
     model_config = {"frozen": True}
 
@@ -74,8 +76,12 @@ class ToolDefinition(BaseModel):
             if param.type == "array":
                 # OpenAI function-parameter schemas require `items` for array fields.
                 prop["items"] = {"type": param.items_type or "string"}
+                if param.items_semantic_type is not None:
+                    prop["items"]["x-shisad-semantic-type"] = param.items_semantic_type
             if param.enum is not None:
                 prop["enum"] = param.enum
+            if param.semantic_type is not None:
+                prop["x-shisad-semantic-type"] = param.semantic_type
             properties[param.name] = prop
             if param.required:
                 required_fields.append(param.name)

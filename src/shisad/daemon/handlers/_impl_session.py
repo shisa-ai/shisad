@@ -8,7 +8,7 @@ import json
 import logging
 import re
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from contextlib import suppress
 from copy import deepcopy
 from dataclasses import dataclass, field, replace
@@ -72,6 +72,7 @@ from shisad.core.trace import TraceMessage, TraceToolCall, TraceTurn
 from shisad.core.transcript import TranscriptEntry, TranscriptStore
 from shisad.core.types import (
     Capability,
+    CredentialRef,
     SessionId,
     SessionMode,
     SessionRole,
@@ -758,28 +759,69 @@ def _task_recovery_checkpoint_id(session: Session) -> str | None:
     return value or None
 
 
-def _extract_files_changed_from_task_outputs(records: Sequence[dict[str, Any]]) -> tuple[str, ...]:
-    def _normalized_path(raw: Any) -> str | None:
-        value = str(raw).strip()
-        if not value or len(value) > _TASK_REPORTED_PATH_MAX_CHARS:
-            return None
-        if any(token in value for token in ("\x00", "\n", "\r")):
-            return None
-        return value
+def _task_envelope_for_session(session: Session) -> TaskEnvelope | None:
+    raw = session.metadata.get("task_envelope")
+    if raw in ({}, None, ""):
+        return None
+    if not isinstance(raw, dict):
+        return None
+    try:
+        return TaskEnvelope.model_validate(raw)
+    except ValidationError:
+        logger.warning("Ignoring invalid task_envelope metadata for session %s", session.id)
+        return None
 
+
+def _task_scope_enforcement_active(session: Session, task_envelope: TaskEnvelope | None) -> bool:
+    return session.mode == SessionMode.TASK or bool(
+        str(session.metadata.get("background_task_id", "")).strip()
+    ) or task_envelope is not None
+
+
+def _task_resource_authorizer(
+    task_envelope: TaskEnvelope | None,
+) -> Callable[[str, WorkspaceId, UserId], bool] | None:
+    if task_envelope is None:
+        return None
+    allowed_ids = set(task_envelope.resource_scope_ids)
+    allowed_prefixes = tuple(task_envelope.resource_scope_prefixes)
+    if not allowed_ids and not allowed_prefixes:
+        return None
+
+    def _authorize(resource_id: str, _workspace_id: WorkspaceId, _user_id: UserId) -> bool:
+        normalized = str(resource_id).strip()
+        if not normalized:
+            return False
+        if normalized in allowed_ids:
+            return True
+        return any(normalized.startswith(prefix) for prefix in allowed_prefixes)
+
+    return _authorize
+
+
+def _normalize_reported_task_path(raw: Any) -> str | None:
+    value = str(raw).strip()
+    if not value or len(value) > _TASK_REPORTED_PATH_MAX_CHARS:
+        return None
+    if any(token in value for token in ("\x00", "\n", "\r")):
+        return None
+    return value
+
+
+def _extract_files_changed_from_task_outputs(records: Sequence[dict[str, Any]]) -> tuple[str, ...]:
     files: list[str] = []
     for record in records:
         payload = record.get("payload")
         if not isinstance(payload, dict):
             continue
         for key in ("path", "file", "target_path"):
-            value = _normalized_path(payload.get(key, ""))
+            value = _normalize_reported_task_path(payload.get(key, ""))
             if value and value not in files:
                 files.append(value)
         paths = payload.get("paths")
         if isinstance(paths, list):
             for item in paths:
-                value = _normalized_path(item)
+                value = _normalize_reported_task_path(item)
                 if value and value not in files:
                     files.append(value)
     return tuple(files)
@@ -3100,6 +3142,7 @@ class SessionImplMixin(HandlerMixinBase):
             trust_level=validated.trust_level,
             policy_taint_labels=policy_taint_labels,
         )
+        task_envelope = _task_envelope_for_session(session)
         context = PolicyContext(
             capabilities=effective_caps,
             taint_labels=policy_taint_labels,
@@ -3108,8 +3151,21 @@ class SessionImplMixin(HandlerMixinBase):
             session_id=sid,
             workspace_id=session.workspace_id,
             user_id=session.user_id,
+            resource_authorizer=_task_resource_authorizer(task_envelope),
             tool_allowlist=planner_tool_allowlist,
             trust_level=validated.trust_level,
+            credential_refs={
+                CredentialRef(ref_id)
+                for ref_id in (
+                    task_envelope.credential_refs
+                    if task_envelope is not None
+                    else ()
+                )
+            },
+            enforce_explicit_credential_refs=_task_scope_enforcement_active(
+                session,
+                task_envelope,
+            ),
         )
 
         planner_origin = self._origin_for(session=session, actor="planner")
@@ -4020,6 +4076,46 @@ class SessionImplMixin(HandlerMixinBase):
         if executor not in {"planner", "coding_agent"}:
             raise ValueError(f"Unsupported task executor: {executor}")
 
+        credential_refs_raw = raw_task.get("credential_refs", [])
+        credential_refs = (
+            tuple(
+                item
+                for item in (
+                    str(entry).strip()
+                    for entry in credential_refs_raw
+                    if str(entry).strip()
+                )
+            )
+            if isinstance(credential_refs_raw, list)
+            else ()
+        )
+        resource_scope_ids_raw = raw_task.get("resource_scope_ids", [])
+        resource_scope_ids = (
+            tuple(
+                item
+                for item in (
+                    str(entry).strip()
+                    for entry in resource_scope_ids_raw
+                    if str(entry).strip()
+                )
+            )
+            if isinstance(resource_scope_ids_raw, list)
+            else ()
+        )
+        resource_scope_prefixes_raw = raw_task.get("resource_scope_prefixes", [])
+        resource_scope_prefixes = (
+            tuple(
+                item
+                for item in (
+                    str(entry).strip()
+                    for entry in resource_scope_prefixes_raw
+                    if str(entry).strip()
+                )
+            )
+            if isinstance(resource_scope_prefixes_raw, list)
+            else ()
+        )
+
         coding_config: CodingAgentConfig | None = None
         if executor == "coding_agent":
             if handoff_mode != _TASK_HANDOFF_SUMMARY_ONLY:
@@ -4106,6 +4202,10 @@ class SessionImplMixin(HandlerMixinBase):
             audit_trail_ref=f"task-session:{parent_session.id}:{_short_hash(task_description)}",
             policy_snapshot_ref="",
             lockdown_state_inheritance="inherit_runtime_restrictions",
+            credential_refs=credential_refs,
+            resource_scope_ids=resource_scope_ids,
+            resource_scope_prefixes=resource_scope_prefixes,
+            untrusted_payload_action="require_confirmation",
         )
 
         return TaskSessionRequest(
@@ -4924,9 +5024,9 @@ class SessionImplMixin(HandlerMixinBase):
 
             task_files_changed = (
                 tuple(
-                    str(item).strip()
+                    normalized
                     for item in task_response_payload.get("files_changed", [])
-                    if str(item).strip()
+                    if (normalized := _normalize_reported_task_path(item)) is not None
                 )
                 if isinstance(task_response_payload.get("files_changed"), list)
                 else _extract_files_changed_from_task_outputs(serialized_tool_outputs)

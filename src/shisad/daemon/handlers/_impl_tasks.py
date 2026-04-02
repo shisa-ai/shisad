@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from typing import Any, cast
 from urllib.parse import urlparse
 
@@ -16,6 +16,7 @@ from shisad.core.events import (
 )
 from shisad.core.types import (
     Capability,
+    CredentialRef,
     PEPDecisionKind,
     SessionId,
     SessionMode,
@@ -70,6 +71,35 @@ def _payload_trust_level(payload_taint: str) -> str:
     if payload_taint.strip().lower() == "trusted_scheduler":
         return "internal"
     return "untrusted"
+
+
+def _task_resource_authorizer(
+    task_envelope: Any,
+) -> Callable[[str, WorkspaceId, UserId], bool] | None:
+    if task_envelope is None:
+        return None
+    allowed_ids = {
+        str(item).strip()
+        for item in getattr(task_envelope, "resource_scope_ids", ())
+        if str(item).strip()
+    }
+    allowed_prefixes = tuple(
+        str(item).strip()
+        for item in getattr(task_envelope, "resource_scope_prefixes", ())
+        if str(item).strip()
+    )
+    if not allowed_ids and not allowed_prefixes:
+        return None
+
+    def _authorize(resource_id: str, _workspace_id: WorkspaceId, _user_id: UserId) -> bool:
+        normalized = str(resource_id).strip()
+        if not normalized:
+            return False
+        if normalized in allowed_ids:
+            return True
+        return any(normalized.startswith(prefix) for prefix in allowed_prefixes)
+
+    return _authorize
 
 
 def _join_reason_codes(*codes: str) -> str:
@@ -276,6 +306,7 @@ class TasksImplMixin(HandlerMixinBase):
         task = self._scheduler.get_task(str(getattr(run, "task_id", "")))
         if task is None:
             return {"accepted": False, "queued_confirmation": False, "executed": False}
+        task_envelope = getattr(task, "task_envelope", None)
 
         if str(getattr(run, "plan_commitment", "")) != str(task.commitment_hash()):
             await self._publish_task_anomaly(
@@ -383,7 +414,14 @@ class TasksImplMixin(HandlerMixinBase):
                 session_id=sid,
                 workspace_id=WorkspaceId(str(getattr(task, "workspace_id", ""))),
                 user_id=UserId(str(getattr(task, "created_by", ""))),
+                resource_authorizer=_task_resource_authorizer(task_envelope),
                 trust_level=trust_level,
+                credential_refs={
+                    CredentialRef(str(item))
+                    for item in getattr(task_envelope, "credential_refs", ())
+                    if str(item).strip()
+                },
+                enforce_explicit_credential_refs=task_envelope is not None,
             ),
         )
 
@@ -443,6 +481,22 @@ class TasksImplMixin(HandlerMixinBase):
                 final_reason = scope_reason
             else:
                 final_reason = _join_reason_codes(final_reason, scope_reason)
+
+        payload_policy = str(
+            getattr(task_envelope, "untrusted_payload_action", "require_confirmation")
+        ).strip().lower()
+        if str(getattr(run, "payload_taint", "")).strip().lower() != "trusted_scheduler":
+            if payload_policy == "reject":
+                final_kind = PEPDecisionKind.REJECT.value
+                final_reason = "background:tainted_trigger_scope_block"
+            elif final_kind == PEPDecisionKind.ALLOW.value:
+                final_kind = PEPDecisionKind.REQUIRE_CONFIRMATION.value
+                final_reason = "background:tainted_trigger_requires_confirmation"
+            elif final_kind == PEPDecisionKind.REQUIRE_CONFIRMATION.value:
+                final_reason = _join_reason_codes(
+                    final_reason,
+                    "background:tainted_trigger_requires_confirmation",
+                )
 
         if final_kind == PEPDecisionKind.REJECT.value:
             return await self._reject_task_run(
@@ -517,6 +571,13 @@ class TasksImplMixin(HandlerMixinBase):
             allowed_recipients=list(params.get("allowed_recipients", [])),
             allowed_domains=list(params.get("allowed_domains", [])),
             delivery_target=delivery_target,
+            credential_refs=list(params.get("credential_refs", [])),
+            resource_scope_ids=list(params.get("resource_scope_ids", [])),
+            resource_scope_prefixes=list(params.get("resource_scope_prefixes", [])),
+            untrusted_payload_action=optional_string(
+                params.get("untrusted_payload_action", "require_confirmation")
+            )
+            or "require_confirmation",
             max_runs=int(params.get("max_runs", 0)),
         )
         await self._event_bus.publish(
