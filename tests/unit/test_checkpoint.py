@@ -82,3 +82,43 @@ class TestCheckpointRoundTrip:
 
         assert checkpoint.state["session"]["id"] == "lockdown-session"
         assert checkpoint.state["lockdown"]["level"] == LockdownLevel.CAUTION.value
+
+    def test_m2_checkpoint_store_preserves_provided_lockdown_state(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        current_lockdown = LockdownManager()
+        session = Session(
+            id=SessionId("archive-import-session"),
+            user_id=UserId("alice"),
+        )
+        current_lockdown.set_level(
+            session.id,
+            level=LockdownLevel.NORMAL,
+            reason="current-runtime",
+            trigger="manual",
+        )
+        store = CheckpointStore(
+            tmp_path / "checkpoints",
+            supplemental_state_provider=lambda current: {
+                "lockdown": current_lockdown.snapshot(current.id)
+            },
+        )
+        archived_lockdown = {
+            "session_id": str(session.id),
+            "level": LockdownLevel.FULL_LOCKDOWN.value,
+            "reason": "archived",
+            "trigger": "manual",
+            "updated_at": "2026-04-02T00:00:00+00:00",
+        }
+
+        checkpoint = store.create(
+            session,
+            state={
+                "session": session.model_dump(mode="json"),
+                "lockdown": archived_lockdown,
+            },
+        )
+
+        assert checkpoint.state["lockdown"]["level"] == LockdownLevel.FULL_LOCKDOWN.value
+        assert checkpoint.state["lockdown"]["reason"] == "archived"

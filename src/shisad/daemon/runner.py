@@ -104,8 +104,8 @@ def _method_specs(
         ("session.message", handlers.handle_session_message, False, SessionMessageParams),
         ("session.list", handlers.handle_session_list, False, NoParams),
         ("session.terminate", handlers.handle_session_terminate, False, SessionTerminateParams),
-        ("session.restore", handlers.handle_session_restore, False, SessionRestoreParams),
-        ("session.export", handlers.handle_session_export, False, SessionExportParams),
+        ("session.restore", handlers.handle_session_restore, True, SessionRestoreParams),
+        ("session.export", handlers.handle_session_export, True, SessionExportParams),
         ("session.import", handlers.handle_session_import, True, SessionImportParams),
         ("session.rollback", handlers.handle_session_rollback, True, SessionRollbackParams),
         (

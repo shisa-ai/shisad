@@ -49,7 +49,7 @@ Exit criteria:
 - Credential scoping across delegated execution boundaries
 - Type-restricted task/tool boundary schemas
 - Summary firewall barrier and approval provenance
-- Current execution status: G0, M1, and M2 are now implementation-complete. The live runtime has formal orchestrator/subagent session roles, immutable task envelopes, trust-aware `report_anomaly` exposure, taint-safe COMMAND↔TASK handoffs, a TASK close-gate self-check, versioned session rehydration with lockdown continuity, and bounded session archive export/import with integrity checks plus fresh-session cutover.
+- Current execution status: G0, M1, and M2 are now implementation-complete. The live runtime has formal orchestrator/subagent session roles, immutable task envelopes, trust-aware `report_anomaly` exposure, taint-safe COMMAND↔TASK handoffs, a TASK close-gate self-check, versioned session rehydration with lockdown continuity, and bounded admin/operator session restore/archive surfaces with integrity checks, fail-closed rehydrate validation, and fresh-session archive cutover.
 
 ### v0.6.1 — Interop and remote tool trust
 

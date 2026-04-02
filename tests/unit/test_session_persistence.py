@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 
 import shisad.core.session as session_module
-from shisad.core.session import Session, SessionManager
+from shisad.core.session import Checkpoint, Session, SessionManager, SessionRehydrateError
 from shisad.core.types import (
     Capability,
     SessionId,
@@ -608,3 +608,66 @@ def test_m2_session_manager_rejects_unsupported_schema_version(
         and data.get("reason") == "unsupported_schema_version:99"
         for action, data in audits
     )
+
+
+def test_m2_restore_from_checkpoint_rejects_unsupported_payload_shape(
+    tmp_path: Path,
+) -> None:
+    manager = SessionManager(state_dir=tmp_path / "sessions" / "state")
+    checkpoint = Checkpoint(
+        session_id=SessionId("bad-shape"),
+        state={"unexpected": "payload"},
+    )
+
+    with pytest.raises(SessionRehydrateError, match="unsupported_payload_shape"):
+        manager.restore_from_checkpoint(checkpoint)
+
+
+def test_m2_restore_from_checkpoint_rejects_invalid_lockdown_payload(
+    tmp_path: Path,
+) -> None:
+    lockdown = LockdownManager()
+    provider, restorer = _lockdown_hooks(lockdown)
+    manager = SessionManager(
+        state_dir=tmp_path / "sessions" / "state",
+        supplemental_state_provider=provider,
+        supplemental_state_restorer=restorer,
+    )
+    session = manager.create(
+        channel="cli",
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws1"),
+    )
+    checkpoint = Checkpoint(
+        session_id=session.id,
+        state={
+            "session": session.model_dump(mode="json"),
+            "lockdown": "not-a-dict",
+        },
+    )
+
+    with pytest.raises(SessionRehydrateError, match="invalid_lockdown_payload"):
+        manager.restore_from_checkpoint(checkpoint)
+
+
+def test_m2_restore_from_checkpoint_normalizes_supplemental_restore_failures(
+    tmp_path: Path,
+) -> None:
+    manager = SessionManager(
+        state_dir=tmp_path / "sessions" / "state",
+        supplemental_state_restorer=lambda _session, _record, _source: (
+            (_ for _ in ()).throw(ValueError("boom"))
+        ),
+    )
+    session = manager.create(
+        channel="cli",
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws1"),
+    )
+    checkpoint = Checkpoint(
+        session_id=session.id,
+        state={"session": session.model_dump(mode="json")},
+    )
+
+    with pytest.raises(SessionRehydrateError, match="invalid_supplemental_state"):
+        manager.restore_from_checkpoint(checkpoint)

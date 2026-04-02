@@ -25,6 +25,10 @@ _SESSION_PATH = "session.json"
 _TRANSCRIPT_PATH = "transcript.json"
 _CHECKPOINT_PREFIX = "checkpoints/"
 _ARCHIVE_SUFFIX = ".shisad-session.zip"
+_ARCHIVE_MAX_MEMBER_BYTES = 64 * 1024 * 1024
+_ARCHIVE_MAX_TOTAL_BYTES = 256 * 1024 * 1024
+_ARCHIVE_MAX_MEMBER_COUNT = 2048
+_ARCHIVE_READ_CHUNK_BYTES = 64 * 1024
 
 
 class SessionArchiveError(ValueError):
@@ -42,6 +46,7 @@ class SessionArchiveManifest(BaseModel):
     role: str = ""
     mode: str = ""
     lockdown_level: str = ""
+    capability_hash: str = ""
     transcript_entries: int = 0
     checkpoint_count: int = 0
     includes: list[str] = Field(
@@ -102,57 +107,64 @@ class SessionArchiveManager:
         session_payload = record.get("session")
         if not isinstance(session_payload, dict):
             raise SessionArchiveError("invalid_session_record")
+        try:
+            session = Session.model_validate(session_payload)
+            transcript_rows = self._transcript_rows_for(session_id)
+            checkpoints = self._checkpoint_store.list_for_session(session_id)
+            archive_path = destination or self._default_archive_path(session.id)
+            archive_path.parent.mkdir(parents=True, exist_ok=True)
 
-        session = Session.model_validate(session_payload)
-        transcript_rows = self._transcript_rows_for(session_id)
-        checkpoints = self._checkpoint_store.list_for_session(session_id)
-        archive_path = destination or self._default_archive_path(session.id)
-        archive_path.parent.mkdir(parents=True, exist_ok=True)
+            members: dict[str, bytes] = {
+                _SESSION_PATH: json.dumps(
+                    record,
+                    ensure_ascii=True,
+                    indent=2,
+                    sort_keys=True,
+                ).encode("utf-8"),
+                _TRANSCRIPT_PATH: json.dumps(
+                    transcript_rows,
+                    ensure_ascii=True,
+                    indent=2,
+                    sort_keys=True,
+                ).encode("utf-8"),
+            }
+            for checkpoint in checkpoints:
+                checkpoint_path = f"{_CHECKPOINT_PREFIX}{checkpoint.checkpoint_id}.json"
+                members[checkpoint_path] = checkpoint.model_dump_json(indent=2).encode("utf-8")
 
-        members: dict[str, bytes] = {
-            _SESSION_PATH: json.dumps(
-                record,
-                ensure_ascii=True,
-                indent=2,
-                sort_keys=True,
-            ).encode("utf-8"),
-            _TRANSCRIPT_PATH: json.dumps(
-                transcript_rows,
-                ensure_ascii=True,
-                indent=2,
-                sort_keys=True,
-            ).encode("utf-8"),
-        }
-        for checkpoint in checkpoints:
-            checkpoint_path = f"{_CHECKPOINT_PREFIX}{checkpoint.checkpoint_id}.json"
-            members[checkpoint_path] = checkpoint.model_dump_json(indent=2).encode("utf-8")
+            manifest = SessionArchiveManifest(
+                original_session_id=str(session.id),
+                channel=session.channel,
+                user_id=str(session.user_id),
+                workspace_id=str(session.workspace_id),
+                role=session.role.value,
+                mode=session.mode.value,
+                lockdown_level=(
+                    str(record.get("lockdown", {}).get("level", ""))
+                    if isinstance(record.get("lockdown"), dict)
+                    else ""
+                ),
+                capability_hash=_capability_hash(session_payload.get("capabilities")),
+                transcript_entries=len(transcript_rows),
+                checkpoint_count=len(checkpoints),
+                entries={name: _sha256_bytes(data) for name, data in members.items()},
+            )
+            members[_MANIFEST_PATH] = manifest.model_dump_json(indent=2).encode("utf-8")
 
-        manifest = SessionArchiveManifest(
-            original_session_id=str(session.id),
-            channel=session.channel,
-            user_id=str(session.user_id),
-            workspace_id=str(session.workspace_id),
-            role=session.role.value,
-            mode=session.mode.value,
-            lockdown_level=(
-                str(record.get("lockdown", {}).get("level", ""))
-                if isinstance(record.get("lockdown"), dict)
-                else ""
-            ),
-            transcript_entries=len(transcript_rows),
-            checkpoint_count=len(checkpoints),
-            entries={name: _sha256_bytes(data) for name, data in members.items()},
-        )
-        members[_MANIFEST_PATH] = manifest.model_dump_json(indent=2).encode("utf-8")
+            with zipfile.ZipFile(archive_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+                for name, data in sorted(members.items()):
+                    archive.writestr(name, data)
 
-        with zipfile.ZipFile(archive_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
-            for name, data in sorted(members.items()):
-                archive.writestr(name, data)
+            archive_sha256 = _sha256_bytes(archive_path.read_bytes())
+        except SessionArchiveError:
+            raise
+        except (OSError, ValidationError, TypeError, ValueError) as exc:
+            raise SessionArchiveError("archive_write_failed") from exc
 
         return SessionArchiveExportResult(
             session_id=session.id,
             archive_path=archive_path,
-            sha256=_sha256_bytes(archive_path.read_bytes()),
+            sha256=archive_sha256,
             transcript_entries=len(transcript_rows),
             checkpoint_count=len(checkpoints),
         )
@@ -252,14 +264,43 @@ class SessionArchiveManager:
         if not archive_path.exists():
             raise SessionArchiveError("archive_not_found")
         members: dict[str, bytes] = {}
-        with zipfile.ZipFile(archive_path, "r") as archive:
-            for info in archive.infolist():
-                name = info.filename
-                _validate_archive_member_name(name)
-                if name in members:
-                    raise SessionArchiveError("duplicate_archive_member")
-                members[name] = archive.read(name)
+        total_bytes = 0
+        try:
+            with zipfile.ZipFile(archive_path, "r") as archive:
+                infos = archive.infolist()
+                if len(infos) > _ARCHIVE_MAX_MEMBER_COUNT:
+                    raise SessionArchiveError("archive_too_many_members")
+                for info in infos:
+                    name = info.filename
+                    _validate_archive_member_name(name)
+                    if name in members:
+                        raise SessionArchiveError("duplicate_archive_member")
+                    if info.file_size > _ARCHIVE_MAX_MEMBER_BYTES:
+                        raise SessionArchiveError("archive_member_too_large")
+                    total_bytes += int(info.file_size)
+                    if total_bytes > _ARCHIVE_MAX_TOTAL_BYTES:
+                        raise SessionArchiveError("archive_too_large")
+                    members[name] = self._read_archive_member(archive, info)
+        except zipfile.BadZipFile as exc:
+            raise SessionArchiveError("invalid_archive") from exc
+        except OSError as exc:
+            raise SessionArchiveError("archive_read_failed") from exc
         return members
+
+    @staticmethod
+    def _read_archive_member(archive: zipfile.ZipFile, info: zipfile.ZipInfo) -> bytes:
+        total_read = 0
+        chunks: list[bytes] = []
+        with archive.open(info, "r") as handle:
+            while True:
+                chunk = handle.read(_ARCHIVE_READ_CHUNK_BYTES)
+                if not chunk:
+                    break
+                total_read += len(chunk)
+                if total_read > _ARCHIVE_MAX_MEMBER_BYTES:
+                    raise SessionArchiveError("archive_member_too_large")
+                chunks.append(chunk)
+        return b"".join(chunks)
 
     def _validate_manifest(self, members: dict[str, bytes]) -> SessionArchiveManifest:
         manifest_bytes = members.get(_MANIFEST_PATH)
@@ -311,6 +352,10 @@ class SessionArchiveManager:
             raise SessionArchiveError("archive_role_mismatch")
         if str(session_payload.get("mode", "")).strip() != manifest.mode:
             raise SessionArchiveError("archive_mode_mismatch")
+        if manifest.capability_hash and _capability_hash(
+            session_payload.get("capabilities")
+        ) != str(manifest.capability_hash).strip():
+            raise SessionArchiveError("archive_capability_mismatch")
         record_lockdown = record.get("lockdown")
         record_level = (
             str(record_lockdown.get("level", "")).strip()
@@ -324,10 +369,13 @@ class SessionArchiveManager:
         if not isinstance(row, dict):
             raise SessionArchiveError("invalid_transcript_row")
         content = str(row.get("content", ""))
+        content_hash = str(row.get("content_hash", "")).strip()
         role = str(row.get("role", "")).strip()
         timestamp = str(row.get("timestamp", "")).strip()
-        if not role or not timestamp:
+        if not role or not timestamp or not content_hash:
             raise SessionArchiveError("invalid_transcript_row")
+        if _sha256_bytes(content.encode("utf-8")) != content_hash:
+            raise SessionArchiveError("transcript_hash_mismatch")
         metadata = row.get("metadata", {})
         if not isinstance(metadata, dict):
             raise SessionArchiveError("invalid_transcript_row_metadata")
@@ -373,16 +421,19 @@ def _rewrite_checkpoint_session_ids(
     original_session_id: SessionId,
     imported_session_id: SessionId,
 ) -> dict[str, Any]:
+    def _looks_like_session_payload(payload: dict[str, Any]) -> bool:
+        return (
+            payload.get("id") == str(original_session_id)
+            and {"channel", "user_id", "workspace_id", "session_key"}.issubset(payload)
+        )
+
     def _rewrite(value: Any, *, parent_key: str = "") -> Any:
         if isinstance(value, dict):
             rewritten = {
                 key: _rewrite(item, parent_key=key)
                 for key, item in value.items()
             }
-            if (
-                rewritten.get("id") == str(original_session_id)
-                and {"channel", "user_id", "workspace_id"}.issubset(rewritten)
-            ):
+            if _looks_like_session_payload(rewritten):
                 rewritten["id"] = str(imported_session_id)
             return rewritten
         if isinstance(value, list):
@@ -399,3 +450,14 @@ def _rewrite_checkpoint_session_ids(
     if not isinstance(rewritten, dict):
         return dict(state)
     return rewritten
+
+
+def _capability_hash(capabilities: Any) -> str:
+    if isinstance(capabilities, set | list):
+        normalized = sorted(str(item) for item in capabilities)
+    elif capabilities in (None, ""):
+        normalized = []
+    else:
+        normalized = [str(capabilities)]
+    payload = json.dumps(normalized, ensure_ascii=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()

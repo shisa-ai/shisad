@@ -74,3 +74,5 @@ def test_runner_registers_m4_dev_methods_and_m3_realitycheck_and_doctor_methods(
     assert admin_only["dev.review"] is True
     assert admin_only["dev.remediate"] is True
     assert admin_only["dev.close"] is True
+    assert admin_only["session.restore"] is True
+    assert admin_only["session.export"] is True

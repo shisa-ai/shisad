@@ -30,6 +30,7 @@ from shisad.core.types import (
     WorkspaceId,
 )
 from shisad.scheduler.schema import TaskEnvelope
+from shisad.security.lockdown import LockdownState
 
 logger = logging.getLogger(__name__)
 _DIR_FSYNC_UNSUPPORTED_ERRNOS = {errno.EINVAL, errno.ENOSYS}
@@ -330,6 +331,7 @@ class SessionManager:
             checkpoint.state,
             source="checkpoint",
             fallback_session_id=checkpoint.session_id,
+            allow_fallback=False,
         )
         logger.info(
             "Session restored from checkpoint: %s (session=%s)",
@@ -457,7 +459,7 @@ class SessionManager:
             if self._supplemental_state_restorer is not None:
                 try:
                     self._supplemental_state_restorer(loaded, record, "startup")
-                except ValueError as exc:
+                except (ValidationError, TypeError, ValueError) as exc:
                     logger.warning(
                         "Skipping persisted session with invalid supplemental state: %s (%s)",
                         path,
@@ -721,7 +723,10 @@ class SessionManager:
         self._validate_loaded_session_state(session, record)
         outcome = self._migrate_loaded_session(session)
         if self._supplemental_state_restorer is not None:
-            self._supplemental_state_restorer(session, record, source)
+            try:
+                self._supplemental_state_restorer(session, record, source)
+            except (ValidationError, TypeError, ValueError) as exc:
+                raise SessionRehydrateError("invalid_supplemental_state") from exc
         self._sessions[session.id] = session
         self._persist_session(session)
         lockdown_payload = record.get("lockdown")
@@ -747,6 +752,16 @@ class SessionManager:
 
     @staticmethod
     def _validate_loaded_session_state(session: Session, record: dict[str, Any]) -> None:
+        lockdown_payload = record.get("lockdown")
+        if lockdown_payload is not None and lockdown_payload != {}:
+            if not isinstance(lockdown_payload, dict):
+                raise SessionRehydrateError("invalid_lockdown_payload")
+            try:
+                lockdown_state = LockdownState.model_validate(lockdown_payload)
+            except (ValidationError, TypeError, ValueError) as exc:
+                raise SessionRehydrateError("invalid_lockdown_payload") from exc
+            if lockdown_state.session_id != session.id:
+                raise SessionRehydrateError("lockdown_session_id_mismatch")
         task_envelope_payload = session.metadata.get("task_envelope")
         if task_envelope_payload in ({}, None, ""):
             return
@@ -762,11 +777,6 @@ class SessionManager:
         envelope_parent = str(task_envelope.parent_session_id).strip()
         if metadata_parent and envelope_parent and metadata_parent != envelope_parent:
             raise SessionRehydrateError("task_envelope_parent_session_mismatch")
-        lockdown_payload = record.get("lockdown")
-        if lockdown_payload is not None and lockdown_payload != {} and not isinstance(
-            lockdown_payload, dict
-        ):
-            raise SessionRehydrateError("invalid_lockdown_payload")
 
     def _emit_audit(self, action: str, data: dict[str, Any]) -> None:
         if self._audit_hook is None:
@@ -817,7 +827,8 @@ class CheckpointStore:
                         **dict(supplemental),
                     }
                 else:
-                    checkpoint_state.update(dict(supplemental))
+                    for key, value in dict(supplemental).items():
+                        checkpoint_state.setdefault(key, value)
                     if "session" not in checkpoint_state and "id" not in checkpoint_state:
                         checkpoint_state["session"] = session.model_dump(mode="json")
         checkpoint = Checkpoint(

@@ -20,7 +20,8 @@ shisad session list
 Prefer the most recent checkpoint before first bad event.
 
 If the operator needs a bounded cutover artifact before rollback, export the
-current session first:
+current session first. These session lifecycle controls are operator/admin
+surfaces; they are not available to unprivileged control peers:
 
 ```bash
 shisad session export <session-id> /tmp/<session-id>.shisad-session.zip
@@ -33,7 +34,8 @@ Session archives are intentionally scoped to:
 - session checkpoints
 
 They do **not** include evidence blobs, memory databases, or scheduler-global
-state.
+state. Import validation is fail-closed on archive integrity/scope mismatch,
+invalid ZIP payloads, oversized members, or oversized total archive contents.
 
 ## 3. Execute rollback
 

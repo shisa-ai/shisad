@@ -12,6 +12,7 @@ from typing import Any
 
 import pytest
 
+import shisad.core.session_archive as session_archive_module
 from shisad.core.session import CheckpointStore, Session, SessionManager
 from shisad.core.session_archive import SessionArchiveError, SessionArchiveManager
 from shisad.core.transcript import TranscriptStore
@@ -63,6 +64,34 @@ def _build_archive_stack(
         archive_dir=tmp_path / "archives",
     )
     return session_manager, transcript_store, checkpoint_store, lockdown, archive_manager
+
+
+def _read_archive_members(path: Path) -> dict[str, bytes]:
+    with zipfile.ZipFile(path, "r") as archive:
+        return {info.filename: archive.read(info.filename) for info in archive.infolist()}
+
+
+def _write_archive_members(path: Path, members: dict[str, bytes]) -> None:
+    with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        for name, payload in sorted(members.items()):
+            archive.writestr(name, payload)
+
+
+def _with_rehashed_manifest(members: dict[str, bytes]) -> dict[str, bytes]:
+    manifest = json.loads(members["manifest.json"].decode("utf-8"))
+    manifest["entries"] = {
+        name: hashlib.sha256(payload).hexdigest()
+        for name, payload in members.items()
+        if name != "manifest.json"
+    }
+    rewritten = dict(members)
+    rewritten["manifest.json"] = json.dumps(
+        manifest,
+        ensure_ascii=True,
+        indent=2,
+        sort_keys=True,
+    ).encode("utf-8")
+    return rewritten
 
 
 def test_m2_session_archive_roundtrip_preserves_scope_and_lockdown(tmp_path: Path) -> None:
@@ -207,3 +236,225 @@ def test_m2_session_archive_rejects_cross_workspace_scope_mismatch(tmp_path: Pat
 
     with pytest.raises(SessionArchiveError, match="archive_workspace_id_mismatch"):
         archive_manager.import_archive(mismatched)
+
+
+def test_m2_session_archive_import_rejects_invalid_zip_files(tmp_path: Path) -> None:
+    _, _, _, _, archive_manager = _build_archive_stack(tmp_path)
+    invalid = tmp_path / "not-a-zip.shisad-session.zip"
+    invalid.write_text("not really a zip archive", encoding="utf-8")
+
+    with pytest.raises(SessionArchiveError, match="invalid_archive"):
+        archive_manager.import_archive(invalid)
+
+
+def test_m2_session_archive_import_rejects_oversized_members(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session_manager, _, _, _, archive_manager = _build_archive_stack(tmp_path)
+    session = session_manager.create(
+        channel="cli",
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws1"),
+    )
+    exported = archive_manager.export_session(session.id)
+    oversized = tmp_path / "oversized.shisad-session.zip"
+    members = _read_archive_members(exported.archive_path)
+    members["transcript.json"] = b"x" * 128
+    members = _with_rehashed_manifest(members)
+    _write_archive_members(oversized, members)
+    monkeypatch.setattr(session_archive_module, "_ARCHIVE_MAX_MEMBER_BYTES", 32)
+
+    with pytest.raises(SessionArchiveError, match="archive_member_too_large"):
+        archive_manager.import_archive(oversized)
+
+
+def test_m2_session_archive_import_rejects_excessive_member_counts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session_manager, _, _, _, archive_manager = _build_archive_stack(tmp_path)
+    session = session_manager.create(
+        channel="cli",
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws1"),
+    )
+    exported = archive_manager.export_session(session.id)
+    too_many = tmp_path / "too-many.shisad-session.zip"
+    members = _read_archive_members(exported.archive_path)
+    members["checkpoints/extra-1.json"] = b"{}"
+    members["checkpoints/extra-2.json"] = b"{}"
+    members = _with_rehashed_manifest(members)
+    manifest = json.loads(members["manifest.json"].decode("utf-8"))
+    manifest["checkpoint_count"] = 2
+    members["manifest.json"] = json.dumps(
+        manifest,
+        ensure_ascii=True,
+        indent=2,
+        sort_keys=True,
+    ).encode("utf-8")
+    monkeypatch.setattr(session_archive_module, "_ARCHIVE_MAX_MEMBER_COUNT", 4)
+    _write_archive_members(too_many, members)
+
+    with pytest.raises(SessionArchiveError, match="archive_too_many_members"):
+        archive_manager.import_archive(too_many)
+
+
+def test_m2_session_archive_import_rejects_excessive_total_size(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session_manager, _, _, _, archive_manager = _build_archive_stack(tmp_path)
+    session = session_manager.create(
+        channel="cli",
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws1"),
+    )
+    exported = archive_manager.export_session(session.id)
+    too_large = tmp_path / "too-large.shisad-session.zip"
+    members = _read_archive_members(exported.archive_path)
+    members["transcript.json"] = b"a" * 40
+    members["checkpoints/extra-1.json"] = b"b" * 40
+    members = _with_rehashed_manifest(members)
+    _write_archive_members(too_large, members)
+    monkeypatch.setattr(session_archive_module, "_ARCHIVE_MAX_TOTAL_BYTES", 60)
+
+    with pytest.raises(SessionArchiveError, match="archive_too_large"):
+        archive_manager.import_archive(too_large)
+
+
+def test_m2_session_archive_roundtrip_preserves_checkpoint_lockdown_history(
+    tmp_path: Path,
+) -> None:
+    session_manager, _, checkpoint_store, lockdown, archive_manager = _build_archive_stack(tmp_path)
+    session = session_manager.create(
+        channel="cli",
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws1"),
+    )
+    lockdown.set_level(
+        session.id,
+        level=LockdownLevel.FULL_LOCKDOWN,
+        reason="strict",
+        trigger="manual",
+    )
+    checkpoint_store.create(session)
+    lockdown.resume(session.id, reason="recovered")
+    checkpoint_store.create(session)
+
+    exported = archive_manager.export_session(session.id)
+    imported = archive_manager.import_archive(exported.archive_path)
+
+    imported_levels = {
+        checkpoint_store.restore(checkpoint_id).state["lockdown"]["level"]  # type: ignore[union-attr]
+        for checkpoint_id in imported.checkpoint_ids
+    }
+    assert imported_levels == {
+        LockdownLevel.FULL_LOCKDOWN.value,
+        LockdownLevel.NORMAL.value,
+    }
+
+
+def test_m2_session_archive_import_rejects_transcript_hash_mismatch(tmp_path: Path) -> None:
+    session_manager, transcript_store, _, _, archive_manager = _build_archive_stack(tmp_path)
+    session = session_manager.create(
+        channel="cli",
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws1"),
+    )
+    transcript_store.append(
+        session.id,
+        role="assistant",
+        content="original content",
+        timestamp=datetime(2026, 4, 2, tzinfo=UTC),
+    )
+    exported = archive_manager.export_session(session.id)
+    tampered = tmp_path / "tampered-transcript.shisad-session.zip"
+    members = _read_archive_members(exported.archive_path)
+    transcript_rows = json.loads(members["transcript.json"].decode("utf-8"))
+    transcript_rows[0]["content"] = "tampered content"
+    members["transcript.json"] = json.dumps(
+        transcript_rows,
+        ensure_ascii=True,
+        indent=2,
+        sort_keys=True,
+    ).encode("utf-8")
+    members = _with_rehashed_manifest(members)
+    _write_archive_members(tampered, members)
+
+    with pytest.raises(SessionArchiveError, match="transcript_hash_mismatch"):
+        archive_manager.import_archive(tampered)
+
+
+def test_m2_session_archive_import_rejects_capability_manifest_mismatch(tmp_path: Path) -> None:
+    session_manager, _, _, _, archive_manager = _build_archive_stack(tmp_path)
+    session = session_manager.create(
+        channel="cli",
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws1"),
+        capabilities={Capability.FILE_READ},
+    )
+    exported = archive_manager.export_session(session.id)
+    tampered = tmp_path / "tampered-capabilities.shisad-session.zip"
+    members = _read_archive_members(exported.archive_path)
+    session_payload = json.loads(members["session.json"].decode("utf-8"))
+    session_payload["session"]["capabilities"] = [Capability.HTTP_REQUEST.value]
+    members["session.json"] = json.dumps(
+        session_payload,
+        ensure_ascii=True,
+        indent=2,
+        sort_keys=True,
+    ).encode("utf-8")
+    members = _with_rehashed_manifest(members)
+    _write_archive_members(tampered, members)
+
+    with pytest.raises(SessionArchiveError, match="archive_capability_mismatch"):
+        archive_manager.import_archive(tampered)
+
+
+def test_m2_session_archive_import_rewrites_only_session_payload_dicts(tmp_path: Path) -> None:
+    session_manager, _, checkpoint_store, _, archive_manager = _build_archive_stack(tmp_path)
+    session = session_manager.create(
+        channel="cli",
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws1"),
+    )
+    checkpoint = checkpoint_store.create(
+        session,
+        state={
+            "session": session.model_dump(mode="json"),
+            "routing_hint": {
+                "id": str(session.id),
+                "channel": session.channel,
+                "user_id": str(session.user_id),
+                "workspace_id": str(session.workspace_id),
+            },
+        },
+    )
+
+    exported = archive_manager.export_session(session.id)
+    imported = archive_manager.import_archive(exported.archive_path)
+    imported_checkpoint = next(
+        checkpoint_store.restore(checkpoint_id)
+        for checkpoint_id in imported.checkpoint_ids
+        if checkpoint_store.restore(checkpoint_id) is not None
+    )
+
+    assert imported_checkpoint is not None
+    assert imported_checkpoint.state["session"]["id"] == str(imported.session.id)
+    assert imported_checkpoint.state["routing_hint"]["id"] == str(session.id)
+    assert checkpoint_store.restore(checkpoint.checkpoint_id) is not None
+
+
+def test_m2_session_archive_export_wraps_write_failures(tmp_path: Path) -> None:
+    session_manager, _, _, _, archive_manager = _build_archive_stack(tmp_path)
+    session = session_manager.create(
+        channel="cli",
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws1"),
+    )
+    destination = tmp_path / "archive-dir"
+    destination.mkdir()
+
+    with pytest.raises(SessionArchiveError, match="archive_write_failed"):
+        archive_manager.export_session(session.id, destination=destination)
