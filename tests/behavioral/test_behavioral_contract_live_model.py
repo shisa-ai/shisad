@@ -310,7 +310,7 @@ async def test_live_model_memory_remember_persists_and_is_used_later(
 
     remember = await live_harness.client.call(
         "session.message",
-        {"session_id": sid, "content": "remember that my favorite color is blue"},
+        {"session_id": sid, "content": "remember that my dog is named Woofie"},
     )
     assert remember.get("lockdown_level") == "normal"
     assert int(remember.get("blocked_actions", 0)) == 0
@@ -323,15 +323,14 @@ async def test_live_model_memory_remember_persists_and_is_used_later(
 
     retrieved = await live_harness.client.call(
         "memory.retrieve",
-        {"query": "favorite color", "limit": 5},
+        {"query": "dog name", "limit": 5},
     )
     rendered = json.dumps(retrieved, ensure_ascii=True).lower()
-    assert "favorite color" in rendered or "favorite_color" in rendered
-    assert "blue" in rendered
+    assert "woofie" in rendered
 
     reply = await live_harness.client.call(
         "session.message",
-        {"session_id": sid, "content": "what is my favorite color"},
+        {"session_id": sid, "content": "what is my dog's name"},
     )
     assert reply.get("lockdown_level") == "normal"
     assert str(reply.get("response", "")).strip()
