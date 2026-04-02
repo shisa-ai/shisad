@@ -307,9 +307,12 @@ class ConfirmationImplMixin(HandlerMixinBase):
             ref_id = str(payload.get("ref_id", "")).strip()
             target_ref_id = promote_ref_id or ref_id
             store = getattr(self, "_evidence_store", None)
-            transcript_entries_before = len(self._transcript_store.list_entries(pending.session_id))
+            transcript_entries_before = 0
             transcript_appended = False
             try:
+                transcript_entries_before = len(
+                    self._transcript_store.list_entries(pending.session_id)
+                )
                 if not content.strip():
                     raise ValueError("promoted evidence content is empty")
                 self._transcript_store.append(

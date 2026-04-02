@@ -541,3 +541,49 @@ async def test_m4_endorsement_failure_rolls_back_promoted_transcript_entry(tmp_p
         PolicyContext(capabilities={Capability.MEMORY_READ}, session_id=SessionId("s-1")),
     )
     assert decision.kind.value == "require_confirmation"
+
+
+@pytest.mark.asyncio
+async def test_m4_promote_confirmation_fails_closed_when_transcript_snapshot_read_fails(
+    tmp_path,
+) -> None:
+    harness = _ConfirmationImplHarness(tmp_path)
+    ref = harness._evidence_store.store(
+        SessionId("s-1"),
+        "promoted body",
+        taint_labels={TaintLabel.UNTRUSTED},
+        source="web.fetch:example.com",
+        summary="promoted body",
+    )
+    pending = PendingAction(
+        confirmation_id="c-1",
+        decision_nonce="expected",
+        session_id=SessionId("s-1"),
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("w-1"),
+        tool_name=ToolName("evidence.promote"),
+        arguments={"ref_id": ref.ref_id},
+        reason="manual",
+        capabilities={Capability.MEMORY_READ},
+        created_at=datetime.now(UTC),
+    )
+    harness._pending_actions[pending.confirmation_id] = pending
+
+    original_list_entries = harness._transcript_store.list_entries
+
+    def _fail_list_entries(_session_id: SessionId):
+        raise OSError("transcript read failed")
+
+    harness._transcript_store.list_entries = _fail_list_entries  # type: ignore[method-assign]
+    try:
+        result = await harness.do_action_confirm(
+            {"confirmation_id": "c-1", "decision_nonce": "expected"}
+        )
+    finally:
+        harness._transcript_store.list_entries = original_list_entries  # type: ignore[method-assign]
+
+    assert result["confirmed"] is False
+    assert result["status_reason"] == "artifact_endorse_failed"
+    endorsed = harness._evidence_store.get_ref(SessionId("s-1"), ref.ref_id)
+    assert endorsed is not None
+    assert endorsed.endorsement_state == ArtifactEndorsementState.UNENDORSED
