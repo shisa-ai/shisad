@@ -35,6 +35,9 @@ jobs:
       - name: Set up Python ${{ matrix.python-version }}
         run: uv python install ${{ matrix.python-version }}
 
+      - name: Verify lockfile is up to date
+        run: uv lock --check
+
       - name: Install dependencies (default profile)
         run: uv sync --exclude-newer P7D --frozen --dev
 
@@ -251,3 +254,23 @@ jobs:
           path: |
             artifacts/m6-full-metrics.json
             artifacts/m6-full-gate.json
+
+  dependency-review:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Dependency review
+        uses: actions/dependency-review-action@2031cfc080254a8a887f58cffee85186f0e49e48 # v4.9.0
+
+  zizmor:
+    if: github.event_name == 'push' || github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+
+      - name: Lint GitHub Actions workflows
+        uses: zizmorcore/zizmor@0b77258cf93d4e0ae762c843422c333faf2793f6 # v1.23.1
