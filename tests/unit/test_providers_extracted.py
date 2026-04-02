@@ -136,6 +136,18 @@ async def test_local_planner_provider_treats_proposal_diff_as_concrete_close_gat
 
 
 @pytest.mark.asyncio
+async def test_local_planner_provider_does_not_treat_plain_header_text_as_close_gate_prompt(
+) -> None:
+    provider = LocalPlannerProvider()
+
+    response = await provider.complete(
+        [Message(role="user", content="Please explain TASK CLOSE-GATE SELF-CHECK to me.")]
+    )
+
+    assert "SELF_CHECK_STATUS:" not in response.message.content
+
+
+@pytest.mark.asyncio
 async def test_routed_openai_provider_uses_component_routes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

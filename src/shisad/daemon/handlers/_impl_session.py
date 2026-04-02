@@ -288,6 +288,7 @@ class TaskSessionHandoff:
     recovery_checkpoint_id: str | None
     reason: str
     plan_hash: str | None
+    recovery_checkpoint_created: bool = False
     blocked_actions: int = 0
     confirmation_required_actions: int = 0
     executed_actions: int = 0
@@ -303,6 +304,12 @@ class TaskCloseGateAssessment:
     notes: str
     response_text: str
     passed: bool
+
+
+@dataclass(frozen=True, slots=True)
+class RawHandoffCheckpointClaim:
+    checkpoint_id: str
+    created: bool = False
 
 
 _CRC_POSITIVE_PATTERNS = {
@@ -2365,11 +2372,15 @@ class SessionImplMixin(HandlerMixinBase):
         if isinstance(locks, dict):
             locks.pop(session_id, None)
 
-    def _claim_parent_raw_handoff_checkpoint(self, *, session: Session) -> str:
+    def _claim_parent_raw_handoff_checkpoint(
+        self,
+        *,
+        session: Session,
+    ) -> RawHandoffCheckpointClaim:
         if _task_command_context_status(session) == "degraded":
             existing = _task_recovery_checkpoint_id(session)
             if existing:
-                return existing
+                return RawHandoffCheckpointClaim(checkpoint_id=existing, created=False)
 
         pending_checkpoint = str(
             session.metadata.get(_COMMAND_CONTEXT_PENDING_RECOVERY_CHECKPOINT_KEY, "")
@@ -2379,7 +2390,7 @@ class SessionImplMixin(HandlerMixinBase):
                 session.metadata.get(_COMMAND_CONTEXT_PENDING_RAW_HANDOFFS_KEY, 0) or 0
             )
             session.metadata[_COMMAND_CONTEXT_PENDING_RAW_HANDOFFS_KEY] = pending_count + 1
-            return pending_checkpoint
+            return RawHandoffCheckpointClaim(checkpoint_id=pending_checkpoint, created=False)
 
         checkpoint = self._checkpoint_store.create(
             session,
@@ -2391,7 +2402,7 @@ class SessionImplMixin(HandlerMixinBase):
         checkpoint_id = str(checkpoint.checkpoint_id)
         session.metadata[_COMMAND_CONTEXT_PENDING_RECOVERY_CHECKPOINT_KEY] = checkpoint_id
         session.metadata[_COMMAND_CONTEXT_PENDING_RAW_HANDOFFS_KEY] = 1
-        return checkpoint_id
+        return RawHandoffCheckpointClaim(checkpoint_id=checkpoint_id, created=True)
 
     def _release_parent_raw_handoff_checkpoint(
         self,
@@ -4465,6 +4476,7 @@ class SessionImplMixin(HandlerMixinBase):
         )
 
         checkpoint_ids = [handoff.recovery_checkpoint_id] if handoff.recovery_checkpoint_id else []
+        checkpoints_created = 1 if handoff.recovery_checkpoint_created and checkpoint_ids else 0
         return {
             "session_id": sid,
             "response": response_text,
@@ -4474,7 +4486,7 @@ class SessionImplMixin(HandlerMixinBase):
             "confirmation_required_actions": handoff.confirmation_required_actions,
             "executed_actions": handoff.executed_actions,
             "checkpoint_ids": checkpoint_ids,
-            "checkpoints_created": len(checkpoint_ids),
+            "checkpoints_created": checkpoints_created,
             "transcript_root": str(self._transcript_root),
             "lockdown_level": self._lockdown_manager.state_for(sid).level.value,
             "trust_level": validated.trust_level,
@@ -4517,11 +4529,14 @@ class SessionImplMixin(HandlerMixinBase):
         parent_session = validated.session
         parent_sid = validated.sid
         recovery_checkpoint_id = _task_recovery_checkpoint_id(parent_session)
+        raw_checkpoint_claim: RawHandoffCheckpointClaim | None = None
+        raw_checkpoint_released = False
         if task_request.handoff_mode == _TASK_HANDOFF_RAW_PASSTHROUGH:
             async with self._parent_task_handoff_lock(parent_sid):
-                recovery_checkpoint_id = self._claim_parent_raw_handoff_checkpoint(
+                raw_checkpoint_claim = self._claim_parent_raw_handoff_checkpoint(
                     session=parent_session
                 )
+                recovery_checkpoint_id = raw_checkpoint_claim.checkpoint_id
 
         task_metadata: dict[str, Any] = {
             "trust_level": validated.trust_level,
@@ -4537,16 +4552,17 @@ class SessionImplMixin(HandlerMixinBase):
                 str(tool) for tool in validated.tool_allowlist
             )
 
-        task_session = self._session_manager.create_subagent_session(
-            channel="task",
-            user_id=parent_session.user_id,
-            workspace_id=parent_session.workspace_id,
-            parent_session_id=parent_sid,
-            mode=SessionMode.TASK,
-            capabilities=set(task_request.capabilities),
-            metadata=task_metadata,
-        )
+        task_session: Session | None = None
         try:
+            task_session = self._session_manager.create_subagent_session(
+                channel="task",
+                user_id=parent_session.user_id,
+                workspace_id=parent_session.workspace_id,
+                parent_session_id=parent_sid,
+                mode=SessionMode.TASK,
+                capabilities=set(task_request.capabilities),
+                metadata=task_metadata,
+            )
             await self._event_bus.publish(
                 SessionCreated(
                     session_id=task_session.id,
@@ -4974,6 +4990,7 @@ class SessionImplMixin(HandlerMixinBase):
                         session=parent_session,
                         checkpoint_id=recovery_checkpoint_id,
                     )
+                    raw_checkpoint_released = True
                     command_context = _task_command_context_status(parent_session)
                     recovery_checkpoint_id = (
                         _task_recovery_checkpoint_id(parent_session)
@@ -4997,6 +5014,11 @@ class SessionImplMixin(HandlerMixinBase):
                 handoff_mode=task_request.handoff_mode,
                 command_context=command_context,
                 recovery_checkpoint_id=recovery_checkpoint_id,
+                recovery_checkpoint_created=bool(
+                    raw_checkpoint_claim is not None
+                    and raw_checkpoint_claim.created
+                    and recovery_checkpoint_id
+                ),
                 reason=failure_reason,
                 plan_hash=(
                     str(raw_plan_hash).strip()
@@ -5040,25 +5062,36 @@ class SessionImplMixin(HandlerMixinBase):
                 handoff=handoff,
             )
         finally:
-            terminated = self._session_manager.terminate(
-                task_session.id,
-                reason="task_session_complete",
-            )
-            if terminated:
-                try:
-                    await self._event_bus.publish(
-                        SessionTerminated(
-                            session_id=task_session.id,
-                            actor="task_session",
-                            reason="task_session_complete",
+            if (
+                task_request.handoff_mode == _TASK_HANDOFF_RAW_PASSTHROUGH
+                and raw_checkpoint_claim is not None
+                and not raw_checkpoint_released
+            ):
+                async with self._parent_task_handoff_lock(parent_sid):
+                    self._release_parent_raw_handoff_checkpoint(
+                        session=parent_session,
+                        checkpoint_id=raw_checkpoint_claim.checkpoint_id,
+                    )
+            if task_session is not None:
+                terminated = self._session_manager.terminate(
+                    task_session.id,
+                    reason="task_session_complete",
+                )
+                if terminated:
+                    try:
+                        await self._event_bus.publish(
+                            SessionTerminated(
+                                session_id=task_session.id,
+                                actor="task_session",
+                                reason="task_session_complete",
+                            )
                         )
-                    )
-                except Exception:
-                    logger.warning(
-                        "Failed to publish termination for task session %s",
-                        task_session.id,
-                        exc_info=True,
-                    )
+                    except Exception:
+                        logger.warning(
+                            "Failed to publish termination for task session %s",
+                            task_session.id,
+                            exc_info=True,
+                        )
 
     async def do_session_message(self, params: Mapping[str, Any]) -> dict[str, Any]:
         rerouted = await self._maybe_run_rerouted_admin_cleanroom_message(params)

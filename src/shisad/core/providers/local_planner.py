@@ -189,6 +189,19 @@ def _task_close_gate_local_response(planner_input: str) -> str:
     )
 
 
+def _is_structured_task_close_gate_prompt(text: str) -> bool:
+    normalized = text.replace("^", "")
+    return (
+        normalized.startswith("=== RUNTIME")
+        and _TASK_CLOSE_GATE_HEADER in normalized
+        and "=== USER REQUEST ===" in normalized
+        and "Assess whether the delegated task completed the original request." in normalized
+        and "=== DATA EVIDENCE" in normalized
+        and "EVIDENCE_START_" in normalized
+        and "EVIDENCE_END_" in normalized
+    )
+
+
 class LocalPlannerProvider:
     """Local fallback planner provider for daemon operation."""
 
@@ -200,7 +213,7 @@ class LocalPlannerProvider:
         _ = tools
         user_content = messages[-1].content if messages else ""
         normalized_content = user_content.replace("^", "")
-        if _TASK_CLOSE_GATE_HEADER in normalized_content:
+        if _is_structured_task_close_gate_prompt(user_content):
             return ProviderResponse(
                 message=Message(
                     role="assistant",

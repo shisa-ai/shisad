@@ -14,6 +14,7 @@ from shisad.core.api.transport import ControlClient
 from shisad.core.config import DaemonConfig
 from shisad.core.events import EventBus, TaskSessionCompleted
 from shisad.core.planner import Planner, PlannerOutput, PlannerResult
+from shisad.core.transcript import TranscriptStore
 from shisad.daemon.runner import run_daemon
 
 
@@ -295,6 +296,8 @@ async def test_m2_raw_task_handoff_marks_command_degraded_and_recovery_checkpoin
         )
         task_result_again = dict(delegated_again.get("task_result") or {})
         assert task_result_again["recovery_checkpoint_id"] == checkpoint_id
+        assert delegated_again["checkpoint_ids"] == [checkpoint_id]
+        assert delegated_again["checkpoints_created"] == 0
 
         degraded_events = await client.call(
             "audit.query",
@@ -313,6 +316,137 @@ async def test_m2_raw_task_handoff_marks_command_degraded_and_recovery_checkpoin
         sessions_after = await client.call("session.list")
         restored_row = next(item for item in sessions_after["sessions"] if item["id"] == sid)
         assert restored_row["command_context"] == "clean"
+    finally:
+        await _shutdown_daemon(daemon_task, client)
+
+
+@pytest.mark.asyncio
+async def test_m1_raw_task_failure_after_checkpoint_claim_cleans_pending_state(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original_write_task_artifact = session_impl.SessionImplMixin._write_task_artifact
+    fail_self_check_write_once = True
+
+    async def _planner(
+        self: Planner,
+        user_content: str,
+        context: object,
+        *,
+        tools: list[dict[str, object]] | None = None,
+        persona_tone_override: str | None = None,
+    ) -> PlannerResult:
+        _ = (self, context, tools, persona_tone_override)
+        if "TASK CLOSE-GATE SELF-CHECK" in user_content:
+            return _complete_close_gate_result()
+        return PlannerResult(
+            output=PlannerOutput(
+                assistant_response="RAW TASK LOG\n--- a/README.md\n+++ b/README.md\n+secret",
+                actions=[],
+            ),
+            evaluated=[],
+            attempts=1,
+            provider_response=None,
+            messages_sent=(),
+        )
+
+    def _write_task_artifact_once(
+        self: session_impl.SessionImplMixin,
+        *,
+        task_session_id: session_impl.SessionId,
+        filename: str,
+        payload: str | dict[str, object],
+    ) -> str:
+        nonlocal fail_self_check_write_once
+        if filename == "self_check.json" and fail_self_check_write_once:
+            fail_self_check_write_once = False
+            raise RuntimeError("simulated_self_check_artifact_failure")
+        return original_write_task_artifact(
+            self,
+            task_session_id=task_session_id,
+            filename=filename,
+            payload=payload,
+        )
+
+    monkeypatch.setattr(Planner, "propose", _planner)
+    monkeypatch.setattr(
+        session_impl.SessionImplMixin,
+        "_write_task_artifact",
+        _write_task_artifact_once,
+    )
+    daemon_task, client = await _start_daemon(
+        tmp_path,
+        policy_text=_policy_with_caps("file.read"),
+    )
+    transcript_store = TranscriptStore(tmp_path / "data" / "sessions")
+    try:
+        created = await client.call(
+            "session.create",
+            {"channel": "cli", "user_id": "admin", "workspace_id": "ops"},
+        )
+        sid = str(created["session_id"])
+
+        clean_before = await client.call(
+            "session.message",
+            {"session_id": sid, "content": "hello before raw failure"},
+        )
+        assert clean_before["response"]
+
+        with pytest.raises(RuntimeError, match="Internal error"):
+            await client.call(
+                "session.message",
+                {
+                    "session_id": sid,
+                    "content": "debug the raw task output",
+                    "task": {
+                        "enabled": True,
+                        "task_description": "Return the raw task log.",
+                        "file_refs": ["README.md"],
+                        "capabilities": ["file.read"],
+                        "handoff_mode": "raw_passthrough",
+                    },
+                },
+            )
+
+        sessions = await client.call("session.list")
+        failed_row = next(item for item in sessions["sessions"] if item["id"] == sid)
+        assert failed_row["command_context"] == "clean"
+        assert failed_row["recovery_checkpoint_id"] in ("", None)
+
+        clean_after = await client.call(
+            "session.message",
+            {"session_id": sid, "content": "hello after raw failure"},
+        )
+        assert clean_after["response"]
+        transcript_entries_before_success = len(
+            transcript_store.list_entries(session_impl.SessionId(sid))
+        )
+
+        recovered = await client.call(
+            "session.message",
+            {
+                "session_id": sid,
+                "content": "debug the raw task output after failure",
+                "task": {
+                    "enabled": True,
+                    "task_description": "Return the raw task log after cleanup.",
+                    "file_refs": ["README.md"],
+                    "capabilities": ["file.read"],
+                    "handoff_mode": "raw_passthrough",
+                },
+            },
+        )
+        recovered_task_result = dict(recovered.get("task_result") or {})
+        checkpoint_id = str(recovered_task_result.get("recovery_checkpoint_id", "")).strip()
+        assert checkpoint_id
+        assert recovered["checkpoints_created"] == 1
+
+        restored = await client.call("session.rollback", {"checkpoint_id": checkpoint_id})
+        assert restored["rolled_back"] is True
+        assert restored["transcript_entries_removed"] == 1
+        assert len(transcript_store.list_entries(session_impl.SessionId(sid))) == (
+            transcript_entries_before_success + 1
+        )
     finally:
         await _shutdown_daemon(daemon_task, client)
 
