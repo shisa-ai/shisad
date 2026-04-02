@@ -65,24 +65,57 @@ Version must be updated in both places:
       `git tag -a vX.Y.Z -m "vX.Y.Z"`
 - [ ] Push the release commit and tag:
       `git push origin main`, `git push origin vX.Y.Z`
-- [ ] Publish to PyPI:
-      `uv publish dist/shisad-X.Y.Z-py3-none-any.whl dist/shisad-X.Y.Z.tar.gz`
-- [ ] If `uv publish` is not configured, use the fallback:
-      `uvx --from twine twine upload dist/shisad-X.Y.Z-py3-none-any.whl dist/shisad-X.Y.Z.tar.gz`
+- [ ] Publish via trusted publishing workflow (primary path):
+      Go to Actions > "Publish to PyPI" > Run workflow, enter `vX.Y.Z`.
+      The workflow builds, runs tests, generates SBOM, creates attestations,
+      and publishes via OIDC. Requires approval in the `pypi-publish`
+      environment.
 - [ ] Create a GitHub Release from the tag:
       `gh release create vX.Y.Z --title "vX.Y.Z" --notes-file -` (pipe the
       matching `CHANGELOG.md` section, or use `--notes "..."` inline)
+- [ ] Attach SBOM to the GitHub Release:
+      download `sbom-shisad-X.Y.Z` artifact from the workflow run, then
+      `gh release upload vX.Y.Z sbom-shisad-X.Y.Z.spdx.json`
 - [ ] Verify the published package:
       `uvx --refresh --from "shisad==X.Y.Z" shisad --help`
-- [ ] Verify the GitHub Release, tag, and PyPI project page all show the new version
+- [ ] Verify the GitHub Release, tag, and PyPI project page all show the new
+      version
+- [ ] Verify attestation is visible on the PyPI project page
 - [ ] Confirm the tree is clean: `git status -sb`
+
+## Trusted Publishing Setup
+
+The `publish.yml` workflow uses PyPI trusted publishing (OIDC). One-time
+setup required on PyPI:
+
+1. Go to https://pypi.org/manage/project/shisad/settings/publishing/
+2. Add a new "GitHub Actions" trusted publisher:
+   - Owner: `shisa-ai`
+   - Repository: `shisad`
+   - Workflow name: `publish.yml`
+   - Environment name: `pypi-publish`
+3. Create a GitHub Environment named `pypi-publish` in the repo settings
+   (Settings > Environments) with required reviewers enabled.
+
+After setup, the workflow can publish without any stored API tokens.
+
+## Emergency Manual Publish
+
+If the workflow is unavailable, fall back to manual publishing:
+
+```bash
+uv publish dist/shisad-X.Y.Z-py3-none-any.whl dist/shisad-X.Y.Z.tar.gz
+# or:
+uvx --from twine twine upload dist/shisad-X.Y.Z-py3-none-any.whl dist/shisad-X.Y.Z.tar.gz
+```
+
+This path does not generate attestations or SBOM. Use only in emergencies
+and document why the workflow was bypassed.
 
 ## Notes
 
 - Do not publish from a dirty tree.
 - Do not reuse old `dist/` artifacts; rebuild for every release.
-- `uv publish` defaults to `dist/*`; either clear old artifacts first or pass
-  the exact wheel + sdist paths.
 - Immediate post-publish install checks may need `uvx --refresh` because
   resolver caches can lag a minute or two behind PyPI.
 - If a historical tag is missing from `CHANGELOG.md`, backfill that entry
