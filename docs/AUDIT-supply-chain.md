@@ -579,12 +579,12 @@ Current GitHub Actions coverage is useful but not complete for supply-chain assu
      pinned versions for ease of use.
    - Residual: operators must opt in via the env var; default remains `npx`.
 
-2. **No periodic dependency-audit CI job**
-   - Evidence: No scheduled workflow emits inventory diffs or newly introduced
-     package alerts.
-   - Risk: Low. Manual review process exists but is not automated.
-   - Recommended action: Add a scheduled CI job that exports the dependency
-     tree and diffs against the previous release.
+2. **Dependency audit runs at release time** (CLOSED v0.5.3)
+   - Evidence: `publish.yml` now runs `pip-audit` against the lockfile and
+     exports a full dependency tree snapshot as an artifact on every release.
+   - Risk: Low. Dependabot handles reactive CVE alerts between releases.
+   - Residual: no automated diff against previous release's tree (compare
+     artifacts manually or add a diff step later).
 
 3. **No internal package mirror/proxy**
    - Evidence: All CI and local resolution goes directly to pypi.org and
@@ -608,10 +608,7 @@ Current GitHub Actions coverage is useful but not complete for supply-chain assu
 
 1. ~~Add a production mode that disallows live runtime `npx` registry fetches and requires preinstalled adapters.~~ Done (`SHISAD_REQUIRE_LOCAL_ADAPTERS=1`).
 2. Define and document a standard "approved internal package mirror/proxy" pattern for Python and npm. (Deferred to post-v1.0.)
-3. Add a periodic dependency-audit job that emits:
-   - full package inventory,
-   - lock diff summary,
-   - newly introduced packages since last release.
+3. ~~Add a dependency-audit job that emits full package inventory and lock summary.~~ Done (runs in `publish.yml` at release time; Dependabot covers inter-release CVE alerts).
 
 ### Priority 2 (roadmap-aligned, medium term) — CLOSED (v0.5.3)
 
