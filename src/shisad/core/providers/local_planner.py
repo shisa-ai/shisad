@@ -10,6 +10,7 @@ import shlex
 from typing import Any
 
 from shisad.core.providers.base import EmbeddingResponse, Message, ProviderResponse
+from shisad.security.spotlight import LOCAL_TASK_CLOSE_GATE_SENTINEL
 
 _TASK_CLOSE_GATE_HEADER = "TASK CLOSE-GATE SELF-CHECK"
 _TASK_CLOSE_GATE_SECTION_HEADERS = (
@@ -191,14 +192,20 @@ def _task_close_gate_local_response(planner_input: str) -> str:
 
 def _is_structured_task_close_gate_prompt(text: str) -> bool:
     normalized = text.replace("^", "")
+    trusted_preamble, user_separator, remainder = normalized.partition("=== USER REQUEST ===")
+    if not user_separator:
+        return False
+    user_block, evidence_separator, evidence_block = remainder.partition("=== DATA EVIDENCE")
+    if not evidence_separator:
+        return False
+    trusted_lines = {line.strip() for line in trusted_preamble.splitlines() if line.strip()}
     return (
-        normalized.startswith("=== RUNTIME")
-        and _TASK_CLOSE_GATE_HEADER in normalized
-        and "=== USER REQUEST ===" in normalized
-        and "Assess whether the delegated task completed the original request." in normalized
-        and "=== DATA EVIDENCE" in normalized
-        and "EVIDENCE_START_" in normalized
-        and "EVIDENCE_END_" in normalized
+        trusted_preamble.startswith("=== RUNTIME")
+        and LOCAL_TASK_CLOSE_GATE_SENTINEL in trusted_lines
+        and _TASK_CLOSE_GATE_HEADER in trusted_lines
+        and "Assess whether the delegated task completed the original request." in user_block
+        and "EVIDENCE_START_" in evidence_block
+        and "EVIDENCE_END_" in evidence_block
     )
 
 

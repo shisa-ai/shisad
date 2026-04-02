@@ -14,6 +14,8 @@ from pydantic import BaseModel
 
 from shisad.core.context import ContextScaffold, ContextScaffoldEntry
 
+LOCAL_TASK_CLOSE_GATE_SENTINEL = "LOCAL_FALLBACK_MODE: TASK_CLOSE_GATE_SELF_CHECK_V1"
+
 
 class Delimiters(BaseModel):
     evidence_start: str
