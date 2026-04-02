@@ -257,6 +257,8 @@ async def test_m2_raw_task_handoff_marks_command_degraded_and_recovery_checkpoin
         task_result = dict(delegated.get("task_result") or {})
         checkpoint_id = str(task_result.get("recovery_checkpoint_id", "")).strip()
         assert checkpoint_id
+        assert delegated["checkpoint_ids"] == [checkpoint_id]
+        assert delegated["checkpoints_created"] == 1
 
         degraded_event = await _wait_for_event(
             client,
@@ -1027,8 +1029,7 @@ async def test_m1_concurrent_raw_task_handoffs_serialize_parent_state(
         )
 
         second_call = asyncio.create_task(client_two.call("session.message", params))
-        await asyncio.sleep(0.15)
-        assert second_task_entered.is_set() is False
+        await asyncio.wait_for(second_task_entered.wait(), timeout=2.0)
 
         started_events_before = await observer.call(
             "audit.query",
@@ -1039,12 +1040,11 @@ async def test_m1_concurrent_raw_task_handoffs_serialize_parent_state(
             for event in started_events_before.get("events", [])
             if str(event.get("data", {}).get("parent_session_id", "")).strip() == sid
         ]
-        assert len(matching_started_before) == 1
+        assert len(matching_started_before) == 2
 
         release_first_task.set()
 
         first_result = await first_call
-        await asyncio.wait_for(second_task_entered.wait(), timeout=2.0)
         second_result = await second_call
 
         first_task_result = dict(first_result.get("task_result") or {})
@@ -1086,6 +1086,108 @@ async def test_m1_concurrent_raw_task_handoffs_serialize_parent_state(
         assert session_row["recovery_checkpoint_id"] == checkpoint_id
     finally:
         release_first_task.set()
+        await client_two.close()
+        await observer.close()
+        await _shutdown_daemon(daemon_task, client)
+
+
+@pytest.mark.asyncio
+async def test_m1_concurrent_summary_only_task_handoffs_do_not_serialize_parent_runtime(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first_task_entered = asyncio.Event()
+    release_tasks = asyncio.Event()
+    second_task_entered = asyncio.Event()
+    task_turn_count = 0
+
+    async def _planner(
+        self: Planner,
+        user_content: str,
+        context: object,
+        *,
+        tools: list[dict[str, object]] | None = None,
+        persona_tone_override: str | None = None,
+    ) -> PlannerResult:
+        nonlocal task_turn_count
+        _ = (self, context, tools, persona_tone_override)
+        if "TASK CLOSE-GATE SELF-CHECK" in user_content:
+            return _complete_close_gate_result()
+        if "TASK REQUEST:" in user_content:
+            task_turn_count += 1
+            if task_turn_count == 1:
+                first_task_entered.set()
+            else:
+                second_task_entered.set()
+            await release_tasks.wait()
+            return PlannerResult(
+                output=PlannerOutput(assistant_response="task finished", actions=[]),
+                evaluated=[],
+                attempts=1,
+                provider_response=None,
+                messages_sent=(),
+            )
+        return PlannerResult(
+            output=PlannerOutput(assistant_response="ok", actions=[]),
+            evaluated=[],
+            attempts=1,
+            provider_response=None,
+            messages_sent=(),
+        )
+
+    monkeypatch.setattr(Planner, "propose", _planner)
+    daemon_task, client = await _start_daemon(
+        tmp_path,
+        policy_text=_policy_with_caps("file.read"),
+    )
+    client_two = ControlClient(tmp_path / "control.sock")
+    observer = ControlClient(tmp_path / "control.sock")
+    await client_two.connect()
+    await observer.connect()
+    try:
+        created = await client.call(
+            "session.create",
+            {"channel": "cli", "user_id": "alice", "workspace_id": "ws1"},
+        )
+        sid = str(created["session_id"])
+        params = {
+            "session_id": sid,
+            "content": "delegate summary review",
+            "task": {
+                "enabled": True,
+                "task_description": "Review README.md in isolation.",
+                "file_refs": ["README.md"],
+                "capabilities": ["file.read"],
+            },
+        }
+
+        first_call = asyncio.create_task(client.call("session.message", params))
+        await asyncio.wait_for(first_task_entered.wait(), timeout=2.0)
+        second_call = asyncio.create_task(client_two.call("session.message", params))
+        await asyncio.wait_for(second_task_entered.wait(), timeout=2.0)
+
+        started = await observer.call(
+            "audit.query",
+            {"event_type": "TaskSessionStarted", "limit": 10},
+        )
+        matching_started = [
+            event
+            for event in started.get("events", [])
+            if str(event.get("data", {}).get("parent_session_id", "")).strip() == sid
+        ]
+        assert len(matching_started) == 2
+
+        release_tasks.set()
+        first_result = await first_call
+        second_result = await second_call
+        first_task_result = dict(first_result.get("task_result") or {})
+        second_task_result = dict(second_result.get("task_result") or {})
+
+        assert first_task_result["success"] is True
+        assert second_task_result["success"] is True
+        assert first_task_result["task_session_id"] != second_task_result["task_session_id"]
+    finally:
+        release_tasks.set()
         await client_two.close()
         await observer.close()
         await _shutdown_daemon(daemon_task, client)

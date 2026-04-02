@@ -136,6 +136,10 @@ _TASK_HANDOFF_SUMMARY_ONLY = "summary_only"
 _TASK_HANDOFF_RAW_PASSTHROUGH = "raw_passthrough"
 _COMMAND_CONTEXT_STATUS_KEY = "command_context"
 _COMMAND_CONTEXT_RECOVERY_CHECKPOINT_KEY = "command_context_recovery_checkpoint_id"
+_COMMAND_CONTEXT_PENDING_RECOVERY_CHECKPOINT_KEY = (
+    "command_context_pending_recovery_checkpoint_id"
+)
+_COMMAND_CONTEXT_PENDING_RAW_HANDOFFS_KEY = "command_context_pending_raw_handoffs"
 _COMMAND_CONTEXT_REASON_KEY = "command_context_reason"
 _TASK_REPORTED_PATH_MAX_CHARS = 512
 _TASK_CLOSE_GATE_HEADER = "TASK CLOSE-GATE SELF-CHECK"
@@ -150,6 +154,7 @@ _TASK_CLOSE_GATE_RESPONSE_MAX_CHARS = 4000
 _TASK_CLOSE_GATE_FILES_MAX_CHARS = 2000
 _TASK_CLOSE_GATE_TOOL_OUTPUT_MAX_CHARS = 5000
 _TASK_CLOSE_GATE_PROPOSAL_MAX_CHARS = 5000
+_TASK_CLOSE_GATE_DIFF_MAX_CHARS = 4000
 _EVIDENCE_CONTENT_PREVIEW_KEYS: tuple[str, ...] = ("content", "text", "body", "html")
 _EVIDENCE_CONTENT_KEYS: set[str] = set(_EVIDENCE_CONTENT_PREVIEW_KEYS)
 _EVIDENCE_GENERIC_WRAP_MIN_BYTES = 256
@@ -632,6 +637,31 @@ def _normalize_task_close_gate_reason(*, raw: Any, status: str) -> str:
     return "inconclusive"
 
 
+class _TaskCloseGateJsonPayload(dict[str, Any]):
+    def __init__(self, pairs: list[tuple[Any, Any]]) -> None:
+        super().__init__()
+        self.duplicate_keys: set[str] = set()
+        for raw_key, value in pairs:
+            key = str(raw_key)
+            if key in self:
+                self.duplicate_keys.add(key)
+            self[key] = value
+
+
+def _load_task_close_gate_json_payload(pairs: list[tuple[Any, Any]]) -> _TaskCloseGateJsonPayload:
+    return _TaskCloseGateJsonPayload(pairs)
+
+
+def _task_close_gate_payload_has_duplicate_keys(payload: Any) -> bool:
+    if isinstance(payload, _TaskCloseGateJsonPayload) and payload.duplicate_keys:
+        return True
+    if isinstance(payload, Mapping):
+        return any(_task_close_gate_payload_has_duplicate_keys(value) for value in payload.values())
+    if isinstance(payload, list):
+        return any(_task_close_gate_payload_has_duplicate_keys(item) for item in payload)
+    return False
+
+
 def _parse_task_close_gate_response(text: str) -> TaskCloseGateAssessment:
     stripped = text.strip()
     parsed_status = ""
@@ -665,10 +695,14 @@ def _parse_task_close_gate_response(text: str) -> TaskCloseGateAssessment:
         parsed_notes = ""
     elif not parsed_status and stripped.startswith("{") and stripped.endswith("}"):
         try:
-            payload = json.loads(stripped)
+            payload = json.loads(stripped, object_pairs_hook=_load_task_close_gate_json_payload)
         except json.JSONDecodeError:
             payload = None
-        if isinstance(payload, Mapping):
+        if _task_close_gate_payload_has_duplicate_keys(payload):
+            parsed_status = _TASK_CLOSE_GATE_STATUS_INCONCLUSIVE
+            parsed_reason = "duplicate_json_keys"
+            parsed_notes = ""
+        elif isinstance(payload, Mapping):
             parsed_status = _normalize_task_close_gate_status(payload.get("status", ""))
             parsed_reason = str(payload.get("reason", "")).strip()
             parsed_notes = str(payload.get("notes", "")).strip()
@@ -1177,6 +1211,50 @@ def _truncate_close_gate_evidence_text(text: str, *, max_chars: int) -> str:
     if not truncated:
         return notice.lstrip("\n")
     return f"{truncated}{notice}"
+
+
+def _task_close_gate_result_signals(
+    *,
+    task_request: TaskSessionRequest,
+    executor: str,
+    agent: str | None,
+    raw_response_text: str,
+    summary_text: str,
+    files_changed: Sequence[str],
+    serialized_tool_outputs: Sequence[dict[str, Any]],
+    proposal_payload: Mapping[str, Any] | None,
+) -> str:
+    proposal_files: tuple[str, ...] = ()
+    proposal_diff_present = False
+    if isinstance(proposal_payload, Mapping):
+        raw_files = proposal_payload.get("files_changed", [])
+        if isinstance(raw_files, list):
+            proposal_files = tuple(str(item).strip() for item in raw_files if str(item).strip())
+        proposal_diff_present = bool(str(proposal_payload.get("diff", "")).strip())
+
+    lines = [
+        f"executor={executor}",
+        f"agent={str(agent or '').strip() or '(none)'}",
+        f"handoff_mode={task_request.handoff_mode}",
+        (
+            f"task_kind={task_request.coding_config.task_kind}"
+            if task_request.coding_config is not None
+            else "task_kind=(none)"
+        ),
+        (
+            f"read_only={str(task_request.coding_config.read_only).lower()}"
+            if task_request.coding_config is not None
+            else "read_only=(none)"
+        ),
+        f"summary_present={'yes' if summary_text.strip() else 'no'}",
+        f"response_present={'yes' if raw_response_text.strip() else 'no'}",
+        f"files_changed_count={len(tuple(item for item in files_changed if str(item).strip()))}",
+        f"tool_output_count={len(serialized_tool_outputs)}",
+        f"proposal_present={'yes' if isinstance(proposal_payload, Mapping) else 'no'}",
+        f"proposal_has_diff={'yes' if proposal_diff_present else 'no'}",
+        f"proposal_files_changed_count={len(proposal_files)}",
+    ]
+    return "\n".join(lines)
 
 
 def _relative_time_ago(timestamp: datetime, *, now: datetime | None = None) -> str:
@@ -2281,6 +2359,63 @@ class SessionImplMixin(HandlerMixinBase):
             lock = asyncio.Lock()
             locks[session_id] = lock
         return lock
+
+    def _clear_parent_task_handoff_lock(self, session_id: SessionId) -> None:
+        locks = getattr(self, "_task_handoff_locks", None)
+        if isinstance(locks, dict):
+            locks.pop(session_id, None)
+
+    def _claim_parent_raw_handoff_checkpoint(self, *, session: Session) -> str:
+        if _task_command_context_status(session) == "degraded":
+            existing = _task_recovery_checkpoint_id(session)
+            if existing:
+                return existing
+
+        pending_checkpoint = str(
+            session.metadata.get(_COMMAND_CONTEXT_PENDING_RECOVERY_CHECKPOINT_KEY, "")
+        ).strip()
+        if pending_checkpoint:
+            pending_count = int(
+                session.metadata.get(_COMMAND_CONTEXT_PENDING_RAW_HANDOFFS_KEY, 0) or 0
+            )
+            session.metadata[_COMMAND_CONTEXT_PENDING_RAW_HANDOFFS_KEY] = pending_count + 1
+            return pending_checkpoint
+
+        checkpoint = self._checkpoint_store.create(
+            session,
+            state={
+                "session": session.model_dump(mode="json"),
+                "transcript_entry_count": len(self._transcript_store.list_entries(session.id)),
+            },
+        )
+        checkpoint_id = str(checkpoint.checkpoint_id)
+        session.metadata[_COMMAND_CONTEXT_PENDING_RECOVERY_CHECKPOINT_KEY] = checkpoint_id
+        session.metadata[_COMMAND_CONTEXT_PENDING_RAW_HANDOFFS_KEY] = 1
+        return checkpoint_id
+
+    def _release_parent_raw_handoff_checkpoint(
+        self,
+        *,
+        session: Session,
+        checkpoint_id: str | None,
+    ) -> None:
+        pending_checkpoint = str(
+            session.metadata.get(_COMMAND_CONTEXT_PENDING_RECOVERY_CHECKPOINT_KEY, "")
+        ).strip()
+        if not checkpoint_id or pending_checkpoint != checkpoint_id:
+            return
+        if _task_command_context_status(session) == "degraded":
+            session.metadata.pop(_COMMAND_CONTEXT_PENDING_RECOVERY_CHECKPOINT_KEY, None)
+            session.metadata.pop(_COMMAND_CONTEXT_PENDING_RAW_HANDOFFS_KEY, None)
+            return
+        pending_count = int(
+            session.metadata.get(_COMMAND_CONTEXT_PENDING_RAW_HANDOFFS_KEY, 0) or 0
+        )
+        if pending_count > 1:
+            session.metadata[_COMMAND_CONTEXT_PENDING_RAW_HANDOFFS_KEY] = pending_count - 1
+            return
+        session.metadata.pop(_COMMAND_CONTEXT_PENDING_RECOVERY_CHECKPOINT_KEY, None)
+        session.metadata.pop(_COMMAND_CONTEXT_PENDING_RAW_HANDOFFS_KEY, None)
 
     def _build_task_ledger_snapshot(
         self,
@@ -4051,10 +4186,28 @@ class SessionImplMixin(HandlerMixinBase):
         proposal_payload: Mapping[str, Any] | None,
         agent: str | None,
     ) -> TaskCloseGateAssessment:
+        result_signals_block = _task_close_gate_result_signals(
+            task_request=task_request,
+            executor=executor,
+            agent=agent,
+            raw_response_text=raw_response_text,
+            summary_text=summary_text,
+            files_changed=files_changed,
+            serialized_tool_outputs=serialized_tool_outputs,
+            proposal_payload=proposal_payload,
+        )
         file_lines = [f"- {item}" for item in files_changed if str(item).strip()]
         file_block = _truncate_close_gate_evidence_text(
             "\n".join(file_lines) or "(none)",
             max_chars=_TASK_CLOSE_GATE_FILES_MAX_CHARS,
+        )
+        proposal_diff_block = (
+            _truncate_close_gate_evidence_text(
+                str(proposal_payload.get("diff", "")).strip() or "(none)",
+                max_chars=_TASK_CLOSE_GATE_DIFF_MAX_CHARS,
+            )
+            if isinstance(proposal_payload, Mapping)
+            else "(none)"
         )
         proposal_block = (
             _truncate_close_gate_evidence_text(
@@ -4092,14 +4245,28 @@ class SessionImplMixin(HandlerMixinBase):
                         f"executor={executor}",
                         f"agent={str(agent or '').strip() or '(none)'}",
                         f"handoff_mode={task_request.handoff_mode}",
+                        (
+                            f"task_kind={task_request.coding_config.task_kind}"
+                            if task_request.coding_config is not None
+                            else "task_kind=(none)"
+                        ),
+                        (
+                            f"read_only={str(task_request.coding_config.read_only).lower()}"
+                            if task_request.coding_config is not None
+                            else "read_only=(none)"
+                        ),
                     ]
                 ),
+                "TASK RESULT SIGNALS:",
+                result_signals_block,
                 "TASK OUTPUT SUMMARY:",
                 summary_block,
                 "TASK OUTPUT RESPONSE:",
                 response_block,
                 "TASK FILES CHANGED:",
                 file_block,
+                "TASK PROPOSAL DIFF:",
+                proposal_diff_block,
                 "TASK TOOL OUTPUTS JSON:",
                 tool_output_block,
                 "TASK PROPOSAL JSON:",
@@ -4116,6 +4283,12 @@ class SessionImplMixin(HandlerMixinBase):
                 "SELF_CHECK_STATUS: COMPLETE|INCOMPLETE|MISMATCH\n"
                 "SELF_CHECK_REASON: <short_token>\n"
                 "SELF_CHECK_NOTES: <one concise sentence>\n\n"
+                "Treat TASK RUNTIME SIGNALS as trusted runtime-derived metadata about the "
+                "artifacts produced by the delegated task.\n"
+                "For coding-agent implement/remediate work, a proposal diff or files-changed "
+                "signal is concrete completion evidence even when the summary text is terse.\n"
+                "For coding-agent review work, read_only=true with a non-empty summary/response "
+                "and no proposal diff can still be COMPLETE when it matches the original task.\n"
                 "Use COMPLETE only when the output fully satisfies the original task. "
                 "Use INCOMPLETE when required work is missing. "
                 "Use MISMATCH when the output drifted to a different goal or scope."
@@ -4123,6 +4296,12 @@ class SessionImplMixin(HandlerMixinBase):
             user_goal="Assess whether the delegated task completed the original request.",
             untrusted_content=evidence_text,
             encode_untrusted=True,
+            trusted_context=(
+                "=== TASK RUNTIME SIGNALS (TRUSTED) ===\n"
+                "Runtime-derived metadata about the delegated task artifacts:\n"
+                f"{result_signals_block}\n"
+                "=== END TASK RUNTIME SIGNALS ==="
+            ),
         )
         context = PolicyContext(
             capabilities=set(),
@@ -4285,6 +4464,7 @@ class SessionImplMixin(HandlerMixinBase):
             )
         )
 
+        checkpoint_ids = [handoff.recovery_checkpoint_id] if handoff.recovery_checkpoint_id else []
         return {
             "session_id": sid,
             "response": response_text,
@@ -4293,8 +4473,8 @@ class SessionImplMixin(HandlerMixinBase):
             "blocked_actions": handoff.blocked_actions,
             "confirmation_required_actions": handoff.confirmation_required_actions,
             "executed_actions": handoff.executed_actions,
-            "checkpoint_ids": [],
-            "checkpoints_created": 0,
+            "checkpoint_ids": checkpoint_ids,
+            "checkpoints_created": len(checkpoint_ids),
             "transcript_root": str(self._transcript_root),
             "lockdown_level": self._lockdown_manager.state_for(sid).level.value,
             "trust_level": validated.trust_level,
@@ -4336,21 +4516,12 @@ class SessionImplMixin(HandlerMixinBase):
     ) -> dict[str, Any]:
         parent_session = validated.session
         parent_sid = validated.sid
-        existing_recovery_checkpoint = _task_recovery_checkpoint_id(parent_session)
-
-        recovery_checkpoint_id = existing_recovery_checkpoint
-        if (
-            task_request.handoff_mode == _TASK_HANDOFF_RAW_PASSTHROUGH
-            and recovery_checkpoint_id is None
-        ):
-            checkpoint = self._checkpoint_store.create(
-                parent_session,
-                state={
-                    "session": parent_session.model_dump(mode="json"),
-                    "transcript_entry_count": len(self._transcript_store.list_entries(parent_sid)),
-                },
-            )
-            recovery_checkpoint_id = checkpoint.checkpoint_id
+        recovery_checkpoint_id = _task_recovery_checkpoint_id(parent_session)
+        if task_request.handoff_mode == _TASK_HANDOFF_RAW_PASSTHROUGH:
+            async with self._parent_task_handoff_lock(parent_sid):
+                recovery_checkpoint_id = self._claim_parent_raw_handoff_checkpoint(
+                    session=parent_session
+                )
 
         task_metadata: dict[str, Any] = {
             "trust_level": validated.trust_level,
@@ -4780,21 +4951,35 @@ class SessionImplMixin(HandlerMixinBase):
                     )
                     raw_response_text = summary_text
 
-            command_context = _task_command_context_status(parent_session)
             response_text = summary_text
-            if failure_reason == "" and task_request.handoff_mode == _TASK_HANDOFF_RAW_PASSTHROUGH:
-                degrade_reason = "raw_task_content_passthrough"
-                if recovery_checkpoint_id is None:
-                    raise RuntimeError("missing recovery checkpoint for raw task passthrough")
-                if command_context != "degraded":
-                    await self._mark_command_context_degraded(
+            command_context = _task_command_context_status(parent_session)
+            if task_request.handoff_mode == _TASK_HANDOFF_RAW_PASSTHROUGH:
+                async with self._parent_task_handoff_lock(parent_sid):
+                    command_context = _task_command_context_status(parent_session)
+                    if failure_reason == "":
+                        degrade_reason = "raw_task_content_passthrough"
+                        if recovery_checkpoint_id is None:
+                            raise RuntimeError(
+                                "missing recovery checkpoint for raw task passthrough"
+                            )
+                        if command_context != "degraded":
+                            await self._mark_command_context_degraded(
+                                session=parent_session,
+                                task_session_id=task_session.id,
+                                reason=degrade_reason,
+                                recovery_checkpoint_id=recovery_checkpoint_id,
+                            )
+                        response_text = raw_response_text or summary_text
+                    self._release_parent_raw_handoff_checkpoint(
                         session=parent_session,
-                        task_session_id=task_session.id,
-                        reason=degrade_reason,
-                        recovery_checkpoint_id=recovery_checkpoint_id,
+                        checkpoint_id=recovery_checkpoint_id,
                     )
-                command_context = "degraded"
-                response_text = raw_response_text or summary_text
+                    command_context = _task_command_context_status(parent_session)
+                    recovery_checkpoint_id = (
+                        _task_recovery_checkpoint_id(parent_session)
+                        if command_context == "degraded"
+                        else None
+                    )
 
             duration_ms = int((time.monotonic() - task_t0) * 1000)
             success = failure_reason == ""
@@ -4811,9 +4996,7 @@ class SessionImplMixin(HandlerMixinBase):
                 raw_log_ref=raw_log_ref,
                 handoff_mode=task_request.handoff_mode,
                 command_context=command_context,
-                recovery_checkpoint_id=(
-                    recovery_checkpoint_id if command_context == "degraded" else None
-                ),
+                recovery_checkpoint_id=recovery_checkpoint_id,
                 reason=failure_reason,
                 plan_hash=(
                     str(raw_plan_hash).strip()
@@ -4896,11 +5079,10 @@ class SessionImplMixin(HandlerMixinBase):
         if task_request is not None:
             if validated.session_mode != SessionMode.DEFAULT:
                 raise ValueError("delegated task sessions require a default COMMAND session")
-            async with self._parent_task_handoff_lock(validated.sid):
-                return await self._run_delegated_task_session(
-                    validated=validated,
-                    task_request=task_request,
-                )
+            return await self._run_delegated_task_session(
+                validated=validated,
+                task_request=task_request,
+            )
         planner_context = await self._build_context_for_planner(validated)
         planner_dispatch = await self._dispatch_to_planner(planner_context)
         execution = await self._evaluate_and_execute_actions(planner_dispatch)
@@ -5146,6 +5328,7 @@ class SessionImplMixin(HandlerMixinBase):
             raise ValueError("Session identity binding mismatch")
         terminated = self._session_manager.terminate(sid, reason=reason)
         if terminated:
+            self._clear_parent_task_handoff_lock(sid)
             await self._event_bus.publish(
                 SessionTerminated(
                     session_id=sid,

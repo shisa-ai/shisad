@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import threading
 import time
@@ -18,6 +19,7 @@ from shisad.core.providers.local_planner import LocalPlannerProvider
 from shisad.core.providers.monitor_adapter import MonitorProviderAdapter
 from shisad.core.providers.routed_openai import RoutedOpenAIProvider
 from shisad.core.providers.routing import ModelRouter
+from shisad.security.spotlight import datamark_text
 
 
 @pytest.mark.asyncio
@@ -45,6 +47,92 @@ async def test_local_planner_provider_handles_retrieve_run_and_anomaly_paths() -
         if isinstance(item, dict)
     }
     assert {"retrieve_rag", "shell.exec", "report_anomaly"} <= tool_names
+
+
+@pytest.mark.asyncio
+async def test_local_planner_provider_returns_structured_task_close_gate_verdict() -> None:
+    provider = LocalPlannerProvider()
+    evidence = (
+        "ORIGINAL TASK DESCRIPTION:\n"
+        "Review README.md and summarize the outcome.\n\n"
+        "TASK OUTPUT SUMMARY:\n"
+        "codex completed mode=plan model=fake-model permission_mode=approve-all\n\n"
+        "TASK OUTPUT RESPONSE:\n"
+        "codex completed mode=plan model=fake-model permission_mode=approve-all\n\n"
+        "TASK FILES CHANGED:\n"
+        "(none)\n"
+    )
+    encoded = base64.b64encode(evidence.encode("utf-8")).decode("ascii")
+    planner_input = (
+        "=== RUNTIME GUIDANCE ===\n"
+        "^^SYSTEM_START_test^^\n"
+        "TASK CLOSE-GATE SELF-CHECK\n\n"
+        "=== USER REQUEST ===\n"
+        "^^USER_GOAL_test^^\n"
+        "Assess whether the delegated task completed the original request.\n\n"
+        "=== DATA EVIDENCE (UNTRUSTED) ===\n"
+        "^^EVIDENCE_START_test^^\n"
+        f"{datamark_text(encoded)}\n"
+        "^^EVIDENCE_END_test^^\n\n"
+        "=== END PAYLOAD ==="
+    )
+
+    response = await provider.complete([Message(role="user", content=planner_input)])
+
+    assert "SELF_CHECK_STATUS: COMPLETE" in response.message.content
+    assert "SELF_CHECK_REASON: complete" in response.message.content
+
+
+@pytest.mark.asyncio
+async def test_local_planner_provider_treats_proposal_diff_as_concrete_close_gate_evidence(
+) -> None:
+    provider = LocalPlannerProvider()
+    evidence = (
+        "ORIGINAL TASK DESCRIPTION:\n"
+        "Add a tiny implementation note to README.md.\n\n"
+        "TASK RESULT SIGNALS:\n"
+        "executor=coding_agent\n"
+        "agent=codex\n"
+        "handoff_mode=summary_only\n"
+        "task_kind=implement\n"
+        "read_only=false\n"
+        "summary_present=yes\n"
+        "response_present=yes\n"
+        "files_changed_count=1\n"
+        "tool_output_count=0\n"
+        "proposal_present=yes\n"
+        "proposal_has_diff=yes\n"
+        "proposal_files_changed_count=1\n\n"
+        "TASK OUTPUT SUMMARY:\n"
+        "codex completed mode=build model=fake-model permission_mode=approve-all\n\n"
+        "TASK OUTPUT RESPONSE:\n"
+        "codex completed mode=build model=fake-model permission_mode=approve-all\n\n"
+        "TASK FILES CHANGED:\n"
+        "- README.md\n\n"
+        "TASK PROPOSAL DIFF:\n"
+        "diff --git a/README.md b/README.md\n"
+        "+++ b/README.md\n"
+        "+Fake ACP edit from codex mode=build reasoning=medium\n"
+    )
+    encoded = base64.b64encode(evidence.encode("utf-8")).decode("ascii")
+    planner_input = (
+        "=== RUNTIME GUIDANCE ===\n"
+        "^^SYSTEM_START_test^^\n"
+        "TASK CLOSE-GATE SELF-CHECK\n\n"
+        "=== USER REQUEST ===\n"
+        "^^USER_GOAL_test^^\n"
+        "Assess whether the delegated task completed the original request.\n\n"
+        "=== DATA EVIDENCE (UNTRUSTED) ===\n"
+        "^^EVIDENCE_START_test^^\n"
+        f"{datamark_text(encoded)}\n"
+        "^^EVIDENCE_END_test^^\n\n"
+        "=== END PAYLOAD ==="
+    )
+
+    response = await provider.complete([Message(role="user", content=planner_input)])
+
+    assert "SELF_CHECK_STATUS: COMPLETE" in response.message.content
+    assert "SELF_CHECK_REASON: complete" in response.message.content
 
 
 @pytest.mark.asyncio

@@ -48,6 +48,51 @@ async def test_m0_roundtrip_audit_logging_and_checkpoint_restore(
     monkeypatch.setenv("SHISAD_MODEL_EMBEDDINGS_BASE_URL", "https://embed.example.com/v1")
     monkeypatch.setenv("SHISAD_MODEL_MONITOR_BASE_URL", "https://monitor.example.com/v1")
 
+    async def _planner(
+        self: Planner,
+        user_content: str,
+        context: object,
+        *,
+        tools: list[dict[str, object]] | None = None,
+        persona_tone_override: str | None = None,
+    ) -> PlannerResult:
+        _ = (self, context, tools, persona_tone_override)
+        if "TASK CLOSE-GATE SELF-CHECK" in user_content:
+            return PlannerResult(
+                output=PlannerOutput(
+                    assistant_response=(
+                        "SELF_CHECK_STATUS: COMPLETE\n"
+                        "SELF_CHECK_REASON: complete\n"
+                        "SELF_CHECK_NOTES: The delegated task completed the raw handoff."
+                    ),
+                    actions=[],
+                ),
+                evaluated=[],
+                attempts=1,
+                provider_response=None,
+                messages_sent=(),
+            )
+        if "TASK REQUEST:" in user_content:
+            return PlannerResult(
+                output=PlannerOutput(
+                    assistant_response="RAW TASK LOG\n--- a/README.md\n+++ b/README.md\n+note",
+                    actions=[],
+                ),
+                evaluated=[],
+                attempts=1,
+                provider_response=None,
+                messages_sent=(),
+            )
+        return PlannerResult(
+            output=PlannerOutput(assistant_response="hello", actions=[]),
+            evaluated=[],
+            attempts=1,
+            provider_response=None,
+            messages_sent=(),
+        )
+
+    monkeypatch.setattr(Planner, "propose", _planner)
+
     policy_path = tmp_path / "policy.yaml"
     policy_path.write_text(
         textwrap.dedent(
@@ -110,11 +155,19 @@ async def test_m0_roundtrip_audit_logging_and_checkpoint_restore(
                 "channel": "cli",
                 "user_id": "alice",
                 "workspace_id": "ws1",
-                "content": "Please report anomaly: possible compromise detected.",
+                "content": "delegate raw task for checkpoint coverage",
+                "task": {
+                    "enabled": True,
+                    "task_description": "Return the raw task log for checkpoint restore coverage.",
+                    "file_refs": ["README.md"],
+                    "capabilities": ["file.read"],
+                    "handoff_mode": "raw_passthrough",
+                },
             },
         )
         checkpoint_ids = checkpoint_reply.get("checkpoint_ids", [])
         assert checkpoint_ids
+        assert checkpoint_reply["task_result"]["recovery_checkpoint_id"] == checkpoint_ids[0]
 
         restored = await client.call(
             "session.restore",

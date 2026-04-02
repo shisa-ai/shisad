@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import sys
 from contextlib import suppress
 from pathlib import Path
@@ -89,6 +90,32 @@ def _fake_coding_agent_command(agent_name: str, *extra_args: str) -> str:
     extra = " ".join(extra_args)
     suffix = f" {extra}" if extra else ""
     return f"{sys.executable} {script} --agent-name {agent_name}{suffix}"
+
+
+@pytest.fixture(autouse=True)
+def _force_local_planner_routes(monkeypatch: pytest.MonkeyPatch) -> None:
+    # These dev-loop integration tests cover coding-task orchestration, not live
+    # provider behavior. Keep the planner local so ambient API keys do not make
+    # the suite depend on remote model availability or output variance.
+    for key in (
+        "SHISAD_MODEL_REMOTE_ENABLED",
+        "SHISAD_MODEL_PLANNER_REMOTE_ENABLED",
+        "SHISAD_MODEL_EMBEDDINGS_REMOTE_ENABLED",
+        "SHISAD_MODEL_MONITOR_REMOTE_ENABLED",
+    ):
+        monkeypatch.setenv(key, "false")
+    for key in (
+        "SHISA_API_KEY",
+        "OPENAI_API_KEY",
+        "OPENROUTER_API_KEY",
+        "GEMINI_API_KEY",
+        "SHISAD_MODEL_API_KEY",
+        "SHISAD_MODEL_PLANNER_API_KEY",
+        "SHISAD_MODEL_EMBEDDINGS_API_KEY",
+        "SHISAD_MODEL_MONITOR_API_KEY",
+    ):
+        if key in os.environ:
+            monkeypatch.delenv(key)
 
 
 @pytest.mark.asyncio

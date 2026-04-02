@@ -173,6 +173,16 @@ def test_m1_task_close_gate_parser_rejects_embedded_whole_json_with_free_text() 
     assert parsed.passed is False
 
 
+def test_m1_task_close_gate_parser_rejects_duplicate_json_keys() -> None:
+    parsed = _parse_task_close_gate_response(
+        '{"status":"mismatch","status":"complete","reason":"goal_drift","notes":"dup key"}'
+    )
+
+    assert parsed.status == "inconclusive"
+    assert parsed.reason == "duplicate_json_keys"
+    assert parsed.passed is False
+
+
 def test_m1_task_close_gate_parser_compacts_structured_notes() -> None:
     long_notes = "This note spans lines and should be compacted. " * 16
     parsed = _parse_task_close_gate_response(
