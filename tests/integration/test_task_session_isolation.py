@@ -11,6 +11,7 @@ import pytest
 
 from shisad.core.api.transport import ControlClient
 from shisad.core.config import DaemonConfig
+from shisad.core.events import EventBus, TaskSessionCompleted
 from shisad.core.planner import Planner, PlannerOutput, PlannerResult
 from shisad.daemon.runner import run_daemon
 
@@ -181,7 +182,12 @@ async def test_m2_task_session_isolates_command_context_and_returns_structured_h
         assert task_result["success"] is True
         assert task_result["handoff_mode"] == "summary_only"
         assert task_result["raw_log_ref"]
+        assert task_result["self_check_status"] == "complete"
+        assert task_result["self_check_ref"]
+        assert task_result["taint_labels"] == ["untrusted"]
         assert completed_event["data"]["parent_session_id"] == sid
+        assert completed_event["data"]["self_check_status"] == "complete"
+        assert completed_event["data"]["self_check_ref"]
         assert "hello from command history" not in captured_inputs[-1]
         assert "MEMORY CANARY" not in captured_inputs[-1]
         assert "MEMORY CONTEXT" not in captured_inputs[-1]
@@ -527,6 +533,348 @@ async def test_m1_task_close_gate_flags_goal_drift_before_handoff(
             or "changed scope" in task_result["summary"].lower()
         )
     finally:
+        await _shutdown_daemon(daemon_task, client)
+
+
+@pytest.mark.asyncio
+async def test_m1_task_close_gate_inconclusive_blocks_handoff(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _planner(
+        self: Planner,
+        user_content: str,
+        context: object,
+        *,
+        tools: list[dict[str, object]] | None = None,
+        persona_tone_override: str | None = None,
+    ) -> PlannerResult:
+        _ = (self, context, tools, persona_tone_override)
+        if "TASK CLOSE-GATE SELF-CHECK" in user_content:
+            raise RuntimeError("close_gate_unavailable")
+        return PlannerResult(
+            output=PlannerOutput(
+                assistant_response="I reviewed README.md and drafted a summary.",
+                actions=[],
+            ),
+            evaluated=[],
+            attempts=1,
+            provider_response=None,
+            messages_sent=(),
+        )
+
+    monkeypatch.setattr(Planner, "propose", _planner)
+    daemon_task, client = await _start_daemon(
+        tmp_path,
+        policy_text=_policy_with_caps("file.read"),
+    )
+    try:
+        created = await client.call(
+            "session.create",
+            {"channel": "cli", "user_id": "alice", "workspace_id": "ws1"},
+        )
+        sid = str(created["session_id"])
+        result = await client.call(
+            "session.message",
+            {
+                "session_id": sid,
+                "content": "delegate the README review",
+                "task": {
+                    "enabled": True,
+                    "task_description": "Review README.md and summarize it.",
+                    "file_refs": ["README.md"],
+                    "capabilities": ["file.read"],
+                },
+            },
+        )
+
+        task_result = dict(result.get("task_result") or {})
+        completed_event = await _wait_for_event(
+            client,
+            event_type="TaskSessionCompleted",
+            predicate=lambda item: str(item.get("session_id", "")).strip()
+            == str(task_result.get("task_session_id", "")).strip(),
+        )
+
+        assert task_result["success"] is False
+        assert task_result["reason"] == "task_self_check_inconclusive"
+        assert task_result["self_check_status"] == "inconclusive"
+        assert task_result["self_check_ref"]
+        assert "self-check" in task_result["summary"].lower()
+        assert completed_event["data"]["reason"] == "task_self_check_inconclusive"
+        assert completed_event["data"]["self_check_status"] == "inconclusive"
+    finally:
+        await _shutdown_daemon(daemon_task, client)
+
+
+@pytest.mark.asyncio
+async def test_m1_raw_task_handoff_failed_self_check_does_not_degrade_command_context(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _planner(
+        self: Planner,
+        user_content: str,
+        context: object,
+        *,
+        tools: list[dict[str, object]] | None = None,
+        persona_tone_override: str | None = None,
+    ) -> PlannerResult:
+        _ = (self, context, tools, persona_tone_override)
+        if "TASK CLOSE-GATE SELF-CHECK" in user_content:
+            return PlannerResult(
+                output=PlannerOutput(
+                    assistant_response=(
+                        "SELF_CHECK_STATUS: MISMATCH\n"
+                        "SELF_CHECK_REASON: goal_drift\n"
+                        "SELF_CHECK_NOTES: The raw task output drifted from the delegated goal."
+                    ),
+                    actions=[],
+                ),
+                evaluated=[],
+                attempts=1,
+                provider_response=None,
+                messages_sent=(),
+            )
+        return PlannerResult(
+            output=PlannerOutput(
+                assistant_response="RAW TASK LOG\n--- a/README.md\n+++ b/README.md\n+secret",
+                actions=[],
+            ),
+            evaluated=[],
+            attempts=1,
+            provider_response=None,
+            messages_sent=(),
+        )
+
+    monkeypatch.setattr(Planner, "propose", _planner)
+    daemon_task, client = await _start_daemon(
+        tmp_path,
+        policy_text=_policy_with_caps("file.read"),
+    )
+    try:
+        created = await client.call(
+            "session.create",
+            {"channel": "cli", "user_id": "admin", "workspace_id": "ops"},
+        )
+        sid = str(created["session_id"])
+
+        delegated = await client.call(
+            "session.message",
+            {
+                "session_id": sid,
+                "content": "debug the raw task output",
+                "task": {
+                    "enabled": True,
+                    "task_description": "Return the raw task log.",
+                    "file_refs": ["README.md"],
+                    "capabilities": ["file.read"],
+                    "handoff_mode": "raw_passthrough",
+                },
+            },
+        )
+        task_result = dict(delegated.get("task_result") or {})
+
+        sessions = await client.call("session.list")
+        session_row = next(item for item in sessions["sessions"] if item["id"] == sid)
+        degraded_events = await client.call(
+            "audit.query",
+            {"event_type": "CommandContextDegraded", "session_id": sid, "limit": 10},
+        )
+        matching_events = [
+            event
+            for event in degraded_events.get("events", [])
+            if str(event.get("session_id", "")).strip() == sid
+        ]
+
+        assert task_result["success"] is False
+        assert task_result["reason"] == "task_self_check_mismatch"
+        assert task_result["self_check_status"] == "mismatch"
+        assert task_result["command_context"] == "clean"
+        assert not task_result["recovery_checkpoint_id"]
+        assert session_row["command_context"] == "clean"
+        assert matching_events == []
+    finally:
+        await _shutdown_daemon(daemon_task, client)
+
+
+@pytest.mark.asyncio
+async def test_m1_untrusted_parent_task_session_does_not_upgrade_trust_level(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    planner_entered = asyncio.Event()
+    release_task = asyncio.Event()
+    task_host_patterns: list[str] = []
+
+    async def _planner(
+        self: Planner,
+        user_content: str,
+        context: object,
+        *,
+        tools: list[dict[str, object]] | None = None,
+        persona_tone_override: str | None = None,
+    ) -> PlannerResult:
+        _ = (self, tools, persona_tone_override)
+        if "TASK CLOSE-GATE SELF-CHECK" in user_content:
+            return _complete_close_gate_result()
+        if "TASK REQUEST:" in user_content:
+            task_host_patterns[:] = sorted(getattr(context, "user_goal_host_patterns", set()))
+            planner_entered.set()
+            await release_task.wait()
+            return PlannerResult(
+                output=PlannerOutput(assistant_response="task finished", actions=[]),
+                evaluated=[],
+                attempts=1,
+                provider_response=None,
+                messages_sent=(),
+            )
+        return PlannerResult(
+            output=PlannerOutput(assistant_response="ok", actions=[]),
+            evaluated=[],
+            attempts=1,
+            provider_response=None,
+            messages_sent=(),
+        )
+
+    monkeypatch.setattr(Planner, "propose", _planner)
+    daemon_task, client = await _start_daemon(
+        tmp_path,
+        policy_text=_policy_with_caps("file.read"),
+    )
+    observer = ControlClient(tmp_path / "control.sock")
+    await observer.connect()
+    try:
+        created = await client.call(
+            "session.create",
+            {"channel": "matrix", "user_id": "alice", "workspace_id": "ws1"},
+        )
+        sid = str(created["session_id"])
+
+        message_task = asyncio.create_task(
+            client.call(
+                "session.message",
+                {
+                    "session_id": sid,
+                    "channel": "matrix",
+                    "user_id": "alice",
+                    "workspace_id": "ws1",
+                    "content": "delegate this review",
+                    "task": {
+                        "enabled": True,
+                        "task_description": "Review https://example.com in isolation.",
+                        "file_refs": ["README.md"],
+                        "capabilities": ["file.read"],
+                    },
+                },
+            )
+        )
+
+        started = await _wait_for_event(
+            observer,
+            event_type="TaskSessionStarted",
+            predicate=lambda item: str(item.get("data", {}).get("parent_session_id", "")).strip()
+            == sid,
+        )
+        task_sid = str(started.get("session_id", "")).strip()
+        await asyncio.wait_for(planner_entered.wait(), timeout=2.0)
+
+        sessions = await observer.call("session.list")
+        parent_row = next(item for item in sessions["sessions"] if item["id"] == sid)
+        task_row = next(item for item in sessions["sessions"] if item["id"] == task_sid)
+
+        assert parent_row["trust_level"] == "untrusted"
+        assert task_row["trust_level"] == "untrusted"
+        assert task_host_patterns == []
+
+        release_task.set()
+        result = await message_task
+        task_result = dict(result.get("task_result") or {})
+        assert task_result["success"] is True
+        assert task_result["self_check_status"] == "complete"
+    finally:
+        release_task.set()
+        await observer.close()
+        await _shutdown_daemon(daemon_task, client)
+
+
+@pytest.mark.asyncio
+async def test_m1_task_session_terminates_even_if_completion_event_publish_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original_publish = EventBus.publish
+
+    async def _publish_with_failure(self: EventBus, event: object) -> None:
+        if isinstance(event, TaskSessionCompleted):
+            raise RuntimeError("simulated_task_publish_failure")
+        await original_publish(self, event)
+
+    async def _planner(
+        self: Planner,
+        user_content: str,
+        context: object,
+        *,
+        tools: list[dict[str, object]] | None = None,
+        persona_tone_override: str | None = None,
+    ) -> PlannerResult:
+        _ = (self, context, tools, persona_tone_override)
+        if "TASK CLOSE-GATE SELF-CHECK" in user_content:
+            return _complete_close_gate_result()
+        return PlannerResult(
+            output=PlannerOutput(assistant_response="task finished", actions=[]),
+            evaluated=[],
+            attempts=1,
+            provider_response=None,
+            messages_sent=(),
+        )
+
+    monkeypatch.setattr(EventBus, "publish", _publish_with_failure)
+    monkeypatch.setattr(Planner, "propose", _planner)
+    daemon_task, client = await _start_daemon(
+        tmp_path,
+        policy_text=_policy_with_caps("file.read"),
+    )
+    observer = ControlClient(tmp_path / "control.sock")
+    await observer.connect()
+    try:
+        created = await client.call(
+            "session.create",
+            {"channel": "cli", "user_id": "alice", "workspace_id": "ws1"},
+        )
+        sid = str(created["session_id"])
+
+        message_task = asyncio.create_task(
+            client.call(
+                "session.message",
+                {
+                    "session_id": sid,
+                    "content": "delegate the README review",
+                    "task": {
+                        "enabled": True,
+                        "task_description": "Review README.md in isolation.",
+                        "file_refs": ["README.md"],
+                        "capabilities": ["file.read"],
+                    },
+                },
+            )
+        )
+        started = await _wait_for_event(
+            observer,
+            event_type="TaskSessionStarted",
+            predicate=lambda item: str(item.get("data", {}).get("parent_session_id", "")).strip()
+            == sid,
+        )
+        task_sid = str(started.get("session_id", "")).strip()
+
+        with pytest.raises(RuntimeError, match="Internal error"):
+            await message_task
+
+        sessions = await observer.call("session.list")
+        active_ids = {str(item["id"]) for item in sessions["sessions"]}
+        assert task_sid not in active_ids
+    finally:
+        await observer.close()
         await _shutdown_daemon(daemon_task, client)
 
 

@@ -583,8 +583,8 @@ def _compose_task_request_content(
     task_description: str,
     file_refs: Sequence[str],
 ) -> str:
-    # task_description is authenticated COMMAND input and stays inside a fixed
-    # TASK envelope so marker-like user text cannot become runtime scaffold.
+    # TASK descriptions stay inside a fixed envelope so marker-like text
+    # cannot become runtime scaffold, regardless of parent-session trust.
     description = task_description.strip() or "Complete the delegated task."
     ordered_refs: list[str] = []
     seen: set[str] = set()
@@ -627,77 +627,42 @@ def _normalize_task_close_gate_reason(*, raw: Any, status: str) -> str:
     return "inconclusive"
 
 
-def _heuristic_task_close_gate_status(text: str) -> str:
-    lowered = text.lower()
-    if any(token in lowered for token in ("mismatch", "goal drift", "drifted", "wrong task")):
-        return _TASK_CLOSE_GATE_STATUS_MISMATCH
-    if any(
-        token in lowered
-        for token in (
-            "incomplete",
-            "not complete",
-            "not completed",
-            "did not complete",
-            "missing",
-            "not done",
-        )
-    ):
-        return _TASK_CLOSE_GATE_STATUS_INCOMPLETE
-    if any(
-        token in lowered
-        for token in ("complete", "completed", "matches the task", "satisfies the task")
-    ):
-        return _TASK_CLOSE_GATE_STATUS_COMPLETE
-    return _TASK_CLOSE_GATE_STATUS_INCONCLUSIVE
-
-
 def _parse_task_close_gate_response(text: str) -> TaskCloseGateAssessment:
     stripped = text.strip()
     parsed_status = ""
     parsed_reason = ""
     parsed_notes = ""
 
-    json_candidates: list[str] = []
-    if stripped.startswith("{") and stripped.endswith("}"):
-        json_candidates.append(stripped)
-    elif "{" in stripped and "}" in stripped:
-        json_candidates.append(stripped[stripped.find("{") : stripped.rfind("}") + 1])
-    for candidate in json_candidates:
-        try:
-            payload = json.loads(candidate)
-        except json.JSONDecodeError:
+    for line in stripped.splitlines():
+        key, sep, value = line.partition(":")
+        if not sep:
             continue
+        normalized_key = key.strip().upper()
+        normalized_value = value.strip()
+        if normalized_key == "SELF_CHECK_STATUS":
+            parsed_status = _normalize_task_close_gate_status(normalized_value)
+        elif normalized_key == "SELF_CHECK_REASON":
+            parsed_reason = normalized_value
+        elif normalized_key == "SELF_CHECK_NOTES":
+            parsed_notes = normalized_value
+
+    if not parsed_status and stripped.startswith("{") and stripped.endswith("}"):
+        try:
+            payload = json.loads(stripped)
+        except json.JSONDecodeError:
+            payload = None
         if isinstance(payload, Mapping):
             parsed_status = _normalize_task_close_gate_status(payload.get("status", ""))
-            parsed_reason = _normalize_task_close_gate_reason(
-                raw=payload.get("reason", ""),
-                status=parsed_status,
-            )
+            parsed_reason = str(payload.get("reason", "")).strip()
             parsed_notes = str(payload.get("notes", "")).strip()
-            break
 
     if not parsed_status:
-        for line in stripped.splitlines():
-            key, sep, value = line.partition(":")
-            if not sep:
-                continue
-            normalized_key = key.strip().upper()
-            normalized_value = value.strip()
-            if normalized_key == "SELF_CHECK_STATUS":
-                parsed_status = _normalize_task_close_gate_status(normalized_value)
-            elif normalized_key == "SELF_CHECK_REASON":
-                parsed_reason = normalized_value
-            elif normalized_key == "SELF_CHECK_NOTES":
-                parsed_notes = normalized_value
-
-    if not parsed_status:
-        parsed_status = _heuristic_task_close_gate_status(stripped)
+        parsed_status = _TASK_CLOSE_GATE_STATUS_INCONCLUSIVE
     parsed_reason = _normalize_task_close_gate_reason(raw=parsed_reason, status=parsed_status)
-    if not parsed_notes:
-        parsed_notes = _compact_context_text(
-            stripped or "Self-check did not return structured details.",
-            max_chars=_TASK_CLOSE_GATE_NOTES_MAX_CHARS,
-        )
+    parsed_notes = _compact_context_text(
+        parsed_notes or stripped or "Self-check did not return structured details.",
+        max_chars=_TASK_CLOSE_GATE_NOTES_MAX_CHARS,
+    )
 
     return TaskCloseGateAssessment(
         status=parsed_status,
@@ -4016,7 +3981,7 @@ class SessionImplMixin(HandlerMixinBase):
             "channel": task_session.channel,
             "user_id": task_session.user_id,
             "workspace_id": task_session.workspace_id,
-            "trust_level": "internal",
+            "trust_level": parent_validation.trust_level,
             "_internal_ingress_marker": self._internal_ingress_marker,
             "_firewall_result": task_firewall_result.model_dump(mode="json"),
         }
@@ -4102,6 +4067,7 @@ class SessionImplMixin(HandlerMixinBase):
             ),
             user_goal="Assess whether the delegated task completed the original request.",
             untrusted_content=evidence_text,
+            encode_untrusted=True,
         )
         context = PolicyContext(
             capabilities=set(),
@@ -4110,7 +4076,8 @@ class SessionImplMixin(HandlerMixinBase):
             workspace_id=task_session.workspace_id,
             user_id=task_session.user_id,
             tool_allowlist=set(),
-            trust_level="internal",
+            trust_level=str(task_session.metadata.get("trust_level", "untrusted")).strip()
+            or "untrusted",
         )
         try:
             result = await self._planner.propose(
@@ -4320,7 +4287,7 @@ class SessionImplMixin(HandlerMixinBase):
             recovery_checkpoint_id = checkpoint.checkpoint_id
 
         task_metadata: dict[str, Any] = {
-            "trust_level": "internal",
+            "trust_level": validated.trust_level,
             "session_mode": SessionMode.TASK.value,
             _COMMAND_CONTEXT_STATUS_KEY: "clean",
             "task_file_refs": list(task_request.file_refs),
@@ -4342,484 +4309,484 @@ class SessionImplMixin(HandlerMixinBase):
             capabilities=set(task_request.capabilities),
             metadata=task_metadata,
         )
-        await self._event_bus.publish(
-            SessionCreated(
-                session_id=task_session.id,
-                user_id=task_session.user_id,
-                workspace_id=task_session.workspace_id,
-                actor="task_session",
-            )
-        )
-        await self._event_bus.publish(
-            TaskSessionStarted(
-                session_id=task_session.id,
-                actor="task_session",
-                parent_session_id=str(parent_sid),
-                task_description_hash=_short_hash(task_request.task_description),
-                file_refs=list(task_request.file_refs),
-                capabilities=sorted(cap.value for cap in task_request.capabilities),
-                executor=task_request.executor,
-                agent=(
-                    task_request.coding_config.preferred_agent
-                    if task_request.coding_config is not None
-                    else ""
-                )
-                or "",
-                handoff_mode=task_request.handoff_mode,
-            )
-        )
-
-        task_t0 = time.monotonic()
-        task_response_payload: dict[str, Any] = {}
-        failure_reason = ""
-        selected_agent: str | None = None
-        selected_cost: float | None = None
-
         try:
-            if task_request.executor == "coding_agent":
-                coding_config = task_request.coding_config or CodingAgentConfig(
-                    timeout_sec=self._config.coding_agent_timeout_seconds
+            await self._event_bus.publish(
+                SessionCreated(
+                    session_id=task_session.id,
+                    user_id=task_session.user_id,
+                    workspace_id=task_session.workspace_id,
+                    actor="task_session",
                 )
-                missing_capabilities = _missing_coding_agent_capabilities(
-                    capabilities=task_request.capabilities,
-                    read_only=coding_config.read_only,
-                )
-                if missing_capabilities:
-                    failure_reason = "coding_agent_capability_denied"
-                    task_response_payload = {
-                        "response": (
-                            "Coding-agent TASK denied by TASK capability scope. "
-                            f"Missing capabilities: {', '.join(missing_capabilities)}."
-                        ),
-                        "plan_hash": None,
-                        "blocked_actions": 0,
-                        "confirmation_required_actions": 0,
-                        "executed_actions": 0,
-                        "tool_outputs": [],
-                    }
-                else:
-                    selection_attempts: list[dict[str, Any]] = []
-                    exhausted_agents: set[str] = set()
-                    coding_record = None
-                    worktree_path = str(
-                        self._coding_manager.worktree_path_for(str(task_session.id))
+            )
+            await self._event_bus.publish(
+                TaskSessionStarted(
+                    session_id=task_session.id,
+                    actor="task_session",
+                    parent_session_id=str(parent_sid),
+                    task_description_hash=_short_hash(task_request.task_description),
+                    file_refs=list(task_request.file_refs),
+                    capabilities=sorted(cap.value for cap in task_request.capabilities),
+                    executor=task_request.executor,
+                    agent=(
+                        task_request.coding_config.preferred_agent
+                        if task_request.coding_config is not None
+                        else ""
                     )
+                    or "",
+                    handoff_mode=task_request.handoff_mode,
+                )
+            )
 
-                    async def _publish_coding_selected(
-                        *,
-                        current_config: CodingAgentConfig,
-                        selection_result: Any,
-                    ) -> None:
-                        await self._event_bus.publish(
-                            CodingAgentSelected(
-                                session_id=task_session.id,
-                                actor="coding_agent",
-                                preferred_agent=current_config.preferred_agent or "",
-                                fallback_agents=list(current_config.fallback_agents),
-                                selected_agent=(
-                                    selection_result.spec.name
-                                    if selection_result.spec is not None
-                                    else ""
-                                ),
-                                fallback_used=selection_result.fallback_used,
-                                attempts=selection_attempts,
-                            )
+            task_t0 = time.monotonic()
+            task_response_payload: dict[str, Any] = {}
+            failure_reason = ""
+            selected_agent: str | None = None
+            selected_cost: float | None = None
+
+            try:
+                if task_request.executor == "coding_agent":
+                    coding_config = task_request.coding_config or CodingAgentConfig(
+                        timeout_sec=self._config.coding_agent_timeout_seconds
+                    )
+                    missing_capabilities = _missing_coding_agent_capabilities(
+                        capabilities=task_request.capabilities,
+                        read_only=coding_config.read_only,
+                    )
+                    if missing_capabilities:
+                        failure_reason = "coding_agent_capability_denied"
+                        task_response_payload = {
+                            "response": (
+                                "Coding-agent TASK denied by TASK capability scope. "
+                                f"Missing capabilities: {', '.join(missing_capabilities)}."
+                            ),
+                            "plan_hash": None,
+                            "blocked_actions": 0,
+                            "confirmation_required_actions": 0,
+                            "executed_actions": 0,
+                            "tool_outputs": [],
+                        }
+                    else:
+                        selection_attempts: list[dict[str, Any]] = []
+                        exhausted_agents: set[str] = set()
+                        coding_record = None
+                        worktree_path = str(
+                            self._coding_manager.worktree_path_for(str(task_session.id))
                         )
 
-                    while True:
-                        remaining_agents = tuple(
-                            agent
-                            for agent in coding_config.selection_chain()
-                            if agent not in exhausted_agents
-                        )
-                        if not remaining_agents:
-                            break
+                        async def _publish_coding_selected(
+                            *,
+                            current_config: CodingAgentConfig,
+                            selection_result: Any,
+                        ) -> None:
+                            await self._event_bus.publish(
+                                CodingAgentSelected(
+                                    session_id=task_session.id,
+                                    actor="coding_agent",
+                                    preferred_agent=current_config.preferred_agent or "",
+                                    fallback_agents=list(current_config.fallback_agents),
+                                    selected_agent=(
+                                        selection_result.spec.name
+                                        if selection_result.spec is not None
+                                        else ""
+                                    ),
+                                    fallback_used=selection_result.fallback_used,
+                                    attempts=selection_attempts,
+                                )
+                            )
 
-                        current_config = replace(
-                            coding_config,
-                            preferred_agent=remaining_agents[0],
-                            fallback_agents=tuple(remaining_agents[1:]),
-                        )
-                        selection = self._coding_manager.select_agent(current_config)
-                        selection_attempts = _merge_coding_selection_attempts(
-                            selection_attempts,
-                            selection.attempts,
-                        )
-                        await _publish_coding_selected(
-                            current_config=current_config,
-                            selection_result=selection,
-                        )
-                        if selection.spec is None:
-                            coding_record = await self._coding_manager.execute(
-                                task_session_id=str(task_session.id),
-                                task_description=task_request.task_description,
-                                file_refs=task_request.file_refs,
-                                config=current_config,
-                                selection=selection,
+                        while True:
+                            remaining_agents = tuple(
+                                agent
+                                for agent in coding_config.selection_chain()
+                                if agent not in exhausted_agents
                             )
-                            break
+                            if not remaining_agents:
+                                break
 
-                        await self._event_bus.publish(
-                            CodingAgentSessionStarted(
-                                session_id=task_session.id,
-                                actor="coding_agent",
-                                agent=selection.spec.name,
-                                task_kind=current_config.task_kind,
-                                read_only=current_config.read_only,
-                                worktree_path=worktree_path,
+                            current_config = replace(
+                                coding_config,
+                                preferred_agent=remaining_agents[0],
+                                fallback_agents=tuple(remaining_agents[1:]),
                             )
-                        )
-                        attempt_t0 = time.monotonic()
-                        try:
-                            coding_record = await self._coding_manager.execute(
-                                task_session_id=str(task_session.id),
-                                task_description=task_request.task_description,
-                                file_refs=task_request.file_refs,
-                                config=current_config,
-                                selection=selection,
-                            )
-                        except Exception as exc:
-                            failure_reason = f"task_error:{exc.__class__.__name__}"
-                            logger.warning(
-                                "Delegated coding-agent task session %s failed",
-                                task_session.id,
-                                exc_info=True,
-                            )
-                            selection_attempts = _update_coding_selection_attempt_reason(
+                            selection = self._coding_manager.select_agent(current_config)
+                            selection_attempts = _merge_coding_selection_attempts(
                                 selection_attempts,
-                                agent=selection.spec.name,
-                                reason=failure_reason,
+                                selection.attempts,
                             )
                             await _publish_coding_selected(
                                 current_config=current_config,
                                 selection_result=selection,
                             )
-                            duration_ms = int((time.monotonic() - attempt_t0) * 1000)
+                            if selection.spec is None:
+                                coding_record = await self._coding_manager.execute(
+                                    task_session_id=str(task_session.id),
+                                    task_description=task_request.task_description,
+                                    file_refs=task_request.file_refs,
+                                    config=current_config,
+                                    selection=selection,
+                                )
+                                break
+
                             await self._event_bus.publish(
-                                CodingAgentSessionCompleted(
+                                CodingAgentSessionStarted(
                                     session_id=task_session.id,
                                     actor="coding_agent",
                                     agent=selection.spec.name,
                                     task_kind=current_config.task_kind,
-                                    success=False,
-                                    reason=failure_reason,
-                                    stop_reason="",
-                                    duration_ms=duration_ms,
-                                    cost=None,
-                                    files_changed=[],
+                                    read_only=current_config.read_only,
+                                    worktree_path=worktree_path,
                                 )
                             )
-                            task_response_payload = {
-                                "response": "Delegated task failed before completion.",
-                                "plan_hash": None,
-                                "blocked_actions": 0,
-                                "confirmation_required_actions": 0,
-                                "executed_actions": 0,
-                                "tool_outputs": [],
-                            }
+                            attempt_t0 = time.monotonic()
+                            try:
+                                coding_record = await self._coding_manager.execute(
+                                    task_session_id=str(task_session.id),
+                                    task_description=task_request.task_description,
+                                    file_refs=task_request.file_refs,
+                                    config=current_config,
+                                    selection=selection,
+                                )
+                            except Exception as exc:
+                                failure_reason = f"task_error:{exc.__class__.__name__}"
+                                logger.warning(
+                                    "Delegated coding-agent task session %s failed",
+                                    task_session.id,
+                                    exc_info=True,
+                                )
+                                selection_attempts = _update_coding_selection_attempt_reason(
+                                    selection_attempts,
+                                    agent=selection.spec.name,
+                                    reason=failure_reason,
+                                )
+                                await _publish_coding_selected(
+                                    current_config=current_config,
+                                    selection_result=selection,
+                                )
+                                duration_ms = int((time.monotonic() - attempt_t0) * 1000)
+                                await self._event_bus.publish(
+                                    CodingAgentSessionCompleted(
+                                        session_id=task_session.id,
+                                        actor="coding_agent",
+                                        agent=selection.spec.name,
+                                        task_kind=current_config.task_kind,
+                                        success=False,
+                                        reason=failure_reason,
+                                        stop_reason="",
+                                        duration_ms=duration_ms,
+                                        cost=None,
+                                        files_changed=[],
+                                    )
+                                )
+                                task_response_payload = {
+                                    "response": "Delegated task failed before completion.",
+                                    "plan_hash": None,
+                                    "blocked_actions": 0,
+                                    "confirmation_required_actions": 0,
+                                    "executed_actions": 0,
+                                    "tool_outputs": [],
+                                }
+                                break
+
+                            exhausted_agents.update(
+                                str(attempt.agent).strip()
+                                for attempt in selection.attempts
+                                if str(attempt.agent).strip()
+                            )
+                            selected_agent = coding_record.selected_agent or None
+                            selected_cost = coding_record.result.cost
+                            if coding_record.error_code == "timeout":
+                                failure_reason = "task_timeout"
+                            elif coding_record.error_code:
+                                failure_reason = coding_record.error_code
+                            elif not coding_record.result.success:
+                                failure_reason = "coding_agent_failed"
+                            else:
+                                failure_reason = ""
+                            await self._event_bus.publish(
+                                CodingAgentSessionCompleted(
+                                    session_id=task_session.id,
+                                    actor="coding_agent",
+                                    agent=coding_record.selected_agent,
+                                    task_kind=current_config.task_kind,
+                                    success=coding_record.result.success,
+                                    reason=failure_reason,
+                                    stop_reason=coding_record.stop_reason,
+                                    duration_ms=coding_record.result.duration_ms,
+                                    cost=coding_record.result.cost,
+                                    files_changed=list(coding_record.result.files_changed),
+                                )
+                            )
+                            if coding_record.error_code in {"agent_unavailable", "protocol_error"}:
+                                selection_attempts = _update_coding_selection_attempt_reason(
+                                    selection_attempts,
+                                    agent=coding_record.selected_agent or selection.spec.name,
+                                    reason=coding_record.error_code,
+                                )
+                                await _publish_coding_selected(
+                                    current_config=current_config,
+                                    selection_result=selection,
+                                )
+                                continue
                             break
 
-                        exhausted_agents.update(
-                            str(attempt.agent).strip()
-                            for attempt in selection.attempts
-                            if str(attempt.agent).strip()
-                        )
-                        selected_agent = coding_record.selected_agent or None
-                        selected_cost = coding_record.result.cost
-                        if coding_record.error_code == "timeout":
-                            failure_reason = "task_timeout"
-                        elif coding_record.error_code:
-                            failure_reason = coding_record.error_code
-                        elif not coding_record.result.success:
-                            failure_reason = "coding_agent_failed"
-                        else:
-                            failure_reason = ""
-                        await self._event_bus.publish(
-                            CodingAgentSessionCompleted(
-                                session_id=task_session.id,
-                                actor="coding_agent",
-                                agent=coding_record.selected_agent,
-                                task_kind=current_config.task_kind,
-                                success=coding_record.result.success,
-                                reason=failure_reason,
-                                stop_reason=coding_record.stop_reason,
-                                duration_ms=coding_record.result.duration_ms,
-                                cost=coding_record.result.cost,
-                                files_changed=list(coding_record.result.files_changed),
-                            )
-                        )
-                        if coding_record.error_code in {"agent_unavailable", "protocol_error"}:
-                            selection_attempts = _update_coding_selection_attempt_reason(
-                                selection_attempts,
-                                agent=coding_record.selected_agent or selection.spec.name,
-                                reason=coding_record.error_code,
-                            )
-                            await _publish_coding_selected(
-                                current_config=current_config,
-                                selection_result=selection,
-                            )
-                            continue
-                        break
+                        if coding_record is not None and not failure_reason:
+                            if coding_record.error_code == "timeout":
+                                failure_reason = "task_timeout"
+                            elif coding_record.error_code:
+                                failure_reason = coding_record.error_code
+                            elif not coding_record.result.success:
+                                failure_reason = "coding_agent_failed"
 
-                    if coding_record is not None and not failure_reason:
-                        if coding_record.error_code == "timeout":
-                            failure_reason = "task_timeout"
-                        elif coding_record.error_code:
-                            failure_reason = coding_record.error_code
-                        elif not coding_record.result.success:
-                            failure_reason = "coding_agent_failed"
-
-                    if not task_response_payload:
-                        if coding_record is None:
-                            failure_reason = "agent_unavailable"
-                            task_response_payload = {
-                                "response": "Requested coding agent is not available.",
-                                "plan_hash": None,
-                                "blocked_actions": 0,
-                                "confirmation_required_actions": 0,
-                                "executed_actions": 0,
-                                "tool_outputs": [],
-                            }
+                        if not task_response_payload:
+                            if coding_record is None:
+                                failure_reason = "agent_unavailable"
+                                task_response_payload = {
+                                    "response": "Requested coding agent is not available.",
+                                    "plan_hash": None,
+                                    "blocked_actions": 0,
+                                    "confirmation_required_actions": 0,
+                                    "executed_actions": 0,
+                                    "tool_outputs": [],
+                                }
+                            else:
+                                task_response_payload = {
+                                    "response": coding_record.result.summary,
+                                    "plan_hash": None,
+                                    "blocked_actions": 0,
+                                    "confirmation_required_actions": 0,
+                                    "executed_actions": 0,
+                                    "tool_outputs": [],
+                                    "raw_log_payload": coding_record.raw_log_payload or {},
+                                    "proposal_payload": coding_record.proposal_payload,
+                                    "files_changed": list(coding_record.result.files_changed),
+                                    "agent": coding_record.selected_agent,
+                                    "cost": coding_record.result.cost,
+                                    "stop_reason": coding_record.stop_reason,
+                                    "worktree_path": coding_record.worktree_path,
+                                }
+                else:
+                    task_params = self._task_internal_ingress_payload(
+                        task_session=task_session,
+                        task_request=task_request,
+                        parent_validation=validated,
+                    )
+                    task_call = asyncio.create_task(self.do_session_message(task_params))
+                    try:
+                        if task_request.timeout_sec is not None:
+                            task_response_payload = await asyncio.wait_for(
+                                task_call,
+                                timeout=task_request.timeout_sec,
+                            )
                         else:
-                            task_response_payload = {
-                                "response": coding_record.result.summary,
-                                "plan_hash": None,
-                                "blocked_actions": 0,
-                                "confirmation_required_actions": 0,
-                                "executed_actions": 0,
-                                "tool_outputs": [],
-                                "raw_log_payload": coding_record.raw_log_payload or {},
-                                "proposal_payload": coding_record.proposal_payload,
-                                "files_changed": list(coding_record.result.files_changed),
-                                "agent": coding_record.selected_agent,
-                                "cost": coding_record.result.cost,
-                                "stop_reason": coding_record.stop_reason,
-                                "worktree_path": coding_record.worktree_path,
-                            }
-            else:
-                task_params = self._task_internal_ingress_payload(
+                            task_response_payload = await task_call
+                    except TimeoutError:
+                        failure_reason = "task_timeout"
+                        task_call.cancel()
+                        with suppress(asyncio.CancelledError):
+                            await task_call
+                        task_response_payload = {
+                            "response": "Delegated task timed out before completion.",
+                            "plan_hash": None,
+                            "blocked_actions": 0,
+                            "confirmation_required_actions": 0,
+                            "executed_actions": 0,
+                            "tool_outputs": [],
+                        }
+            except Exception as exc:
+                failure_reason = f"task_error:{exc.__class__.__name__}"
+                logger.warning(
+                    "Delegated task session %s failed",
+                    task_session.id,
+                    exc_info=True,
+                )
+                task_response_payload = {
+                    "response": "Delegated task failed before completion.",
+                    "plan_hash": None,
+                    "blocked_actions": 0,
+                    "confirmation_required_actions": 0,
+                    "executed_actions": 0,
+                    "tool_outputs": [],
+                }
+
+            raw_response_text = str(task_response_payload.get("response", "")).strip()
+            raw_plan_hash = task_response_payload.get("plan_hash")
+            serialized_tool_outputs = (
+                list(task_response_payload.get("tool_outputs", []))
+                if isinstance(task_response_payload.get("tool_outputs", []), list)
+                else []
+            )
+            raw_log_ref = self._write_task_artifact(
+                task_session_id=task_session.id,
+                filename="raw_log.json",
+                payload=(
+                    dict(task_response_payload.get("raw_log_payload", {}))
+                    if isinstance(task_response_payload.get("raw_log_payload"), Mapping)
+                    else {
+                        "task_session_id": str(task_session.id),
+                        "parent_session_id": str(parent_sid),
+                        "response": raw_response_text,
+                        "tool_outputs": serialized_tool_outputs,
+                        "plan_hash": task_response_payload.get("plan_hash"),
+                        "reason": failure_reason,
+                    }
+                ),
+            )
+            proposal_ref: str | None = None
+            proposal_payload = task_response_payload.get("proposal_payload")
+            if isinstance(proposal_payload, Mapping):
+                proposal_ref = self._write_task_artifact(
+                    task_session_id=task_session.id,
+                    filename="proposal.json",
+                    payload=dict(proposal_payload),
+                )
+            elif serialized_tool_outputs or _looks_like_diff_content(raw_response_text):
+                proposal_ref = self._write_task_artifact(
+                    task_session_id=task_session.id,
+                    filename="proposal.json",
+                    payload={
+                        "response": raw_response_text,
+                        "tool_outputs": serialized_tool_outputs,
+                    },
+                )
+
+            # TASK output is daemon-internal planner output, but it can reflect
+            # tool-returned content; keep the content firewall barrier while
+            # avoiding external-ingress taint semantics at the TASK->COMMAND seam.
+            summary_result = self._firewall.inspect(raw_response_text, trusted_input=True)
+            summary_text = summary_result.sanitized_text.strip()
+            if not summary_text:
+                summary_text = (
+                    "Delegated task completed. Review the raw log artifact for details."
+                    if not failure_reason
+                    else "Delegated task failed. Review the raw log artifact for details."
+                )
+            summary_text = _compact_context_text(summary_text, max_chars=320)
+
+            task_files_changed = (
+                tuple(
+                    str(item).strip()
+                    for item in task_response_payload.get("files_changed", [])
+                    if str(item).strip()
+                )
+                if isinstance(task_response_payload.get("files_changed"), list)
+                else _extract_files_changed_from_task_outputs(serialized_tool_outputs)
+            )
+            task_cost = _coerce_optional_float(task_response_payload.get("cost"))
+            if task_cost is None:
+                task_cost = selected_cost
+            task_agent = str(task_response_payload.get("agent", "")).strip() or selected_agent
+
+            self_check_status = ""
+            self_check_ref: str | None = None
+            if not failure_reason:
+                self_check = await self._run_task_close_gate_self_check(
                     task_session=task_session,
                     task_request=task_request,
-                    parent_validation=validated,
-                )
-                task_call = asyncio.create_task(self.do_session_message(task_params))
-                try:
-                    if task_request.timeout_sec is not None:
-                        task_response_payload = await asyncio.wait_for(
-                            task_call,
-                            timeout=task_request.timeout_sec,
-                        )
-                    else:
-                        task_response_payload = await task_call
-                except TimeoutError:
-                    failure_reason = "task_timeout"
-                    task_call.cancel()
-                    with suppress(asyncio.CancelledError):
-                        await task_call
-                    task_response_payload = {
-                        "response": "Delegated task timed out before completion.",
-                        "plan_hash": None,
-                        "blocked_actions": 0,
-                        "confirmation_required_actions": 0,
-                        "executed_actions": 0,
-                        "tool_outputs": [],
-                    }
-        except Exception as exc:
-            failure_reason = f"task_error:{exc.__class__.__name__}"
-            logger.warning(
-                "Delegated task session %s failed",
-                task_session.id,
-                exc_info=True,
-            )
-            task_response_payload = {
-                "response": "Delegated task failed before completion.",
-                "plan_hash": None,
-                "blocked_actions": 0,
-                "confirmation_required_actions": 0,
-                "executed_actions": 0,
-                "tool_outputs": [],
-            }
-
-        raw_response_text = str(task_response_payload.get("response", "")).strip()
-        raw_plan_hash = task_response_payload.get("plan_hash")
-        serialized_tool_outputs = (
-            list(task_response_payload.get("tool_outputs", []))
-            if isinstance(task_response_payload.get("tool_outputs", []), list)
-            else []
-        )
-        raw_log_ref = self._write_task_artifact(
-            task_session_id=task_session.id,
-            filename="raw_log.json",
-            payload=(
-                dict(task_response_payload.get("raw_log_payload", {}))
-                if isinstance(task_response_payload.get("raw_log_payload"), Mapping)
-                else {
-                    "task_session_id": str(task_session.id),
-                    "parent_session_id": str(parent_sid),
-                    "response": raw_response_text,
-                    "tool_outputs": serialized_tool_outputs,
-                    "plan_hash": task_response_payload.get("plan_hash"),
-                    "reason": failure_reason,
-                }
-            ),
-        )
-        proposal_ref: str | None = None
-        proposal_payload = task_response_payload.get("proposal_payload")
-        if isinstance(proposal_payload, Mapping):
-            proposal_ref = self._write_task_artifact(
-                task_session_id=task_session.id,
-                filename="proposal.json",
-                payload=dict(proposal_payload),
-            )
-        elif serialized_tool_outputs or _looks_like_diff_content(raw_response_text):
-            proposal_ref = self._write_task_artifact(
-                task_session_id=task_session.id,
-                filename="proposal.json",
-                payload={
-                    "response": raw_response_text,
-                    "tool_outputs": serialized_tool_outputs,
-                },
-            )
-
-        # TASK output is daemon-internal planner output, but it can reflect
-        # tool-returned content; keep the content firewall barrier while
-        # avoiding external-ingress taint semantics at the TASK->COMMAND seam.
-        summary_result = self._firewall.inspect(raw_response_text, trusted_input=True)
-        summary_text = summary_result.sanitized_text.strip()
-        if not summary_text:
-            summary_text = (
-                "Delegated task completed. Review the raw log artifact for details."
-                if not failure_reason
-                else "Delegated task failed. Review the raw log artifact for details."
-            )
-        summary_text = _compact_context_text(summary_text, max_chars=320)
-
-        task_files_changed = (
-            tuple(
-                str(item).strip()
-                for item in task_response_payload.get("files_changed", [])
-                if str(item).strip()
-            )
-            if isinstance(task_response_payload.get("files_changed"), list)
-            else _extract_files_changed_from_task_outputs(serialized_tool_outputs)
-        )
-        task_cost = _coerce_optional_float(task_response_payload.get("cost"))
-        if task_cost is None:
-            task_cost = selected_cost
-        task_agent = str(task_response_payload.get("agent", "")).strip() or selected_agent
-
-        self_check_status = ""
-        self_check_ref: str | None = None
-        if not failure_reason:
-            self_check = await self._run_task_close_gate_self_check(
-                task_session=task_session,
-                task_request=task_request,
-                executor=task_request.executor,
-                raw_response_text=raw_response_text,
-                summary_text=summary_text,
-                files_changed=task_files_changed,
-                serialized_tool_outputs=serialized_tool_outputs,
-                proposal_payload=(
-                    dict(proposal_payload) if isinstance(proposal_payload, Mapping) else None
-                ),
-                agent=task_agent,
-            )
-            self_check_status = self_check.status
-            self_check_ref = self._write_task_artifact(
-                task_session_id=task_session.id,
-                filename="self_check.json",
-                payload={
-                    "status": self_check.status,
-                    "reason": self_check.reason,
-                    "notes": self_check.notes,
-                    "passed": self_check.passed,
-                    "response": self_check.response_text,
-                },
-            )
-            if not self_check.passed:
-                failure_reason = _task_self_check_failure_reason(self_check.status)
-                summary_text = _compact_context_text(
-                    (
-                        "Delegated task self-check blocked handoff. "
-                        f"{self_check.notes}"
+                    executor=task_request.executor,
+                    raw_response_text=raw_response_text,
+                    summary_text=summary_text,
+                    files_changed=task_files_changed,
+                    serialized_tool_outputs=serialized_tool_outputs,
+                    proposal_payload=(
+                        dict(proposal_payload) if isinstance(proposal_payload, Mapping) else None
                     ),
-                    max_chars=320,
+                    agent=task_agent,
                 )
-                raw_response_text = summary_text
-
-        command_context = _task_command_context_status(parent_session)
-        response_text = summary_text
-        if failure_reason == "" and task_request.handoff_mode == _TASK_HANDOFF_RAW_PASSTHROUGH:
-            degrade_reason = "raw_task_content_passthrough"
-            if recovery_checkpoint_id is None:
-                raise RuntimeError("missing recovery checkpoint for raw task passthrough")
-            if command_context != "degraded":
-                await self._mark_command_context_degraded(
-                    session=parent_session,
+                self_check_status = self_check.status
+                self_check_ref = self._write_task_artifact(
                     task_session_id=task_session.id,
-                    reason=degrade_reason,
-                    recovery_checkpoint_id=recovery_checkpoint_id,
+                    filename="self_check.json",
+                    payload={
+                        "status": self_check.status,
+                        "reason": self_check.reason,
+                        "notes": self_check.notes,
+                        "passed": self_check.passed,
+                        "response": self_check.response_text,
+                    },
                 )
-            command_context = "degraded"
-            response_text = raw_response_text or summary_text
+                if not self_check.passed:
+                    failure_reason = _task_self_check_failure_reason(self_check.status)
+                    summary_text = _compact_context_text(
+                        (
+                            "Delegated task self-check blocked handoff. "
+                            f"{self_check.notes}"
+                        ),
+                        max_chars=320,
+                    )
+                    raw_response_text = summary_text
 
-        duration_ms = int((time.monotonic() - task_t0) * 1000)
-        success = failure_reason == ""
-        handoff = TaskSessionHandoff(
-            task_session_id=task_session.id,
-            success=success,
-            summary=summary_text,
-            response_text=response_text,
-            files_changed=task_files_changed,
-            agent=task_agent,
-            cost=task_cost,
-            duration_ms=duration_ms,
-            proposal_ref=proposal_ref,
-            raw_log_ref=raw_log_ref,
-            handoff_mode=task_request.handoff_mode,
-            command_context=command_context,
-            recovery_checkpoint_id=(
-                recovery_checkpoint_id if command_context == "degraded" else None
-            ),
-            reason=failure_reason,
-            plan_hash=(
-                str(raw_plan_hash).strip()
-                if raw_plan_hash not in (None, "")
-                else None
-            ),
-            blocked_actions=int(task_response_payload.get("blocked_actions", 0) or 0),
-            confirmation_required_actions=int(
-                task_response_payload.get("confirmation_required_actions", 0) or 0
-            ),
-            executed_actions=int(task_response_payload.get("executed_actions", 0) or 0),
-            taint_labels=(TaintLabel.UNTRUSTED.value,),
-            self_check_status=self_check_status,
-            self_check_ref=self_check_ref,
-        )
+            command_context = _task_command_context_status(parent_session)
+            response_text = summary_text
+            if failure_reason == "" and task_request.handoff_mode == _TASK_HANDOFF_RAW_PASSTHROUGH:
+                degrade_reason = "raw_task_content_passthrough"
+                if recovery_checkpoint_id is None:
+                    raise RuntimeError("missing recovery checkpoint for raw task passthrough")
+                if command_context != "degraded":
+                    await self._mark_command_context_degraded(
+                        session=parent_session,
+                        task_session_id=task_session.id,
+                        reason=degrade_reason,
+                        recovery_checkpoint_id=recovery_checkpoint_id,
+                    )
+                command_context = "degraded"
+                response_text = raw_response_text or summary_text
 
-        await self._event_bus.publish(
-            TaskSessionCompleted(
-                session_id=task_session.id,
-                actor="task_session",
-                parent_session_id=str(parent_sid),
-                success=handoff.success,
-                reason=handoff.reason,
-                duration_ms=handoff.duration_ms,
-                files_changed=list(handoff.files_changed),
-                executor=task_request.executor,
-                agent=handoff.agent or "",
-                cost=handoff.cost,
-                proposal_ref=handoff.proposal_ref or "",
-                raw_log_ref=handoff.raw_log_ref or "",
-                handoff_mode=handoff.handoff_mode,
-                command_context=handoff.command_context,
-                taint_labels=list(handoff.taint_labels),
-                self_check_status=handoff.self_check_status,
-                self_check_ref=handoff.self_check_ref or "",
+            duration_ms = int((time.monotonic() - task_t0) * 1000)
+            success = failure_reason == ""
+            handoff = TaskSessionHandoff(
+                task_session_id=task_session.id,
+                success=success,
+                summary=summary_text,
+                response_text=response_text,
+                files_changed=task_files_changed,
+                agent=task_agent,
+                cost=task_cost,
+                duration_ms=duration_ms,
+                proposal_ref=proposal_ref,
+                raw_log_ref=raw_log_ref,
+                handoff_mode=task_request.handoff_mode,
+                command_context=command_context,
+                recovery_checkpoint_id=(
+                    recovery_checkpoint_id if command_context == "degraded" else None
+                ),
+                reason=failure_reason,
+                plan_hash=(
+                    str(raw_plan_hash).strip()
+                    if raw_plan_hash not in (None, "")
+                    else None
+                ),
+                blocked_actions=int(task_response_payload.get("blocked_actions", 0) or 0),
+                confirmation_required_actions=int(
+                    task_response_payload.get("confirmation_required_actions", 0) or 0
+                ),
+                executed_actions=int(task_response_payload.get("executed_actions", 0) or 0),
+                taint_labels=(TaintLabel.UNTRUSTED.value,),
+                self_check_status=self_check_status,
+                self_check_ref=self_check_ref,
             )
-        )
 
-        try:
+            await self._event_bus.publish(
+                TaskSessionCompleted(
+                    session_id=task_session.id,
+                    actor="task_session",
+                    parent_session_id=str(parent_sid),
+                    success=handoff.success,
+                    reason=handoff.reason,
+                    duration_ms=handoff.duration_ms,
+                    files_changed=list(handoff.files_changed),
+                    executor=task_request.executor,
+                    agent=handoff.agent or "",
+                    cost=handoff.cost,
+                    proposal_ref=handoff.proposal_ref or "",
+                    raw_log_ref=handoff.raw_log_ref or "",
+                    handoff_mode=handoff.handoff_mode,
+                    command_context=handoff.command_context,
+                    taint_labels=list(handoff.taint_labels),
+                    self_check_status=handoff.self_check_status,
+                    self_check_ref=handoff.self_check_ref or "",
+                )
+            )
+
             return await self._finalize_task_handoff_response(
                 validated=validated,
                 handoff=handoff,
@@ -4830,13 +4797,20 @@ class SessionImplMixin(HandlerMixinBase):
                 reason="task_session_complete",
             )
             if terminated:
-                await self._event_bus.publish(
-                    SessionTerminated(
-                        session_id=task_session.id,
-                        actor="task_session",
-                        reason="task_session_complete",
+                try:
+                    await self._event_bus.publish(
+                        SessionTerminated(
+                            session_id=task_session.id,
+                            actor="task_session",
+                            reason="task_session_complete",
+                        )
                     )
-                )
+                except Exception:
+                    logger.warning(
+                        "Failed to publish termination for task session %s",
+                        task_session.id,
+                        exc_info=True,
+                    )
 
     async def do_session_message(self, params: Mapping[str, Any]) -> dict[str, Any]:
         rerouted = await self._maybe_run_rerouted_admin_cleanroom_message(params)

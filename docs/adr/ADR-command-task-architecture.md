@@ -11,7 +11,10 @@ and scheduler-owned task sessions, omits `report_anomaly` from clean
 orchestrator planner manifests while keeping it available in tainted or split
 subagent contexts, forces COMMAND→TASK handoff through an UNTRUSTED
 internal-ingress seam, and runs a TASK close-gate self-check before any
-successful TASK→COMMAND handoff completes.
+successful TASK→COMMAND handoff completes. TASK handoff summaries remain
+tainted in the parent transcript by design; direct mode-switch attempts on that
+tainted COMMAND session stay blocked, while privileged follow-ups continue
+through the existing fresh-session auto-rerouted cleanroom path.
 
 ## Core premise
 

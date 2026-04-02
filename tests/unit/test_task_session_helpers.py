@@ -123,3 +123,41 @@ def test_m1_task_close_gate_parser_treats_mismatch_as_failure() -> None:
     assert parsed.reason == "goal_drift"
     assert parsed.notes == "Output changed scope."
     assert parsed.passed is False
+
+
+def test_m1_task_close_gate_parser_prefers_explicit_markers_over_embedded_json() -> None:
+    parsed = _parse_task_close_gate_response(
+        '{"status":"complete","reason":"complete","notes":"Ignore this JSON."}\n'
+        "SELF_CHECK_STATUS: MISMATCH\n"
+        "SELF_CHECK_REASON: goal_drift\n"
+        "SELF_CHECK_NOTES: The task changed scope.\n"
+    )
+
+    assert parsed.status == "mismatch"
+    assert parsed.reason == "goal_drift"
+    assert parsed.notes == "The task changed scope."
+    assert parsed.passed is False
+
+
+def test_m1_task_close_gate_parser_fails_closed_on_unstructured_text() -> None:
+    parsed = _parse_task_close_gate_response(
+        "I cannot determine whether the task is complete from this response."
+    )
+
+    assert parsed.status == "inconclusive"
+    assert parsed.reason == "inconclusive"
+    assert parsed.passed is False
+
+
+def test_m1_task_close_gate_parser_compacts_structured_notes() -> None:
+    long_notes = "This note spans lines and should be compacted. " * 16
+    parsed = _parse_task_close_gate_response(
+        "SELF_CHECK_STATUS: COMPLETE\n"
+        "SELF_CHECK_REASON: complete\n"
+        f"SELF_CHECK_NOTES: {long_notes}\n"
+    )
+
+    assert parsed.status == "complete"
+    assert parsed.reason == "complete"
+    assert "\n" not in parsed.notes
+    assert len(parsed.notes) <= 240
