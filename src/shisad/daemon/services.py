@@ -826,7 +826,12 @@ def _build_tool_registry(
             name=ToolName("fs.list"),
             description="Read-first filesystem listing primitive.",
             parameters=[
-                ToolParameter(name="path", type="string", required=False),
+                ToolParameter(
+                    name="path",
+                    type="string",
+                    required=False,
+                    semantic_type="workspace_path",
+                ),
                 ToolParameter(name="recursive", type="boolean", required=False),
                 ToolParameter(name="limit", type="integer", required=False),
             ],
@@ -839,7 +844,12 @@ def _build_tool_registry(
             name=ToolName("fs.read"),
             description="Read-first filesystem read primitive.",
             parameters=[
-                ToolParameter(name="path", type="string", required=True),
+                ToolParameter(
+                    name="path",
+                    type="string",
+                    required=True,
+                    semantic_type="workspace_path",
+                ),
                 ToolParameter(name="max_bytes", type="integer", required=False),
             ],
             capabilities_required=[Capability.FILE_READ],
@@ -851,7 +861,12 @@ def _build_tool_registry(
             name=ToolName("fs.write"),
             description="Filesystem write primitive requiring explicit confirmation.",
             parameters=[
-                ToolParameter(name="path", type="string", required=True),
+                ToolParameter(
+                    name="path",
+                    type="string",
+                    required=True,
+                    semantic_type="workspace_path",
+                ),
                 ToolParameter(name="content", type="string", required=True),
                 ToolParameter(name="confirm", type="boolean", required=False),
             ],
@@ -864,7 +879,12 @@ def _build_tool_registry(
             name=ToolName("git.status"),
             description="Read-only git status primitive.",
             parameters=[
-                ToolParameter(name="repo_path", type="string", required=False),
+                ToolParameter(
+                    name="repo_path",
+                    type="string",
+                    required=False,
+                    semantic_type="workspace_path",
+                ),
             ],
             capabilities_required=[Capability.FILE_READ],
             require_confirmation=False,
@@ -875,7 +895,12 @@ def _build_tool_registry(
             name=ToolName("git.diff"),
             description="Read-only git diff primitive.",
             parameters=[
-                ToolParameter(name="repo_path", type="string", required=False),
+                ToolParameter(
+                    name="repo_path",
+                    type="string",
+                    required=False,
+                    semantic_type="workspace_path",
+                ),
                 ToolParameter(name="ref", type="string", required=False),
                 ToolParameter(name="max_lines", type="integer", required=False),
             ],
@@ -888,7 +913,12 @@ def _build_tool_registry(
             name=ToolName("git.log"),
             description="Read-only git log primitive.",
             parameters=[
-                ToolParameter(name="repo_path", type="string", required=False),
+                ToolParameter(
+                    name="repo_path",
+                    type="string",
+                    required=False,
+                    semantic_type="workspace_path",
+                ),
                 ToolParameter(name="limit", type="integer", required=False),
             ],
             capabilities_required=[Capability.FILE_READ],

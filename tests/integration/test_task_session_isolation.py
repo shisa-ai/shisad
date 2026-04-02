@@ -10,11 +10,20 @@ from typing import Any
 import pytest
 
 import shisad.daemon.handlers._impl_session as session_impl
+import shisad.daemon.services as daemon_services
 from shisad.core.api.transport import ControlClient
 from shisad.core.config import DaemonConfig
 from shisad.core.events import EventBus, TaskSessionCompleted
-from shisad.core.planner import Planner, PlannerOutput, PlannerResult
+from shisad.core.planner import (
+    ActionProposal,
+    EvaluatedProposal,
+    Planner,
+    PlannerOutput,
+    PlannerResult,
+)
+from shisad.core.tools.schema import ToolDefinition, ToolParameter
 from shisad.core.transcript import TranscriptStore
+from shisad.core.types import Capability, ToolName
 from shisad.daemon.runner import run_daemon
 
 
@@ -198,6 +207,105 @@ async def test_m2_task_session_isolates_command_context_and_returns_structured_h
         sessions = await client.call("session.list")
         active_ids = {str(item["id"]) for item in sessions["sessions"]}
         assert str(task_result["task_session_id"]) not in active_ids
+    finally:
+        await _shutdown_daemon(daemon_task, client)
+
+
+@pytest.mark.asyncio
+async def test_m3_delegated_task_session_enforces_credential_scope_during_pep_evaluation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original_build_tool_registry = daemon_services._build_tool_registry
+    captured_decisions: list[str] = []
+
+    def _build_tool_registry(*args: Any, **kwargs: Any):
+        registry, alarm_tool = original_build_tool_registry(*args, **kwargs)
+        registry.register(
+            ToolDefinition(
+                name=ToolName("email.fetch"),
+                description="Fetch email with an explicit credential ref.",
+                parameters=[
+                    ToolParameter(name="url", type="string", required=True, semantic_type="url"),
+                    ToolParameter(
+                        name="credential_ref",
+                        type="string",
+                        required=True,
+                        semantic_type="credential_ref",
+                    ),
+                ],
+                capabilities_required=[Capability.HTTP_REQUEST],
+                destinations=["mail.example.com"],
+            )
+        )
+        return registry, alarm_tool
+
+    async def _planner(
+        self: Planner,
+        user_content: str,
+        context: object,
+        *,
+        tools: list[dict[str, object]] | None = None,
+        persona_tone_override: str | None = None,
+    ) -> PlannerResult:
+        _ = (user_content, tools, persona_tone_override)
+        if "TASK CLOSE-GATE SELF-CHECK" in user_content:
+            return _complete_close_gate_result()
+        proposal = ActionProposal(
+            action_id="a1",
+            tool_name=ToolName("email.fetch"),
+            arguments={
+                "url": "https://mail.example.com/api/messages",
+                "credential_ref": "mail_send",
+            },
+            reasoning="Validate delegated credential scope.",
+        )
+        decision = self._pep.evaluate(proposal.tool_name, proposal.arguments, context)
+        captured_decisions.append(f"{decision.kind.value}:{decision.reason}")
+        return PlannerResult(
+            output=PlannerOutput(
+                assistant_response="Delegated credential check finished.",
+                actions=[proposal],
+            ),
+            evaluated=[EvaluatedProposal(proposal=proposal, decision=decision)],
+            attempts=1,
+            provider_response=None,
+            messages_sent=(),
+        )
+
+    monkeypatch.setattr(daemon_services, "_build_tool_registry", _build_tool_registry)
+    monkeypatch.setattr(Planner, "propose", _planner)
+    daemon_task, client = await _start_daemon(
+        tmp_path,
+        policy_text=_policy_with_caps("http.request"),
+    )
+    try:
+        created = await client.call(
+            "session.create",
+            {"channel": "cli", "user_id": "alice", "workspace_id": "ws1"},
+        )
+        sid = str(created["session_id"])
+
+        result = await client.call(
+            "session.message",
+            {
+                "session_id": sid,
+                "content": "run delegated mail review",
+                "task": {
+                    "enabled": True,
+                    "task_description": "Fetch mail in isolation.",
+                    "capabilities": ["http.request"],
+                    "credential_refs": ["mail_read"],
+                },
+            },
+        )
+
+        task_result = dict(result.get("task_result") or {})
+
+        assert task_result["task_session_id"]
+        assert captured_decisions == [
+            "reject:credential_ref 'mail_send' is out of scope for this task/session"
+        ]
     finally:
         await _shutdown_daemon(daemon_task, client)
 

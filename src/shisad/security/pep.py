@@ -116,7 +116,7 @@ class PEP:
     ]
     _CREDENTIAL_REF_KEYS: ClassVar[set[str]] = {"credential_ref"}
     _RESOURCE_ARG_SUFFIX: ClassVar[str] = "_id"
-    _RESOURCE_ARG_ALLOWLIST: ClassVar[set[str]] = {"session_id"}
+    _RESOURCE_ARG_ALLOWLIST: ClassVar[set[str]] = {"session_id", "ref_id"}
 
     def __init__(
         self,
@@ -587,9 +587,12 @@ class PEP:
 
         if context.enforce_explicit_credential_refs:
             allowed_refs = set(context.credential_refs)
-            for credential_ref in credential_refs:
-                if credential_ref in allowed_refs:
-                    continue
+            rejected_refs = [
+                credential_ref
+                for credential_ref in credential_refs
+                if credential_ref not in allowed_refs
+            ]
+            for credential_ref in rejected_refs:
                 self._record_credential_attempt(
                     CredentialUseAttempt(
                         tool_name=tool_name,
@@ -599,6 +602,8 @@ class PEP:
                         reason="credential_ref_out_of_scope",
                     )
                 )
+            if rejected_refs:
+                credential_ref = rejected_refs[0]
                 return self._reject(
                     tool_name,
                     f"credential_ref '{credential_ref}' is out of scope for this task/session",

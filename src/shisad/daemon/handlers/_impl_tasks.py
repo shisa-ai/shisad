@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 from typing import Any, cast
 from urllib.parse import urlparse
 
@@ -27,6 +27,7 @@ from shisad.core.types import (
 )
 from shisad.daemon.handlers._mixin_typing import HandlerMixinBase
 from shisad.daemon.handlers._string_utils import optional_string
+from shisad.daemon.handlers._task_scope import task_resource_authorizer
 from shisad.scheduler.schema import Schedule
 from shisad.security.control_plane.consensus import TRACE_VOTER_NAME
 from shisad.security.control_plane.schema import ControlDecision, Origin, RiskTier
@@ -71,35 +72,6 @@ def _payload_trust_level(payload_taint: str) -> str:
     if payload_taint.strip().lower() == "trusted_scheduler":
         return "internal"
     return "untrusted"
-
-
-def _task_resource_authorizer(
-    task_envelope: Any,
-) -> Callable[[str, WorkspaceId, UserId], bool] | None:
-    if task_envelope is None:
-        return None
-    allowed_ids = {
-        str(item).strip()
-        for item in getattr(task_envelope, "resource_scope_ids", ())
-        if str(item).strip()
-    }
-    allowed_prefixes = tuple(
-        str(item).strip()
-        for item in getattr(task_envelope, "resource_scope_prefixes", ())
-        if str(item).strip()
-    )
-    if not allowed_ids and not allowed_prefixes:
-        return None
-
-    def _authorize(resource_id: str, _workspace_id: WorkspaceId, _user_id: UserId) -> bool:
-        normalized = str(resource_id).strip()
-        if not normalized:
-            return False
-        if normalized in allowed_ids:
-            return True
-        return any(normalized.startswith(prefix) for prefix in allowed_prefixes)
-
-    return _authorize
 
 
 def _join_reason_codes(*codes: str) -> str:
@@ -414,7 +386,7 @@ class TasksImplMixin(HandlerMixinBase):
                 session_id=sid,
                 workspace_id=WorkspaceId(str(getattr(task, "workspace_id", ""))),
                 user_id=UserId(str(getattr(task, "created_by", ""))),
-                resource_authorizer=_task_resource_authorizer(task_envelope),
+                resource_authorizer=task_resource_authorizer(task_envelope),
                 trust_level=trust_level,
                 credential_refs={
                     CredentialRef(str(item))

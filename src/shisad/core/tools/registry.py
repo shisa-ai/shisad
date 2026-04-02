@@ -23,6 +23,90 @@ logger = logging.getLogger(__name__)
 
 _OPAQUE_HANDLE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 _CREDENTIAL_REF_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
+_PATH_SEGMENT_SPLIT_RE = re.compile(r"[\\/]+")
+_INSTRUCTION_PREFIXES = {
+    "please",
+    "read",
+    "write",
+    "edit",
+    "open",
+    "fetch",
+    "review",
+    "summarize",
+    "run",
+    "execute",
+    "use",
+    "visit",
+    "send",
+    "call",
+    "search",
+}
+
+
+def _normalized_semantic_candidate(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    candidate = value.strip()
+    if candidate != value or not candidate:
+        return None
+    if any(token in candidate for token in ("\x00", "\n", "\r", "\t")):
+        return None
+    return candidate
+
+
+def _looks_like_instructional_text(candidate: str) -> bool:
+    tokens = candidate.split()
+    if len(tokens) < 3:
+        return False
+    first = tokens[0].lower().rstrip(":,.!?")
+    if first in _INSTRUCTION_PREFIXES:
+        return True
+    if first == "please" and len(tokens) >= 2:
+        second = tokens[1].lower().rstrip(":,.!?")
+        if second in _INSTRUCTION_PREFIXES:
+            return True
+    return all(re.fullmatch(r"[A-Za-z]+", token) for token in tokens[:2])
+
+
+def is_valid_semantic_value(value: Any, expected: str) -> bool:
+    candidate = _normalized_semantic_candidate(value)
+    if candidate is None:
+        return False
+    if expected == "url":
+        if any(char.isspace() for char in candidate):
+            return False
+        parsed = urlparse(candidate)
+        return (
+            parsed.scheme in {"http", "https"}
+            and bool(parsed.hostname)
+            and bool(parsed.netloc)
+        )
+    if expected == "workspace_path":
+        if _looks_like_instructional_text(candidate):
+            return False
+        segments = _PATH_SEGMENT_SPLIT_RE.split(candidate)
+        for index, segment in enumerate(segments):
+            if segment == "" and index in {0, len(segments) - 1}:
+                continue
+            if not segment or segment.strip() != segment:
+                return False
+            if segment == "..":
+                return False
+        return True
+    if expected == "command_token":
+        return not _looks_like_instructional_text(candidate)
+    if expected == "credential_ref":
+        return bool(_CREDENTIAL_REF_RE.fullmatch(candidate))
+    if expected in {"evidence_ref", "artifact_ref", "thread_id"}:
+        return bool(_OPAQUE_HANDLE_RE.fullmatch(candidate))
+    if expected == "recipient":
+        # Channel recipients span room ids, email addresses, and webhook-like
+        # handles today, so keep this intentionally minimal until a dedicated
+        # address normalizer exists.
+        return True
+    if expected == "email_address":
+        return bool(re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", candidate))
+    return True
 
 
 class ToolRegistry:
@@ -204,26 +288,4 @@ class ToolRegistry:
 
     @staticmethod
     def _check_semantic_value(value: Any, expected: str) -> bool:
-        if not isinstance(value, str):
-            return False
-        candidate = value.strip()
-        if candidate != value or not candidate:
-            return False
-        if any(token in candidate for token in ("\x00", "\n", "\r")):
-            return False
-        if expected == "url":
-            parsed = urlparse(candidate)
-            return parsed.scheme in {"http", "https"} and bool(parsed.hostname)
-        if expected == "workspace_path":
-            return True
-        if expected == "command_token":
-            return True
-        if expected == "credential_ref":
-            return bool(_CREDENTIAL_REF_RE.fullmatch(candidate))
-        if expected in {"evidence_ref", "artifact_ref", "thread_id"}:
-            return bool(_OPAQUE_HANDLE_RE.fullmatch(candidate))
-        if expected == "recipient":
-            return True
-        if expected == "email_address":
-            return bool(re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", candidate))
-        return True
+        return is_valid_semantic_value(value, expected)

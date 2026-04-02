@@ -8,7 +8,7 @@ import json
 import logging
 import re
 import time
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from contextlib import suppress
 from copy import deepcopy
 from dataclasses import dataclass, field, replace
@@ -63,6 +63,7 @@ from shisad.core.planner import (
 from shisad.core.session import Session, SessionRehydrateError
 from shisad.core.session_archive import SessionArchiveError
 from shisad.core.tools.names import canonical_tool_name, canonical_tool_name_typed
+from shisad.core.tools.registry import is_valid_semantic_value
 from shisad.core.tools.schema import (
     ToolDefinition,
     openai_function_name,
@@ -83,6 +84,7 @@ from shisad.core.types import (
     WorkspaceId,
 )
 from shisad.daemon.handlers._mixin_typing import HandlerMixinBase
+from shisad.daemon.handlers._task_scope import task_resource_authorizer
 from shisad.governance.merge import PolicyMergeError
 from shisad.memory.ingestion import IngestionPipeline
 from shisad.memory.schema import MemorySource
@@ -778,32 +780,11 @@ def _task_scope_enforcement_active(session: Session, task_envelope: TaskEnvelope
     ) or task_envelope is not None
 
 
-def _task_resource_authorizer(
-    task_envelope: TaskEnvelope | None,
-) -> Callable[[str, WorkspaceId, UserId], bool] | None:
-    if task_envelope is None:
-        return None
-    allowed_ids = set(task_envelope.resource_scope_ids)
-    allowed_prefixes = tuple(task_envelope.resource_scope_prefixes)
-    if not allowed_ids and not allowed_prefixes:
-        return None
-
-    def _authorize(resource_id: str, _workspace_id: WorkspaceId, _user_id: UserId) -> bool:
-        normalized = str(resource_id).strip()
-        if not normalized:
-            return False
-        if normalized in allowed_ids:
-            return True
-        return any(normalized.startswith(prefix) for prefix in allowed_prefixes)
-
-    return _authorize
-
-
 def _normalize_reported_task_path(raw: Any) -> str | None:
     value = str(raw).strip()
     if not value or len(value) > _TASK_REPORTED_PATH_MAX_CHARS:
         return None
-    if any(token in value for token in ("\x00", "\n", "\r")):
+    if not is_valid_semantic_value(value, "workspace_path"):
         return None
     return value
 
@@ -3151,7 +3132,7 @@ class SessionImplMixin(HandlerMixinBase):
             session_id=sid,
             workspace_id=session.workspace_id,
             user_id=session.user_id,
-            resource_authorizer=_task_resource_authorizer(task_envelope),
+            resource_authorizer=task_resource_authorizer(task_envelope),
             tool_allowlist=planner_tool_allowlist,
             trust_level=validated.trust_level,
             credential_refs={

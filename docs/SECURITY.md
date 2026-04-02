@@ -189,7 +189,10 @@ Large untrusted content is stored out-of-band in a content-addressed evidence st
 Structured cross-boundary fields are also constrained by semantic tool-schema
 types. Sink-critical arguments such as URLs, command tokens, workspace paths,
 evidence refs, and thread ids are validated as atoms or opaque handles instead
-of being accepted as arbitrary free text.
+of being accepted as arbitrary free text. These semantic atom checks protect
+the planner / TASK orchestration path and structured TASK-return boundary; the
+explicit admin `tool.execute` surface is a separately trusted operator path
+with its own policy and audit controls.
 
 ### Output Firewall (egress)
 

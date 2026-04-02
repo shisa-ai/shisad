@@ -199,3 +199,47 @@ async def test_m3_task_resource_scope_blocks_cross_thread_message_send(
         assert "thread_id" in _event_reason(rejected)
     finally:
         await _shutdown_daemon(daemon_task, client)
+
+
+@pytest.mark.asyncio
+async def test_m3_task_resource_scope_prefix_allows_matching_thread_message_send(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    daemon_task, client = await _start_daemon(tmp_path, monkeypatch)
+    try:
+        created = await client.call(
+            "task.create",
+            {
+                "name": "thread-reminder-prefix",
+                "goal": "Reminder: post back into the allowed thread prefix",
+                "schedule": {
+                    "kind": "event",
+                    "expression": "message.received",
+                    "event_type": "message.received",
+                },
+                "capability_snapshot": ["message.send"],
+                "policy_snapshot_ref": "p1",
+                "created_by": "alice",
+                "workspace_id": "ws1",
+                "delivery_target": {
+                    "channel": "discord",
+                    "recipient": "ops-room",
+                    "thread_id": "thread-allowed:ops-room",
+                },
+                "resource_scope_prefixes": ["thread-allowed:"],
+            },
+        )
+
+        assert created["task_envelope"]["resource_scope_prefixes"] == ["thread-allowed:"]
+
+        runs = await client.call(
+            "task.trigger_event",
+            {"event_type": "message.received", "payload": "user supplied payload"},
+        )
+
+        assert runs["count"] == 1
+        assert runs["queued_confirmations"] == 1
+        assert runs["blocked_runs"] == 0
+    finally:
+        await _shutdown_daemon(daemon_task, client)
