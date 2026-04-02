@@ -561,42 +561,26 @@ class ArtifactLedger:
             )
             return None, True
 
-        if ref.metadata_mac:
-            expected_mac = self._make_metadata_mac(session_key, ref)
-            if hmac.compare_digest(ref.metadata_mac, expected_mac):
-                return ref, False
+        if not ref.metadata_mac:
             logger.warning(
-                (
-                    "Dropping persisted evidence ref %s for session %s because "
-                    "metadata MAC verification failed"
-                ),
+                "Dropping persisted evidence ref %s for session %s because metadata MAC is missing",
                 ref.ref_id,
                 session_key,
             )
             return None, True
 
-        downgraded = ref
-        if (
-            ref.endorsement_state != ArtifactEndorsementState.UNENDORSED
-            or ref.endorsed_at is not None
-            or ref.endorsed_by
-        ):
-            logger.warning(
-                (
-                    "Downgrading legacy unverified endorsement metadata on evidence ref %s "
-                    "for session %s"
-                ),
-                ref.ref_id,
-                session_key,
-            )
-            downgraded = ref.model_copy(
-                update={
-                    "endorsement_state": ArtifactEndorsementState.UNENDORSED,
-                    "endorsed_at": None,
-                    "endorsed_by": "",
-                }
-            )
-        return self._stamp_metadata_mac(session_key, downgraded), True
+        expected_mac = self._make_metadata_mac(session_key, ref)
+        if hmac.compare_digest(ref.metadata_mac, expected_mac):
+            return ref, False
+        logger.warning(
+            (
+                "Dropping persisted evidence ref %s for session %s because "
+                "metadata MAC verification failed"
+            ),
+            ref.ref_id,
+            session_key,
+        )
+        return None, True
 
     def _write_blob(self, path: Path, content: str) -> None:
         path.write_bytes(self._blob_codec.encode(content))

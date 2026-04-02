@@ -485,3 +485,59 @@ async def test_m4_failed_confirmed_promote_does_not_endorse_artifact(tmp_path) -
         PolicyContext(capabilities={Capability.MEMORY_READ}, session_id=SessionId("s-1")),
     )
     assert decision.kind.value == "require_confirmation"
+
+
+@pytest.mark.asyncio
+async def test_m4_endorsement_failure_rolls_back_promoted_transcript_entry(tmp_path) -> None:
+    harness = _ConfirmationImplHarness(tmp_path)
+    ref = harness._evidence_store.store(
+        SessionId("s-1"),
+        "promoted body",
+        taint_labels={TaintLabel.UNTRUSTED},
+        source="web.fetch:example.com",
+        summary="promoted body",
+    )
+    pending = PendingAction(
+        confirmation_id="c-1",
+        decision_nonce="expected",
+        session_id=SessionId("s-1"),
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("w-1"),
+        tool_name=ToolName("evidence.promote"),
+        arguments={"ref_id": ref.ref_id},
+        reason="manual",
+        capabilities={Capability.MEMORY_READ},
+        created_at=datetime.now(UTC),
+    )
+    harness._pending_actions[pending.confirmation_id] = pending
+
+    original_endorse = harness._evidence_store.endorse
+
+    def _fail_endorse(*args, **kwargs):
+        raise OSError("endorse failed after promote")
+
+    harness._evidence_store.endorse = _fail_endorse  # type: ignore[method-assign]
+    try:
+        result = await harness.do_action_confirm(
+            {"confirmation_id": "c-1", "decision_nonce": "expected"}
+        )
+    finally:
+        harness._evidence_store.endorse = original_endorse  # type: ignore[method-assign]
+
+    assert result["confirmed"] is False
+    assert result["status_reason"] == "artifact_endorse_failed"
+    assert harness._transcript_store.list_entries(SessionId("s-1")) == []
+    endorsed = harness._evidence_store.get_ref(SessionId("s-1"), ref.ref_id)
+    assert endorsed is not None
+    assert endorsed.endorsement_state == ArtifactEndorsementState.UNENDORSED
+    pep = PEP(
+        PolicyBundle(default_require_confirmation=False),
+        _registry_for_evidence(),
+        evidence_store=harness._evidence_store,
+    )
+    decision = pep.evaluate(
+        ToolName("evidence.promote"),
+        {"ref_id": ref.ref_id},
+        PolicyContext(capabilities={Capability.MEMORY_READ}, session_id=SessionId("s-1")),
+    )
+    assert decision.kind.value == "require_confirmation"

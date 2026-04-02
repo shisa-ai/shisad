@@ -546,6 +546,41 @@ def test_pep_rejects_promote_when_endorsement_metadata_is_tampered_offline(tmp_p
     assert decision.reason == "invalid or unknown evidence reference"
 
 
+def test_pep_rejects_promote_when_metadata_mac_is_stripped_and_summary_tampered(
+    tmp_path,
+) -> None:
+    evidence_root = tmp_path / "evidence"
+    sid = SessionId("sess-a")
+    store = EvidenceStore(evidence_root, salt=b"a" * 32)
+    ref = store.store(
+        sid,
+        "hello",
+        taint_labels={TaintLabel.UNTRUSTED},
+        source="web.fetch:example.com",
+        summary="hello",
+    )
+    index_path = evidence_root / "refs_index.json"
+    raw_index = json.loads(index_path.read_text(encoding="utf-8"))
+    raw_index[str(sid)][ref.ref_id]["metadata_mac"] = ""
+    raw_index[str(sid)][ref.ref_id]["summary"] = "tampered summary from disk"
+    index_path.write_text(json.dumps(raw_index), encoding="utf-8")
+    restarted = EvidenceStore(evidence_root, salt=b"a" * 32)
+    pep = PEP(
+        PolicyBundle(default_require_confirmation=False),
+        _registry_for_evidence(),
+        evidence_store=restarted,
+    )
+
+    decision = pep.evaluate(
+        ToolName("evidence.promote"),
+        {"ref_id": ref.ref_id},
+        PolicyContext(capabilities={Capability.MEMORY_READ}, session_id=sid),
+    )
+
+    assert decision.kind.value == "reject"
+    assert decision.reason == "invalid or unknown evidence reference"
+
+
 @pytest.mark.asyncio
 async def test_structured_evidence_handlers_return_expected_content_and_taints(tmp_path) -> None:
     store = EvidenceStore(tmp_path / "evidence", salt=b"a" * 32)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from typing import Any
@@ -12,6 +13,8 @@ from shisad.core.evidence import ArtifactEndorsementState
 from shisad.core.types import TaintLabel
 from shisad.daemon.handlers._mixin_typing import HandlerMixinBase
 from shisad.security.control_plane.schema import RiskTier, build_action
+
+logger = logging.getLogger(__name__)
 
 
 class ConfirmationImplMixin(HandlerMixinBase):
@@ -304,6 +307,8 @@ class ConfirmationImplMixin(HandlerMixinBase):
             ref_id = str(payload.get("ref_id", "")).strip()
             target_ref_id = promote_ref_id or ref_id
             store = getattr(self, "_evidence_store", None)
+            transcript_entries_before = len(self._transcript_store.list_entries(pending.session_id))
+            transcript_appended = False
             try:
                 if not content.strip():
                     raise ValueError("promoted evidence content is empty")
@@ -322,6 +327,7 @@ class ConfirmationImplMixin(HandlerMixinBase):
                     },
                     evidence_ref_id=target_ref_id or None,
                 )
+                transcript_appended = True
                 if not target_ref_id or store is None:
                     raise ValueError("missing evidence ref for endorsement")
                 endorsed = store.endorse(
@@ -334,6 +340,21 @@ class ConfirmationImplMixin(HandlerMixinBase):
                 if endorsed is None:
                     raise ValueError("missing evidence ref for endorsement")
             except (OSError, RuntimeError, TypeError, ValueError):
+                if transcript_appended:
+                    try:
+                        self._transcript_store.truncate(
+                            pending.session_id,
+                            keep_entries=transcript_entries_before,
+                        )
+                    except OSError:
+                        logger.warning(
+                            (
+                                "Failed to roll back promoted transcript entry after "
+                                "endorsement failure for session %s"
+                            ),
+                            pending.session_id,
+                            exc_info=True,
+                        )
                 success = False
                 promote_followup_reason = "artifact_endorse_failed"
                 await self._event_bus.publish(

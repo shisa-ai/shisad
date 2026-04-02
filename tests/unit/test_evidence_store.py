@@ -82,6 +82,32 @@ def test_evidence_store_drops_refs_with_tampered_metadata_mac_on_restart(tmp_pat
     assert restarted.validate_ref_id(sid, created.ref_id) is False
 
 
+def test_evidence_store_drops_refs_when_metadata_mac_is_stripped_and_summary_tampered(
+    tmp_path,
+) -> None:
+    evidence_root = tmp_path / "evidence"
+    sid = SessionId("sess-a")
+
+    first = EvidenceStore(evidence_root, salt=b"a" * 32)
+    created = first.store(
+        sid,
+        "restart-stable evidence",
+        taint_labels={TaintLabel.UNTRUSTED},
+        source="web.fetch:example.com",
+        summary="restart-stable evidence",
+    )
+    index_path = evidence_root / "refs_index.json"
+    raw_index = json.loads(index_path.read_text(encoding="utf-8"))
+    raw_index[str(sid)][created.ref_id]["metadata_mac"] = ""
+    raw_index[str(sid)][created.ref_id]["summary"] = "tampered summary from disk"
+    index_path.write_text(json.dumps(raw_index), encoding="utf-8")
+
+    restarted = EvidenceStore(evidence_root, salt=b"a" * 32)
+
+    assert restarted.get_ref(sid, created.ref_id) is None
+    assert restarted.validate_ref_id(sid, created.ref_id) is False
+
+
 def test_evidence_store_drops_refs_with_tampered_blob_content(tmp_path) -> None:
     evidence_root = tmp_path / "evidence"
     sid = SessionId("sess-a")
@@ -100,6 +126,34 @@ def test_evidence_store_drops_refs_with_tampered_blob_content(tmp_path) -> None:
     assert store.get_ref(sid, created.ref_id) is None
     assert store.read(sid, created.ref_id) is None
     assert store.validate_ref_id(sid, created.ref_id) is False
+
+
+def test_evidence_store_drops_refs_with_codec_mismatch_on_restart(tmp_path) -> None:
+    evidence_root = tmp_path / "evidence"
+    sid = SessionId("sess-a")
+
+    first = EvidenceStore(evidence_root, salt=b"a" * 32)
+    created = first.store(
+        sid,
+        "restart-stable evidence",
+        taint_labels={TaintLabel.UNTRUSTED},
+        source="web.fetch:example.com",
+        summary="restart-stable evidence",
+    )
+    index_path = evidence_root / "refs_index.json"
+    raw_index = json.loads(index_path.read_text(encoding="utf-8"))
+    modified = created.model_copy(update={"storage_codec": "alternate-codec", "metadata_mac": ""})
+    raw_index[str(sid)][created.ref_id] = modified.model_dump(mode="json")
+    raw_index[str(sid)][created.ref_id]["metadata_mac"] = first._make_metadata_mac(
+        str(sid),
+        modified,
+    )
+    index_path.write_text(json.dumps(raw_index), encoding="utf-8")
+
+    restarted = EvidenceStore(evidence_root, salt=b"a" * 32)
+
+    assert restarted.get_ref(sid, created.ref_id) is None
+    assert restarted.read(sid, created.ref_id) is None
 
 
 def test_evidence_store_ignores_malformed_index_without_quarantining_blobs(tmp_path) -> None:
