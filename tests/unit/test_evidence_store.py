@@ -446,6 +446,35 @@ def test_artifact_ledger_uses_configured_blob_codec(tmp_path) -> None:
     assert loaded.storage_codec == "reverse"
 
 
+def test_artifact_ledger_read_uses_single_decode_for_valid_blob(tmp_path) -> None:
+    class _CountingCodec:
+        name = "counting"
+
+        def __init__(self) -> None:
+            self.decode_calls = 0
+
+        def encode(self, content: str) -> bytes:
+            return content.encode("utf-8")
+
+        def decode(self, payload: bytes) -> str:
+            self.decode_calls += 1
+            return payload.decode("utf-8")
+
+    codec = _CountingCodec()
+    ledger = ArtifactLedger(tmp_path / "evidence", salt=b"a" * 32, blob_codec=codec)
+    sid = SessionId("sess-a")
+    ref = ledger.store(
+        sid,
+        "single pass body",
+        taint_labels={TaintLabel.UNTRUSTED},
+        source="web.fetch:example.com",
+        summary="single pass body",
+    )
+
+    assert ledger.read(sid, ref.ref_id) == "single pass body"
+    assert codec.decode_calls == 1
+
+
 def test_evidence_store_accessors_lazily_evict_expired_refs(tmp_path) -> None:
     store = EvidenceStore(tmp_path / "evidence", salt=b"a" * 32, default_max_age_seconds=60)
     sid = SessionId("sess-a")

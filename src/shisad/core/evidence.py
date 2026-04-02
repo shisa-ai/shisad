@@ -338,22 +338,27 @@ class ArtifactLedger:
         return ref
 
     def read(self, session_id: SessionId, ref_id: str) -> str | None:
-        ref = self.get_ref(session_id, ref_id)
-        if ref is None:
+        ref, content = self._resolve_valid_ref(session_id, ref_id)
+        if ref is None or content is None:
             return None
-        path = self._blob_path(ref.content_hash)
-        if not path.exists():
-            return None
-        return self._read_blob(path)
+        return content
 
     def get_ref(self, session_id: SessionId, ref_id: str) -> EvidenceRef | None:
+        ref, _ = self._resolve_valid_ref(session_id, ref_id)
+        return ref
+
+    def _resolve_valid_ref(
+        self,
+        session_id: SessionId,
+        ref_id: str,
+    ) -> tuple[EvidenceRef | None, str | None]:
         self._evict_for_session(session_id)
         session_key = self._session_key(session_id)
         ref = self._refs.get(session_key, {}).get(ref_id)
         if ref is None:
-            return None
-        blob_valid, failure_reason = self._validate_blob_integrity(ref)
-        if not blob_valid:
+            return None, None
+        content, failure_reason = self._load_validated_blob_content(ref)
+        if content is None:
             logger.warning(
                 "Dropping evidence ref %s for session %s because %s",
                 ref_id,
@@ -361,8 +366,8 @@ class ArtifactLedger:
                 failure_reason,
             )
             self._drop_ref(session_key, ref_id)
-            return None
-        return ref
+            return None, None
+        return ref, content
 
     def validate_ref_id(self, session_id: SessionId, ref_id: str) -> bool:
         ref = self.get_ref(session_id, ref_id)
@@ -524,10 +529,10 @@ class ArtifactLedger:
             hashlib.sha256,
         ).hexdigest()
 
-    def _validate_blob_integrity(self, ref: EvidenceRef) -> tuple[bool, str]:
+    def _load_validated_blob_content(self, ref: EvidenceRef) -> tuple[str | None, str]:
         if ref.storage_codec != self._blob_codec.name:
             return (
-                False,
+                None,
                 (
                     "blob storage codec mismatch "
                     f"(ref={ref.storage_codec} active={self._blob_codec.name})"
@@ -535,15 +540,19 @@ class ArtifactLedger:
             )
         path = self._blob_path(ref.content_hash)
         if not path.exists():
-            return False, f"blob {ref.content_hash} is missing"
+            return None, f"blob {ref.content_hash} is missing"
         try:
             content = self._read_blob(path)
         except (OSError, UnicodeDecodeError, ValueError):
-            return False, f"blob {ref.content_hash} is unreadable"
+            return None, f"blob {ref.content_hash} is unreadable"
         actual_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
         if not hmac.compare_digest(actual_hash, ref.content_hash):
-            return False, f"blob {ref.content_hash} failed content hash verification"
-        return True, ""
+            return None, f"blob {ref.content_hash} failed content hash verification"
+        return content, ""
+
+    def _validate_blob_integrity(self, ref: EvidenceRef) -> tuple[bool, str]:
+        content, failure_reason = self._load_validated_blob_content(ref)
+        return content is not None, failure_reason
 
     def _normalize_loaded_ref(
         self,
