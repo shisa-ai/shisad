@@ -19,7 +19,8 @@ Reach a genuinely useful personal-assistant baseline while preserving the projec
 
 - `v0.3.x` established the runtime foundation: provider routing, channels, assistant primitives, and destructive-command protection.
 - `v0.4.0` shipped safe self-improvement infrastructure, coding-agent runtime support, and minimal COMMAND/TASK isolation.
-- `v0.5` is the first public-release lane.
+- `v0.5.0` is the first public release: zero-config SHISA provider, evidence references, public repo split, Apache 2.0.
+- `v0.6.0` is in active execution: G0 and M1 closed, M2 implementation complete and in review remediation.
 
 ## Milestones
 
@@ -41,60 +42,64 @@ Exit criteria:
 5. Public repo history, docs, and licensing are release-ready.
 6. `uv run pytest tests/behavioral/ -q` passes on the public repo.
 
-### v0.6 — Orchestration foundation
+### v0.6 — Orchestration foundation + tool-surface expansion
 
-- Full COMMAND/TASK orchestration runtime
+Focus:
+
+- Full COMMAND/TASK orchestration runtime (M1-M4)
+- Web tool surface and browser automation proving the orchestration model (M5-M6)
 - Multi-turn taint boundaries and task handoff contract in the live runtime
 - Artifact/provenance model for delegated work
 - Credential scoping across delegated execution boundaries
 - Type-restricted task/tool boundary schemas
 - Summary firewall barrier and approval provenance
-- Current execution status: G0, M1, and M2 are now implementation-complete. The live runtime has formal orchestrator/subagent session roles, immutable task envelopes, trust-aware `report_anomaly` exposure, taint-safe COMMAND↔TASK handoffs, a TASK close-gate self-check, versioned session rehydration with lockdown continuity, and bounded admin/operator session restore/archive surfaces with integrity checks, fail-closed rehydrate validation, and fresh-session archive cutover.
 
-### v0.6.1 — Interop and remote tool trust
+Current execution status: G0 and M1 closed; M2 implementation complete and in review remediation. The live runtime has formal orchestrator/subagent session roles, immutable task envelopes, trust-aware `report_anomaly` exposure, taint-safe COMMAND↔TASK handoffs, a TASK close-gate self-check, versioned session rehydration with lockdown continuity, and bounded session archive export/import with integrity checks plus fresh-session cutover.
+
+#### v0.6.1 — Security hardening
+
+- Minimal control-plane isolation boundary (OS-level process/container)
+- PromptGuard 2 ML classifier integration
+- Phantom action detection
+- Tool Dependency Graph verification
+
+#### v0.6.2 — Hardware-backed approval and signing
+
+- Ledger / hardware wallet integration for high-value operations
+- Hardware token signing and artifact signing flows
+
+#### v0.6.3 — MCP/A2A interop
 
 - MCP/A2A compatibility
 - Remote tool/server trust policy
 - Interop layer for consuming or exposing remote tools without weakening local enforcement
 
-### v0.7 — Tool-surface expansion
+#### v0.6.4 — Connector + skill expansions
 
 - Email and calendar connectors
 - Attachment pipeline (voice + image)
-- Browser automation with sandbox + policy gates
-- Additional tracing, adversarial evaluation, and connector/browser hardening
+- Additional skill integrations
 
-#### v0.7.1 — Minimal control-plane isolation hardening
-
-- Move core enforcement behind a minimal OS-enforced process/container boundary
-- Verify the expanded tool surfaces still work cleanly across the isolation seam
-- Document residual same-host non-claims and degraded-mode expectations
-
-#### v0.7.2 — Hardware-backed approval and signing
-
-- Hardware token signing for high-value operations
-- Stronger operator authentication and artifact signing flows
-
-### v0.8 — Memory foundation
+### v0.7 — Memory foundation
 
 - Structured, versioned long-term memory
 - Knowledge-graph and consolidation foundations
 - Proposed-write path integrated with orchestration boundary
 - Memory write gating, quarantine, and audit path shipped end-to-end
 
-### v0.8.1 — Memory hardening and benchmark closure
+#### v0.7.1 — Memory hardening and benchmark closure
 
 - Benchmark adapters and oracle diagnostics
 - Retrieval/schema precision and telemetry hardening
 - Memory poisoning and persistence-policy regression closure
 
-### v0.9 — Operator web UI and multitenant support
+### v0.8 — Operator web UI and multitenant support
 
 - Operator web UI on top of daemon/event-stream surfaces
 - Progress and status streaming for long-running tasks
 - Org/workspace isolation for multi-tenant deployments
 
-### v1.0+ — Collaborative workflows
+### v0.9+ — Collaborative workflows
 
 - Shared and collaborative agent workflows
 
@@ -104,25 +109,26 @@ Exit criteria:
 | --- | --- |
 | Personal reminder / notetaker baseline | v0.5 |
 | Evidence references | v0.5 |
-| Multi-agent orchestration | v0.6 |
-| MCP/A2A interop | v0.6.1 |
-| Email / calendar connectors | v0.7 |
-| Attachment pipeline | v0.7 |
-| Browser automation | v0.7 |
-| Hardware-backed approvals | v0.7.2 |
-| Long-term memory | v0.8 |
-| Operator web UI | v0.9 |
+| Multi-agent orchestration | v0.6.0 |
+| Web tools + browser automation | v0.6.0 |
+| Control-plane isolation | v0.6.1 |
+| Hardware-backed approvals | v0.6.2 |
+| MCP/A2A interop | v0.6.3 |
+| Email / calendar connectors | v0.6.4 |
+| Attachment pipeline | v0.6.4 |
+| Long-term memory | v0.7 |
+| Operator web UI | v0.8 |
 
 ## Critical Path
 
 1. Public release baseline (`v0.5`)
-2. Orchestration boundary and delegated execution (`v0.6`)
-3. Remote-tool trust and interop (`v0.6.1`)
-4. High-value tool surfaces on top of stable orchestration (`v0.7`)
-5. Stronger isolation boundary (`v0.7.1`)
-6. Hardware-backed high-risk approvals (`v0.7.2`)
-7. Durable memory with gated writes (`v0.8`)
-8. Operator UI and multi-tenant support (`v0.9`)
+2. Orchestration boundary + tool-surface expansion (`v0.6.0`)
+3. Security hardening + control-plane isolation (`v0.6.1`)
+4. Hardware-backed high-risk approvals (`v0.6.2`)
+5. Remote-tool trust and interop (`v0.6.3`)
+6. High-value connectors on top of stable orchestration + interop (`v0.6.4`)
+7. Durable memory with gated writes (`v0.7`)
+8. Operator UI and multi-tenant support (`v0.8`)
 
 ## Public Announcement Criteria
 
