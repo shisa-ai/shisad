@@ -94,6 +94,8 @@ def is_valid_semantic_value(value: Any, expected: str) -> bool:
                 return False
         return True
     if expected == "command_token":
+        if any(char.isspace() for char in candidate):
+            return False
         return not _looks_like_instructional_text(candidate)
     if expected == "credential_ref":
         return bool(_CREDENTIAL_REF_RE.fullmatch(candidate))

@@ -166,6 +166,33 @@ def test_m3_typed_boundary_validation_rejects_instructional_command_token_text()
     assert errors == ["Argument 'command': expected validated atoms 'command_token'"]
 
 
+def test_m3_typed_boundary_validation_rejects_whitespace_bearing_command_token() -> None:
+    registry = ToolRegistry()
+    registry.register(
+        ToolDefinition(
+            name=ToolName("shell.exec"),
+            description="Execute a command.",
+            parameters=[
+                ToolParameter(
+                    name="command",
+                    type="array",
+                    required=True,
+                    items_type="string",
+                    items_semantic_type="command_token",
+                ),
+            ],
+            capabilities_required=[Capability.SHELL_EXEC],
+        )
+    )
+
+    errors = registry.validate_call(
+        ToolName("shell.exec"),
+        {"command": ["git status", "curl https://example.com && echo hacked"]},
+    )
+
+    assert errors == ["Argument 'command': expected validated atoms 'command_token'"]
+
+
 def test_m3_typed_boundary_validation_rejects_instructional_workspace_path_text() -> None:
     registry = ToolRegistry()
     registry.register(
