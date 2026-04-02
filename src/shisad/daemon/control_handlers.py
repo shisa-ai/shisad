@@ -93,8 +93,12 @@ from shisad.core.api.schema import (
     RiskCalibrateResult,
     SessionCreateParams,
     SessionCreateResult,
+    SessionExportParams,
+    SessionExportResult,
     SessionGrantCapabilitiesParams,
     SessionGrantCapabilitiesResult,
+    SessionImportParams,
+    SessionImportResult,
     SessionListResult,
     SessionMessageParams,
     SessionMessageResult,
@@ -219,6 +223,16 @@ class DaemonControlHandlers:
         self, params: SessionRestoreParams, ctx: RequestContext
     ) -> SessionRestoreResult:
         return await self._session.handle_session_restore(params, ctx)
+
+    async def handle_session_export(
+        self, params: SessionExportParams, ctx: RequestContext
+    ) -> SessionExportResult:
+        return await self._session.handle_session_export(params, ctx)
+
+    async def handle_session_import(
+        self, params: SessionImportParams, ctx: RequestContext
+    ) -> SessionImportResult:
+        return await self._session.handle_session_import(params, ctx)
 
     async def handle_session_rollback(
         self, params: SessionRollbackParams, ctx: RequestContext

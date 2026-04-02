@@ -124,6 +124,11 @@ class TranscriptStore:
         self._ensure_file_permissions(path)
         return removed
 
+    def delete_session(self, session_id: SessionId) -> None:
+        path = self._transcript_dir / f"{session_id}.jsonl"
+        with contextlib.suppress(OSError):
+            path.unlink()
+
     def read_blob(self, content_hash: str) -> str | None:
         """Read a large blob by its content hash."""
         path = self._blob_dir / f"{content_hash}.txt"

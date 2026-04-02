@@ -21,6 +21,10 @@ from shisad.core.events import (
     MemoryEntryStored,
     OutputFirewallAlert,
     RateLimitTriggered,
+    SessionArchiveExported,
+    SessionArchiveImported,
+    SessionRehydrated,
+    SessionRehydrateRejected,
 )
 from shisad.core.types import SessionId, ToolName
 from shisad.daemon.context import RequestContext
@@ -92,8 +96,35 @@ class DaemonEventWiring:
                 event_type,
             )
 
-    def audit_capability_event(self, action: str, data: dict[str, Any]) -> None:
+    def audit_session_event(self, action: str, data: dict[str, Any]) -> None:
         if action != "session.capability_granted":
+            if action == "session.rehydrated":
+                self.publish_async(
+                    SessionRehydrated(
+                        session_id=SessionId(str(data.get("session_id", ""))),
+                        actor="session_manager",
+                        source=str(data.get("source", "")),
+                        schema_version=int(data.get("schema_version", 0) or 0),
+                        migrated=bool(data.get("migrated", False)),
+                        migration_reason=str(data.get("migration_reason", "")),
+                        role=str(data.get("role", "")),
+                        mode=str(data.get("mode", "")),
+                        lockdown_level=str(data.get("lockdown_level", "")),
+                    )
+                )
+            elif action == "session.rehydrate_rejected":
+                raw_session_id = str(data.get("session_id", "")).strip()
+                session_id = SessionId(raw_session_id) if raw_session_id else None
+                self.publish_async(
+                    SessionRehydrateRejected(
+                        session_id=session_id,
+                        actor="session_manager",
+                        source=str(data.get("source", "")),
+                        reason=str(data.get("reason", "")),
+                        schema_version=int(data.get("schema_version", 0) or 0),
+                        path=str(data.get("path", "")),
+                    )
+                )
             return
         raw_granted = data.get("granted")
         granted = [str(item) for item in raw_granted] if isinstance(raw_granted, list) else []
@@ -104,6 +135,35 @@ class DaemonEventWiring:
                 capabilities=granted,
                 granted_by=str(data.get("actor", "")),
                 reason=str(data.get("reason", "")),
+            )
+        )
+
+    def audit_capability_event(self, action: str, data: dict[str, Any]) -> None:
+        self.audit_session_event(action, data)
+
+    def audit_archive_export(self, data: dict[str, Any]) -> None:
+        self.publish_async(
+            SessionArchiveExported(
+                session_id=SessionId(str(data.get("session_id", ""))),
+                actor="session_archive",
+                archive_path=str(data.get("archive_path", "")),
+                original_session_id=str(data.get("original_session_id", "")),
+                transcript_entries=int(data.get("transcript_entries", 0) or 0),
+                checkpoint_count=int(data.get("checkpoint_count", 0) or 0),
+                archive_sha256=str(data.get("archive_sha256", "")),
+            )
+        )
+
+    def audit_archive_import(self, data: dict[str, Any]) -> None:
+        self.publish_async(
+            SessionArchiveImported(
+                session_id=SessionId(str(data.get("session_id", ""))),
+                actor="session_archive",
+                archive_path=str(data.get("archive_path", "")),
+                original_session_id=str(data.get("original_session_id", "")),
+                imported_session_id=str(data.get("imported_session_id", "")),
+                transcript_entries=int(data.get("transcript_entries", 0) or 0),
+                checkpoint_count=int(data.get("checkpoint_count", 0) or 0),
             )
         )
 

@@ -59,7 +59,9 @@ from shisad.core.api.schema import (
     RealityCheckReadResult,
     RealityCheckSearchResult,
     SessionCreateResult,
+    SessionExportResult,
     SessionGrantCapabilitiesResult,
+    SessionImportResult,
     SessionListResult,
     SessionMessageResult,
     SessionRestoreResult,
@@ -1028,6 +1030,56 @@ def session_restore(checkpoint_id: str) -> None:
         click.echo(f"Restored session {result.session_id} from checkpoint {checkpoint_id}")
         return
     click.echo(f"Checkpoint not found: {checkpoint_id}", err=True)
+    sys.exit(1)
+
+
+@session.command("export")
+@click.argument("session_id")
+@click.argument("output_path", required=False)
+def session_export(session_id: str, output_path: str | None) -> None:
+    """Export a bounded single-session archive."""
+    config = _get_config()
+    payload: dict[str, object] = {"session_id": session_id}
+    if output_path:
+        payload["path"] = output_path
+    result = rpc_call(
+        config,
+        "session.export",
+        payload,
+        response_model=SessionExportResult,
+    )
+    if result.exported:
+        click.echo(
+            f"Exported session {result.session_id} to {result.archive_path} "
+            "("
+            f"checkpoints={result.checkpoint_count}, "
+            f"transcript_entries={result.transcript_entries}"
+            ")"
+        )
+        return
+    click.echo(f"Session export failed: {result.reason}", err=True)
+    sys.exit(1)
+
+
+@session.command("import")
+@click.argument("archive_path")
+def session_import(archive_path: str) -> None:
+    """Import a bounded single-session archive into a fresh session."""
+    config = _get_config()
+
+    result = rpc_call(
+        config,
+        "session.import",
+        {"archive_path": archive_path},
+        response_model=SessionImportResult,
+    )
+    if result.imported:
+        click.echo(
+            f"Imported archive {result.archive_path} as session {result.session_id} "
+            f"(from {result.original_session_id}, checkpoints={result.checkpoint_count})"
+        )
+        return
+    click.echo(f"Session import failed: {result.reason}", err=True)
     sys.exit(1)
 
 

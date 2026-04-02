@@ -19,10 +19,34 @@ shisad session list
 
 Prefer the most recent checkpoint before first bad event.
 
+If the operator needs a bounded cutover artifact before rollback, export the
+current session first:
+
+```bash
+shisad session export <session-id> /tmp/<session-id>.shisad-session.zip
+```
+
+Session archives are intentionally scoped to:
+- persisted session state
+- lockdown state
+- transcript rows
+- session checkpoints
+
+They do **not** include evidence blobs, memory databases, or scheduler-global
+state.
+
 ## 3. Execute rollback
 
 Session rollback path:
 - call `session.rollback` with checkpoint ID for each affected session.
+- checkpoint rollback restores the persisted session snapshot, including session
+  mode and lockdown level when the checkpoint carries them.
+
+Archive-assisted cutover path:
+- import archive into a fresh session with `session.import`
+- verify binding/mode/lockdown on the imported session
+- if needed, run `session.rollback` against one of the imported checkpoint IDs
+  to reapply the archived safe state before resuming work
 
 Policy/config rollback path:
 - restore known-good policy artifact
@@ -47,3 +71,4 @@ Confirm:
 - no new critical alerts after rollback
 - confirmation queue drains normally
 - expected workflow utility restored
+- imported sessions remain bound to the original channel/user/workspace tuple

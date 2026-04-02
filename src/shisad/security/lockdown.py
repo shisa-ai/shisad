@@ -43,9 +43,11 @@ class LockdownManager:
         self,
         *,
         notification_hook: Callable[[SessionId, str], None] | None = None,
+        state_change_hook: Callable[[SessionId, LockdownState], None] | None = None,
     ) -> None:
         self._states: dict[SessionId, LockdownState] = {}
         self._notification_hook = notification_hook
+        self._state_change_hook = state_change_hook
 
     def state_for(self, session_id: SessionId) -> LockdownState:
         state = self._states.get(session_id)
@@ -125,6 +127,34 @@ class LockdownManager:
             "Review, escalate, resume, or terminate via control API."
         )
 
+    def snapshot(self, session_id: SessionId, *, include_default: bool = True) -> dict[str, object]:
+        state = self.state_for(session_id) if include_default else self._states.get(session_id)
+        if state is None:
+            return {}
+        return state.model_dump(mode="json")
+
+    def rehydrate(
+        self,
+        session_id: SessionId,
+        snapshot: object,
+        *,
+        notify: bool = False,
+    ) -> LockdownState:
+        if snapshot in (None, {}):
+            return self.state_for(session_id)
+        payload = LockdownState.model_validate(snapshot)
+        if payload.session_id != session_id:
+            raise ValueError("lockdown snapshot session_id mismatch")
+        self._states[session_id] = payload
+        if self._state_change_hook is not None:
+            self._state_change_hook(session_id, payload)
+        if notify:
+            self._notify(session_id, payload)
+        return payload
+
+    def clear_state(self, session_id: SessionId) -> None:
+        self._states.pop(session_id, None)
+
     def _target_level(self, *, trigger: str, recommended_action: str) -> LockdownLevel:
         action = recommended_action.lower().strip()
         if action in {"normal", "resume", "clear"}:
@@ -179,5 +209,7 @@ class LockdownManager:
             updated_at=datetime.now(UTC),
         )
         self._states[session_id] = state
+        if self._state_change_hook is not None:
+            self._state_change_hook(session_id, state)
         self._notify(session_id, state)
         return state

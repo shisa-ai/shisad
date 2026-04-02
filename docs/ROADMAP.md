@@ -1,7 +1,7 @@
 # shisad Roadmap
 
 *Created: 2026-02-26*
-*Updated: 2026-04-01*
+*Updated: 2026-04-02*
 *Status: Active*
 
 ## Goal
@@ -49,7 +49,7 @@ Exit criteria:
 - Credential scoping across delegated execution boundaries
 - Type-restricted task/tool boundary schemas
 - Summary firewall barrier and approval provenance
-- Current execution status: G0 evidence-store gate is closed and v0.6.0 M1 is now implementation-complete. The live runtime has formal orchestrator/subagent session roles, immutable task envelopes, trust-aware `report_anomaly` exposure, taint-safe COMMAND↔TASK handoffs, and a TASK close-gate self-check before handoff.
+- Current execution status: G0, M1, and M2 are now implementation-complete. The live runtime has formal orchestrator/subagent session roles, immutable task envelopes, trust-aware `report_anomaly` exposure, taint-safe COMMAND↔TASK handoffs, a TASK close-gate self-check, versioned session rehydration with lockdown continuity, and bounded session archive export/import with integrity checks plus fresh-session cutover.
 
 ### v0.6.1 — Interop and remote tool trust
 

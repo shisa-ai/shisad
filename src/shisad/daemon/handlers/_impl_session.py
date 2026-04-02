@@ -13,6 +13,7 @@ from contextlib import suppress
 from copy import deepcopy
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import urlparse
 
@@ -37,6 +38,8 @@ from shisad.core.events import (
     MonitorEvaluated,
     PlanCancelled,
     PlanCommitted,
+    SessionArchiveExported,
+    SessionArchiveImported,
     SessionCreated,
     SessionMessageReceived,
     SessionMessageResponded,
@@ -57,7 +60,8 @@ from shisad.core.planner import (
     PlannerOutputError,
     PlannerResult,
 )
-from shisad.core.session import Session
+from shisad.core.session import Session, SessionRehydrateError
+from shisad.core.session_archive import SessionArchiveError
 from shisad.core.tools.names import canonical_tool_name, canonical_tool_name_typed
 from shisad.core.tools.schema import (
     ToolDefinition,
@@ -5366,6 +5370,9 @@ class SessionImplMixin(HandlerMixinBase):
         terminated = self._session_manager.terminate(sid, reason=reason)
         if terminated:
             self._clear_parent_task_handoff_lock(sid)
+            lockdown_manager = getattr(self, "_lockdown_manager", None)
+            if lockdown_manager is not None:
+                lockdown_manager.clear_state(sid)
             await self._event_bus.publish(
                 SessionTerminated(
                     session_id=sid,
@@ -5385,12 +5392,26 @@ class SessionImplMixin(HandlerMixinBase):
             raise ValueError("checkpoint_id is required")
         checkpoint = self._checkpoint_store.restore(checkpoint_id)
         if checkpoint is None:
-            return {"restored": False, "checkpoint_id": checkpoint_id, "session_id": None}
-        restored = self._session_manager.restore_from_checkpoint(checkpoint)
+            return {
+                "restored": False,
+                "checkpoint_id": checkpoint_id,
+                "session_id": None,
+                "reason": "not_found",
+            }
+        try:
+            restored = self._session_manager.restore_from_checkpoint(checkpoint)
+        except SessionRehydrateError as exc:
+            return {
+                "restored": False,
+                "checkpoint_id": checkpoint_id,
+                "session_id": None,
+                "reason": str(exc),
+            }
         return {
             "restored": True,
             "checkpoint_id": checkpoint_id,
             "session_id": restored.id,
+            "reason": "",
         }
 
     def _restore_transcript_from_checkpoint(
@@ -5426,8 +5447,21 @@ class SessionImplMixin(HandlerMixinBase):
                 "files_restored": 0,
                 "files_deleted": 0,
                 "restore_errors": [],
+                "reason": "not_found",
             }
-        restored = self._session_manager.restore_from_checkpoint(checkpoint)
+        try:
+            restored = self._session_manager.restore_from_checkpoint(checkpoint)
+        except SessionRehydrateError as exc:
+            return {
+                "rolled_back": False,
+                "checkpoint_id": checkpoint_id,
+                "session_id": None,
+                "files_restored": 0,
+                "files_deleted": 0,
+                "transcript_entries_removed": 0,
+                "restore_errors": [],
+                "reason": str(exc),
+            }
         files_restored, files_deleted, restore_errors = self._restore_filesystem_from_checkpoint(
             checkpoint.state
         )
@@ -5450,6 +5484,87 @@ class SessionImplMixin(HandlerMixinBase):
             "files_deleted": files_deleted,
             "transcript_entries_removed": transcript_entries_removed,
             "restore_errors": restore_errors,
+            "reason": "",
+        }
+
+    async def do_session_export(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        sid = SessionId(str(params.get("session_id", "")).strip())
+        if not sid:
+            raise ValueError("session_id is required")
+        raw_path = str(params.get("path", "") or "").strip()
+        try:
+            result = self._session_archive.export_session(
+                sid,
+                destination=Path(raw_path) if raw_path else None,
+            )
+        except SessionArchiveError as exc:
+            return {
+                "exported": False,
+                "session_id": str(sid) or None,
+                "archive_path": raw_path,
+                "sha256": "",
+                "transcript_entries": 0,
+                "checkpoint_count": 0,
+                "reason": str(exc),
+            }
+        await self._event_bus.publish(
+            SessionArchiveExported(
+                session_id=result.session_id,
+                actor="control_api",
+                archive_path=str(result.archive_path),
+                original_session_id=str(result.session_id),
+                transcript_entries=result.transcript_entries,
+                checkpoint_count=result.checkpoint_count,
+                archive_sha256=result.sha256,
+            )
+        )
+        return {
+            "exported": True,
+            "session_id": result.session_id,
+            "archive_path": str(result.archive_path),
+            "sha256": result.sha256,
+            "transcript_entries": result.transcript_entries,
+            "checkpoint_count": result.checkpoint_count,
+            "reason": "",
+        }
+
+    async def do_session_import(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        archive_path = str(params.get("archive_path", "")).strip()
+        if not archive_path:
+            raise ValueError("archive_path is required")
+        try:
+            result = self._session_archive.import_archive(Path(archive_path))
+        except SessionArchiveError as exc:
+            return {
+                "imported": False,
+                "session_id": None,
+                "original_session_id": None,
+                "archive_path": archive_path,
+                "checkpoint_ids": [],
+                "transcript_entries": 0,
+                "checkpoint_count": 0,
+                "reason": str(exc),
+            }
+        await self._event_bus.publish(
+            SessionArchiveImported(
+                session_id=result.session.id,
+                actor="control_api",
+                archive_path=str(result.archive_path),
+                original_session_id=str(result.original_session_id),
+                imported_session_id=str(result.session.id),
+                transcript_entries=result.transcript_entries,
+                checkpoint_count=len(result.checkpoint_ids),
+            )
+        )
+        return {
+            "imported": True,
+            "session_id": result.session.id,
+            "original_session_id": result.original_session_id,
+            "archive_path": str(result.archive_path),
+            "checkpoint_ids": list(result.checkpoint_ids),
+            "transcript_entries": result.transcript_entries,
+            "checkpoint_count": len(result.checkpoint_ids),
+            "reason": "",
         }
 
     async def do_session_grant_capabilities(self, params: Mapping[str, Any]) -> dict[str, Any]:

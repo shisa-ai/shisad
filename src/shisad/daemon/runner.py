@@ -53,7 +53,9 @@ from shisad.core.api.schema import (
     RealityCheckReadParams,
     RealityCheckSearchParams,
     SessionCreateParams,
+    SessionExportParams,
     SessionGrantCapabilitiesParams,
+    SessionImportParams,
     SessionMessageParams,
     SessionRestoreParams,
     SessionRollbackParams,
@@ -103,6 +105,8 @@ def _method_specs(
         ("session.list", handlers.handle_session_list, False, NoParams),
         ("session.terminate", handlers.handle_session_terminate, False, SessionTerminateParams),
         ("session.restore", handlers.handle_session_restore, False, SessionRestoreParams),
+        ("session.export", handlers.handle_session_export, False, SessionExportParams),
+        ("session.import", handlers.handle_session_import, True, SessionImportParams),
         ("session.rollback", handlers.handle_session_rollback, True, SessionRollbackParams),
         (
             "session.grant_capabilities",

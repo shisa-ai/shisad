@@ -217,12 +217,26 @@ class SessionRollbackParams(_StrictParams):
     checkpoint_id: str
 
 
+class SessionExportParams(_StrictParams):
+    """Parameters for session.export."""
+
+    session_id: str
+    path: str | None = None
+
+
+class SessionImportParams(_StrictParams):
+    """Parameters for session.import."""
+
+    archive_path: str
+
+
 class SessionRestoreResult(BaseModel):
     """Result for session.restore."""
 
     restored: bool
     session_id: str | None = None
     checkpoint_id: str
+    reason: str = ""
 
 
 class SessionRollbackResult(BaseModel):
@@ -235,6 +249,32 @@ class SessionRollbackResult(BaseModel):
     files_deleted: int = 0
     transcript_entries_removed: int = 0
     restore_errors: list[str] = Field(default_factory=list)
+    reason: str = ""
+
+
+class SessionExportResult(BaseModel):
+    """Result for session.export."""
+
+    exported: bool
+    session_id: str | None = None
+    archive_path: str = ""
+    sha256: str = ""
+    transcript_entries: int = 0
+    checkpoint_count: int = 0
+    reason: str = ""
+
+
+class SessionImportResult(BaseModel):
+    """Result for session.import."""
+
+    imported: bool
+    session_id: str | None = None
+    original_session_id: str | None = None
+    archive_path: str = ""
+    checkpoint_ids: list[str] = Field(default_factory=list)
+    transcript_entries: int = 0
+    checkpoint_count: int = 0
+    reason: str = ""
 
 
 class SessionGrantCapabilitiesParams(_StrictParams):

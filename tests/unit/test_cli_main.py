@@ -84,6 +84,25 @@ def test_cli_commands_route_through_rpc_wrapper(
             ]
         },
         "session.restore": {"restored": True, "session_id": "s-1", "checkpoint_id": "cp-1"},
+        "session.export": {
+            "exported": True,
+            "session_id": "s-1",
+            "archive_path": "/tmp/s-1.shisad-session.zip",
+            "sha256": "abc123",
+            "transcript_entries": 2,
+            "checkpoint_count": 1,
+            "reason": "",
+        },
+        "session.import": {
+            "imported": True,
+            "session_id": "s-2",
+            "original_session_id": "s-1",
+            "archive_path": "/tmp/s-1.shisad-session.zip",
+            "checkpoint_ids": ["cp-2"],
+            "transcript_entries": 2,
+            "checkpoint_count": 1,
+            "reason": "",
+        },
         "session.rollback": {"rolled_back": True, "session_id": "s-1", "checkpoint_id": "cp-1"},
         "action.pending": {
             "actions": [
@@ -382,6 +401,14 @@ def test_cli_commands_route_through_rpc_wrapper(
     _invoke_ok(runner, ["session", "terminate", "s-1", "--reason", "manual"])
     _invoke_ok(runner, ["session", "prune", "--user", "alice"])
     assert "Restored session s-1" in _invoke_ok(runner, ["session", "restore", "cp-1"]).output
+    assert "Exported session s-1" in _invoke_ok(
+        runner,
+        ["session", "export", "s-1", "/tmp/s-1.shisad-session.zip"],
+    ).output
+    assert "Imported archive /tmp/s-1.shisad-session.zip as session s-2" in _invoke_ok(
+        runner,
+        ["session", "import", "/tmp/s-1.shisad-session.zip"],
+    ).output
     assert "Rolled back session s-1" in _invoke_ok(runner, ["session", "rollback", "cp-1"]).output
     assert "preview payload" in _invoke_ok(
         runner,
@@ -645,6 +672,14 @@ def test_cli_commands_route_through_rpc_wrapper(
     assert (
         "dev.close",
         {"milestone": "M4", "implementation_path": "/tmp/IMPLEMENTATION.md"},
+    ) in calls
+    assert (
+        "session.export",
+        {"session_id": "s-1", "path": "/tmp/s-1.shisad-session.zip"},
+    ) in calls
+    assert (
+        "session.import",
+        {"archive_path": "/tmp/s-1.shisad-session.zip"},
     ) in calls
 
 

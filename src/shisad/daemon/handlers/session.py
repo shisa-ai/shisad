@@ -6,8 +6,12 @@ from shisad.core.api.schema import (
     NoParams,
     SessionCreateParams,
     SessionCreateResult,
+    SessionExportParams,
+    SessionExportResult,
     SessionGrantCapabilitiesParams,
     SessionGrantCapabilitiesResult,
+    SessionImportParams,
+    SessionImportResult,
     SessionListResult,
     SessionMessageParams,
     SessionMessageResult,
@@ -75,6 +79,30 @@ class SessionHandlers:
             internal_ingress_marker=self._internal_ingress_marker,
         )
         return SessionRestoreResult.model_validate(await self._impl.do_session_restore(payload))
+
+    async def handle_session_export(
+        self,
+        params: SessionExportParams,
+        ctx: RequestContext,
+    ) -> SessionExportResult:
+        payload = build_params_payload(
+            params,
+            ctx,
+            internal_ingress_marker=self._internal_ingress_marker,
+        )
+        return SessionExportResult.model_validate(await self._impl.do_session_export(payload))
+
+    async def handle_session_import(
+        self,
+        params: SessionImportParams,
+        ctx: RequestContext,
+    ) -> SessionImportResult:
+        payload = build_params_payload(
+            params,
+            ctx,
+            internal_ingress_marker=self._internal_ingress_marker,
+        )
+        return SessionImportResult.model_validate(await self._impl.do_session_import(payload))
 
     async def handle_session_rollback(
         self,

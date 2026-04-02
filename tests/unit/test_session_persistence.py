@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import errno
+import json
 import logging
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -19,10 +21,27 @@ from shisad.core.types import (
     UserId,
     WorkspaceId,
 )
+from shisad.scheduler.schema import TaskEnvelope
+from shisad.security.lockdown import LockdownLevel, LockdownManager
 
 
 def _session_state_path(root: Path, session_id: str) -> Path:
     return root / f"{session_id}.json"
+
+
+def _lockdown_hooks(
+    lockdown: LockdownManager,
+) -> tuple[
+    Callable[[Session], dict[str, object]],
+    Callable[[Session, dict[str, object], str], None],
+]:
+    def _provider(session: Session) -> dict[str, object]:
+        return {"lockdown": lockdown.snapshot(session.id)}
+
+    def _restorer(session: Session, record: dict[str, object], _source: str) -> None:
+        lockdown.rehydrate(session.id, record.get("lockdown"))
+
+    return _provider, _restorer
 
 
 def test_m3_session_manager_persists_and_restores_identity_binding(tmp_path: Path) -> None:
@@ -420,3 +439,172 @@ def test_m1_session_manager_backfills_subagent_role_for_legacy_task_sessions(
     restored = restored_manager.get(legacy.id)
     assert restored is not None
     assert restored.role == SessionRole.SUBAGENT
+
+
+def test_m2_session_manager_persists_versioned_record_and_rehydrates_lockdown(
+    tmp_path: Path,
+) -> None:
+    state_dir = tmp_path / "sessions" / "state"
+    lockdown = LockdownManager()
+    provider, restorer = _lockdown_hooks(lockdown)
+    manager = SessionManager(
+        state_dir=state_dir,
+        supplemental_state_provider=provider,
+        supplemental_state_restorer=restorer,
+    )
+    session = manager.create(
+        channel="cli",
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws1"),
+        capabilities={Capability.FILE_READ},
+        metadata={"trust_level": "trusted"},
+    )
+    manager.set_mode(session.id, SessionMode.ADMIN_CLEANROOM)
+    lockdown.set_level(
+        session.id,
+        level=LockdownLevel.CAUTION,
+        reason="m2-test",
+        trigger="manual",
+    )
+    assert manager.persist(session.id)
+
+    persisted = json.loads(
+        _session_state_path(state_dir, str(session.id)).read_text(encoding="utf-8")
+    )
+    assert persisted["schema_version"] == 1
+    assert persisted["session"]["mode"] == SessionMode.ADMIN_CLEANROOM.value
+    assert persisted["lockdown"]["level"] == LockdownLevel.CAUTION.value
+
+    reloaded_lockdown = LockdownManager()
+    provider, restorer = _lockdown_hooks(reloaded_lockdown)
+    reloaded = SessionManager(
+        state_dir=state_dir,
+        supplemental_state_provider=provider,
+        supplemental_state_restorer=restorer,
+    )
+    restored = reloaded.get(session.id)
+    assert restored is not None
+    assert restored.mode == SessionMode.ADMIN_CLEANROOM
+    assert reloaded_lockdown.state_for(session.id).level == LockdownLevel.CAUTION
+
+
+def test_m2_subagent_sessions_do_not_sync_policy_defaults_on_restore(
+    tmp_path: Path,
+) -> None:
+    state_dir = tmp_path / "sessions" / "state"
+    state_dir.mkdir(parents=True, exist_ok=True)
+    legacy = Session(
+        id=SessionId("subagent-policy-default"),
+        channel="task",
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws1"),
+        mode=SessionMode.TASK,
+        role=SessionRole.SUBAGENT,
+        capabilities={Capability.FILE_READ},
+        metadata={
+            "parent_session_id": "parent-1",
+            "capability_sync_mode": "policy_default",
+            "task_envelope": TaskEnvelope(
+                capability_snapshot=frozenset({Capability.FILE_READ}),
+                parent_session_id="parent-1",
+                orchestrator_provenance="session:parent-1",
+                audit_trail_ref="audit-1",
+                policy_snapshot_ref="",
+                lockdown_state_inheritance="inherit_runtime_restrictions",
+            ).model_dump(mode="json"),
+        },
+    )
+    _session_state_path(state_dir, str(legacy.id)).write_text(
+        legacy.model_dump_json(indent=2),
+        encoding="utf-8",
+    )
+
+    restored_manager = SessionManager(
+        state_dir=state_dir,
+        default_capabilities={Capability.HTTP_REQUEST},
+    )
+    restored = restored_manager.get(legacy.id)
+    assert restored is not None
+    assert restored.capabilities == {Capability.FILE_READ}
+    assert restored.metadata.get("capability_sync_mode") == "manual_override"
+
+
+def test_m2_session_manager_rejects_task_envelope_capability_mismatch(
+    tmp_path: Path,
+) -> None:
+    state_dir = tmp_path / "sessions" / "state"
+    state_dir.mkdir(parents=True, exist_ok=True)
+    session = Session(
+        id=SessionId("task-envelope-mismatch"),
+        channel="task",
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws1"),
+        mode=SessionMode.TASK,
+        role=SessionRole.SUBAGENT,
+        capabilities={Capability.FILE_READ, Capability.HTTP_REQUEST},
+        metadata={
+            "parent_session_id": "parent-1",
+            "capability_sync_mode": "manual_override",
+            "task_envelope": TaskEnvelope(
+                capability_snapshot=frozenset({Capability.FILE_READ}),
+                parent_session_id="parent-1",
+                orchestrator_provenance="session:parent-1",
+                audit_trail_ref="audit-1",
+                policy_snapshot_ref="",
+                lockdown_state_inheritance="inherit_runtime_restrictions",
+            ).model_dump(mode="json"),
+        },
+    )
+    record = {
+        "schema_version": 1,
+        "session": session.model_dump(mode="json"),
+        "lockdown": LockdownManager().snapshot(session.id),
+    }
+    _session_state_path(state_dir, str(session.id)).write_text(
+        json.dumps(record, ensure_ascii=True, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+    audits: list[tuple[str, dict[str, object]]] = []
+    lockdown = LockdownManager()
+    provider, restorer = _lockdown_hooks(lockdown)
+    restored_manager = SessionManager(
+        state_dir=state_dir,
+        audit_hook=lambda action, data: audits.append((action, data)),
+        supplemental_state_provider=provider,
+        supplemental_state_restorer=restorer,
+    )
+    assert restored_manager.get(session.id) is None
+    assert any(
+        action == "session.rehydrate_rejected"
+        and data.get("reason") == "task_envelope_capability_mismatch"
+        for action, data in audits
+    )
+
+
+def test_m2_session_manager_rejects_unsupported_schema_version(
+    tmp_path: Path,
+) -> None:
+    state_dir = tmp_path / "sessions" / "state"
+    state_dir.mkdir(parents=True, exist_ok=True)
+    session = Session(id=SessionId("future-schema"))
+    record = {
+        "schema_version": 99,
+        "session": session.model_dump(mode="json"),
+    }
+    _session_state_path(state_dir, str(session.id)).write_text(
+        json.dumps(record, ensure_ascii=True, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+    audits: list[tuple[str, dict[str, object]]] = []
+
+    restored_manager = SessionManager(
+        state_dir=state_dir,
+        audit_hook=lambda action, data: audits.append((action, data)),
+    )
+
+    assert restored_manager.get(session.id) is None
+    assert any(
+        action == "session.rehydrate_rejected"
+        and data.get("reason") == "unsupported_schema_version:99"
+        for action, data in audits
+    )

@@ -44,6 +44,7 @@ from shisad.core.events import (
     ToolRejected,
 )
 from shisad.core.session import Session
+from shisad.core.session_archive import SessionArchiveManager
 from shisad.core.tools.builtin.alarm import AnomalyReportInput
 from shisad.core.tools.schema import ToolDefinition
 from shisad.core.types import (
@@ -689,6 +690,13 @@ class HandlerImplementation(
         self._trace_recorder = services.trace_recorder
         self._transcript_root = services.transcript_root
         self._checkpoint_store = services.checkpoint_store
+        self._session_archive = SessionArchiveManager(
+            session_manager=services.session_manager,
+            transcript_store=services.transcript_store,
+            checkpoint_store=services.checkpoint_store,
+            lockdown_manager=services.lockdown_manager,
+            archive_dir=self._config.data_dir / "session_archives",
+        )
         self._firewall = services.firewall
         self._output_firewall = services.output_firewall
         self._channel_ingress = services.channel_ingress

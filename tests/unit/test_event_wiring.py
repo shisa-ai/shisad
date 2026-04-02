@@ -10,7 +10,13 @@ from typing import Any
 
 import pytest
 
-from shisad.core.events import CapabilityGranted, SessionCreated
+from shisad.core.events import (
+    CapabilityGranted,
+    SessionArchiveExported,
+    SessionCreated,
+    SessionRehydrated,
+    SessionRehydrateRejected,
+)
 from shisad.core.types import SessionId
 from shisad.daemon.event_wiring import DaemonEventWiring, channel_receive_pump, matrix_receive_pump
 from shisad.security.lockdown import LockdownManager
@@ -109,6 +115,61 @@ async def test_audit_capability_event_publishes_grant_event() -> None:
     assert bus.events
     assert isinstance(bus.events[0], CapabilityGranted)
     assert bus.events[0].capabilities == ["http.request"]
+
+
+@pytest.mark.asyncio
+async def test_audit_session_event_publishes_rehydration_events() -> None:
+    bus = _RecordingEventBus()
+    server = _RecordingServer()
+    wiring = DaemonEventWiring(event_bus=bus, server=server)  # type: ignore[arg-type]
+
+    wiring.audit_session_event(
+        "session.rehydrated",
+        {
+            "session_id": "s1",
+            "source": "startup",
+            "schema_version": 1,
+            "migrated": True,
+            "migration_reason": "legacy_fixup",
+            "role": "orchestrator",
+            "mode": "default",
+            "lockdown_level": "caution",
+        },
+    )
+    wiring.audit_session_event(
+        "session.rehydrate_rejected",
+        {
+            "source": "startup",
+            "reason": "unsupported_schema_version:99",
+            "path": "/tmp/s1.json",
+            "schema_version": 99,
+        },
+    )
+    await asyncio.sleep(0)
+
+    assert isinstance(bus.events[0], SessionRehydrated)
+    assert isinstance(bus.events[1], SessionRehydrateRejected)
+
+
+@pytest.mark.asyncio
+async def test_audit_archive_events_publish_archive_telemetry() -> None:
+    bus = _RecordingEventBus()
+    server = _RecordingServer()
+    wiring = DaemonEventWiring(event_bus=bus, server=server)  # type: ignore[arg-type]
+
+    wiring.audit_archive_export(
+        {
+            "session_id": "s1",
+            "archive_path": "/tmp/archive.zip",
+            "original_session_id": "s1",
+            "transcript_entries": 2,
+            "checkpoint_count": 1,
+            "archive_sha256": "abc123",
+        }
+    )
+    await asyncio.sleep(0)
+
+    assert isinstance(bus.events[0], SessionArchiveExported)
 
 
 @pytest.mark.asyncio

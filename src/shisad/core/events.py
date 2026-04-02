@@ -110,6 +110,47 @@ class SessionTerminated(BaseEvent):
     reason: str = ""
 
 
+class SessionRehydrated(BaseEvent):
+    """A persisted/checkpoint/archive session state was accepted and restored."""
+
+    source: str = ""
+    schema_version: int = 0
+    migrated: bool = False
+    migration_reason: str = ""
+    role: str = ""
+    mode: str = ""
+    lockdown_level: str = ""
+
+
+class SessionRehydrateRejected(BaseEvent):
+    """A persisted/checkpoint/archive session state was rejected."""
+
+    source: str = ""
+    reason: str = ""
+    schema_version: int = 0
+    path: str = ""
+
+
+class SessionArchiveExported(BaseEvent):
+    """A bounded single-session archive was written."""
+
+    archive_path: str = ""
+    original_session_id: str = ""
+    transcript_entries: int = 0
+    checkpoint_count: int = 0
+    archive_sha256: str = ""
+
+
+class SessionArchiveImported(BaseEvent):
+    """A bounded single-session archive was imported into a fresh session."""
+
+    archive_path: str = ""
+    original_session_id: str = ""
+    imported_session_id: str = ""
+    transcript_entries: int = 0
+    checkpoint_count: int = 0
+
+
 class CapabilityGranted(BaseEvent):
     """Capabilities were granted to a session by a non-agent actor."""
 

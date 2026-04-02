@@ -29,9 +29,11 @@ from shisad.core.types import (
     UserId,
     WorkspaceId,
 )
+from shisad.scheduler.schema import TaskEnvelope
 
 logger = logging.getLogger(__name__)
 _DIR_FSYNC_UNSUPPORTED_ERRNOS = {errno.EINVAL, errno.ENOSYS}
+_PERSISTED_SESSION_SCHEMA_VERSION = 1
 for _name in ("ENOTSUP", "EOPNOTSUPP"):
     _value = getattr(errno, _name, None)
     if isinstance(_value, int):
@@ -46,6 +48,10 @@ class _SessionMigrationOutcome:
     sync_mode_after: str
     capabilities_before: frozenset[Capability]
     capabilities_after: frozenset[Capability]
+
+
+class SessionRehydrateError(ValueError):
+    """Raised when persisted/recovered session state is incompatible."""
 
 
 class Session(BaseModel):
@@ -104,6 +110,10 @@ class SessionManager:
         audit_hook: Callable[[str, dict[str, Any]], None] | None = None,
         state_dir: Path | None = None,
         default_capabilities: set[Capability] | None = None,
+        supplemental_state_provider: Callable[[Session], dict[str, Any]] | None = None,
+        supplemental_state_restorer: (
+            Callable[[Session, dict[str, Any], str], None] | None
+        ) = None,
     ) -> None:
         self._sessions: dict[SessionId, Session] = {}
         self._audit_hook = audit_hook
@@ -111,6 +121,8 @@ class SessionManager:
         self._default_capabilities = (
             None if default_capabilities is None else set(default_capabilities)
         )
+        self._supplemental_state_provider = supplemental_state_provider
+        self._supplemental_state_restorer = supplemental_state_restorer
         if self._state_dir is not None:
             self._state_dir.mkdir(parents=True, exist_ok=True)
             self._load_persisted_active_sessions()
@@ -314,28 +326,38 @@ class SessionManager:
 
     def restore_from_checkpoint(self, checkpoint: Checkpoint) -> Session:
         """Restore session state from a checkpoint payload."""
-        state = checkpoint.state
-        restored: Session
-        if isinstance(state, dict):
-            if "id" in state:
-                restored = Session.model_validate(state)
-            elif isinstance(state.get("session"), dict):
-                restored = Session.model_validate(state["session"])
-            else:
-                restored = Session(id=checkpoint.session_id)
-                restored.metadata["checkpoint_state"] = state
-        else:
-            restored = Session(id=checkpoint.session_id)
-            restored.metadata["checkpoint_state"] = {"raw": state}
-        restored.state = SessionState.ACTIVE
-        self._sessions[restored.id] = restored
-        self._persist_session(restored)
+        restored = self._restore_rehydrated_session(
+            checkpoint.state,
+            source="checkpoint",
+            fallback_session_id=checkpoint.session_id,
+        )
         logger.info(
             "Session restored from checkpoint: %s (session=%s)",
             checkpoint.checkpoint_id,
             restored.id,
         )
         return restored
+
+    def import_session_record(
+        self,
+        record: dict[str, Any],
+        *,
+        source: str = "archive",
+        new_session_id: SessionId | None = None,
+    ) -> Session:
+        return self._restore_rehydrated_session(
+            record,
+            source=source,
+            fallback_session_id=new_session_id,
+            new_session_id=new_session_id,
+            allow_fallback=False,
+        )
+
+    def export_session_record(self, session_id: SessionId) -> dict[str, Any] | None:
+        session = self._sessions.get(session_id)
+        if session is None:
+            return None
+        return self._build_persisted_session_payload(session)
 
     def persist(self, session_id: SessionId) -> bool:
         """Persist a session after external metadata updates."""
@@ -355,7 +377,12 @@ class SessionManager:
             return True
         tmp_path = path.with_suffix(".tmp")
         try:
-            payload = session.model_dump_json(indent=2)
+            payload = json.dumps(
+                self._build_persisted_session_payload(session),
+                ensure_ascii=True,
+                indent=2,
+                sort_keys=True,
+            )
             with tmp_path.open("w", encoding="utf-8") as handle:
                 handle.write(payload)
                 handle.flush()
@@ -394,13 +421,62 @@ class SessionManager:
             return
         for path in sorted(self._state_dir.glob("*.json")):
             try:
-                loaded = Session.model_validate_json(path.read_text(encoding="utf-8"))
-            except (OSError, ValidationError, TypeError, ValueError):
+                payload = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, TypeError, ValueError, json.JSONDecodeError):
                 logger.warning("Skipping invalid persisted session file: %s", path)
+                self._emit_audit(
+                    "session.rehydrate_rejected",
+                    {
+                        "source": "startup",
+                        "reason": "invalid_persisted_file",
+                        "path": str(path),
+                    },
+                )
+                continue
+            try:
+                loaded, record, schema_version = self._load_session_from_payload(
+                    payload,
+                    source="startup",
+                    path=path,
+                )
+            except SessionRehydrateError as exc:
+                logger.warning("Skipping incompatible persisted session file: %s (%s)", path, exc)
+                self._emit_audit(
+                    "session.rehydrate_rejected",
+                    {
+                        "source": "startup",
+                        "reason": str(exc),
+                        "path": str(path),
+                    },
+                )
                 continue
             if loaded.state != SessionState.ACTIVE:
                 continue
             outcome = self._migrate_loaded_session(loaded)
+            lockdown_level = ""
+            if self._supplemental_state_restorer is not None:
+                try:
+                    self._supplemental_state_restorer(loaded, record, "startup")
+                except ValueError as exc:
+                    logger.warning(
+                        "Skipping persisted session with invalid supplemental state: %s (%s)",
+                        path,
+                        exc,
+                    )
+                    self._emit_audit(
+                        "session.rehydrate_rejected",
+                        {
+                            "source": "startup",
+                            "reason": str(exc),
+                            "path": str(path),
+                            "session_id": str(loaded.id),
+                            "schema_version": schema_version,
+                        },
+                    )
+                    continue
+                lockdown_payload = record.get("lockdown")
+                if isinstance(lockdown_payload, dict):
+                    lockdown_level = str(lockdown_payload.get("level", "")).strip().lower()
             if outcome.changed:
                 persisted = self._persist_session(loaded)
                 added = set(outcome.capabilities_after).difference(outcome.capabilities_before)
@@ -434,19 +510,34 @@ class SessionManager:
                 sorted(cap.value for cap in outcome.capabilities_after),
             )
             self._sessions[loaded.id] = loaded
+            self._emit_audit(
+                "session.rehydrated",
+                {
+                    "session_id": str(loaded.id),
+                    "source": "startup",
+                    "schema_version": schema_version,
+                    "migrated": outcome.changed,
+                    "migration_reason": outcome.reason,
+                    "role": loaded.role.value,
+                    "mode": loaded.mode.value,
+                    "lockdown_level": lockdown_level,
+                },
+            )
 
     def _migrate_loaded_session(self, session: Session) -> _SessionMigrationOutcome:
         before_caps = set(session.capabilities)
         role_changed = False
-        if (
+        session_kind_is_subagent = (
             session.role == SessionRole.ORCHESTRATOR
             and (
                 session.mode == SessionMode.TASK
                 or str(session.channel).strip().lower() in {"task", "scheduler"}
                 or str(session.metadata.get("parent_session_id", "")).strip()
                 or str(session.metadata.get("background_task_id", "")).strip()
+                or bool(session.metadata.get("task_envelope"))
             )
-        ):
+        )
+        if session_kind_is_subagent:
             role_changed = session.migrate_role(SessionRole.SUBAGENT)
         raw_mode = str(session.metadata.get("capability_sync_mode", "")).strip().lower()
         sync_mode_before = (
@@ -454,7 +545,15 @@ class SessionManager:
         )
         reason = "no_op"
 
-        if raw_mode == "manual_override":
+        if session.role == SessionRole.SUBAGENT:
+            session.metadata["capability_sync_mode"] = "manual_override"
+            sync_mode_after = "manual_override"
+            reason = (
+                "subagent_manual_override_enforced"
+                if sync_mode_before != "manual_override"
+                else "subagent_manual_override_preserved"
+            )
+        elif raw_mode == "manual_override":
             sync_mode_after = "manual_override"
             reason = "manual_override_skip"
         elif raw_mode == "policy_default":
@@ -501,6 +600,179 @@ class SessionManager:
             capabilities_after=frozenset(after_caps),
         )
 
+    def _build_persisted_session_payload(self, session: Session) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "schema_version": _PERSISTED_SESSION_SCHEMA_VERSION,
+            "persisted_at": datetime.now(UTC).isoformat(),
+            "session": session.model_dump(mode="json"),
+        }
+        if self._supplemental_state_provider is None:
+            return payload
+        supplemental = self._supplemental_state_provider(session)
+        if supplemental:
+            payload.update(dict(supplemental))
+        return payload
+
+    def _load_session_from_payload(
+        self,
+        payload: Any,
+        *,
+        source: str,
+        path: Path | None = None,
+        allow_legacy: bool = True,
+    ) -> tuple[Session, dict[str, Any], int]:
+        if isinstance(payload, dict) and "schema_version" in payload:
+            try:
+                schema_version = int(payload.get("schema_version") or 0)
+            except (TypeError, ValueError) as exc:
+                raise SessionRehydrateError("invalid_schema_version") from exc
+            if schema_version != _PERSISTED_SESSION_SCHEMA_VERSION:
+                raise SessionRehydrateError(
+                    f"unsupported_schema_version:{schema_version}"
+                )
+            session_payload = payload.get("session")
+            if not isinstance(session_payload, dict):
+                raise SessionRehydrateError("missing_session_payload")
+            try:
+                session = Session.model_validate(session_payload)
+            except (ValidationError, TypeError, ValueError) as exc:
+                raise SessionRehydrateError("invalid_session_payload") from exc
+            self._validate_loaded_session_state(session, payload)
+            return session, dict(payload), schema_version
+
+        if allow_legacy and isinstance(payload, dict):
+            try:
+                session = Session.model_validate(payload)
+            except (ValidationError, TypeError, ValueError) as exc:
+                raise SessionRehydrateError("invalid_legacy_session_payload") from exc
+            legacy_record = {
+                "schema_version": 0,
+                "session": payload,
+            }
+            self._validate_loaded_session_state(session, legacy_record)
+            return session, legacy_record, 0
+
+        location = f" ({path})" if path is not None else ""
+        raise SessionRehydrateError(f"unsupported_payload_shape{location}")
+
+    def _restore_rehydrated_session(
+        self,
+        state: Any,
+        *,
+        source: str,
+        fallback_session_id: SessionId | None = None,
+        new_session_id: SessionId | None = None,
+        allow_fallback: bool = True,
+    ) -> Session:
+        if isinstance(state, dict):
+            candidate = state
+            if "schema_version" in state:
+                session, record, schema_version = self._load_session_from_payload(
+                    state,
+                    source=source,
+                    allow_legacy=False,
+                )
+            elif isinstance(state.get("session"), dict) and (
+                "schema_version" in state.get("session", {}) or "id" in state.get("session", {})
+            ):
+                session, record, schema_version = self._load_session_from_payload(
+                    state["session"],
+                    source=source,
+                    allow_legacy=True,
+                )
+                record = dict(state)
+                record.setdefault("session", session.model_dump(mode="json"))
+            elif "id" in state:
+                session, record, schema_version = self._load_session_from_payload(
+                    state,
+                    source=source,
+                    allow_legacy=True,
+                )
+            elif allow_fallback:
+                session = Session(id=fallback_session_id or SessionId(uuid.uuid4().hex))
+                session.metadata["checkpoint_state"] = candidate
+                schema_version = 0
+                record = {"schema_version": 0, "session": session.model_dump(mode="json")}
+            else:
+                raise SessionRehydrateError("unsupported_payload_shape")
+        elif allow_fallback:
+            session = Session(id=fallback_session_id or SessionId(uuid.uuid4().hex))
+            session.metadata["checkpoint_state"] = {"raw": state}
+            schema_version = 0
+            record = {"schema_version": 0, "session": session.model_dump(mode="json")}
+        else:
+            raise SessionRehydrateError("unsupported_payload_shape")
+
+        if new_session_id is not None and session.id != new_session_id:
+            previous_session_id = session.id
+            session.id = new_session_id
+            nonce = uuid.uuid4().hex[:12]
+            session.session_key = f"{session.workspace_id}:{session.user_id}:{nonce}"
+            record = dict(record)
+            record["session"] = session.model_dump(mode="json")
+            lockdown_payload = record.get("lockdown")
+            if isinstance(lockdown_payload, dict) and str(
+                lockdown_payload.get("session_id", "")
+            ).strip() == str(previous_session_id):
+                rewritten_lockdown = dict(lockdown_payload)
+                rewritten_lockdown["session_id"] = str(new_session_id)
+                record["lockdown"] = rewritten_lockdown
+        session.state = SessionState.ACTIVE
+        self._validate_loaded_session_state(session, record)
+        outcome = self._migrate_loaded_session(session)
+        if self._supplemental_state_restorer is not None:
+            self._supplemental_state_restorer(session, record, source)
+        self._sessions[session.id] = session
+        self._persist_session(session)
+        lockdown_payload = record.get("lockdown")
+        lockdown_level = (
+            str(lockdown_payload.get("level", "")).strip().lower()
+            if isinstance(lockdown_payload, dict)
+            else ""
+        )
+        self._emit_audit(
+            "session.rehydrated",
+            {
+                "session_id": str(session.id),
+                "source": source,
+                "schema_version": schema_version,
+                "migrated": outcome.changed,
+                "migration_reason": outcome.reason,
+                "role": session.role.value,
+                "mode": session.mode.value,
+                "lockdown_level": lockdown_level,
+            },
+        )
+        return session
+
+    @staticmethod
+    def _validate_loaded_session_state(session: Session, record: dict[str, Any]) -> None:
+        task_envelope_payload = session.metadata.get("task_envelope")
+        if task_envelope_payload in ({}, None, ""):
+            return
+        if not isinstance(task_envelope_payload, dict):
+            raise SessionRehydrateError("invalid_task_envelope_payload")
+        try:
+            task_envelope = TaskEnvelope.model_validate(task_envelope_payload)
+        except ValidationError as exc:
+            raise SessionRehydrateError("invalid_task_envelope_payload") from exc
+        if set(session.capabilities) != set(task_envelope.capability_snapshot):
+            raise SessionRehydrateError("task_envelope_capability_mismatch")
+        metadata_parent = str(session.metadata.get("parent_session_id", "")).strip()
+        envelope_parent = str(task_envelope.parent_session_id).strip()
+        if metadata_parent and envelope_parent and metadata_parent != envelope_parent:
+            raise SessionRehydrateError("task_envelope_parent_session_mismatch")
+        lockdown_payload = record.get("lockdown")
+        if lockdown_payload is not None and lockdown_payload != {} and not isinstance(
+            lockdown_payload, dict
+        ):
+            raise SessionRehydrateError("invalid_lockdown_payload")
+
+    def _emit_audit(self, action: str, data: dict[str, Any]) -> None:
+        if self._audit_hook is None:
+            return
+        self._audit_hook(action, data)
+
 
 # --- Checkpoint system ---
 
@@ -521,15 +793,36 @@ class CheckpointStore:
     state recovery, not workspace/filesystem rollback (that lands in M3).
     """
 
-    def __init__(self, checkpoint_dir: Path) -> None:
+    def __init__(
+        self,
+        checkpoint_dir: Path,
+        *,
+        supplemental_state_provider: Callable[[Session], dict[str, Any]] | None = None,
+    ) -> None:
         self._dir = checkpoint_dir
         self._dir.mkdir(parents=True, exist_ok=True)
+        self._supplemental_state_provider = supplemental_state_provider
 
     def create(self, session: Session, state: dict[str, Any] | None = None) -> Checkpoint:
         """Create a checkpoint of the current session state."""
+        checkpoint_state: dict[str, Any] = (
+            session.model_dump(mode="json") if state is None else dict(state)
+        )
+        if self._supplemental_state_provider is not None:
+            supplemental = self._supplemental_state_provider(session)
+            if supplemental:
+                if state is None:
+                    checkpoint_state = {
+                        "session": session.model_dump(mode="json"),
+                        **dict(supplemental),
+                    }
+                else:
+                    checkpoint_state.update(dict(supplemental))
+                    if "session" not in checkpoint_state and "id" not in checkpoint_state:
+                        checkpoint_state["session"] = session.model_dump(mode="json")
         checkpoint = Checkpoint(
             session_id=session.id,
-            state=state or session.model_dump(mode="json"),
+            state=checkpoint_state,
         )
 
         path = self._checkpoint_path(checkpoint.checkpoint_id)
@@ -565,3 +858,7 @@ class CheckpointStore:
 
     def _checkpoint_path(self, checkpoint_id: str) -> Path:
         return self._dir / f"{checkpoint_id}.json"
+
+    def delete(self, checkpoint_id: str) -> None:
+        with contextlib.suppress(OSError):
+            self._checkpoint_path(checkpoint_id).unlink()

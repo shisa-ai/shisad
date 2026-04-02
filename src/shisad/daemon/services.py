@@ -36,14 +36,14 @@ from shisad.core.providers.local_planner import LocalPlannerProvider
 from shisad.core.providers.monitor_adapter import MonitorProviderAdapter
 from shisad.core.providers.routed_openai import RoutedOpenAIProvider
 from shisad.core.providers.routing import ModelComponent, ModelRouter
-from shisad.core.session import CheckpointStore, SessionManager
+from shisad.core.session import CheckpointStore, Session, SessionManager
 from shisad.core.tools.builtin.alarm import AlarmTool
 from shisad.core.tools.builtin.shell_exec import ShellExecTool
 from shisad.core.tools.registry import ToolRegistry
 from shisad.core.tools.schema import ToolDefinition, ToolParameter
 from shisad.core.trace import TraceRecorder
 from shisad.core.transcript import TranscriptStore
-from shisad.core.types import Capability, CredentialRef, ToolName
+from shisad.core.types import Capability, CredentialRef, SessionId, ToolName
 from shisad.daemon.event_wiring import DaemonEventWiring
 from shisad.executors.browser import BrowserSandbox, BrowserSandboxPolicy
 from shisad.executors.connect_path import IptablesConnectPathProxy
@@ -184,7 +184,6 @@ class DaemonServices:
         trace_recorder: TraceRecorder | None = None
         if config.trace_enabled:
             trace_recorder = TraceRecorder(config.data_dir / "traces")
-        checkpoint_store = CheckpointStore(config.data_dir / "checkpoints")
         risk_calibrator = RiskCalibrator(
             policy_path=config.data_dir / "risk" / "policy.json",
             observations_path=config.data_dir / "risk" / "observations.jsonl",
@@ -200,6 +199,7 @@ class DaemonServices:
         event_wiring = DaemonEventWiring(event_bus=event_bus, server=server)
         event_bus.subscribe_all(event_wiring.forward_event_to_subscribers)
         internal_ingress_marker = object()
+        session_manager: SessionManager | None = None
         channels: dict[str, Channel] = {}
         matrix_channel: MatrixChannel | None = None
         discord_channel: DiscordChannel | None = None
@@ -209,10 +209,36 @@ class DaemonServices:
         startup_complete = False
 
         try:
+            def _lockdown_snapshot_provider(session: Session) -> dict[str, Any]:
+                return {"lockdown": lockdown_manager.snapshot(session.id)}
+
+            def _restore_lockdown_snapshot(
+                session: Session,
+                record: dict[str, Any],
+                _source: str,
+            ) -> None:
+                lockdown_manager.rehydrate(session.id, record.get("lockdown"))
+
+            def _persist_lockdown_snapshot(session_id: SessionId, _state: object) -> None:
+                if session_manager is None or session_manager.get(session_id) is None:
+                    return
+                session_manager.persist(session_id)
+
+            lockdown_manager = LockdownManager(
+                notification_hook=event_wiring.lockdown_notify,
+                state_change_hook=_persist_lockdown_snapshot,
+            )
+            event_wiring.bind_lockdown_manager(lockdown_manager)
             session_manager = SessionManager(
-                audit_hook=event_wiring.audit_capability_event,
+                audit_hook=event_wiring.audit_session_event,
                 state_dir=config.data_dir / "sessions" / "state",
                 default_capabilities=set(policy_loader.policy.default_capabilities),
+                supplemental_state_provider=_lockdown_snapshot_provider,
+                supplemental_state_restorer=_restore_lockdown_snapshot,
+            )
+            checkpoint_store = CheckpointStore(
+                config.data_dir / "checkpoints",
+                supplemental_state_provider=_lockdown_snapshot_provider,
             )
             firewall = ContentFirewall()
             if policy_loader.policy.yara_required and firewall.classifier_mode != "yara":
@@ -354,8 +380,6 @@ class DaemonServices:
                 max_search_files=config.realitycheck_search_max_files,
             )
             realitycheck_status = realitycheck_toolkit.doctor_status()
-            lockdown_manager = LockdownManager(notification_hook=event_wiring.lockdown_notify)
-            event_wiring.bind_lockdown_manager(lockdown_manager)
             rate_limiter = RateLimiter(
                 RateLimitConfig(
                     window_seconds=policy_loader.policy.rate_limits.window_seconds,

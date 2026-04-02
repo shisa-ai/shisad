@@ -8,6 +8,7 @@ import pytest
 
 from shisad.core.session import CheckpointStore, Session
 from shisad.core.types import SessionId, UserId
+from shisad.security.lockdown import LockdownLevel, LockdownManager
 
 
 @pytest.fixture
@@ -56,3 +57,28 @@ class TestCheckpointRoundTrip:
 
         assert len(checkpoint_store.list_for_session(SessionId("s1"))) == 1
         assert len(checkpoint_store.list_for_session(SessionId("s2"))) == 1
+
+    def test_m2_checkpoint_store_enriches_state_with_lockdown_snapshot(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        lockdown = LockdownManager()
+        session = Session(
+            id=SessionId("lockdown-session"),
+            user_id=UserId("alice"),
+        )
+        lockdown.set_level(
+            session.id,
+            level=LockdownLevel.CAUTION,
+            reason="checkpoint-test",
+            trigger="manual",
+        )
+        store = CheckpointStore(
+            tmp_path / "checkpoints",
+            supplemental_state_provider=lambda current: {"lockdown": lockdown.snapshot(current.id)},
+        )
+
+        checkpoint = store.create(session)
+
+        assert checkpoint.state["session"]["id"] == "lockdown-session"
+        assert checkpoint.state["lockdown"]["level"] == LockdownLevel.CAUTION.value
