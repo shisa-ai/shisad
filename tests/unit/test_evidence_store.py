@@ -58,6 +58,50 @@ def test_evidence_store_restores_metadata_after_restart(tmp_path) -> None:
     assert restarted.validate_ref_id(sid, created.ref_id) is True
 
 
+def test_evidence_store_drops_refs_with_tampered_metadata_mac_on_restart(tmp_path) -> None:
+    evidence_root = tmp_path / "evidence"
+    sid = SessionId("sess-a")
+
+    first = EvidenceStore(evidence_root, salt=b"a" * 32)
+    created = first.store(
+        sid,
+        "restart-stable evidence",
+        taint_labels={TaintLabel.UNTRUSTED},
+        source="web.fetch:example.com",
+        summary="restart-stable evidence",
+    )
+    index_path = evidence_root / "refs_index.json"
+    raw_index = json.loads(index_path.read_text(encoding="utf-8"))
+    raw_index[str(sid)][created.ref_id]["endorsement_state"] = "user_endorsed"
+    raw_index[str(sid)][created.ref_id]["endorsed_by"] = "forged-offline"
+    index_path.write_text(json.dumps(raw_index), encoding="utf-8")
+
+    restarted = EvidenceStore(evidence_root, salt=b"a" * 32)
+
+    assert restarted.get_ref(sid, created.ref_id) is None
+    assert restarted.validate_ref_id(sid, created.ref_id) is False
+
+
+def test_evidence_store_drops_refs_with_tampered_blob_content(tmp_path) -> None:
+    evidence_root = tmp_path / "evidence"
+    sid = SessionId("sess-a")
+
+    store = EvidenceStore(evidence_root, salt=b"a" * 32)
+    created = store.store(
+        sid,
+        "restart-stable evidence",
+        taint_labels={TaintLabel.UNTRUSTED},
+        source="web.fetch:example.com",
+        summary="restart-stable evidence",
+    )
+    blob_path = evidence_root / "blobs" / f"{created.content_hash}.txt"
+    blob_path.write_text("tampered evidence body", encoding="utf-8")
+
+    assert store.get_ref(sid, created.ref_id) is None
+    assert store.read(sid, created.ref_id) is None
+    assert store.validate_ref_id(sid, created.ref_id) is False
+
+
 def test_evidence_store_ignores_malformed_index_without_quarantining_blobs(tmp_path) -> None:
     evidence_root = tmp_path / "evidence"
     blob_dir = evidence_root / "blobs"

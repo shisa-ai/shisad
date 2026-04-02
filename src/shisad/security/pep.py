@@ -489,16 +489,16 @@ class PEP:
         ref = self._evidence_store.get_ref(context.session_id, ref_id)
         if ref is None:
             return self._reject(tool_name, "invalid or unknown evidence reference")
-        if ref.endorsement_state == ArtifactEndorsementState.UNENDORSED:
-            return PEPDecision(
-                kind=PEPDecisionKind.REQUIRE_CONFIRMATION,
-                reason=(
-                    "Artifact is unendorsed; user confirmation is required before "
-                    "it can be promoted into persistent conversation context."
-                ),
-                tool_name=tool_name,
-            )
-        return None
+        if ref.endorsement_state == ArtifactEndorsementState.USER_ENDORSED:
+            return None
+        return PEPDecision(
+            kind=PEPDecisionKind.REQUIRE_CONFIRMATION,
+            reason=(
+                "Artifact is not explicitly user-endorsed; confirmation is required "
+                "before it can be promoted into persistent conversation context."
+            ),
+            tool_name=tool_name,
+        )
 
     def _check_allowed_args(
         self,

@@ -4236,6 +4236,13 @@ class SessionImplMixin(HandlerMixinBase):
     ) -> str:
         artifact_root = self._config.data_dir / "task_artifacts" / str(task_session_id)
         artifact_root.mkdir(parents=True, exist_ok=True)
+        try:
+            artifact_root.chmod(0o700)
+        except OSError:
+            logger.warning(
+                "Failed to set task artifact directory permissions for %s",
+                artifact_root,
+            )
         artifact_path = artifact_root / filename
         if isinstance(payload, str):
             artifact_path.write_text(payload, encoding="utf-8")
@@ -4257,16 +4264,16 @@ class SessionImplMixin(HandlerMixinBase):
         raw_response_text: str,
         failure_reason: str,
     ) -> TaskSummaryFirewallCheckpoint | None:
-        inspected = self._firewall.inspect(raw_response_text, trusted_input=False)
-        summary_text = inspected.sanitized_text.strip()
-        if not summary_text:
-            summary_text = (
-                "Delegated task completed. Review the raw log artifact for details."
-                if not failure_reason
-                else "Delegated task failed. Review the raw log artifact for details."
-            )
-        summary_text = _compact_context_text(summary_text, max_chars=320)
         try:
+            inspected = self._firewall.inspect(raw_response_text, trusted_input=False)
+            summary_text = inspected.sanitized_text.strip()
+            if not summary_text:
+                summary_text = (
+                    "Delegated task completed. Review the raw log artifact for details."
+                    if not failure_reason
+                    else "Delegated task failed. Review the raw log artifact for details."
+                )
+            summary_text = _compact_context_text(summary_text, max_chars=320)
             checkpoint_ref = self._write_task_artifact(
                 task_session_id=task_session_id,
                 filename="summary_firewall.json",

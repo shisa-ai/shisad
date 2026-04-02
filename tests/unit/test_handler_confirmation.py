@@ -14,6 +14,8 @@ from shisad.core.api.schema import (
     ConfirmationMetricsParams,
 )
 from shisad.core.evidence import ArtifactEndorsementState, EvidenceStore
+from shisad.core.tools.registry import ToolRegistry
+from shisad.core.tools.schema import ToolDefinition, ToolParameter
 from shisad.core.transcript import TranscriptStore
 from shisad.core.types import (
     Capability,
@@ -29,6 +31,8 @@ from shisad.daemon.handlers._impl import PendingAction
 from shisad.daemon.handlers._impl_confirmation import ConfirmationImplMixin
 from shisad.daemon.handlers.confirmation import ConfirmationHandlers
 from shisad.security.control_plane.schema import Origin, RiskTier
+from shisad.security.pep import PEP, PolicyContext
+from shisad.security.policy import PolicyBundle
 
 
 class _StubImpl:
@@ -93,6 +97,19 @@ async def test_confirmation_decision_wrappers() -> None:
     assert reject.rejected is True
 
 
+def _registry_for_evidence() -> ToolRegistry:
+    registry = ToolRegistry()
+    registry.register(
+        ToolDefinition(
+            name=ToolName("evidence.promote"),
+            description="promote evidence",
+            parameters=[ToolParameter(name="ref_id", type="string", required=True)],
+            capabilities_required=[Capability.MEMORY_READ],
+        )
+    )
+    return registry
+
+
 class _ControlPlaneRecorder:
     def __init__(self) -> None:
         self.approved_actions: list[object] = []
@@ -107,7 +124,13 @@ class _ControlPlaneRecorder:
 
 
 class _ConfirmationImplHarness(ConfirmationImplMixin):
-    def __init__(self, tmp_path, *, allow_amendment: bool = False) -> None:
+    def __init__(
+        self,
+        tmp_path,
+        *,
+        allow_amendment: bool = False,
+        execute_success: bool = True,
+    ) -> None:
         self._pending_actions: dict[str, PendingAction] = {}
         self._lockdown_manager = SimpleNamespace(should_block_all_actions=lambda _sid: False)
         self.published_events: list[object] = []
@@ -131,6 +154,7 @@ class _ConfirmationImplHarness(ConfirmationImplMixin):
         self.execution_kwargs: list[dict[str, object]] = []
         self._transcript_store = TranscriptStore(tmp_path / "sessions")
         self._evidence_store = EvidenceStore(tmp_path / "evidence", salt=b"a" * 32)
+        self._execute_success = execute_success
 
     async def _noop_publish(self, _event: object) -> None:
         self.published_events.append(_event)
@@ -199,7 +223,11 @@ class _ConfirmationImplHarness(ConfirmationImplMixin):
                 ),
                 taint_labels={TaintLabel.USER_REVIEWED},
             )
-        return SimpleNamespace(success=True, checkpoint_id=None, tool_output=tool_output)
+        return SimpleNamespace(
+            success=self._execute_success,
+            checkpoint_id=None,
+            tool_output=tool_output if self._execute_success else None,
+        )
 
     @staticmethod
     def _pending_to_dict(pending: PendingAction) -> dict[str, object]:
@@ -400,6 +428,9 @@ async def test_m4_confirmation_endorses_promoted_evidence_and_passes_provenance(
     assert endorsed is not None
     assert endorsed.endorsement_state == ArtifactEndorsementState.USER_ENDORSED
     assert endorsed.endorsed_by == "human_confirmation"
+    assert endorsed.endorsed_at == datetime.fromisoformat(
+        str(harness.execution_kwargs[0]["approval_timestamp"])
+    )
     assert len(harness.execution_kwargs) == 1
     assert harness.execution_kwargs[0]["tool_name"] == "evidence.promote"
     assert harness.execution_kwargs[0]["approval_confirmation_id"] == "c-1"
@@ -409,3 +440,48 @@ async def test_m4_confirmation_endorses_promoted_evidence_and_passes_provenance(
     transcript_entries = harness._transcript_store.list_entries(SessionId("s-1"))
     assert transcript_entries[-1].metadata["promoted_evidence"] is True
     assert transcript_entries[-1].metadata["promoted_ref_id"] == ref.ref_id
+
+
+@pytest.mark.asyncio
+async def test_m4_failed_confirmed_promote_does_not_endorse_artifact(tmp_path) -> None:
+    harness = _ConfirmationImplHarness(tmp_path, execute_success=False)
+    ref = harness._evidence_store.store(
+        SessionId("s-1"),
+        "promoted body",
+        taint_labels={TaintLabel.UNTRUSTED},
+        source="web.fetch:example.com",
+        summary="promoted body",
+    )
+    pending = PendingAction(
+        confirmation_id="c-1",
+        decision_nonce="expected",
+        session_id=SessionId("s-1"),
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("w-1"),
+        tool_name=ToolName("evidence.promote"),
+        arguments={"ref_id": ref.ref_id},
+        reason="manual",
+        capabilities={Capability.MEMORY_READ},
+        created_at=datetime.now(UTC),
+    )
+    harness._pending_actions[pending.confirmation_id] = pending
+
+    result = await harness.do_action_confirm(
+        {"confirmation_id": "c-1", "decision_nonce": "expected"}
+    )
+
+    assert result["confirmed"] is False
+    endorsed = harness._evidence_store.get_ref(SessionId("s-1"), ref.ref_id)
+    assert endorsed is not None
+    assert endorsed.endorsement_state == ArtifactEndorsementState.UNENDORSED
+    pep = PEP(
+        PolicyBundle(default_require_confirmation=False),
+        _registry_for_evidence(),
+        evidence_store=harness._evidence_store,
+    )
+    decision = pep.evaluate(
+        ToolName("evidence.promote"),
+        {"ref_id": ref.ref_id},
+        PolicyContext(capabilities={Capability.MEMORY_READ}, session_id=SessionId("s-1")),
+    )
+    assert decision.kind.value == "require_confirmation"

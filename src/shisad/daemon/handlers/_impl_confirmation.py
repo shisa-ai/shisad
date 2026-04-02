@@ -268,52 +268,8 @@ class ConfirmationImplMixin(HandlerMixinBase):
             )
 
         decision_timestamp = datetime.now(UTC).isoformat()
-        if str(pending.tool_name) == "evidence.promote":
-            promote_ref_id = str(pending.arguments.get("ref_id", "")).strip()
-            store = getattr(self, "_evidence_store", None)
-            if promote_ref_id and store is not None:
-                try:
-                    store.endorse(
-                        pending.session_id,
-                        promote_ref_id,
-                        endorsement_state=ArtifactEndorsementState.USER_ENDORSED,
-                        actor="human_confirmation",
-                    )
-                except (OSError, RuntimeError, TypeError, ValueError):
-                    pending.status = "failed"
-                    pending.status_reason = "artifact_endorse_failed"
-                    await self._event_bus.publish(
-                        ToolRejected(
-                            session_id=pending.session_id,
-                            actor="human_confirmation",
-                            tool_name=pending.tool_name,
-                            reason="artifact_endorse_failed",
-                            approval_session_id=str(pending.session_id),
-                            approval_task_envelope_id=str(
-                                getattr(pending, "approval_task_envelope_id", "")
-                            ).strip(),
-                            approval_confirmation_id=str(pending.confirmation_id),
-                            approval_decision_nonce=str(pending.decision_nonce),
-                            approval_timestamp=decision_timestamp,
-                        )
-                    )
-                    self._sync_task_confirmation_status(pending)
-                    self._record_task_confirmation_outcome(pending, success=False)
-                    self._persist_pending_actions()
-                    self._confirmation_analytics.record(
-                        user_id=str(pending.user_id),
-                        decision="reject",
-                        created_at=pending.created_at,
-                    )
-                    await self._maybe_emit_confirmation_hygiene_alert(
-                        user_id=str(pending.user_id),
-                        session_id=pending.session_id,
-                    )
-                    return {
-                        "confirmed": False,
-                        "confirmation_id": confirmation_id,
-                        "reason": "artifact_endorse_failed",
-                    }
+        decision_at = datetime.fromisoformat(decision_timestamp)
+        promote_ref_id = str(pending.arguments.get("ref_id", "")).strip()
         execution_result = await self._execute_approved_action(
             sid=pending.session_id,
             user_id=pending.user_id,
@@ -334,6 +290,7 @@ class ConfirmationImplMixin(HandlerMixinBase):
         success = execution_result.success
         checkpoint_id = execution_result.checkpoint_id
         tool_output = getattr(execution_result, "tool_output", None)
+        promote_followup_reason = ""
         if (
             success
             and tool_output is not None
@@ -345,7 +302,11 @@ class ConfirmationImplMixin(HandlerMixinBase):
                 payload = {}
             content = str(payload.get("content", ""))
             ref_id = str(payload.get("ref_id", "")).strip()
-            if content.strip():
+            target_ref_id = promote_ref_id or ref_id
+            store = getattr(self, "_evidence_store", None)
+            try:
+                if not content.strip():
+                    raise ValueError("promoted evidence content is empty")
                 self._transcript_store.append(
                     pending.session_id,
                     role="assistant",
@@ -357,12 +318,45 @@ class ConfirmationImplMixin(HandlerMixinBase):
                         "timestamp_utc": datetime.now(UTC).isoformat(),
                         "session_mode": session.mode.value,
                         "promoted_evidence": True,
-                        "promoted_ref_id": ref_id,
+                        "promoted_ref_id": target_ref_id,
                     },
-                    evidence_ref_id=ref_id or None,
+                    evidence_ref_id=target_ref_id or None,
+                )
+                if not target_ref_id or store is None:
+                    raise ValueError("missing evidence ref for endorsement")
+                endorsed = store.endorse(
+                    pending.session_id,
+                    target_ref_id,
+                    endorsement_state=ArtifactEndorsementState.USER_ENDORSED,
+                    actor="human_confirmation",
+                    endorsed_at=decision_at,
+                )
+                if endorsed is None:
+                    raise ValueError("missing evidence ref for endorsement")
+            except (OSError, RuntimeError, TypeError, ValueError):
+                success = False
+                promote_followup_reason = "artifact_endorse_failed"
+                await self._event_bus.publish(
+                    ToolRejected(
+                        session_id=pending.session_id,
+                        actor="human_confirmation",
+                        tool_name=pending.tool_name,
+                        reason=promote_followup_reason,
+                        approval_session_id=str(pending.session_id),
+                        approval_task_envelope_id=str(
+                            getattr(pending, "approval_task_envelope_id", "")
+                        ).strip(),
+                        approval_confirmation_id=str(pending.confirmation_id),
+                        approval_decision_nonce=str(pending.decision_nonce),
+                        approval_timestamp=decision_timestamp,
+                    )
                 )
         pending.status = "approved" if success else "failed"
-        pending.status_reason = str(params.get("reason", "")).strip() or pending.status
+        pending.status_reason = (
+            promote_followup_reason
+            or str(params.get("reason", "")).strip()
+            or pending.status
+        )
         self._sync_task_confirmation_status(pending)
         self._record_task_confirmation_outcome(pending, success=success)
         self._persist_pending_actions()

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import contextlib
 import hashlib
 import inspect
 import json
@@ -1656,7 +1657,11 @@ class HandlerImplementation(
     def _persist_pending_actions(self) -> None:
         payload = [self._pending_to_dict(item) for item in self._pending_actions.values()]
         self._pending_actions_file.parent.mkdir(parents=True, exist_ok=True)
+        with contextlib.suppress(OSError):
+            self._pending_actions_file.parent.chmod(0o700)
         self._pending_actions_file.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        with contextlib.suppress(OSError):
+            self._pending_actions_file.chmod(0o600)
 
     def _load_pending_actions(self) -> None:
         if not self._pending_actions_file.exists():

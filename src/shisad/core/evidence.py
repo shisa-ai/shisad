@@ -87,6 +87,7 @@ class EvidenceRef(BaseModel):
     endorsed_at: datetime | None = None
     endorsed_by: str = ""
     storage_codec: str = "plaintext"
+    metadata_mac: str = ""
 
 
 @dataclass(frozen=True)
@@ -299,7 +300,8 @@ class ArtifactLedger:
         blob_path = self._blob_path(content_hash)
         existing = self._refs.setdefault(session_key, {}).get(ref_id)
         if existing is not None:
-            if not blob_path.exists():
+            blob_valid, _ = self._validate_blob_integrity(existing)
+            if not blob_valid:
                 self._write_blob(blob_path, content)
                 self._ensure_file_permissions(blob_path)
             merged = self._merge_existing_ref(
@@ -330,6 +332,7 @@ class ArtifactLedger:
             endorsement_state=ArtifactEndorsementState.UNENDORSED,
             storage_codec=self._blob_codec.name,
         )
+        ref = self._stamp_metadata_mac(session_key, ref)
         self._refs[session_key][ref_id] = ref
         self._persist_metadata_index()
         return ref
@@ -349,12 +352,13 @@ class ArtifactLedger:
         ref = self._refs.get(session_key, {}).get(ref_id)
         if ref is None:
             return None
-        if not self._blob_path(ref.content_hash).exists():
+        blob_valid, failure_reason = self._validate_blob_integrity(ref)
+        if not blob_valid:
             logger.warning(
-                "Dropping evidence ref %s for session %s because blob %s is missing",
+                "Dropping evidence ref %s for session %s because %s",
                 ref_id,
                 session_key,
-                ref.content_hash,
+                failure_reason,
             )
             self._drop_ref(session_key, ref_id)
             return None
@@ -449,9 +453,16 @@ class ArtifactLedger:
                 "endorsed_by": normalized_actor,
             }
         )
+        updated = self._stamp_metadata_mac(session_key, updated)
         self._refs[session_key][ref_id] = updated
         self._persist_metadata_index()
         return updated
+
+    def _stamp_metadata_mac(self, session_key: str, ref: EvidenceRef) -> EvidenceRef:
+        mac = self._make_metadata_mac(session_key, ref)
+        if hmac.compare_digest(ref.metadata_mac, mac):
+            return ref
+        return ref.model_copy(update={"metadata_mac": mac})
 
     def _make_ref_id(self, *, session_id: SessionId, content_hash: str) -> str:
         payload = f"{self._session_key(session_id)}:{content_hash}".encode()
@@ -486,6 +497,106 @@ class ArtifactLedger:
 
     def _blob_path(self, content_hash: str) -> Path:
         return self._blob_dir / f"{content_hash}.txt"
+
+    def _make_metadata_mac(self, session_key: str, ref: EvidenceRef) -> str:
+        payload = {
+            "artifact_kind": ref.artifact_kind,
+            "byte_size": ref.byte_size,
+            "content_hash": ref.content_hash,
+            "created_at": ref.created_at.isoformat(),
+            "endorsement_state": ref.endorsement_state.value,
+            "endorsed_at": ref.endorsed_at.isoformat() if ref.endorsed_at is not None else "",
+            "endorsed_by": ref.endorsed_by,
+            "lifecycle_state": ref.lifecycle_state.value,
+            "ref_id": ref.ref_id,
+            "session_key": session_key,
+            "source": ref.source,
+            "storage_codec": ref.storage_codec,
+            "summary": ref.summary,
+            "taint_labels": sorted(label.value for label in ref.taint_labels),
+            "ttl_seconds": ref.ttl_seconds,
+        }
+        return hmac.new(
+            self._salt,
+            json.dumps(payload, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode(
+                "utf-8"
+            ),
+            hashlib.sha256,
+        ).hexdigest()
+
+    def _validate_blob_integrity(self, ref: EvidenceRef) -> tuple[bool, str]:
+        if ref.storage_codec != self._blob_codec.name:
+            return (
+                False,
+                (
+                    "blob storage codec mismatch "
+                    f"(ref={ref.storage_codec} active={self._blob_codec.name})"
+                ),
+            )
+        path = self._blob_path(ref.content_hash)
+        if not path.exists():
+            return False, f"blob {ref.content_hash} is missing"
+        try:
+            content = self._read_blob(path)
+        except (OSError, UnicodeDecodeError, ValueError):
+            return False, f"blob {ref.content_hash} is unreadable"
+        actual_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
+        if not hmac.compare_digest(actual_hash, ref.content_hash):
+            return False, f"blob {ref.content_hash} failed content hash verification"
+        return True, ""
+
+    def _normalize_loaded_ref(
+        self,
+        *,
+        session_key: str,
+        ref: EvidenceRef,
+    ) -> tuple[EvidenceRef | None, bool]:
+        blob_valid, failure_reason = self._validate_blob_integrity(ref)
+        if not blob_valid:
+            logger.warning(
+                "Dropping persisted evidence ref %s for session %s because %s",
+                ref.ref_id,
+                session_key,
+                failure_reason,
+            )
+            return None, True
+
+        if ref.metadata_mac:
+            expected_mac = self._make_metadata_mac(session_key, ref)
+            if hmac.compare_digest(ref.metadata_mac, expected_mac):
+                return ref, False
+            logger.warning(
+                (
+                    "Dropping persisted evidence ref %s for session %s because "
+                    "metadata MAC verification failed"
+                ),
+                ref.ref_id,
+                session_key,
+            )
+            return None, True
+
+        downgraded = ref
+        if (
+            ref.endorsement_state != ArtifactEndorsementState.UNENDORSED
+            or ref.endorsed_at is not None
+            or ref.endorsed_by
+        ):
+            logger.warning(
+                (
+                    "Downgrading legacy unverified endorsement metadata on evidence ref %s "
+                    "for session %s"
+                ),
+                ref.ref_id,
+                session_key,
+            )
+            downgraded = ref.model_copy(
+                update={
+                    "endorsement_state": ArtifactEndorsementState.UNENDORSED,
+                    "endorsed_at": None,
+                    "endorsed_by": "",
+                }
+            )
+        return self._stamp_metadata_mac(session_key, downgraded), True
 
     def _write_blob(self, path: Path, content: str) -> None:
         path.write_bytes(self._blob_codec.encode(content))
@@ -536,19 +647,14 @@ class ArtifactLedger:
                         session_key,
                     )
                     continue
-                if not self._blob_path(ref.content_hash).exists():
-                    dirty = True
-                    logger.warning(
-                        (
-                            "Dropping persisted evidence ref %s for session %s "
-                            "because blob %s is missing"
-                        ),
-                        ref_id,
-                        session_key,
-                        ref.content_hash,
-                    )
+                normalized_ref, normalized_dirty = self._normalize_loaded_ref(
+                    session_key=session_key,
+                    ref=ref,
+                )
+                dirty = dirty or normalized_dirty
+                if normalized_ref is None:
                     continue
-                session_refs[ref_id] = ref
+                session_refs[ref_id] = normalized_ref
             if session_refs:
                 loaded[session_key] = session_refs
         return _MetadataLoadResult(refs=loaded, loaded_ok=loaded_ok, dirty=dirty)
@@ -655,6 +761,7 @@ class ArtifactLedger:
                 "storage_codec": existing.storage_codec or self._blob_codec.name,
             }
         )
+        merged = self._stamp_metadata_mac(session_key, merged)
         self._refs[session_key][ref_id] = merged
         return merged
 

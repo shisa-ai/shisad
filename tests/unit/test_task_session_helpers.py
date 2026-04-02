@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 from pydantic import ValidationError
 
-from shisad.core.types import Capability
+from shisad.core.types import Capability, SessionId
 from shisad.daemon.handlers._impl_session import (
+    SessionImplMixin,
     _compose_task_request_content,
     _extract_files_changed_from_task_outputs,
     _normalize_reported_task_path,
@@ -213,3 +216,23 @@ def test_m1_close_gate_evidence_truncation_preserves_structure_and_marks_omissio
     assert "diff --git a/x b/x +keep indentation" not in truncated
     assert "[TRUNCATED:" in truncated
     assert len(truncated) <= 64
+
+
+def test_m4_task_summary_firewall_checkpoint_returns_none_on_firewall_exception() -> None:
+    def _raise(*args: object, **kwargs: object) -> object:
+        _ = (args, kwargs)
+        raise RuntimeError("firewall unavailable")
+
+    helper = SimpleNamespace(
+        _firewall=SimpleNamespace(inspect=_raise),
+        _write_task_artifact=lambda **kwargs: "unused",
+    )
+
+    result = SessionImplMixin._build_task_summary_firewall_checkpoint(
+        helper,
+        task_session_id=SessionId("task-1"),
+        raw_response_text="Task summary ready.",
+        failure_reason="",
+    )
+
+    assert result is None
