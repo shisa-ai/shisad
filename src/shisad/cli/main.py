@@ -1029,7 +1029,13 @@ def session_restore(checkpoint_id: str) -> None:
     if result.restored:
         click.echo(f"Restored session {result.session_id} from checkpoint {checkpoint_id}")
         return
-    click.echo(f"Checkpoint not found: {checkpoint_id}", err=True)
+    if result.reason in {"", "not_found"}:
+        click.echo(f"Checkpoint not found: {checkpoint_id}", err=True)
+    else:
+        click.echo(
+            f"Session restore failed: {result.reason} (checkpoint {checkpoint_id})",
+            err=True,
+        )
     sys.exit(1)
 
 
@@ -1098,7 +1104,13 @@ def session_rollback(checkpoint_id: str) -> None:
     if result.rolled_back:
         click.echo(f"Rolled back session {result.session_id} to checkpoint {checkpoint_id}")
         return
-    click.echo(f"Checkpoint not found: {checkpoint_id}", err=True)
+    if result.reason in {"", "not_found"}:
+        click.echo(f"Checkpoint not found: {checkpoint_id}", err=True)
+    else:
+        click.echo(
+            f"Session rollback failed: {result.reason} (checkpoint {checkpoint_id})",
+            err=True,
+        )
     sys.exit(1)
 
 

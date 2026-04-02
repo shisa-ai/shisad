@@ -744,7 +744,12 @@ def test_session_restore_not_found_exits_nonzero(
         *,
         response_model: type[object] | None = None,
     ) -> object:
-        payload = {"restored": False, "checkpoint_id": "cp-missing", "session_id": None}
+        payload = {
+            "restored": False,
+            "checkpoint_id": "cp-missing",
+            "session_id": None,
+            "reason": "not_found",
+        }
         if response_model is None:
             return payload
         return response_model.model_validate(payload)  # type: ignore[attr-defined]
@@ -755,6 +760,74 @@ def test_session_restore_not_found_exits_nonzero(
     result = runner.invoke(cli_main.cli, ["session", "restore", "cp-missing"])
     assert result.exit_code == 1
     assert "Checkpoint not found: cp-missing" in result.output
+
+
+def test_session_restore_surfaces_structured_failure_reason(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _config(tmp_path)
+    monkeypatch.setattr(cli_main, "_get_config", lambda: config)
+
+    def _fake_rpc_call(
+        _config: DaemonConfig,
+        _method: str,
+        _params: dict[str, object] | None = None,
+        *,
+        response_model: type[object] | None = None,
+    ) -> object:
+        payload = {
+            "restored": False,
+            "checkpoint_id": "cp-bad",
+            "session_id": None,
+            "reason": "invalid_lockdown_payload",
+        }
+        if response_model is None:
+            return payload
+        return response_model.model_validate(payload)  # type: ignore[attr-defined]
+
+    monkeypatch.setattr(cli_main, "rpc_call", _fake_rpc_call)
+    runner = CliRunner()
+
+    result = runner.invoke(cli_main.cli, ["session", "restore", "cp-bad"])
+    assert result.exit_code == 1
+    assert "Session restore failed: invalid_lockdown_payload" in result.output
+
+
+def test_session_rollback_surfaces_structured_failure_reason(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _config(tmp_path)
+    monkeypatch.setattr(cli_main, "_get_config", lambda: config)
+
+    def _fake_rpc_call(
+        _config: DaemonConfig,
+        _method: str,
+        _params: dict[str, object] | None = None,
+        *,
+        response_model: type[object] | None = None,
+    ) -> object:
+        payload = {
+            "rolled_back": False,
+            "checkpoint_id": "cp-bad",
+            "session_id": None,
+            "files_restored": 0,
+            "files_deleted": 0,
+            "transcript_entries_removed": 0,
+            "restore_errors": [],
+            "reason": "invalid_lockdown_payload",
+        }
+        if response_model is None:
+            return payload
+        return response_model.model_validate(payload)  # type: ignore[attr-defined]
+
+    monkeypatch.setattr(cli_main, "rpc_call", _fake_rpc_call)
+    runner = CliRunner()
+
+    result = runner.invoke(cli_main.cli, ["session", "rollback", "cp-bad"])
+    assert result.exit_code == 1
+    assert "Session rollback failed: invalid_lockdown_payload" in result.output
 
 
 def test_session_prune_all_requires_confirm(

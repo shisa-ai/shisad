@@ -283,6 +283,10 @@ class SessionArchiveManager:
                     members[name] = self._read_archive_member(archive, info)
         except zipfile.BadZipFile as exc:
             raise SessionArchiveError("invalid_archive") from exc
+        except RuntimeError as exc:
+            raise _normalize_archive_runtime_error(exc) from exc
+        except NotImplementedError as exc:
+            raise SessionArchiveError("invalid_archive") from exc
         except OSError as exc:
             raise SessionArchiveError("archive_read_failed") from exc
         return members
@@ -461,3 +465,10 @@ def _capability_hash(capabilities: Any) -> str:
         normalized = [str(capabilities)]
     payload = json.dumps(normalized, ensure_ascii=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(payload).hexdigest()
+
+
+def _normalize_archive_runtime_error(exc: RuntimeError) -> SessionArchiveError:
+    message = str(exc).strip().lower()
+    if "encrypted" in message or "password" in message:
+        return SessionArchiveError("encrypted_archive")
+    return SessionArchiveError("invalid_archive")

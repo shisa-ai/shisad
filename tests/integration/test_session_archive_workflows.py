@@ -14,6 +14,7 @@ from shisad.core.api.transport import ControlClient
 from shisad.core.config import DaemonConfig
 from shisad.core.planner import Planner, PlannerOutput, PlannerResult
 from shisad.core.session import Checkpoint, CheckpointStore, Session
+from shisad.core.session_archive import SessionArchiveManager
 from shisad.core.types import SessionId
 from shisad.daemon.runner import run_daemon
 
@@ -239,6 +240,31 @@ async def test_m2_archive_and_restore_control_paths_fail_closed_with_structured_
         )
         assert imported["imported"] is False
         assert imported["reason"] == "invalid_archive"
+
+        valid_archive = tmp_path / "valid.shisad-session.zip"
+        exported_valid = await client.call(
+            "session.export",
+            {"session_id": sid, "path": str(valid_archive)},
+        )
+        assert exported_valid["exported"] is True
+
+        def _raise_encrypted(
+            _archive: object,
+            _info: object,
+        ) -> bytes:
+            raise RuntimeError("File is encrypted, password required for extraction")
+
+        monkeypatch.setattr(
+            SessionArchiveManager,
+            "_read_archive_member",
+            staticmethod(_raise_encrypted),
+        )
+        encrypted = await client.call(
+            "session.import",
+            {"archive_path": str(valid_archive)},
+        )
+        assert encrypted["imported"] is False
+        assert encrypted["reason"] == "encrypted_archive"
 
         export_destination = tmp_path / "archive-dir"
         export_destination.mkdir()

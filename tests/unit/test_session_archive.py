@@ -247,6 +247,34 @@ def test_m2_session_archive_import_rejects_invalid_zip_files(tmp_path: Path) -> 
         archive_manager.import_archive(invalid)
 
 
+def test_m2_session_archive_import_rejects_encrypted_members(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session_manager, _, _, _, archive_manager = _build_archive_stack(tmp_path)
+    session = session_manager.create(
+        channel="cli",
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws1"),
+    )
+    exported = archive_manager.export_session(session.id)
+
+    def _raise_encrypted(
+        _archive: zipfile.ZipFile,
+        _info: zipfile.ZipInfo,
+    ) -> bytes:
+        raise RuntimeError("File is encrypted, password required for extraction")
+
+    monkeypatch.setattr(
+        SessionArchiveManager,
+        "_read_archive_member",
+        staticmethod(_raise_encrypted),
+    )
+
+    with pytest.raises(SessionArchiveError, match="encrypted_archive"):
+        archive_manager.import_archive(exported.archive_path)
+
+
 def test_m2_session_archive_import_rejects_oversized_members(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
