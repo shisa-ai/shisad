@@ -29,6 +29,7 @@ _ARCHIVE_MAX_MEMBER_BYTES = 64 * 1024 * 1024
 _ARCHIVE_MAX_TOTAL_BYTES = 256 * 1024 * 1024
 _ARCHIVE_MAX_MEMBER_COUNT = 2048
 _ARCHIVE_READ_CHUNK_BYTES = 64 * 1024
+_ZIP_FLAG_ENCRYPTED = 0x1
 
 
 class SessionArchiveError(ValueError):
@@ -275,6 +276,8 @@ class SessionArchiveManager:
                     _validate_archive_member_name(name)
                     if name in members:
                         raise SessionArchiveError("duplicate_archive_member")
+                    if info.flag_bits & _ZIP_FLAG_ENCRYPTED:
+                        raise SessionArchiveError("encrypted_archive")
                     if info.file_size > _ARCHIVE_MAX_MEMBER_BYTES:
                         raise SessionArchiveError("archive_member_too_large")
                     total_bytes += int(info.file_size)

@@ -259,16 +259,29 @@ def test_m2_session_archive_import_rejects_encrypted_members(
     )
     exported = archive_manager.export_session(session.id)
 
-    def _raise_encrypted(
+    original_infolist = zipfile.ZipFile.infolist
+
+    def _encrypted_infolist(self: zipfile.ZipFile) -> list[zipfile.ZipInfo]:
+        infos = original_infolist(self)
+        for info in infos:
+            info.flag_bits |= 0x1
+        return infos
+
+    def _unexpected_read(
         _archive: zipfile.ZipFile,
         _info: zipfile.ZipInfo,
     ) -> bytes:
-        raise RuntimeError("File is encrypted, password required for extraction")
+        raise AssertionError("encrypted archive should be rejected before member read")
 
+    monkeypatch.setattr(
+        zipfile.ZipFile,
+        "infolist",
+        _encrypted_infolist,
+    )
     monkeypatch.setattr(
         SessionArchiveManager,
         "_read_archive_member",
-        staticmethod(_raise_encrypted),
+        staticmethod(_unexpected_read),
     )
 
     with pytest.raises(SessionArchiveError, match="encrypted_archive"):

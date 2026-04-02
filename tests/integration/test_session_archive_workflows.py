@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import textwrap
+import zipfile
 from contextlib import suppress
 from pathlib import Path
 
@@ -14,7 +15,6 @@ from shisad.core.api.transport import ControlClient
 from shisad.core.config import DaemonConfig
 from shisad.core.planner import Planner, PlannerOutput, PlannerResult
 from shisad.core.session import Checkpoint, CheckpointStore, Session
-from shisad.core.session_archive import SessionArchiveManager
 from shisad.core.types import SessionId
 from shisad.daemon.runner import run_daemon
 
@@ -248,16 +248,18 @@ async def test_m2_archive_and_restore_control_paths_fail_closed_with_structured_
         )
         assert exported_valid["exported"] is True
 
-        def _raise_encrypted(
-            _archive: object,
-            _info: object,
-        ) -> bytes:
-            raise RuntimeError("File is encrypted, password required for extraction")
+        original_infolist = zipfile.ZipFile.infolist
+
+        def _encrypted_infolist(self: zipfile.ZipFile) -> list[zipfile.ZipInfo]:
+            infos = original_infolist(self)
+            for info in infos:
+                info.flag_bits |= 0x1
+            return infos
 
         monkeypatch.setattr(
-            SessionArchiveManager,
-            "_read_archive_member",
-            staticmethod(_raise_encrypted),
+            zipfile.ZipFile,
+            "infolist",
+            _encrypted_infolist,
         )
         encrypted = await client.call(
             "session.import",
