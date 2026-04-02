@@ -9,6 +9,7 @@ from typing import Any
 
 import pytest
 
+import shisad.daemon.handlers._impl_session as session_impl
 from shisad.core.api.transport import ControlClient
 from shisad.core.config import DaemonConfig
 from shisad.core.events import EventBus, TaskSessionCompleted
@@ -608,6 +609,70 @@ async def test_m1_task_close_gate_inconclusive_blocks_handoff(
 
 
 @pytest.mark.asyncio
+async def test_m1_task_close_gate_timeout_fails_closed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _planner(
+        self: Planner,
+        user_content: str,
+        context: object,
+        *,
+        tools: list[dict[str, object]] | None = None,
+        persona_tone_override: str | None = None,
+    ) -> PlannerResult:
+        _ = (self, context, tools, persona_tone_override)
+        if "TASK CLOSE-GATE SELF-CHECK" in user_content:
+            await asyncio.sleep(0.05)
+            return _complete_close_gate_result()
+        return PlannerResult(
+            output=PlannerOutput(
+                assistant_response="I reviewed README.md and drafted a summary.",
+                actions=[],
+            ),
+            evaluated=[],
+            attempts=1,
+            provider_response=None,
+            messages_sent=(),
+        )
+
+    monkeypatch.setattr(Planner, "propose", _planner)
+    monkeypatch.setattr(session_impl, "_TASK_CLOSE_GATE_TIMEOUT_SEC", 0.01)
+    daemon_task, client = await _start_daemon(
+        tmp_path,
+        policy_text=_policy_with_caps("file.read"),
+    )
+    try:
+        created = await client.call(
+            "session.create",
+            {"channel": "cli", "user_id": "alice", "workspace_id": "ws1"},
+        )
+        sid = str(created["session_id"])
+        result = await client.call(
+            "session.message",
+            {
+                "session_id": sid,
+                "content": "delegate the README review",
+                "task": {
+                    "enabled": True,
+                    "task_description": "Review README.md and summarize it.",
+                    "file_refs": ["README.md"],
+                    "capabilities": ["file.read"],
+                },
+            },
+        )
+
+        task_result = dict(result.get("task_result") or {})
+        assert task_result["success"] is False
+        assert task_result["reason"] == "task_self_check_inconclusive"
+        assert task_result["self_check_status"] == "inconclusive"
+        assert task_result["self_check_ref"]
+        assert "self-check" in task_result["summary"].lower()
+    finally:
+        await _shutdown_daemon(daemon_task, client)
+
+
+@pytest.mark.asyncio
 async def test_m1_raw_task_handoff_failed_self_check_does_not_degrade_command_context(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -874,6 +939,154 @@ async def test_m1_task_session_terminates_even_if_completion_event_publish_fails
         active_ids = {str(item["id"]) for item in sessions["sessions"]}
         assert task_sid not in active_ids
     finally:
+        await observer.close()
+        await _shutdown_daemon(daemon_task, client)
+
+
+@pytest.mark.asyncio
+async def test_m1_concurrent_raw_task_handoffs_serialize_parent_state(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first_task_entered = asyncio.Event()
+    release_first_task = asyncio.Event()
+    second_task_entered = asyncio.Event()
+    task_turn_count = 0
+
+    async def _planner(
+        self: Planner,
+        user_content: str,
+        context: object,
+        *,
+        tools: list[dict[str, object]] | None = None,
+        persona_tone_override: str | None = None,
+    ) -> PlannerResult:
+        nonlocal task_turn_count
+        _ = (self, context, tools, persona_tone_override)
+        if "TASK CLOSE-GATE SELF-CHECK" in user_content:
+            return _complete_close_gate_result()
+        if "TASK REQUEST:" in user_content:
+            task_turn_count += 1
+            if task_turn_count == 1:
+                first_task_entered.set()
+                await release_first_task.wait()
+            else:
+                second_task_entered.set()
+            return PlannerResult(
+                output=PlannerOutput(
+                    assistant_response="RAW TASK LOG\n--- a/README.md\n+++ b/README.md\n+secret",
+                    actions=[],
+                ),
+                evaluated=[],
+                attempts=1,
+                provider_response=None,
+                messages_sent=(),
+            )
+        return PlannerResult(
+            output=PlannerOutput(assistant_response="ok", actions=[]),
+            evaluated=[],
+            attempts=1,
+            provider_response=None,
+            messages_sent=(),
+        )
+
+    monkeypatch.setattr(Planner, "propose", _planner)
+    daemon_task, client = await _start_daemon(
+        tmp_path,
+        policy_text=_policy_with_caps("file.read"),
+    )
+    client_two = ControlClient(tmp_path / "control.sock")
+    observer = ControlClient(tmp_path / "control.sock")
+    await client_two.connect()
+    await observer.connect()
+    try:
+        created = await client.call(
+            "session.create",
+            {"channel": "cli", "user_id": "admin", "workspace_id": "ops"},
+        )
+        sid = str(created["session_id"])
+        params = {
+            "session_id": sid,
+            "content": "debug the raw task output",
+            "task": {
+                "enabled": True,
+                "task_description": "Return the raw task log.",
+                "file_refs": ["README.md"],
+                "capabilities": ["file.read"],
+                "handoff_mode": "raw_passthrough",
+            },
+        }
+
+        first_call = asyncio.create_task(client.call("session.message", params))
+        await asyncio.wait_for(first_task_entered.wait(), timeout=2.0)
+        await _wait_for_event(
+            observer,
+            event_type="TaskSessionStarted",
+            predicate=lambda item: str(item.get("data", {}).get("parent_session_id", "")).strip()
+            == sid,
+        )
+
+        second_call = asyncio.create_task(client_two.call("session.message", params))
+        await asyncio.sleep(0.15)
+        assert second_task_entered.is_set() is False
+
+        started_events_before = await observer.call(
+            "audit.query",
+            {"event_type": "TaskSessionStarted", "limit": 10},
+        )
+        matching_started_before = [
+            event
+            for event in started_events_before.get("events", [])
+            if str(event.get("data", {}).get("parent_session_id", "")).strip() == sid
+        ]
+        assert len(matching_started_before) == 1
+
+        release_first_task.set()
+
+        first_result = await first_call
+        await asyncio.wait_for(second_task_entered.wait(), timeout=2.0)
+        second_result = await second_call
+
+        first_task_result = dict(first_result.get("task_result") or {})
+        second_task_result = dict(second_result.get("task_result") or {})
+        checkpoint_id = str(first_task_result.get("recovery_checkpoint_id", "")).strip()
+
+        assert first_task_result["success"] is True
+        assert second_task_result["success"] is True
+        assert checkpoint_id
+        assert second_task_result["recovery_checkpoint_id"] == checkpoint_id
+        assert first_task_result["task_session_id"] != second_task_result["task_session_id"]
+
+        degraded_events = await observer.call(
+            "audit.query",
+            {"event_type": "CommandContextDegraded", "limit": 10},
+        )
+        matching_degraded = [
+            event
+            for event in degraded_events.get("events", [])
+            if str(event.get("session_id", "")).strip() == sid
+        ]
+        assert len(matching_degraded) == 1
+        assert matching_degraded[0]["data"]["recovery_checkpoint_id"] == checkpoint_id
+
+        started_events_after = await observer.call(
+            "audit.query",
+            {"event_type": "TaskSessionStarted", "limit": 10},
+        )
+        matching_started_after = [
+            event
+            for event in started_events_after.get("events", [])
+            if str(event.get("data", {}).get("parent_session_id", "")).strip() == sid
+        ]
+        assert len(matching_started_after) == 2
+
+        sessions = await observer.call("session.list")
+        session_row = next(item for item in sessions["sessions"] if item["id"] == sid)
+        assert session_row["command_context"] == "degraded"
+        assert session_row["recovery_checkpoint_id"] == checkpoint_id
+    finally:
+        release_first_task.set()
+        await client_two.close()
         await observer.close()
         await _shutdown_daemon(daemon_task, client)
 

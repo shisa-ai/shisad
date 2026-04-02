@@ -11,6 +11,7 @@ from shisad.daemon.handlers._impl_session import (
     _extract_files_changed_from_task_outputs,
     _parse_task_close_gate_response,
     _resolve_task_capability_scope,
+    _truncate_close_gate_evidence_text,
 )
 from shisad.scheduler.schema import TaskEnvelope
 
@@ -149,6 +150,29 @@ def test_m1_task_close_gate_parser_fails_closed_on_unstructured_text() -> None:
     assert parsed.passed is False
 
 
+def test_m1_task_close_gate_parser_fails_closed_on_duplicate_markers() -> None:
+    parsed = _parse_task_close_gate_response(
+        "SELF_CHECK_STATUS: MISMATCH\n"
+        "SELF_CHECK_REASON: goal_drift\n"
+        "SELF_CHECK_STATUS: COMPLETE\n"
+        "SELF_CHECK_NOTES: Later markers must not override earlier ones.\n"
+    )
+
+    assert parsed.status == "inconclusive"
+    assert parsed.reason == "duplicate_markers"
+    assert parsed.passed is False
+
+
+def test_m1_task_close_gate_parser_rejects_embedded_whole_json_with_free_text() -> None:
+    parsed = _parse_task_close_gate_response(
+        'Preface\n{"status":"complete","reason":"complete","notes":"not authoritative"}\nTail'
+    )
+
+    assert parsed.status == "inconclusive"
+    assert parsed.reason == "inconclusive"
+    assert parsed.passed is False
+
+
 def test_m1_task_close_gate_parser_compacts_structured_notes() -> None:
     long_notes = "This note spans lines and should be compacted. " * 16
     parsed = _parse_task_close_gate_response(
@@ -161,3 +185,15 @@ def test_m1_task_close_gate_parser_compacts_structured_notes() -> None:
     assert parsed.reason == "complete"
     assert "\n" not in parsed.notes
     assert len(parsed.notes) <= 240
+
+
+def test_m1_close_gate_evidence_truncation_preserves_structure_and_marks_omissions() -> None:
+    evidence = "diff --git a/x b/x\n+keep indentation\n    nested detail\n" + ("x" * 120)
+
+    truncated = _truncate_close_gate_evidence_text(evidence, max_chars=64)
+
+    assert truncated.startswith("diff --git a/x b/x\n")
+    assert "\n" in truncated
+    assert "diff --git a/x b/x +keep indentation" not in truncated
+    assert "[TRUNCATED:" in truncated
+    assert len(truncated) <= 64

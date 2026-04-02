@@ -231,6 +231,7 @@ async def test_m1_adversarial_task_output_returns_to_command_with_untrusted_tain
 
         assert delegated.task_result is not None
         assert delegated.task_result.taint_labels == [TaintLabel.UNTRUSTED.value]
+        assert "[REMOVED_SUSPICIOUS_TEXT]" in delegated.task_result.summary
 
         parent_entries = services.transcript_store.list_entries(sid)
         last_assistant = parent_entries[-1]

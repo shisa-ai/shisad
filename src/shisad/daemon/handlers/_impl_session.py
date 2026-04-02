@@ -144,7 +144,12 @@ _TASK_CLOSE_GATE_STATUS_INCOMPLETE = "incomplete"
 _TASK_CLOSE_GATE_STATUS_MISMATCH = "mismatch"
 _TASK_CLOSE_GATE_STATUS_INCONCLUSIVE = "inconclusive"
 _TASK_CLOSE_GATE_NOTES_MAX_CHARS = 240
-_TASK_CLOSE_GATE_EVIDENCE_MAX_CHARS = 2000
+_TASK_CLOSE_GATE_TIMEOUT_SEC = 30.0
+_TASK_CLOSE_GATE_SUMMARY_MAX_CHARS = 1200
+_TASK_CLOSE_GATE_RESPONSE_MAX_CHARS = 4000
+_TASK_CLOSE_GATE_FILES_MAX_CHARS = 2000
+_TASK_CLOSE_GATE_TOOL_OUTPUT_MAX_CHARS = 5000
+_TASK_CLOSE_GATE_PROPOSAL_MAX_CHARS = 5000
 _EVIDENCE_CONTENT_PREVIEW_KEYS: tuple[str, ...] = ("content", "text", "body", "html")
 _EVIDENCE_CONTENT_KEYS: set[str] = set(_EVIDENCE_CONTENT_PREVIEW_KEYS)
 _EVIDENCE_GENERIC_WRAP_MIN_BYTES = 256
@@ -632,6 +637,8 @@ def _parse_task_close_gate_response(text: str) -> TaskCloseGateAssessment:
     parsed_status = ""
     parsed_reason = ""
     parsed_notes = ""
+    duplicate_markers = False
+    seen_markers: set[str] = set()
 
     for line in stripped.splitlines():
         key, sep, value = line.partition(":")
@@ -639,6 +646,12 @@ def _parse_task_close_gate_response(text: str) -> TaskCloseGateAssessment:
             continue
         normalized_key = key.strip().upper()
         normalized_value = value.strip()
+        if normalized_key not in {"SELF_CHECK_STATUS", "SELF_CHECK_REASON", "SELF_CHECK_NOTES"}:
+            continue
+        if normalized_key in seen_markers:
+            duplicate_markers = True
+            continue
+        seen_markers.add(normalized_key)
         if normalized_key == "SELF_CHECK_STATUS":
             parsed_status = _normalize_task_close_gate_status(normalized_value)
         elif normalized_key == "SELF_CHECK_REASON":
@@ -646,7 +659,11 @@ def _parse_task_close_gate_response(text: str) -> TaskCloseGateAssessment:
         elif normalized_key == "SELF_CHECK_NOTES":
             parsed_notes = normalized_value
 
-    if not parsed_status and stripped.startswith("{") and stripped.endswith("}"):
+    if duplicate_markers:
+        parsed_status = _TASK_CLOSE_GATE_STATUS_INCONCLUSIVE
+        parsed_reason = "duplicate_markers"
+        parsed_notes = ""
+    elif not parsed_status and stripped.startswith("{") and stripped.endswith("}"):
         try:
             payload = json.loads(stripped)
         except json.JSONDecodeError:
@@ -1136,6 +1153,30 @@ def _compact_context_text(text: str, *, max_chars: int) -> str:
     if len(compacted) <= max_chars:
         return compacted
     return f"{compacted[: max_chars - 3]}..."
+
+
+def _truncate_close_gate_evidence_text(text: str, *, max_chars: int) -> str:
+    normalized = text.replace("\r\n", "\n").replace("\r", "\n").strip()
+    if not normalized:
+        return ""
+    normalized = "\n".join(line.rstrip() for line in normalized.split("\n"))
+    if len(normalized) <= max_chars:
+        return normalized
+
+    remaining_chars = len(normalized)
+    truncated = normalized
+    for _ in range(3):
+        notice = f"\n[TRUNCATED: {remaining_chars} chars omitted]"
+        cutoff = max(0, max_chars - len(notice))
+        truncated = normalized[:cutoff].rstrip()
+        new_remaining = max(0, len(normalized) - len(truncated))
+        if new_remaining == remaining_chars:
+            break
+        remaining_chars = new_remaining
+    notice = f"\n[TRUNCATED: {remaining_chars} chars omitted]"
+    if not truncated:
+        return notice.lstrip("\n")
+    return f"{truncated}{notice}"
 
 
 def _relative_time_ago(timestamp: datetime, *, now: datetime | None = None) -> str:
@@ -2230,6 +2271,17 @@ def _risk_tier_from_score(score: float) -> RiskTier:
 
 
 class SessionImplMixin(HandlerMixinBase):
+    def _parent_task_handoff_lock(self, session_id: SessionId) -> asyncio.Lock:
+        locks = getattr(self, "_task_handoff_locks", None)
+        if not isinstance(locks, dict):
+            locks = {}
+            self._task_handoff_locks = locks
+        lock = locks.get(session_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            locks[session_id] = lock
+        return lock
+
     def _build_task_ledger_snapshot(
         self,
         *,
@@ -4000,30 +4052,33 @@ class SessionImplMixin(HandlerMixinBase):
         agent: str | None,
     ) -> TaskCloseGateAssessment:
         file_lines = [f"- {item}" for item in files_changed if str(item).strip()]
-        file_block = "\n".join(file_lines) or "(none)"
+        file_block = _truncate_close_gate_evidence_text(
+            "\n".join(file_lines) or "(none)",
+            max_chars=_TASK_CLOSE_GATE_FILES_MAX_CHARS,
+        )
         proposal_block = (
-            _compact_context_text(
+            _truncate_close_gate_evidence_text(
                 json.dumps(dict(proposal_payload), ensure_ascii=True, sort_keys=True),
-                max_chars=_TASK_CLOSE_GATE_EVIDENCE_MAX_CHARS,
+                max_chars=_TASK_CLOSE_GATE_PROPOSAL_MAX_CHARS,
             )
             if isinstance(proposal_payload, Mapping)
             else "(none)"
         )
         tool_output_block = (
-            _compact_context_text(
+            _truncate_close_gate_evidence_text(
                 json.dumps(list(serialized_tool_outputs), ensure_ascii=True, sort_keys=True),
-                max_chars=_TASK_CLOSE_GATE_EVIDENCE_MAX_CHARS,
+                max_chars=_TASK_CLOSE_GATE_TOOL_OUTPUT_MAX_CHARS,
             )
             if serialized_tool_outputs
             else "(none)"
         )
-        response_block = _compact_context_text(
+        response_block = _truncate_close_gate_evidence_text(
             raw_response_text or "(empty)",
-            max_chars=_TASK_CLOSE_GATE_EVIDENCE_MAX_CHARS,
+            max_chars=_TASK_CLOSE_GATE_RESPONSE_MAX_CHARS,
         )
-        summary_block = _compact_context_text(
+        summary_block = _truncate_close_gate_evidence_text(
             summary_text or "(empty)",
-            max_chars=800,
+            max_chars=_TASK_CLOSE_GATE_SUMMARY_MAX_CHARS,
         )
         evidence_text = "\n\n".join(
             [
@@ -4080,12 +4135,23 @@ class SessionImplMixin(HandlerMixinBase):
             or "untrusted",
         )
         try:
-            result = await self._planner.propose(
-                planner_input,
-                context,
-                tools=[],
+            result = await asyncio.wait_for(
+                self._planner.propose(
+                    planner_input,
+                    context,
+                    tools=[],
+                ),
+                timeout=_TASK_CLOSE_GATE_TIMEOUT_SEC,
             )
             response_text = str(result.output.assistant_response).strip()
+        except TimeoutError:
+            return TaskCloseGateAssessment(
+                status=_TASK_CLOSE_GATE_STATUS_INCONCLUSIVE,
+                reason="task_self_check_timeout",
+                notes="Self-check timed out before returning a verdict.",
+                response_text="",
+                passed=False,
+            )
         except PlannerOutputError as exc:
             return TaskCloseGateAssessment(
                 status=_TASK_CLOSE_GATE_STATUS_INCONCLUSIVE,
@@ -4649,10 +4715,9 @@ class SessionImplMixin(HandlerMixinBase):
                     },
                 )
 
-            # TASK output is daemon-internal planner output, but it can reflect
-            # tool-returned content; keep the content firewall barrier while
-            # avoiding external-ingress taint semantics at the TASK->COMMAND seam.
-            summary_result = self._firewall.inspect(raw_response_text, trusted_input=True)
+            # TASK output can reflect attacker-controlled tool-returned content,
+            # so keep the TASK->COMMAND summary firewall seam on the untrusted path.
+            summary_result = self._firewall.inspect(raw_response_text, trusted_input=False)
             summary_text = summary_result.sanitized_text.strip()
             if not summary_text:
                 summary_text = (
@@ -4831,10 +4896,11 @@ class SessionImplMixin(HandlerMixinBase):
         if task_request is not None:
             if validated.session_mode != SessionMode.DEFAULT:
                 raise ValueError("delegated task sessions require a default COMMAND session")
-            return await self._run_delegated_task_session(
-                validated=validated,
-                task_request=task_request,
-            )
+            async with self._parent_task_handoff_lock(validated.sid):
+                return await self._run_delegated_task_session(
+                    validated=validated,
+                    task_request=task_request,
+                )
         planner_context = await self._build_context_for_planner(validated)
         planner_dispatch = await self._dispatch_to_planner(planner_context)
         execution = await self._evaluate_and_execute_actions(planner_dispatch)
