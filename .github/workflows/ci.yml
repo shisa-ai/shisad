@@ -16,6 +16,8 @@ on:
     # 03:00 JST nightly
     - cron: "0 18 * * *"
 
+permissions: read-all
+
 jobs:
   lint-and-test:
     if: github.event_name == 'push' || github.event_name == 'pull_request'
@@ -25,16 +27,16 @@ jobs:
         python-version: ["3.12", "3.13"]
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v4
+        uses: astral-sh/setup-uv@38f3f104447c67c051c4a08e39b64a148898af3a # v4.2.0
 
       - name: Set up Python ${{ matrix.python-version }}
         run: uv python install ${{ matrix.python-version }}
 
       - name: Install dependencies (default profile)
-        run: uv sync --exclude-newer "$(date -u -d '7 days ago' +%Y-%m-%dT%H:%M:%SZ)" --frozen --dev
+        run: uv sync --exclude-newer P7D --frozen --dev
 
       - name: Lint with ruff
         run: uv run ruff check src/ tests/ scripts/
@@ -56,16 +58,16 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v4
+        uses: astral-sh/setup-uv@38f3f104447c67c051c4a08e39b64a148898af3a # v4.2.0
 
       - name: Set up Python 3.12
         run: uv python install 3.12
 
       - name: Install dependencies (security-runtime + coverage + channels-runtime)
-        run: uv sync --exclude-newer "$(date -u -d '7 days ago' +%Y-%m-%dT%H:%M:%SZ)" --frozen --dev --group security-runtime --group coverage --group channels-runtime
+        run: uv sync --exclude-newer P7D --frozen --dev --group security-runtime --group coverage --group channels-runtime
 
       - name: Verify security asset provenance
         run: uv run python scripts/security_assets.py verify
@@ -86,7 +88,7 @@ jobs:
         run: uv run python scripts/yara_parity_report.py --output artifacts/yara-parity.json
 
       - name: Upload security runtime artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: security-runtime-artifacts
           path: |
@@ -99,16 +101,16 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v4
+        uses: astral-sh/setup-uv@38f3f104447c67c051c4a08e39b64a148898af3a # v4.2.0
 
       - name: Set up Python 3.12
         run: uv python install 3.12
 
       - name: Install dependencies (default profile)
-        run: uv sync --exclude-newer "$(date -u -d '7 days ago' +%Y-%m-%dT%H:%M:%SZ)" --frozen --dev
+        run: uv sync --exclude-newer P7D --frozen --dev
 
       - name: Detect CAP_NET_ADMIN availability
         id: capcheck
@@ -131,16 +133,16 @@ jobs:
       ALLOW_M6_REGRESSION: ${{ vars.ALLOW_M6_REGRESSION || 'false' }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v4
+        uses: astral-sh/setup-uv@38f3f104447c67c051c4a08e39b64a148898af3a # v4.2.0
 
       - name: Set up Python 3.12
         run: uv python install 3.12
 
       - name: Install dependencies (default profile)
-        run: uv sync --exclude-newer "$(date -u -d '7 days ago' +%Y-%m-%dT%H:%M:%SZ)" --frozen --dev
+        run: uv sync --exclude-newer P7D --frozen --dev
 
       - name: Run deterministic core adversarial subset
         run: |
@@ -184,7 +186,7 @@ jobs:
           } >> "${GITHUB_STEP_SUMMARY}"
 
       - name: Upload PR lane adversarial artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: m6-pr-core-artifacts
           path: |
@@ -198,16 +200,16 @@ jobs:
       ALLOW_M6_REGRESSION: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.allow_regression_override || 'false' }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v4
+        uses: astral-sh/setup-uv@38f3f104447c67c051c4a08e39b64a148898af3a # v4.2.0
 
       - name: Set up Python 3.12
         run: uv python install 3.12
 
       - name: Install dependencies (default profile)
-        run: uv sync --exclude-newer "$(date -u -d '7 days ago' +%Y-%m-%dT%H:%M:%SZ)" --frozen --dev
+        run: uv sync --exclude-newer P7D --frozen --dev
 
       - name: Run full M6 adversarial suites
         run: uv run pytest -q tests/adversarial/test_adversarial_hardening.py tests/integration/test_security_hardening_integration.py
@@ -243,7 +245,7 @@ jobs:
           } >> "${GITHUB_STEP_SUMMARY}"
 
       - name: Upload nightly adversarial artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: m6-nightly-full-artifacts
           path: |
