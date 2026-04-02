@@ -328,6 +328,13 @@ async def test_behavioral_fetch_stub_read_strip_promote_flow(evidence_harness) -
     )
     assert confirmed["confirmed"] is True
 
+    promote_again = await client.call(
+        "session.message",
+        {"session_id": sid, "content": f"promote evidence {ref_id}"},
+    )
+    assert int(promote_again.get("confirmation_required_actions", 0)) == 0
+    assert int(promote_again.get("executed_actions", 0)) == 1
+
     promoted = await client.call(
         "session.message",
         {"session_id": sid, "content": "what was in that evidence again?"},

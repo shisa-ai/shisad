@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from shisad.core.events import PlanAmended, ToolRejected
+from shisad.core.evidence import ArtifactEndorsementState
 from shisad.core.types import TaintLabel
 from shisad.daemon.handlers._mixin_typing import HandlerMixinBase
 from shisad.security.control_plane.schema import RiskTier, build_action
@@ -129,12 +130,20 @@ class ConfirmationImplMixin(HandlerMixinBase):
         if self._lockdown_manager.should_block_all_actions(pending.session_id):
             pending.status = "rejected"
             pending.status_reason = "session_in_lockdown"
+            decision_timestamp = datetime.now(UTC).isoformat()
             await self._event_bus.publish(
                 ToolRejected(
                     session_id=pending.session_id,
                     actor="human_confirmation",
                     tool_name=pending.tool_name,
                     reason="session_in_lockdown",
+                    approval_session_id=str(pending.session_id),
+                    approval_task_envelope_id=str(
+                        getattr(pending, "approval_task_envelope_id", "")
+                    ).strip(),
+                    approval_confirmation_id=str(pending.confirmation_id),
+                    approval_decision_nonce=str(pending.decision_nonce),
+                    approval_timestamp=decision_timestamp,
                 )
             )
             self._sync_task_confirmation_status(pending)
@@ -159,6 +168,22 @@ class ConfirmationImplMixin(HandlerMixinBase):
         if session is None:
             pending.status = "failed"
             pending.status_reason = "session_missing"
+            decision_timestamp = datetime.now(UTC).isoformat()
+            await self._event_bus.publish(
+                ToolRejected(
+                    session_id=pending.session_id,
+                    actor="human_confirmation",
+                    tool_name=pending.tool_name,
+                    reason="session_missing",
+                    approval_session_id=str(pending.session_id),
+                    approval_task_envelope_id=str(
+                        getattr(pending, "approval_task_envelope_id", "")
+                    ).strip(),
+                    approval_confirmation_id=str(pending.confirmation_id),
+                    approval_decision_nonce=str(pending.decision_nonce),
+                    approval_timestamp=decision_timestamp,
+                )
+            )
             self._sync_task_confirmation_status(pending)
             self._record_task_confirmation_outcome(pending, success=False)
             self._persist_pending_actions()
@@ -183,6 +208,22 @@ class ConfirmationImplMixin(HandlerMixinBase):
             if not bool(self._policy_loader.policy.control_plane.trace.allow_amendment):
                 pending.status = "rejected"
                 pending.status_reason = "plan_amendment_disabled"
+                decision_timestamp = datetime.now(UTC).isoformat()
+                await self._event_bus.publish(
+                    ToolRejected(
+                        session_id=pending.session_id,
+                        actor="human_confirmation",
+                        tool_name=pending.tool_name,
+                        reason="plan_amendment_disabled",
+                        approval_session_id=str(pending.session_id),
+                        approval_task_envelope_id=str(
+                            getattr(pending, "approval_task_envelope_id", "")
+                        ).strip(),
+                        approval_confirmation_id=str(pending.confirmation_id),
+                        approval_decision_nonce=str(pending.decision_nonce),
+                        approval_timestamp=decision_timestamp,
+                    )
+                )
                 self._sync_task_confirmation_status(pending)
                 self._record_task_confirmation_outcome(pending, success=False)
                 self._persist_pending_actions()
@@ -226,6 +267,53 @@ class ConfirmationImplMixin(HandlerMixinBase):
                 )
             )
 
+        decision_timestamp = datetime.now(UTC).isoformat()
+        if str(pending.tool_name) == "evidence.promote":
+            promote_ref_id = str(pending.arguments.get("ref_id", "")).strip()
+            store = getattr(self, "_evidence_store", None)
+            if promote_ref_id and store is not None:
+                try:
+                    store.endorse(
+                        pending.session_id,
+                        promote_ref_id,
+                        endorsement_state=ArtifactEndorsementState.USER_ENDORSED,
+                        actor="human_confirmation",
+                    )
+                except (OSError, RuntimeError, TypeError, ValueError):
+                    pending.status = "failed"
+                    pending.status_reason = "artifact_endorse_failed"
+                    await self._event_bus.publish(
+                        ToolRejected(
+                            session_id=pending.session_id,
+                            actor="human_confirmation",
+                            tool_name=pending.tool_name,
+                            reason="artifact_endorse_failed",
+                            approval_session_id=str(pending.session_id),
+                            approval_task_envelope_id=str(
+                                getattr(pending, "approval_task_envelope_id", "")
+                            ).strip(),
+                            approval_confirmation_id=str(pending.confirmation_id),
+                            approval_decision_nonce=str(pending.decision_nonce),
+                            approval_timestamp=decision_timestamp,
+                        )
+                    )
+                    self._sync_task_confirmation_status(pending)
+                    self._record_task_confirmation_outcome(pending, success=False)
+                    self._persist_pending_actions()
+                    self._confirmation_analytics.record(
+                        user_id=str(pending.user_id),
+                        decision="reject",
+                        created_at=pending.created_at,
+                    )
+                    await self._maybe_emit_confirmation_hygiene_alert(
+                        user_id=str(pending.user_id),
+                        session_id=pending.session_id,
+                    )
+                    return {
+                        "confirmed": False,
+                        "confirmation_id": confirmation_id,
+                        "reason": "artifact_endorse_failed",
+                    }
         execution_result = await self._execute_approved_action(
             sid=pending.session_id,
             user_id=pending.user_id,
@@ -236,6 +324,12 @@ class ConfirmationImplMixin(HandlerMixinBase):
             execution_action=pending_preflight_action,
             merged_policy=pending.merged_policy,
             user_confirmed=True,
+            approval_confirmation_id=str(pending.confirmation_id),
+            approval_decision_nonce=str(pending.decision_nonce),
+            approval_task_envelope_id=str(
+                getattr(pending, "approval_task_envelope_id", "")
+            ).strip(),
+            approval_timestamp=decision_timestamp,
         )
         success = execution_result.success
         checkpoint_id = execution_result.checkpoint_id
@@ -320,12 +414,20 @@ class ConfirmationImplMixin(HandlerMixinBase):
             }
         pending.status = "rejected"
         pending.status_reason = reason
+        decision_timestamp = datetime.now(UTC).isoformat()
         await self._event_bus.publish(
             ToolRejected(
                 session_id=pending.session_id,
                 actor="human_confirmation",
                 tool_name=pending.tool_name,
                 reason=reason,
+                approval_session_id=str(pending.session_id),
+                approval_task_envelope_id=str(
+                    getattr(pending, "approval_task_envelope_id", "")
+                ).strip(),
+                approval_confirmation_id=str(pending.confirmation_id),
+                approval_decision_nonce=str(pending.decision_nonce),
+                approval_timestamp=decision_timestamp,
             )
         )
         self._sync_task_confirmation_status(pending)

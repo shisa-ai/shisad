@@ -126,6 +126,7 @@ class SessionTaskResult(BaseModel):
     duration_ms: int = 0
     proposal_ref: str | None = None
     raw_log_ref: str | None = None
+    summary_checkpoint_ref: str | None = None
     task_session_id: str = ""
     task_session_mode: str = "task"
     handoff_mode: str = "summary_only"
@@ -849,6 +850,7 @@ class ActionPendingEntry(BaseModel):
     safe_preview: str | None = None
     warnings: list[str] = Field(default_factory=list)
     leak_check: dict[str, Any] = Field(default_factory=dict)
+    approval_task_envelope_id: str = ""
     status_reason: str | None = None
     preflight_action: dict[str, Any] | None = None
     merged_policy: dict[str, Any] | None = None

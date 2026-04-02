@@ -27,7 +27,7 @@ from shisad.core.api.transport import ControlServer
 from shisad.core.audit import AuditLog
 from shisad.core.config import DaemonConfig, ModelConfig
 from shisad.core.events import EventBus
-from shisad.core.evidence import EvidenceStore
+from shisad.core.evidence import ArtifactLedger
 from shisad.core.planner import Planner
 from shisad.core.providers.base import validate_endpoint
 from shisad.core.providers.capabilities import AuthMode
@@ -114,7 +114,7 @@ class DaemonServices:
     router: ModelRouter
     transcript_root: Path
     transcript_store: TranscriptStore
-    evidence_store: EvidenceStore
+    evidence_store: ArtifactLedger
     trace_recorder: TraceRecorder | None
     checkpoint_store: CheckpointStore
     risk_calibrator: RiskCalibrator
@@ -180,7 +180,7 @@ class DaemonServices:
 
         transcript_root = config.data_dir / "sessions"
         transcript_store = TranscriptStore(transcript_root)
-        evidence_store = EvidenceStore(transcript_root / "evidence")
+        evidence_store = ArtifactLedger(transcript_root / "evidence")
         trace_recorder: TraceRecorder | None = None
         if config.trace_enabled:
             trace_recorder = TraceRecorder(config.data_dir / "traces")

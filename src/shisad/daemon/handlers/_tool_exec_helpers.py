@@ -42,8 +42,10 @@ async def execute_structured_tool(
     record_execution: Callable[[bool], None],
     sanitize_output: Callable[[str], str],
     taint_labels: set[TaintLabel],
+    approval_event_fields: Mapping[str, str] | None = None,
 ) -> StructuredToolExecutionResult:
     success = bool(payload.get("ok", False))
+    event_fields = dict(approval_event_fields or {})
     if not success:
         await emit_event(
             ToolRejected(
@@ -51,6 +53,7 @@ async def execute_structured_tool(
                 actor=actor,
                 tool_name=tool_name,
                 reason=str(payload.get("error", default_error)),
+                **event_fields,
             )
         )
     await emit_event(
@@ -59,6 +62,7 @@ async def execute_structured_tool(
             actor=actor,
             tool_name=tool_name,
             success=success,
+            **event_fields,
         )
     )
     record_execution(success)

@@ -38,6 +38,7 @@ class Schedule(BaseModel):
 class TaskEnvelope(BaseModel):
     """Immutable task-execution boundary metadata."""
 
+    envelope_id: str = Field(default_factory=lambda: uuid.uuid4().hex)
     capability_snapshot: frozenset[Capability] = Field(default_factory=frozenset)
     parent_session_id: str = ""
     orchestrator_provenance: str = ""
@@ -121,6 +122,7 @@ class ScheduledTask(BaseModel):
             if created_by or workspace_id:
                 provenance = f"scheduler:{created_by or 'unknown'}:{workspace_id or 'default'}"
             payload["task_envelope"] = {
+                "envelope_id": uuid.uuid4().hex,
                 "capability_snapshot": list(payload.get("capability_snapshot", [])),
                 "parent_session_id": "",
                 "orchestrator_provenance": provenance,
@@ -143,6 +145,7 @@ class ScheduledTask(BaseModel):
             "capability_snapshot": sorted(cap.value for cap in self.capability_snapshot),
             "policy_snapshot_ref": self.policy_snapshot_ref,
             "task_envelope": {
+                "envelope_id": self.task_envelope.envelope_id,
                 "capability_snapshot": sorted(
                     cap.value for cap in self.task_envelope.capability_snapshot
                 ),

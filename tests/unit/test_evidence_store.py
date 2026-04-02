@@ -8,6 +8,8 @@ from datetime import UTC, datetime, timedelta
 from stat import S_IMODE
 
 from shisad.core.evidence import (
+    ArtifactEndorsementState,
+    ArtifactLedger,
     EvidenceRef,
     EvidenceStore,
     _generate_safe_summary,
@@ -255,6 +257,95 @@ def test_evidence_store_evicts_stale_entries(tmp_path) -> None:
 
     assert evicted == [ref.ref_id]
     assert store.read(sid, ref.ref_id) is None
+
+
+def test_artifact_ledger_endorsement_persists_across_restart(tmp_path) -> None:
+    evidence_root = tmp_path / "evidence"
+    sid = SessionId("sess-a")
+    first = ArtifactLedger(evidence_root, salt=b"a" * 32)
+    created = first.store(
+        sid,
+        "endorsed evidence",
+        taint_labels={TaintLabel.UNTRUSTED},
+        source="web.fetch:example.com",
+        summary="endorsed evidence",
+    )
+
+    endorsed = first.endorse(
+        sid,
+        created.ref_id,
+        endorsement_state=ArtifactEndorsementState.USER_ENDORSED,
+        actor="human_confirmation",
+    )
+    assert endorsed is not None
+    assert endorsed.endorsement_state == ArtifactEndorsementState.USER_ENDORSED
+    assert endorsed.endorsed_by == "human_confirmation"
+    assert endorsed.endorsed_at is not None
+
+    restarted = ArtifactLedger(evidence_root, salt=b"a" * 32)
+    loaded = restarted.get_ref(sid, created.ref_id)
+
+    assert loaded is not None
+    assert loaded.endorsement_state == ArtifactEndorsementState.USER_ENDORSED
+    assert loaded.endorsed_by == "human_confirmation"
+    assert loaded.endorsed_at is not None
+
+
+def test_artifact_ledger_collect_garbage_evicts_expired_refs_and_quarantines_orphans(
+    tmp_path,
+) -> None:
+    evidence_root = tmp_path / "evidence"
+    sid = SessionId("sess-a")
+    store = ArtifactLedger(evidence_root, salt=b"a" * 32, orphan_retention_seconds=3600)
+    ref = store.store(
+        sid,
+        "old evidence",
+        taint_labels={TaintLabel.UNTRUSTED},
+        source="web.fetch:example.com",
+        summary="old evidence",
+    )
+    store._refs[str(sid)][ref.ref_id] = ref.model_copy(
+        update={"created_at": datetime.now(UTC) - timedelta(hours=2)}
+    )
+    orphan_hash = "deadbeef" * 8
+    orphan_blob = evidence_root / "blobs" / f"{orphan_hash}.txt"
+    orphan_blob.write_text("orphan blob", encoding="utf-8")
+
+    evicted = store.collect_garbage(max_age_seconds=60)
+
+    assert evicted == [ref.ref_id]
+    assert store.get_ref(sid, ref.ref_id) is None
+    assert (evidence_root / "blobs" / f"{ref.content_hash}.txt").exists() is False
+    assert orphan_blob.exists() is False
+    assert (evidence_root / "quarantine" / f"{orphan_hash}.txt").exists() is True
+
+
+def test_artifact_ledger_uses_configured_blob_codec(tmp_path) -> None:
+    class _ReverseCodec:
+        name = "reverse"
+
+        def encode(self, content: str) -> bytes:
+            return content[::-1].encode("utf-8")
+
+        def decode(self, payload: bytes) -> str:
+            return payload.decode("utf-8")[::-1]
+
+    ledger = ArtifactLedger(tmp_path / "evidence", salt=b"a" * 32, blob_codec=_ReverseCodec())
+    sid = SessionId("sess-a")
+    ref = ledger.store(
+        sid,
+        "codec body",
+        taint_labels={TaintLabel.UNTRUSTED},
+        source="web.fetch:example.com",
+        summary="codec body",
+    )
+
+    blob_path = tmp_path / "evidence" / "blobs" / f"{ref.content_hash}.txt"
+    assert blob_path.read_bytes() != b"codec body"
+    assert ledger.read(sid, ref.ref_id) == "codec body"
+    loaded = ledger.get_ref(sid, ref.ref_id)
+    assert loaded is not None
+    assert loaded.storage_codec == "reverse"
 
 
 def test_evidence_store_accessors_lazily_evict_expired_refs(tmp_path) -> None:

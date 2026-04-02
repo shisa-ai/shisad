@@ -52,7 +52,7 @@ from shisad.core.events import (
     ToolProposed,
     ToolRejected,
 )
-from shisad.core.evidence import EvidenceStore, _generate_safe_summary, format_evidence_stub
+from shisad.core.evidence import ArtifactLedger, _generate_safe_summary, format_evidence_stub
 from shisad.core.planner import (
     ActionProposal,
     EvaluatedProposal,
@@ -165,6 +165,7 @@ _TASK_CLOSE_GATE_FILES_MAX_CHARS = 2000
 _TASK_CLOSE_GATE_TOOL_OUTPUT_MAX_CHARS = 5000
 _TASK_CLOSE_GATE_PROPOSAL_MAX_CHARS = 5000
 _TASK_CLOSE_GATE_DIFF_MAX_CHARS = 4000
+_TASK_SUMMARY_CHECKPOINT_FAILURE_REASON = "task_summary_firewall_checkpoint_failed"
 _EVIDENCE_CONTENT_PREVIEW_KEYS: tuple[str, ...] = ("content", "text", "body", "html")
 _EVIDENCE_CONTENT_KEYS: set[str] = set(_EVIDENCE_CONTENT_PREVIEW_KEYS)
 _EVIDENCE_GENERIC_WRAP_MIN_BYTES = 256
@@ -305,6 +306,7 @@ class TaskSessionHandoff:
     taint_labels: tuple[str, ...] = (TaintLabel.UNTRUSTED.value,)
     self_check_status: str = ""
     self_check_ref: str | None = None
+    summary_checkpoint_ref: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -314,6 +316,13 @@ class TaskCloseGateAssessment:
     notes: str
     response_text: str
     passed: bool
+
+
+@dataclass(frozen=True, slots=True)
+class TaskSummaryFirewallCheckpoint:
+    summary_text: str
+    checkpoint_ref: str
+    firewall_result: FirewallResult
 
 
 @dataclass(frozen=True, slots=True)
@@ -2083,7 +2092,7 @@ def _wrap_serialized_tool_outputs_with_evidence(
     *,
     session_id: SessionId,
     records: list[dict[str, Any]],
-    evidence_store: EvidenceStore,
+    evidence_store: ArtifactLedger,
     firewall: Any,
 ) -> list[str]:
     """Mutate serialized tool payloads in place, replacing tainted content fields with stubs."""
@@ -4241,6 +4250,46 @@ class SessionImplMixin(HandlerMixinBase):
             logger.warning("Failed to set task artifact permissions for %s", artifact_path)
         return str(artifact_path)
 
+    def _build_task_summary_firewall_checkpoint(
+        self,
+        *,
+        task_session_id: SessionId,
+        raw_response_text: str,
+        failure_reason: str,
+    ) -> TaskSummaryFirewallCheckpoint | None:
+        inspected = self._firewall.inspect(raw_response_text, trusted_input=False)
+        summary_text = inspected.sanitized_text.strip()
+        if not summary_text:
+            summary_text = (
+                "Delegated task completed. Review the raw log artifact for details."
+                if not failure_reason
+                else "Delegated task failed. Review the raw log artifact for details."
+            )
+        summary_text = _compact_context_text(summary_text, max_chars=320)
+        try:
+            checkpoint_ref = self._write_task_artifact(
+                task_session_id=task_session_id,
+                filename="summary_firewall.json",
+                payload={
+                    "raw_response_text": raw_response_text,
+                    "summary_text": summary_text,
+                    "failure_reason": failure_reason,
+                    "firewall_result": inspected.model_dump(mode="json"),
+                },
+            )
+        except Exception:
+            logger.warning(
+                "Failed to persist TASK summary-firewall checkpoint for session %s",
+                task_session_id,
+                exc_info=True,
+            )
+            return None
+        return TaskSummaryFirewallCheckpoint(
+            summary_text=summary_text,
+            checkpoint_ref=checkpoint_ref,
+            firewall_result=inspected,
+        )
+
     def _task_internal_ingress_payload(
         self,
         *,
@@ -4525,6 +4574,7 @@ class SessionImplMixin(HandlerMixinBase):
             "cost": handoff.cost,
             "proposal_ref": handoff.proposal_ref,
             "raw_log_ref": handoff.raw_log_ref,
+            "summary_checkpoint_ref": handoff.summary_checkpoint_ref,
             "command_context": handoff.command_context,
             "recovery_checkpoint_id": handoff.recovery_checkpoint_id or "",
             "reason": handoff.reason,
@@ -4597,6 +4647,7 @@ class SessionImplMixin(HandlerMixinBase):
                 "duration_ms": handoff.duration_ms,
                 "proposal_ref": handoff.proposal_ref,
                 "raw_log_ref": handoff.raw_log_ref,
+                "summary_checkpoint_ref": handoff.summary_checkpoint_ref,
                 "task_session_id": str(handoff.task_session_id),
                 "task_session_mode": SessionMode.TASK.value,
                 "handoff_mode": handoff.handoff_mode,
@@ -4991,18 +5042,6 @@ class SessionImplMixin(HandlerMixinBase):
                     },
                 )
 
-            # TASK output can reflect attacker-controlled tool-returned content,
-            # so keep the TASK->COMMAND summary firewall seam on the untrusted path.
-            summary_result = self._firewall.inspect(raw_response_text, trusted_input=False)
-            summary_text = summary_result.sanitized_text.strip()
-            if not summary_text:
-                summary_text = (
-                    "Delegated task completed. Review the raw log artifact for details."
-                    if not failure_reason
-                    else "Delegated task failed. Review the raw log artifact for details."
-                )
-            summary_text = _compact_context_text(summary_text, max_chars=320)
-
             task_files_changed = (
                 tuple(
                     normalized
@@ -5016,6 +5055,23 @@ class SessionImplMixin(HandlerMixinBase):
             if task_cost is None:
                 task_cost = selected_cost
             task_agent = str(task_response_payload.get("agent", "")).strip() or selected_agent
+
+            summary_checkpoint_ref: str | None = None
+            summary_checkpoint = self._build_task_summary_firewall_checkpoint(
+                task_session_id=task_session.id,
+                raw_response_text=raw_response_text,
+                failure_reason=failure_reason,
+            )
+            if summary_checkpoint is None:
+                failure_reason = _TASK_SUMMARY_CHECKPOINT_FAILURE_REASON
+                summary_text = (
+                    "Delegated task handoff was blocked because the summary firewall "
+                    "checkpoint could not be recorded."
+                )
+                raw_response_text = summary_text
+            else:
+                summary_text = summary_checkpoint.summary_text
+                summary_checkpoint_ref = summary_checkpoint.checkpoint_ref
 
             self_check_status = ""
             self_check_ref: str | None = None
@@ -5122,6 +5178,7 @@ class SessionImplMixin(HandlerMixinBase):
                 taint_labels=(TaintLabel.UNTRUSTED.value,),
                 self_check_status=self_check_status,
                 self_check_ref=self_check_ref,
+                summary_checkpoint_ref=summary_checkpoint_ref,
             )
 
             await self._event_bus.publish(
@@ -5143,6 +5200,7 @@ class SessionImplMixin(HandlerMixinBase):
                     taint_labels=list(handoff.taint_labels),
                     self_check_status=handoff.self_check_status,
                     self_check_ref=handoff.self_check_ref or "",
+                    summary_checkpoint_ref=handoff.summary_checkpoint_ref or "",
                 )
             )
 

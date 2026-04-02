@@ -23,7 +23,7 @@ from shisad.core.planner import (
 )
 from shisad.core.tools.schema import ToolDefinition, ToolParameter
 from shisad.core.transcript import TranscriptStore
-from shisad.core.types import Capability, ToolName
+from shisad.core.types import Capability, PEPDecision, PEPDecisionKind, ToolName
 from shisad.daemon.runner import run_daemon
 
 
@@ -193,10 +193,12 @@ async def test_m2_task_session_isolates_command_context_and_returns_structured_h
         assert task_result["success"] is True
         assert task_result["handoff_mode"] == "summary_only"
         assert task_result["raw_log_ref"]
+        assert task_result["summary_checkpoint_ref"]
         assert task_result["self_check_status"] == "complete"
         assert task_result["self_check_ref"]
         assert task_result["taint_labels"] == ["untrusted"]
         assert completed_event["data"]["parent_session_id"] == sid
+        assert completed_event["data"]["summary_checkpoint_ref"]
         assert completed_event["data"]["self_check_status"] == "complete"
         assert completed_event["data"]["self_check_ref"]
         assert "hello from command history" not in captured_inputs[-1]
@@ -207,6 +209,78 @@ async def test_m2_task_session_isolates_command_context_and_returns_structured_h
         sessions = await client.call("session.list")
         active_ids = {str(item["id"]) for item in sessions["sessions"]}
         assert str(task_result["task_session_id"]) not in active_ids
+    finally:
+        await _shutdown_daemon(daemon_task, client)
+
+
+@pytest.mark.asyncio
+async def test_m4_task_summary_firewall_checkpoint_is_mandatory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _planner(
+        self: Planner,
+        user_content: str,
+        context: object,
+        *,
+        tools: list[dict[str, object]] | None = None,
+        persona_tone_override: str | None = None,
+    ) -> PlannerResult:
+        _ = (self, context, tools, persona_tone_override)
+        if "TASK CLOSE-GATE SELF-CHECK" in user_content:
+            return _complete_close_gate_result()
+        return PlannerResult(
+            output=PlannerOutput(assistant_response="Task summary ready.", actions=[]),
+            evaluated=[],
+            attempts=1,
+            provider_response=None,
+            messages_sent=(),
+        )
+
+    monkeypatch.setattr(Planner, "propose", _planner)
+    monkeypatch.setattr(
+        session_impl.SessionImplMixin,
+        "_build_task_summary_firewall_checkpoint",
+        lambda *args, **kwargs: None,
+    )
+    daemon_task, client = await _start_daemon(
+        tmp_path,
+        policy_text=_policy_with_caps("file.read"),
+    )
+    try:
+        created = await client.call(
+            "session.create",
+            {"channel": "cli", "user_id": "alice", "workspace_id": "ws1"},
+        )
+        sid = str(created["session_id"])
+        result = await client.call(
+            "session.message",
+            {
+                "session_id": sid,
+                "content": "run delegated review",
+                "task": {
+                    "enabled": True,
+                    "task_description": "Review README.md in isolation.",
+                    "file_refs": ["README.md"],
+                    "capabilities": ["file.read"],
+                },
+            },
+        )
+
+        task_result = dict(result.get("task_result") or {})
+        completed_event = await _wait_for_event(
+            client,
+            event_type="TaskSessionCompleted",
+            predicate=lambda item: str(item.get("session_id", "")).strip()
+            == str(task_result.get("task_session_id", "")).strip(),
+        )
+
+        assert task_result["success"] is False
+        assert task_result["reason"] == "task_summary_firewall_checkpoint_failed"
+        assert task_result["summary_checkpoint_ref"] in ("", None)
+        assert "summary firewall" in task_result["summary"].lower()
+        assert completed_event["data"]["reason"] == "task_summary_firewall_checkpoint_failed"
+        assert completed_event["data"]["summary_checkpoint_ref"] == ""
     finally:
         await _shutdown_daemon(daemon_task, client)
 
@@ -306,6 +380,174 @@ async def test_m3_delegated_task_session_enforces_credential_scope_during_pep_ev
         assert captured_decisions == [
             "reject:credential_ref 'mail_send' is out of scope for this task/session"
         ]
+    finally:
+        await _shutdown_daemon(daemon_task, client)
+
+
+@pytest.mark.asyncio
+async def test_m4_task_approval_nonce_and_provenance_stay_bound_to_origin_task(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _planner(
+        self: Planner,
+        user_content: str,
+        context: object,
+        *,
+        tools: list[dict[str, object]] | None = None,
+        persona_tone_override: str | None = None,
+    ) -> PlannerResult:
+        _ = (self, context, tools, persona_tone_override)
+        if "TASK CLOSE-GATE SELF-CHECK" in user_content:
+            return _complete_close_gate_result()
+        proposal = ActionProposal(
+            action_id="a1",
+            tool_name=ToolName("message.send"),
+            arguments={
+                "channel": "session",
+                "recipient": "session-target",
+                "message": "queue a confirmation-bound delivery",
+            },
+            reasoning="Require confirmation for this delegated side effect.",
+        )
+        return PlannerResult(
+            output=PlannerOutput(
+                assistant_response="Delegated task queued a confirmation-bound delivery.",
+                actions=[proposal],
+            ),
+            evaluated=[
+                EvaluatedProposal(
+                    proposal=proposal,
+                    decision=PEPDecision(
+                        kind=PEPDecisionKind.REQUIRE_CONFIRMATION,
+                        reason="policy_default_confirmation",
+                        tool_name=proposal.tool_name,
+                        risk_score=0.6,
+                    ),
+                )
+            ],
+            attempts=1,
+            provider_response=None,
+            messages_sent=(),
+        )
+
+    monkeypatch.setattr(Planner, "propose", _planner)
+    daemon_task, client = await _start_daemon(
+        tmp_path,
+        policy_text=(
+            'version: "1"\n'
+            "default_require_confirmation: true\n"
+            "default_capabilities:\n"
+            "  - message.send\n"
+        ),
+    )
+    try:
+        first_parent = await client.call(
+            "session.create",
+            {"channel": "cli", "user_id": "alice", "workspace_id": "ws1"},
+        )
+        second_parent = await client.call(
+            "session.create",
+            {"channel": "cli", "user_id": "alice", "workspace_id": "ws1"},
+        )
+
+        first = await client.call(
+            "session.message",
+            {
+                "session_id": str(first_parent["session_id"]),
+                "content": "delegate delivery task A",
+                "task": {
+                    "enabled": True,
+                    "task_description": "Queue TASK-A delivery.",
+                    "capabilities": ["message.send"],
+                },
+            },
+        )
+        second = await client.call(
+            "session.message",
+            {
+                "session_id": str(second_parent["session_id"]),
+                "content": "delegate delivery task B",
+                "task": {
+                    "enabled": True,
+                    "task_description": "Queue TASK-B delivery.",
+                    "capabilities": ["message.send"],
+                },
+            },
+        )
+
+        first_task_result = dict(first.get("task_result") or {})
+        second_task_result = dict(second.get("task_result") or {})
+        pending = await client.call("action.pending", {"status": "pending", "limit": 10})
+        first_pending = next(
+            item
+            for item in pending["actions"]
+            if str(item.get("session_id", "")) == str(first_task_result["task_session_id"])
+        )
+        second_pending = next(
+            item
+            for item in pending["actions"]
+            if str(item.get("session_id", "")) == str(second_task_result["task_session_id"])
+        )
+
+        assert first_pending["approval_task_envelope_id"]
+        assert second_pending["approval_task_envelope_id"]
+        assert (
+            first_pending["approval_task_envelope_id"]
+            != second_pending["approval_task_envelope_id"]
+        )
+
+        wrong_nonce = await client.call(
+            "action.confirm",
+            {
+                "confirmation_id": second_pending["confirmation_id"],
+                "decision_nonce": first_pending["decision_nonce"],
+            },
+        )
+        assert wrong_nonce["confirmed"] is False
+        assert wrong_nonce["reason"] == "invalid_decision_nonce"
+
+        confirmed = await client.call(
+            "action.confirm",
+            {
+                "confirmation_id": first_pending["confirmation_id"],
+                "decision_nonce": first_pending["decision_nonce"],
+            },
+        )
+        if str(confirmed.get("reason", "")) == "cooldown_active":
+            await asyncio.sleep(float(confirmed["retry_after_seconds"]) + 0.05)
+            confirmed = await client.call(
+                "action.confirm",
+                {
+                    "confirmation_id": first_pending["confirmation_id"],
+                    "decision_nonce": first_pending["decision_nonce"],
+                },
+            )
+        assert confirmed["confirmed"] is False
+        assert str(confirmed.get("confirmation_id", "")) == str(first_pending["confirmation_id"])
+
+        rejected_event = await _wait_for_event(
+            client,
+            event_type="ToolRejected",
+            predicate=lambda item: (
+                str(item.get("session_id", "")).strip()
+                == str(first_task_result["task_session_id"]).strip()
+                and str(item.get("data", {}).get("approval_confirmation_id", "")).strip()
+                == str(first_pending["confirmation_id"]).strip()
+            ),
+        )
+
+        assert rejected_event["data"]["approval_session_id"] == str(
+            first_task_result["task_session_id"]
+        )
+        assert (
+            rejected_event["data"]["approval_task_envelope_id"]
+            == first_pending["approval_task_envelope_id"]
+        )
+        assert (
+            rejected_event["data"]["approval_decision_nonce"]
+            == first_pending["decision_nonce"]
+        )
     finally:
         await _shutdown_daemon(daemon_task, client)
 

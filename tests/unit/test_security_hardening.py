@@ -30,7 +30,8 @@ def test_m2_t23_ci_generates_coverage_and_validates_baseline() -> None:
     assert "scripts/coverage_trend.py" in ci
     assert "scripts/test_function_audit.py" in ci
     assert "scripts/yara_parity_report.py" in ci
-    assert "actions/upload-artifact@v4" in ci
+    assert "actions/upload-artifact@" in ci
+    assert "# v4" in ci
     assert ci.index("scripts/test_function_audit.py") < ci.index(
         "pytest -v -m \"not requires_cap_net_admin\""
     )

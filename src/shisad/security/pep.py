@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from typing import Any, ClassVar
 from urllib.parse import urlparse
 
-from shisad.core.evidence import EvidenceStore
+from shisad.core.evidence import ArtifactEndorsementState, ArtifactLedger
 from shisad.core.host_matching import host_matches
 from shisad.core.tools.names import canonical_tool_name_typed
 from shisad.core.tools.registry import ToolRegistry
@@ -123,7 +123,7 @@ class PEP:
         policy: PolicyBundle,
         tool_registry: ToolRegistry,
         *,
-        evidence_store: EvidenceStore | None = None,
+        evidence_store: ArtifactLedger | None = None,
         credential_store: CredentialStore | None = None,
         credential_audit_hook: Callable[[CredentialUseAttempt], None] | None = None,
     ) -> None:
@@ -199,6 +199,10 @@ class PEP:
         evidence_ref_error = self._check_evidence_ref(tool_name, arguments, context)
         if evidence_ref_error is not None:
             return evidence_ref_error
+
+        endorsement_decision = self._check_artifact_endorsement(tool_name, arguments, context)
+        if endorsement_decision is not None:
+            return endorsement_decision
 
         # 6. Egress allowlist enforcement
         destination_declared_by_tool = False
@@ -390,17 +394,6 @@ class PEP:
                 risk_score=risk_score,
             )
 
-        if str(tool_name) == "evidence.promote":
-            return PEPDecision(
-                kind=PEPDecisionKind.REQUIRE_CONFIRMATION,
-                reason=(
-                    "Tool 'evidence.promote' requires explicit user confirmation before "
-                    "tainted evidence can be promoted into persistent conversation context."
-                ),
-                tool_name=tool_name,
-                risk_score=risk_score,
-            )
-
         if risk_score >= block_threshold:
             taint_summary = (
                 ",".join(sorted(label.value for label in context.taint_labels)) or "none"
@@ -478,6 +471,33 @@ class PEP:
             )
         if not self._evidence_store.validate_ref_id(context.session_id, ref_id):
             return self._reject(tool_name, "invalid or unknown evidence reference")
+        return None
+
+    def _check_artifact_endorsement(
+        self,
+        tool_name: ToolName,
+        arguments: dict[str, Any],
+        context: PolicyContext,
+    ) -> PEPDecision | None:
+        if str(tool_name) != "evidence.promote":
+            return None
+        if self._evidence_store is None:
+            return self._reject(tool_name, "invalid or unknown evidence reference")
+        ref_id = str(arguments.get("ref_id", "")).strip()
+        if not ref_id:
+            return self._reject(tool_name, "invalid or unknown evidence reference")
+        ref = self._evidence_store.get_ref(context.session_id, ref_id)
+        if ref is None:
+            return self._reject(tool_name, "invalid or unknown evidence reference")
+        if ref.endorsement_state == ArtifactEndorsementState.UNENDORSED:
+            return PEPDecision(
+                kind=PEPDecisionKind.REQUIRE_CONFIRMATION,
+                reason=(
+                    "Artifact is unendorsed; user confirmation is required before "
+                    "it can be promoted into persistent conversation context."
+                ),
+                tool_name=tool_name,
+            )
         return None
 
     def _check_allowed_args(

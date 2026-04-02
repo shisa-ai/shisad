@@ -643,6 +643,7 @@ class PendingAction:
     warnings: list[str] = field(default_factory=list)
     leak_check: dict[str, Any] = field(default_factory=dict)
     merged_policy: ToolExecutionPolicy | None = None
+    approval_task_envelope_id: str = ""
     status: str = "pending"
     status_reason: str = ""
 
@@ -974,6 +975,15 @@ class HandlerImplementation(
             channel=str(session.channel),
             trust_level=str(session.metadata.get("trust_level", "untrusted")),
         )
+
+    @staticmethod
+    def _approval_task_envelope_id_for_session(session: Session | None) -> str:
+        if session is None:
+            return ""
+        raw_envelope = session.metadata.get("task_envelope")
+        if not isinstance(raw_envelope, Mapping):
+            return ""
+        return str(raw_envelope.get("envelope_id", "")).strip()
 
     @staticmethod
     def _risk_tier_for_tool_execute(
@@ -1501,6 +1511,7 @@ class HandlerImplementation(
             "safe_preview": pending.safe_preview,
             "warnings": list(pending.warnings),
             "leak_check": dict(pending.leak_check),
+            "approval_task_envelope_id": pending.approval_task_envelope_id,
             "status": pending.status,
             "status_reason": pending.status_reason,
         }
@@ -1610,6 +1621,7 @@ class HandlerImplementation(
         execute_after: datetime | None = None
         if self._is_high_risk_confirmation(tool_name, arguments):
             execute_after = created_at + timedelta(seconds=3)
+        session = self._session_manager.get(session_id)
         pending = PendingAction(
             confirmation_id=confirmation_id,
             decision_nonce=decision_nonce,
@@ -1631,6 +1643,9 @@ class HandlerImplementation(
                 merged_policy.model_copy(deep=True)
                 if merged_policy is not None
                 else None
+            ),
+            approval_task_envelope_id=HandlerImplementation._approval_task_envelope_id_for_session(
+                session
             ),
         )
         self._pending_actions[confirmation_id] = pending
@@ -1699,6 +1714,9 @@ class HandlerImplementation(
                     warnings=[str(value) for value in item.get("warnings", [])],
                     leak_check=dict(item.get("leak_check", {})),
                     merged_policy=merged_policy,
+                    approval_task_envelope_id=str(
+                        item.get("approval_task_envelope_id", "")
+                    ).strip(),
                     status=str(item.get("status", "pending")),
                     status_reason=str(item.get("status_reason", "")),
                 )
@@ -1793,6 +1811,10 @@ class HandlerImplementation(
         execution_action: ControlPlaneAction | None = None,
         merged_policy: ToolExecutionPolicy | None = None,
         user_confirmed: bool = False,
+        approval_confirmation_id: str = "",
+        approval_decision_nonce: str = "",
+        approval_task_envelope_id: str = "",
+        approval_timestamp: str = "",
     ) -> ApprovedToolExecutionResult:
         session = self._session_manager.get(sid)
         if session is None:
@@ -1822,11 +1844,23 @@ class HandlerImplementation(
             checkpoint = self._checkpoint_store.create(session)
             checkpoint_id = checkpoint.checkpoint_id
 
+        approval_event_fields = {
+            "approval_session_id": str(sid),
+            "approval_task_envelope_id": (
+                approval_task_envelope_id
+                or HandlerImplementation._approval_task_envelope_id_for_session(session)
+            ),
+            "approval_confirmation_id": approval_confirmation_id,
+            "approval_decision_nonce": approval_decision_nonce,
+            "approval_timestamp": approval_timestamp or datetime.now(UTC).isoformat(),
+        }
+
         await self._event_bus.publish(
             ToolApproved(
                 session_id=sid,
                 actor=approval_actor,
                 tool_name=tool_name,
+                **approval_event_fields,
             )
         )
 
@@ -1856,6 +1890,7 @@ class HandlerImplementation(
                     actor="tool_runtime",
                     tool_name=tool_name,
                     success=True,
+                    **approval_event_fields,
                 )
             )
             self._control_plane.record_execution(action=executed_action, success=True)
@@ -1881,6 +1916,7 @@ class HandlerImplementation(
                     actor="tool_runtime",
                     tool_name=tool_name,
                     success=True,
+                    **approval_event_fields,
                 )
             )
             self._control_plane.record_execution(action=executed_action, success=True)
@@ -1950,6 +1986,7 @@ class HandlerImplementation(
                             actor="tool_runtime",
                             tool_name=tool_name,
                             reason=reason,
+                            **approval_event_fields,
                         )
                     )
                     await self._event_bus.publish(
@@ -1958,6 +1995,7 @@ class HandlerImplementation(
                             actor="tool_runtime",
                             tool_name=tool_name,
                             success=False,
+                            **approval_event_fields,
                         )
                     )
                     self._control_plane.record_execution(action=executed_action, success=False)
@@ -2013,6 +2051,7 @@ class HandlerImplementation(
                         actor="tool_runtime",
                         tool_name=tool_name,
                         success=True,
+                        **approval_event_fields,
                     )
                 )
                 self._control_plane.record_execution(action=executed_action, success=True)
@@ -2056,6 +2095,7 @@ class HandlerImplementation(
                         actor="tool_runtime",
                         tool_name=tool_name,
                         reason=delivery_result.reason or "message_send_failed",
+                        **approval_event_fields,
                     )
                 )
             await self._event_bus.publish(
@@ -2064,6 +2104,7 @@ class HandlerImplementation(
                     actor="tool_runtime",
                     tool_name=tool_name,
                     success=success,
+                    **approval_event_fields,
                 )
             )
             self._control_plane.record_execution(action=executed_action, success=success)
@@ -2098,6 +2139,7 @@ class HandlerImplementation(
                 record_execution=_record_execution,
                 sanitize_output=self._sanitize_tool_output_text,
                 taint_labels=label_tool_output(str(tool_name)),
+                approval_event_fields=approval_event_fields,
             )
             return ApprovedToolExecutionResult(
                 success=result.success,
@@ -2156,6 +2198,7 @@ class HandlerImplementation(
                     actor="tool_runtime",
                     tool_name=tool_name,
                     success=False,
+                    **approval_event_fields,
                 )
             )
             self._control_plane.record_execution(action=executed_action, success=False)
@@ -2192,6 +2235,7 @@ class HandlerImplementation(
                     actor="tool_runtime",
                     tool_name=tool_name,
                     reason=sandbox_result.reason or "sandbox_execution_failed",
+                    **approval_event_fields,
                 )
             )
         await self._event_bus.publish(
@@ -2200,6 +2244,7 @@ class HandlerImplementation(
                 actor="sandbox",
                 tool_name=tool_name,
                 success=success,
+                **approval_event_fields,
             )
         )
         self._control_plane.record_execution(action=executed_action, success=success)

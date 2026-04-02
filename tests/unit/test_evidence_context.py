@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from shisad.core.evidence import EvidenceStore
+from shisad.core.evidence import ArtifactEndorsementState, EvidenceStore
 from shisad.core.tools.registry import ToolRegistry
 from shisad.core.tools.schema import ToolDefinition, ToolParameter
 from shisad.core.transcript import TranscriptStore
@@ -448,6 +448,37 @@ def test_pep_requires_confirmation_for_promote_even_when_risk_policy_would_block
     )
 
     assert decision.kind.value == "require_confirmation"
+
+
+def test_pep_allows_promote_for_user_endorsed_artifact_when_policy_allows(tmp_path) -> None:
+    store = EvidenceStore(tmp_path / "evidence", salt=b"a" * 32)
+    sid = SessionId("sess-a")
+    ref = store.store(
+        sid,
+        "hello",
+        taint_labels={TaintLabel.UNTRUSTED},
+        source="web.fetch:example.com",
+        summary="hello",
+    )
+    store.endorse(
+        sid,
+        ref.ref_id,
+        endorsement_state=ArtifactEndorsementState.USER_ENDORSED,
+        actor="human_confirmation",
+    )
+    pep = PEP(
+        PolicyBundle(default_require_confirmation=False),
+        _registry_for_evidence(),
+        evidence_store=store,
+    )
+
+    decision = pep.evaluate(
+        ToolName("evidence.promote"),
+        {"ref_id": ref.ref_id},
+        PolicyContext(capabilities={Capability.MEMORY_READ}, session_id=sid),
+    )
+
+    assert decision.kind.value == "allow"
 
 
 @pytest.mark.asyncio

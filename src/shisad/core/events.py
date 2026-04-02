@@ -171,6 +171,11 @@ class ToolApproved(BaseEvent):
 
     tool_name: ToolName
     decision: PEPDecisionKind = PEPDecisionKind.ALLOW
+    approval_session_id: str = ""
+    approval_task_envelope_id: str = ""
+    approval_confirmation_id: str = ""
+    approval_decision_nonce: str = ""
+    approval_timestamp: str = ""
 
 
 class ToolRejected(BaseEvent):
@@ -179,6 +184,11 @@ class ToolRejected(BaseEvent):
     tool_name: ToolName
     decision: PEPDecisionKind = PEPDecisionKind.REJECT
     reason: str = ""
+    approval_session_id: str = ""
+    approval_task_envelope_id: str = ""
+    approval_confirmation_id: str = ""
+    approval_decision_nonce: str = ""
+    approval_timestamp: str = ""
 
 
 class ToolExecuted(BaseEvent):
@@ -187,6 +197,11 @@ class ToolExecuted(BaseEvent):
     tool_name: ToolName
     success: bool = True
     error: str = ""
+    approval_session_id: str = ""
+    approval_task_envelope_id: str = ""
+    approval_confirmation_id: str = ""
+    approval_decision_nonce: str = ""
+    approval_timestamp: str = ""
 
 
 class AnomalyReported(BaseEvent):
@@ -337,6 +352,7 @@ class TaskSessionCompleted(BaseEvent):
     taint_labels: list[str] = Field(default_factory=list)
     self_check_status: str = ""
     self_check_ref: str = ""
+    summary_checkpoint_ref: str = ""
 
 
 class CodingAgentSelected(BaseEvent):

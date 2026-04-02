@@ -11,8 +11,10 @@ import os
 import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from enum import StrEnum
 from html.parser import HTMLParser
 from pathlib import Path
+from typing import Protocol
 
 from pydantic import BaseModel, Field, ValidationError
 
@@ -34,6 +36,40 @@ _EVIDENCE_METADATA_FILENAME = "refs_index.json"
 logger = logging.getLogger(__name__)
 
 
+class ArtifactLifecycleState(StrEnum):
+    ACTIVE = "active"
+    QUARANTINED = "quarantined"
+
+
+class ArtifactEndorsementState(StrEnum):
+    UNENDORSED = "unendorsed"
+    USER_ENDORSED = "user_endorsed"
+    SYSTEM_ENDORSED = "system_endorsed"
+
+
+class ArtifactBlobCodec(Protocol):
+    """Hook point for future non-plaintext artifact storage backends."""
+
+    name: str
+
+    def encode(self, content: str) -> bytes: ...
+
+    def decode(self, payload: bytes) -> str: ...
+
+
+@dataclass(frozen=True)
+class PlaintextArtifactBlobCodec:
+    """Default artifact codec: plaintext on local disk."""
+
+    name: str = "plaintext"
+
+    def encode(self, content: str) -> bytes:
+        return content.encode("utf-8")
+
+    def decode(self, payload: bytes) -> str:
+        return payload.decode("utf-8")
+
+
 class EvidenceRef(BaseModel):
     """Opaque reference to tainted content stored out-of-band."""
 
@@ -45,6 +81,12 @@ class EvidenceRef(BaseModel):
     summary: str
     byte_size: int
     ttl_seconds: int | None = None
+    artifact_kind: str = "evidence"
+    lifecycle_state: ArtifactLifecycleState = ArtifactLifecycleState.ACTIVE
+    endorsement_state: ArtifactEndorsementState = ArtifactEndorsementState.UNENDORSED
+    endorsed_at: datetime | None = None
+    endorsed_by: str = ""
+    storage_codec: str = "plaintext"
 
 
 @dataclass(frozen=True)
@@ -199,8 +241,8 @@ def format_evidence_stub(ref: EvidenceRef) -> str:
     )
 
 
-class EvidenceStore:
-    """Out-of-band blob store + metadata index for evidence references."""
+class ArtifactLedger:
+    """Structured artifact ledger for persisted evidence refs."""
 
     def __init__(
         self,
@@ -209,6 +251,7 @@ class EvidenceStore:
         salt: bytes | None = None,
         default_max_age_seconds: int = _DEFAULT_EVIDENCE_MAX_AGE_SECONDS,
         orphan_retention_seconds: int = _DEFAULT_ORPHAN_RETENTION_SECONDS,
+        blob_codec: ArtifactBlobCodec | None = None,
     ) -> None:
         self._root_dir = root_dir
         self._blob_dir = root_dir / "blobs"
@@ -217,6 +260,7 @@ class EvidenceStore:
         self._salt_path = root_dir / "evidence_salt"
         self._default_max_age_seconds = max(1, int(default_max_age_seconds))
         self._orphan_retention_seconds = max(1, int(orphan_retention_seconds))
+        self._blob_codec = blob_codec or PlaintextArtifactBlobCodec()
         self._root_dir.mkdir(parents=True, exist_ok=True)
         self._blob_dir.mkdir(parents=True, exist_ok=True)
         self._quarantine_dir.mkdir(parents=True, exist_ok=True)
@@ -256,7 +300,7 @@ class EvidenceStore:
         existing = self._refs.setdefault(session_key, {}).get(ref_id)
         if existing is not None:
             if not blob_path.exists():
-                blob_path.write_text(content, encoding="utf-8")
+                self._write_blob(blob_path, content)
                 self._ensure_file_permissions(blob_path)
             merged = self._merge_existing_ref(
                 session_key=session_key,
@@ -271,7 +315,7 @@ class EvidenceStore:
             return merged
 
         if not blob_path.exists():
-            blob_path.write_text(content, encoding="utf-8")
+            self._write_blob(blob_path, content)
         self._ensure_file_permissions(blob_path)
         ref = EvidenceRef(
             ref_id=ref_id,
@@ -281,6 +325,10 @@ class EvidenceStore:
             summary=summary,
             byte_size=len(raw),
             ttl_seconds=ttl_seconds,
+            artifact_kind="evidence",
+            lifecycle_state=ArtifactLifecycleState.ACTIVE,
+            endorsement_state=ArtifactEndorsementState.UNENDORSED,
+            storage_codec=self._blob_codec.name,
         )
         self._refs[session_key][ref_id] = ref
         self._persist_metadata_index()
@@ -293,7 +341,7 @@ class EvidenceStore:
         path = self._blob_path(ref.content_hash)
         if not path.exists():
             return None
-        return path.read_text(encoding="utf-8")
+        return self._read_blob(path)
 
     def get_ref(self, session_id: SessionId, ref_id: str) -> EvidenceRef | None:
         self._evict_for_session(session_id)
@@ -355,6 +403,56 @@ class EvidenceStore:
                 self._persist_metadata_index()
         return evicted
 
+    def collect_garbage(
+        self,
+        *,
+        max_age_seconds: int | None = None,
+    ) -> list[str]:
+        evicted: list[str] = []
+        effective_max_age = (
+            self._default_max_age_seconds
+            if max_age_seconds is None
+            else max(1, int(max_age_seconds))
+        )
+        for session_key in list(self._refs.keys()):
+            evicted.extend(
+                self.evict_expired(
+                    SessionId(session_key),
+                    max_age_seconds=effective_max_age,
+                    best_effort_persist=True,
+                )
+            )
+        self._quarantine_orphaned_blobs()
+        self._prune_quarantine()
+        return evicted
+
+    def endorse(
+        self,
+        session_id: SessionId,
+        ref_id: str,
+        *,
+        endorsement_state: ArtifactEndorsementState,
+        actor: str,
+        endorsed_at: datetime | None = None,
+    ) -> EvidenceRef | None:
+        session_key = self._session_key(session_id)
+        ref = self._refs.get(session_key, {}).get(ref_id)
+        if ref is None:
+            return None
+        normalized_actor = actor.strip()
+        if not normalized_actor:
+            raise ValueError("actor is required to endorse an artifact")
+        updated = ref.model_copy(
+            update={
+                "endorsement_state": endorsement_state,
+                "endorsed_at": endorsed_at or datetime.now(UTC),
+                "endorsed_by": normalized_actor,
+            }
+        )
+        self._refs[session_key][ref_id] = updated
+        self._persist_metadata_index()
+        return updated
+
     def _make_ref_id(self, *, session_id: SessionId, content_hash: str) -> str:
         payload = f"{self._session_key(session_id)}:{content_hash}".encode()
         digest = hmac.new(self._salt, payload, hashlib.sha256).hexdigest()[:16]
@@ -388,6 +486,12 @@ class EvidenceStore:
 
     def _blob_path(self, content_hash: str) -> Path:
         return self._blob_dir / f"{content_hash}.txt"
+
+    def _write_blob(self, path: Path, content: str) -> None:
+        path.write_bytes(self._blob_codec.encode(content))
+
+    def _read_blob(self, path: Path) -> str:
+        return self._blob_codec.decode(path.read_bytes())
 
     def _load_metadata_index(self) -> _MetadataLoadResult:
         if not self._metadata_path.exists():
@@ -548,6 +652,7 @@ class EvidenceStore:
                 "source": source or existing.source,
                 "summary": summary or existing.summary,
                 "ttl_seconds": self._merge_ttl_seconds(existing.ttl_seconds, ttl_seconds),
+                "storage_codec": existing.storage_codec or self._blob_codec.name,
             }
         )
         self._refs[session_key][ref_id] = merged
@@ -581,3 +686,7 @@ class EvidenceStore:
     @staticmethod
     def _session_key(session_id: SessionId) -> str:
         return str(session_id).strip()
+
+
+class EvidenceStore(ArtifactLedger):
+    """Backwards-compatible alias for the artifact ledger evidence surface."""

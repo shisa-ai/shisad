@@ -71,6 +71,12 @@ Content-seeing components produce only structured metadata outputs (scores, flag
 
 **7. Approvals don't launder provenance.** When a user confirms an ambiguous action, the confirmation authorizes *that specific action* — it does not remove taint labels, change the content's provenance, or grant blanket trust to the source. A confirmed web fetch from an untrusted page does not make the fetched content trusted. Taint persists through the full data lifecycle regardless of intermediate approvals.
 
+Approval decisions are also bound to their origin. When an action is approved,
+rejected, or executed through a confirmation path, the audit trail can record
+the originating session, task-envelope ID, confirmation ID, decision nonce,
+and timestamp. Approval is evidence about *who approved what*, not a trust
+upgrade for the underlying content.
+
 **8. Context control is a first-class security primitive.** Because we construct the LLM's context each turn, we can choose exactly what the model sees — and more importantly, what it *doesn't* see. This is unique to LLM-based systems and has no equivalent in traditional software. Evidence references are the primary application: large untrusted content (web pages, email bodies, tool output) is stored out-of-band in a content-addressed evidence store, and the LLM receives only an opaque reference stub with metadata. The raw tainted content never enters the conversation history, so it cannot persist as an injection surface across turns. When the model needs to re-examine content, it makes an explicit `evidence.read` tool call — which goes through PEP enforcement and returns content into a single-turn isolated context, not the persistent transcript. This turns the usual LLM limitation (no persistent memory) into a security advantage: we can quarantine, exclude, or replace any piece of context at any time, and the model cannot tell the difference.
 
 ---
@@ -186,6 +192,13 @@ out-of-scope refs fail closed. Tool grants do not imply credential grants.
 
 Large untrusted content is stored out-of-band in a content-addressed evidence store. The LLM context receives only a short reference stub with metadata (`[EVIDENCE ref=ev-a1b2c3d4 source=web.fetch:nytimes.com taint=untrusted size=14832 summary="..."]`). The raw tainted content never enters the conversation transcript, eliminating persistent injection surface. When the model needs to re-examine content, it calls `evidence.read(ref_id)` — which goes through PEP enforcement and returns content into a single-turn isolated context. This dramatically reduces the token-budget cost of tainted content and limits each injection payload to a single exposure window.
 
+Internally this now lives in a structured ArtifactLedger rather than an
+ad-hoc blob map. The ledger persists artifact lifecycle state and endorsement
+metadata alongside the ref. Endorsement is narrow by design: a user-endorsed
+artifact may pass the `evidence.promote` confirmation seam on later reuse, but
+endorsement does not strip taint, upgrade provenance, or make the artifact
+globally trusted.
+
 Structured cross-boundary fields are also constrained by semantic tool-schema
 types. Sink-critical arguments such as URLs, command tokens, workspace paths,
 evidence refs, and thread ids are validated as atoms or opaque handles instead
@@ -193,6 +206,13 @@ of being accepted as arbitrary free text. These semantic atom checks protect
 the planner / TASK orchestration path and structured TASK-return boundary; the
 explicit admin `tool.execute` surface is a separately trusted operator path
 with its own policy and audit controls.
+
+Delegated TASK output crosses a second boundary before it can influence the
+COMMAND transcript: the TASK raw response must pass through a mandatory
+summary-firewall checkpoint, and the resulting summary checkpoint artifact is
+persisted before the sanitized summary is handed back. If the checkpoint cannot
+be produced, the handoff fails closed instead of letting an unchecked TASK
+summary enter the orchestrator context.
 
 ### Output Firewall (egress)
 
