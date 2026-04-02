@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from shisad.coding.models import CodingAgentConfig
 from shisad.coding.registry import (
     AgentAvailability,
@@ -62,6 +64,34 @@ def test_m3_agent_selection_uses_fallback_chain_when_preferred_agent_unavailable
     assert [attempt.agent for attempt in selection.attempts] == ["codex", "claude"]
     assert selection.attempts[0].available is False
     assert selection.attempts[1].available is True
+
+
+def test_require_local_adapters_replaces_npx_with_local_binaries() -> None:
+    registry = build_default_agent_registry(require_local=True)
+
+    assert registry["claude"].command == ("claude-agent-acp",)
+    assert registry["codex"].command == ("codex-acp",)
+    assert registry["opencode"].command == ("opencode", "acp")
+    for spec in registry.values():
+        assert spec.command[0] != "npx"
+
+
+def test_require_local_adapters_env_var(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("SHISAD_REQUIRE_LOCAL_ADAPTERS", "1")
+    registry = build_default_agent_registry()
+
+    for spec in registry.values():
+        assert spec.command[0] != "npx"
+
+
+def test_require_local_adapters_overrides_still_apply() -> None:
+    registry = build_default_agent_registry(
+        overrides={"claude": "/usr/local/bin/my-claude"},
+        require_local=True,
+    )
+
+    assert registry["claude"].command == ("/usr/local/bin/my-claude",)
+    assert registry["codex"].command == ("codex-acp",)
 
 
 def test_m3_agent_registry_accepts_operator_command_overrides() -> None:

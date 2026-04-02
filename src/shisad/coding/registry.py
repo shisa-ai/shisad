@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import shlex
 import shutil
 from collections.abc import Callable, Mapping
@@ -53,23 +54,56 @@ def _parse_command(command: str) -> tuple[str, ...]:
     return parsed
 
 
+def _require_local_adapters() -> bool:
+    """Check whether runtime npx fetches are disallowed.
+
+    Set ``SHISAD_REQUIRE_LOCAL_ADAPTERS=1`` to require adapters to be
+    pre-installed locally.  When enabled, the default registry uses bare
+    binary names instead of ``npx`` invocations, and
+    :func:`select_coding_agent` will only succeed if the binary is
+    already on ``$PATH``.
+    """
+    return os.environ.get("SHISAD_REQUIRE_LOCAL_ADAPTERS", "").strip() in ("1", "true", "yes")
+
+
 def build_default_agent_registry(
     overrides: Mapping[str, str] | None = None,
+    *,
+    require_local: bool | None = None,
 ) -> dict[str, AgentCommandSpec]:
-    registry = {
-        "claude": AgentCommandSpec(
-            name="claude",
-            command=("npx", "-y", "@zed-industries/claude-agent-acp@0.21.0"),
-        ),
-        "codex": AgentCommandSpec(
-            name="codex",
-            command=("npx", "@zed-industries/codex-acp@0.9.5"),
-        ),
-        "opencode": AgentCommandSpec(
-            name="opencode",
-            command=("npx", "-y", "opencode-ai@1.3.10", "acp"),
-        ),
-    }
+    if require_local is None:
+        require_local = _require_local_adapters()
+
+    if require_local:
+        registry = {
+            "claude": AgentCommandSpec(
+                name="claude",
+                command=("claude-agent-acp",),
+            ),
+            "codex": AgentCommandSpec(
+                name="codex",
+                command=("codex-acp",),
+            ),
+            "opencode": AgentCommandSpec(
+                name="opencode",
+                command=("opencode", "acp"),
+            ),
+        }
+    else:
+        registry = {
+            "claude": AgentCommandSpec(
+                name="claude",
+                command=("npx", "-y", "@zed-industries/claude-agent-acp@0.21.0"),
+            ),
+            "codex": AgentCommandSpec(
+                name="codex",
+                command=("npx", "@zed-industries/codex-acp@0.9.5"),
+            ),
+            "opencode": AgentCommandSpec(
+                name="opencode",
+                command=("npx", "-y", "opencode-ai@1.3.10", "acp"),
+            ),
+        }
     for raw_name, raw_command in (overrides or {}).items():
         name = str(raw_name).strip().lower()
         command = str(raw_command).strip()
