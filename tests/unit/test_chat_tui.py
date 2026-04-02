@@ -41,6 +41,19 @@ def test_format_assistant_message_handles_empty() -> None:
     assert isinstance(result, str)
 
 
+def test_format_assistant_message_renders_evidence_ref_block() -> None:
+    result = format_assistant_message(
+        '[EVIDENCE ref=ev-61f3d4c48f54ff92 source=web.fetch:example.com '
+        'taint=UNTRUSTED size=88 summary="Example Domain" '
+        'Use evidence.read("ev-61f3d4c48f54ff92") for full content, or '
+        'evidence.promote("ev-61f3d4c48f54ff92") to add it to the conversation.]'
+    )
+
+    assert result.startswith("shisad:")
+    assert "[EVIDENCE ref=" not in result
+    assert "[Evidence ev-61f3d4c48f54ff92]" in result
+
+
 # ---------------------------------------------------------------------------
 # ChatApp construction tests
 # ---------------------------------------------------------------------------

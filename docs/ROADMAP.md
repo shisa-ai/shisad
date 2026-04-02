@@ -20,7 +20,7 @@ Reach a genuinely useful personal-assistant baseline while preserving the projec
 - `v0.3.x` established the runtime foundation: provider routing, channels, assistant primitives, and destructive-command protection.
 - `v0.4.0` shipped safe self-improvement infrastructure, coding-agent runtime support, and minimal COMMAND/TASK isolation.
 - `v0.5.0` is the first public release: zero-config SHISA provider, evidence references, public repo split, Apache 2.0.
-- `v0.6.0` is in active execution: G0, M1, M2, M3, and M4 are closed; M5 is the active next milestone.
+- `v0.6.0` is in active execution: G0, M1, M2, M3, and M4 are closed; M5 is now in progress, focused on web-surface parity, skill-tool discoverability, and evidence-ref user rendering.
 
 ## Milestones
 
@@ -54,7 +54,7 @@ Focus:
 - Type-restricted task/tool boundary schemas
 - Summary firewall barrier and approval provenance
 
-Current execution status: G0, M1, M2, M3, and M4 are closed; M5 is the active next milestone. The live runtime now has formal orchestrator/subagent session roles, immutable task envelopes, trust-aware `report_anomaly` exposure, taint-safe COMMAND↔TASK handoffs, a TASK close-gate self-check, versioned session rehydration with lockdown continuity, bounded session archive export/import with integrity checks plus fresh-session cutover, task-scoped credential refs, typed sink validation for the current built-in runtime boundaries, live resource-scope enforcement, background tainted-trigger policy, a structured ArtifactLedger with endorsement metadata and GC semantics, approval provenance attached to approval/reject/execute audit events, and a mandatory TASK summary-firewall checkpoint before delegated output crosses back into COMMAND context.
+Current execution status: G0, M1, M2, M3, and M4 are closed; M5 is in progress. The live runtime now has formal orchestrator/subagent session roles, immutable task envelopes, trust-aware `report_anomaly` exposure, taint-safe COMMAND↔TASK handoffs, a TASK close-gate self-check, versioned session rehydration with lockdown continuity, bounded session archive export/import with integrity checks plus fresh-session cutover, task-scoped credential refs, typed sink validation for the current built-in runtime boundaries, live resource-scope enforcement, background tainted-trigger policy, a structured ArtifactLedger with endorsement metadata and GC semantics, approval provenance attached to approval/reject/execute audit events, and a mandatory TASK summary-firewall checkpoint before delegated output crosses back into COMMAND context. The current M5 lane is closing the remaining user-boundary gaps around `web.search` configuration parity, skill-declared tool discovery, and evidence-ref rendering in terminal-facing surfaces.
 
 #### v0.6.1 — Security hardening
 

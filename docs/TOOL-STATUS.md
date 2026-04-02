@@ -14,6 +14,10 @@ Status meanings:
 
 Current snapshot:
 
+Note:
+
+- `tool.web.search` is `DISABLED` in this recorded snapshot because the daemon was started without `SHISAD_WEB_SEARCH_BACKEND_URL`. In a configured environment, the backend host must also appear in `SHISAD_WEB_ALLOWED_DOMAINS` before the tool can show up as `WORKS`.
+
 | Tool | Status | Detail |
 |------|--------|--------|
 | prompt.1 | WORKS | response_ok |

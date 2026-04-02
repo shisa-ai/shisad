@@ -683,6 +683,41 @@ def test_cli_commands_route_through_rpc_wrapper(
     ) in calls
 
 
+def test_session_message_command_renders_evidence_stub_block(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _config(tmp_path)
+    monkeypatch.setattr(cli_main, "_get_config", lambda: config)
+    monkeypatch.setattr(
+        cli_main,
+        "rpc_call",
+        lambda *_args, **_kwargs: cli_main.SessionMessageResult.model_validate(
+            {
+                "session_id": "s-1",
+                "response": (
+                    "Need to inspect the fetched page.\n\n"
+                    "Tool results summary:\n"
+                    "- web.fetch: success=True, ok=True\n"
+                    '  output: [EVIDENCE ref=ev-61f3d4c48f54ff92 '
+                    'source=web.fetch:example.com taint=UNTRUSTED size=88 '
+                    'summary="Example Domain" '
+                    'Use evidence.read("ev-61f3d4c48f54ff92") for full content, or '
+                    'evidence.promote("ev-61f3d4c48f54ff92") to add it to the conversation.]'
+                ),
+            }
+        ),
+    )
+    runner = CliRunner()
+
+    result = runner.invoke(cli_main.cli, ["session", "message", "s-1", "fetch example"])
+
+    assert result.exit_code == 0, result.output
+    assert "[EVIDENCE ref=" not in result.output
+    assert "[Evidence ev-61f3d4c48f54ff92]" in result.output
+    assert 'inspect: evidence.read("ev-61f3d4c48f54ff92")' in result.output
+
+
 def test_events_subscribe_uses_rpc_run_wrapper(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

@@ -189,10 +189,14 @@ export SHISAD_CHANNEL_IDENTITY_ALLOWLIST='{"discord":["1234567890"],"telegram":[
 ### Assistant surfaces
 
 ```bash
-# web_fetch and web_search are enabled by default
-# Configure a search backend to use web_search:
+# web_fetch and web_search are enabled by default.
+# web_search needs a compatible JSON search backend (SearxNG-style /search?q=...&format=json).
+# The backend host must also be present in SHISAD_WEB_ALLOWED_DOMAINS.
 export SHISAD_WEB_SEARCH_BACKEND_URL="https://search.example.com"
 export SHISAD_WEB_ALLOWED_DOMAINS='["search.example.com","docs.example.com"]'
+
+# Verify the configured tool surface from a live daemon:
+# uv run python scripts/live_tool_matrix.py --tool-status
 
 export SHISAD_ASSISTANT_FS_ROOTS='["/tmp/shisad-workspace"]'
 ```

@@ -9,8 +9,10 @@ import pytest
 import yaml
 
 from shisad.core.tools.registry import ToolRegistry
+from shisad.core.tools.schema import tool_definitions_to_openai
 from shisad.core.types import Capability, ToolName
-from shisad.security.policy import SkillPolicy
+from shisad.security.pep import PEP, PolicyContext
+from shisad.security.policy import PolicyBundle, SkillPolicy
 from shisad.skills.manager import SkillManager
 from shisad.skills.manifest import parse_manifest
 
@@ -165,3 +167,99 @@ async def test_m1_skill_revoke_unregisters_declared_tools(tmp_path: Path) -> Non
 
     assert revoked is not None
     assert registry.has_tool(ToolName("skill.calendar-helper.lookup")) is False
+
+
+@pytest.mark.asyncio
+async def test_m5_skill_install_exposes_declared_tool_in_openai_payload(tmp_path: Path) -> None:
+    registry = ToolRegistry()
+    manager = SkillManager(
+        storage_dir=tmp_path / "state",
+        policy=SkillPolicy(
+            require_signature_for_auto_install=False,
+            require_review_on_update=False,
+        ),
+        tool_registry=registry,
+    )
+    skill = _write_skill(
+        tmp_path / "skill",
+        manifest=_manifest_payload(
+            tools=[
+                {
+                    "name": "lookup",
+                    "description": "Look up calendar entries.",
+                    "parameters": [
+                        {
+                            "name": "query",
+                            "type": "string",
+                            "required": True,
+                        }
+                    ],
+                    "destinations": ["api.good.example"],
+                }
+            ]
+        ),
+        files={"SKILL.md": "safe helper"},
+    )
+
+    decision = await manager.install(skill, approve_untrusted=True)
+
+    assert decision.allowed is True
+    tools_payload = tool_definitions_to_openai(registry.list_tools())
+    assert any(
+        item.get("function", {}).get("name") == "skill_calendar_helper_lookup"
+        for item in tools_payload
+    )
+
+
+@pytest.mark.asyncio
+async def test_m5_registered_skill_tool_still_runs_through_pep_validation(tmp_path: Path) -> None:
+    registry = ToolRegistry()
+    manager = SkillManager(
+        storage_dir=tmp_path / "state",
+        policy=SkillPolicy(
+            require_signature_for_auto_install=False,
+            require_review_on_update=False,
+        ),
+        tool_registry=registry,
+    )
+    skill = _write_skill(
+        tmp_path / "skill",
+        manifest=_manifest_payload(
+            tools=[
+                {
+                    "name": "lookup",
+                    "description": "Look up calendar entries.",
+                    "parameters": [
+                        {
+                            "name": "query",
+                            "type": "string",
+                            "required": True,
+                        }
+                    ],
+                    "destinations": ["api.good.example"],
+                }
+            ]
+        ),
+        files={"SKILL.md": "safe helper"},
+    )
+
+    decision = await manager.install(skill, approve_untrusted=True)
+    assert decision.allowed is True
+
+    pep = PEP(PolicyBundle(default_require_confirmation=False), registry)
+    tool_name = ToolName("skill.calendar-helper.lookup")
+
+    blocked = pep.evaluate(
+        tool_name,
+        {},
+        PolicyContext(capabilities={Capability.HTTP_REQUEST}),
+    )
+    allowed = pep.evaluate(
+        tool_name,
+        {"query": "today"},
+        PolicyContext(capabilities={Capability.HTTP_REQUEST}),
+    )
+
+    assert blocked.kind.value == "reject"
+    assert "Missing required argument: query" in blocked.reason
+    assert allowed.kind.value == "allow"

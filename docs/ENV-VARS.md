@@ -101,6 +101,12 @@ Web:
 - `SHISAD_WEB_TIMEOUT_SECONDS`
 - `SHISAD_WEB_MAX_FETCH_BYTES`
 
+Web notes:
+
+- `SHISAD_WEB_SEARCH_BACKEND_URL` must point at a compatible search backend that serves JSON search results over HTTP(S). The current runtime expects a SearxNG-style `/search` endpoint.
+- The search backend host must also be present in `SHISAD_WEB_ALLOWED_DOMAINS`, alongside any fetch/search destinations you want auto-approved in the tested environment.
+- If `SHISAD_WEB_SEARCH_BACKEND_URL` is unset, `tool.web.search` stays available in the registry but reports `web_search_backend_unconfigured` in live tool-status checks instead of silently locking down the session.
+
 Filesystem/git:
 
 - `SHISAD_ASSISTANT_FS_ROOTS`

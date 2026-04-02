@@ -82,6 +82,7 @@ from shisad.core.api.schema import (
     WebSearchResult,
 )
 from shisad.core.config import DaemonConfig
+from shisad.ui.evidence import render_evidence_refs_for_terminal
 
 
 def _get_config() -> DaemonConfig:
@@ -846,7 +847,7 @@ def session_message(session_id: str, content: str) -> None:
         {"session_id": session_id, "content": content},
         response_model=SessionMessageResult,
     )
-    click.echo(result.response)
+    click.echo(render_evidence_refs_for_terminal(result.response))
 
 
 @session.command("list")

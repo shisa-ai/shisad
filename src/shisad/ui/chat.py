@@ -18,6 +18,8 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.widgets import Footer, Header, Input, TextArea
 
+from shisad.ui.evidence import render_evidence_refs_for_terminal
+
 
 def format_user_message(content: str) -> str:
     """Format a user message for display in the chat log."""
@@ -30,7 +32,7 @@ def format_assistant_message(content: str) -> str:
     text = content.strip()
     if not text:
         return "(no response)"
-    return f"shisad: {text}"
+    return f"shisad: {render_evidence_refs_for_terminal(text)}"
 
 
 def _format_error(content: str) -> str:
