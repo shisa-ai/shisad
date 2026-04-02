@@ -69,9 +69,12 @@ Version must be updated in both places:
       `uv publish dist/shisad-X.Y.Z-py3-none-any.whl dist/shisad-X.Y.Z.tar.gz`
 - [ ] If `uv publish` is not configured, use the fallback:
       `uvx --from twine twine upload dist/shisad-X.Y.Z-py3-none-any.whl dist/shisad-X.Y.Z.tar.gz`
+- [ ] Create a GitHub Release from the tag:
+      `gh release create vX.Y.Z --title "vX.Y.Z" --notes-file -` (pipe the
+      matching `CHANGELOG.md` section, or use `--notes "..."` inline)
 - [ ] Verify the published package:
       `uvx --refresh --from "shisad==X.Y.Z" shisad --help`
-- [ ] Verify the GitHub tag and PyPI project page both show the new version
+- [ ] Verify the GitHub Release, tag, and PyPI project page all show the new version
 - [ ] Confirm the tree is clean: `git status -sb`
 
 ## Notes
