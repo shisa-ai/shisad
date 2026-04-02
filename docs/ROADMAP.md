@@ -20,7 +20,7 @@ Reach a genuinely useful personal-assistant baseline while preserving the projec
 - `v0.3.x` established the runtime foundation: provider routing, channels, assistant primitives, and destructive-command protection.
 - `v0.4.0` shipped safe self-improvement infrastructure, coding-agent runtime support, and minimal COMMAND/TASK isolation.
 - `v0.5.0` is the first public release: zero-config SHISA provider, evidence references, public repo split, Apache 2.0.
-- `v0.6.0` is in active execution: G0 and M1 closed, M2 implementation complete and in review remediation.
+- `v0.6.0` is in active execution: G0, M1, M2, and M3 are closed; M4 is the next active gate.
 
 ## Milestones
 
@@ -54,7 +54,7 @@ Focus:
 - Type-restricted task/tool boundary schemas
 - Summary firewall barrier and approval provenance
 
-Current execution status: G0 and M1 closed; M2 implementation complete and in review remediation. The live runtime has formal orchestrator/subagent session roles, immutable task envelopes, trust-aware `report_anomaly` exposure, taint-safe COMMAND↔TASK handoffs, a TASK close-gate self-check, versioned session rehydration with lockdown continuity, and bounded session archive export/import with integrity checks plus fresh-session cutover.
+Current execution status: G0, M1, M2, and M3 are closed; M4 is the next active gate. The live runtime now has formal orchestrator/subagent session roles, immutable task envelopes, trust-aware `report_anomaly` exposure, taint-safe COMMAND↔TASK handoffs, a TASK close-gate self-check, versioned session rehydration with lockdown continuity, bounded session archive export/import with integrity checks plus fresh-session cutover, task-scoped credential refs, typed sink validation for the current built-in runtime boundaries, live resource-scope enforcement, and background tainted-trigger policy.
 
 #### v0.6.1 — Security hardening
 
