@@ -127,6 +127,53 @@ class _DirectRunner:
         )
 
 
+class _SelectiveFailureRunner(_DirectRunner):
+    def __init__(self, *, fail_tools: set[str], fail_after_goto: int = 0) -> None:
+        super().__init__()
+        self._fail_tools = set(fail_tools)
+        self._goto_count = 0
+        self._fail_after_goto = max(0, int(fail_after_goto))
+
+    async def execute_async(
+        self,
+        config: SandboxConfig,
+        *,
+        session: Session | None = None,
+    ) -> SandboxResult:
+        self.configs.append(config)
+        if config.tool_name in self._fail_tools and "goto" in config.command:
+            self._goto_count += 1
+            if self._goto_count > self._fail_after_goto:
+                return SandboxResult(allowed=True, exit_code=1, reason="browser_command_failed")
+        _ = session
+        env = {**os.environ, **dict(config.env)}
+        try:
+            completed = await asyncio.to_thread(
+                subprocess.run,
+                config.command,
+                cwd=config.cwd or None,
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=max(1, int(config.limits.timeout_seconds)),
+                check=False,
+            )
+        except subprocess.TimeoutExpired:
+            return SandboxResult(
+                allowed=True,
+                exit_code=None,
+                timed_out=True,
+                reason="browser_command_timeout",
+            )
+        return SandboxResult(
+            allowed=True,
+            exit_code=completed.returncode,
+            stdout=completed.stdout,
+            stderr=completed.stderr,
+            reason="" if completed.returncode == 0 else "browser_command_failed",
+        )
+
+
 def _session() -> Session:
     return Session(
         id=SessionId("browser-session"),
@@ -201,9 +248,40 @@ def test_m6_browser_toolkit_non_allowlisted_loopback_stays_blocked(tmp_path: Pat
     )
 
     assert policy.allow_network is True
-    assert policy.allowed_domains == ["example.com"]
+    assert policy.allowed_domains == ["example.com", "127.0.0.1"]
     assert policy.deny_private_ranges is True
     assert policy.deny_ip_literals is True
+
+
+def test_m6_browser_toolkit_network_policy_adds_explicit_target_host(tmp_path: Path) -> None:
+    runner = _DirectRunner()
+    browser_sandbox = BrowserSandbox(
+        output_firewall=OutputFirewall(safe_domains=["127.0.0.1", "localhost"]),
+        screenshots_dir=tmp_path / "screenshots",
+        policy=BrowserSandboxPolicy(),
+    )
+    toolkit = BrowserToolkit(
+        enabled=True,
+        command=[
+            sys.executable,
+            str(Path(__file__).resolve().parents[1] / "fixtures" / "fake_playwright_cli.py"),
+        ],
+        session_root=tmp_path / "browser",
+        allowed_domains=["approved.example"],
+        timeout_seconds=10.0,
+        require_hardened_isolation=False,
+        max_read_bytes=16_384,
+        sandbox_runner=runner,
+        browser_sandbox=browser_sandbox,
+    )
+
+    policy = toolkit._network_policy(
+        target_urls=["https://public.example/path"],
+        allow_network=True,
+    )
+
+    assert policy.allow_network is True
+    assert policy.allowed_domains == ["approved.example", "public.example"]
 
 
 @pytest.mark.asyncio
@@ -262,6 +340,38 @@ async def test_m6_browser_toolkit_type_and_click_follow_form_submission(
 
 
 @pytest.mark.asyncio
+async def test_m6_browser_toolkit_type_submit_submits_form_directly(
+    tmp_path: Path,
+    browser_fixture_server: _FixtureServer,
+) -> None:
+    runner = _DirectRunner()
+    toolkit = _toolkit(tmp_path, runner=runner)
+    session = _session()
+
+    opened = await toolkit.navigate(session=session, url=f"{browser_fixture_server.base_url}/")
+    assert opened["ok"] is True
+
+    prepared = await toolkit.prepare_action_arguments(
+        session=session,
+        tool_name="browser.type_text",
+        arguments={"target": "#search", "text": "hello", "submit": True},
+    )
+    assert prepared["destination"].endswith("/submitted")
+
+    typed = await toolkit.type_text(
+        session=session,
+        target="#search",
+        text="hello",
+        submit=True,
+        destination=str(prepared["destination"]),
+    )
+
+    assert typed["ok"] is True
+    assert typed["title"] == "Submitted"
+    assert "q=hello" in typed["url"]
+
+
+@pytest.mark.asyncio
 async def test_m6_browser_toolkit_click_resolves_natural_language_target(
     tmp_path: Path,
     browser_fixture_server: _FixtureServer,
@@ -284,6 +394,32 @@ async def test_m6_browser_toolkit_click_resolves_natural_language_target(
     assert clicked["target"] == "#continue"
     assert clicked["requested_target"] == "the continue button in the browser"
     assert clicked["url"].endswith("/next")
+
+
+@pytest.mark.asyncio
+async def test_m6_browser_toolkit_prepare_action_arguments_resolves_target_and_destination(
+    tmp_path: Path,
+    browser_fixture_server: _FixtureServer,
+) -> None:
+    runner = _DirectRunner()
+    toolkit = _toolkit(tmp_path, runner=runner)
+    session = _session()
+
+    opened = await toolkit.navigate(session=session, url=f"{browser_fixture_server.base_url}/")
+    assert opened["ok"] is True
+
+    prepared = await toolkit.prepare_action_arguments(
+        session=session,
+        tool_name="browser.click",
+        arguments={
+            "target": "the continue button in the browser",
+            "description": "continue link",
+        },
+    )
+
+    assert prepared["target"] == "the continue button in the browser"
+    assert prepared["resolved_target"] == "#continue"
+    assert prepared["destination"].endswith("/next")
 
 
 @pytest.mark.asyncio
@@ -347,3 +483,21 @@ async def test_m6_browser_toolkit_end_session_removes_browser_state(
     reread = await toolkit.read_page(session=session)
     assert reread["ok"] is False
     assert reread["error"] == "browser_session_missing"
+
+
+@pytest.mark.asyncio
+async def test_m6_browser_toolkit_failed_navigation_preserves_previous_url(
+    tmp_path: Path,
+    browser_fixture_server: _FixtureServer,
+) -> None:
+    runner = _SelectiveFailureRunner(fail_tools={"browser.navigate"}, fail_after_goto=1)
+    toolkit = _toolkit(tmp_path, runner=runner)
+    session = _session()
+
+    opened = await toolkit.navigate(session=session, url=f"{browser_fixture_server.base_url}/")
+    assert opened["ok"] is True
+
+    failed = await toolkit.navigate(session=session, url="https://example.com/other")
+
+    assert failed["ok"] is False
+    assert toolkit._current_url(session) == f"{browser_fixture_server.base_url}/"

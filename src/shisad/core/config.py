@@ -217,10 +217,10 @@ class DaemonConfig(BaseSettings):
         description="Timeout for sandboxed browser CLI actions.",
     )
     browser_require_hardened_isolation: bool = Field(
-        default=False,
+        default=True,
         description=(
-            "Require hardened browser runtime isolation. When false, browser commands "
-            "degrade open to direct subprocess execution if the sandbox runtime is unavailable."
+            "Require hardened browser runtime isolation. Browser commands fail closed "
+            "when the hardened sandbox/runtime isolation path is unavailable."
         ),
     )
     browser_max_read_bytes: int = Field(

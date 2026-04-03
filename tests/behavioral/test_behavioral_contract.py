@@ -609,6 +609,7 @@ async def contract_harness(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> C
             f"{Path(__file__).resolve().parents[1] / 'fixtures' / 'fake_playwright_cli.py'}"
         ),
         browser_allowed_domains=["127.0.0.1", "localhost"],
+        browser_require_hardened_isolation=False,
         assistant_fs_roots=[workspace_root],
     )
 
@@ -1181,11 +1182,23 @@ async def test_contract_browser_click_routes_to_confirmation_not_lockdown(
     )
     reply = await contract_harness.client.call(
         "session.message",
-        {"session_id": sid, "content": "click the continue button in the browser"},
+        {"session_id": sid, "content": "browser click the continue button in the browser"},
     )
     assert reply.get("lockdown_level") == "normal"
     assert int(reply.get("blocked_actions", 0)) == 0
     assert int(reply.get("confirmation_required_actions", 0)) >= 1
+    pending_ids = reply.get("pending_confirmation_ids")
+    assert isinstance(pending_ids, list)
+    assert pending_ids
+    pending = await contract_harness.client.call(
+        "action.pending",
+        {"confirmation_id": str(pending_ids[0])},
+    )
+    actions = pending.get("actions", [])
+    assert actions
+    arguments = dict(actions[0].get("arguments", {}))
+    assert arguments.get("resolved_target") == "#continue"
+    assert str(arguments.get("destination", "")).endswith("/browser-next")
 
 
 @pytest.mark.asyncio
@@ -1202,7 +1215,7 @@ async def test_contract_browser_click_confirmation_approve_executes_after_confir
     )
     proposed = await contract_harness.client.call(
         "session.message",
-        {"session_id": sid, "content": "click the continue button in the browser"},
+        {"session_id": sid, "content": "browser click the continue button in the browser"},
     )
     assert proposed.get("lockdown_level") == "normal"
     pending_ids = proposed.get("pending_confirmation_ids")

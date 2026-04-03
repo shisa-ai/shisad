@@ -236,6 +236,8 @@ async def _structured_browser_click(
             session=context.session,
             target=_argument_string(arguments, "target"),
             description=_argument_string(arguments, "description"),
+            resolved_target=_argument_string(arguments, "resolved_target"),
+            destination=_argument_string(arguments, "destination"),
         )
     )
 
@@ -252,6 +254,8 @@ async def _structured_browser_type_text(
             text=_argument_string(arguments, "text"),
             is_sensitive=bool(arguments.get("is_sensitive", False)),
             submit=bool(arguments.get("submit", False)),
+            resolved_target=_argument_string(arguments, "resolved_target"),
+            destination=_argument_string(arguments, "destination"),
         )
     )
 
@@ -858,6 +862,22 @@ class HandlerImplementation(
             git_timeout_seconds=self._config.assistant_git_timeout_seconds,
         )
         self._load_pending_actions()
+
+    async def _prepare_browser_tool_arguments(
+        self,
+        *,
+        session: Session,
+        tool_name: ToolName,
+        arguments: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        tool_name_value = str(tool_name)
+        if tool_name_value not in {"browser.navigate", "browser.click", "browser.type_text"}:
+            return dict(arguments)
+        return await self._browser_toolkit.prepare_action_arguments(
+            session=session,
+            tool_name=tool_name_value,
+            arguments=arguments,
+        )
 
     @staticmethod
     def _load_skill_manifest(skill_path: Path) -> Any | None:

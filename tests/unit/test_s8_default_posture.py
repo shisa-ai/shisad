@@ -77,6 +77,7 @@ def test_s8_config_defaults_align_with_new_policy_posture(
     monkeypatch.delenv("SHISAD_WEB_FETCH_ENABLED", raising=False)
     monkeypatch.delenv("SHISAD_SECURITY_DEFAULT_DENY", raising=False)
     assert DaemonConfig().web_fetch_enabled is True
+    assert DaemonConfig().browser_require_hardened_isolation is True
     assert SecurityConfig().default_deny is False
 
 

@@ -15,12 +15,14 @@ from shisad.security.pep import PEP, PolicyContext
 from shisad.security.policy import PolicyBundle, SkillPolicy
 from shisad.skills.manager import SkillManager
 from shisad.skills.manifest import parse_manifest
+from shisad.skills.sandbox import SkillExecutionRequest
 
 
 def _manifest_payload(
     *,
     name: str = "calendar-helper",
     version: str = "1.0.0",
+    description: str = "calendar helper",
     tools: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     return {
@@ -30,7 +32,7 @@ def _manifest_payload(
         "author": "trusted-dev",
         "signature": "",
         "source_repo": "https://github.com/trusted-dev/calendar-helper",
-        "description": "calendar helper",
+        "description": description,
         "capabilities": {
             "network": [{"domain": "api.good.example", "reason": "calendar api"}],
             "filesystem": [],
@@ -377,3 +379,118 @@ async def test_m6_skill_tool_schema_drift_blocks_reregistration_on_restart(
     _ = restarted
 
     assert restarted_registry.has_tool(ToolName("skill.calendar-helper.lookup")) is False
+
+
+@pytest.mark.asyncio
+async def test_m6_runtime_authorization_denies_revoked_skill(tmp_path: Path) -> None:
+    manager = SkillManager(
+        storage_dir=tmp_path / "state",
+        policy=SkillPolicy(
+            require_signature_for_auto_install=False,
+            require_review_on_update=False,
+        ),
+        tool_registry=ToolRegistry(),
+    )
+    skill = _write_skill(
+        tmp_path / "skill",
+        manifest=_manifest_payload(
+            tools=[
+                {
+                    "name": "lookup",
+                    "description": "Look up calendar entries.",
+                    "parameters": [
+                        {
+                            "name": "query",
+                            "type": "string",
+                            "required": True,
+                        }
+                    ],
+                    "destinations": ["api.good.example"],
+                }
+            ]
+        ),
+        files={"SKILL.md": "safe helper"},
+    )
+
+    decision = await manager.install(skill, approve_untrusted=True)
+    assert decision.allowed is True
+    manager.revoke(skill_name="calendar-helper", reason="manual")
+
+    runtime = manager.authorize_runtime(
+        skill_name="calendar-helper",
+        request=SkillExecutionRequest(
+            skill_name="calendar-helper",
+            network_hosts=["api.good.example"],
+        ),
+    )
+
+    assert runtime.allowed is False
+    assert runtime.reason == "skill_not_published"
+
+
+@pytest.mark.asyncio
+async def test_m6_runtime_authorization_denies_manifest_drift(tmp_path: Path) -> None:
+    manager = SkillManager(
+        storage_dir=tmp_path / "state",
+        policy=SkillPolicy(
+            require_signature_for_auto_install=False,
+            require_review_on_update=False,
+        ),
+        tool_registry=ToolRegistry(),
+    )
+    skill = _write_skill(
+        tmp_path / "skill",
+        manifest=_manifest_payload(
+            tools=[
+                {
+                    "name": "lookup",
+                    "description": "Look up calendar entries.",
+                    "parameters": [
+                        {
+                            "name": "query",
+                            "type": "string",
+                            "required": True,
+                        }
+                    ],
+                    "destinations": ["api.good.example"],
+                }
+            ]
+        ),
+        files={"SKILL.md": "safe helper"},
+    )
+
+    decision = await manager.install(skill, approve_untrusted=True)
+    assert decision.allowed is True
+
+    manifest = _manifest_payload(
+        description="calendar helper with drift",
+        tools=[
+            {
+                "name": "lookup",
+                "description": "Look up calendar entries.",
+                "parameters": [
+                    {
+                        "name": "query",
+                        "type": "string",
+                        "required": True,
+                    }
+                ],
+                "destinations": ["api.good.example"],
+            }
+        ],
+    )
+    (skill / "skill.manifest.yaml").write_text(
+        yaml.safe_dump(manifest, sort_keys=False),
+        encoding="utf-8",
+    )
+
+    runtime = manager.authorize_runtime(
+        skill_name="calendar-helper",
+        request=SkillExecutionRequest(
+            skill_name="calendar-helper",
+            network_hosts=["api.good.example"],
+        ),
+    )
+
+    assert runtime.allowed is False
+    assert runtime.reason == "skill_manifest_drift"

@@ -293,6 +293,8 @@ class SkillManager:
         installed = self._inventory.get(skill_name)
         if installed is None:
             return SkillSandboxDecision(allowed=False, reason="unknown_skill")
+        if installed.state != ArtifactState.PUBLISHED:
+            return SkillSandboxDecision(allowed=False, reason="skill_not_published")
         path = Path(installed.path)
         if not path.exists():
             return SkillSandboxDecision(allowed=False, reason="skill_path_missing")
@@ -300,6 +302,12 @@ class SkillManager:
             path,
             allowed_dependency_sources=set(self._policy.dependency_source_allowlist),
         )
+        manifest_hash = bundle.manifest.manifest_hash()
+        if manifest_hash != installed.manifest_hash:
+            return SkillSandboxDecision(allowed=False, reason="skill_manifest_drift")
+        current_tool_hashes = _declared_tool_schema_hashes(bundle.manifest)
+        if current_tool_hashes != dict(installed.tool_schema_hashes):
+            return SkillSandboxDecision(allowed=False, reason="skill_tool_schema_drift")
         return self._runtime_sandbox.authorize(
             bundle.manifest,
             request.model_copy(update={"skill_name": bundle.manifest.name}),

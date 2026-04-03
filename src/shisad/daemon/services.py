@@ -439,11 +439,20 @@ class DaemonServices:
             search_backend_destination = _normalize_tool_destination(
                 config.web_search_backend_url
             )
+            browser_destinations = [
+                item.strip()
+                for item in config.browser_allowed_domains
+                if item.strip()
+            ]
+            if not browser_destinations:
+                browser_destinations = [
+                    item.strip() for item in config.web_allowed_domains if item.strip()
+                ]
             registry, alarm_tool = _build_tool_registry(
                 event_bus,
                 web_search_destination=search_backend_destination,
                 browser_surface_enabled=bool(config.browser_enabled),
-                browser_destinations=list(config.browser_allowed_domains),
+                browser_destinations=browser_destinations,
                 realitycheck_surface_enabled=bool(
                     realitycheck_status.get("surface_enabled", False)
                 ),
@@ -869,6 +878,12 @@ def _build_tool_registry(
                 parameters=[
                     ToolParameter(name="target", type="string", required=True),
                     ToolParameter(name="description", type="string", required=False),
+                    ToolParameter(
+                        name="destination",
+                        type="string",
+                        required=False,
+                        semantic_type="url",
+                    ),
                 ],
                 capabilities_required=[Capability.HTTP_REQUEST],
                 destinations=browser_scope,
@@ -884,6 +899,12 @@ def _build_tool_registry(
                     ToolParameter(name="text", type="string", required=True),
                     ToolParameter(name="is_sensitive", type="boolean", required=False),
                     ToolParameter(name="submit", type="boolean", required=False),
+                    ToolParameter(
+                        name="destination",
+                        type="string",
+                        required=False,
+                        semantic_type="url",
+                    ),
                 ],
                 capabilities_required=[Capability.HTTP_REQUEST],
                 destinations=browser_scope,

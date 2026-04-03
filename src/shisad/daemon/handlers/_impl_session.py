@@ -3503,6 +3503,21 @@ class SessionImplMixin(HandlerMixinBase):
         sid = validated.sid
         planner_result = planner_dispatch.planner_result
         trace_tool_calls = list(planner_dispatch.trace_tool_calls)
+        session = self._session_manager.get(sid)
+        if session is None:
+            return SessionMessageExecutionResult(
+                planner_dispatch=planner_dispatch,
+                rejected=0,
+                pending_confirmation=0,
+                executed=0,
+                rejection_reasons_for_user=["session_missing"],
+                checkpoint_ids=[],
+                pending_confirmation_ids=[],
+                executed_tool_outputs=[],
+                cleanroom_proposals=[],
+                cleanroom_block_reasons=[],
+                trace_tool_calls=trace_tool_calls,
+            )
 
         rejected = 0
         pending_confirmation = 0
@@ -3531,6 +3546,18 @@ class SessionImplMixin(HandlerMixinBase):
                     arguments=proposal.arguments,
                 )
             )
+            proposal_arguments = await self._prepare_browser_tool_arguments(
+                session=session,
+                tool_name=proposal.tool_name,
+                arguments=proposal.arguments,
+            )
+            pep_arguments = dict(proposal_arguments)
+            pep_arguments.pop("resolved_target", None)
+            pep_decision = self._pep.evaluate(
+                proposal.tool_name,
+                pep_arguments,
+                planner_context.context,
+            )
 
             monitor_decision = self._monitor.evaluate(
                 user_goal=validated.firewall_result.sanitized_text,
@@ -3548,7 +3575,7 @@ class SessionImplMixin(HandlerMixinBase):
                 )
             )
 
-            risk_score = evaluated.decision.risk_score or 0.0
+            risk_score = pep_decision.risk_score or 0.0
             tool_def = self._registry.get_tool(proposal.tool_name)
             declared_domains: set[str] = set()
             declared_domains.update(planner_context.policy_egress_host_patterns)
@@ -3567,7 +3594,7 @@ class SessionImplMixin(HandlerMixinBase):
                     declared_domains.add(raw_destination.split(":", 1)[0])
             cp_eval = await self._control_plane.evaluate_action(
                 tool_name=str(proposal.tool_name),
-                arguments=dict(proposal.arguments),
+                arguments=dict(proposal_arguments),
                 origin=planner_context.planner_origin,
                 risk_tier=_risk_tier_from_score(risk_score),
                 declared_domains=sorted(declared_domains),
@@ -3591,12 +3618,12 @@ class SessionImplMixin(HandlerMixinBase):
             await self._publish_control_plane_evaluation(
                 sid=sid,
                 tool_name=proposal.tool_name,
-                arguments=proposal.arguments,
+                arguments=proposal_arguments,
                 evaluation=cp_eval,
             )
 
             final_kind, final_reason = combine_monitor_with_policy(
-                pep_kind=evaluated.decision.kind.value,
+                pep_kind=pep_decision.kind.value,
                 monitor=monitor_decision,
                 risk_score=risk_score,
                 auto_approve_threshold=self._policy_loader.policy.risk_policy.auto_approve_threshold,
@@ -3665,7 +3692,7 @@ class SessionImplMixin(HandlerMixinBase):
                 cleanroom_proposals.append(
                     {
                         "tool_name": str(proposal.tool_name),
-                        "arguments": dict(proposal.arguments),
+                        "arguments": dict(proposal_arguments),
                         "decision": final_kind,
                         "reason": proposal_reason,
                     }
@@ -3682,8 +3709,8 @@ class SessionImplMixin(HandlerMixinBase):
                     trace_tool_calls.append(
                         TraceToolCall(
                             tool_name=str(proposal.tool_name),
-                            arguments=dict(proposal.arguments),
-                            pep_decision=evaluated.decision.kind.value,
+                            arguments=dict(proposal_arguments),
+                            pep_decision=pep_decision.kind.value,
                             monitor_decision=monitor_decision.kind.value,
                             control_plane_decision=cp_eval.decision.value,
                             final_decision=final_kind,
@@ -3695,13 +3722,13 @@ class SessionImplMixin(HandlerMixinBase):
 
             if final_kind == "reject":
                 rejected += 1
-                rejection_reasons_for_user.append(final_reason or evaluated.decision.reason)
+                rejection_reasons_for_user.append(final_reason or pep_decision.reason)
                 await self._event_bus.publish(
                     ToolRejected(
                         session_id=sid,
                         actor="policy_loop",
                         tool_name=proposal.tool_name,
-                        reason=final_reason or evaluated.decision.reason,
+                        reason=final_reason or pep_decision.reason,
                     )
                 )
                 if monitor_decision.kind == MonitorDecisionType.REJECT:
@@ -3739,8 +3766,8 @@ class SessionImplMixin(HandlerMixinBase):
                     trace_tool_calls.append(
                         TraceToolCall(
                             tool_name=str(proposal.tool_name),
-                            arguments=dict(proposal.arguments),
-                            pep_decision=evaluated.decision.kind.value,
+                            arguments=dict(proposal_arguments),
+                            pep_decision=pep_decision.kind.value,
                             monitor_decision=monitor_decision.kind.value,
                             control_plane_decision=cp_eval.decision.value,
                             final_decision=final_kind,
@@ -3763,7 +3790,7 @@ class SessionImplMixin(HandlerMixinBase):
                     try:
                         merged_policy = self._build_merged_policy(
                             tool_name=proposal.tool_name,
-                            arguments=proposal.arguments,
+                            arguments=proposal_arguments,
                             tool_definition=tool_def,
                         )
                     except PolicyMergeError as exc:
@@ -3781,8 +3808,8 @@ class SessionImplMixin(HandlerMixinBase):
                             trace_tool_calls.append(
                                 TraceToolCall(
                                     tool_name=str(proposal.tool_name),
-                                    arguments=dict(proposal.arguments),
-                                    pep_decision=evaluated.decision.kind.value,
+                                    arguments=dict(proposal_arguments),
+                                    pep_decision=pep_decision.kind.value,
                                     monitor_decision=monitor_decision.kind.value,
                                     control_plane_decision=cp_eval.decision.value,
                                     final_decision="reject",
@@ -3796,7 +3823,7 @@ class SessionImplMixin(HandlerMixinBase):
                     user_id=validated.user_id,
                     workspace_id=validated.workspace_id,
                     tool_name=proposal.tool_name,
-                    arguments=proposal.arguments,
+                    arguments=proposal_arguments,
                     reason=final_reason or "requires_confirmation",
                     capabilities=planner_context.effective_caps,
                     preflight_action=cp_eval.action,
@@ -3820,8 +3847,8 @@ class SessionImplMixin(HandlerMixinBase):
                     trace_tool_calls.append(
                         TraceToolCall(
                             tool_name=str(proposal.tool_name),
-                            arguments=dict(proposal.arguments),
-                            pep_decision=evaluated.decision.kind.value,
+                            arguments=dict(proposal_arguments),
+                            pep_decision=pep_decision.kind.value,
                             monitor_decision=monitor_decision.kind.value,
                             control_plane_decision=cp_eval.decision.value,
                             final_decision=final_kind,
@@ -3835,7 +3862,7 @@ class SessionImplMixin(HandlerMixinBase):
                 sid=sid,
                 user_id=validated.user_id,
                 tool_name=proposal.tool_name,
-                arguments=proposal.arguments,
+                arguments=proposal_arguments,
                 capabilities=planner_context.effective_caps,
                 approval_actor="policy_loop",
                 execution_action=cp_eval.action,
@@ -3854,8 +3881,8 @@ class SessionImplMixin(HandlerMixinBase):
                 trace_tool_calls.append(
                     TraceToolCall(
                         tool_name=str(proposal.tool_name),
-                        arguments=dict(proposal.arguments),
-                        pep_decision=evaluated.decision.kind.value,
+                        arguments=dict(proposal_arguments),
+                        pep_decision=pep_decision.kind.value,
                         monitor_decision=monitor_decision.kind.value,
                         control_plane_decision=cp_eval.decision.value,
                         final_decision=final_kind,

@@ -88,6 +88,11 @@ class ToolExecutionImplMixin(HandlerMixinBase):
                 )
             )
             raise
+        params = await self._prepare_browser_tool_arguments(
+            session=session,
+            tool_name=tool_name,
+            arguments=params,
+        )
         skill_name = str(params.get("skill_name") or "").strip()
         if skill_name:
             network_hosts: list[str] = []

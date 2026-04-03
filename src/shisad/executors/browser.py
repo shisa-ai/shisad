@@ -12,11 +12,13 @@ import math
 import re
 import shlex
 import shutil
+from collections.abc import Mapping
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
 from typing import Any, Protocol
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 
 from pydantic import BaseModel, Field
 
@@ -35,7 +37,10 @@ from shisad.executors.sandbox import (
 from shisad.security.firewall.output import OutputFirewall
 
 _SNAPSHOT_ELEMENT_RE = re.compile(
-    r'^\[(?P<ref>e\d+)\]\s+(?P<kind>\w+)\s+"(?P<label>[^"]*)"\s+selector="(?P<selector>[^"]*)"$'
+    r'^\[(?P<ref>e\d+)\]\s+(?P<kind>\w+)\s+"(?P<label>[^"]*)"\s+selector="(?P<selector>[^"]*)"'
+    r'(?:\s+href="(?P<href>[^"]*)")?'
+    r'(?:\s+form_action="(?P<form_action>[^"]*)")?'
+    r'(?:\s+form_method="(?P<form_method>[^"]*)")?$'
 )
 _STRUCTURED_BROWSER_TARGET_RE = re.compile(r"^(?:e\d+|[#./\[].+)$")
 _TARGET_STOPWORDS = {
@@ -56,6 +61,24 @@ _TARGET_STOPWORDS = {
     "the",
     "to",
 }
+
+
+@dataclass(slots=True)
+class BrowserSnapshotElement:
+    ref: str
+    kind: str
+    label: str
+    selector: str
+    href: str = ""
+    form_action: str = ""
+    form_method: str = ""
+
+
+@dataclass(slots=True)
+class BrowserTargetResolution:
+    requested_target: str
+    resolved_target: str
+    destination_url: str = ""
 
 
 class BrowserSandboxMode(StrEnum):
@@ -238,6 +261,37 @@ class BrowserToolkit:
         self._sandbox_runner = sandbox_runner
         self._browser_sandbox = browser_sandbox
 
+    async def prepare_action_arguments(
+        self,
+        *,
+        session: Session,
+        tool_name: str,
+        arguments: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        prepared = dict(arguments)
+        if tool_name == "browser.navigate":
+            url = str(prepared.get("url", "")).strip()
+            if url:
+                prepared["url"] = url
+            return prepared
+        if tool_name not in {"browser.click", "browser.type_text"}:
+            return prepared
+        current_url = self._current_url(session)
+        if not current_url:
+            return prepared
+        resolution = await self._resolve_target_details(
+            session=session,
+            tool_name=tool_name,
+            target=str(prepared.get("target", "")),
+            current_url=current_url,
+            submit=bool(prepared.get("submit", False)),
+        )
+        if resolution.resolved_target and resolution.resolved_target != resolution.requested_target:
+            prepared["resolved_target"] = resolution.resolved_target
+        if resolution.destination_url:
+            prepared["destination"] = resolution.destination_url
+        return prepared
+
     async def navigate(self, *, session: Session, url: str) -> dict[str, Any]:
         normalized_url = url.strip()
         if not normalized_url:
@@ -245,15 +299,11 @@ class BrowserToolkit:
         availability = self._availability_error()
         if availability is not None:
             return availability
-        host_error = self._host_policy_error(normalized_url)
-        if host_error is not None:
-            return self._error_payload(host_error)
+        if not (urlparse(normalized_url).hostname or "").strip():
+            return self._error_payload("browser_url_invalid")
         opened = await self._ensure_session_open(session=session)
         if opened is not None:
             return opened
-        state = self._load_state(session)
-        state["current_url"] = normalized_url
-        self._save_state(session, state)
         result = await self._run_cli(
             session=session,
             tool_name="browser.navigate",
@@ -267,6 +317,7 @@ class BrowserToolkit:
             session=session,
             tool_name="browser.navigate",
             include_snapshot=True,
+            fallback_url=normalized_url,
         )
 
     async def read_page(self, *, session: Session) -> dict[str, Any]:
@@ -288,6 +339,8 @@ class BrowserToolkit:
         session: Session,
         target: str,
         description: str = "",
+        resolved_target: str = "",
+        destination: str = "",
     ) -> dict[str, Any]:
         availability = self._availability_error()
         if availability is not None:
@@ -296,17 +349,21 @@ class BrowserToolkit:
         if not current_url:
             return self._error_payload("browser_session_missing")
         requested_target = target.strip()
-        resolved_target = await self._resolve_target(
+        concrete_target = resolved_target.strip() or await self._resolve_target(
             session=session,
             tool_name="browser.click",
             target=requested_target,
             current_url=current_url,
         )
+        network_urls = [current_url]
+        destination_url = destination.strip()
+        if destination_url and destination_url not in network_urls:
+            network_urls.append(destination_url)
         result = await self._run_cli(
             session=session,
             tool_name="browser.click",
-            args=["click", resolved_target],
-            network_urls=[current_url],
+            args=["click", concrete_target],
+            network_urls=network_urls,
             allow_network=True,
         )
         if result is not None:
@@ -318,9 +375,11 @@ class BrowserToolkit:
         )
         if payload.get("ok") is True:
             payload["action"] = "click"
-            payload["target"] = resolved_target
+            payload["target"] = concrete_target
             payload["requested_target"] = requested_target
             payload["description"] = description.strip()
+            if destination_url:
+                payload["destination"] = destination_url
         return payload
 
     async def type_text(
@@ -331,6 +390,8 @@ class BrowserToolkit:
         text: str,
         is_sensitive: bool = False,
         submit: bool = False,
+        resolved_target: str = "",
+        destination: str = "",
     ) -> dict[str, Any]:
         availability = self._availability_error()
         if availability is not None:
@@ -339,20 +400,24 @@ class BrowserToolkit:
         if not current_url:
             return self._error_payload("browser_session_missing")
         requested_target = target.strip()
-        resolved_target = await self._resolve_target(
+        concrete_target = resolved_target.strip() or await self._resolve_target(
             session=session,
             tool_name="browser.type_text",
             target=requested_target,
             current_url=current_url,
         )
-        args = ["fill", resolved_target, text]
+        args = ["fill", concrete_target, text]
         if submit:
             args.append("--submit")
+        network_urls = [current_url]
+        destination_url = destination.strip()
+        if destination_url and destination_url not in network_urls:
+            network_urls.append(destination_url)
         result = await self._run_cli(
             session=session,
             tool_name="browser.type_text",
             args=args,
-            network_urls=[current_url],
+            network_urls=network_urls,
             allow_network=True,
         )
         if result is not None:
@@ -364,9 +429,11 @@ class BrowserToolkit:
         )
         if payload.get("ok") is True:
             payload["action"] = "type_text"
-            payload["target"] = resolved_target
+            payload["target"] = concrete_target
             payload["requested_target"] = requested_target
             payload["is_sensitive"] = bool(is_sensitive)
+            if destination_url:
+                payload["destination"] = destination_url
         return payload
 
     async def screenshot(self, *, session: Session) -> dict[str, Any]:
@@ -480,8 +547,9 @@ class BrowserToolkit:
         session: Session,
         tool_name: str,
         include_snapshot: bool,
+        fallback_url: str = "",
     ) -> dict[str, Any]:
-        current_url = self._current_url(session)
+        current_url = self._current_url(session) or fallback_url.strip()
         if not current_url:
             return self._error_payload("browser_session_missing")
         session_dir = self._session_dir(session)
@@ -586,14 +654,7 @@ class BrowserToolkit:
         if not allow_network:
             return NetworkPolicy(allow_network=False, allowed_domains=[])
         allow_private_targets = self._allows_private_network_target(target_urls)
-        if self._allowed_domains:
-            return NetworkPolicy(
-                allow_network=True,
-                allowed_domains=list(self._allowed_domains),
-                deny_private_ranges=not allow_private_targets,
-                deny_ip_literals=not allow_private_targets,
-            )
-        hosts = []
+        hosts = list(self._allowed_domains)
         for url in target_urls:
             host = (urlparse(url).hostname or "").lower()
             if host and host not in hosts:
@@ -630,16 +691,6 @@ class BrowserToolkit:
         except ValueError:
             return False
         return bool(address.is_private or address.is_loopback or address.is_link_local)
-
-    def _host_policy_error(self, url: str) -> str | None:
-        host = (urlparse(url).hostname or "").lower()
-        if not host:
-            return "browser_url_invalid"
-        if not self._allowed_domains:
-            return None
-        if any(host_matches(host, rule) for rule in self._allowed_domains):
-            return None
-        return "browser_host_not_allowlisted"
 
     def _result_error_reason(self, result: SandboxResult) -> str:
         if result.timed_out:
@@ -690,9 +741,61 @@ class BrowserToolkit:
         target: str,
         current_url: str,
     ) -> str:
+        return (
+            await self._resolve_target_details(
+                session=session,
+                tool_name=tool_name,
+                target=target,
+                current_url=current_url,
+            )
+        ).resolved_target
+
+    async def _resolve_target_details(
+        self,
+        *,
+        session: Session,
+        tool_name: str,
+        target: str,
+        current_url: str,
+        submit: bool = False,
+    ) -> BrowserTargetResolution:
         candidate = target.strip()
-        if not candidate or _STRUCTURED_BROWSER_TARGET_RE.fullmatch(candidate):
-            return candidate
+        if not candidate:
+            return BrowserTargetResolution(requested_target="", resolved_target="")
+        elements = await self._load_interaction_snapshot(
+            session=session,
+            tool_name=tool_name,
+            current_url=current_url,
+        )
+        if not elements:
+            return BrowserTargetResolution(
+                requested_target=candidate,
+                resolved_target=candidate,
+            )
+        matched = self._match_snapshot_target(elements, candidate)
+        if matched is None:
+            return BrowserTargetResolution(
+                requested_target=candidate,
+                resolved_target=candidate,
+            )
+        resolved_target = matched.selector or matched.ref or candidate
+        return BrowserTargetResolution(
+            requested_target=candidate,
+            resolved_target=resolved_target,
+            destination_url=self._predict_destination_url(
+                matched,
+                current_url=current_url,
+                submit=submit,
+            ),
+        )
+
+    async def _load_interaction_snapshot(
+        self,
+        *,
+        session: Session,
+        tool_name: str,
+        current_url: str,
+    ) -> list[BrowserSnapshotElement]:
         session_dir = self._session_dir(session)
         snapshot_path = session_dir / "interaction-targets.txt"
         snapshot_error = await self._run_cli(
@@ -703,43 +806,79 @@ class BrowserToolkit:
             allow_network=True,
         )
         if snapshot_error is not None:
-            return candidate
+            return []
         try:
             raw_snapshot = snapshot_path.read_text(encoding="utf-8")
         except OSError:
-            return candidate
-        return self._match_snapshot_target(raw_snapshot, candidate) or candidate
+            return []
+        return self._parse_snapshot_elements(raw_snapshot)
 
     @classmethod
-    def _match_snapshot_target(cls, raw_snapshot: str, target: str) -> str | None:
+    def _match_snapshot_target(
+        cls,
+        elements: list[BrowserSnapshotElement],
+        target: str,
+    ) -> BrowserSnapshotElement | None:
         normalized_target = cls._normalize_target(target)
         target_tokens = cls._target_tokens(target)
-        best_match: tuple[int, int, str] | None = None
-        for line in raw_snapshot.splitlines():
-            match = _SNAPSHOT_ELEMENT_RE.match(line.strip())
-            if match is None:
-                continue
-            selector = match.group("selector").strip()
-            ref = match.group("ref").strip()
-            label = match.group("label").strip()
-            kind = match.group("kind").strip()
+        best_match: tuple[int, int, BrowserSnapshotElement] | None = None
+        for element in elements:
+            selector = element.selector.strip()
+            ref = element.ref.strip()
+            label = element.label.strip()
+            kind = element.kind.strip()
             normalized_label = cls._normalize_target(label)
             if normalized_target and (
                 normalized_target == normalized_label
                 or normalized_target in normalized_label
                 or normalized_label in normalized_target
             ):
-                return selector or ref
+                return element
             element_tokens = cls._target_tokens(" ".join([label, selector, ref, kind]))
             overlap = len(target_tokens & element_tokens)
             if overlap <= 0:
                 continue
             score = (overlap, -len(target_tokens - element_tokens))
             if best_match is None or score > best_match[:2]:
-                best_match = (*score, selector or ref)
+                best_match = (*score, element)
         if best_match is None:
             return None
         return best_match[2]
+
+    @staticmethod
+    def _parse_snapshot_elements(raw_snapshot: str) -> list[BrowserSnapshotElement]:
+        elements: list[BrowserSnapshotElement] = []
+        for line in raw_snapshot.splitlines():
+            match = _SNAPSHOT_ELEMENT_RE.match(line.strip())
+            if match is None:
+                continue
+            elements.append(
+                BrowserSnapshotElement(
+                    ref=match.group("ref").strip(),
+                    kind=match.group("kind").strip(),
+                    label=match.group("label").strip(),
+                    selector=match.group("selector").strip(),
+                    href=(match.group("href") or "").strip(),
+                    form_action=(match.group("form_action") or "").strip(),
+                    form_method=(match.group("form_method") or "").strip(),
+                )
+            )
+        return elements
+
+    @staticmethod
+    def _predict_destination_url(
+        element: BrowserSnapshotElement,
+        *,
+        current_url: str,
+        submit: bool,
+    ) -> str:
+        if element.kind == "link" and element.href:
+            return urljoin(current_url, element.href)
+        if element.kind == "button":
+            return urljoin(current_url, element.form_action or current_url)
+        if submit and element.kind == "field":
+            return urljoin(current_url, element.form_action or current_url)
+        return ""
 
     @classmethod
     def _normalize_target(cls, value: str) -> str:

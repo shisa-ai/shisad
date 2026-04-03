@@ -250,9 +250,16 @@ def _handle_snapshot(
         "Elements:",
     ]
     for element in parser.elements:
+        attributes = [f'selector="{element.get("selector", "")}"']
+        if element.get("href"):
+            attributes.append(f'href="{element.get("href", "")}"')
+        if element.get("form_action"):
+            attributes.append(f'form_action="{element.get("form_action", "")}"')
+        if element.get("form_method"):
+            attributes.append(f'form_method="{element.get("form_method", "")}"')
         lines.append(
             f'[{element["ref"]}] {element["kind"]} "{element.get("label", "").strip()}" '
-            f'selector="{element.get("selector", "")}"'
+            + " ".join(attributes)
         )
     output = "\n".join(lines).strip() + "\n"
     state["current_url"] = final_url or str(state.get("current_url", ""))
@@ -268,6 +275,7 @@ def _handle_fill(
     session: str,
     target: str,
     text: str,
+    submit: bool,
 ) -> int:
     _require_opened(state)
     parser, final_url = _parse_page(str(state.get("current_url", "")))
@@ -278,7 +286,18 @@ def _handle_fill(
     field_name = element.get("name") or element.get("id") or element.get("selector") or target
     fields[field_name] = text
     state["fields"] = fields
-    state["current_url"] = final_url or str(state.get("current_url", ""))
+    next_url = final_url or str(state.get("current_url", ""))
+    if submit:
+        action = element.get("form_action", "") or next_url
+        method = element.get("form_method", "get").lower()
+        if method == "get" and fields:
+            encoded = urlencode(fields)
+            separator = "&" if "?" in action else "?"
+            next_url = urljoin(next_url, action)
+            next_url = f"{next_url}{separator}{encoded}"
+        else:
+            next_url = urljoin(next_url, action)
+    state["current_url"] = next_url
     _save_state(cwd, session, state)
     return 0
 
@@ -376,6 +395,7 @@ def main(argv: list[str] | None = None) -> int:
         parser = argparse.ArgumentParser(add_help=False)
         parser.add_argument("target")
         parser.add_argument("text")
+        parser.add_argument("--submit", action="store_true")
         parsed = parser.parse_args(args)
         return _handle_fill(
             state,
@@ -383,6 +403,7 @@ def main(argv: list[str] | None = None) -> int:
             session=session,
             target=parsed.target,
             text=parsed.text,
+            submit=bool(parsed.submit),
         )
     if command == "click":
         parser = argparse.ArgumentParser(add_help=False)

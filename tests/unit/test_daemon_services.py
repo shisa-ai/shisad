@@ -484,6 +484,28 @@ def test_m6_tool_registry_registers_browser_scope_destinations() -> None:
     assert click_tool is not None
     assert navigate_tool.destinations == ["localhost", "127.0.0.1"]
     assert click_tool.destinations == ["localhost", "127.0.0.1"]
+    assert any(param.name == "destination" for param in click_tool.parameters)
+
+
+@pytest.mark.asyncio
+async def test_m6_daemon_services_browser_registry_falls_back_to_web_allowlist(
+    tmp_path,
+) -> None:
+    config = DaemonConfig(
+        data_dir=tmp_path / "data",
+        socket_path=tmp_path / "control.sock",
+        policy_path=tmp_path / "policy.yaml",
+        browser_enabled=True,
+        web_allowed_domains=["localhost"],
+        browser_allowed_domains=[],
+    )
+    services = await DaemonServices.build(config)
+    try:
+        navigate_tool = services.registry.get_tool(ToolName("browser.navigate"))
+        assert navigate_tool is not None
+        assert navigate_tool.destinations == ["localhost"]
+    finally:
+        await services.shutdown()
 
 
 @pytest.mark.asyncio

@@ -120,10 +120,11 @@ Browser notes:
 
 - `SHISAD_BROWSER_ENABLED=1` turns on the planner-visible browser tool surface (`browser.navigate`, `browser.read_page`, `browser.screenshot`, `browser.click`, `browser.type_text`, `browser.end_session`).
 - `SHISAD_BROWSER_COMMAND` must point at a Playwright-compatible browser CLI. In tests and local harness runs this can be a wrapper script; in operator environments it is typically a real Playwright CLI install.
-- If `SHISAD_BROWSER_ALLOWED_DOMAINS` is empty, the runtime falls back to `SHISAD_WEB_ALLOWED_DOMAINS` for browser-host allowlisting.
+- If `SHISAD_BROWSER_ALLOWED_DOMAINS` is empty, both the runtime browser sandbox policy and the planner/PEP browser tool registry fall back to `SHISAD_WEB_ALLOWED_DOMAINS`.
+- `SHISAD_BROWSER_ALLOWED_DOMAINS` acts as an auto-approve/browser-egress scope seed, not a hard deny wall for explicit public-host navigation; the runtime still adds the concrete requested browser host to the per-action sandbox allowlist.
 - Read-mostly browser actions (`browser.navigate`, `browser.read_page`, `browser.screenshot`, `browser.end_session`) are intended to proceed without confirmation when the destination is authorized. Browser write actions (`browser.click`, `browser.type_text`) are confirmation-gated.
 - Loopback/private browser targets remain blocked by the sandbox unless the target host is explicitly allowlisted for the browser surface in the current configuration.
-- `SHISAD_BROWSER_REQUIRE_HARDENED_ISOLATION=1` makes browser commands fail closed when the hardened sandbox/runtime isolation path is unavailable. When false, the runtime can degrade open to direct subprocess execution if the browser sandbox backend is unavailable.
+- `SHISAD_BROWSER_REQUIRE_HARDENED_ISOLATION` defaults to `1`. Keep it enabled unless you are deliberately running a non-production browser integration and understand that disabling it weakens the browser isolation boundary.
 
 Filesystem/git:
 
