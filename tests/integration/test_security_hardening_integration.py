@@ -25,7 +25,7 @@ def model_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("SHISAD_MODEL_MONITOR_BASE_URL", "https://monitor.example.com/v1")
 
 
-async def _wait_for_socket(path: Path, timeout: float = 2.0) -> None:
+async def _wait_for_socket(path: Path, timeout: float = 5.0) -> None:
     end = asyncio.get_running_loop().time() + timeout
     while asyncio.get_running_loop().time() < end:
         if path.exists():

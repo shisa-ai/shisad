@@ -35,7 +35,7 @@ from shisad.security.pep import PEP, PolicyContext
 from shisad.security.policy import EgressRule, PolicyBundle
 
 
-async def _wait_for_socket(path: Path, timeout: float = 2.0) -> None:
+async def _wait_for_socket(path: Path, timeout: float = 5.0) -> None:
     end = asyncio.get_running_loop().time() + timeout
     while asyncio.get_running_loop().time() < end:
         if path.exists():

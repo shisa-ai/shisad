@@ -10,7 +10,12 @@ from urllib.parse import urlparse
 from shisad.core.events import PlanCancelled, PlanCommitted, ToolRejected
 from shisad.core.tools.names import canonical_tool_name
 from shisad.core.types import Capability, SessionId, TaintLabel, ToolName
-from shisad.daemon.handlers._mixin_typing import HandlerMixinBase
+from shisad.daemon.handlers._mixin_typing import (
+    HandlerMixinBase,
+)
+from shisad.daemon.handlers._mixin_typing import (
+    call_control_plane as _call_control_plane,
+)
 from shisad.executors.sandbox import DegradedModePolicy, SandboxResult
 from shisad.governance.merge import PolicyMergeError, normalize_patch
 from shisad.security.control_plane.consensus import TRACE_VOTER_NAME
@@ -228,8 +233,10 @@ class ToolExecutionImplMixin(HandlerMixinBase):
             skill_name=skill_name,
         )
         trace_policy = self._policy_loader.policy.control_plane.trace
-        previous_plan_hash = self._control_plane.active_plan_hash(str(sid))
-        committed_plan_hash = self._control_plane.begin_precontent_plan(
+        previous_plan_hash = await _call_control_plane(self, "active_plan_hash", str(sid))
+        committed_plan_hash = await _call_control_plane(
+            self,
+            "begin_precontent_plan",
             session_id=str(sid),
             goal=f"tool.execute:{tool_name_value}",
             origin=operator_origin,
@@ -245,8 +252,10 @@ class ToolExecutionImplMixin(HandlerMixinBase):
                     plan_hash=previous_plan_hash,
                     reason="superseded_by_tool_execute",
                 )
-            )
-        plan_hash = self._control_plane.active_plan_hash(str(sid)) or committed_plan_hash
+        )
+        plan_hash = (
+            await _call_control_plane(self, "active_plan_hash", str(sid))
+        ) or committed_plan_hash
         await self._event_bus.publish(
             PlanCommitted(
                 session_id=sid,
@@ -262,7 +271,9 @@ class ToolExecutionImplMixin(HandlerMixinBase):
             write_paths=[str(item) for item in params.get("write_paths", [])],
             security_critical=bool(merged_policy.security_critical),
         )
-        cp_eval = await self._control_plane.evaluate_action(
+        cp_eval = await _call_control_plane(
+            self,
+            "evaluate_action",
             tool_name=tool_name_value,
             arguments=dict(params),
             origin=operator_origin,

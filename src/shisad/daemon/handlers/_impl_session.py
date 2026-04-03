@@ -83,7 +83,12 @@ from shisad.core.types import (
     UserId,
     WorkspaceId,
 )
-from shisad.daemon.handlers._mixin_typing import HandlerMixinBase
+from shisad.daemon.handlers._mixin_typing import (
+    HandlerMixinBase,
+)
+from shisad.daemon.handlers._mixin_typing import (
+    call_control_plane as _call_control_plane,
+)
 from shisad.daemon.handlers._task_scope import task_resource_authorizer
 from shisad.governance.merge import PolicyMergeError
 from shisad.memory.ingestion import IngestionPipeline
@@ -2781,7 +2786,7 @@ class SessionImplMixin(HandlerMixinBase):
         return {
             "session_id": sid,
             "response": response_text,
-            "plan_hash": self._control_plane.active_plan_hash(str(sid)),
+            "plan_hash": await _call_control_plane(self, "active_plan_hash", str(sid)),
             "risk_score": firewall_result.risk_score,
             "blocked_actions": blocked_actions,
             "confirmation_required_actions": len(pending_confirmation_ids),
@@ -3203,8 +3208,10 @@ class SessionImplMixin(HandlerMixinBase):
 
         planner_origin = self._origin_for(session=session, actor="planner")
         trace_policy = self._policy_loader.policy.control_plane.trace
-        previous_plan_hash = self._control_plane.active_plan_hash(str(sid))
-        committed_plan_hash = self._control_plane.begin_precontent_plan(
+        previous_plan_hash = await _call_control_plane(self, "active_plan_hash", str(sid))
+        committed_plan_hash = await _call_control_plane(
+            self,
+            "begin_precontent_plan",
             session_id=str(sid),
             goal=str(firewall_result.sanitized_text),
             origin=planner_origin,
@@ -3221,7 +3228,7 @@ class SessionImplMixin(HandlerMixinBase):
                     reason="superseded_by_new_goal",
                 )
             )
-        active_plan_hash = self._control_plane.active_plan_hash(str(sid))
+        active_plan_hash = await _call_control_plane(self, "active_plan_hash", str(sid))
         await self._event_bus.publish(
             PlanCommitted(
                 session_id=sid,
@@ -3564,7 +3571,9 @@ class SessionImplMixin(HandlerMixinBase):
                             declared_domains.add(host)
                         continue
                     declared_domains.add(raw_destination.split(":", 1)[0])
-            cp_eval = await self._control_plane.evaluate_action(
+            cp_eval = await _call_control_plane(
+                self,
+                "evaluate_action",
                 tool_name=str(proposal.tool_name),
                 arguments=dict(proposal_arguments),
                 origin=planner_context.planner_origin,

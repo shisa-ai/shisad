@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 from pydantic import ValidationError
 
@@ -19,7 +21,18 @@ from shisad.daemon.services import (
     _register_route_credentials,
     _validate_security_route_pins,
 )
+from shisad.security.control_plane.sidecar import ControlPlaneUnavailableError
 from shisad.security.credentials import InMemoryCredentialStore
+
+
+def _clear_remote_provider_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("SHISA_API_KEY", raising=False)
+    monkeypatch.delenv("SHISAD_MODEL_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.setenv("SHISAD_MODEL_REMOTE_ENABLED", "false")
+    monkeypatch.setenv("SHISAD_MODEL_MONITOR_REMOTE_ENABLED", "false")
 
 
 @pytest.mark.asyncio
@@ -28,11 +41,7 @@ async def test_daemon_services_builds_with_local_provider(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # Explicitly clear API key overrides to force local provider path.
-    monkeypatch.delenv("SHISA_API_KEY", raising=False)
-    monkeypatch.delenv("SHISAD_MODEL_API_KEY", raising=False)
-    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
-    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    _clear_remote_provider_env(monkeypatch)
     config = DaemonConfig(
         data_dir=tmp_path / "data",
         socket_path=tmp_path / "control.sock",
@@ -46,6 +55,89 @@ async def test_daemon_services_builds_with_local_provider(
         assert services.internal_ingress_marker is not None
     finally:
         await services.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_h1_daemon_services_builds_with_supervised_control_plane_sidecar(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clear_remote_provider_env(monkeypatch)
+    config = DaemonConfig(
+        data_dir=tmp_path / "data",
+        socket_path=tmp_path / "control.sock",
+        policy_path=tmp_path / "policy.yaml",
+    )
+    services = await DaemonServices.build(config)
+    sidecar = services.control_plane_sidecar
+    assert sidecar is not None
+    assert sidecar.process.returncode is None
+    assert await services.control_plane.ping() is True
+
+    await services.shutdown()
+
+    assert sidecar.process.returncode is not None
+    assert not sidecar.socket_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_h1_daemon_services_build_fails_closed_when_control_plane_sidecar_unavailable(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _raise_sidecar(*, data_dir, policy_path):  # type: ignore[no-untyped-def]
+        _ = (data_dir, policy_path)
+        raise ControlPlaneUnavailableError(reason_code="control_plane.startup_failed")
+
+    monkeypatch.setattr("shisad.daemon.services.start_control_plane_sidecar", _raise_sidecar)
+    config = DaemonConfig(
+        data_dir=tmp_path / "data",
+        socket_path=tmp_path / "control.sock",
+        policy_path=tmp_path / "policy.yaml",
+    )
+
+    with pytest.raises(ControlPlaneUnavailableError, match="Control-plane sidecar unavailable"):
+        await DaemonServices.build(config)
+
+
+@pytest.mark.asyncio
+async def test_h1_daemon_services_closes_started_sidecar_on_late_build_failure(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    closed: list[bool] = []
+
+    class _FakeSidecar:
+        def __init__(self) -> None:
+            self.client = SimpleNamespace(ping=self._ping)
+            self.process = SimpleNamespace(returncode=None)
+            self.socket_path = tmp_path / "data" / "control_plane" / "fake.sock"
+
+        async def _ping(self) -> bool:
+            return True
+
+        async def close(self) -> None:
+            closed.append(True)
+
+    async def _fake_start(*, data_dir, policy_path):  # type: ignore[no-untyped-def]
+        _ = (data_dir, policy_path)
+        return _FakeSidecar()
+
+    monkeypatch.setattr("shisad.daemon.services.start_control_plane_sidecar", _fake_start)
+    monkeypatch.setattr(
+        "shisad.daemon.services._load_provenance",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("boom")),
+    )
+    config = DaemonConfig(
+        data_dir=tmp_path / "data",
+        socket_path=tmp_path / "control.sock",
+        policy_path=tmp_path / "policy.yaml",
+    )
+
+    with pytest.raises(RuntimeError, match="boom"):
+        await DaemonServices.build(config)
+
+    assert closed == [True]
 
 
 @pytest.mark.asyncio

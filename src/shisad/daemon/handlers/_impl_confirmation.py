@@ -11,7 +11,12 @@ from typing import Any
 from shisad.core.events import PlanAmended, ToolRejected
 from shisad.core.evidence import ArtifactEndorsementState
 from shisad.core.types import TaintLabel
-from shisad.daemon.handlers._mixin_typing import HandlerMixinBase
+from shisad.daemon.handlers._mixin_typing import (
+    HandlerMixinBase,
+)
+from shisad.daemon.handlers._mixin_typing import (
+    call_control_plane as _call_control_plane,
+)
 from shisad.security.control_plane.schema import RiskTier, build_action
 
 logger = logging.getLogger(__name__)
@@ -256,8 +261,14 @@ class ConfirmationImplMixin(HandlerMixinBase):
                 origin=self._origin_for(session=session, actor="human_confirmation"),
                 risk_tier=fallback_risk_tier,
             )
-            previous_hash = self._control_plane.active_plan_hash(str(pending.session_id))
-            plan_hash = self._control_plane.approve_stage2(
+            previous_hash = await _call_control_plane(
+                self,
+                "active_plan_hash",
+                str(pending.session_id),
+            )
+            plan_hash = await _call_control_plane(
+                self,
+                "approve_stage2",
                 action=approved_action,
                 approved_by="human_confirmation",
             )

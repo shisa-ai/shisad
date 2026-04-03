@@ -23,7 +23,7 @@ from shisad.security.control_plane.consensus import (
 from shisad.security.control_plane.schema import RiskTier
 
 
-async def _wait_for_socket(path: Path, timeout: float = 2.0) -> None:
+async def _wait_for_socket(path: Path, timeout: float = 5.0) -> None:
     end = asyncio.get_running_loop().time() + timeout
     while asyncio.get_running_loop().time() < end:
         if path.exists():

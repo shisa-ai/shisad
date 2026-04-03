@@ -52,8 +52,11 @@ from shisad.executors.sandbox import SandboxOrchestrator
 from shisad.memory.ingestion import EmbeddingFingerprint, IngestionPipeline, RetrieveRagTool
 from shisad.memory.manager import MemoryManager
 from shisad.scheduler.manager import SchedulerManager
-from shisad.security.control_plane.consensus import ConsensusPolicy
-from shisad.security.control_plane.engine import ControlPlaneEngine
+from shisad.security.control_plane.sidecar import (
+    ControlPlaneGateway,
+    ControlPlaneSidecarHandle,
+    start_control_plane_sidecar,
+)
 from shisad.security.credentials import CredentialConfig, InMemoryCredentialStore
 from shisad.security.firewall import ContentFirewall
 from shisad.security.firewall.output import OutputFirewall
@@ -151,7 +154,8 @@ class DaemonServices:
     lockdown_manager: LockdownManager
     rate_limiter: RateLimiter
     monitor: ActionMonitor
-    control_plane: ControlPlaneEngine
+    control_plane: ControlPlaneGateway
+    control_plane_sidecar: ControlPlaneSidecarHandle | None
     provenance_status: dict[str, Any]
     registry: ToolRegistry
     alarm_tool: AlarmTool
@@ -206,6 +210,7 @@ class DaemonServices:
         telegram_channel: TelegramChannel | None = None
         slack_channel: SlackChannel | None = None
         embeddings_adapter: SyncEmbeddingsAdapter | None = None
+        control_plane_sidecar: ControlPlaneSidecarHandle | None = None
         startup_complete = False
 
         try:
@@ -389,39 +394,11 @@ class DaemonServices:
                 anomaly_hook=event_wiring.on_ratelimit,
             )
             monitor = ActionMonitor()
-            control_plane_policy = policy_loader.policy.control_plane
-            control_plane = ControlPlaneEngine.build(
+            control_plane_sidecar = await start_control_plane_sidecar(
                 data_dir=config.data_dir,
-                monitor_provider=monitor_provider,
-                action_monitor_provider=monitor_provider,
-                monitor_timeout_seconds=max(0.05, control_plane_policy.network.timeout_ms / 1000.0),
-                monitor_cache_ttl_seconds=int(control_plane_policy.network.cache_ttl_seconds),
-                baseline_learning_rate=float(control_plane_policy.network.baseline_learning_rate),
-                high_critical_timeout_action=control_plane_policy.network.high_critical_timeout_action,
-                low_medium_timeout_action=control_plane_policy.network.low_medium_timeout_action,
-                trace_ttl_seconds=int(control_plane_policy.trace.ttl_seconds),
-                trace_max_actions=int(control_plane_policy.trace.max_actions),
-                consensus_policy=ConsensusPolicy(
-                    required_approvals_low=int(
-                        control_plane_policy.consensus.required_approvals_low
-                    ),
-                    required_approvals_medium=int(
-                        control_plane_policy.consensus.required_approvals_medium
-                    ),
-                    required_approvals_high=int(
-                        control_plane_policy.consensus.required_approvals_high
-                    ),
-                    required_approvals_critical=int(
-                        control_plane_policy.consensus.required_approvals_critical
-                    ),
-                    veto_for_high_and_critical=bool(
-                        control_plane_policy.consensus.veto_for_high_and_critical
-                    ),
-                    voter_timeout_seconds=float(
-                        control_plane_policy.consensus.voter_timeout_seconds
-                    ),
-                ),
+                policy_path=config.policy_path,
             )
+            control_plane = control_plane_sidecar.client
 
             provenance_manifest_path = (
                 Path(__file__).resolve().parents[1] / "security" / "rules" / "provenance.json"
@@ -540,6 +517,7 @@ class DaemonServices:
                 rate_limiter=rate_limiter,
                 monitor=monitor,
                 control_plane=control_plane,
+                control_plane_sidecar=control_plane_sidecar,
                 provenance_status=provenance_status,
                 registry=registry,
                 alarm_tool=alarm_tool,
@@ -561,6 +539,9 @@ class DaemonServices:
                 for channel in channels.values():
                     with contextlib.suppress(OSError, RuntimeError):
                         await channel.disconnect()
+                if control_plane_sidecar is not None:
+                    with contextlib.suppress(OSError, RuntimeError):
+                        await control_plane_sidecar.close()
                 with contextlib.suppress(OSError, RuntimeError):
                     await server.stop()
 
@@ -604,6 +585,12 @@ class DaemonServices:
                 await slack_channel.disconnect()
             except (OSError, RuntimeError):
                 logger.exception("Error disconnecting slack channel")
+        sidecar = getattr(self, "control_plane_sidecar", None)
+        if sidecar is not None:
+            try:
+                await sidecar.close()
+            except (OSError, RuntimeError):
+                logger.exception("Error stopping control-plane sidecar")
         try:
             await self.server.stop()
         except (OSError, RuntimeError):

@@ -67,6 +67,7 @@ from shisad.daemon.handlers._impl_session import SessionImplMixin
 from shisad.daemon.handlers._impl_skills import SkillsImplMixin
 from shisad.daemon.handlers._impl_tasks import TasksImplMixin
 from shisad.daemon.handlers._impl_tool_execution import ToolExecutionImplMixin
+from shisad.daemon.handlers._mixin_typing import call_control_plane as _call_control_plane
 from shisad.daemon.handlers._side_effects import is_side_effect_tool
 from shisad.daemon.handlers._string_utils import optional_string
 from shisad.daemon.handlers._tool_exec_helpers import execute_structured_tool
@@ -1990,7 +1991,12 @@ class HandlerImplementation(
                     **approval_event_fields,
                 )
             )
-            self._control_plane.record_execution(action=executed_action, success=True)
+            await _call_control_plane(
+                self,
+                "record_execution",
+                action=executed_action,
+                success=True,
+            )
             return ApprovedToolExecutionResult(
                 success=True,
                 checkpoint_id=checkpoint_id,
@@ -2016,7 +2022,12 @@ class HandlerImplementation(
                     **approval_event_fields,
                 )
             )
-            self._control_plane.record_execution(action=executed_action, success=True)
+            await _call_control_plane(
+                self,
+                "record_execution",
+                action=executed_action,
+                success=True,
+            )
             preview_rows = [
                 {
                     "chunk_id": item.chunk_id,
@@ -2095,7 +2106,12 @@ class HandlerImplementation(
                             **approval_event_fields,
                         )
                     )
-                    self._control_plane.record_execution(action=executed_action, success=False)
+                    await _call_control_plane(
+                        self,
+                        "record_execution",
+                        action=executed_action,
+                        success=False,
+                    )
                     return ApprovedToolExecutionResult(
                         success=False,
                         checkpoint_id=checkpoint_id,
@@ -2151,7 +2167,12 @@ class HandlerImplementation(
                         **approval_event_fields,
                     )
                 )
-                self._control_plane.record_execution(action=executed_action, success=True)
+                await _call_control_plane(
+                    self,
+                    "record_execution",
+                    action=executed_action,
+                    success=True,
+                )
                 return ApprovedToolExecutionResult(
                     success=True,
                     checkpoint_id=checkpoint_id,
@@ -2204,7 +2225,12 @@ class HandlerImplementation(
                     **approval_event_fields,
                 )
             )
-            self._control_plane.record_execution(action=executed_action, success=success)
+            await _call_control_plane(
+                self,
+                "record_execution",
+                action=executed_action,
+                success=success,
+            )
             return ApprovedToolExecutionResult(
                 success=success,
                 checkpoint_id=checkpoint_id,
@@ -2218,8 +2244,13 @@ class HandlerImplementation(
                 ),
             )
 
-        def _record_execution(success: bool) -> None:
-            self._control_plane.record_execution(action=executed_action, success=success)
+        async def _record_execution(success: bool) -> None:
+            await _call_control_plane(
+                self,
+                "record_execution",
+                action=executed_action,
+                success=success,
+            )
 
         async def _execute_structured_payload_tool(
             payload: Mapping[str, Any],
@@ -2296,7 +2327,12 @@ class HandlerImplementation(
                     **approval_event_fields,
                 )
             )
-            self._control_plane.record_execution(action=executed_action, success=False)
+            await _call_control_plane(
+                self,
+                "record_execution",
+                action=executed_action,
+                success=False,
+            )
             return ApprovedToolExecutionResult(
                 success=False,
                 checkpoint_id=checkpoint_id,
@@ -2342,7 +2378,12 @@ class HandlerImplementation(
                 **approval_event_fields,
             )
         )
-        self._control_plane.record_execution(action=executed_action, success=success)
+        await _call_control_plane(
+            self,
+            "record_execution",
+            action=executed_action,
+            success=success,
+        )
         raw_output = "\n".join(
             segment for segment in [sandbox_result.stdout, sandbox_result.stderr] if segment
         ).strip()
@@ -2506,7 +2547,9 @@ class HandlerImplementation(
                     origin=origin_data,
                 )
             )
-            self._control_plane.observe_runtime_network(
+            await _call_control_plane(
+                self,
+                "observe_runtime_network",
                 origin=origin,
                 tool_name=str(config_tool_name),
                 destination_host=decision.destination_host,

@@ -25,7 +25,12 @@ from shisad.core.types import (
     UserId,
     WorkspaceId,
 )
-from shisad.daemon.handlers._mixin_typing import HandlerMixinBase
+from shisad.daemon.handlers._mixin_typing import (
+    HandlerMixinBase,
+)
+from shisad.daemon.handlers._mixin_typing import (
+    call_control_plane as _call_control_plane,
+)
 from shisad.daemon.handlers._string_utils import optional_string
 from shisad.daemon.handlers._task_scope import task_resource_authorizer
 from shisad.scheduler.schema import Schedule
@@ -308,9 +313,11 @@ class TasksImplMixin(HandlerMixinBase):
         trust_level = _payload_trust_level(str(getattr(run, "payload_taint", "")))
         origin = self._task_origin_for(session=session, task=task, trust_level=trust_level)
 
-        previous_plan_hash = self._control_plane.active_plan_hash(str(sid))
+        previous_plan_hash = await _call_control_plane(self, "active_plan_hash", str(sid))
         trace_policy = self._policy_loader.policy.control_plane.trace
-        committed_plan_hash = self._control_plane.begin_precontent_plan(
+        committed_plan_hash = await _call_control_plane(
+            self,
+            "begin_precontent_plan",
             session_id=str(sid),
             goal=str(getattr(task, "goal", "")),
             origin=origin,
@@ -331,7 +338,10 @@ class TasksImplMixin(HandlerMixinBase):
             PlanCommitted(
                 session_id=sid,
                 actor="control_plane",
-                plan_hash=self._control_plane.active_plan_hash(str(sid)) or committed_plan_hash,
+                plan_hash=(
+                    await _call_control_plane(self, "active_plan_hash", str(sid))
+                )
+                or committed_plan_hash,
                 stage="stage1_precontent",
                 expires_at="",
             )
@@ -350,7 +360,9 @@ class TasksImplMixin(HandlerMixinBase):
             sid,
             set(getattr(task, "capability_snapshot", set())),
         )
-        cp_eval = await self._control_plane.evaluate_action(
+        cp_eval = await _call_control_plane(
+            self,
+            "evaluate_action",
             tool_name=str(_BACKGROUND_MESSAGE_SEND),
             arguments=dict(delivery_arguments),
             origin=origin,

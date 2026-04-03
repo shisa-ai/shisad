@@ -1,7 +1,6 @@
 """Shared helpers for structured tool-execution result handling."""
 
-from __future__ import annotations
-
+import inspect
 import json
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
@@ -39,7 +38,7 @@ async def execute_structured_tool(
     default_error: str,
     actor: str,
     emit_event: Callable[[BaseEvent], Awaitable[None]],
-    record_execution: Callable[[bool], None],
+    record_execution: Callable[[bool], None | Awaitable[None]],
     sanitize_output: Callable[[str], str],
     taint_labels: set[TaintLabel],
     approval_event_fields: Mapping[str, str] | None = None,
@@ -65,7 +64,9 @@ async def execute_structured_tool(
             **event_fields,
         )
     )
-    record_execution(success)
+    record_result = record_execution(success)
+    if inspect.isawaitable(record_result):
+        await record_result
     return StructuredToolExecutionResult(
         success=success,
         content=sanitize_output(json.dumps(payload, ensure_ascii=True)),
