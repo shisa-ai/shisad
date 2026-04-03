@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import subprocess
 import sys
@@ -11,6 +12,7 @@ from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 import pytest
 
@@ -21,42 +23,49 @@ from shisad.executors.sandbox import SandboxConfig, SandboxResult
 from shisad.security.firewall.output import OutputFirewall
 
 
-class _BrowserFixtureHandler(BaseHTTPRequestHandler):
-    def do_GET(self) -> None:
-        if self.path.startswith("/submitted"):
-            body = (
-                "<html><head><title>Submitted</title></head><body>"
-                "Form submitted successfully."
-                f"<div id='query'>{self.path}</div>"
-                "</body></html>"
-            )
-        elif self.path == "/next":
-            body = (
-                "<html><head><title>Next Page</title></head><body>"
-                "You reached the next page."
-                "</body></html>"
-            )
-        else:
-            body = (
-                "<html><head><title>Browser Home</title></head><body>"
-                "<h1>Hello browser</h1>"
-                "<p>Read only content for testing.</p>"
-                "<a id='continue' href='/next'>Continue</a>"
-                "<form action='/submitted' method='get'>"
-                "<input id='search' name='q' type='text' />"
-                "<button id='submit' type='submit'>Submit</button>"
-                "</form>"
-                "</body></html>"
-            )
-        encoded = body.encode("utf-8")
-        self.send_response(200)
-        self.send_header("Content-Type", "text/html; charset=utf-8")
-        self.send_header("Content-Length", str(len(encoded)))
-        self.end_headers()
-        self.wfile.write(encoded)
+def _make_browser_fixture_handler(
+    *,
+    link_href: str = "/next",
+    form_action: str = "/submitted",
+) -> type[BaseHTTPRequestHandler]:
+    class _BrowserFixtureHandler(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            if self.path.startswith("/submitted"):
+                body = (
+                    "<html><head><title>Submitted</title></head><body>"
+                    "Form submitted successfully."
+                    f"<div id='query'>{self.path}</div>"
+                    "</body></html>"
+                )
+            elif self.path == "/next":
+                body = (
+                    "<html><head><title>Next Page</title></head><body>"
+                    "You reached the next page."
+                    "</body></html>"
+                )
+            else:
+                body = (
+                    "<html><head><title>Browser Home</title></head><body>"
+                    "<h1>Hello browser</h1>"
+                    "<p>Read only content for testing.</p>"
+                    f"<a id='continue' href='{link_href}'>Continue</a>"
+                    f"<form action='{form_action}' method='get'>"
+                    "<input id='search' name='q' type='text' />"
+                    "<button id='submit' type='submit'>Submit</button>"
+                    "</form>"
+                    "</body></html>"
+                )
+            encoded = body.encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(encoded)))
+            self.end_headers()
+            self.wfile.write(encoded)
 
-    def log_message(self, format: str, *args: Any) -> None:
-        _ = (format, args)
+        def log_message(self, format: str, *args: Any) -> None:
+            _ = (format, args)
+
+    return _BrowserFixtureHandler
 
 
 @dataclass
@@ -71,16 +80,28 @@ class _FixtureServer:
         self.thread.join(timeout=5)
 
 
-@pytest.fixture
-def browser_fixture_server() -> _FixtureServer:
-    server = ThreadingHTTPServer(("127.0.0.1", 0), _BrowserFixtureHandler)
+def _start_fixture_server(
+    *,
+    host: str = "127.0.0.1",
+    link_href: str = "/next",
+    form_action: str = "/submitted",
+) -> _FixtureServer:
+    server = ThreadingHTTPServer(
+        (host, 0),
+        _make_browser_fixture_handler(link_href=link_href, form_action=form_action),
+    )
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
-    fixture = _FixtureServer(
+    return _FixtureServer(
         server=server,
         thread=thread,
-        base_url=f"http://127.0.0.1:{server.server_address[1]}",
+        base_url=f"http://{host}:{server.server_address[1]}",
     )
+
+
+@pytest.fixture
+def browser_fixture_server() -> _FixtureServer:
+    fixture = _start_fixture_server()
     try:
         yield fixture
     finally:
@@ -91,14 +112,7 @@ class _DirectRunner:
     def __init__(self) -> None:
         self.configs: list[SandboxConfig] = []
 
-    async def execute_async(
-        self,
-        config: SandboxConfig,
-        *,
-        session: Session | None = None,
-    ) -> SandboxResult:
-        _ = session
-        self.configs.append(config)
+    async def _run_config(self, config: SandboxConfig) -> SandboxResult:
         env = {**os.environ, **dict(config.env)}
         try:
             completed = await asyncio.to_thread(
@@ -125,6 +139,16 @@ class _DirectRunner:
             stderr=completed.stderr,
             reason="" if completed.returncode == 0 else "browser_command_failed",
         )
+
+    async def execute_async(
+        self,
+        config: SandboxConfig,
+        *,
+        session: Session | None = None,
+    ) -> SandboxResult:
+        _ = session
+        self.configs.append(config)
+        return await self._run_config(config)
 
 
 class _SelectiveFailureRunner(_DirectRunner):
@@ -146,32 +170,57 @@ class _SelectiveFailureRunner(_DirectRunner):
             if self._goto_count > self._fail_after_goto:
                 return SandboxResult(allowed=True, exit_code=1, reason="browser_command_failed")
         _ = session
-        env = {**os.environ, **dict(config.env)}
-        try:
-            completed = await asyncio.to_thread(
-                subprocess.run,
-                config.command,
-                cwd=config.cwd or None,
-                env=env,
-                capture_output=True,
-                text=True,
-                timeout=max(1, int(config.limits.timeout_seconds)),
-                check=False,
-            )
-        except subprocess.TimeoutExpired:
-            return SandboxResult(
-                allowed=True,
-                exit_code=None,
-                timed_out=True,
-                reason="browser_command_timeout",
-            )
-        return SandboxResult(
-            allowed=True,
-            exit_code=completed.returncode,
-            stdout=completed.stdout,
-            stderr=completed.stderr,
-            reason="" if completed.returncode == 0 else "browser_command_failed",
+        return await self._run_config(config)
+
+
+class _PolicyScopedRunner(_DirectRunner):
+    @staticmethod
+    def _state_path(config: SandboxConfig) -> Path:
+        session_token = next(
+            (str(item).split("=", 1)[1] for item in config.command if str(item).startswith("-s=")),
+            "default",
         )
+        return Path(config.cwd) / ".fake-playwright" / f"{session_token}.json"
+
+    @staticmethod
+    def _allowed_hosts(config: SandboxConfig) -> set[str]:
+        hosts: set[str] = set()
+        for item in config.network.allowed_domains:
+            raw = str(item).strip().lower()
+            if not raw:
+                continue
+            parsed = urlparse(raw if "://" in raw else f"https://{raw}")
+            host = (parsed.hostname or "").lower()
+            if host:
+                hosts.add(host)
+        return hosts
+
+    async def execute_async(
+        self,
+        config: SandboxConfig,
+        *,
+        session: Session | None = None,
+    ) -> SandboxResult:
+        self.configs.append(config)
+        if any(token in config.command for token in ("eval", "snapshot")):
+            state_path = self._state_path(config)
+            if state_path.exists():
+                try:
+                    current_url = json.loads(state_path.read_text(encoding="utf-8")).get(
+                        "current_url",
+                        "",
+                    )
+                except (OSError, ValueError, TypeError):
+                    current_url = ""
+                live_host = (urlparse(str(current_url)).hostname or "").lower()
+                if live_host and live_host not in self._allowed_hosts(config):
+                    return SandboxResult(
+                        allowed=True,
+                        exit_code=1,
+                        reason="browser_command_failed",
+                    )
+        _ = session
+        return await self._run_config(config)
 
 
 def _session() -> Session:
@@ -183,10 +232,17 @@ def _session() -> Session:
     )
 
 
-def _toolkit(tmp_path: Path, *, runner: _DirectRunner, enabled: bool = True) -> BrowserToolkit:
+def _toolkit(
+    tmp_path: Path,
+    *,
+    runner: _DirectRunner,
+    enabled: bool = True,
+    allowed_domains: list[str] | None = None,
+) -> BrowserToolkit:
     fixture_cli = Path(__file__).resolve().parents[1] / "fixtures" / "fake_playwright_cli.py"
+    safe_domains = list(allowed_domains or ["127.0.0.1", "localhost"])
     browser_sandbox = BrowserSandbox(
-        output_firewall=OutputFirewall(safe_domains=["127.0.0.1", "localhost"]),
+        output_firewall=OutputFirewall(safe_domains=safe_domains),
         screenshots_dir=tmp_path / "screenshots",
         policy=BrowserSandboxPolicy(),
     )
@@ -194,7 +250,7 @@ def _toolkit(tmp_path: Path, *, runner: _DirectRunner, enabled: bool = True) -> 
         enabled=enabled,
         command=[sys.executable, str(fixture_cli)],
         session_root=tmp_path / "browser",
-        allowed_domains=["127.0.0.1", "localhost"],
+        allowed_domains=list(allowed_domains or ["127.0.0.1", "localhost"]),
         timeout_seconds=10.0,
         require_hardened_isolation=False,
         max_read_bytes=16_384,
@@ -420,6 +476,121 @@ async def test_m6_browser_toolkit_prepare_action_arguments_resolves_target_and_d
     assert prepared["target"] == "the continue button in the browser"
     assert prepared["resolved_target"] == "#continue"
     assert prepared["destination"].endswith("/next")
+    assert prepared["source_url"] == f"{browser_fixture_server.base_url}/"
+
+
+@pytest.mark.asyncio
+async def test_m6_browser_toolkit_click_confirmation_fails_if_page_changed_after_prepare(
+    tmp_path: Path,
+    browser_fixture_server: _FixtureServer,
+) -> None:
+    runner = _DirectRunner()
+    toolkit = _toolkit(tmp_path, runner=runner)
+    session = _session()
+
+    opened = await toolkit.navigate(session=session, url=f"{browser_fixture_server.base_url}/")
+    assert opened["ok"] is True
+    prepared = await toolkit.prepare_action_arguments(
+        session=session,
+        tool_name="browser.click",
+        arguments={"target": "the continue button in the browser"},
+    )
+    assert prepared["source_url"] == f"{browser_fixture_server.base_url}/"
+
+    moved = await toolkit.navigate(session=session, url=f"{browser_fixture_server.base_url}/next")
+    assert moved["ok"] is True
+    config_count = len(runner.configs)
+
+    blocked = await toolkit.click(
+        session=session,
+        target=str(prepared["target"]),
+        resolved_target=str(prepared["resolved_target"]),
+        destination=str(prepared["destination"]),
+        source_url=str(prepared["source_url"]),
+    )
+
+    assert blocked == {
+        "ok": False,
+        "error": "browser_confirmation_context_changed",
+        "taint_labels": [],
+    }
+    assert len(runner.configs) == config_count
+
+
+@pytest.mark.asyncio
+async def test_m6_browser_toolkit_click_carries_cross_host_destination_into_post_action_capture(
+    tmp_path: Path,
+) -> None:
+    destination_server = _start_fixture_server(host="127.0.0.2")
+    source_server = _start_fixture_server(
+        host="127.0.0.1",
+        link_href=f"{destination_server.base_url}/next",
+    )
+    try:
+        runner = _PolicyScopedRunner()
+        toolkit = _toolkit(tmp_path, runner=runner, allowed_domains=["127.0.0.1"])
+        session = _session()
+
+        opened = await toolkit.navigate(session=session, url=f"{source_server.base_url}/")
+        assert opened["ok"] is True
+        prepared = await toolkit.prepare_action_arguments(
+            session=session,
+            tool_name="browser.click",
+            arguments={"target": "the continue button in the browser"},
+        )
+
+        clicked = await toolkit.click(
+            session=session,
+            target=str(prepared["target"]),
+            resolved_target=str(prepared["resolved_target"]),
+            destination=str(prepared["destination"]),
+            source_url=str(prepared["source_url"]),
+        )
+
+        assert clicked["ok"] is True
+        assert clicked["url"] == f"{destination_server.base_url}/next"
+    finally:
+        source_server.close()
+        destination_server.close()
+
+
+@pytest.mark.asyncio
+async def test_m6_browser_toolkit_submit_carries_cross_host_destination_into_post_action_capture(
+    tmp_path: Path,
+) -> None:
+    destination_server = _start_fixture_server(host="127.0.0.2")
+    source_server = _start_fixture_server(
+        host="127.0.0.1",
+        form_action=f"{destination_server.base_url}/submitted",
+    )
+    try:
+        runner = _PolicyScopedRunner()
+        toolkit = _toolkit(tmp_path, runner=runner, allowed_domains=["127.0.0.1"])
+        session = _session()
+
+        opened = await toolkit.navigate(session=session, url=f"{source_server.base_url}/")
+        assert opened["ok"] is True
+        prepared = await toolkit.prepare_action_arguments(
+            session=session,
+            tool_name="browser.type_text",
+            arguments={"target": "#search", "text": "hello", "submit": True},
+        )
+
+        typed = await toolkit.type_text(
+            session=session,
+            target=str(prepared["target"]),
+            text="hello",
+            submit=True,
+            destination=str(prepared["destination"]),
+            source_url=str(prepared["source_url"]),
+        )
+
+        assert typed["ok"] is True
+        assert typed["url"].startswith(f"{destination_server.base_url}/submitted")
+        assert "q=hello" in typed["url"]
+    finally:
+        source_server.close()
+        destination_server.close()
 
 
 @pytest.mark.asyncio

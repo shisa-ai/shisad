@@ -279,6 +279,7 @@ class BrowserToolkit:
         current_url = self._current_url(session)
         if not current_url:
             return prepared
+        prepared["source_url"] = current_url
         resolution = await self._resolve_target_details(
             session=session,
             tool_name=tool_name,
@@ -341,6 +342,7 @@ class BrowserToolkit:
         description: str = "",
         resolved_target: str = "",
         destination: str = "",
+        source_url: str = "",
     ) -> dict[str, Any]:
         availability = self._availability_error()
         if availability is not None:
@@ -348,6 +350,9 @@ class BrowserToolkit:
         current_url = self._current_url(session)
         if not current_url:
             return self._error_payload("browser_session_missing")
+        prepared_source_url = source_url.strip()
+        if prepared_source_url and prepared_source_url != current_url:
+            return self._error_payload("browser_confirmation_context_changed")
         requested_target = target.strip()
         concrete_target = resolved_target.strip() or await self._resolve_target(
             session=session,
@@ -355,10 +360,8 @@ class BrowserToolkit:
             target=requested_target,
             current_url=current_url,
         )
-        network_urls = [current_url]
         destination_url = destination.strip()
-        if destination_url and destination_url not in network_urls:
-            network_urls.append(destination_url)
+        network_urls = self._merge_network_urls(current_url, prepared_source_url, destination_url)
         result = await self._run_cli(
             session=session,
             tool_name="browser.click",
@@ -372,12 +375,15 @@ class BrowserToolkit:
             session=session,
             tool_name="browser.click",
             include_snapshot=True,
+            additional_network_urls=network_urls,
         )
         if payload.get("ok") is True:
             payload["action"] = "click"
             payload["target"] = concrete_target
             payload["requested_target"] = requested_target
             payload["description"] = description.strip()
+            if prepared_source_url:
+                payload["source_url"] = prepared_source_url
             if destination_url:
                 payload["destination"] = destination_url
         return payload
@@ -392,6 +398,7 @@ class BrowserToolkit:
         submit: bool = False,
         resolved_target: str = "",
         destination: str = "",
+        source_url: str = "",
     ) -> dict[str, Any]:
         availability = self._availability_error()
         if availability is not None:
@@ -399,6 +406,9 @@ class BrowserToolkit:
         current_url = self._current_url(session)
         if not current_url:
             return self._error_payload("browser_session_missing")
+        prepared_source_url = source_url.strip()
+        if prepared_source_url and prepared_source_url != current_url:
+            return self._error_payload("browser_confirmation_context_changed")
         requested_target = target.strip()
         concrete_target = resolved_target.strip() or await self._resolve_target(
             session=session,
@@ -409,10 +419,8 @@ class BrowserToolkit:
         args = ["fill", concrete_target, text]
         if submit:
             args.append("--submit")
-        network_urls = [current_url]
         destination_url = destination.strip()
-        if destination_url and destination_url not in network_urls:
-            network_urls.append(destination_url)
+        network_urls = self._merge_network_urls(current_url, prepared_source_url, destination_url)
         result = await self._run_cli(
             session=session,
             tool_name="browser.type_text",
@@ -426,12 +434,15 @@ class BrowserToolkit:
             session=session,
             tool_name="browser.type_text",
             include_snapshot=False,
+            additional_network_urls=network_urls,
         )
         if payload.get("ok") is True:
             payload["action"] = "type_text"
             payload["target"] = concrete_target
             payload["requested_target"] = requested_target
             payload["is_sensitive"] = bool(is_sensitive)
+            if prepared_source_url:
+                payload["source_url"] = prepared_source_url
             if destination_url:
                 payload["destination"] = destination_url
         return payload
@@ -548,10 +559,16 @@ class BrowserToolkit:
         tool_name: str,
         include_snapshot: bool,
         fallback_url: str = "",
+        additional_network_urls: list[str] | None = None,
     ) -> dict[str, Any]:
         current_url = self._current_url(session) or fallback_url.strip()
         if not current_url:
             return self._error_payload("browser_session_missing")
+        network_scope = self._merge_network_urls(
+            current_url,
+            fallback_url,
+            *(additional_network_urls or []),
+        )
         session_dir = self._session_dir(session)
         metadata_path = session_dir / "page.json"
         snapshot_path = session_dir / "snapshot.txt"
@@ -567,7 +584,7 @@ class BrowserToolkit:
                 "--filename",
                 str(metadata_path),
             ],
-            network_urls=[current_url],
+            network_urls=network_scope,
             allow_network=True,
         )
         if metadata_error is not None:
@@ -582,7 +599,12 @@ class BrowserToolkit:
                 session=session,
                 tool_name=tool_name,
                 args=["snapshot", "--filename", str(snapshot_path)],
-                network_urls=[payload.get("url", current_url)],
+                network_urls=self._merge_network_urls(
+                    current_url,
+                    fallback_url,
+                    str(payload.get("url", current_url)),
+                    *(additional_network_urls or []),
+                ),
                 allow_network=True,
             )
             if snapshot_error is not None:
@@ -604,6 +626,18 @@ class BrowserToolkit:
             "taint_labels": [TaintLabel.UNTRUSTED.value],
             "error": "",
         }
+
+    @staticmethod
+    def _merge_network_urls(*urls: str) -> list[str]:
+        merged: list[str] = []
+        seen: set[str] = set()
+        for raw_url in urls:
+            normalized = str(raw_url).strip()
+            if not normalized or normalized in seen:
+                continue
+            merged.append(normalized)
+            seen.add(normalized)
+        return merged
 
     async def _run_cli(
         self,

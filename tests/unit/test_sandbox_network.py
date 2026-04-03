@@ -205,6 +205,29 @@ def test_m6_network_revalidate_requests_propagates_revalidation_reason(monkeypat
     assert reason == "dns_rebinding_blocked"
 
 
+def test_m6_network_resolve_connect_path_scope_addresses_uses_literal_allowlist_hosts() -> None:
+    def _scope_resolver(hostname: str) -> list[str]:
+        mapping = {
+            "browser.example": ["93.184.216.34"],
+            "cdn.browser.example": ["93.184.216.35"],
+        }
+        return mapping.get(hostname, [])
+
+    manager = SandboxNetworkManager(EgressProxy(resolver=_scope_resolver))
+    addresses = manager.resolve_connect_path_scope_addresses(
+        policy=NetworkPolicy(
+            allow_network=True,
+            allowed_domains=[
+                "browser.example",
+                "https://cdn.browser.example:443",
+                "*.ignored.example",
+            ],
+        )
+    )
+
+    assert addresses == ["93.184.216.34", "93.184.216.35"]
+
+
 def test_m6_network_inject_credentials_embedded_and_host_mismatch() -> None:
     store = InMemoryCredentialStore()
     store.register(

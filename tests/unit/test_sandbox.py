@@ -15,6 +15,7 @@ from shisad.executors.proxy import EgressProxy, NetworkPolicy
 from shisad.executors.sandbox import (
     DegradedModePolicy,
     EnvironmentPolicy,
+    ProcessRunResult,
     ResourceLimits,
     SandboxBackend,
     SandboxConfig,
@@ -253,6 +254,68 @@ def test_m3_sandbox_redacts_injected_headers_in_result_payload() -> None:
     assert result.allowed is True
     assert result.network_decisions
     assert result.network_decisions[0].injected_headers["Authorization"] == "[redacted]"
+
+
+def test_m6_sandbox_connect_path_includes_literal_allowlist_scope_addresses(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def _scope_resolver(hostname: str) -> list[str]:
+        mapping = {
+            "browser.example": ["93.184.216.34"],
+            "cdn.browser.example": ["93.184.216.35"],
+        }
+        return mapping.get(hostname, [])
+
+    orchestrator = SandboxOrchestrator(proxy=EgressProxy(resolver=_scope_resolver))
+    captured: dict[str, object] = {}
+
+    def _fake_run_process(
+        config: SandboxConfig,
+        *,
+        backend: SandboxBackend,
+        command: list[str],
+        env: dict[str, str],
+        connect_path_allowed_ips: list[str],
+        enforce_connect_path: bool,
+    ) -> ProcessRunResult:
+        captured["config"] = config
+        captured["backend"] = backend
+        captured["command"] = list(command)
+        captured["env"] = dict(env)
+        captured["allowed_ips"] = list(connect_path_allowed_ips)
+        captured["enforce_connect_path"] = enforce_connect_path
+        return ProcessRunResult(
+            stdout="ok\n",
+            stderr="",
+            exit_code=0,
+            timed_out=False,
+            truncated=False,
+            resource_limit_warning="",
+            isolation_degraded=False,
+            blocked_reason="",
+            connect_path_result=None,
+            connect_path_degraded=False,
+        )
+
+    monkeypatch.setattr(orchestrator, "_run_process", _fake_run_process)
+    result = orchestrator.execute(
+        SandboxConfig(
+            tool_name="browser.read_page",
+            command=[sys.executable, "-c", "print('ok')"],
+            network=NetworkPolicy(
+                allow_network=True,
+                allowed_domains=["browser.example", "cdn.browser.example"],
+            ),
+            network_urls=["https://browser.example/page"],
+            approved_by_pep=True,
+            degraded_mode=DegradedModePolicy.FAIL_OPEN,
+            security_critical=False,
+        )
+    )
+
+    assert result.allowed is True
+    assert captured["enforce_connect_path"] is True
+    assert captured["allowed_ips"] == ["93.184.216.34", "93.184.216.35"]
 
 
 def test_m3_sandbox_blocks_placeholder_injection_without_pep_approval() -> None:

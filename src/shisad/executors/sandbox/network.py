@@ -29,6 +29,7 @@ _NETWORK_EXECUTABLES = {
 }
 _DOMAIN_TOKEN_RE = re.compile(r"^[A-Za-z0-9.-]+\.[A-Za-z]{2,}(?::\d+)?$")
 _PLACEHOLDER_RE = re.compile(r"SHISAD_SECRET_PLACEHOLDER_[A-Fa-f0-9]{32}")
+_WILDCARD_TOKENS = {"*", "?", "[", "]"}
 
 
 class SandboxNetworkComponent(Protocol):
@@ -58,6 +59,12 @@ class SandboxNetworkComponent(Protocol):
         prior_decisions: list[ProxyDecision],
         approved_by_pep: bool,
     ) -> str | None: ...
+
+    def resolve_connect_path_scope_addresses(
+        self,
+        *,
+        policy: NetworkPolicy,
+    ) -> list[str]: ...
 
     def inject_credentials(
         self,
@@ -171,6 +178,24 @@ class SandboxNetworkManager:
                 return revalidated.reason
         return None
 
+    def resolve_connect_path_scope_addresses(
+        self,
+        *,
+        policy: NetworkPolicy,
+    ) -> list[str]:
+        addresses: list[str] = []
+        seen: set[str] = set()
+        for raw_scope in policy.allowed_domains:
+            probe_url = self._connect_path_probe_url(raw_scope)
+            if not probe_url:
+                continue
+            for address in self._proxy.resolve_scope_addresses(url=probe_url, policy=policy):
+                if address in seen:
+                    continue
+                addresses.append(address)
+                seen.add(address)
+        return addresses
+
     def inject_credentials(
         self,
         *,
@@ -235,6 +260,26 @@ class SandboxNetworkManager:
                     replaced = replaced.replace(placeholder, resolved)
             transformed_env[key] = replaced
         return transformed_command, transformed_env, None
+
+    @staticmethod
+    def _connect_path_probe_url(raw_scope: str) -> str:
+        normalized = str(raw_scope).strip().lower()
+        if not normalized:
+            return ""
+        parsed = urlparse(normalized if "://" in normalized else f"https://{normalized}")
+        scheme = (parsed.scheme or "https").lower()
+        if scheme not in {"http", "https"}:
+            return ""
+        try:
+            host = (parsed.hostname or "").lower()
+            port = parsed.port
+        except ValueError:
+            return ""
+        if not host or any(token in host for token in _WILDCARD_TOKENS):
+            return ""
+        if port is None:
+            port = 80 if scheme == "http" else 443
+        return f"{scheme}://{host}:{port}/"
 
 
 __all__ = ["SandboxNetworkComponent", "SandboxNetworkManager"]

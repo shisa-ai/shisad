@@ -201,6 +201,44 @@ class EgressProxy:
         self._audit(tool_name=tool_name, url=url, decision=decision, body=body)
         return decision
 
+    def resolve_scope_addresses(
+        self,
+        *,
+        url: str,
+        policy: NetworkPolicy,
+    ) -> list[str]:
+        """Resolve literal allowlisted hosts for runtime network narrowing."""
+        parsed = urlparse(url)
+        protocol = (parsed.scheme or "").lower()
+        try:
+            host = (parsed.hostname or "").lower()
+        except ValueError:
+            return []
+        if not policy.allow_network:
+            return []
+        if protocol not in {"http", "https"} or not host:
+            return []
+        if self._is_ip_literal(host) and policy.deny_ip_literals:
+            return []
+        if not self._host_allowed(host, policy.allowed_domains):
+            return []
+        if self._looks_like_dns_exfil(host):
+            return []
+        resolved = list(self._resolver(host))
+        if not resolved:
+            return []
+        if policy.deny_private_ranges and any(self._is_private(addr) for addr in resolved):
+            return []
+        deduped: list[str] = []
+        seen: set[str] = set()
+        for address in resolved:
+            normalized = str(address).strip()
+            if not normalized or normalized in seen:
+                continue
+            deduped.append(normalized)
+            seen.add(normalized)
+        return deduped
+
     def _resolve_placeholder(self, placeholder: str, host: str) -> str | None:
         if self._credential_store is None:
             return None
@@ -227,7 +265,15 @@ class EgressProxy:
     def _host_allowed(host: str, allowed_domains: list[str]) -> bool:
         if not allowed_domains:
             return False
-        return any(host_matches(host, raw) for raw in allowed_domains)
+        patterns: list[str] = []
+        for raw in allowed_domains:
+            normalized = str(raw).strip().lower()
+            if not normalized:
+                continue
+            parsed = urlparse(normalized if "://" in normalized else f"https://{normalized}")
+            candidate = (parsed.hostname or "").lower()
+            patterns.append(candidate or normalized)
+        return any(host_matches(host, pattern) for pattern in patterns if pattern)
 
     @staticmethod
     def _is_ip_literal(host: str) -> bool:

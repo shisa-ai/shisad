@@ -1199,6 +1199,7 @@ async def test_contract_browser_click_routes_to_confirmation_not_lockdown(
     arguments = dict(actions[0].get("arguments", {}))
     assert arguments.get("resolved_target") == "#continue"
     assert str(arguments.get("destination", "")).endswith("/browser-next")
+    assert str(arguments.get("source_url", "")).endswith("/browser")
 
 
 @pytest.mark.asyncio

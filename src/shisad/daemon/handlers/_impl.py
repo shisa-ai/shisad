@@ -238,6 +238,7 @@ async def _structured_browser_click(
             description=_argument_string(arguments, "description"),
             resolved_target=_argument_string(arguments, "resolved_target"),
             destination=_argument_string(arguments, "destination"),
+            source_url=_argument_string(arguments, "source_url"),
         )
     )
 
@@ -256,6 +257,7 @@ async def _structured_browser_type_text(
             submit=bool(arguments.get("submit", False)),
             resolved_target=_argument_string(arguments, "resolved_target"),
             destination=_argument_string(arguments, "destination"),
+            source_url=_argument_string(arguments, "source_url"),
         )
     )
 

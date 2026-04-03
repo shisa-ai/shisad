@@ -238,12 +238,16 @@ class SandboxOrchestrator:
             session=session,
             is_destructive=self.is_destructive,
         )
+        connect_path_scope_addresses = self._network.resolve_connect_path_scope_addresses(
+            policy=config.network,
+        )
         process = self._execute_process(
             config=config,
             backend=backend,
             command=command,
             env=resolved_env,
             network_decisions=raw_network_decisions,
+            connect_path_scope_addresses=connect_path_scope_addresses,
         )
         return self._result_from_process(
             config=config,
@@ -282,6 +286,7 @@ class SandboxOrchestrator:
         command: list[str],
         env: dict[str, str],
         network_decisions: list[ProxyDecision],
+        connect_path_scope_addresses: list[str],
     ) -> ProcessRunResult:
         connect_path_allowed_ips = sorted(
             {
@@ -289,6 +294,16 @@ class SandboxOrchestrator:
                 for decision in network_decisions
                 for address in decision.resolved_addresses
                 if address.strip()
+            }
+        )
+        connect_path_allowed_ips = sorted(
+            {
+                *connect_path_allowed_ips,
+                *[
+                    address.strip()
+                    for address in connect_path_scope_addresses
+                    if address.strip()
+                ],
             }
         )
         instance = backend.create(config)
