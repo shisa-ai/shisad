@@ -43,6 +43,7 @@ _SNAPSHOT_ELEMENT_RE = re.compile(
     r'(?:\s+form_method="(?P<form_method>[^"]*)")?$'
 )
 _STRUCTURED_BROWSER_TARGET_RE = re.compile(r"^(?:e\d+|[#./\[].+)$")
+_WILDCARD_SCOPE_TOKENS = {"*", "?", "[", "]"}
 _TARGET_STOPWORDS = {
     "a",
     "an",
@@ -79,6 +80,7 @@ class BrowserTargetResolution:
     requested_target: str
     resolved_target: str
     destination_url: str = ""
+    binding_hash: str = ""
 
 
 class BrowserSandboxMode(StrEnum):
@@ -291,6 +293,8 @@ class BrowserToolkit:
             prepared["resolved_target"] = resolution.resolved_target
         if resolution.destination_url:
             prepared["destination"] = resolution.destination_url
+        if resolution.binding_hash:
+            prepared["source_binding"] = resolution.binding_hash
         return prepared
 
     async def navigate(self, *, session: Session, url: str) -> dict[str, Any]:
@@ -343,6 +347,7 @@ class BrowserToolkit:
         resolved_target: str = "",
         destination: str = "",
         source_url: str = "",
+        source_binding: str = "",
     ) -> dict[str, Any]:
         availability = self._availability_error()
         if availability is not None:
@@ -360,6 +365,16 @@ class BrowserToolkit:
             target=requested_target,
             current_url=current_url,
         )
+        binding_error = await self._validate_prepared_binding(
+            session=session,
+            tool_name="browser.click",
+            current_url=current_url,
+            binding_target=concrete_target,
+            expected_binding=source_binding.strip(),
+            submit=False,
+        )
+        if binding_error is not None:
+            return binding_error
         destination_url = destination.strip()
         network_urls = self._merge_network_urls(current_url, prepared_source_url, destination_url)
         result = await self._run_cli(
@@ -399,6 +414,7 @@ class BrowserToolkit:
         resolved_target: str = "",
         destination: str = "",
         source_url: str = "",
+        source_binding: str = "",
     ) -> dict[str, Any]:
         availability = self._availability_error()
         if availability is not None:
@@ -416,6 +432,16 @@ class BrowserToolkit:
             target=requested_target,
             current_url=current_url,
         )
+        binding_error = await self._validate_prepared_binding(
+            session=session,
+            tool_name="browser.type_text",
+            current_url=current_url,
+            binding_target=concrete_target,
+            expected_binding=source_binding.strip(),
+            submit=submit,
+        )
+        if binding_error is not None:
+            return binding_error
         args = ["fill", concrete_target, text]
         if submit:
             args.append("--submit")
@@ -528,12 +554,19 @@ class BrowserToolkit:
     def _availability_error(self) -> dict[str, Any] | None:
         if not self._enabled:
             return self._error_payload("browser_disabled")
+        if self._has_unsupported_hardened_wildcard_scope():
+            return self._error_payload("browser_hardened_wildcard_scope_unsupported")
         if not self._command:
             return self._error_payload("browser_command_unconfigured")
         executable = self._command[0]
         if Path(executable).exists() or shutil.which(executable):
             return None
         return self._error_payload("browser_command_unavailable")
+
+    def _has_unsupported_hardened_wildcard_scope(self) -> bool:
+        if not self._require_hardened_isolation:
+            return False
+        return any(self._scope_rule_has_wildcards(rule) for rule in self._allowed_domains)
 
     async def _ensure_session_open(self, *, session: Session) -> dict[str, Any] | None:
         state = self._load_state(session)
@@ -821,6 +854,11 @@ class BrowserToolkit:
                 current_url=current_url,
                 submit=submit,
             ),
+            binding_hash=self._binding_hash_for_element(
+                matched,
+                current_url=current_url,
+                submit=submit,
+            ),
         )
 
     async def _load_interaction_snapshot(
@@ -880,6 +918,19 @@ class BrowserToolkit:
         return best_match[2]
 
     @staticmethod
+    def _find_exact_snapshot_target(
+        elements: list[BrowserSnapshotElement],
+        target: str,
+    ) -> BrowserSnapshotElement | None:
+        candidate = target.strip()
+        if not candidate:
+            return None
+        for element in elements:
+            if candidate in {element.ref.strip(), element.selector.strip()}:
+                return element
+        return None
+
+    @staticmethod
     def _parse_snapshot_elements(raw_snapshot: str) -> list[BrowserSnapshotElement]:
         elements: list[BrowserSnapshotElement] = []
         for line in raw_snapshot.splitlines():
@@ -915,6 +966,63 @@ class BrowserToolkit:
         return ""
 
     @classmethod
+    def _binding_hash_for_element(
+        cls,
+        element: BrowserSnapshotElement,
+        *,
+        current_url: str,
+        submit: bool,
+    ) -> str:
+        payload = {
+            "ref": element.ref.strip(),
+            "kind": element.kind.strip(),
+            "label": element.label.strip(),
+            "selector": element.selector.strip(),
+            "href": element.href.strip(),
+            "form_action": element.form_action.strip(),
+            "form_method": element.form_method.strip().lower(),
+            "destination": cls._predict_destination_url(
+                element,
+                current_url=current_url,
+                submit=submit,
+            ),
+        }
+        return hashlib.sha256(
+            json.dumps(payload, sort_keys=True, ensure_ascii=True).encode("utf-8")
+        ).hexdigest()
+
+    async def _validate_prepared_binding(
+        self,
+        *,
+        session: Session,
+        tool_name: str,
+        current_url: str,
+        binding_target: str,
+        expected_binding: str,
+        submit: bool,
+    ) -> dict[str, Any] | None:
+        if not expected_binding:
+            return None
+        elements = await self._load_interaction_snapshot(
+            session=session,
+            tool_name=tool_name,
+            current_url=current_url,
+        )
+        if not elements:
+            return self._error_payload("browser_confirmation_context_changed")
+        matched = self._find_exact_snapshot_target(elements, binding_target)
+        if matched is None:
+            return self._error_payload("browser_confirmation_context_changed")
+        live_binding = self._binding_hash_for_element(
+            matched,
+            current_url=current_url,
+            submit=submit,
+        )
+        if live_binding != expected_binding:
+            return self._error_payload("browser_confirmation_context_changed")
+        return None
+
+    @classmethod
     def _normalize_target(cls, value: str) -> str:
         tokens = cls._target_tokens(value)
         return " ".join(sorted(tokens))
@@ -926,6 +1034,15 @@ class BrowserToolkit:
             for token in re.findall(r"[a-z0-9]+", value.lower())
             if token and token not in _TARGET_STOPWORDS
         }
+
+    @staticmethod
+    def _scope_rule_has_wildcards(rule: str) -> bool:
+        normalized = str(rule).strip().lower()
+        if not normalized:
+            return False
+        parsed = urlparse(normalized if "://" in normalized else f"https://{normalized}")
+        host = (parsed.hostname or normalized).lower()
+        return any(token in host for token in _WILDCARD_SCOPE_TOKENS)
 
     def _session_alias(self, session: Session) -> str:
         return f"shisad-{session.id}"

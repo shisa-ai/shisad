@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pytest
+from pydantic import ValidationError
 
 from shisad.core.config import DaemonConfig, ModelConfig
 from shisad.core.events import EventBus
@@ -485,6 +486,30 @@ def test_m6_tool_registry_registers_browser_scope_destinations() -> None:
     assert navigate_tool.destinations == ["localhost", "127.0.0.1"]
     assert click_tool.destinations == ["localhost", "127.0.0.1"]
     assert any(param.name == "destination" for param in click_tool.parameters)
+
+
+@pytest.mark.parametrize(
+    ("browser_allowed_domains", "web_allowed_domains"),
+    [
+        (["*.browser.example"], []),
+        ([], ["*.browser.example"]),
+    ],
+)
+def test_m6_daemon_config_rejects_wildcard_browser_scope_under_hardened_isolation(
+    tmp_path,
+    browser_allowed_domains: list[str],
+    web_allowed_domains: list[str],
+) -> None:
+    with pytest.raises(ValidationError, match="wildcard browser scope"):
+        DaemonConfig(
+            data_dir=tmp_path / "data",
+            socket_path=tmp_path / "control.sock",
+            policy_path=tmp_path / "policy.yaml",
+            browser_enabled=True,
+            browser_require_hardened_isolation=True,
+            browser_allowed_domains=browser_allowed_domains,
+            web_allowed_domains=web_allowed_domains,
+        )
 
 
 @pytest.mark.asyncio

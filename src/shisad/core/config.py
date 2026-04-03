@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from typing import Literal, Self
+from urllib.parse import urlparse
 
 from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -25,6 +26,22 @@ from shisad.core.providers.http_headers import validate_auth_header_name, valida
 
 def _default_selfmod_allowed_signers_path() -> Path:
     return Path(__file__).resolve().parents[3] / "config" / "selfmod" / "allowed_signers"
+
+
+_WILDCARD_HOST_TOKENS = {"*", "?", "[", "]"}
+
+
+def _destination_host_pattern(destination: str) -> str:
+    raw = destination.strip().lower()
+    if not raw:
+        return ""
+    parsed = urlparse(raw if "://" in raw else f"https://{raw}")
+    return (parsed.hostname or raw).lower()
+
+
+def _contains_wildcard_host_pattern(destination: str) -> bool:
+    host_pattern = _destination_host_pattern(destination)
+    return bool(host_pattern and any(token in host_pattern for token in _WILDCARD_HOST_TOKENS))
 
 
 class DaemonConfig(BaseSettings):
@@ -503,6 +520,23 @@ class DaemonConfig(BaseSettings):
     @model_validator(mode="after")
     def _ensure_data_dir(self) -> Self:
         self.data_dir.mkdir(parents=True, exist_ok=True)
+        return self
+
+    @model_validator(mode="after")
+    def _validate_browser_hardened_scope(self) -> Self:
+        if not self.browser_enabled or not self.browser_require_hardened_isolation:
+            return self
+        browser_scope = (
+            list(self.browser_allowed_domains)
+            if self.browser_allowed_domains
+            else list(self.web_allowed_domains)
+        )
+        wildcard_scope = [item for item in browser_scope if _contains_wildcard_host_pattern(item)]
+        if wildcard_scope:
+            raise ValueError(
+                "browser_require_hardened_isolation does not support wildcard browser scope "
+                f"entries: {', '.join(sorted(wildcard_scope))}"
+            )
         return self
 
 

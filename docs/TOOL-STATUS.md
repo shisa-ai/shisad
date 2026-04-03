@@ -19,6 +19,7 @@ Note:
 - `tool.web.search` is `DISABLED` in this recorded snapshot because the daemon was started without `SHISAD_WEB_SEARCH_BACKEND_URL`. In a configured environment, the backend host must also appear in `SHISAD_WEB_ALLOWED_DOMAINS` before the tool can show up as `WORKS`.
 - The generated snapshot below reflects the current `scripts/live_tool_matrix.py` probe surface. Browser rows are intentionally omitted from this point-in-time table even though the browser tool surface is live in `v0.6.0` M6 when `SHISAD_BROWSER_ENABLED=1` and `SHISAD_BROWSER_COMMAND` is configured.
 - Browser read-mostly tools (`browser.navigate`, `browser.read_page`, `browser.screenshot`, `browser.end_session`) are designed to work without confirmation when the destination is authorized. Browser write tools (`browser.click`, `browser.type_text`) are confirmation-gated in the live runtime.
+- With `SHISAD_BROWSER_REQUIRE_HARDENED_ISOLATION=1` (the default), browser scope entries must be literal hosts/URLs; wildcard browser allowlist patterns are rejected fail-closed because the hardened connect-path layer cannot enforce wildcard sibling hosts safely.
 
 | Tool | Status | Detail |
 |------|--------|--------|

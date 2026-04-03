@@ -27,9 +27,12 @@ def _make_browser_fixture_handler(
     *,
     link_href: str = "/next",
     form_action: str = "/submitted",
+    state: dict[str, str] | None = None,
 ) -> type[BaseHTTPRequestHandler]:
     class _BrowserFixtureHandler(BaseHTTPRequestHandler):
         def do_GET(self) -> None:
+            current_link_href = str((state or {}).get("link_href", link_href))
+            current_form_action = str((state or {}).get("form_action", form_action))
             if self.path.startswith("/submitted"):
                 body = (
                     "<html><head><title>Submitted</title></head><body>"
@@ -37,10 +40,10 @@ def _make_browser_fixture_handler(
                     f"<div id='query'>{self.path}</div>"
                     "</body></html>"
                 )
-            elif self.path == "/next":
+            elif self.path.startswith("/next"):
                 body = (
                     "<html><head><title>Next Page</title></head><body>"
-                    "You reached the next page."
+                    f"You reached {self.path or '/next'}."
                     "</body></html>"
                 )
             else:
@@ -48,8 +51,8 @@ def _make_browser_fixture_handler(
                     "<html><head><title>Browser Home</title></head><body>"
                     "<h1>Hello browser</h1>"
                     "<p>Read only content for testing.</p>"
-                    f"<a id='continue' href='{link_href}'>Continue</a>"
-                    f"<form action='{form_action}' method='get'>"
+                    f"<a id='continue' href='{current_link_href}'>Continue</a>"
+                    f"<form action='{current_form_action}' method='get'>"
                     "<input id='search' name='q' type='text' />"
                     "<button id='submit' type='submit'>Submit</button>"
                     "</form>"
@@ -85,10 +88,15 @@ def _start_fixture_server(
     host: str = "127.0.0.1",
     link_href: str = "/next",
     form_action: str = "/submitted",
+    state: dict[str, str] | None = None,
 ) -> _FixtureServer:
     server = ThreadingHTTPServer(
         (host, 0),
-        _make_browser_fixture_handler(link_href=link_href, form_action=form_action),
+        _make_browser_fixture_handler(
+            link_href=link_href,
+            form_action=form_action,
+            state=state,
+        ),
     )
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -238,6 +246,7 @@ def _toolkit(
     runner: _DirectRunner,
     enabled: bool = True,
     allowed_domains: list[str] | None = None,
+    require_hardened_isolation: bool = False,
 ) -> BrowserToolkit:
     fixture_cli = Path(__file__).resolve().parents[1] / "fixtures" / "fake_playwright_cli.py"
     safe_domains = list(allowed_domains or ["127.0.0.1", "localhost"])
@@ -252,7 +261,7 @@ def _toolkit(
         session_root=tmp_path / "browser",
         allowed_domains=list(allowed_domains or ["127.0.0.1", "localhost"]),
         timeout_seconds=10.0,
-        require_hardened_isolation=False,
+        require_hardened_isolation=require_hardened_isolation,
         max_read_bytes=16_384,
         sandbox_runner=runner,
         browser_sandbox=browser_sandbox,
@@ -477,6 +486,7 @@ async def test_m6_browser_toolkit_prepare_action_arguments_resolves_target_and_d
     assert prepared["resolved_target"] == "#continue"
     assert prepared["destination"].endswith("/next")
     assert prepared["source_url"] == f"{browser_fixture_server.base_url}/"
+    assert str(prepared.get("source_binding", "")).strip()
 
 
 @pytest.mark.asyncio
@@ -518,6 +528,53 @@ async def test_m6_browser_toolkit_click_confirmation_fails_if_page_changed_after
 
 
 @pytest.mark.asyncio
+async def test_m6_browser_toolkit_click_confirmation_fails_if_bound_element_changes_at_same_url(
+    tmp_path: Path,
+) -> None:
+    state = {"link_href": "/next-a"}
+    browser_server = _start_fixture_server(state=state)
+    try:
+        runner = _DirectRunner()
+        toolkit = _toolkit(tmp_path, runner=runner)
+        session = _session()
+
+        opened = await toolkit.navigate(session=session, url=f"{browser_server.base_url}/")
+        assert opened["ok"] is True
+        prepared = await toolkit.prepare_action_arguments(
+            session=session,
+            tool_name="browser.click",
+            arguments={"target": "the continue button in the browser"},
+        )
+
+        assert str(prepared["destination"]).endswith("/next-a")
+        assert str(prepared.get("source_binding", "")).strip()
+
+        state["link_href"] = "/next-b"
+        config_count = len(runner.configs)
+
+        blocked = await toolkit.click(
+            session=session,
+            target=str(prepared["target"]),
+            resolved_target=str(prepared["resolved_target"]),
+            destination=str(prepared["destination"]),
+            source_url=str(prepared["source_url"]),
+            source_binding=str(prepared["source_binding"]),
+        )
+
+        assert blocked == {
+            "ok": False,
+            "error": "browser_confirmation_context_changed",
+            "taint_labels": [],
+        }
+        new_configs = runner.configs[config_count:]
+        assert new_configs
+        assert not any("click" in config.command for config in new_configs)
+        assert toolkit._current_url(session) == f"{browser_server.base_url}/"
+    finally:
+        browser_server.close()
+
+
+@pytest.mark.asyncio
 async def test_m6_browser_toolkit_click_carries_cross_host_destination_into_post_action_capture(
     tmp_path: Path,
 ) -> None:
@@ -545,6 +602,7 @@ async def test_m6_browser_toolkit_click_carries_cross_host_destination_into_post
             resolved_target=str(prepared["resolved_target"]),
             destination=str(prepared["destination"]),
             source_url=str(prepared["source_url"]),
+            source_binding=str(prepared["source_binding"]),
         )
 
         assert clicked["ok"] is True
@@ -583,6 +641,7 @@ async def test_m6_browser_toolkit_submit_carries_cross_host_destination_into_pos
             submit=True,
             destination=str(prepared["destination"]),
             source_url=str(prepared["source_url"]),
+            source_binding=str(prepared["source_binding"]),
         )
 
         assert typed["ok"] is True
@@ -621,6 +680,26 @@ async def test_m6_browser_toolkit_disabled_is_actionable(tmp_path: Path) -> None
     assert result == {
         "ok": False,
         "error": "browser_disabled",
+        "taint_labels": [],
+    }
+    assert runner.configs == []
+
+
+@pytest.mark.asyncio
+async def test_m6_browser_toolkit_hardened_wildcard_scope_is_actionable(tmp_path: Path) -> None:
+    runner = _DirectRunner()
+    toolkit = _toolkit(
+        tmp_path,
+        runner=runner,
+        allowed_domains=["*.browser.example"],
+        require_hardened_isolation=True,
+    )
+
+    result = await toolkit.navigate(session=_session(), url="https://sub.browser.example/")
+
+    assert result == {
+        "ok": False,
+        "error": "browser_hardened_wildcard_scope_unsupported",
         "taint_labels": [],
     }
     assert runner.configs == []
