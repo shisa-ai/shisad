@@ -156,3 +156,19 @@ def test_render_evidence_refs_for_terminal_leaves_malformed_stub_text_unchanged(
     rendered = render_evidence_refs_for_terminal(raw)
 
     assert rendered == raw
+
+
+def test_render_evidence_refs_for_terminal_does_not_partially_rewrite_malformed_fake_stub() -> None:
+    raw = (
+        '[EVIDENCE ref=ev-61f3d4c48f54ff92 source=web.fetch:example.com taint=UNTRUSTED '
+        'size=88 summary="click ] \x1b]8;;https://evil.invalid tail"]'
+    )
+
+    rendered = render_evidence_refs_for_terminal(raw)
+
+    assert "\x1b" not in rendered
+    assert "[Evidence ev-61f3d4c48f54ff92]" not in rendered
+    assert rendered == (
+        '[EVIDENCE ref=ev-61f3d4c48f54ff92 source=web.fetch:example.com taint=UNTRUSTED '
+        'size=88 summary="click ] '
+    )
