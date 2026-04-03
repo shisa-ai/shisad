@@ -45,6 +45,23 @@ def _registry_with_web_search(destination: str) -> ToolRegistry:
     return registry
 
 
+def _registry_with_browser_navigate(*destinations: str) -> ToolRegistry:
+    registry = ToolRegistry()
+    registry.register(
+        ToolDefinition(
+            name=ToolName("browser.navigate"),
+            description="Navigate the sandboxed browser to a URL and return visible page content.",
+            parameters=[
+                ToolParameter(name="url", type="string", required=True, semantic_type="url"),
+            ],
+            capabilities_required=[Capability.HTTP_REQUEST],
+            destinations=list(destinations),
+            require_confirmation=False,
+        )
+    )
+    return registry
+
+
 def test_pep_allows_user_goal_destination_without_allowlist() -> None:
     pep = PEP(PolicyBundle(), _registry_with_web_fetch())
     context = PolicyContext(
@@ -144,6 +161,20 @@ def test_pep_allows_operator_allowlisted_ip_literal() -> None:
     decision = pep.evaluate(
         ToolName("web.fetch"),
         {"url": "http://127.0.0.1:80/"},
+        context,
+    )
+    assert decision.kind == PEPDecisionKind.ALLOW
+
+
+def test_m6_pep_allows_browser_navigation_with_declared_local_scope() -> None:
+    pep = PEP(PolicyBundle(), _registry_with_browser_navigate("localhost", "127.0.0.1"))
+    context = PolicyContext(
+        capabilities={Capability.HTTP_REQUEST},
+        trust_level="trusted",
+    )
+    decision = pep.evaluate(
+        ToolName("browser.navigate"),
+        {"url": "http://localhost:8080/browser"},
         context,
     )
     assert decision.kind == PEPDecisionKind.ALLOW

@@ -472,6 +472,20 @@ def test_m3_tool_registry_registers_realitycheck_tools_with_endpoint_caps() -> N
     assert set(read_tool.capabilities_required) == {Capability.FILE_READ}
 
 
+def test_m6_tool_registry_registers_browser_scope_destinations() -> None:
+    registry, _alarm = _build_tool_registry(
+        EventBus(),
+        browser_surface_enabled=True,
+        browser_destinations=["localhost", "127.0.0.1"],
+    )
+    navigate_tool = registry.get_tool(ToolName("browser.navigate"))
+    click_tool = registry.get_tool(ToolName("browser.click"))
+    assert navigate_tool is not None
+    assert click_tool is not None
+    assert navigate_tool.destinations == ["localhost", "127.0.0.1"]
+    assert click_tool.destinations == ["localhost", "127.0.0.1"]
+
+
 @pytest.mark.asyncio
 async def test_m3_daemon_services_fail_closed_when_realitycheck_disabled(tmp_path) -> None:
     config = DaemonConfig(

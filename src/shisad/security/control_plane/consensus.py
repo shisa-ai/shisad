@@ -253,6 +253,7 @@ class ActionMonitorVoter:
     _SIDE_EFFECT_KINDS: frozenset[ActionKind] = frozenset(
         {
             ActionKind.EGRESS,
+            ActionKind.BROWSER_WRITE,
             ActionKind.FS_WRITE,
             ActionKind.MEMORY_WRITE,
             ActionKind.MESSAGE_SEND,

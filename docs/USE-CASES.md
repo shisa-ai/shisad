@@ -17,9 +17,9 @@ This document catalogs concrete personal AI assistant use cases drawn from real-
 | Status | Count | Description |
 |--------|-------|-------------|
 | **Supported (v0.3)** | 7 | Works today: chat, reminders, lists, web research, shell/fs/git ops, identity routing |
-| **Partial** | 24 | Foundation exists (scheduler, channels, PEP, memory) — needs thin skill wrappers or config |
+| **Partial** | 25 | Foundation exists (scheduler, channels, PEP, memory) — needs thin skill wrappers or config |
 | **Planned** | 2 | Architecture designed, not runtime-wired (memory hierarchy, personal knowledge base) |
-| **Missing** | 29 | Needs new connectors, skills, or architectural work |
+| **Missing** | 28 | Needs new connectors, skills, or architectural work |
 
 ### Top 10 Most-Wanted Use Cases (by community frequency)
 
@@ -36,14 +36,14 @@ These are the most commonly cited use cases across all source articles, rank-ord
 | **7** | **Smart home control** | Missing | HomeAssistant / Hue skill | v0.6+ |
 | **8** | **Group chat @mention gating** | Partial | Per-channel routing config + group-scoped policy model | **v0.7 (stretch)** |
 | **9** | **Scheduled task guardrails** | Partial | Task cancellation propagation, output sanitization | **v0.4** |
-| **10** | **Browser automation** | Missing | Playwright sandbox on top of the orchestration foundation | **v0.7** |
+| **10** | **Browser automation** | Partial | Baseline sandboxed browser tools shipped in `v0.6.0` M6; authenticated/admin follow-ons still need more hardening | **v0.6 (baseline)** |
 
 ### Key Insight: Two Blockers Unlock Most Value
 
 1. **Orchestration foundation** (`v0.6`) — unlocks safe delegated execution, typed boundaries, provenance-aware handoff, and credential scoping for the high-risk assistant surfaces that follow.
 2. **Email/calendar + attachment tool-surface track** (`v0.7`) — unlocks #1, #2, #3, #4 plus package tracking, morning briefings, weekly reports, job search, transcription, OCR, and other downstream assistant workflows.
 
-Some of the 24 partial use cases are thin-skill follow-ons on top of existing infrastructure. The higher-risk ones now explicitly wait on the `v0.6` orchestration boundary and the `v0.7` connector/tool-surface lane rather than the locked `v0.4` scope.
+Some of the 25 partial use cases are thin-skill follow-ons on top of existing infrastructure. The higher-risk ones now explicitly wait on the `v0.6` orchestration boundary and the `v0.7` connector/tool-surface lane rather than the locked `v0.4` scope. Browser automation moved into the `v0.6` baseline once the sandboxed tool surface and confirmation boundaries landed; authenticated/admin-heavy follow-ons remain future work.
 
 ---
 
@@ -818,10 +818,10 @@ Key design choices: phone-number-based routing, Docker sandboxing for restricted
 
 | Aspect | Status |
 |--------|--------|
-| **shisad support** | Missing (deferred to the browser-automation lane) |
-| **Gap** | No browser automation tool. Browser executor exists (`src/shisad/executors/browser.py`) but not wired as a user-facing skill. |
-| **Needed** | Browser automation skill (Playwright-based). Page interaction tools (navigate, click, fill, extract). Session management for authenticated sites. |
-| **Security notes** | Browser automation is extremely high-risk: highest prompt-injection pressure (web pages are untrusted), credential exposure (logging into sites), action surface (can do anything a human can in a browser). Requires: sandboxed browser, action confirmation, URL allowlisting, no credential exposure to LLM context. Target: **v0.7**. |
+| **shisad support** | Partial (`v0.6.0` M6 ships `browser.navigate`, `browser.read_page`, `browser.screenshot`, `browser.click`, `browser.type_text`, and `browser.end_session`) |
+| **Gap** | Baseline browser automation is present, but authenticated/admin-heavy workflows still need stronger session/cookie ergonomics and broader live-site coverage. |
+| **Needed** | Follow-on browser hardening for authenticated sites, richer form flows, and broader operator-facing validation coverage. |
+| **Security notes** | Browser automation remains one of the highest-risk surfaces: web pages are untrusted, side effects must be attributable, and browser writes need confirmation. The current baseline ships sandboxed execution, URL allowlisting, taint-marked reads, and confirmation-gated click/type actions. |
 
 ---
 
@@ -935,7 +935,7 @@ Key design choices: phone-number-based routing, Docker sandboxing for restricted
 | Autonomous task execution | Multi-step execution loop + kill switch | v0.5 | Extremely high-risk; commit-before-contamination |
 | Content/newsletter drafting | Style profile in memory + proactive gen | v0.6+ | Needs memory hierarchy + scheduled tasks |
 | Bulk data ingestion | Ingestion pipeline + ContentFirewall | v0.6+ | Major poisoning vector; rate-limited |
-| Browser automation | Playwright + sandboxed browser | **v0.7** | Highest injection pressure; URL allowlisting |
+| Browser automation | Playwright + sandboxed browser | **v0.6** | Highest injection pressure; baseline shipped with allowlisting + confirmation-gated browser writes, broader authenticated flows later |
 | Self-extending agent (write own skills) | Clean-room proposal workflow | Present (v0.3) | Deliberate: proposal-only, no auto-apply |
 
 ### Deliberate Divergences (Not a Gap)
@@ -1045,7 +1045,7 @@ Based on the article and OpenClaw's architecture:
 | **v0.5** | Public release baseline: evidence references, public docs, licensing, and release-ready runtime validation |
 | **v0.6** | Orchestration foundation, multi-turn taint/task handoff, typed delegated execution, safe subagent/task runtime for later assistant surfaces |
 | **v0.6.1** | MCP/A2A interop and remote-tool trust work |
-| **v0.7** | Email (read/send/triage), calendar (read/write), morning briefings (full), attachment pipeline, browser automation, weekly reports, content drafting, TTS, meeting transcription, voice-to-journal, health/fitness dashboards, financial alerts/queries, receipt processing, document filing/OCR, personal CRM, job search, package tracking, flight tracking, Google Workspace, media server management |
+| **v0.7** | Email (read/send/triage), calendar (read/write), morning briefings (full), attachment pipeline, weekly reports, content drafting, TTS, meeting transcription, voice-to-journal, health/fitness dashboards, financial alerts/queries, receipt processing, document filing/OCR, personal CRM, job search, package tracking, flight tracking, Google Workspace, media server management |
 | **v0.6+** | Music control, smart home, grocery/shopping, bulk data ingestion, news monitoring (structured), content repurposing, customer support agent, social media management, voice telephony |
 | **v0.7+** | Memory hierarchy, preference learning, personal knowledge base / RAG, bookmark/link search, family calendar aggregation, household coordination, location-aware recall, group chat @mention gating, memory-driven extraction workflows |
 | **v0.8** | Operator Web UI, TUI/web progress-status streaming, multitenant deployments |
@@ -1135,7 +1135,7 @@ Complete per-use-case breakdown across all 62 cataloged use cases.
 | 23.1 | Media server management (Plex/Jellyfin) | v0.6+ | Radarr/Sonarr API |
 | 24.1 | Voice-to-journal | v0.7+ | STT |
 | 25.1 | Family calendar aggregation | v0.7+ | Calendar connectors |
-| 26.1 | Browser automation (forms, web admin) | **v0.7** | Playwright sandbox |
+| 26.1 | Browser automation (forms, web admin) | **v0.6 (baseline)** | Playwright sandbox; authenticated/admin-heavy follow-ons still need additional hardening |
 | 27.1 | Google Workspace editing | v0.6+ | Google API skills |
 
 ---

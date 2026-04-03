@@ -26,6 +26,11 @@ class MonitorDecision(BaseModel):
 class ActionMonitor:
     """Deterministic M2 monitor with clean-room constraints."""
 
+    _READ_ONLY_BROWSER_TOOLS: ClassVar[set[str]] = {
+        "browser.navigate",
+        "browser.read_page",
+        "browser.screenshot",
+    }
     _HIGH_RISK_TOOLS: ClassVar[set[str]] = {
         "http.request",
         "send_email",
@@ -58,6 +63,11 @@ class ActionMonitor:
 
             if tool in self._HIGH_RISK_TOOLS and not self._goal_mentions_side_effect(goal_text):
                 reject_flags.append(f"{tool}:goal_misaligned_high_risk")
+                continue
+
+            if tool in self._READ_ONLY_BROWSER_TOOLS and self._goal_mentions_browser_navigation(
+                goal_text
+            ):
                 continue
 
             if self._looks_suspicious_url(argument_text):
@@ -95,6 +105,17 @@ class ActionMonitor:
             "look up",
             "lookup",
             "download",
+        )
+        return any(token in goal_text for token in cues)
+
+    @staticmethod
+    def _goal_mentions_browser_navigation(goal_text: str) -> bool:
+        cues = (
+            "browser",
+            "browse",
+            "open",
+            "visit",
+            "navigate",
         )
         return any(token in goal_text for token in cues)
 

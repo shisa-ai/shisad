@@ -2,7 +2,7 @@
 
 *Created: 2026-03-27*
 *Status: Design draft*
-*Updated: 2026-04-01 — v0.6.0 G0 shipped restart-stable metadata reload, orphan-blob quarantine, and generic unknown-key wrapping fallback*
+*Updated: 2026-04-03 — v0.6.0 G0 shipped restart-stable metadata reload, orphan-blob quarantine, and generic unknown-key wrapping fallback; v0.6.0 M6 records the text-first channel rendering contract*
 
 ## Problem
 
@@ -117,6 +117,20 @@ The channel adapter renders evidence blocks as expandable/collapsible UI element
 - **TUI**: Dedicated evidence pane (side panel or scrollable section)
 
 The user always sees the full content. The LLM doesn't.
+
+### Channel-Safe Rendering Contract
+
+The canonical representation is the structured `EvidenceRef`, not a particular terminal/card/transcript rendering. That distinction matters because shisad has to support both richer local UIs and text-first chat surfaces with limited formatting affordances.
+
+Rules:
+
+- Keep a structured evidence payload as the source of truth.
+- Treat terminal/chat renderers as flatteners from structured fields, not as the canonical store.
+- Do not assume markdown widgets, embeds, or per-channel rich UI affordances exist.
+- If a renderer uses reparsing at all, it must fail closed and fall back to plain text rather than inventing state from malformed transcript text.
+- Unicode glyphs and emoji can be useful optional affordances on text-first surfaces, but they are presentation sugar, not a correctness dependency.
+
+In practice that means Discord/Slack/Telegram/terminal/TUI renderers may differ cosmetically, but all of them should be derived from the same structured evidence object and must degrade cleanly to plain text.
 
 ### Why This Works (Security Properties)
 

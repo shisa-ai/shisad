@@ -146,10 +146,10 @@ Good:
 
 Gap:
 - `config/selfmod/allowed_signers` is an empty operator-populated trust store by default. That is honest and safe, but it means the trust anchor only exists after operator setup.
-- Multi-engine skill scanning and remote-tool discovery hardening are still future work (`PF.70`).
+- M6 closes the local skill-manifest tool-surface integrity gap (declared-tool schema hashes now persist across install/re-registration, and local tool metadata goes through dedicated tool-surface analysis), but multi-engine scanning and remote-tool discovery hardening are still future work.
 
 Assessment:
-- Strong model, partial implementation, operator configuration required.
+- Strong model, stronger after the local M6 tool-surface hardening pass, but still partial overall and operator configuration is still required.
 
 ### 5. Release pipeline and publish provenance
 

@@ -121,6 +121,11 @@ _CLEANROOM_UNTRUSTED_TOOL_NAMES: set[str] = {
     "retrieve_rag",
     "web.search",
     "web.fetch",
+    "browser.navigate",
+    "browser.read_page",
+    "browser.screenshot",
+    "browser.click",
+    "browser.type_text",
     "realitycheck.search",
     "realitycheck.read",
 }
@@ -171,12 +176,14 @@ _EVIDENCE_CONTENT_KEYS: set[str] = set(_EVIDENCE_CONTENT_PREVIEW_KEYS)
 _EVIDENCE_GENERIC_WRAP_MIN_BYTES = 256
 _EVIDENCE_REF_ID_RE = re.compile(r"\bev-[0-9a-f]{16}\b")
 _IN_BAND_READ_ONLY_ACTION_KINDS: set[ActionKind] = {
+    ActionKind.BROWSER_READ,
     ActionKind.FS_READ,
     ActionKind.FS_LIST,
     ActionKind.MEMORY_READ,
     ActionKind.MESSAGE_READ,
 }
 _DELEGATE_SIDE_EFFECT_ACTION_KINDS: set[ActionKind] = {
+    ActionKind.BROWSER_WRITE,
     ActionKind.EGRESS,
     ActionKind.FS_WRITE,
     ActionKind.MEMORY_WRITE,
@@ -1133,6 +1140,68 @@ def _build_explicit_memory_intent_proposal(user_text: str) -> ActionProposal | N
                 tool_name=ToolName("web.fetch"),
                 arguments={"url": url},
                 reasoning="Execute the user's explicit web fetch request.",
+                data_sources=["user_text:explicit_memory_intent"],
+            )
+
+    browser_navigate_match = re.fullmatch(
+        r"(?:browser\s+)?(?:navigate|open)\s+(https?://\S+)",
+        normalized,
+        flags=re.IGNORECASE,
+    )
+    if browser_navigate_match is not None:
+        url = browser_navigate_match.group(1).strip()
+        if url:
+            return ActionProposal(
+                action_id="explicit-browser-navigate",
+                tool_name=ToolName("browser.navigate"),
+                arguments={"url": url},
+                reasoning="Execute the user's explicit browser navigation request.",
+                data_sources=["user_text:explicit_memory_intent"],
+            )
+
+    if re.fullmatch(
+        r"(?:browser\s+)?(?:read(?:\s+page)?|show\s+page)",
+        normalized,
+        flags=re.IGNORECASE,
+    ):
+        return ActionProposal(
+            action_id="explicit-browser-read-page",
+            tool_name=ToolName("browser.read_page"),
+            arguments={},
+            reasoning="Execute the user's explicit browser read request.",
+            data_sources=["user_text:explicit_memory_intent"],
+        )
+
+    browser_click_match = re.fullmatch(
+        r"(?:browser\s+)?click\s+(.+)",
+        normalized,
+        flags=re.IGNORECASE,
+    )
+    if browser_click_match is not None:
+        target = browser_click_match.group(1).strip()
+        if target:
+            return ActionProposal(
+                action_id="explicit-browser-click",
+                tool_name=ToolName("browser.click"),
+                arguments={"target": target, "description": target},
+                reasoning="Execute the user's explicit browser click request.",
+                data_sources=["user_text:explicit_memory_intent"],
+            )
+
+    browser_type_match = re.fullmatch(
+        r'(?:browser\s+)?type\s+"([^"]+)"\s+into\s+(.+)',
+        normalized,
+        flags=re.IGNORECASE,
+    )
+    if browser_type_match is not None:
+        text = browser_type_match.group(1).strip()
+        target = browser_type_match.group(2).strip()
+        if text and target:
+            return ActionProposal(
+                action_id="explicit-browser-type-text",
+                tool_name=ToolName("browser.type_text"),
+                arguments={"target": target, "text": text},
+                reasoning="Execute the user's explicit browser type request.",
                 data_sources=["user_text:explicit_memory_intent"],
             )
 

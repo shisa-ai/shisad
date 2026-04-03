@@ -11,6 +11,8 @@ from shisad.security.firewall.secrets import detect_ingress_secrets
 WRITE_TOOLS = {
     "file.write",
     "fs.write",
+    "browser.click",
+    "browser.type_text",
     "update_calendar",
     "create_event",
     "send_email",

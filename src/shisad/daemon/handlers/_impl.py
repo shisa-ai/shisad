@@ -70,6 +70,7 @@ from shisad.daemon.handlers._impl_tool_execution import ToolExecutionImplMixin
 from shisad.daemon.handlers._side_effects import is_side_effect_tool
 from shisad.daemon.handlers._string_utils import optional_string
 from shisad.daemon.handlers._tool_exec_helpers import execute_structured_tool
+from shisad.executors.browser import BrowserToolkit
 from shisad.executors.mounts import FilesystemPolicy
 from shisad.executors.proxy import NetworkPolicy
 from shisad.executors.sandbox import (
@@ -192,6 +193,76 @@ def _structured_web_fetch(
             max_bytes=_optional_int(arguments.get("max_bytes")),
         )
     )
+
+
+async def _structured_browser_navigate(
+    handler: Any,
+    arguments: Mapping[str, Any],
+    context: StructuredToolContext,
+) -> Mapping[str, Any]:
+    return dict(
+        await handler._browser_toolkit.navigate(
+            session=context.session,
+            url=_argument_string(arguments, "url"),
+        )
+    )
+
+
+async def _structured_browser_read_page(
+    handler: Any,
+    arguments: Mapping[str, Any],
+    context: StructuredToolContext,
+) -> Mapping[str, Any]:
+    _ = arguments
+    return dict(await handler._browser_toolkit.read_page(session=context.session))
+
+
+async def _structured_browser_screenshot(
+    handler: Any,
+    arguments: Mapping[str, Any],
+    context: StructuredToolContext,
+) -> Mapping[str, Any]:
+    _ = arguments
+    return dict(await handler._browser_toolkit.screenshot(session=context.session))
+
+
+async def _structured_browser_click(
+    handler: Any,
+    arguments: Mapping[str, Any],
+    context: StructuredToolContext,
+) -> Mapping[str, Any]:
+    return dict(
+        await handler._browser_toolkit.click(
+            session=context.session,
+            target=_argument_string(arguments, "target"),
+            description=_argument_string(arguments, "description"),
+        )
+    )
+
+
+async def _structured_browser_type_text(
+    handler: Any,
+    arguments: Mapping[str, Any],
+    context: StructuredToolContext,
+) -> Mapping[str, Any]:
+    return dict(
+        await handler._browser_toolkit.type_text(
+            session=context.session,
+            target=_argument_string(arguments, "target"),
+            text=_argument_string(arguments, "text"),
+            is_sensitive=bool(arguments.get("is_sensitive", False)),
+            submit=bool(arguments.get("submit", False)),
+        )
+    )
+
+
+async def _structured_browser_end_session(
+    handler: Any,
+    arguments: Mapping[str, Any],
+    context: StructuredToolContext,
+) -> Mapping[str, Any]:
+    _ = arguments
+    return dict(await handler._browser_toolkit.end_session(session=context.session))
 
 
 def _structured_realitycheck_search(
@@ -762,6 +833,24 @@ class HandlerImplementation(
             allowed_domains=web_allowed_domains,
             timeout_seconds=self._config.web_timeout_seconds,
             max_fetch_bytes=self._config.web_max_fetch_bytes,
+        )
+        browser_allowed_domains = [
+            item for item in self._config.browser_allowed_domains if item.strip()
+        ]
+        if not browser_allowed_domains:
+            browser_allowed_domains = list(web_allowed_domains)
+        self._browser_toolkit = BrowserToolkit(
+            enabled=bool(self._config.browser_enabled),
+            command=self._config.browser_command,
+            session_root=self._config.data_dir / "browser",
+            allowed_domains=browser_allowed_domains,
+            timeout_seconds=self._config.browser_timeout_seconds,
+            require_hardened_isolation=bool(
+                self._config.browser_require_hardened_isolation
+            ),
+            max_read_bytes=self._config.browser_max_read_bytes,
+            sandbox_runner=self._sandbox,
+            browser_sandbox=self._browser_sandbox,
         )
         self._fs_git_toolkit = FsGitToolkit(
             roots=list(self._config.assistant_fs_roots),
@@ -2279,6 +2368,15 @@ class HandlerImplementation(
         return {
             "web.search": (_structured_web_search, "web_search_failed"),
             "web.fetch": (_structured_web_fetch, "web_fetch_failed"),
+            "browser.navigate": (_structured_browser_navigate, "browser_navigate_failed"),
+            "browser.read_page": (_structured_browser_read_page, "browser_read_page_failed"),
+            "browser.screenshot": (_structured_browser_screenshot, "browser_screenshot_failed"),
+            "browser.click": (_structured_browser_click, "browser_click_failed"),
+            "browser.type_text": (_structured_browser_type_text, "browser_type_text_failed"),
+            "browser.end_session": (
+                _structured_browser_end_session,
+                "browser_end_session_failed",
+            ),
             "realitycheck.search": (
                 _structured_realitycheck_search,
                 "realitycheck_search_failed",

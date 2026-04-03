@@ -177,6 +177,12 @@ def test_m1_rf014_structured_tool_registry_lists_expected_handlers() -> None:
     assert {
         "web.search",
         "web.fetch",
+        "browser.navigate",
+        "browser.read_page",
+        "browser.screenshot",
+        "browser.click",
+        "browser.type_text",
+        "browser.end_session",
         "realitycheck.search",
         "realitycheck.read",
         "fs.list",

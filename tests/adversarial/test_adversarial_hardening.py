@@ -8,6 +8,9 @@ from pathlib import Path
 
 import pytest
 
+from shisad.core.tools.registry import ToolRegistry
+from shisad.core.tools.schema import ToolDefinition, ToolParameter
+from shisad.core.types import Capability, TaintLabel, ToolName
 from shisad.executors.browser import BrowserSandbox, BrowserSandboxPolicy
 from shisad.executors.proxy import EgressProxy, NetworkPolicy
 from shisad.memory.manager import MemoryManager
@@ -20,6 +23,8 @@ from shisad.security.control_plane.network import (
 from shisad.security.control_plane.schema import Origin, RiskTier, sanitize_metadata_payload
 from shisad.security.firewall import ContentFirewall
 from shisad.security.firewall.output import OutputFirewall
+from shisad.security.pep import PEP, PolicyContext
+from shisad.security.policy import PolicyBundle
 
 
 def _json(path: Path) -> object:
@@ -167,3 +172,37 @@ def test_m6_t11_browser_exfil_attempt_cannot_bypass_policy_gate(tmp_path: Path) 
     result = sandbox.paste(prompt + " https://evil.com/collect")
     assert result.allowed is False
     assert result.blocked is True or result.require_confirmation is True
+
+
+def test_m6_t12_browser_navigation_from_untrusted_page_requires_confirmation() -> None:
+    registry = ToolRegistry()
+    registry.register(
+        ToolDefinition(
+            name=ToolName("browser.navigate"),
+            description="Navigate the browser to a URL.",
+            parameters=[
+                ToolParameter(
+                    name="url",
+                    type="string",
+                    required=True,
+                    semantic_type="url",
+                )
+            ],
+            capabilities_required=[Capability.HTTP_REQUEST],
+            require_confirmation=False,
+        )
+    )
+    pep = PEP(PolicyBundle(default_require_confirmation=False), registry)
+
+    decision = pep.evaluate(
+        ToolName("browser.navigate"),
+        {"url": "https://evil.example/phish"},
+        PolicyContext(
+            capabilities={Capability.HTTP_REQUEST},
+            taint_labels={TaintLabel.UNTRUSTED},
+            user_goal_host_patterns=set(),
+            untrusted_host_patterns={"evil.example"},
+        ),
+    )
+
+    assert decision.kind.value == "require_confirmation"

@@ -205,12 +205,10 @@ class PEP:
             return endorsement_decision
 
         # 6. Egress allowlist enforcement
-        destination_declared_by_tool = False
         try:
             destination = self._extract_destination(arguments)
             if destination is None:
                 destination = self._infer_destination_from_tool(tool)
-                destination_declared_by_tool = destination is not None
         except ValueError:
             return self._reject(
                 tool_name,
@@ -234,6 +232,10 @@ class PEP:
         egress_requires_confirmation = False
         egress_reason = ""
         if destination is not None:
+            tool_declared_destination = self._tool_destination_matches(
+                destination=destination,
+                tool=tool,
+            )
             if destination.protocol and destination.protocol not in {"http", "https"}:
                 self.egress_attempts.append(
                     EgressAttempt(
@@ -253,9 +255,7 @@ class PEP:
                     ),
                 )
 
-            allowlisted = self._is_egress_allowed(destination)
-            if destination_declared_by_tool:
-                allowlisted = True
+            allowlisted = self._is_egress_allowed(destination) or tool_declared_destination
             user_requested = self._host_matches_any(
                 destination.host, context.user_goal_host_patterns
             )
@@ -300,7 +300,7 @@ class PEP:
                     ),
                 )
 
-            if destination_declared_by_tool:
+            if tool_declared_destination:
                 self.egress_attempts.append(
                     EgressAttempt(
                         tool_name=tool_name,
@@ -838,6 +838,13 @@ class PEP:
             return value
         parsed = urlparse(value)
         return (parsed.hostname or "").lower()
+
+    def _tool_destination_matches(self, *, destination: EgressDestination, tool: Any) -> bool:
+        for raw_pattern in getattr(tool, "destinations", []):
+            pattern = self._destination_host_pattern(str(raw_pattern))
+            if pattern and host_matches(destination.host, pattern):
+                return True
+        return False
 
     def _is_egress_allowed(self, destination: EgressDestination) -> bool:
         if not self._policy.egress:

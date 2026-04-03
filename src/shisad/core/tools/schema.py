@@ -54,9 +54,11 @@ class ToolDefinition(BaseModel):
         canonical = json.dumps(
             {
                 "name": self.name,
+                "description": self.description,
                 "parameters": [p.model_dump() for p in self.parameters],
                 "capabilities_required": sorted(self.capabilities_required),
                 "destinations": sorted(self.destinations),
+                "require_confirmation": self.require_confirmation,
                 "sandbox_type": self.sandbox_type or "",
             },
             sort_keys=True,

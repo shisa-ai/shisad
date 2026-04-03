@@ -12,7 +12,10 @@ from shisad.core.tools.registry import ToolRegistry
 from shisad.core.tools.schema import ToolDefinition, ToolParameter
 from shisad.core.transcript import TranscriptStore
 from shisad.core.types import Capability, SessionId, TaintLabel, ToolName
-from shisad.daemon.handlers._impl import _structured_evidence_promote
+from shisad.daemon.handlers._impl import (
+    _structured_evidence_promote,
+    _structured_evidence_read,
+)
 from shisad.daemon.handlers._impl_session import (
     _build_planner_conversation_context,
     _wrap_serialized_tool_outputs_with_evidence,
@@ -242,3 +245,55 @@ async def test_evidence_promote_preserves_user_reviewed_taint_not_trusted(tmp_pa
 
     assert payload["ok"] is True
     assert payload["taint_labels"] == [TaintLabel.USER_REVIEWED.value]
+
+
+@pytest.mark.asyncio
+async def test_cross_session_evidence_refs_cannot_be_read_or_promoted(tmp_path) -> None:
+    store = EvidenceStore(tmp_path / "evidence", salt=b"a" * 32)
+    sid_a = SessionId("sess-a")
+    sid_b = SessionId("sess-b")
+    ref = store.store(
+        sid_a,
+        "session-a-only body",
+        taint_labels={TaintLabel.UNTRUSTED},
+        source="web.fetch:example.com",
+        summary="session-a-only body",
+    )
+    pep = PEP(
+        PolicyBundle(default_require_confirmation=False),
+        _registry_for_evidence(),
+        evidence_store=store,
+    )
+
+    read_decision = pep.evaluate(
+        ToolName("evidence.read"),
+        {"ref_id": ref.ref_id},
+        PolicyContext(capabilities={Capability.MEMORY_READ}, session_id=sid_b),
+    )
+    promote_decision = pep.evaluate(
+        ToolName("evidence.promote"),
+        {"ref_id": ref.ref_id},
+        PolicyContext(capabilities={Capability.MEMORY_READ}, session_id=sid_b),
+    )
+
+    handler = SimpleNamespace(_evidence_store=store)
+    context = SimpleNamespace(session_id=sid_b)
+    read_payload = await _structured_evidence_read(handler, {"ref_id": ref.ref_id}, context)
+    promote_payload = await _structured_evidence_promote(
+        handler, {"ref_id": ref.ref_id}, context
+    )
+
+    assert read_decision.kind.value == "reject"
+    assert read_decision.reason == "invalid or unknown evidence reference"
+    assert promote_decision.kind.value == "reject"
+    assert promote_decision.reason == "invalid or unknown evidence reference"
+    assert read_payload == {
+        "ok": False,
+        "error": "invalid or unknown evidence reference",
+        "ref_id": ref.ref_id,
+    }
+    assert promote_payload == {
+        "ok": False,
+        "error": "invalid or unknown evidence reference",
+        "ref_id": ref.ref_id,
+    }

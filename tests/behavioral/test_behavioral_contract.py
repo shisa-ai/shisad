@@ -15,6 +15,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 import threading
 from collections.abc import Callable, Mapping
 from contextlib import suppress
@@ -121,6 +122,11 @@ def _extract_reminder_arguments(goal: str) -> tuple[str, str] | None:
     return None
 
 
+def _extract_browser_url(goal: str) -> str:
+    match = re.search(r"(https?://\S+)", goal, flags=re.IGNORECASE)
+    return match.group(1).strip() if match else ""
+
+
 async def _stub_complete(
     self: LocalPlannerProvider,
     messages: list[Message],
@@ -184,6 +190,43 @@ async def _stub_complete(
             message=Message(role="assistant", content=response),
             model="behavioral-stub",
             finish_reason="stop",
+            usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+        )
+
+    if "browser navigate" in goal_lower or "open the browser to" in goal_lower:
+        url = _extract_browser_url(goal)
+        return ProviderResponse(
+            message=Message(
+                role="assistant",
+                content="Opening the browser.",
+                tool_calls=[
+                    _tool_call(
+                        "browser.navigate",
+                        {"url": url},
+                        call_id="t-browser-navigate",
+                    )
+                ],
+            ),
+            model="behavioral-stub",
+            finish_reason="tool_calls",
+            usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+        )
+
+    if "browser click" in goal_lower or "click the continue button" in goal_lower:
+        return ProviderResponse(
+            message=Message(
+                role="assistant",
+                content="Clicking the page control.",
+                tool_calls=[
+                    _tool_call(
+                        "browser.click",
+                        {"target": "#continue", "description": "continue link"},
+                        call_id="t-browser-click",
+                    )
+                ],
+            ),
+            model="behavioral-stub",
+            finish_reason="tool_calls",
             usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
         )
 
@@ -390,6 +433,32 @@ def _force_deterministic_local_planner(
 class _StubSearchHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
+        if parsed.path == "/browser":
+            body = (
+                b"<html><head><title>Browser Home</title></head><body>"
+                b"<h1>Hello browser</h1>"
+                b"<p>Read only content for behavioral test.</p>"
+                b"<a id='continue' href='/browser-next'>Continue</a>"
+                b"</body></html>"
+            )
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        if parsed.path == "/browser-next":
+            body = (
+                b"<html><head><title>Browser Next</title></head><body>"
+                b"You reached the next browser page."
+                b"</body></html>"
+            )
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
         if parsed.path != "/search":
             body = b"stub page content for behavioral test"
             self.send_response(200)
@@ -494,6 +563,7 @@ class ContractHarness:
     config: DaemonConfig
     workspace_root: Path
     web_search_backend_url: str
+    browser_base_url: str
 
 
 @pytest.fixture
@@ -533,6 +603,12 @@ async def contract_harness(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> C
         web_search_enabled=True,
         web_search_backend_url=backend_url,
         web_allowed_domains=["127.0.0.1", "localhost"],
+        browser_enabled=True,
+        browser_command=(
+            f"{sys.executable} "
+            f"{Path(__file__).resolve().parents[1] / 'fixtures' / 'fake_playwright_cli.py'}"
+        ),
+        browser_allowed_domains=["127.0.0.1", "localhost"],
         assistant_fs_roots=[workspace_root],
     )
 
@@ -546,6 +622,7 @@ async def contract_harness(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> C
             config=config,
             workspace_root=workspace_root,
             web_search_backend_url=backend_url,
+            browser_base_url=backend_url,
         )
     finally:
         with suppress(Exception):
@@ -1068,6 +1145,82 @@ async def test_contract_web_fetch_routes_to_confirmation_not_lockdown(
 
 
 @pytest.mark.asyncio
+async def test_contract_browser_navigate_executes_and_returns_page(
+    contract_harness: ContractHarness,
+) -> None:
+    sid = await _create_session(contract_harness.client)
+    reply = await contract_harness.client.call(
+        "session.message",
+        {
+            "session_id": sid,
+            "content": f"browser navigate {contract_harness.browser_base_url}/browser",
+        },
+    )
+    assert reply.get("lockdown_level") == "normal"
+    assert int(reply.get("blocked_actions", 0)) == 0
+    assert int(reply.get("confirmation_required_actions", 0)) == 0
+    assert int(reply.get("executed_actions", 0)) == 1
+    outputs = _extract_tool_outputs(reply)
+    assert "browser.navigate" in outputs
+    payload = outputs["browser.navigate"][0]
+    assert payload.get("ok") is True
+    assert payload.get("title") == "Browser Home"
+
+
+@pytest.mark.asyncio
+async def test_contract_browser_click_routes_to_confirmation_not_lockdown(
+    contract_harness: ContractHarness,
+) -> None:
+    sid = await _create_session(contract_harness.client)
+    await contract_harness.client.call(
+        "session.message",
+        {
+            "session_id": sid,
+            "content": f"browser navigate {contract_harness.browser_base_url}/browser",
+        },
+    )
+    reply = await contract_harness.client.call(
+        "session.message",
+        {"session_id": sid, "content": "click the continue button in the browser"},
+    )
+    assert reply.get("lockdown_level") == "normal"
+    assert int(reply.get("blocked_actions", 0)) == 0
+    assert int(reply.get("confirmation_required_actions", 0)) >= 1
+
+
+@pytest.mark.asyncio
+async def test_contract_browser_click_confirmation_approve_executes_after_confirmation(
+    contract_harness: ContractHarness,
+) -> None:
+    sid = await _create_session(contract_harness.client)
+    await contract_harness.client.call(
+        "session.message",
+        {
+            "session_id": sid,
+            "content": f"browser navigate {contract_harness.browser_base_url}/browser",
+        },
+    )
+    proposed = await contract_harness.client.call(
+        "session.message",
+        {"session_id": sid, "content": "click the continue button in the browser"},
+    )
+    assert proposed.get("lockdown_level") == "normal"
+    pending_ids = proposed.get("pending_confirmation_ids")
+    assert isinstance(pending_ids, list)
+    assert pending_ids
+
+    confirmed = await _confirm_pending_action(contract_harness.client, str(pending_ids[0]))
+    assert confirmed.get("confirmed") is True
+    await _wait_for_audit_event(
+        contract_harness.client,
+        event_type="ToolExecuted",
+        session_id=sid,
+        predicate=lambda event: str(event.get("data", {}).get("tool_name", "")) == "browser.click"
+        and bool(event.get("data", {}).get("success")) is True,
+    )
+
+
+@pytest.mark.asyncio
 async def test_contract_git_status_executes_and_returns_output(
     contract_harness: ContractHarness,
 ) -> None:
@@ -1291,6 +1444,7 @@ async def contract_harness_no_policy_egress(
             config=config,
             workspace_root=workspace_root,
             web_search_backend_url=backend_url,
+            browser_base_url=backend_url,
         )
     finally:
         with suppress(Exception):
@@ -1351,6 +1505,7 @@ async def contract_harness_backend_unconfigured(
             config=config,
             workspace_root=workspace_root,
             web_search_backend_url="",
+            browser_base_url="",
         )
     finally:
         with suppress(Exception):

@@ -2,6 +2,7 @@
 
 from shisad.executors.browser import (
     BrowserClipboardMode,
+    BrowserCommandRunner,
     BrowserCookiesMode,
     BrowserDownloadsMode,
     BrowserExtensionsMode,
@@ -11,6 +12,7 @@ from shisad.executors.browser import (
     BrowserSandboxMode,
     BrowserSandboxPolicy,
     BrowserScreenshotResult,
+    BrowserToolkit,
 )
 from shisad.executors.connect_path import (
     ConnectPathProxy,
@@ -37,6 +39,7 @@ from shisad.executors.sandbox import (
 
 __all__ = [
     "BrowserClipboardMode",
+    "BrowserCommandRunner",
     "BrowserCookiesMode",
     "BrowserDownloadsMode",
     "BrowserExtensionsMode",
@@ -46,6 +49,7 @@ __all__ = [
     "BrowserSandboxMode",
     "BrowserSandboxPolicy",
     "BrowserScreenshotResult",
+    "BrowserToolkit",
     "ConnectPathProxy",
     "ConnectPathResult",
     "DegradedModePolicy",

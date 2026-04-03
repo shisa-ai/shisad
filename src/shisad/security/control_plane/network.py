@@ -238,6 +238,21 @@ class NetworkIntelligenceMonitor:
                 timeout=self._timeout_seconds,
             )
         except TimeoutError:
+            if self._should_allow_heuristic_on_timeout(
+                heuristic=heuristic,
+                enrichment=enrichment,
+                risk_tier=risk_tier,
+            ):
+                return heuristic.model_copy(
+                    update={
+                        "reason_codes": [
+                            *heuristic.reason_codes,
+                            "network:monitor_timeout_heuristic_allow",
+                        ],
+                        "timed_out": True,
+                        "source": "timeout_heuristic_allow",
+                    }
+                )
             provider_decision = self._timeout_fallback(risk_tier=risk_tier, enrichment=enrichment)
             self._cache_decision(cache_key, provider_decision)
             return self._combine_decisions(heuristic=heuristic, llm=provider_decision)
@@ -468,6 +483,19 @@ class NetworkIntelligenceMonitor:
             enrichment=enrichment,
             timed_out=True,
             source="timeout_fallback",
+        )
+
+    @staticmethod
+    def _should_allow_heuristic_on_timeout(
+        *,
+        heuristic: NetworkMonitorDecision,
+        enrichment: dict[str, Any],
+        risk_tier: RiskTier,
+    ) -> bool:
+        return (
+            risk_tier == RiskTier.LOW
+            and heuristic.decision == NetworkMonitorDecisionKind.ALLOW
+            and bool(enrichment.get("declared_domain"))
         )
 
     def _combine_decisions(

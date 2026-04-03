@@ -22,6 +22,8 @@ class ActionKind(StrEnum):
     FS_WRITE = "FS_WRITE"
     FS_LIST = "FS_LIST"
     EGRESS = "EGRESS"
+    BROWSER_READ = "BROWSER_READ"
+    BROWSER_WRITE = "BROWSER_WRITE"
     SHELL_EXEC = "SHELL_EXEC"
     ENV_ACCESS = "ENV_ACCESS"
     MEMORY_READ = "MEMORY_READ"
@@ -32,7 +34,7 @@ class ActionKind(StrEnum):
 
 
 _CAPABILITY_TO_ACTION_KINDS: dict[Capability, set[ActionKind]] = {
-    Capability.HTTP_REQUEST: {ActionKind.EGRESS},
+    Capability.HTTP_REQUEST: {ActionKind.EGRESS, ActionKind.BROWSER_READ},
     Capability.FILE_WRITE: {ActionKind.FS_WRITE},
     Capability.FILE_READ: {ActionKind.FS_READ},
     Capability.MEMORY_WRITE: {ActionKind.MEMORY_WRITE},
@@ -136,6 +138,12 @@ _TOOL_KIND_MAP: dict[str, ActionKind] = {
     "http.request": ActionKind.EGRESS,
     "web.search": ActionKind.EGRESS,
     "web.fetch": ActionKind.EGRESS,
+    "browser.navigate": ActionKind.BROWSER_READ,
+    "browser.read_page": ActionKind.BROWSER_READ,
+    "browser.screenshot": ActionKind.BROWSER_READ,
+    "browser.click": ActionKind.BROWSER_WRITE,
+    "browser.type_text": ActionKind.BROWSER_WRITE,
+    "browser.end_session": ActionKind.BROWSER_READ,
     "send_email": ActionKind.MESSAGE_SEND,
     "message.send": ActionKind.MESSAGE_SEND,
     "session.message": ActionKind.MESSAGE_READ,
@@ -342,7 +350,7 @@ def normalize_resource_ids(*, action_kind: ActionKind, arguments: dict[str, Any]
                 normalized = _normalize_path(value)
                 if normalized:
                     resources.append(normalized)
-    elif action_kind == ActionKind.EGRESS:
+    elif action_kind in {ActionKind.EGRESS, ActionKind.BROWSER_READ, ActionKind.BROWSER_WRITE}:
         resources.extend(extract_network_hosts(arguments))
     elif action_kind == ActionKind.ENV_ACCESS:
         env_obj = arguments.get("env")

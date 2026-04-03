@@ -1,18 +1,61 @@
-"""Browser sandbox helpers (clipboard + screenshot handling)."""
+"""Browser sandbox helpers and external browser toolkit wrapper."""
 
 from __future__ import annotations
 
 import base64
 import binascii
+import contextlib
 import hashlib
+import ipaddress
+import json
+import math
+import re
+import shlex
+import shutil
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
+from typing import Any, Protocol
+from urllib.parse import urlparse
 
 from pydantic import BaseModel, Field
 
+from shisad.core.host_matching import host_matches
+from shisad.core.session import Session
 from shisad.core.types import TaintLabel
+from shisad.executors.mounts import FilesystemPolicy
+from shisad.executors.proxy import NetworkPolicy
+from shisad.executors.sandbox import (
+    DegradedModePolicy,
+    ResourceLimits,
+    SandboxConfig,
+    SandboxResult,
+    SandboxType,
+)
 from shisad.security.firewall.output import OutputFirewall
+
+_SNAPSHOT_ELEMENT_RE = re.compile(
+    r'^\[(?P<ref>e\d+)\]\s+(?P<kind>\w+)\s+"(?P<label>[^"]*)"\s+selector="(?P<selector>[^"]*)"$'
+)
+_STRUCTURED_BROWSER_TARGET_RE = re.compile(r"^(?:e\d+|[#./\[].+)$")
+_TARGET_STOPWORDS = {
+    "a",
+    "an",
+    "browser",
+    "button",
+    "control",
+    "element",
+    "field",
+    "in",
+    "input",
+    "link",
+    "of",
+    "on",
+    "page",
+    "tab",
+    "the",
+    "to",
+}
 
 
 class BrowserSandboxMode(StrEnum):
@@ -153,3 +196,596 @@ class BrowserSandbox:
             size_bytes=len(payload),
             ocr_text=ocr_text,
         )
+
+
+class BrowserCommandRunner(Protocol):
+    """Async command runner interface used by browser automation."""
+
+    async def execute_async(
+        self,
+        config: SandboxConfig,
+        *,
+        session: Session | None = None,
+    ) -> SandboxResult: ...
+
+
+class BrowserToolkit:
+    """Playwright-CLI style browser wrapper with sandboxed command execution."""
+
+    def __init__(
+        self,
+        *,
+        enabled: bool,
+        command: list[str] | str,
+        session_root: Path,
+        allowed_domains: list[str],
+        timeout_seconds: float,
+        require_hardened_isolation: bool,
+        max_read_bytes: int,
+        sandbox_runner: BrowserCommandRunner,
+        browser_sandbox: BrowserSandbox,
+    ) -> None:
+        if isinstance(command, str):
+            command = shlex.split(command)
+        self._enabled = enabled
+        self._command = [str(token) for token in command if str(token).strip()]
+        self._session_root = session_root
+        self._session_root.mkdir(parents=True, exist_ok=True)
+        self._allowed_domains = [item.strip().lower() for item in allowed_domains if item.strip()]
+        self._timeout_seconds = max(1.0, float(timeout_seconds))
+        self._require_hardened_isolation = bool(require_hardened_isolation)
+        self._max_read_bytes = max(1024, int(max_read_bytes))
+        self._sandbox_runner = sandbox_runner
+        self._browser_sandbox = browser_sandbox
+
+    async def navigate(self, *, session: Session, url: str) -> dict[str, Any]:
+        normalized_url = url.strip()
+        if not normalized_url:
+            return self._error_payload("url_required")
+        availability = self._availability_error()
+        if availability is not None:
+            return availability
+        host_error = self._host_policy_error(normalized_url)
+        if host_error is not None:
+            return self._error_payload(host_error)
+        opened = await self._ensure_session_open(session=session)
+        if opened is not None:
+            return opened
+        state = self._load_state(session)
+        state["current_url"] = normalized_url
+        self._save_state(session, state)
+        result = await self._run_cli(
+            session=session,
+            tool_name="browser.navigate",
+            args=["goto", normalized_url],
+            network_urls=[normalized_url],
+            allow_network=True,
+        )
+        if result is not None:
+            return result
+        return await self._capture_page_state(
+            session=session,
+            tool_name="browser.navigate",
+            include_snapshot=True,
+        )
+
+    async def read_page(self, *, session: Session) -> dict[str, Any]:
+        availability = self._availability_error()
+        if availability is not None:
+            return availability
+        state = self._load_state(session)
+        if not bool(state.get("opened")) or not str(state.get("current_url", "")).strip():
+            return self._error_payload("browser_session_missing")
+        return await self._capture_page_state(
+            session=session,
+            tool_name="browser.read_page",
+            include_snapshot=True,
+        )
+
+    async def click(
+        self,
+        *,
+        session: Session,
+        target: str,
+        description: str = "",
+    ) -> dict[str, Any]:
+        availability = self._availability_error()
+        if availability is not None:
+            return availability
+        current_url = self._current_url(session)
+        if not current_url:
+            return self._error_payload("browser_session_missing")
+        requested_target = target.strip()
+        resolved_target = await self._resolve_target(
+            session=session,
+            tool_name="browser.click",
+            target=requested_target,
+            current_url=current_url,
+        )
+        result = await self._run_cli(
+            session=session,
+            tool_name="browser.click",
+            args=["click", resolved_target],
+            network_urls=[current_url],
+            allow_network=True,
+        )
+        if result is not None:
+            return result
+        payload = await self._capture_page_state(
+            session=session,
+            tool_name="browser.click",
+            include_snapshot=True,
+        )
+        if payload.get("ok") is True:
+            payload["action"] = "click"
+            payload["target"] = resolved_target
+            payload["requested_target"] = requested_target
+            payload["description"] = description.strip()
+        return payload
+
+    async def type_text(
+        self,
+        *,
+        session: Session,
+        target: str,
+        text: str,
+        is_sensitive: bool = False,
+        submit: bool = False,
+    ) -> dict[str, Any]:
+        availability = self._availability_error()
+        if availability is not None:
+            return availability
+        current_url = self._current_url(session)
+        if not current_url:
+            return self._error_payload("browser_session_missing")
+        requested_target = target.strip()
+        resolved_target = await self._resolve_target(
+            session=session,
+            tool_name="browser.type_text",
+            target=requested_target,
+            current_url=current_url,
+        )
+        args = ["fill", resolved_target, text]
+        if submit:
+            args.append("--submit")
+        result = await self._run_cli(
+            session=session,
+            tool_name="browser.type_text",
+            args=args,
+            network_urls=[current_url],
+            allow_network=True,
+        )
+        if result is not None:
+            return result
+        payload = await self._capture_page_state(
+            session=session,
+            tool_name="browser.type_text",
+            include_snapshot=False,
+        )
+        if payload.get("ok") is True:
+            payload["action"] = "type_text"
+            payload["target"] = resolved_target
+            payload["requested_target"] = requested_target
+            payload["is_sensitive"] = bool(is_sensitive)
+        return payload
+
+    async def screenshot(self, *, session: Session) -> dict[str, Any]:
+        availability = self._availability_error()
+        if availability is not None:
+            return availability
+        current_url = self._current_url(session)
+        if not current_url:
+            return self._error_payload("browser_session_missing")
+        session_dir = self._session_dir(session)
+        raw_path = session_dir / "page.png"
+        result = await self._run_cli(
+            session=session,
+            tool_name="browser.screenshot",
+            args=["screenshot", "--filename", str(raw_path)],
+            network_urls=[current_url],
+            allow_network=True,
+        )
+        if result is not None:
+            return result
+        page_state = await self._capture_page_state(
+            session=session,
+            tool_name="browser.screenshot",
+            include_snapshot=False,
+        )
+        if page_state.get("ok") is not True:
+            return page_state
+        if not raw_path.exists():
+            return self._error_payload("browser_screenshot_missing")
+        image_base64 = base64.b64encode(raw_path.read_bytes()).decode("ascii")
+        stored = self._browser_sandbox.store_screenshot(
+            session_id=str(session.id),
+            image_base64=image_base64,
+            ocr_text=str(page_state.get("content", "")),
+        )
+        with contextlib.suppress(OSError):
+            raw_path.unlink()
+        return {
+            "ok": True,
+            "url": page_state.get("url", ""),
+            "title": page_state.get("title", ""),
+            "screenshot_id": stored.screenshot_id,
+            "path": stored.path,
+            "size_bytes": stored.size_bytes,
+            "ocr_text": stored.ocr_text,
+            "taint_labels": list(stored.taint_labels),
+            "error": "",
+        }
+
+    async def end_session(self, *, session: Session) -> dict[str, Any]:
+        availability = self._availability_error()
+        if availability is not None:
+            return availability
+        if not bool(self._load_state(session).get("opened")):
+            return {"ok": True, "closed": False, "taint_labels": [], "error": ""}
+        result = await self._run_cli(
+            session=session,
+            tool_name="browser.end_session",
+            args=["close"],
+            network_urls=[],
+            allow_network=False,
+        )
+        session_dir = self._session_dir(session)
+        try:
+            state_path = self._state_path(session)
+            if state_path.exists():
+                state_path.unlink()
+        except OSError:
+            pass
+        if result is not None:
+            return result
+        if session_dir.exists():
+            for child in session_dir.iterdir():
+                if child.is_file():
+                    try:
+                        child.unlink()
+                    except OSError:
+                        continue
+        return {"ok": True, "closed": True, "taint_labels": [], "error": ""}
+
+    def _availability_error(self) -> dict[str, Any] | None:
+        if not self._enabled:
+            return self._error_payload("browser_disabled")
+        if not self._command:
+            return self._error_payload("browser_command_unconfigured")
+        executable = self._command[0]
+        if Path(executable).exists() or shutil.which(executable):
+            return None
+        return self._error_payload("browser_command_unavailable")
+
+    async def _ensure_session_open(self, *, session: Session) -> dict[str, Any] | None:
+        state = self._load_state(session)
+        if bool(state.get("opened")):
+            return None
+        result = await self._run_cli(
+            session=session,
+            tool_name="browser.navigate",
+            args=["open"],
+            network_urls=[],
+            allow_network=False,
+        )
+        if result is not None:
+            return result
+        state["opened"] = True
+        self._save_state(session, state)
+        return None
+
+    async def _capture_page_state(
+        self,
+        *,
+        session: Session,
+        tool_name: str,
+        include_snapshot: bool,
+    ) -> dict[str, Any]:
+        current_url = self._current_url(session)
+        if not current_url:
+            return self._error_payload("browser_session_missing")
+        session_dir = self._session_dir(session)
+        metadata_path = session_dir / "page.json"
+        snapshot_path = session_dir / "snapshot.txt"
+        metadata_error = await self._run_cli(
+            session=session,
+            tool_name=tool_name,
+            args=[
+                "eval",
+                (
+                    "() => JSON.stringify({url: location.href, title: document.title, "
+                    "visible_text: document.body ? document.body.innerText : ''})"
+                ),
+                "--filename",
+                str(metadata_path),
+            ],
+            network_urls=[current_url],
+            allow_network=True,
+        )
+        if metadata_error is not None:
+            return metadata_error
+        try:
+            payload = self._parse_page_metadata(metadata_path.read_text(encoding="utf-8"))
+        except (OSError, TypeError, ValueError):
+            return self._error_payload("browser_eval_invalid")
+        snapshot = ""
+        if include_snapshot:
+            snapshot_error = await self._run_cli(
+                session=session,
+                tool_name=tool_name,
+                args=["snapshot", "--filename", str(snapshot_path)],
+                network_urls=[payload.get("url", current_url)],
+                allow_network=True,
+            )
+            if snapshot_error is not None:
+                return snapshot_error
+            try:
+                snapshot = self._truncate_text(snapshot_path.read_text(encoding="utf-8"))
+            except OSError:
+                snapshot = ""
+        state = self._load_state(session)
+        state["opened"] = True
+        state["current_url"] = str(payload.get("url", current_url)).strip() or current_url
+        self._save_state(session, state)
+        return {
+            "ok": True,
+            "url": state["current_url"],
+            "title": str(payload.get("title", "")).strip(),
+            "content": self._truncate_text(str(payload.get("visible_text", ""))),
+            "snapshot": snapshot,
+            "taint_labels": [TaintLabel.UNTRUSTED.value],
+            "error": "",
+        }
+
+    async def _run_cli(
+        self,
+        *,
+        session: Session,
+        tool_name: str,
+        args: list[str],
+        network_urls: list[str],
+        allow_network: bool,
+    ) -> dict[str, Any] | None:
+        session_dir = self._session_dir(session)
+        session_dir.mkdir(parents=True, exist_ok=True)
+        network_policy = self._network_policy(target_urls=network_urls, allow_network=allow_network)
+        config = SandboxConfig(
+            tool_name=tool_name,
+            command=[*self._command, f"-s={self._session_alias(session)}", *args],
+            sandbox_type=SandboxType.CONTAINER,
+            session_id=str(session.id),
+            cwd=str(session_dir),
+            read_paths=[str(session_dir)],
+            write_paths=[str(session_dir)],
+            filesystem=FilesystemPolicy(mounts=[{"path": str(session_dir), "mode": "rw"}]),
+            network_urls=network_urls,
+            network=network_policy,
+            limits=ResourceLimits(
+                timeout_seconds=max(1, math.ceil(self._timeout_seconds)),
+                output_bytes=max(self._max_read_bytes * 2, 32_768),
+            ),
+            degraded_mode=(
+                DegradedModePolicy.FAIL_CLOSED
+                if self._require_hardened_isolation
+                else DegradedModePolicy.FAIL_OPEN
+            ),
+            security_critical=self._require_hardened_isolation,
+            approved_by_pep=True,
+            origin={
+                "actor": "browser_toolkit",
+                "session_id": str(session.id),
+                "channel": str(session.channel),
+            },
+        )
+        result = await self._sandbox_runner.execute_async(config, session=session)
+        if result.allowed and not result.timed_out and (result.exit_code or 0) == 0:
+            return None
+        return self._error_payload(self._result_error_reason(result))
+
+    def _network_policy(self, *, target_urls: list[str], allow_network: bool) -> NetworkPolicy:
+        if not allow_network:
+            return NetworkPolicy(allow_network=False, allowed_domains=[])
+        allow_private_targets = self._allows_private_network_target(target_urls)
+        if self._allowed_domains:
+            return NetworkPolicy(
+                allow_network=True,
+                allowed_domains=list(self._allowed_domains),
+                deny_private_ranges=not allow_private_targets,
+                deny_ip_literals=not allow_private_targets,
+            )
+        hosts = []
+        for url in target_urls:
+            host = (urlparse(url).hostname or "").lower()
+            if host and host not in hosts:
+                hosts.append(host)
+        return NetworkPolicy(
+            allow_network=True,
+            allowed_domains=hosts,
+            deny_private_ranges=not allow_private_targets,
+            deny_ip_literals=not allow_private_targets,
+        )
+
+    def _allows_private_network_target(self, target_urls: list[str]) -> bool:
+        if not target_urls:
+            return False
+        for url in target_urls:
+            host = (urlparse(url).hostname or "").lower()
+            if not self._is_private_network_host(host):
+                continue
+            if (
+                self._browser_sandbox.policy.local_network == BrowserLocalNetworkMode.ALLOWED
+                or any(host_matches(host, rule) for rule in self._allowed_domains)
+            ):
+                return True
+        return False
+
+    @staticmethod
+    def _is_private_network_host(host: str) -> bool:
+        if not host:
+            return False
+        if host == "localhost":
+            return True
+        try:
+            address = ipaddress.ip_address(host)
+        except ValueError:
+            return False
+        return bool(address.is_private or address.is_loopback or address.is_link_local)
+
+    def _host_policy_error(self, url: str) -> str | None:
+        host = (urlparse(url).hostname or "").lower()
+        if not host:
+            return "browser_url_invalid"
+        if not self._allowed_domains:
+            return None
+        if any(host_matches(host, rule) for rule in self._allowed_domains):
+            return None
+        return "browser_host_not_allowlisted"
+
+    def _result_error_reason(self, result: SandboxResult) -> str:
+        if result.timed_out:
+            return "browser_command_timeout"
+        if result.reason in {
+            "degraded_enforcement",
+            "runtime_isolation_unavailable",
+            "connect_path_unavailable",
+        }:
+            return "browser_runtime_isolation_unavailable"
+        if "private_range_blocked" in result.reason or "ip_literal_blocked" in result.reason:
+            return "browser_local_network_blocked"
+        detail = " ".join(
+            part for part in [result.reason, result.stderr, result.stdout] if part
+        ).lower()
+        if (
+            "distribution" in detail
+            or "install-browser" in detail
+            or "playwright install" in detail
+        ):
+            return "browser_browser_not_installed"
+        if "not found" in detail or "no such file" in detail:
+            return "browser_command_unavailable"
+        return "browser_command_failed"
+
+    def _parse_page_metadata(self, raw: str) -> dict[str, Any]:
+        text = raw.strip()
+        if not text:
+            raise ValueError("empty browser metadata")
+        payload = json.loads(text)
+        if isinstance(payload, str):
+            payload = json.loads(payload)
+        if not isinstance(payload, dict):
+            raise ValueError("invalid browser metadata payload")
+        return payload
+
+    def _truncate_text(self, text: str) -> str:
+        encoded = text.encode("utf-8")
+        if len(encoded) <= self._max_read_bytes:
+            return text.strip()
+        return encoded[: self._max_read_bytes].decode("utf-8", errors="ignore").strip()
+
+    async def _resolve_target(
+        self,
+        *,
+        session: Session,
+        tool_name: str,
+        target: str,
+        current_url: str,
+    ) -> str:
+        candidate = target.strip()
+        if not candidate or _STRUCTURED_BROWSER_TARGET_RE.fullmatch(candidate):
+            return candidate
+        session_dir = self._session_dir(session)
+        snapshot_path = session_dir / "interaction-targets.txt"
+        snapshot_error = await self._run_cli(
+            session=session,
+            tool_name=tool_name,
+            args=["snapshot", "--filename", str(snapshot_path)],
+            network_urls=[current_url],
+            allow_network=True,
+        )
+        if snapshot_error is not None:
+            return candidate
+        try:
+            raw_snapshot = snapshot_path.read_text(encoding="utf-8")
+        except OSError:
+            return candidate
+        return self._match_snapshot_target(raw_snapshot, candidate) or candidate
+
+    @classmethod
+    def _match_snapshot_target(cls, raw_snapshot: str, target: str) -> str | None:
+        normalized_target = cls._normalize_target(target)
+        target_tokens = cls._target_tokens(target)
+        best_match: tuple[int, int, str] | None = None
+        for line in raw_snapshot.splitlines():
+            match = _SNAPSHOT_ELEMENT_RE.match(line.strip())
+            if match is None:
+                continue
+            selector = match.group("selector").strip()
+            ref = match.group("ref").strip()
+            label = match.group("label").strip()
+            kind = match.group("kind").strip()
+            normalized_label = cls._normalize_target(label)
+            if normalized_target and (
+                normalized_target == normalized_label
+                or normalized_target in normalized_label
+                or normalized_label in normalized_target
+            ):
+                return selector or ref
+            element_tokens = cls._target_tokens(" ".join([label, selector, ref, kind]))
+            overlap = len(target_tokens & element_tokens)
+            if overlap <= 0:
+                continue
+            score = (overlap, -len(target_tokens - element_tokens))
+            if best_match is None or score > best_match[:2]:
+                best_match = (*score, selector or ref)
+        if best_match is None:
+            return None
+        return best_match[2]
+
+    @classmethod
+    def _normalize_target(cls, value: str) -> str:
+        tokens = cls._target_tokens(value)
+        return " ".join(sorted(tokens))
+
+    @staticmethod
+    def _target_tokens(value: str) -> set[str]:
+        return {
+            token
+            for token in re.findall(r"[a-z0-9]+", value.lower())
+            if token and token not in _TARGET_STOPWORDS
+        }
+
+    def _session_alias(self, session: Session) -> str:
+        return f"shisad-{session.id}"
+
+    def _session_dir(self, session: Session) -> Path:
+        return self._session_root / str(session.id)
+
+    def _state_path(self, session: Session) -> Path:
+        return self._session_dir(session) / "state.json"
+
+    def _load_state(self, session: Session) -> dict[str, Any]:
+        path = self._state_path(session)
+        if not path.exists():
+            return {"opened": False, "current_url": ""}
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return {"opened": False, "current_url": ""}
+        if not isinstance(payload, dict):
+            return {"opened": False, "current_url": ""}
+        return {
+            "opened": bool(payload.get("opened")),
+            "current_url": str(payload.get("current_url", "")).strip(),
+        }
+
+    def _save_state(self, session: Session, state: dict[str, Any]) -> None:
+        path = self._state_path(session)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(state, indent=2), encoding="utf-8")
+
+    def _current_url(self, session: Session) -> str:
+        return str(self._load_state(session).get("current_url", "")).strip()
+
+    @staticmethod
+    def _error_payload(reason: str) -> dict[str, Any]:
+        return {"ok": False, "error": reason, "taint_labels": []}

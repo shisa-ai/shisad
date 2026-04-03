@@ -16,6 +16,7 @@ from shisad.core.events import (
     ProxyRequestEvaluated,
 )
 from shisad.core.providers.base import Message, ProviderResponse
+from shisad.core.types import Capability
 from shisad.security.control_plane.audit import ControlPlaneAuditLog
 from shisad.security.control_plane.consensus import (
     ActionMonitorVoter,
@@ -584,6 +585,20 @@ def test_s9_infer_action_kind_treats_web_search_as_egress() -> None:
     assert infer_action_kind("web.search", {"query": "security updates"}) == ActionKind.EGRESS
 
 
+def test_m6_infer_action_kind_treats_browser_tools_as_browser_read_write() -> None:
+    assert infer_action_kind("browser.navigate", {"url": "https://example.com"}) == (
+        ActionKind.BROWSER_READ
+    )
+    assert infer_action_kind("browser.read_page", {}) == ActionKind.BROWSER_READ
+    assert infer_action_kind("browser.screenshot", {}) == ActionKind.BROWSER_READ
+    assert infer_action_kind("browser.click", {"target": "#continue"}) == (
+        ActionKind.BROWSER_WRITE
+    )
+    assert infer_action_kind("browser.type_text", {"target": "#search", "text": "hello"}) == (
+        ActionKind.BROWSER_WRITE
+    )
+
+
 def test_s9_infer_action_kind_treats_fs_list_without_path_as_fs_list() -> None:
     assert infer_action_kind("fs.list", {}) == ActionKind.FS_LIST
 
@@ -620,6 +635,25 @@ def test_m5_rt10_trace_allows_fs_list_without_path_arguments() -> None:
     result = verifier.verify_action(session_id=origin.session_id, action=action)
     assert result.allowed is True
     assert result.reason_code == "trace:allowed"
+
+
+def test_m6_trace_requires_stage2_for_browser_write_actions() -> None:
+    verifier = ExecutionTraceVerifier()
+    origin = _origin("s-m6-browser-write")
+    verifier.begin_precontent_plan(
+        session_id=origin.session_id,
+        goal="click continue in the browser",
+        origin=origin,
+        capabilities={Capability.HTTP_REQUEST},
+    )
+    action = build_action(
+        tool_name="browser.click",
+        arguments={"target": "#continue"},
+        origin=origin,
+    )
+    result = verifier.verify_action(session_id=origin.session_id, action=action)
+    assert result.allowed is False
+    assert result.reason_code == "trace:stage2_upgrade_required"
 
 
 def test_m5_t16_control_plane_metadata_events_exclude_raw_payload_fields() -> None:
@@ -697,6 +731,33 @@ async def test_m5_t17_high_critical_monitor_timeout_cannot_fail_open() -> None:
     )
     assert decision.timed_out is True
     assert decision.decision != "ALLOW"
+
+
+@pytest.mark.asyncio
+async def test_m6_low_risk_declared_domain_timeout_uses_heuristic_allow() -> None:
+    monitor = NetworkIntelligenceMonitor(
+        baseline_db=BaselineDatabase(),
+        monitor_provider=_SlowMonitorProvider(),
+        timeout_seconds=0.01,
+        high_critical_timeout_action="BLOCK",
+        low_medium_timeout_action="FLAG",
+    )
+    metadata = extract_network_metadata(
+        origin=_origin("s-browser-timeout"),
+        tool_name="browser.navigate",
+        destination_host="localhost",
+        destination_port=443,
+        protocol="https",
+        request_size=0,
+    )
+    decision = await monitor.evaluate(
+        metadata=metadata,
+        declared_domains=["localhost"],
+        risk_tier=RiskTier.LOW,
+    )
+    assert decision.timed_out is True
+    assert decision.decision == "ALLOW"
+    assert "network:monitor_timeout_heuristic_allow" in decision.reason_codes
 
 
 @pytest.mark.asyncio

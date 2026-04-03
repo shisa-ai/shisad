@@ -47,6 +47,21 @@ def test_m4_action_monitor_rejects_goal_misaligned_dotted_runtime_tools() -> Non
     assert decision.kind == MonitorDecisionType.REJECT
 
 
+def test_m6_action_monitor_allows_explicit_browser_navigation() -> None:
+    monitor = ActionMonitor()
+    decision = monitor.evaluate(
+        user_goal="browser navigate http://localhost:8080/browser",
+        actions=[
+            SimpleNamespace(
+                tool_name="browser.navigate",
+                arguments={"url": "http://localhost:8080/browser"},
+                reasoning="open the requested page",
+            )
+        ],
+    )
+    assert decision.kind == MonitorDecisionType.APPROVE
+
+
 def test_m2_t10_rate_limiter_blocks_burst() -> None:
     limiter = RateLimiter(
         RateLimitConfig(

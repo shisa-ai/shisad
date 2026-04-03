@@ -199,6 +199,35 @@ class DaemonConfig(BaseSettings):
         ge=1024,
         description="Maximum bytes fetched for web page content.",
     )
+    browser_enabled: bool = Field(
+        default=False,
+        description="Enable browser automation surface.",
+    )
+    browser_command: str = Field(
+        default="playwright-cli",
+        description="Browser automation command (for example 'playwright-cli').",
+    )
+    browser_allowed_domains: list[str] = Field(
+        default_factory=list,
+        description="Allowlisted domains for browser automation egress.",
+    )
+    browser_timeout_seconds: float = Field(
+        default=20.0,
+        ge=1.0,
+        description="Timeout for sandboxed browser CLI actions.",
+    )
+    browser_require_hardened_isolation: bool = Field(
+        default=False,
+        description=(
+            "Require hardened browser runtime isolation. When false, browser commands "
+            "degrade open to direct subprocess execution if the sandbox runtime is unavailable."
+        ),
+    )
+    browser_max_read_bytes: int = Field(
+        default=262144,
+        ge=1024,
+        description="Maximum bytes returned for browser page text/snapshots.",
+    )
     assistant_fs_roots: list[Path] = Field(
         default_factory=list,
         description="Allowlisted roots for fs/git assistant primitives.",
@@ -402,6 +431,11 @@ class DaemonConfig(BaseSettings):
     @classmethod
     def _parse_web_allowed_domains(cls, value: object) -> object:
         return cls._parse_list_field(value, field_name="SHISAD_WEB_ALLOWED_DOMAINS")
+
+    @field_validator("browser_allowed_domains", mode="before")
+    @classmethod
+    def _parse_browser_allowed_domains(cls, value: object) -> object:
+        return cls._parse_list_field(value, field_name="SHISAD_BROWSER_ALLOWED_DOMAINS")
 
     @field_validator("assistant_fs_roots", mode="before")
     @classmethod

@@ -442,6 +442,8 @@ class DaemonServices:
             registry, alarm_tool = _build_tool_registry(
                 event_bus,
                 web_search_destination=search_backend_destination,
+                browser_surface_enabled=bool(config.browser_enabled),
+                browser_destinations=list(config.browser_allowed_domains),
                 realitycheck_surface_enabled=bool(
                     realitycheck_status.get("surface_enabled", False)
                 ),
@@ -708,6 +710,8 @@ def _build_tool_registry(
     event_bus: EventBus,
     *,
     web_search_destination: str = "",
+    browser_surface_enabled: bool = False,
+    browser_destinations: list[str] | None = None,
     realitycheck_surface_enabled: bool = False,
     realitycheck_endpoint_enabled: bool = False,
     realitycheck_endpoint_host: str = "",
@@ -821,6 +825,81 @@ def _build_tool_registry(
             require_confirmation=False,
         )
     )
+    if browser_surface_enabled:
+        browser_scope = [item for item in (browser_destinations or []) if item.strip()]
+        registry.register(
+            ToolDefinition(
+                name=ToolName("browser.navigate"),
+                description=(
+                    "Navigate the sandboxed browser to a URL and return visible "
+                    "page content."
+                ),
+                parameters=[
+                    ToolParameter(name="url", type="string", required=True, semantic_type="url"),
+                ],
+                capabilities_required=[Capability.HTTP_REQUEST],
+                destinations=browser_scope,
+                require_confirmation=False,
+            )
+        )
+        registry.register(
+            ToolDefinition(
+                name=ToolName("browser.read_page"),
+                description="Read the current sandboxed browser page.",
+                parameters=[],
+                capabilities_required=[Capability.HTTP_REQUEST],
+                destinations=browser_scope,
+                require_confirmation=False,
+            )
+        )
+        registry.register(
+            ToolDefinition(
+                name=ToolName("browser.screenshot"),
+                description="Capture a screenshot of the current sandboxed browser page.",
+                parameters=[],
+                capabilities_required=[Capability.HTTP_REQUEST],
+                destinations=browser_scope,
+                require_confirmation=False,
+            )
+        )
+        registry.register(
+            ToolDefinition(
+                name=ToolName("browser.click"),
+                description="Click an element in the sandboxed browser.",
+                parameters=[
+                    ToolParameter(name="target", type="string", required=True),
+                    ToolParameter(name="description", type="string", required=False),
+                ],
+                capabilities_required=[Capability.HTTP_REQUEST],
+                destinations=browser_scope,
+                require_confirmation=True,
+            )
+        )
+        registry.register(
+            ToolDefinition(
+                name=ToolName("browser.type_text"),
+                description="Fill text into an element in the sandboxed browser.",
+                parameters=[
+                    ToolParameter(name="target", type="string", required=True),
+                    ToolParameter(name="text", type="string", required=True),
+                    ToolParameter(name="is_sensitive", type="boolean", required=False),
+                    ToolParameter(name="submit", type="boolean", required=False),
+                ],
+                capabilities_required=[Capability.HTTP_REQUEST],
+                destinations=browser_scope,
+                require_confirmation=True,
+            )
+        )
+        registry.register(
+            ToolDefinition(
+                name=ToolName("browser.end_session"),
+                description="Close the current sandboxed browser session.",
+                parameters=[],
+                capabilities_required=[Capability.HTTP_REQUEST],
+                destinations=browser_scope,
+                require_confirmation=False,
+            )
+        )
     registry.register(
         ToolDefinition(
             name=ToolName("fs.list"),

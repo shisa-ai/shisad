@@ -143,6 +143,7 @@ class ExecutionTraceVerifier:
         if action.action_kind not in plan.allowed_actions:
             if plan.stage == PlanStage.STAGE1_PRECONTENT and action.action_kind in {
                 ActionKind.EGRESS,
+                ActionKind.BROWSER_WRITE,
                 ActionKind.FS_WRITE,
                 ActionKind.MEMORY_WRITE,
                 ActionKind.MESSAGE_SEND,

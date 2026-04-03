@@ -19,6 +19,7 @@ from shisad.skills.analyzer import (
     FindingSeverity,
     ObfuscationAnalyzer,
     SkillBundle,
+    ToolSurfaceAnalyzer,
     load_skill_bundle,
 )
 from shisad.skills.artifacts import ArtifactState
@@ -47,6 +48,7 @@ class InstalledSkill(BaseModel):
     manifest_hash: str
     state: ArtifactState
     author: str
+    tool_schema_hashes: dict[str, str] = Field(default_factory=dict)
 
 
 class SkillManager:
@@ -69,6 +71,9 @@ class SkillManager:
         self._llm_analyzer = llm_analyzer
         self._tool_registry = tool_registry
         self._dangerous = DangerousPatternAnalyzer(
+            yara_rules_dir=Path(__file__).resolve().parents[1] / "security" / "rules" / "yara"
+        )
+        self._tool_surface = ToolSurfaceAnalyzer(
             yara_rules_dir=Path(__file__).resolve().parents[1] / "security" / "rules" / "yara"
         )
         self._capability = CapabilityInferenceAnalyzer()
@@ -175,6 +180,15 @@ class SkillManager:
 
         max_severity = _max_severity(findings)
         if max_severity in {FindingSeverity.CRITICAL, FindingSeverity.HIGH}:
+            if any("tool_surface_policy" in finding.tags for finding in findings):
+                return SkillInstallDecision(
+                    allowed=False,
+                    status="review",
+                    reason="tool_surface_policy_violation",
+                    findings=findings,
+                    summary=summary,
+                    artifact_state=ArtifactState.REVIEW,
+                )
             return SkillInstallDecision(
                 allowed=False,
                 status="review",
@@ -256,11 +270,15 @@ class SkillManager:
             manifest_hash=bundle.manifest.manifest_hash(),
             state=state,
             author=bundle.manifest.author,
+            tool_schema_hashes=_declared_tool_schema_hashes(bundle.manifest),
         )
         self._inventory[bundle.manifest.name] = installed
         self._persist_inventory()
         if state == ArtifactState.PUBLISHED:
-            self._register_skill_tools(bundle.manifest)
+            self._register_skill_tools(
+                bundle.manifest,
+                expected_hashes=installed.tool_schema_hashes,
+            )
         return installed
 
     def tool_names_for_skill(self, skill_name: str) -> list[str]:
@@ -290,6 +308,7 @@ class SkillManager:
     def _run_static(self, bundle: SkillBundle) -> list[Finding]:
         findings: list[Finding] = []
         findings.extend(self._dangerous.analyze(bundle))
+        findings.extend(self._tool_surface.analyze(bundle))
         findings.extend(self._obfuscation.analyze(bundle))
         findings.extend(self._capability.analyze(bundle))
         return findings
@@ -344,9 +363,17 @@ class SkillManager:
                 )
             except (FileNotFoundError, OSError, TypeError, ValueError):
                 continue
-            self._register_skill_tools(bundle.manifest)
+            self._register_skill_tools(
+                bundle.manifest,
+                expected_hashes=getattr(installed, "tool_schema_hashes", {}),
+            )
 
-    def _register_skill_tools(self, manifest: Any) -> list[ToolName]:
+    def _register_skill_tools(
+        self,
+        manifest: Any,
+        *,
+        expected_hashes: dict[str, str] | None = None,
+    ) -> list[ToolName]:
         if self._tool_registry is None:
             return []
         required_caps = _skill_tool_capabilities(manifest)
@@ -361,7 +388,13 @@ class SkillManager:
                 destinations=list(declared_tool.destinations),
                 require_confirmation=bool(declared_tool.require_confirmation),
             )
-            self._tool_registry.register(tool_def)
+            try:
+                self._tool_registry.register(
+                    tool_def,
+                    expected_hash=(expected_hashes or {}).get(declared_tool.name),
+                )
+            except ValueError:
+                continue
             registered.append(tool_name)
         self._skill_tool_map[manifest.name] = registered
         return registered
@@ -412,3 +445,19 @@ def _skill_tool_capabilities(manifest: Any) -> set[Capability]:
     if getattr(manifest.capabilities, "shell", []):
         capabilities.add(Capability.SHELL_EXEC)
     return capabilities
+
+
+def _declared_tool_schema_hashes(manifest: Any) -> dict[str, str]:
+    required_caps = _skill_tool_capabilities(manifest)
+    hashes: dict[str, str] = {}
+    for declared_tool in getattr(manifest, "tools", []):
+        tool_def = ToolDefinition(
+            name=ToolName(f"skill.{manifest.name}.{declared_tool.name}"),
+            description=declared_tool.description,
+            parameters=list(declared_tool.parameters),
+            capabilities_required=sorted(required_caps, key=str),
+            destinations=list(declared_tool.destinations),
+            require_confirmation=bool(declared_tool.require_confirmation),
+        )
+        hashes[declared_tool.name] = tool_def.schema_hash()
+    return hashes

@@ -9,9 +9,11 @@ from collections.abc import Iterable
 from enum import StrEnum
 from pathlib import Path
 from typing import Any, Protocol
+from urllib.parse import urlparse
 
 from pydantic import BaseModel, Field
 
+from shisad.core.host_matching import host_matches
 from shisad.core.types import ThreatCategory
 from shisad.security.firewall.classifier import PatternInjectionClassifier
 from shisad.skills.manifest import SkillManifest, parse_manifest
@@ -162,7 +164,7 @@ class DangerousPatternAnalyzer:
 
             content = file.content
             findings.extend(_scan_executable_payload(path=file.path, content=content))
-            findings.extend(self._scan_regex_patterns(file.path, content))
+            findings.extend(ToolSurfaceAnalyzer._scan_regex_patterns(file.path, content))
             findings.extend(_scan_delivery_chain(path=file.path, content=content))
             cls = self._classifier.classify(content)
             if cls.risk_score >= 0.2:
@@ -183,6 +185,83 @@ class DangerousPatternAnalyzer:
                             "risk_score": cls.risk_score,
                             "risk_factors": cls.risk_factors,
                             "matched_patterns": cls.matched_patterns,
+                        },
+                    )
+                )
+        return findings
+
+
+class ToolSurfaceAnalyzer:
+    """Scanner/validator for skill-declared tool metadata."""
+
+    def __init__(self, *, yara_rules_dir: Path | None = None) -> None:
+        self._classifier = PatternInjectionClassifier(yara_rules_dir=yara_rules_dir)
+
+    def analyze(self, skill: SkillBundle) -> list[Finding]:
+        findings: list[Finding] = []
+        declared_domains = {
+            item.domain.strip().lower()
+            for item in skill.manifest.capabilities.network
+            if item.domain.strip()
+        }
+        for declared_tool in skill.manifest.tools:
+            metadata_blob = "\n".join(
+                piece
+                for piece in [
+                    declared_tool.description,
+                    *[
+                        str(getattr(parameter, "description", "") or "")
+                        for parameter in declared_tool.parameters
+                    ],
+                ]
+                if piece.strip()
+            )
+            if metadata_blob.strip():
+                cls = self._classifier.classify(metadata_blob)
+                if cls.risk_score >= 0.2:
+                    findings.append(
+                        Finding(
+                            analyzer="tool-surface",
+                            category=ThreatCategory.PROMPT_INJECTION_INDIRECT,
+                            severity=(
+                                FindingSeverity.HIGH
+                                if cls.risk_score >= 0.45
+                                else FindingSeverity.MEDIUM
+                            ),
+                            title="Potential prompt-injection in tool metadata",
+                            detail=", ".join(cls.risk_factors) or "Suspicious tool metadata",
+                            file_path="skill.manifest.yaml",
+                            tags=["tool_surface", "metadata_injection"],
+                            metadata={
+                                "tool_name": declared_tool.name,
+                                "risk_score": cls.risk_score,
+                                "risk_factors": cls.risk_factors,
+                            },
+                        )
+                    )
+            for destination in declared_tool.destinations:
+                normalized = destination.strip()
+                host = (urlparse(normalized).hostname or normalized).lower()
+                if not host:
+                    continue
+                if declared_domains and any(host_matches(host, rule) for rule in declared_domains):
+                    continue
+                findings.append(
+                    Finding(
+                        analyzer="tool-surface",
+                        category=ThreatCategory.SUPPLY_CHAIN,
+                        severity=FindingSeverity.HIGH,
+                        title="Tool destination exceeds declared network capability",
+                        detail=(
+                            f"Tool '{declared_tool.name}' declares destination '{destination}' "
+                            "outside the manifest network capability set."
+                        ),
+                        file_path="skill.manifest.yaml",
+                        tags=["tool_surface", "tool_surface_policy", "destination_scope"],
+                        metadata={
+                            "tool_name": declared_tool.name,
+                            "destination": destination,
+                            "declared_domains": sorted(declared_domains),
                         },
                     )
                 )
