@@ -288,23 +288,70 @@ Certain catastrophic command patterns (e.g., `rm -rf /`) are blocked structurall
 
 ## Supply Chain
 
-Dependencies are pinned via `uv.lock` with SHA256 integrity hashes. Skills are treated as untrusted code: capability manifests declare what a skill can access, PEP rejects undeclared operations, all skill-initiated tool calls go through the same enforcement pipeline as direct actions, and no skill auto-installs without operator review. See `analysis/ANALYSIS-supply-chain.md` for the full analysis.
+Dependencies are pinned via `uv.lock` with SHA256 integrity hashes. Skills are
+treated as untrusted code: capability manifests declare what a skill can
+access, PEP rejects undeclared operations, all skill-initiated tool calls go
+through the same enforcement pipeline as direct actions, and no skill
+auto-installs without operator review.
+
+As of the published `v0.6.0` line, the CI/release path is also materially
+hardened: GitHub Actions are pinned by SHA, CI runs dependency-review on PRs,
+workflow linting (`zizmor`), and GitHub code scanning, and the public release
+path goes through GitHub Actions `publish.yml` using PyPI OIDC trusted
+publishing with release-time dependency audit, SPDX SBOM generation, and build
+provenance attestations. The manual upload path still exists only as an
+emergency fallback and does not carry the same provenance guarantees. See
+`docs/AUDIT-supply-chain.md` and `analysis/ANALYSIS-supply-chain.md` for the
+full analysis.
 
 ---
 
 ## Implementation Status
 
-The architecture described here is the target design. Current status as of v0.5:
+The architecture described here is still the target design. Current status as
+of the published `v0.6.0` line:
 
-**Implemented**: PEP 8-layer pipeline, taint tracking and provenance labeling, content firewall with YARA rules, output firewall with secret/PII detection, consensus voting (5 voters), egress allowlisting with provenance-aware enforcement, credential broker, destructive command protection, clean-room admin workflows, append-only audit log, default-deny channel identity allowlisting.
+**Implemented**:
+
+- PEP 8-layer pipeline, taint tracking and provenance labeling, content
+  firewall with YARA rules, output firewall with secret/PII detection,
+  consensus voting (5 voters), egress allowlisting with provenance-aware
+  enforcement, credential broker, destructive command protection, clean-room
+  admin workflows, append-only audit log, and default-deny channel identity
+  allowlisting.
+- Formal `COMMAND` / `TASK` orchestration boundaries in the live runtime:
+  immutable task envelopes, taint-safe handoffs, task-scoped credential refs,
+  typed sink validation for built-in runtime boundaries, live resource-scope
+  enforcement, TASK summary-firewall checkpoints, and approval provenance on
+  confirmation/execute audit paths.
+- Structured evidence / artifact handling: restart-stable evidence metadata, a
+  structured ArtifactLedger with endorsement metadata and GC semantics, and
+  text-first evidence rendering that keeps large untrusted content on the
+  extractive path by default.
+- Baseline high-risk tool surfaces now ship in the same enforcement model:
+  web search/fetch, confirmation-gated browser writes with source/destination
+  binding, and local skill tool-surface integrity checks via persisted
+  schema-hash validation.
+- Supply-chain and deployment hardening for the shipped line: pinned workflow
+  actions, CI dependency review + workflow linting + code scanning, release-time
+  dependency auditing, PyPI OIDC trusted publishing, SPDX SBOM generation, and
+  provenance attestations.
 
 **Planned**:
 
-- **Differential execution** (v0.6+) — when suspicious content enters the context and the next proposed action involves egress or side effects, run the same request with and without the suspect content and compare proposed actions. Behavioral divergence is empirical evidence of injection influence. If proposals are identical, the content is not influencing behavior (reduces false positives). If they diverge materially, a third-party evaluator in a clean context (it never sees the suspect content directly) judges whether the divergence is benign or suspicious. This catches subtle goal drift and laundered injection that passes the content firewall — and equally importantly, confirms innocence when content looks suspicious but isn't actually influencing behavior.
+- **Minimal control-plane isolation boundary** (`v0.6.1`) — move core policy /
+  PEP / audit enforcement behind an OS-enforced process boundary without
+  breaking the current behavioral contract.
+- **PromptGuard 2 / stronger semantic classifier integration** (`v0.6.1`) —
+  harden the semantic-classifier path without turning it into the sole
+  enforcement boundary.
+- **Tool Dependency Graph verification + phantom action detection** (`v0.6.1`)
+  — add stronger metadata-only runtime checks tying tool calls back to the
+  committed user-goal plan and surfacing deny-pattern compromise signals.
+- **Differential execution** (post-`v0.6.1`) — when suspicious content enters the context and the next proposed action involves egress or side effects, run the same request with and without the suspect content and compare proposed actions. Behavioral divergence is empirical evidence of injection influence. If proposals are identical, the content is not influencing behavior (reduces false positives). If they diverge materially, a third-party evaluator in a clean context (it never sees the suspect content directly) judges whether the divergence is benign or suspicious. This catches subtle goal drift and laundered injection that passes the content firewall — and equally importantly, confirms innocence when content looks suspicious but isn't actually influencing behavior.
 - **Full spotlighting with datamarking** — enhanced context builder with per-request cryptographically random delimiters and character-level datamarking of untrusted content
-- **Memory write gating with quarantine** (v0.8) — proposed memory writes held in quarantine with provenance review before committing to durable storage; poisoned entries can be identified and removed before they influence future sessions
-- **Formal control-plane process isolation** (v0.7.1) — move core enforcement behind an OS-enforced process/container boundary so that even full code execution in the agent sandbox cannot reach the control plane
-- **Hardware-backed approval signing** (v0.7.2) — hardware token (e.g., Ledger) signing for high-value operations; operator authentication and artifact signing flows that cannot be spoofed by software
+- **Memory write gating with quarantine** (`v0.7`) — proposed memory writes held in quarantine with provenance review before committing to durable storage; poisoned entries can be identified and removed before they influence future sessions
+- **Hardware-backed approval signing** (`v0.6.2`) — hardware token (for example Ledger) signing for high-value operations plus operator-authenticated artifact approval flows that cannot be spoofed by software
 
 ---
 
