@@ -57,14 +57,9 @@ async def _shutdown(daemon_task: asyncio.Task[None], client: ControlClient) -> N
 
 def test_m6_t7_integration_adversarial_suite_all_pass() -> None:
     fixture_path = (
-        Path(__file__).resolve().parents[1]
-        / "adversarial"
-        / "injection"
-        / "direct_templates.json"
+        Path(__file__).resolve().parents[1] / "adversarial" / "injection" / "direct_templates.json"
     )
-    fixture = json.loads(
-        fixture_path.read_text(encoding="utf-8")
-    )
+    fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
     templates = [str(item) for item in fixture["templates"]]
     targets = [str(item) for item in fixture["targets"]]
     tokens = [str(item) for item in fixture["tokens"]]
@@ -113,7 +108,7 @@ async def test_m6_t12_cross_thread_high_overlap_requires_confirmation_and_audit_
     # Restrict capabilities so http_request triggers stage2 → confirmation,
     # where the leak-check analysis can fire.
     (tmp_path / "policy.yaml").write_text(
-        "version: \"1\"\ndefault_deny: false\n"
+        'version: "1"\ndefault_deny: false\n'
         "default_capabilities:\n"
         "  - file.read\n  - memory.read\n",
         encoding="utf-8",
@@ -151,9 +146,7 @@ async def test_m6_t12_cross_thread_high_overlap_requires_confirmation_and_audit_
             {"session_id": sid, "status": "pending", "limit": 20},
         )
         row = next(
-            item
-            for item in pending["actions"]
-            if item["confirmation_id"] == confirmation_id
+            item for item in pending["actions"] if item["confirmation_id"] == confirmation_id
         )
         leak_check = row.get("leak_check", {})
         assert leak_check.get("detected") is True
@@ -181,7 +174,7 @@ async def test_m6_t13_explicit_forward_intent_allows_warning_trail(
     # Restrict capabilities so http_request triggers stage2 → confirmation,
     # where the leak-check analysis can fire.
     (tmp_path / "policy.yaml").write_text(
-        "version: \"1\"\ndefault_deny: false\n"
+        'version: "1"\ndefault_deny: false\n'
         "default_capabilities:\n"
         "  - file.read\n  - memory.read\n",
         encoding="utf-8",
@@ -220,9 +213,7 @@ async def test_m6_t13_explicit_forward_intent_allows_warning_trail(
             {"session_id": sid, "status": "pending", "limit": 20},
         )
         row = next(
-            item
-            for item in pending["actions"]
-            if item["confirmation_id"] == confirmation_id
+            item for item in pending["actions"] if item["confirmation_id"] == confirmation_id
         )
         leak_check = row.get("leak_check", {})
         assert leak_check.get("detected") is True

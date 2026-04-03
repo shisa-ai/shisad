@@ -138,4 +138,3 @@ def _looks_like_local_path_token(token: str) -> bool:
             candidate = head
     suffix = Path(candidate).suffix.lower()
     return suffix in _LOCAL_FILE_EXTENSIONS
-

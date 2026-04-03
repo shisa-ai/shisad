@@ -324,11 +324,7 @@ class SchedulerManager:
         if owner:
             tasks = [task for task in tasks if str(task.created_by).strip() == owner]
         if workspace:
-            tasks = [
-                task
-                for task in tasks
-                if str(task.workspace_id).strip() == workspace
-            ]
+            tasks = [task for task in tasks if str(task.workspace_id).strip() == workspace]
         rows: list[dict[str, Any]] = []
         for task in tasks[: max(0, int(limit))]:
             pending = len(self.pending_confirmations(task.id))
@@ -375,7 +371,7 @@ class SchedulerManager:
             )
         )
         if len(resolved) > _MAX_RESOLVED_CONFIRMATIONS_PER_TASK:
-            resolved = resolved[-_MAX_RESOLVED_CONFIRMATIONS_PER_TASK :]
+            resolved = resolved[-_MAX_RESOLVED_CONFIRMATIONS_PER_TASK:]
         self._pending_confirmations[task_id] = [*pending, *resolved]
 
     def _validate_schedule(self, schedule: Schedule) -> None:

@@ -360,9 +360,7 @@ class SandboxProcessRunner:
 
         executable = command[0] if command else ""
         resolved_executable = (
-            shutil.which(executable)
-            if executable and not Path(executable).exists()
-            else executable
+            shutil.which(executable) if executable and not Path(executable).exists() else executable
         )
         if resolved_executable:
             executable_path = Path(resolved_executable).expanduser()
@@ -450,9 +448,7 @@ class SandboxProcessRunner:
                 os.write(
                     2,
                     (
-                        "[shisad sandbox] resource limits degraded: "
-                        + ",".join(errors)
-                        + "\n"
+                        "[shisad sandbox] resource limits degraded: " + ",".join(errors) + "\n"
                     ).encode("utf-8", errors="ignore"),
                 )
 

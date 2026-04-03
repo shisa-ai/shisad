@@ -112,9 +112,7 @@ class ToolExecutionImplMixin(HandlerMixinBase):
                 request=SkillExecutionRequest(
                     skill_name=skill_name,
                     network_hosts=network_hosts,
-                    filesystem_paths=[
-                        str(item) for item in params.get("read_paths", [])
-                    ]
+                    filesystem_paths=[str(item) for item in params.get("read_paths", [])]
                     + [str(item) for item in params.get("write_paths", [])],
                     shell_commands=[" ".join(str(token) for token in params.get("command", []))],
                     environment_vars=list(dict(params.get("env", {})).keys()),
@@ -176,9 +174,7 @@ class ToolExecutionImplMixin(HandlerMixinBase):
         required_caps = set(tool_def.capabilities_required)
         if Capability.HTTP_REQUEST in required_caps and not tool_def.destinations:
             domains = [
-                item.strip().lower()
-                for item in merged_policy.network.allowed_domains
-                if item
+                item.strip().lower() for item in merged_policy.network.allowed_domains if item
             ]
             if not domains:
                 await self._event_bus.publish(
@@ -410,15 +406,11 @@ class ToolExecutionImplMixin(HandlerMixinBase):
                 raise ValueError("arguments keys must be non-empty strings")
             merged_arguments[key] = value
         collisions = sorted(
-            key
-            for key in merged_arguments
-            if key in _RESERVED_TOOL_EXECUTION_ARGUMENT_KEYS
+            key for key in merged_arguments if key in _RESERVED_TOOL_EXECUTION_ARGUMENT_KEYS
         )
         if collisions:
             joined = ", ".join(collisions)
-            raise ValueError(
-                f"arguments must not include reserved execution keys: {joined}"
-            )
+            raise ValueError(f"arguments must not include reserved execution keys: {joined}")
         payload.update(merged_arguments)
         return payload
 

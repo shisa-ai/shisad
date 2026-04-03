@@ -508,9 +508,7 @@ def test_m1_selfmod_same_version_reapply_restores_store_and_runtime_on_failure(
     proposal = manager.propose(candidate)
 
     def _commit_broken(*_args: object, **_kwargs: object) -> None:
-        raise selfmod_manager_module._SelfModificationOperationError(
-            "change_record_persist_failed"
-        )
+        raise selfmod_manager_module._SelfModificationOperationError("change_record_persist_failed")
 
     monkeypatch.setattr(manager, "_commit_inventory_and_change", _commit_broken)
 

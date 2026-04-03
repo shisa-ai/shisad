@@ -152,8 +152,9 @@ async def test_m4_dev_commands_reuse_live_coding_task_runtime(tmp_path: Path) ->
         selected = await _wait_for_event(
             client,
             event_type="CodingAgentSessionCompleted",
-            predicate=lambda item: str(item.get("session_id", "")).strip()
-            == str(implement["task_session_id"]),
+            predicate=lambda item: (
+                str(item.get("session_id", "")).strip() == str(implement["task_session_id"])
+            ),
         )
         assert selected["data"]["agent"] == "codex"
         assert selected["data"]["success"] is True

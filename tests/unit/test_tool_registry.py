@@ -25,10 +25,13 @@ def _registry_with_note_create() -> ToolRegistry:
 def test_tool_registry_allows_null_for_optional_argument() -> None:
     registry = _registry_with_note_create()
 
-    assert registry.validate_call(
-        ToolName("note.create"),
-        {"content": "remember to buy groceries", "key": None},
-    ) == []
+    assert (
+        registry.validate_call(
+            ToolName("note.create"),
+            {"content": "remember to buy groceries", "key": None},
+        )
+        == []
+    )
 
 
 def test_tool_registry_rejects_null_for_required_argument() -> None:

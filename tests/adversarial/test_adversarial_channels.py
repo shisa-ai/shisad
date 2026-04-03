@@ -32,4 +32,3 @@ def test_m1_a_channel_telegram_ingress_injection_sanitized() -> None:
 
 def test_m1_a_channel_slack_ingress_injection_sanitized() -> None:
     _assert_channel_injection_blocked("slack")
-

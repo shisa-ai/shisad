@@ -144,6 +144,11 @@ class DangerousPatternAnalyzer:
     def __init__(self, *, yara_rules_dir: Path | None = None) -> None:
         self._classifier = PatternInjectionClassifier(yara_rules_dir=yara_rules_dir)
 
+    @staticmethod
+    def _scan_regex_patterns(path: str, content: str) -> list[Finding]:
+        """Compatibility shim for older callers/tests using the pattern-only scanner."""
+        return ToolSurfaceAnalyzer._scan_regex_patterns(path, content)
+
     def analyze(self, skill: SkillBundle) -> list[Finding]:
         findings: list[Finding] = []
         findings.extend(_scan_typosquatting(skill))
@@ -164,7 +169,7 @@ class DangerousPatternAnalyzer:
 
             content = file.content
             findings.extend(_scan_executable_payload(path=file.path, content=content))
-            findings.extend(ToolSurfaceAnalyzer._scan_regex_patterns(file.path, content))
+            findings.extend(self._scan_regex_patterns(file.path, content))
             findings.extend(_scan_delivery_chain(path=file.path, content=content))
             cls = self._classifier.classify(content)
             if cls.risk_score >= 0.2:
@@ -338,10 +343,7 @@ class ToolSurfaceAnalyzer:
                             tags=["url", "non_https"],
                         )
                     )
-            if (
-                "xattr -d com.apple.quarantine" in lowered
-                or "spctl --master-disable" in lowered
-            ):
+            if "xattr -d com.apple.quarantine" in lowered or "spctl --master-disable" in lowered:
                 findings.append(
                     Finding(
                         analyzer="dangerous-pattern",
@@ -384,13 +386,9 @@ class CapabilityInferenceAnalyzer:
 
     def analyze(self, skill: SkillBundle) -> list[Finding]:
         inferred = self.infer(skill)
-        declared_domains = {
-            item.domain.lower() for item in skill.manifest.capabilities.network
-        }
+        declared_domains = {item.domain.lower() for item in skill.manifest.capabilities.network}
         undeclared_domains = sorted(
-            domain
-            for domain in inferred.network_domains
-            if domain not in declared_domains
+            domain for domain in inferred.network_domains if domain not in declared_domains
         )
 
         declared_env = {item.var.upper() for item in skill.manifest.capabilities.environment}
@@ -399,17 +397,13 @@ class CapabilityInferenceAnalyzer:
         )
 
         declared_shell = {
-            _normalize_command(item.command)
-            for item in skill.manifest.capabilities.shell
+            _normalize_command(item.command) for item in skill.manifest.capabilities.shell
         }
         undeclared_shell = sorted(
             item
             for item in inferred.shell_commands
             if declared_shell
-            and not any(
-                _shell_command_matches(item, declared)
-                for declared in declared_shell
-            )
+            and not any(_shell_command_matches(item, declared) for declared in declared_shell)
         )
 
         findings: list[Finding] = []

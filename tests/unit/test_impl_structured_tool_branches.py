@@ -484,8 +484,7 @@ async def test_m7_impl_web_search_branch_records_success_with_structured_helper(
     assert harness._control_plane.results == [True]
     assert any(isinstance(event, ToolApproved) for event in harness._event_bus.events)
     assert any(
-        isinstance(event, ToolExecuted) and event.success
-        for event in harness._event_bus.events
+        isinstance(event, ToolExecuted) and event.success for event in harness._event_bus.events
     )
     assert not any(isinstance(event, ToolRejected) for event in harness._event_bus.events)
 
@@ -557,8 +556,7 @@ async def test_g3_impl_message_send_branch_uses_delivery_service_and_records_suc
     assert harness._control_plane.results == [True]
     assert any(isinstance(event, ToolApproved) for event in harness._event_bus.events)
     assert any(
-        isinstance(event, ToolExecuted) and event.success
-        for event in harness._event_bus.events
+        isinstance(event, ToolExecuted) and event.success for event in harness._event_bus.events
     )
 
 

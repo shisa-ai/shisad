@@ -239,9 +239,7 @@ async def compute_metrics(*, lane: str) -> AdversarialMetrics:
         memory_detected, memory_total = _memory_poisoning_checks()
         metadata_detected, metadata_total = _metadata_poisoning_checks()
         rag_detected, rag_total = _rag_poisoning_checks(firewall=firewall)
-        detected_attacks += (
-            indirect_detected + memory_detected + metadata_detected + rag_detected
-        )
+        detected_attacks += indirect_detected + memory_detected + metadata_detected + rag_detected
         total_attacks += indirect_total + memory_total + metadata_total + rag_total
 
     benign_blocked = 0

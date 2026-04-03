@@ -255,6 +255,15 @@ test: add prompt injection test cases
 When asked to close a milestone, review remediation, or release-readiness pass:
 
 0. **Behavioral tests pass**: `uv run pytest tests/behavioral/ -q` — if these fail, the milestone is not closeable regardless of other test results
+0a. **Release-close validation bundle recorded**: before any release-close/publish claim, run and record the full release bundle unless the human lead explicitly approves a narrower scope:
+   - `uv run pytest tests/adversarial -q`
+   - `uv run pytest tests/behavioral/ -q`
+   - `bash live-behavior.sh --live-model -q`
+   - `timeout 240s env SHISAD_LIVE_CODING_AGENTS=claude uv run pytest tests/live/test_coding_agents_live.py -q`
+   - `timeout 240s env SHISAD_LIVE_CODING_AGENTS=codex uv run pytest tests/live/test_coding_agents_live.py -q`
+   - `timeout 240s env SHISAD_LIVE_CODING_AGENTS=opencode uv run pytest tests/live/test_coding_agents_live.py -q`
+   Run the live-model and ACP live lanes sequentially, not in parallel; overlapping them can create harness-level startup timeouts and invalidate the evidence.
+   If any live lane cannot run, record the exact reason before calling the release closeable.
 0b. **Tool status check**: review `docs/TOOL-STATUS.md` — if a tool that was WORKS is now BROKEN, the milestone is not closeable. Regenerate with a live daemon if available: `uv run python scripts/live_tool_matrix.py --tool-status`
 0c. **Live runner evidence recorded for runtime-facing scope**: if the milestone changed planner/provider behavior, tool wiring, scheduler delivery, channel behavior, or user-visible authorization/runtime behavior, run an isolated `runner/harness.sh` verification pass and record the exact commands + outcomes in the active implementation/worklog doc. If this cannot be run, do not call the milestone closeable without an explicit deferral approved by the human lead.
 1. Stage only explicit task files: `git add <file> ...`

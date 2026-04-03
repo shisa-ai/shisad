@@ -82,9 +82,9 @@ def test_m2_output_firewall_url_adversarial_matrix() -> None:
     for case in matrix:
         result = firewall.inspect(str(case["text"]))
         assert result.blocked is bool(case["expected_blocked"]), case["id"]
-        assert any(
-            item.reason == case["expected_reason"] for item in result.url_findings
-        ), case["id"]
+        assert any(item.reason == case["expected_reason"] for item in result.url_findings), case[
+            "id"
+        ]
 
 
 def test_m5_output_firewall_host_matching_normalizes_allowlist_rules() -> None:

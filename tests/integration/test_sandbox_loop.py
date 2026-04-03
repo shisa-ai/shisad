@@ -295,12 +295,12 @@ async def test_m3_t2_t3_filesystem_mount_and_denylist_enforced(
                 "read_paths": [str(denied)],
                 "security_critical": False,
                 "degraded_mode": "fail_open",
-                    "filesystem": {
-                        "mounts": [{"path": f"{workspace.as_posix()}/**", "mode": "ro"}],
-                        "denylist": ["**/*.tmp"],
-                    },
+                "filesystem": {
+                    "mounts": [{"path": f"{workspace.as_posix()}/**", "mode": "ro"}],
+                    "denylist": ["**/*.tmp"],
                 },
-            )
+            },
+        )
         assert deny_result["allowed"] is False
         assert deny_result["reason"] == "filesystem:denylist_match"
     finally:
@@ -369,12 +369,10 @@ async def test_m3_t4_timeout_and_t5_output_truncation(model_env: None, tmp_path:
             and str(event.get("data", {}).get("actor", "")) == "sandbox"
         ]
         assert any(
-            bool(event.get("data", {}).get("success")) is False
-            for event in shell_exec_events
+            bool(event.get("data", {}).get("success")) is False for event in shell_exec_events
         )
         assert any(
-            bool(event.get("data", {}).get("success")) is True
-            for event in shell_exec_events
+            bool(event.get("data", {}).get("success")) is True for event in shell_exec_events
         )
     finally:
         await _shutdown(daemon_task, client)
@@ -564,8 +562,7 @@ async def test_m3_rr2_planner_shell_exec_with_capability_no_lockdown(
                 "user_id": "alice",
                 "workspace_id": "ws1",
                 "content": (
-                    "write a command result and run: "
-                    "python -c \"print('planner-sandbox-ok')\""
+                    "write a command result and run: python -c \"print('planner-sandbox-ok')\""
                 ),
             },
         )

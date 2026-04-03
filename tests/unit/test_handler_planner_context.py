@@ -107,8 +107,7 @@ def test_m6_rr2_action_monitor_explanation_is_bounded_for_user_output() -> None:
         voter="ActionMonitorVoter",
         details={
             "explanation": (
-                "user asked for summary only\n"
-                + "unexpected side-effect proposed " * 30
+                "user asked for summary only\n" + "unexpected side-effect proposed " * 30
             )
         },
     )

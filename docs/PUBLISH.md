@@ -39,16 +39,39 @@ Version must be updated in both places:
 - [ ] Update `CHANGELOG.md`:
       add a new topmost `## [X.Y.Z] - YYYY-MM-DD` section and update the
       version comparison links at the bottom
-- [ ] Update README/docs if install steps, CLI behavior, or security model
-      changed
+- [ ] Review `README.md` and top-level operator docs for release parity:
+      `docs/ROADMAP.md`, `docs/ENV-VARS.md`, `docs/TOOL-STATUS.md`,
+      `docs/USE-CASES.md`
+- [ ] Update release-version/status tables while doing the docs parity pass:
+      make sure the current release line is presented as current, prior
+      releases are de-emphasized, and any version/focus tables stay in sync.
+      Unless the doc explicitly needs patch-level detail, treat these tables as
+      major release-line summaries and keep patch releases in `CHANGELOG.md`
+- [ ] Update README/docs when install steps, CLI behavior, shipped tool
+      surfaces, or the documented security model changed
 - [ ] Run release validation:
       `uv run ruff format --check .`
 - [ ] Run release validation:
       `uv run ruff check .`
 - [ ] Run release validation:
       `uv run pytest tests/ -q`
+- [ ] Run adversarial release gate:
+      `uv run pytest tests/adversarial -q`
 - [ ] Run behavioral gate:
       `uv run pytest tests/behavioral/ -q`
+- [ ] Run live-model release gate:
+      `bash live-behavior.sh --live-model -q`
+- [ ] Run ACP live coding-agent gates (one pass per configured agent):
+      `timeout 240s env SHISAD_LIVE_CODING_AGENTS=claude uv run pytest tests/live/test_coding_agents_live.py -q`
+      `timeout 240s env SHISAD_LIVE_CODING_AGENTS=codex uv run pytest tests/live/test_coding_agents_live.py -q`
+      `timeout 240s env SHISAD_LIVE_CODING_AGENTS=opencode uv run pytest tests/live/test_coding_agents_live.py -q`
+- [ ] Run the live-model + ACP live lanes sequentially, not in parallel.
+      The behavioral/live harnesses assume a lightly loaded local daemon
+      startup path; overlapping them can create avoidable socket-startup
+      timeouts and invalidate the release-close evidence.
+- [ ] Record the exact release-close validation commands and outcomes in the
+      active implementation/worklog doc; if any live lane cannot be run, note
+      why before claiming the release is closeable
 - [ ] Remove stale build artifacts:
       `rm -rf dist/`
 - [ ] Build fresh artifacts:

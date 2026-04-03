@@ -279,9 +279,7 @@ def build_action(
     resource_ids = normalize_resource_ids(action_kind=action_kind, arguments=arguments)
     network_hosts = extract_network_hosts(arguments)
     primary_resource = (
-        resource_ids[0]
-        if resource_ids
-        else (network_hosts[0] if network_hosts else "")
+        resource_ids[0] if resource_ids else (network_hosts[0] if network_hosts else "")
     )
     return ControlPlaneAction(
         origin=origin,

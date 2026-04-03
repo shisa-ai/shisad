@@ -60,6 +60,7 @@ class ConfirmationImplMixin(HandlerMixinBase):
             for user in self._confirmation_analytics.users()
         ]
         return {"metrics": rows, "count": len(rows)}
+
     async def do_action_pending(self, params: Mapping[str, Any]) -> dict[str, Any]:
         confirmation_filter = str(params.get("confirmation_id") or "").strip()
         session_filter = str(params.get("session_id") or "").strip()
@@ -294,11 +295,7 @@ class ConfirmationImplMixin(HandlerMixinBase):
         checkpoint_id = execution_result.checkpoint_id
         tool_output = getattr(execution_result, "tool_output", None)
         promote_followup_reason = ""
-        if (
-            success
-            and tool_output is not None
-            and str(pending.tool_name) == "evidence.promote"
-        ):
+        if success and tool_output is not None and str(pending.tool_name) == "evidence.promote":
             try:
                 payload = json.loads(str(getattr(tool_output, "content", "")))
             except json.JSONDecodeError:
@@ -377,9 +374,7 @@ class ConfirmationImplMixin(HandlerMixinBase):
                 )
         pending.status = "approved" if success else "failed"
         pending.status_reason = (
-            promote_followup_reason
-            or str(params.get("reason", "")).strip()
-            or pending.status
+            promote_followup_reason or str(params.get("reason", "")).strip() or pending.status
         )
         self._sync_task_confirmation_status(pending)
         self._record_task_confirmation_outcome(pending, success=success)

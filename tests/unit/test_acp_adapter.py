@@ -75,9 +75,7 @@ async def test_m3_acp_adapter_review_mode_uses_read_only_session_mode(
 
 @pytest.mark.asyncio
 async def test_m3_acp_adapter_keeps_existing_preferred_mode(tmp_path: Path) -> None:
-    adapter = AcpAdapter(
-        spec=_fake_agent_spec("codex", "--default-mode", "build")
-    )
+    adapter = AcpAdapter(spec=_fake_agent_spec("codex", "--default-mode", "build"))
 
     result = await adapter.run(
         prompt_text="TASK KIND: implement\nFILES:\n- README.md\n",
@@ -113,9 +111,7 @@ async def test_m3_acp_adapter_timeout_maps_to_clean_failure(tmp_path: Path) -> N
 
 @pytest.mark.asyncio
 async def test_m3_acp_adapter_timeout_covers_initialize_handshake(tmp_path: Path) -> None:
-    adapter = AcpAdapter(
-        spec=_fake_agent_spec("claude", "--initialize-sleep", "0.25")
-    )
+    adapter = AcpAdapter(spec=_fake_agent_spec("claude", "--initialize-sleep", "0.25"))
 
     result = await adapter.run(
         prompt_text="TASK KIND: review\nFILES:\n- README.md\n",
@@ -164,9 +160,7 @@ async def test_m3_acp_adapter_preserves_agent_auth_env(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-anthropic-key")
-    adapter = AcpAdapter(
-        spec=_fake_agent_spec("claude", "--require-env", "ANTHROPIC_API_KEY")
-    )
+    adapter = AcpAdapter(spec=_fake_agent_spec("claude", "--require-env", "ANTHROPIC_API_KEY"))
 
     result = await adapter.run(
         prompt_text="TASK KIND: review\nFILES:\n- README.md\n",

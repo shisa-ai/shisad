@@ -151,9 +151,7 @@ _TASK_HANDOFF_SUMMARY_ONLY = "summary_only"
 _TASK_HANDOFF_RAW_PASSTHROUGH = "raw_passthrough"
 _COMMAND_CONTEXT_STATUS_KEY = "command_context"
 _COMMAND_CONTEXT_RECOVERY_CHECKPOINT_KEY = "command_context_recovery_checkpoint_id"
-_COMMAND_CONTEXT_PENDING_RECOVERY_CHECKPOINT_KEY = (
-    "command_context_pending_recovery_checkpoint_id"
-)
+_COMMAND_CONTEXT_PENDING_RECOVERY_CHECKPOINT_KEY = "command_context_pending_recovery_checkpoint_id"
 _COMMAND_CONTEXT_PENDING_RAW_HANDOFFS_KEY = "command_context_pending_raw_handoffs"
 _COMMAND_CONTEXT_REASON_KEY = "command_context_reason"
 _TASK_REPORTED_PATH_MAX_CHARS = 512
@@ -375,9 +373,7 @@ _AUTO_CLEANROOM_ADMIN_SUBJECT_RE = re.compile(
     r"signed\s+skill(?:\s+bundle)?|assistant\s+behavior"
     r")\b"
 )
-_AUTO_CLEANROOM_ADMIN_COMMAND_RE = re.compile(
-    r"(?i)\bselfmod\s+(?:propose|apply|rollback)\b"
-)
+_AUTO_CLEANROOM_ADMIN_COMMAND_RE = re.compile(r"(?i)\bselfmod\s+(?:propose|apply|rollback)\b")
 
 
 def _classify_chat_confirmation_intent(text: str) -> ChatConfirmationIntent:
@@ -791,9 +787,11 @@ def _task_envelope_for_session(session: Session) -> TaskEnvelope | None:
 
 
 def _task_scope_enforcement_active(session: Session, task_envelope: TaskEnvelope | None) -> bool:
-    return session.mode == SessionMode.TASK or bool(
-        str(session.metadata.get("background_task_id", "")).strip()
-    ) or task_envelope is not None
+    return (
+        session.mode == SessionMode.TASK
+        or bool(str(session.metadata.get("background_task_id", "")).strip())
+        or task_envelope is not None
+    )
 
 
 def _normalize_reported_task_path(raw: Any) -> str | None:
@@ -839,9 +837,7 @@ def _build_planner_tool_context(
     trust_level: str,
 ) -> str:
     visible_tools = [
-        tool
-        for tool in registry_tools
-        if tool_allowlist is None or tool.name in tool_allowlist
+        tool for tool in registry_tools if tool_allowlist is None or tool.name in tool_allowlist
     ]
     visible_tools.sort(key=lambda item: str(item.name))
     enabled_tools = _planner_enabled_tools(
@@ -914,9 +910,7 @@ def _build_planner_tool_context(
                     display_name = f"{display_name} (native function: {native_name})"
                 lines.append(f"- {display_name}: blocked (missing: {', '.join(missing)})")
     else:
-        lines.append(
-            "Enabled tools: " + ", ".join(str(tool.name) for tool in enabled_tools)
-        )
+        lines.append("Enabled tools: " + ", ".join(str(tool.name) for tool in enabled_tools))
     if any(str(tool.name) in {"evidence.read", "evidence.promote"} for tool in enabled_tools):
         lines.append(
             "If a tool result includes an [EVIDENCE ref=...] stub, call evidence.read(ref_id) "
@@ -1657,9 +1651,7 @@ def _build_episode_snapshot(
                 "compressed": bool(episode.compressed),
                 "summary": episode.summary.text if episode.summary is not None else "",
                 "summary_minimized": (
-                    bool(episode.summary.minimized)
-                    if episode.summary is not None
-                    else False
+                    bool(episode.summary.minimized) if episode.summary is not None else False
                 ),
                 "source_taint_labels": source_taints,
             }
@@ -1948,8 +1940,7 @@ def _build_session_frontmatter(
             active = episodes[-1]
             if isinstance(active, dict):
                 lines.append(
-                    "active_episode_id="
-                    f"{_sanitize_frontmatter_value(active.get('episode_id', ''))}"
+                    f"active_episode_id={_sanitize_frontmatter_value(active.get('episode_id', ''))}"
                 )
                 lines.append(f"active_episode_messages={active.get('message_count', 0)}")
                 lines.append(f"active_episode_finalized={bool(active.get('finalized', False))}")
@@ -2003,9 +1994,7 @@ def _build_internal_scaffold_entries(
                 )
     # Internal tier entries are intentionally heterogeneous:
     # episode summaries remain SEMI_TRUSTED while deterministic task status is TRUSTED.
-    entries.extend(
-        _build_task_internal_scaffold_entries(task_ledger_snapshot=task_ledger_snapshot)
-    )
+    entries.extend(_build_task_internal_scaffold_entries(task_ledger_snapshot=task_ledger_snapshot))
     return entries
 
 
@@ -2170,7 +2159,7 @@ def _wrap_serialized_tool_outputs_with_evidence(
         summary = f"Content from {source}, {byte_size} bytes"
         taint_value = ",".join(sorted(label.upper() for label in taint_labels)) or "NONE"
         return (
-            f'[EVIDENCE unavailable source={source} taint={taint_value} size={byte_size} '
+            f"[EVIDENCE unavailable source={source} taint={taint_value} size={byte_size} "
             f'summary="{summary}" Evidence storage unavailable; inspect tool_outputs for the '
             "full content in this turn.]"
         )
@@ -2435,9 +2424,7 @@ def _summarize_tool_outputs_for_chat(records: list[dict[str, Any]]) -> str:
                     ref_id for ref_id in all_evidence_ref_ids if ref_id not in visible_ref_ids
                 ]
                 if hidden_ref_ids:
-                    lines.append(
-                        f"  additional_evidence_ref_ids={', '.join(hidden_ref_ids)}"
-                    )
+                    lines.append(f"  additional_evidence_ref_ids={', '.join(hidden_ref_ids)}")
                 lines.append("  output:")
                 lines.extend(f"  {line}" for line in preview_lines)
                 if truncated:
@@ -2527,9 +2514,7 @@ class SessionImplMixin(HandlerMixinBase):
             session.metadata.pop(_COMMAND_CONTEXT_PENDING_RECOVERY_CHECKPOINT_KEY, None)
             session.metadata.pop(_COMMAND_CONTEXT_PENDING_RAW_HANDOFFS_KEY, None)
             return
-        pending_count = int(
-            session.metadata.get(_COMMAND_CONTEXT_PENDING_RAW_HANDOFFS_KEY, 0) or 0
-        )
+        pending_count = int(session.metadata.get(_COMMAND_CONTEXT_PENDING_RAW_HANDOFFS_KEY, 0) or 0)
         if pending_count > 1:
             session.metadata[_COMMAND_CONTEXT_PENDING_RAW_HANDOFFS_KEY] = pending_count - 1
             return
@@ -2729,18 +2714,14 @@ class SessionImplMixin(HandlerMixinBase):
                     if checkpoint_id:
                         checkpoint_ids.append(checkpoint_id)
                     status = str(result.get("status") or result.get("reason") or "failed").strip()
-                    outcome_lines.append(
-                        f"confirmed {index + 1} ({pending.tool_name}): {status}"
-                    )
+                    outcome_lines.append(f"confirmed {index + 1} ({pending.tool_name}): {status}")
                 else:
                     result = await self.do_action_reject(payload)
                     rejected = bool(result.get("rejected", False))
                     if rejected:
                         blocked_actions += 1
                     status = str(result.get("status") or result.get("reason") or "failed").strip()
-                    outcome_lines.append(
-                        f"rejected {index + 1} ({pending.tool_name}): {status}"
-                    )
+                    outcome_lines.append(f"rejected {index + 1} ({pending.tool_name}): {status}")
             response_text = "\n".join(outcome_lines)
             remaining = self._pending_confirmations_for_binding(
                 session_id=sid,
@@ -2748,12 +2729,9 @@ class SessionImplMixin(HandlerMixinBase):
                 workspace_id=workspace_id,
             )
             if remaining:
-                response_text = (
-                    f"{response_text}\n\n"
-                    + self._chat_pending_confirmation_summary(
-                        pending_rows=remaining,
-                        tainted_session=tainted_session,
-                    )
+                response_text = f"{response_text}\n\n" + self._chat_pending_confirmation_summary(
+                    pending_rows=remaining,
+                    tainted_session=tainted_session,
                 )
 
         output_result = self._output_firewall.inspect(
@@ -3215,11 +3193,7 @@ class SessionImplMixin(HandlerMixinBase):
             trust_level=validated.trust_level,
             credential_refs={
                 CredentialRef(ref_id)
-                for ref_id in (
-                    task_envelope.credential_refs
-                    if task_envelope is not None
-                    else ()
-                )
+                for ref_id in (task_envelope.credential_refs if task_envelope is not None else ())
             },
             enforce_explicit_credential_refs=_task_scope_enforcement_active(
                 session,
@@ -3368,9 +3342,7 @@ class SessionImplMixin(HandlerMixinBase):
             session.metadata.pop(_CONTEXT_SCAFFOLD_DEGRADED_REASON_CODES_KEY, None)
         self._session_manager.persist(sid)
 
-        assistant_tone_override = _normalize_assistant_tone(
-            session.metadata.get("assistant_tone")
-        )
+        assistant_tone_override = _normalize_assistant_tone(session.metadata.get("assistant_tone"))
         return SessionMessagePlannerContextResult(
             validated=validated,
             conversation_context=conversation_context,
@@ -3605,8 +3577,7 @@ class SessionImplMixin(HandlerMixinBase):
             trace_only_stage2_block = (
                 cp_eval.trace_result.reason_code == "trace:stage2_upgrade_required"
                 and not any(
-                    vote.decision.value == "BLOCK"
-                    and vote.voter != TRACE_VOTER_NAME
+                    vote.decision.value == "BLOCK" and vote.voter != TRACE_VOTER_NAME
                     for vote in cp_eval.consensus.votes
                 )
             )
@@ -3782,9 +3753,7 @@ class SessionImplMixin(HandlerMixinBase):
                 amv_explanation = _action_monitor_explanation_from_votes(cp_eval.consensus.votes)
                 extra_warnings: list[str] = []
                 if amv_explanation:
-                    extra_warnings.append(
-                        f"This action was flagged because: {amv_explanation}"
-                    )
+                    extra_warnings.append(f"This action was flagged because: {amv_explanation}")
                 merged_policy = None
                 if tool_def is not None:
                     try:
@@ -3937,10 +3906,7 @@ class SessionImplMixin(HandlerMixinBase):
                 response_text = (
                     f"{response_text}\n\n{summary}" if response_text.strip() else summary
                 )
-        if (
-            validated.session_mode == SessionMode.ADMIN_CLEANROOM
-            and execution.cleanroom_proposals
-        ):
+        if validated.session_mode == SessionMode.ADMIN_CLEANROOM and execution.cleanroom_proposals:
             proposal_payload = json.dumps(
                 execution.cleanroom_proposals,
                 ensure_ascii=True,
@@ -4029,15 +3995,19 @@ class SessionImplMixin(HandlerMixinBase):
         if self._trace_recorder is not None:
             try:
                 provider_resp = planner_dispatch.planner_result.provider_response
-                trace_messages = [
-                    TraceMessage(
-                        role=message.role,
-                        content=message.content,
-                        tool_calls=message.tool_calls,
-                        tool_call_id=message.tool_call_id,
-                    )
-                    for message in planner_dispatch.planner_result.messages_sent
-                ] if planner_dispatch.planner_result.messages_sent else []
+                trace_messages = (
+                    [
+                        TraceMessage(
+                            role=message.role,
+                            content=message.content,
+                            tool_calls=message.tool_calls,
+                            tool_call_id=message.tool_call_id,
+                        )
+                        for message in planner_dispatch.planner_result.messages_sent
+                    ]
+                    if planner_dispatch.planner_result.messages_sent
+                    else []
+                )
                 model_id = self._planner_model_id
                 if provider_resp and provider_resp.model:
                     model_id = provider_resp.model
@@ -4129,9 +4099,7 @@ class SessionImplMixin(HandlerMixinBase):
         requested_capabilities: list[str] | None = None
         if isinstance(requested_capabilities_raw, list):
             requested_capabilities = [
-                str(item).strip()
-                for item in requested_capabilities_raw
-                if str(item).strip()
+                str(item).strip() for item in requested_capabilities_raw if str(item).strip()
             ]
         scoped_capabilities = _resolve_task_capability_scope(
             parent_capabilities=parent_capabilities,
@@ -4167,9 +4135,7 @@ class SessionImplMixin(HandlerMixinBase):
             tuple(
                 item
                 for item in (
-                    str(entry).strip()
-                    for entry in credential_refs_raw
-                    if str(entry).strip()
+                    str(entry).strip() for entry in credential_refs_raw if str(entry).strip()
                 )
             )
             if isinstance(credential_refs_raw, list)
@@ -4180,9 +4146,7 @@ class SessionImplMixin(HandlerMixinBase):
             tuple(
                 item
                 for item in (
-                    str(entry).strip()
-                    for entry in resource_scope_ids_raw
-                    if str(entry).strip()
+                    str(entry).strip() for entry in resource_scope_ids_raw if str(entry).strip()
                 )
             )
             if isinstance(resource_scope_ids_raw, list)
@@ -4210,9 +4174,7 @@ class SessionImplMixin(HandlerMixinBase):
             fallback_agents_raw = raw_task.get("fallback_agents", [])
             fallback_agents = (
                 tuple(
-                    str(item).strip().lower()
-                    for item in fallback_agents_raw
-                    if str(item).strip()
+                    str(item).strip().lower() for item in fallback_agents_raw if str(item).strip()
                 )
                 if isinstance(fallback_agents_raw, list)
                 else ()
@@ -4258,23 +4220,15 @@ class SessionImplMixin(HandlerMixinBase):
             coding_config = CodingAgentConfig(
                 preferred_agent=preferred_agent,
                 fallback_agents=tuple(
-                    item
-                    for item in fallback_agents
-                    if item and item != preferred_agent
+                    item for item in fallback_agents if item and item != preferred_agent
                 ),
                 timeout_sec=timeout_sec or self._config.coding_agent_timeout_seconds,
                 max_budget_usd=max_budget_value,
                 read_only=effective_read_only,
                 task_kind=task_kind,
                 max_turns=max_turns_value,
-                model=(
-                    str(raw_task.get("model", "")).strip()
-                    or None
-                ),
-                reasoning_effort=(
-                    str(raw_task.get("reasoning_effort", "")).strip()
-                    or None
-                ),
+                model=(str(raw_task.get("model", "")).strip() or None),
+                reasoning_effort=(str(raw_task.get("reasoning_effort", "")).strip() or None),
                 allowed_tools=_coding_agent_allowed_tools(
                     capabilities=frozenset(scoped_capabilities),
                     read_only=effective_read_only,
@@ -4791,9 +4745,7 @@ class SessionImplMixin(HandlerMixinBase):
             "task_handoff_taint_labels": [TaintLabel.UNTRUSTED.value],
         }
         if validated.tool_allowlist is not None:
-            task_metadata["tool_allowlist"] = sorted(
-                str(tool) for tool in validated.tool_allowlist
-            )
+            task_metadata["tool_allowlist"] = sorted(str(tool) for tool in validated.tool_allowlist)
 
         task_session: Session | None = None
         try:
@@ -5207,10 +5159,7 @@ class SessionImplMixin(HandlerMixinBase):
                 if not self_check.passed:
                     failure_reason = _task_self_check_failure_reason(self_check.status)
                     summary_text = _compact_context_text(
-                        (
-                            "Delegated task self-check blocked handoff. "
-                            f"{self_check.notes}"
-                        ),
+                        (f"Delegated task self-check blocked handoff. {self_check.notes}"),
                         max_chars=320,
                     )
                     raw_response_text = summary_text
@@ -5268,11 +5217,7 @@ class SessionImplMixin(HandlerMixinBase):
                     and recovery_checkpoint_id
                 ),
                 reason=failure_reason,
-                plan_hash=(
-                    str(raw_plan_hash).strip()
-                    if raw_plan_hash not in (None, "")
-                    else None
-                ),
+                plan_hash=(str(raw_plan_hash).strip() if raw_plan_hash not in (None, "") else None),
                 blocked_actions=int(task_response_payload.get("blocked_actions", 0) or 0),
                 confirmation_required_actions=int(
                     task_response_payload.get("confirmation_required_actions", 0) or 0

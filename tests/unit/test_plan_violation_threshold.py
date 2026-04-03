@@ -16,9 +16,7 @@ class _PlanViolationHarness:
         self._plan_violation_counts: dict[SessionId, int] = {}
         self._policy_loader = SimpleNamespace(
             policy=SimpleNamespace(
-                control_plane=SimpleNamespace(
-                    trace=SimpleNamespace(escalation_threshold=threshold)
-                )
+                control_plane=SimpleNamespace(trace=SimpleNamespace(escalation_threshold=threshold))
             )
         )
         self.events: list[object] = []

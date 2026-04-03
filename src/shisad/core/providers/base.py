@@ -220,9 +220,7 @@ class OpenAICompatibleProvider:
         else:
             endpoint_path = f"{current_path}/{suffix_path}"
 
-        return urlunparse(
-            parsed._replace(path=endpoint_path, params="", query="", fragment="")
-        )
+        return urlunparse(parsed._replace(path=endpoint_path, params="", query="", fragment=""))
 
     def _post_json(self, url: str, payload: dict[str, Any]) -> dict[str, Any]:
         body = json.dumps(payload).encode("utf-8")
@@ -272,8 +270,7 @@ class OpenAICompatibleProvider:
                     )
                     if redirect_errors:
                         raise RuntimeError(
-                            f"Provider redirect blocked for {redirected_url}: "
-                            f"{redirect_errors[0]}"
+                            f"Provider redirect blocked for {redirected_url}: {redirect_errors[0]}"
                         ) from exc
                     active_url = redirected_url
                     continue
@@ -378,8 +375,7 @@ def _matches_endpoint_allowlist(parsed_url: Any, allowlist: list[str]) -> bool:
                 continue
             rule_path = parsed_rule.path.rstrip("/")
             if rule_path and not (
-                normalized_path == rule_path
-                or normalized_path.startswith(rule_path + "/")
+                normalized_path == rule_path or normalized_path.startswith(rule_path + "/")
             ):
                 continue
             return True
@@ -417,9 +413,9 @@ def log_prompt_metadata(
         metadata["message_hashes"] = [
             hashlib.sha256(m.content.encode()).hexdigest()[:16] for m in messages
         ]
-        metadata["response_hash"] = hashlib.sha256(
-            response.message.content.encode()
-        ).hexdigest()[:16]
+        metadata["response_hash"] = hashlib.sha256(response.message.content.encode()).hexdigest()[
+            :16
+        ]
 
     return metadata
 
@@ -459,11 +455,7 @@ def _validate_runtime_endpoint_url(
     )
     parsed = urlparse(url)
     hostname = (parsed.hostname or "").strip()
-    if (
-        not block_private_ranges
-        or not hostname
-        or hostname in {"localhost", "127.0.0.1", "::1"}
-    ):
+    if not block_private_ranges or not hostname or hostname in {"localhost", "127.0.0.1", "::1"}:
         return errors
 
     if _is_ip_literal(hostname):
@@ -485,9 +477,7 @@ def _validate_runtime_endpoint_url(
             continue
         seen_addresses.add(address)
         if _address_in_private_ranges(address):
-            errors.append(
-                f"Endpoint resolves to private range: {hostname} ({address})"
-            )
+            errors.append(f"Endpoint resolves to private range: {hostname} ({address})")
             break
     return errors
 

@@ -56,11 +56,7 @@ class DashboardImplMixin(HandlerMixinBase):
             data = row.get("data", {})
             if not isinstance(data, dict):
                 continue
-            skill_name = str(
-                data.get("skill_name")
-                or data.get("name")
-                or ""
-            ).strip()
+            skill_name = str(data.get("skill_name") or data.get("name") or "").strip()
             if not skill_name:
                 continue
             bucket = timeline.setdefault(

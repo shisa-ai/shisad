@@ -156,9 +156,7 @@ class _PhaseHarness(SessionImplMixin):
             trace_tool_calls=[],
         )
 
-    async def _finalize_response(
-        self, execution: SessionMessageExecutionResult
-    ) -> dict[str, Any]:
+    async def _finalize_response(self, execution: SessionMessageExecutionResult) -> dict[str, Any]:
         self.calls.append("finalize")
         assert isinstance(execution, SessionMessageExecutionResult)
         return {
@@ -229,6 +227,9 @@ class _PendingPolicySnapshotHarness(SessionImplMixin):
     def __init__(self) -> None:
         self.captured_merged_policy: object | None = None
         self._event_bus = SimpleNamespace(publish=self._noop_publish)
+        self._session_manager = SimpleNamespace(
+            get=lambda sid: SimpleNamespace(id=sid),
+        )
         self._monitor = SimpleNamespace(
             evaluate=lambda **_kwargs: SimpleNamespace(
                 kind=MonitorDecisionType.APPROVE,
@@ -253,6 +254,14 @@ class _PendingPolicySnapshotHarness(SessionImplMixin):
         )
         self._risk_calibrator = SimpleNamespace(record=lambda _observation: None)
         self._trace_recorder = None
+        self._pep = SimpleNamespace(
+            evaluate=lambda _tool_name, _arguments, _context: PEPDecision(
+                kind=PEPDecisionKind.REQUIRE_CONFIRMATION,
+                reason="needs confirmation",
+                tool_name=ToolName("shell.exec"),
+                risk_score=0.5,
+            )
+        )
         self._policy_loader = SimpleNamespace(
             policy=SimpleNamespace(
                 risk_policy=SimpleNamespace(
@@ -310,6 +319,16 @@ class _PendingPolicySnapshotHarness(SessionImplMixin):
     def _queue_pending_action(self, **kwargs: object) -> object:
         self.captured_merged_policy = kwargs.get("merged_policy")
         return SimpleNamespace(confirmation_id="c-1", reason="requires_confirmation")
+
+    async def _prepare_browser_tool_arguments(
+        self,
+        *,
+        session: object,
+        tool_name: ToolName,
+        arguments: dict[str, object],
+    ) -> dict[str, object]:
+        _ = (session, tool_name)
+        return dict(arguments)
 
 
 @pytest.mark.asyncio

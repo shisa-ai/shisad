@@ -68,16 +68,12 @@ class TaskEnvelope(BaseModel):
             return tuple(items)
 
         payload["credential_refs"] = _normalized_sequence(payload.get("credential_refs", ()))
-        payload["resource_scope_ids"] = _normalized_sequence(
-            payload.get("resource_scope_ids", ())
-        )
+        payload["resource_scope_ids"] = _normalized_sequence(payload.get("resource_scope_ids", ()))
         payload["resource_scope_prefixes"] = _normalized_sequence(
             payload.get("resource_scope_prefixes", ())
         )
         action = (
-            str(payload.get("untrusted_payload_action", "require_confirmation"))
-            .strip()
-            .lower()
+            str(payload.get("untrusted_payload_action", "require_confirmation")).strip().lower()
         )
         if action not in {"require_confirmation", "reject"}:
             action = "require_confirmation"

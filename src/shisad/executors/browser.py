@@ -740,9 +740,8 @@ class BrowserToolkit:
             host = (urlparse(url).hostname or "").lower()
             if not self._is_private_network_host(host):
                 continue
-            if (
-                self._browser_sandbox.policy.local_network == BrowserLocalNetworkMode.ALLOWED
-                or any(host_matches(host, rule) for rule in self._allowed_domains)
+            if self._browser_sandbox.policy.local_network == BrowserLocalNetworkMode.ALLOWED or any(
+                host_matches(host, rule) for rule in self._allowed_domains
             ):
                 return True
         return False

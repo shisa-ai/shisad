@@ -29,9 +29,7 @@ class _StubImpl:
         self.calls.append(("egress_review", _payload))
         return {"events": [], "count": 0}
 
-    async def do_dashboard_skill_provenance(
-        self, _payload: dict[str, object]
-    ) -> dict[str, object]:
+    async def do_dashboard_skill_provenance(self, _payload: dict[str, object]) -> dict[str, object]:
         self.calls.append(("skill_provenance", _payload))
         return {"events": [], "count": 0}
 

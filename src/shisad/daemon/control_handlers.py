@@ -304,9 +304,7 @@ class DaemonControlHandlers:
     ) -> DevRemediateResult:
         return await self._admin.handle_dev_remediate(params, ctx)
 
-    async def handle_dev_close(
-        self, params: DevCloseParams, ctx: RequestContext
-    ) -> DevCloseResult:
+    async def handle_dev_close(self, params: DevCloseParams, ctx: RequestContext) -> DevCloseResult:
         return await self._admin.handle_dev_close(params, ctx)
 
     async def handle_audit_query(
@@ -396,9 +394,7 @@ class DaemonControlHandlers:
     ) -> MemoryWriteResult:
         return await self._memory.handle_note_create(params, ctx)
 
-    async def handle_note_list(
-        self, params: NoteListParams, ctx: RequestContext
-    ) -> NoteListResult:
+    async def handle_note_list(self, params: NoteListParams, ctx: RequestContext) -> NoteListResult:
         return await self._memory.handle_note_list(params, ctx)
 
     async def handle_note_search(
@@ -406,9 +402,7 @@ class DaemonControlHandlers:
     ) -> NoteSearchResult:
         return await self._memory.handle_note_search(params, ctx)
 
-    async def handle_note_get(
-        self, params: NoteEntryParams, ctx: RequestContext
-    ) -> NoteGetResult:
+    async def handle_note_get(self, params: NoteEntryParams, ctx: RequestContext) -> NoteGetResult:
         return await self._memory.handle_note_get(params, ctx)
 
     async def handle_note_delete(
@@ -431,9 +425,7 @@ class DaemonControlHandlers:
     ) -> MemoryWriteResult:
         return await self._memory.handle_todo_create(params, ctx)
 
-    async def handle_todo_list(
-        self, params: TodoListParams, ctx: RequestContext
-    ) -> TodoListResult:
+    async def handle_todo_list(self, params: TodoListParams, ctx: RequestContext) -> TodoListResult:
         return await self._memory.handle_todo_list(params, ctx)
 
     async def handle_todo_complete(
@@ -441,9 +433,7 @@ class DaemonControlHandlers:
     ) -> TodoCompleteResult:
         return await self._memory.handle_todo_complete(params, ctx)
 
-    async def handle_todo_get(
-        self, params: TodoEntryParams, ctx: RequestContext
-    ) -> TodoGetResult:
+    async def handle_todo_get(self, params: TodoEntryParams, ctx: RequestContext) -> TodoGetResult:
         return await self._memory.handle_todo_get(params, ctx)
 
     async def handle_todo_delete(
@@ -514,9 +504,7 @@ class DaemonControlHandlers:
     ) -> WebSearchResult:
         return await self._assistant.handle_web_search(params, ctx)
 
-    async def handle_web_fetch(
-        self, params: WebFetchParams, ctx: RequestContext
-    ) -> WebFetchResult:
+    async def handle_web_fetch(self, params: WebFetchParams, ctx: RequestContext) -> WebFetchResult:
         return await self._assistant.handle_web_fetch(params, ctx)
 
     async def handle_realitycheck_search(

@@ -27,10 +27,7 @@ LOG_FORMAT = (
 
 # Logfile format — full ISO timestamp, no ANSI escapes.
 LOG_FORMAT_FILE = (
-    "{time:YYYY-MM-DDTHH:mm:ss.SSSZ} | "
-    "{level: <8} | "
-    "{name}:{function}:{line} - "
-    "{message}"
+    "{time:YYYY-MM-DDTHH:mm:ss.SSSZ} | {level: <8} | {name}:{function}:{line} - {message}"
 )
 
 
@@ -58,9 +55,7 @@ class _InterceptHandler(logging.Handler):
                 continue
             break
 
-        logger.opt(depth=depth, exception=record.exc_info).log(
-            level, record.getMessage()
-        )
+        logger.opt(depth=depth, exception=record.exc_info).log(level, record.getMessage())
 
 
 def setup_logging(

@@ -425,8 +425,7 @@ class IngestionPipeline:
             "version": 1,
             "active_key_id": self._active_key_id,
             "keys": [
-                self._key_metadata_by_id[key_id]
-                for key_id in sorted(self._key_metadata_by_id)
+                self._key_metadata_by_id[key_id] for key_id in sorted(self._key_metadata_by_id)
             ],
         }
         self._key_manifest_file.parent.mkdir(parents=True, exist_ok=True)

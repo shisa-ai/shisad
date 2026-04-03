@@ -568,9 +568,7 @@ class PEP:
         if lowered in {"localhost"}:
             return True
         return (
-            lowered.endswith(".local")
-            or lowered.endswith(".internal")
-            or lowered.endswith(".lan")
+            lowered.endswith(".local") or lowered.endswith(".internal") or lowered.endswith(".lan")
         )
 
     def _check_resource_authorization(
@@ -715,8 +713,7 @@ class PEP:
                 )
 
             declared_destination_hosts = [
-                self._destination_host_pattern(str(pattern))
-                for pattern in tool.destinations
+                self._destination_host_pattern(str(pattern)) for pattern in tool.destinations
             ]
             if not any(
                 pattern and host_matches(destination.host, pattern)

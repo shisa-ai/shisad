@@ -79,7 +79,7 @@ def _start_stub_search_backend() -> tuple[ThreadingHTTPServer, threading.Thread,
     return server, thread, f"http://localhost:{port}", int(port)
 
 
-async def _wait_for_socket(path: Path, timeout: float = 3.0) -> None:
+async def _wait_for_socket(path: Path, timeout: float = 5.0) -> None:
     end = asyncio.get_running_loop().time() + timeout
     while asyncio.get_running_loop().time() < end:
         if path.exists():

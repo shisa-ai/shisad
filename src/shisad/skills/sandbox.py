@@ -66,8 +66,7 @@ class SkillRuntimeSandbox:
                 violations.append(f"undeclared_env:{normalized}")
 
         allowed_paths = [
-            _resolve_path(Path(item.path))
-            for item in manifest.capabilities.filesystem
+            _resolve_path(Path(item.path)) for item in manifest.capabilities.filesystem
         ]
         if not allowed_paths and request.filesystem_paths:
             for raw_path in request.filesystem_paths:

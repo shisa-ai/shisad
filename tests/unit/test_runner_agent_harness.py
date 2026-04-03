@@ -128,7 +128,9 @@ def test_runner_env_is_gitignored() -> None:
 def _run_parser(env_content: str) -> dict[str, str]:
     """Write a temp .env and run the bash parser helper."""
     with tempfile.NamedTemporaryFile(
-        mode="w", suffix=".env", delete=False,
+        mode="w",
+        suffix=".env",
+        delete=False,
     ) as f:
         f.write(env_content)
         env_path = f.name
@@ -154,11 +156,7 @@ def test_dotenv_parser_basic_key_value() -> None:
 
 
 def test_dotenv_parser_strips_quotes() -> None:
-    result = _run_parser(
-        'TEST_DQ="double quoted"\n'
-        "TEST_SQ='single quoted'\n"
-        "TEST_NQ=no quotes\n"
-    )
+    result = _run_parser("TEST_DQ=\"double quoted\"\nTEST_SQ='single quoted'\nTEST_NQ=no quotes\n")
     assert result["TEST_DQ"] == "double quoted"
     assert result["TEST_SQ"] == "single quoted"
     assert result["TEST_NQ"] == "no quotes"
@@ -170,22 +168,12 @@ def test_dotenv_parser_handles_export_prefix() -> None:
 
 
 def test_dotenv_parser_skips_comments_and_blanks() -> None:
-    result = _run_parser(
-        "# This is a comment\n"
-        "\n"
-        "   \n"
-        "TEST_REAL=value\n"
-        "# Another comment\n"
-    )
+    result = _run_parser("# This is a comment\n\n   \nTEST_REAL=value\n# Another comment\n")
     assert result == {"TEST_REAL": "value"}
 
 
 def test_dotenv_parser_rejects_invalid_keys() -> None:
-    result = _run_parser(
-        "123BAD=nope\n"
-        "TEST_GOOD=yes\n"
-        "bad-key=nope\n"
-    )
+    result = _run_parser("123BAD=nope\nTEST_GOOD=yes\nbad-key=nope\n")
     assert "123BAD" not in result
     assert "bad-key" not in result
     assert result["TEST_GOOD"] == "yes"
@@ -225,7 +213,9 @@ def _harness_env(
 def test_harness_env_file_survives_default_clear() -> None:
     """SHISAD_ENV_FILE must be loaded even when env clearing is active."""
     with tempfile.NamedTemporaryFile(
-        mode="w", suffix=".env", delete=False,
+        mode="w",
+        suffix=".env",
+        delete=False,
     ) as f:
         f.write("SHISAD_DATA_DIR=/tmp/shisad-envfile-test\n")
         env_path = f.name

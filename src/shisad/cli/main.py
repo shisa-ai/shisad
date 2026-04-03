@@ -535,8 +535,7 @@ def doctor() -> None:
     "--component",
     default="all",
     help=(
-        "Component to check "
-        "(all, dependencies, provider, policy, channels, sandbox, realitycheck)"
+        "Component to check (all, dependencies, provider, policy, channels, sandbox, realitycheck)"
     ),
 )
 def doctor_check(component: str) -> None:
@@ -1462,8 +1461,7 @@ def dashboard_audit(
     click.echo(f"hash_chain valid={chain.get('valid')} checked={chain.get('entries_checked')}")
     for event in result.events:
         click.echo(
-            f"{event.timestamp} {event.event_type} "
-            f"session={event.session_id} actor={event.actor}"
+            f"{event.timestamp} {event.event_type} session={event.session_id} actor={event.actor}"
         )
 
 
@@ -1480,8 +1478,8 @@ def dashboard_egress(limit: int) -> None:
     )
     for event in result.events:
         click.echo(
-            f"{event.timestamp} host={event.data.get('destination_host','')} "
-            f"allowed={event.data.get('allowed')} reason={event.data.get('reason','')}"
+            f"{event.timestamp} host={event.data.get('destination_host', '')} "
+            f"allowed={event.data.get('allowed')} reason={event.data.get('reason', '')}"
         )
 
 

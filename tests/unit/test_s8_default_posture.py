@@ -179,9 +179,7 @@ def test_s8_pep_still_requires_confirmation_for_risk_threshold() -> None:
         parameters=[ToolParameter(name="url", type="string", required=True)],
     )
     pep = PEP(
-        PolicyBundle(
-            egress=[EgressRule(host="api.good.com", protocols=["https"], ports=[443])]
-        ),
+        PolicyBundle(egress=[EgressRule(host="api.good.com", protocols=["https"], ports=[443])]),
         registry,
     )
     decision = pep.evaluate(

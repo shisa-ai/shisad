@@ -151,9 +151,7 @@ def assess_milestone_readiness(
     punchlist_unchecked = _unchecked_items(punchlist_section)
     acceptance_unchecked = _unchecked_items(acceptance_section)
     punchlist_complete = punchlist_section is not None and not punchlist_unchecked
-    acceptance_checklist_complete = (
-        acceptance_section is not None and not acceptance_unchecked
-    )
+    acceptance_checklist_complete = acceptance_section is not None and not acceptance_unchecked
     open_finding_ids = _open_finding_ids(
         text="\n".join(part for part in (review_section, worklog_section) if part),
         milestone_key=milestone_key,

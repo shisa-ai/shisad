@@ -8,9 +8,7 @@ from pathlib import Path
 
 
 def _load_daily_driver_module():
-    script_path = (
-        Path(__file__).resolve().parents[2] / "scripts" / "daily_driver_evidence.py"
-    )
+    script_path = Path(__file__).resolve().parents[2] / "scripts" / "daily_driver_evidence.py"
     spec = importlib.util.spec_from_file_location("daily_driver_evidence", script_path)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)

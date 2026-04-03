@@ -278,9 +278,8 @@ class FakeAcpAgent(Agent):
                 f"permission_mode={config.get('permission_mode', '')}"
             )
             if self._large_single_line_summary_bytes > 0:
-                payload = (
-                    f"{self._agent_name} large-response mode={mode} "
-                    + ("x" * self._large_single_line_summary_bytes)
+                payload = f"{self._agent_name} large-response mode={mode} " + (
+                    "x" * self._large_single_line_summary_bytes
                 )
                 await self._client.session_update(
                     session_id=session_id,
@@ -289,9 +288,7 @@ class FakeAcpAgent(Agent):
             elif "MULTI_CHUNK_SUMMARY" in prompt_text:
                 await self._client.session_update(
                     session_id=session_id,
-                    update=update_agent_message_text(
-                        f"{self._agent_name} completed mode={mode} "
-                    ),
+                    update=update_agent_message_text(f"{self._agent_name} completed mode={mode} "),
                 )
                 await self._client.session_update(
                     session_id=session_id,

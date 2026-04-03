@@ -315,14 +315,11 @@ class RealityCheckToolkit:
 
     def _search_remote(self, *, query: str, limit: int) -> dict[str, Any]:
         endpoint = self.endpoint_url.strip().rstrip("/")
-        request_url = (
-            f"{endpoint}/search?"
-            + urlencode(
-                {
-                    "q": query,
-                    "limit": max(1, min(limit, 20)),
-                }
-            )
+        request_url = f"{endpoint}/search?" + urlencode(
+            {
+                "q": query,
+                "limit": max(1, min(limit, 20)),
+            }
         )
         request = Request(
             request_url,

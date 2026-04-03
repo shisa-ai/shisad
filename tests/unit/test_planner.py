@@ -417,7 +417,7 @@ async def test_m5_rr2_schema_strict_mode_allows_non_tool_json_array_assistant_te
     registry = _make_registry()
     pep = PEP(PolicyBundle(default_require_confirmation=False), registry)
     planner = Planner(
-        StaticProvider([Message(role="assistant", content='[1, 2, 3]')]),
+        StaticProvider([Message(role="assistant", content="[1, 2, 3]")]),
         pep,
         max_retries=0,
         schema_strict_mode=True,

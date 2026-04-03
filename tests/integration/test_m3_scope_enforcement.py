@@ -193,8 +193,10 @@ async def test_m3_task_resource_scope_blocks_cross_thread_message_send(
         rejected = await _wait_for_audit_event(
             client,
             event_type="ToolRejected",
-            predicate=lambda event: "resource authorization failed" in _event_reason(event).lower()
-            and "thread_id" in _event_reason(event),
+            predicate=lambda event: (
+                "resource authorization failed" in _event_reason(event).lower()
+                and "thread_id" in _event_reason(event)
+            ),
         )
         assert "thread_id" in _event_reason(rejected)
     finally:

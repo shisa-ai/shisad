@@ -210,9 +210,7 @@ def test_m4_t31_policy_patch_tri_state_semantics() -> None:
 
 def test_m4_t32_structured_tool_override_migration_warns(caplog: pytest.LogCaptureFixture) -> None:
     caplog.set_level(logging.WARNING)
-    policy = SandboxPolicy.model_validate(
-        {"tool_overrides": {"shell_exec": "container"}}
-    )
+    policy = SandboxPolicy.model_validate({"tool_overrides": {"shell_exec": "container"}})
     assert policy.tool_overrides["shell.exec"].sandbox_type == "container"
     assert any("Deprecated sandbox.tool_overrides scalar" in rec.message for rec in caplog.records)
 

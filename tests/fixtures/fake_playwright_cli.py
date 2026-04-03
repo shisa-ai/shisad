@@ -182,7 +182,7 @@ def _resolve_target(parser: _PageParser, target: str) -> dict[str, str] | None:
         if target in {
             element.get("ref", ""),
             element.get("selector", ""),
-            f'#{element.get("id", "")}' if element.get("id") else "",
+            f"#{element.get('id', '')}" if element.get("id") else "",
             element.get("name", ""),
         }:
             return element

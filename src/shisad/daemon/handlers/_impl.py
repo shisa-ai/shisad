@@ -478,11 +478,7 @@ def _parse_reminder_delay_seconds(when: str, *, now: datetime) -> int:
         parsed = datetime.fromisoformat(iso_candidate)
     except ValueError as exc:  # pragma: no cover - exercised through reminder behavior tests
         raise ValueError("reminder_time_unsupported") from exc
-    parsed = (
-        parsed.replace(tzinfo=UTC)
-        if parsed.tzinfo is None
-        else parsed.astimezone(UTC)
-    )
+    parsed = parsed.replace(tzinfo=UTC) if parsed.tzinfo is None else parsed.astimezone(UTC)
     return max(1, int((parsed - now).total_seconds()))
 
 
@@ -496,8 +492,7 @@ async def _structured_note_create(
         return {"ok": False, "error": "note_content_required"}
     payload = await handler.do_note_create(
         {
-            "key": _argument_string(arguments, "key")
-            or _slugify_memory_key("note", content),
+            "key": _argument_string(arguments, "key") or _slugify_memory_key("note", content),
             "content": content,
             "origin": "user",
             "source_id": str(context.session_id),
@@ -613,8 +608,7 @@ async def _structured_reminder_create(
     task_payload = await handler.do_task_create(
         {
             "schedule": {"kind": "interval", "expression": f"{delay_seconds}s"},
-            "name": _argument_string(arguments, "name")
-            or _slugify_memory_key("reminder", message),
+            "name": _argument_string(arguments, "name") or _slugify_memory_key("reminder", message),
             "goal": f"Reminder: {message}",
             "capability_snapshot": [Capability.MESSAGE_SEND.value],
             "policy_snapshot_ref": "planner:reminder.create",
@@ -703,6 +697,7 @@ async def _structured_evidence_promote(
         "content": content,
         "taint_labels": taint_labels,
     }
+
 
 @dataclass(slots=True)
 class PendingAction:
@@ -829,9 +824,7 @@ class HandlerImplementation(
         web_allowed_domains = [item for item in self._config.web_allowed_domains if item.strip()]
         if not web_allowed_domains:
             web_allowed_domains = [
-                rule.host.strip()
-                for rule in self._policy_loader.policy.egress
-                if rule.host.strip()
+                rule.host.strip() for rule in self._policy_loader.policy.egress if rule.host.strip()
             ]
         self._web_toolkit = WebToolkit(
             data_dir=self._config.data_dir,
@@ -853,9 +846,7 @@ class HandlerImplementation(
             session_root=self._config.data_dir / "browser",
             allowed_domains=browser_allowed_domains,
             timeout_seconds=self._config.browser_timeout_seconds,
-            require_hardened_isolation=bool(
-                self._config.browser_require_hardened_isolation
-            ),
+            require_hardened_isolation=bool(self._config.browser_require_hardened_isolation),
             max_read_bytes=self._config.browser_max_read_bytes,
             sandbox_runner=self._sandbox,
             browser_sandbox=self._browser_sandbox,
@@ -951,10 +942,7 @@ class HandlerImplementation(
             return
         now = datetime.now(UTC)
         last = self._confirmation_alerted_at.get(user_id)
-        if (
-            last is not None
-            and (now - last).total_seconds() < _CONFIRMATION_ALERT_COOLDOWN_SECONDS
-        ):
+        if last is not None and (now - last).total_seconds() < _CONFIRMATION_ALERT_COOLDOWN_SECONDS:
             return
         reasons: list[str] = []
         if metrics.get("rubber_stamping"):
@@ -1246,9 +1234,7 @@ class HandlerImplementation(
             checkpoint_id = execution.checkpoint_id or execution.sandbox_result.checkpoint_id
             sandbox_result = execution.sandbox_result
             if checkpoint_id != sandbox_result.checkpoint_id:
-                sandbox_result = sandbox_result.model_copy(
-                    update={"checkpoint_id": checkpoint_id}
-                )
+                sandbox_result = sandbox_result.model_copy(update={"checkpoint_id": checkpoint_id})
             return sandbox_result.model_dump(mode="json")
         tool_output = execution.tool_output
         success = execution.success
@@ -1452,8 +1438,7 @@ class HandlerImplementation(
         external_user_id = str(raw.get("external_user_id", "")).strip()
         workspace_hint = str(raw.get("workspace_hint", "")).strip()
         reason = (
-            str(raw.get("reason", "identity_not_allowlisted")).strip()
-            or "identity_not_allowlisted"
+            str(raw.get("reason", "identity_not_allowlisted")).strip() or "identity_not_allowlisted"
         )
         if not channel or not external_user_id:
             return None
@@ -1708,9 +1693,7 @@ class HandlerImplementation(
                 outbound_text=outbound_text,
                 source_text_by_id=self._session_source_text_by_id(session_id),
                 allowed_source_ids={
-                    str(item)
-                    for item in arguments.get("source_ids", [])
-                    if str(item).strip()
+                    str(item) for item in arguments.get("source_ids", []) if str(item).strip()
                 }
                 if isinstance(arguments.get("source_ids"), list)
                 else set(),
@@ -1754,9 +1737,7 @@ class HandlerImplementation(
             warnings=sorted(set(warnings)),
             leak_check=leak_result_payload,
             merged_policy=(
-                merged_policy.model_copy(deep=True)
-                if merged_policy is not None
-                else None
+                merged_policy.model_copy(deep=True) if merged_policy is not None else None
             ),
             approval_task_envelope_id=HandlerImplementation._approval_task_envelope_id_for_session(
                 session
@@ -1821,9 +1802,7 @@ class HandlerImplementation(
                     arguments=dict(item.get("arguments", {})),
                     reason=str(item.get("reason", "")),
                     capabilities={
-                        Capability(str(cap))
-                        for cap in item.get("capabilities", [])
-                        if str(cap)
+                        Capability(str(cap)) for cap in item.get("capabilities", []) if str(cap)
                     },
                     created_at=created_at,
                     preflight_action=preflight_action,
@@ -2270,9 +2249,7 @@ class HandlerImplementation(
                 ),
             )
 
-        structured_handler = HandlerImplementation._structured_tool_registry().get(
-            str(tool_name)
-        )
+        structured_handler = HandlerImplementation._structured_tool_registry().get(str(tool_name))
         if structured_handler is not None:
             payload_builder, default_error = structured_handler
             structured_context = StructuredToolContext(

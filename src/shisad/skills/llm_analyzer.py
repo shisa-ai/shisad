@@ -128,8 +128,7 @@ class LlmSkillAnalyzer:
                         else ThreatCategory.SUPPLY_CHAIN,
                         severity=(
                             FindingSeverity(item.get("severity", FindingSeverity.MEDIUM.value))
-                            if item.get("severity")
-                            in {member.value for member in FindingSeverity}
+                            if item.get("severity") in {member.value for member in FindingSeverity}
                             else FindingSeverity.MEDIUM
                         ),
                         title=str(item.get("title", "Semantic risk finding")),

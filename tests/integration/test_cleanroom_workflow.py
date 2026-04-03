@@ -344,8 +344,7 @@ async def test_m1_trusted_cli_admin_intent_reroutes_to_fresh_cleanroom_and_auto_
         transcript_store = TranscriptStore(config.data_dir / "sessions")
         original_entries = transcript_store.list_entries(sid)
         assert any(
-            "hello from the default session" in entry.content_preview
-            for entry in original_entries
+            "hello from the default session" in entry.content_preview for entry in original_entries
         )
         assert not any(
             "install the signed behavior pack" in entry.content_preview

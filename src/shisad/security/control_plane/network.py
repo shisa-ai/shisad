@@ -125,8 +125,8 @@ class BaselineDatabase:
         current.last_seen = metadata.timestamp
         current.count += 1
         alpha = self._learning_rate
-        current.average_request_size = (
-            (1.0 - alpha) * current.average_request_size + alpha * float(metadata.request_size)
+        current.average_request_size = (1.0 - alpha) * current.average_request_size + alpha * float(
+            metadata.request_size
         )
         self._persist()
 
@@ -279,9 +279,7 @@ class NetworkIntelligenceMonitor:
         recent_minute = [item for item in recent if item.timestamp >= one_minute_ago]
 
         host_minute = [
-            item
-            for item in recent_minute
-            if item.destination_host == metadata.destination_host
+            item for item in recent_minute if item.destination_host == metadata.destination_host
         ]
         small_requests = [item for item in host_minute if item.request_size <= 256]
 
@@ -442,9 +440,7 @@ class NetworkIntelligenceMonitor:
             decision_raw = NetworkMonitorDecisionKind.FLAG
         reasons = parsed.get("reason_codes", [])
         reason_codes = (
-            [str(item) for item in reasons]
-            if isinstance(reasons, list)
-            else ["network:llm"]
+            [str(item) for item in reasons] if isinstance(reasons, list) else ["network:llm"]
         )
         return NetworkMonitorDecision(
             decision=NetworkMonitorDecisionKind(decision_raw),

@@ -209,6 +209,7 @@ class DaemonServices:
         startup_complete = False
 
         try:
+
             def _lockdown_snapshot_provider(session: Session) -> dict[str, Any]:
                 return {"lockdown": lockdown_manager.snapshot(session.id)}
 
@@ -358,15 +359,11 @@ class DaemonServices:
             )
             scheduler = SchedulerManager(storage_dir=config.data_dir / "tasks")
             realitycheck_domains = [
-                item
-                for item in config.realitycheck_allowed_domains
-                if item.strip()
+                item for item in config.realitycheck_allowed_domains if item.strip()
             ]
             if not realitycheck_domains:
                 realitycheck_domains = [
-                    rule.host.strip()
-                    for rule in policy_loader.policy.egress
-                    if rule.host.strip()
+                    rule.host.strip() for rule in policy_loader.policy.egress if rule.host.strip()
                 ]
             realitycheck_toolkit = RealityCheckToolkit(
                 enabled=config.realitycheck_enabled,
@@ -397,13 +394,9 @@ class DaemonServices:
                 data_dir=config.data_dir,
                 monitor_provider=monitor_provider,
                 action_monitor_provider=monitor_provider,
-                monitor_timeout_seconds=max(
-                    0.05, control_plane_policy.network.timeout_ms / 1000.0
-                ),
+                monitor_timeout_seconds=max(0.05, control_plane_policy.network.timeout_ms / 1000.0),
                 monitor_cache_ttl_seconds=int(control_plane_policy.network.cache_ttl_seconds),
-                baseline_learning_rate=float(
-                    control_plane_policy.network.baseline_learning_rate
-                ),
+                baseline_learning_rate=float(control_plane_policy.network.baseline_learning_rate),
                 high_critical_timeout_action=control_plane_policy.network.high_critical_timeout_action,
                 low_medium_timeout_action=control_plane_policy.network.low_medium_timeout_action,
                 trace_ttl_seconds=int(control_plane_policy.trace.ttl_seconds),
@@ -436,13 +429,9 @@ class DaemonServices:
             provenance_root = Path(__file__).resolve().parents[1] / "security" / "rules"
             provenance_status, _ = _load_provenance(provenance_manifest_path, provenance_root)
 
-            search_backend_destination = _normalize_tool_destination(
-                config.web_search_backend_url
-            )
+            search_backend_destination = _normalize_tool_destination(config.web_search_backend_url)
             browser_destinations = [
-                item.strip()
-                for item in config.browser_allowed_domains
-                if item.strip()
+                item.strip() for item in config.browser_allowed_domains if item.strip()
             ]
             if not browser_destinations:
                 browser_destinations = [
@@ -633,8 +622,7 @@ async def _build_matrix_channel(config: DaemonConfig) -> MatrixChannel | None:
     missing = [name for name, value in required.items() if not value]
     if missing:
         raise ValueError(
-            "Matrix channel is enabled but missing required config fields: "
-            + ", ".join(missing)
+            "Matrix channel is enabled but missing required config fields: " + ", ".join(missing)
         )
     matrix_channel = MatrixChannel(
         MatrixConfig(
@@ -656,8 +644,7 @@ async def _build_discord_channel(config: DaemonConfig) -> DiscordChannel | None:
         return None
     if not config.discord_bot_token:
         raise ValueError(
-            "Discord channel is enabled but missing required config field: "
-            "discord_bot_token"
+            "Discord channel is enabled but missing required config field: discord_bot_token"
         )
     channel = DiscordChannel(
         DiscordConfig(
@@ -840,8 +827,7 @@ def _build_tool_registry(
             ToolDefinition(
                 name=ToolName("browser.navigate"),
                 description=(
-                    "Navigate the sandboxed browser to a URL and return visible "
-                    "page content."
+                    "Navigate the sandboxed browser to a URL and return visible page content."
                 ),
                 parameters=[
                     ToolParameter(name="url", type="string", required=True, semantic_type="url"),
@@ -1433,8 +1419,7 @@ def _validate_model_endpoints(model_config: ModelConfig, router: ModelRouter) ->
         )
         if errors:
             raise ValueError(
-                f"Invalid {component.value} model endpoint '{route.base_url}': "
-                f"{'; '.join(errors)}"
+                f"Invalid {component.value} model endpoint '{route.base_url}': {'; '.join(errors)}"
             )
 
 

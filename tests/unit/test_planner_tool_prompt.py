@@ -86,7 +86,7 @@ async def test_m2_tool_prompt_fragment_is_injected_for_content_tool_routes() -> 
     system_prompt = provider.messages[0][0].content
     assert "CONTENT TOOL-CALLING RUNTIME MANIFEST" in system_prompt
     assert "This route does not support native `tool_calls` fields." in system_prompt
-    assert "<tool_call>{\"name\": \"...\", \"arguments\": {...}}</tool_call>" in system_prompt
+    assert '<tool_call>{"name": "...", "arguments": {...}}</tool_call>' in system_prompt
     assert "echo" in system_prompt
     assert "Echo text" in system_prompt
     assert "web.search" not in system_prompt
@@ -150,8 +150,7 @@ async def test_m2_tool_prompt_fragment_is_not_injected_when_content_fallback_dis
 def test_m1_trusted_conversation_repair_flags_no_tool_call_meta_commentary() -> None:
     output = PlannerOutput(
         assistant_response=(
-            "Hello there. No tool call is needed for this request because it is only "
-            "a greeting."
+            "Hello there. No tool call is needed for this request because it is only a greeting."
         ),
         actions=[],
     )

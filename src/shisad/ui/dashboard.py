@@ -65,7 +65,8 @@ class SecurityDashboard:
             rows = [
                 row
                 for row in rows
-                if needle in _json_text(
+                if needle
+                in _json_text(
                     {
                         "event_type": row.get("event_type", ""),
                         "action": row.get("action", ""),
@@ -88,9 +89,7 @@ class SecurityDashboard:
             if not allowed or "flag" in reason or "anomaly" in reason:
                 rows.append(row)
         rows.sort(
-            key=lambda row: _as_datetime(
-                str(row.get("timestamp", "1970-01-01T00:00:00+00:00"))
-            ),
+            key=lambda row: _as_datetime(str(row.get("timestamp", "1970-01-01T00:00:00+00:00"))),
             reverse=True,
         )
         return {"events": rows[:limit], "total": len(rows)}
@@ -103,11 +102,7 @@ class SecurityDashboard:
             "SkillProfiled",
             "SkillRevoked",
         }
-        result = [
-            row
-            for row in rows
-            if str(row.get("event_type", "")) in wanted_event_types
-        ]
+        result = [row for row in rows if str(row.get("event_type", "")) in wanted_event_types]
         return {"events": result, "total": len(result)}
 
     def alerts(self, *, limit: int = 200) -> dict[str, Any]:

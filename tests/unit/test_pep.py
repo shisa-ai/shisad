@@ -57,9 +57,7 @@ class TestPepSchemaValidation:
     def test_extra_arg_rejected(self) -> None:
         pep, _ = _make_pep()
         ctx = PolicyContext(capabilities={Capability.HTTP_REQUEST})
-        decision = pep.evaluate(
-            ToolName("test_tool"), {"query": "hello", "unknown": "bad"}, ctx
-        )
+        decision = pep.evaluate(ToolName("test_tool"), {"query": "hello", "unknown": "bad"}, ctx)
         assert decision.kind == PEPDecisionKind.REJECT
         assert "Unexpected argument" in decision.reason
 

@@ -57,12 +57,10 @@ def scan_cross_skill(skills: list[SkillBundle]) -> list[Finding]:
         skill_exfils[name] = bool(_EXFIL_RE.search(text_corpus))
         skill_domains[name] = {match.lower() for match in _URL_RE.findall(text_corpus)}
         skill_obf[name] = {
-            token.group(0).lower()
-            for token in _OBFUSCATION_RE.finditer(text_corpus)
+            token.group(0).lower() for token in _OBFUSCATION_RE.finditer(text_corpus)
         }
         skill_processes[name] = bool(
-            _PROCESS_RE.search(skill.manifest.description or "")
-            or _PROCESS_RE.search(text_corpus)
+            _PROCESS_RE.search(skill.manifest.description or "") or _PROCESS_RE.search(text_corpus)
         )
 
     findings.extend(_detect_data_relay(skills, skill_collects, skill_exfils))
@@ -96,8 +94,7 @@ def _detect_data_relay(
                     severity=FindingSeverity.CRITICAL,
                     title="Coordinated data relay pattern",
                     detail=(
-                        f"{src} collects sensitive data while {dst} "
-                        "contains exfiltration patterns"
+                        f"{src} collects sensitive data while {dst} contains exfiltration patterns"
                     ),
                     tags=["relay", "multi_skill"],
                     metadata={"collector": src, "exfiltrator": dst},
@@ -111,8 +108,7 @@ def _detect_data_relay(
                     severity=FindingSeverity.CRITICAL,
                     title="Coordinated data relay pattern",
                     detail=(
-                        f"{dst} collects sensitive data while {src} "
-                        "contains exfiltration patterns"
+                        f"{dst} collects sensitive data while {src} contains exfiltration patterns"
                     ),
                     tags=["relay", "multi_skill"],
                     metadata={"collector": dst, "exfiltrator": src},

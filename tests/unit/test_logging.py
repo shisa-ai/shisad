@@ -118,9 +118,7 @@ def test_loguru_direct_output_is_formatted(capsys: object) -> None:
         captured.append(str(message))
 
     setup_logging(level="DEBUG", colorize=False)
-    handler_id = logger.add(
-        sink, format="{time:HH:mm:ss} | {level: <8} | {message}", level="DEBUG"
-    )
+    handler_id = logger.add(sink, format="{time:HH:mm:ss} | {level: <8} | {message}", level="DEBUG")
     try:
         logger.info("formatted-test")
     finally:

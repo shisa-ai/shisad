@@ -639,9 +639,7 @@ def _session_timing(
                         pass_label = next(iter(passes))
                     elif len(passes) > 1:
                         pass_label = "multiple"
-                pass_bucket = bucket["by_remediation_pass"].setdefault(
-                    pass_label, _empty_totals()
-                )
+                pass_bucket = bucket["by_remediation_pass"].setdefault(pass_label, _empty_totals())
                 _add_to_totals(pass_bucket, interval)
             else:
                 _add_to_totals(bucket["initial_totals"], interval)

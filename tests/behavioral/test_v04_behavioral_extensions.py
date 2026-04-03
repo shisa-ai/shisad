@@ -28,7 +28,7 @@ def _base_policy() -> str:
     return 'version: "1"\ndefault_require_confirmation: false\n'
 
 
-async def _wait_for_socket(path: Path, timeout: float = 2.0) -> None:
+async def _wait_for_socket(path: Path, timeout: float = 5.0) -> None:
     end = asyncio.get_running_loop().time() + timeout
     while asyncio.get_running_loop().time() < end:
         if path.exists():
@@ -103,8 +103,10 @@ async def _wait_for_task_session_id(
     event = await _wait_for_audit_event(
         client,
         event_type="TaskTriggered",
-        predicate=lambda item: str(item.get("data", {}).get("task_id", "")) == task_id
-        and bool(str(item.get("session_id", "")).strip()),
+        predicate=lambda item: (
+            str(item.get("data", {}).get("task_id", "")) == task_id
+            and bool(str(item.get("session_id", "")).strip())
+        ),
         timeout=timeout,
     )
     session_id = str(event.get("session_id", "")).strip()
@@ -126,9 +128,7 @@ async def _wait_for_task_pending_confirmation(
         if int(latest.get("count", 0)) >= 1:
             return latest
         await asyncio.sleep(0.1)
-    raise AssertionError(
-        f"Timed out waiting for pending confirmation for task {task_id}: {latest}"
-    )
+    raise AssertionError(f"Timed out waiting for pending confirmation for task {task_id}: {latest}")
 
 
 def _fake_coding_agent_command(agent_name: str) -> str:
@@ -222,9 +222,7 @@ def _write_signed_skill_bundle(root: Path, *, key_path: Path, version: str = "1.
                     {
                         "name": "lookup",
                         "description": "Look up calendar entries.",
-                        "parameters": [
-                            {"name": "query", "type": "string", "required": True}
-                        ],
+                        "parameters": [{"name": "query", "type": "string", "required": True}],
                         "destinations": ["api.good.example"],
                     }
                 ],
@@ -770,10 +768,7 @@ async def test_behavioral_task_handoff_returns_summary_and_artifact_refs(
 
     monkeypatch.setattr(Planner, "propose", _task_only_planner)
     policy_text = (
-        'version: "1"\n'
-        "default_require_confirmation: false\n"
-        "default_capabilities:\n"
-        "  - file.read\n"
+        'version: "1"\ndefault_require_confirmation: false\ndefault_capabilities:\n  - file.read\n'
     )
     daemon_task, client, _config = await _start_daemon(tmp_path, policy_text=policy_text)
     try:
@@ -923,10 +918,7 @@ async def test_behavioral_raw_task_ingest_marks_command_degraded_and_allows_fres
 
     monkeypatch.setattr(Planner, "propose", _planner_with_raw_task_fallback)
     policy_text = (
-        'version: "1"\n'
-        "default_require_confirmation: false\n"
-        "default_capabilities:\n"
-        "  - file.read\n"
+        'version: "1"\ndefault_require_confirmation: false\ndefault_capabilities:\n  - file.read\n'
     )
     daemon_task, client, _config = await _start_daemon(tmp_path, policy_text=policy_text)
     try:
@@ -997,10 +989,7 @@ async def test_behavioral_task_session_cannot_spawn_sudo(
 
     monkeypatch.setattr(Planner, "propose", _task_admin_like_prompt_stays_task)
     policy_text = (
-        'version: "1"\n'
-        "default_require_confirmation: false\n"
-        "default_capabilities:\n"
-        "  - file.read\n"
+        'version: "1"\ndefault_require_confirmation: false\ndefault_capabilities:\n  - file.read\n'
     )
     daemon_task, client, _config = await _start_daemon(tmp_path, policy_text=policy_text)
     try:
@@ -1214,10 +1203,7 @@ async def test_behavioral_coding_agent_respects_task_capability_scope(
 ) -> None:
     readme_before = Path("README.md").read_text(encoding="utf-8")
     policy_text = (
-        'version: "1"\n'
-        "default_require_confirmation: false\n"
-        "default_capabilities:\n"
-        "  - file.read\n"
+        'version: "1"\ndefault_require_confirmation: false\ndefault_capabilities:\n  - file.read\n'
     )
     daemon_task, client, _config = await _start_daemon(
         tmp_path,

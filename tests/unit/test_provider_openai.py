@@ -87,7 +87,7 @@ async def test_openai_compatible_complete_forces_json_mode_when_enabled(
             {
                 "choices": [
                     {
-                        "message": {"role": "assistant", "content": "{\"ok\":true}"},
+                        "message": {"role": "assistant", "content": '{"ok":true}'},
                         "finish_reason": "stop",
                     }
                 ],

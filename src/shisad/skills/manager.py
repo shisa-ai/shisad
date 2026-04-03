@@ -135,9 +135,7 @@ class SkillManager:
                 static_risk_score=_risk_score(findings),
             )
             findings.extend(llm_findings)
-        findings.extend(
-            scan_cross_skill([bundle, *self._installed_bundles()])
-        )
+        findings.extend(scan_cross_skill([bundle, *self._installed_bundles()]))
         content_map = {file.path: file.content for file in bundle.files if not file.binary}
         findings = self._meta.filter(findings, content_map=content_map)
         signature = verify_manifest_signature(
@@ -328,9 +326,7 @@ class SkillManager:
         if not isinstance(payload, list):
             return {}
         entries = [
-            InstalledSkill.model_validate(item)
-            for item in payload
-            if isinstance(item, dict)
+            InstalledSkill.model_validate(item) for item in payload if isinstance(item, dict)
         ]
         return {entry.name: entry for entry in entries}
 

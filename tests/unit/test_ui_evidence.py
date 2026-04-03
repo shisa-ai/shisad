@@ -11,7 +11,7 @@ def test_render_evidence_refs_for_terminal_formats_ref_stub_as_block() -> None:
     raw = (
         "Tool results summary:\n"
         "- web.fetch: success=True, ok=True\n"
-        '  output: [EVIDENCE ref=ev-61f3d4c48f54ff92 source=web.fetch:example.com '
+        "  output: [EVIDENCE ref=ev-61f3d4c48f54ff92 source=web.fetch:example.com "
         'taint=UNTRUSTED size=88 summary="Example Domain" '
         'Use evidence.read("ev-61f3d4c48f54ff92") for full content, or '
         'evidence.promote("ev-61f3d4c48f54ff92") to add it to the conversation.]'
@@ -31,7 +31,7 @@ def test_render_evidence_refs_for_terminal_formats_ref_stub_as_block() -> None:
 
 def test_render_evidence_refs_for_terminal_formats_unavailable_stub() -> None:
     raw = (
-        '[EVIDENCE unavailable source=web.fetch:example.com taint=UNTRUSTED size=42 '
+        "[EVIDENCE unavailable source=web.fetch:example.com taint=UNTRUSTED size=42 "
         'summary="Content from web.fetch:example.com, 42 bytes" '
         "Evidence storage unavailable; inspect tool_outputs for the full content in this turn.]"
     )
@@ -47,7 +47,7 @@ def test_render_evidence_refs_for_terminal_formats_unavailable_stub() -> None:
 def test_render_evidence_refs_for_terminal_preserves_surrounding_text() -> None:
     raw = (
         "First line.\n\n"
-        '[EVIDENCE ref=ev-aaaaaaaaaaaaaaaa source=web.fetch:example.com taint=UNTRUSTED '
+        "[EVIDENCE ref=ev-aaaaaaaaaaaaaaaa source=web.fetch:example.com taint=UNTRUSTED "
         'size=11 summary="Example" Use evidence.read("ev-aaaaaaaaaaaaaaaa") for full content, '
         'or evidence.promote("ev-aaaaaaaaaaaaaaaa") to add it to the conversation.]\n\n'
         "Last line."
@@ -60,10 +60,9 @@ def test_render_evidence_refs_for_terminal_preserves_surrounding_text() -> None:
     assert "[Evidence ev-aaaaaaaaaaaaaaaa]" in rendered
 
 
-def test_render_evidence_refs_for_terminal_keeps_available_ref_when_summary_mentions_unavailable(
-) -> None:
+def test_render_evidence_refs_keeps_ref_when_summary_mentions_unavailable() -> None:
     raw = (
-        '[EVIDENCE ref=ev-61f3d4c48f54ff92 source=web.fetch:example.com taint=UNTRUSTED '
+        "[EVIDENCE ref=ev-61f3d4c48f54ff92 source=web.fetch:example.com taint=UNTRUSTED "
         'size=88 summary="Service unavailable right now" '
         'Use evidence.read("ev-61f3d4c48f54ff92") for full content, or '
         'evidence.promote("ev-61f3d4c48f54ff92") to add it to the conversation.]'
@@ -100,8 +99,9 @@ def test_render_evidence_refs_for_terminal_strips_terminal_control_sequences() -
     assert "summary: click link RED next done" in rendered
 
 
-def test_render_evidence_refs_for_terminal_round_trips_escaped_summary_from_stub_formatter(
-) -> None:
+def test_render_evidence_refs_for_terminal_round_trips_escaped_summary_from_stub_formatter() -> (
+    None
+):
     ref = EvidenceRef(
         ref_id="ev-1234567890abcdef",
         content_hash="hash",
@@ -160,7 +160,7 @@ def test_render_evidence_refs_for_terminal_leaves_malformed_stub_text_unchanged(
 
 def test_render_evidence_refs_for_terminal_does_not_partially_rewrite_malformed_fake_stub() -> None:
     raw = (
-        '[EVIDENCE ref=ev-61f3d4c48f54ff92 source=web.fetch:example.com taint=UNTRUSTED '
+        "[EVIDENCE ref=ev-61f3d4c48f54ff92 source=web.fetch:example.com taint=UNTRUSTED "
         'size=88 summary="click ] \x1b]8;;https://evil.invalid tail"]'
     )
 
@@ -169,6 +169,6 @@ def test_render_evidence_refs_for_terminal_does_not_partially_rewrite_malformed_
     assert "\x1b" not in rendered
     assert "[Evidence ev-61f3d4c48f54ff92]" not in rendered
     assert rendered == (
-        '[EVIDENCE ref=ev-61f3d4c48f54ff92 source=web.fetch:example.com taint=UNTRUSTED '
+        "[EVIDENCE ref=ev-61f3d4c48f54ff92 source=web.fetch:example.com taint=UNTRUSTED "
         'size=88 summary="click ] '
     )

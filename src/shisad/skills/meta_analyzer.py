@@ -51,6 +51,5 @@ class MetaAnalyzer:
         if _PLACEHOLDER_RE.search(context) and _EDUCATIONAL_RE.search(context):
             return True
         return bool(
-            _TEST_CONTEXT_RE.search(context)
-            and "test" in (finding.file_path or "").lower()
+            _TEST_CONTEXT_RE.search(context) and "test" in (finding.file_path or "").lower()
         )

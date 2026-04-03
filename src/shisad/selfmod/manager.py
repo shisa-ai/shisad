@@ -640,8 +640,7 @@ class SelfModificationManager:
             return {}
         try:
             manifest_path = (
-                self._artifact_version_path(artifact_type, name, active_version)
-                / "manifest.json"
+                self._artifact_version_path(artifact_type, name, active_version) / "manifest.json"
             )
         except ValueError:
             return {}
@@ -663,11 +662,7 @@ class SelfModificationManager:
         artifact_type: str,
         name: str,
     ) -> _InventoryEntry:
-        bucket = (
-            inventory.skills
-            if artifact_type == "skill_bundle"
-            else inventory.behavior_packs
-        )
+        bucket = inventory.skills if artifact_type == "skill_bundle" else inventory.behavior_packs
         return bucket.get(name, _InventoryEntry())
 
     def _set_inventory_entry(self, artifact_type: str, name: str, entry: _InventoryEntry) -> None:
@@ -680,11 +675,7 @@ class SelfModificationManager:
         name: str,
         entry: _InventoryEntry,
     ) -> None:
-        bucket = (
-            inventory.skills
-            if artifact_type == "skill_bundle"
-            else inventory.behavior_packs
-        )
+        bucket = inventory.skills if artifact_type == "skill_bundle" else inventory.behavior_packs
         bucket[name] = entry
 
     def _apply_runtime_for_inventory(
@@ -996,8 +987,7 @@ def _skill_declared_capabilities(skill_manifest: Any) -> dict[str, list[str]]:
     shell = [item.command for item in getattr(skill_manifest.capabilities, "shell", [])]
     environment = [item.var for item in getattr(skill_manifest.capabilities, "environment", [])]
     tools = [
-        f"skill.{skill_manifest.name}.{tool.name}"
-        for tool in getattr(skill_manifest, "tools", [])
+        f"skill.{skill_manifest.name}.{tool.name}" for tool in getattr(skill_manifest, "tools", [])
     ]
     return {
         "network": network,

@@ -179,9 +179,7 @@ class ChatApp(App[None]):
                 response = await self._send_message(client, content)
                 if self._reconnected and not prev_reconnected:
                     self._append_history(
-                        _format_error(
-                            "Daemon restarted - started a new conversation."
-                        )
+                        _format_error("Daemon restarted - started a new conversation.")
                     )
             finally:
                 await client.close()
@@ -209,8 +207,7 @@ class ChatApp(App[None]):
                 normalized_lockdown = lockdown_level.strip().lower()
                 if normalized_lockdown and normalized_lockdown != "normal":
                     self._append_history(
-                        "info: reusing existing session in lockdown "
-                        f"state ({normalized_lockdown})."
+                        f"info: reusing existing session in lockdown state ({normalized_lockdown})."
                     )
                 return
         await self._create_new_session(client)
@@ -283,18 +280,14 @@ class ChatApp(App[None]):
 
         return self._extract_response(result)
 
-    async def _do_session_message(
-        self, client: Any, content: str
-    ) -> dict[str, Any]:
+    async def _do_session_message(self, client: Any, content: str) -> dict[str, Any]:
         """Call session.message RPC and return the raw result dict."""
         result = await client.call(
             "session.message",
             params={"session_id": self._session_id, "content": content},
         )
         if not isinstance(result, Mapping):
-            raise RuntimeError(
-                f"Invalid session.message response type: {type(result).__name__}"
-            )
+            raise RuntimeError(f"Invalid session.message response type: {type(result).__name__}")
         return dict(result)
 
     @staticmethod
@@ -303,9 +296,7 @@ class ChatApp(App[None]):
         response = result.get("response", "")
         if isinstance(response, str) and response.strip():
             return response.strip()
-        raise RuntimeError(
-            "session.message returned no response text"
-        )
+        raise RuntimeError("session.message returned no response text")
 
     def _append_history(self, line: str) -> None:
         """Append a single line to the history pane."""

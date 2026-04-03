@@ -496,6 +496,5 @@ def test_release_stats_rollup_computes_git_commit_timing(tmp_path: Path) -> None
     assert summary["remediation_cycle_starts_annotated"][0]["milestone"] == "M1"
     assert summary["remediation_cycle_starts_annotated"][0]["remediation_pass"] == "RR1"
     assert (
-        summary["remediation_cycle_starts"][0]["to_subject"]
-        == "fix: close M1.RR1.1 (remediation)"
+        summary["remediation_cycle_starts"][0]["to_subject"] == "fix: close M1.RR1.1 (remediation)"
     )

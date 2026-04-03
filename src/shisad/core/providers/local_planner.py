@@ -183,11 +183,7 @@ def _task_close_gate_local_response(planner_input: str) -> str:
         note_text = " ".join(note_source.split())
         notes = note_text[:160] if len(note_text) > 160 else note_text
 
-    return (
-        f"SELF_CHECK_STATUS: {status}\n"
-        f"SELF_CHECK_REASON: {reason}\n"
-        f"SELF_CHECK_NOTES: {notes}"
-    )
+    return f"SELF_CHECK_STATUS: {status}\nSELF_CHECK_REASON: {reason}\nSELF_CHECK_NOTES: {notes}"
 
 
 def _is_structured_task_close_gate_prompt(text: str) -> bool:

@@ -39,9 +39,7 @@ async def test_assistant_impl_mixin_smoke() -> None:
         def search(self, *, query: str, limit: int) -> dict[str, Any]:
             return {"ok": True, "query": query, "limit": limit}
 
-        def fetch(
-            self, *, url: str, snapshot: bool, max_bytes: int | None
-        ) -> dict[str, Any]:
+        def fetch(self, *, url: str, snapshot: bool, max_bytes: int | None) -> dict[str, Any]:
             return {"ok": True, "url": url, "snapshot": snapshot, "max_bytes": max_bytes}
 
     class DummyRealitycheckToolkit:

@@ -82,9 +82,7 @@ def apply_request_profile(
 
     if endpoint_family == EndpointFamily.EMBEDDINGS:
         if payload:
-            raise RequestProfileError(
-                "embeddings endpoint does not accept chat request parameters"
-            )
+            raise RequestProfileError("embeddings endpoint does not accept chat request parameters")
         return RequestProfileEvaluation(payload={}, mapped_fields=[], rejected_fields=[])
 
     allowed = _PROFILE_ALLOWED_FIELDS.get(profile_name)
@@ -93,9 +91,7 @@ def apply_request_profile(
 
     for key in payload:
         if key not in allowed:
-            raise RequestProfileError(
-                f"field '{key}' is not allowed for profile '{profile_name}'"
-            )
+            raise RequestProfileError(f"field '{key}' is not allowed for profile '{profile_name}'")
 
     if profile_name == PROFILE_OPENAI_CHAT_GENERAL and "max_tokens" in payload:
         legacy_max_tokens = payload["max_tokens"]
@@ -105,8 +101,7 @@ def apply_request_profile(
             and explicit_max_completion_tokens != legacy_max_tokens
         ):
             raise RequestProfileError(
-                "fields 'max_tokens' and 'max_completion_tokens' conflict for "
-                "openai_chat_general"
+                "fields 'max_tokens' and 'max_completion_tokens' conflict for openai_chat_general"
             )
         payload["max_completion_tokens"] = (
             explicit_max_completion_tokens
@@ -129,9 +124,7 @@ def apply_request_profile(
     if supported_parameters is not None:
         for key in payload:
             if key not in supported_parameters:
-                raise RequestProfileError(
-                    f"field '{key}' rejected by provider metadata narrowing"
-                )
+                raise RequestProfileError(f"field '{key}' rejected by provider metadata narrowing")
 
     _ = model_id
     return RequestProfileEvaluation(

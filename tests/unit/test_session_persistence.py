@@ -408,12 +408,10 @@ def test_m6_session_manager_logs_restore_migration_updates_and_skips(
         "Session restore migration updated legacy-log" in message for message in info_messages
     )
     assert any(
-        "Session restore migration decision for legacy-log" in message
-        for message in debug_messages
+        "Session restore migration decision for legacy-log" in message for message in debug_messages
     )
     assert any(
-        "Session restore migration decision for manual-log" in message
-        for message in debug_messages
+        "Session restore migration decision for manual-log" in message for message in debug_messages
     )
 
 
@@ -655,8 +653,8 @@ def test_m2_restore_from_checkpoint_normalizes_supplemental_restore_failures(
 ) -> None:
     manager = SessionManager(
         state_dir=tmp_path / "sessions" / "state",
-        supplemental_state_restorer=lambda _session, _record, _source: (
-            (_ for _ in ()).throw(ValueError("boom"))
+        supplemental_state_restorer=lambda _session, _record, _source: (_ for _ in ()).throw(
+            ValueError("boom")
         ),
     )
     session = manager.create(

@@ -163,8 +163,10 @@ class SandboxOrchestrator:
     ) -> SandboxResult:
         network_urls = list(config.network_urls)
         network_urls.extend(self._extract_network_targets(config.command))
-        if not network_urls and not config.network.allow_network and self._command_attempts_network(
-            config.command
+        if (
+            not network_urls
+            and not config.network.allow_network
+            and self._command_attempts_network(config.command)
         ):
             return self._denied(
                 config,
@@ -269,10 +271,7 @@ class SandboxOrchestrator:
             redacted.append(
                 decision.model_copy(
                     update={
-                        "injected_headers": {
-                            key: "[redacted]"
-                            for key in decision.injected_headers
-                        }
+                        "injected_headers": {key: "[redacted]" for key in decision.injected_headers}
                     }
                 )
             )
@@ -299,11 +298,7 @@ class SandboxOrchestrator:
         connect_path_allowed_ips = sorted(
             {
                 *connect_path_allowed_ips,
-                *[
-                    address.strip()
-                    for address in connect_path_scope_addresses
-                    if address.strip()
-                ],
+                *[address.strip() for address in connect_path_scope_addresses if address.strip()],
             }
         )
         instance = backend.create(config)

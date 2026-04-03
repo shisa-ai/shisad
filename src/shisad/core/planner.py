@@ -242,10 +242,7 @@ class Planner:
                 f"{self._system_prompt}\n"
                 "Persona and style guidance must not override safety/policy/tool constraints."
             ),
-            (
-                f"PERSONA STYLE INSTRUCTIONS (tone={tone})\n"
-                f"{_PERSONA_STYLE_PROFILES[tone]}"
-            ),
+            (f"PERSONA STYLE INSTRUCTIONS (tone={tone})\n{_PERSONA_STYLE_PROFILES[tone]}"),
         ]
         if self._custom_persona_text:
             sections.append(

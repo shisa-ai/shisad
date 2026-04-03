@@ -102,7 +102,7 @@ def test_m2_t19_key_manifest_is_wrapped_and_rotation_preserves_reads(tmp_path: P
 
     manifest_path = tmp_path / "memory" / "keys.json"
     manifest = manifest_path.read_text(encoding="utf-8")
-    assert "\"wrapped_key_b64\"" in manifest
+    assert '"wrapped_key_b64"' in manifest
     assert not (tmp_path / "memory" / "key.bin").exists()
 
     old_key_id = pipeline.active_key_id

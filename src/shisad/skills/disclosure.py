@@ -101,9 +101,7 @@ def diff_versions(
         if binary_changed:
             if before is None or after is None:
                 raise ValueError("binary_changed requires both before and after files")
-            unified_diff = (
-                f"[binary changed] sha256 {before.sha256[:12]} -> {after.sha256[:12]}"
-            )
+            unified_diff = f"[binary changed] sha256 {before.sha256[:12]} -> {after.sha256[:12]}"
         elif binary_added:
             if after is None:
                 raise ValueError("binary_added requires after file")
@@ -136,9 +134,7 @@ def render_risk_summary(
         "medium": sum(1 for finding in findings if finding.severity == "medium"),
         "low": sum(1 for finding in findings if finding.severity == "low"),
     }
-    domains = sorted(
-        {domain.domain for domain in skill.manifest.capabilities.network}
-    )
+    domains = sorted({domain.domain for domain in skill.manifest.capabilities.network})
     files = list_files(skill)
     external_refs = sum(len(item.external_refs) for item in files)
 

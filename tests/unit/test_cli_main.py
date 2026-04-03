@@ -251,9 +251,7 @@ def test_cli_commands_route_through_rpc_wrapper(
                 }
             ]
         },
-        "dashboard.skill_provenance": {
-            "timeline": [{"skill_name": "demo", "versions": ["1.0.0"]}]
-        },
+        "dashboard.skill_provenance": {"timeline": [{"skill_name": "demo", "versions": ["1.0.0"]}]},
         "dashboard.alerts": {
             "alerts": [
                 {
@@ -295,9 +293,7 @@ def test_cli_commands_route_through_rpc_wrapper(
             ],
             "count": 1,
         },
-        "todo.get": {
-            "entry": {"id": "td-1", "entry_type": "todo", "value": {"title": "Ship M2"}}
-        },
+        "todo.get": {"entry": {"id": "td-1", "entry_type": "todo", "value": {"title": "Ship M2"}}},
         "todo.delete": {"deleted": True, "entry_id": "td-1"},
         "todo.verify": {"verified": True, "entry_id": "td-1"},
         "todo.export": {"format": "json", "data": '[{"id":"td-1"}]'},
@@ -377,10 +373,13 @@ def test_cli_commands_route_through_rpc_wrapper(
     assert "Shutdown signal sent" in _invoke_ok(runner, ["stop"]).output
     assert "Status: running" in _invoke_ok(runner, ["status"]).output
     _invoke_ok(runner, ["doctor", "check", "--component", "realitycheck"])
-    assert "Session created: s-1" in _invoke_ok(
-        runner,
-        ["session", "create", "--user", "alice", "--workspace", "ws-1"],
-    ).output
+    assert (
+        "Session created: s-1"
+        in _invoke_ok(
+            runner,
+            ["session", "create", "--user", "alice", "--workspace", "ws-1"],
+        ).output
+    )
     assert "hello" in _invoke_ok(runner, ["session", "message", "s-1", "hi"]).output
     _invoke_ok(runner, ["session", "mode", "s-1", "--mode", "admin_cleanroom"])
     _invoke_ok(
@@ -401,23 +400,35 @@ def test_cli_commands_route_through_rpc_wrapper(
     _invoke_ok(runner, ["session", "terminate", "s-1", "--reason", "manual"])
     _invoke_ok(runner, ["session", "prune", "--user", "alice"])
     assert "Restored session s-1" in _invoke_ok(runner, ["session", "restore", "cp-1"]).output
-    assert "Exported session s-1" in _invoke_ok(
-        runner,
-        ["session", "export", "s-1", "/tmp/s-1.shisad-session.zip"],
-    ).output
-    assert "Imported archive /tmp/s-1.shisad-session.zip as session s-2" in _invoke_ok(
-        runner,
-        ["session", "import", "/tmp/s-1.shisad-session.zip"],
-    ).output
+    assert (
+        "Exported session s-1"
+        in _invoke_ok(
+            runner,
+            ["session", "export", "s-1", "/tmp/s-1.shisad-session.zip"],
+        ).output
+    )
+    assert (
+        "Imported archive /tmp/s-1.shisad-session.zip as session s-2"
+        in _invoke_ok(
+            runner,
+            ["session", "import", "/tmp/s-1.shisad-session.zip"],
+        ).output
+    )
     assert "Rolled back session s-1" in _invoke_ok(runner, ["session", "rollback", "cp-1"]).output
-    assert "preview payload" in _invoke_ok(
-        runner,
-        ["action", "pending", "--session", "s-1", "--status", "pending", "--limit", "5"],
-    ).output
-    assert "nonce=n-1" in _invoke_ok(
-        runner,
-        ["action", "pending", "--session", "s-1", "--status", "pending", "--limit", "5"],
-    ).output
+    assert (
+        "preview payload"
+        in _invoke_ok(
+            runner,
+            ["action", "pending", "--session", "s-1", "--status", "pending", "--limit", "5"],
+        ).output
+    )
+    assert (
+        "nonce=n-1"
+        in _invoke_ok(
+            runner,
+            ["action", "pending", "--session", "s-1", "--status", "pending", "--limit", "5"],
+        ).output
+    )
     _invoke_ok(runner, ["action", "confirm", "c-1", "--reason", "ok"])
     _invoke_ok(runner, ["action", "reject", "c-1", "--reason", "deny"])
     _invoke_ok(runner, ["lockdown", "resume", "s-1", "--reason", "manual"])
@@ -426,18 +437,27 @@ def test_cli_commands_route_through_rpc_wrapper(
         ["lockdown", "set", "s-1", "--action", "quarantine", "--reason", "manual"],
     )
     _invoke_ok(runner, ["channel", "pairing-propose", "--limit", "5"])
-    assert "selfmod-proposal-1" in _invoke_ok(
-        runner,
-        ["admin", "selfmod", "propose", str(skill_path)],
-    ).output
-    assert "change-1" in _invoke_ok(
-        runner,
-        ["admin", "selfmod", "apply", "selfmod-proposal-1", "--yes"],
-    ).output
-    assert "restored_version=0.9.0" in _invoke_ok(
-        runner,
-        ["admin", "selfmod", "rollback", "change-1"],
-    ).output
+    assert (
+        "selfmod-proposal-1"
+        in _invoke_ok(
+            runner,
+            ["admin", "selfmod", "propose", str(skill_path)],
+        ).output
+    )
+    assert (
+        "change-1"
+        in _invoke_ok(
+            runner,
+            ["admin", "selfmod", "apply", "selfmod-proposal-1", "--yes"],
+        ).output
+    )
+    assert (
+        "restored_version=0.9.0"
+        in _invoke_ok(
+            runner,
+            ["admin", "selfmod", "rollback", "change-1"],
+        ).output
+    )
     _invoke_ok(
         runner,
         [
@@ -508,22 +528,31 @@ def test_cli_commands_route_through_rpc_wrapper(
             "/tmp/IMPLEMENTATION.md",
         ],
     )
-    assert "hash_chain valid=True checked=1" in _invoke_ok(
-        runner,
-        ["dashboard", "audit", "--limit", "1"],
-    ).output
+    assert (
+        "hash_chain valid=True checked=1"
+        in _invoke_ok(
+            runner,
+            ["dashboard", "audit", "--limit", "1"],
+        ).output
+    )
     assert "host=example.com" in _invoke_ok(runner, ["dashboard", "egress", "--limit", "1"]).output
-    assert "demo versions=1.0.0" in _invoke_ok(
-        runner,
-        ["dashboard", "skill-provenance", "--limit", "1"],
-    ).output
+    assert (
+        "demo versions=1.0.0"
+        in _invoke_ok(
+            runner,
+            ["dashboard", "skill-provenance", "--limit", "1"],
+        ).output
+    )
     assert "evt-1 AlertRaised" in _invoke_ok(runner, ["dashboard", "alerts", "--limit", "1"]).output
     _invoke_ok(runner, ["dashboard", "mark-fp", "evt-1", "--reason", "manual"])
     _invoke_ok(runner, ["confirmation", "metrics", "--user", "alice", "--window", "120"])
-    assert "m-1 fact favorite_color" in _invoke_ok(
-        runner,
-        ["memory", "list", "--limit", "1"],
-    ).output
+    assert (
+        "m-1 fact favorite_color"
+        in _invoke_ok(
+            runner,
+            ["memory", "list", "--limit", "1"],
+        ).output
+    )
     _invoke_ok(
         runner,
         [
@@ -699,8 +728,8 @@ def test_session_message_command_renders_evidence_stub_block(
                     "Need to inspect the fetched page.\n\n"
                     "Tool results summary:\n"
                     "- web.fetch: success=True, ok=True\n"
-                    '  output: [EVIDENCE ref=ev-61f3d4c48f54ff92 '
-                    'source=web.fetch:example.com taint=UNTRUSTED size=88 '
+                    "  output: [EVIDENCE ref=ev-61f3d4c48f54ff92 "
+                    "source=web.fetch:example.com taint=UNTRUSTED size=88 "
                     'summary="Example Domain" '
                     'Use evidence.read("ev-61f3d4c48f54ff92") for full content, or '
                     'evidence.promote("ev-61f3d4c48f54ff92") to add it to the conversation.]'

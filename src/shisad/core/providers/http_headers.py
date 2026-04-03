@@ -72,9 +72,7 @@ def validate_extra_headers(
         if any(ord(char) < 0x20 or ord(char) == 0x7F for char in value):
             raise ValueError(f"extra header '{raw_name}' contains control characters")
         if len(value.encode("utf-8")) > _MAX_HEADER_VALUE_BYTES:
-            raise ValueError(
-                f"extra header '{raw_name}' exceeds {_MAX_HEADER_VALUE_BYTES} bytes"
-            )
+            raise ValueError(f"extra header '{raw_name}' exceeds {_MAX_HEADER_VALUE_BYTES} bytes")
         normalized[name] = value
 
     if len(normalized) > _MAX_EXTRA_HEADERS:

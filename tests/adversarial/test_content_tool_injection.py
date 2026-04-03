@@ -88,9 +88,7 @@ async def test_m2_adversarial_content_tool_parser_rejects_oversized_arguments() 
         Message(
             role="assistant",
             content=(
-                "<tool_call>"
-                f"{{\"name\":\"echo\",\"arguments\":{{\"text\":\"{oversized}\"}}}}"
-                "</tool_call>"
+                f'<tool_call>{{"name":"echo","arguments":{{"text":"{oversized}"}}}}</tool_call>'
             ),
         ),
         registry,
@@ -112,10 +110,7 @@ async def test_m2_adversarial_content_tool_parser_rejects_unlisted_runtime_tool_
     planner = _planner(
         Message(
             role="assistant",
-            content=(
-                '<tool_call>{"name":"shell.exec","arguments":{"command":["id"]}}'
-                "</tool_call>"
-            ),
+            content=('<tool_call>{"name":"shell.exec","arguments":{"command":["id"]}}</tool_call>'),
         ),
         registry,
     )

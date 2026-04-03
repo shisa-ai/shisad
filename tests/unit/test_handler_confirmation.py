@@ -336,15 +336,11 @@ async def test_m6_s8_reject_requires_valid_decision_nonce(tmp_path) -> None:
     assert missing["rejected"] is False
     assert missing["reason"] == "missing_decision_nonce"
 
-    invalid = await harness.do_action_reject(
-        {"confirmation_id": "c-1", "decision_nonce": "wrong"}
-    )
+    invalid = await harness.do_action_reject({"confirmation_id": "c-1", "decision_nonce": "wrong"})
     assert invalid["rejected"] is False
     assert invalid["reason"] == "invalid_decision_nonce"
 
-    valid = await harness.do_action_reject(
-        {"confirmation_id": "c-1", "decision_nonce": "expected"}
-    )
+    valid = await harness.do_action_reject({"confirmation_id": "c-1", "decision_nonce": "expected"})
     assert valid["rejected"] is True
     assert valid["status"] == "rejected"
 

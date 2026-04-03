@@ -359,9 +359,11 @@ class SessionArchiveManager:
             raise SessionArchiveError("archive_role_mismatch")
         if str(session_payload.get("mode", "")).strip() != manifest.mode:
             raise SessionArchiveError("archive_mode_mismatch")
-        if manifest.capability_hash and _capability_hash(
-            session_payload.get("capabilities")
-        ) != str(manifest.capability_hash).strip():
+        if (
+            manifest.capability_hash
+            and _capability_hash(session_payload.get("capabilities"))
+            != str(manifest.capability_hash).strip()
+        ):
             raise SessionArchiveError("archive_capability_mismatch")
         record_lockdown = record.get("lockdown")
         record_level = (
@@ -429,17 +431,16 @@ def _rewrite_checkpoint_session_ids(
     imported_session_id: SessionId,
 ) -> dict[str, Any]:
     def _looks_like_session_payload(payload: dict[str, Any]) -> bool:
-        return (
-            payload.get("id") == str(original_session_id)
-            and {"channel", "user_id", "workspace_id", "session_key"}.issubset(payload)
-        )
+        return payload.get("id") == str(original_session_id) and {
+            "channel",
+            "user_id",
+            "workspace_id",
+            "session_key",
+        }.issubset(payload)
 
     def _rewrite(value: Any, *, parent_key: str = "") -> Any:
         if isinstance(value, dict):
-            rewritten = {
-                key: _rewrite(item, parent_key=key)
-                for key, item in value.items()
-            }
+            rewritten = {key: _rewrite(item, parent_key=key) for key, item in value.items()}
             if _looks_like_session_payload(rewritten):
                 rewritten["id"] = str(imported_session_id)
             return rewritten

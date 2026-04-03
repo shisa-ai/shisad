@@ -43,7 +43,7 @@ def test_format_assistant_message_handles_empty() -> None:
 
 def test_format_assistant_message_renders_evidence_ref_block() -> None:
     result = format_assistant_message(
-        '[EVIDENCE ref=ev-61f3d4c48f54ff92 source=web.fetch:example.com '
+        "[EVIDENCE ref=ev-61f3d4c48f54ff92 source=web.fetch:example.com "
         'taint=UNTRUSTED size=88 summary="Example Domain" '
         'Use evidence.read("ev-61f3d4c48f54ff92") for full content, or '
         'evidence.promote("ev-61f3d4c48f54ff92") to add it to the conversation.]'
@@ -111,8 +111,7 @@ def test_chat_app_prompt_history_restores_draft_after_navigation() -> None:
     app._record_prompt_history("second prompt")
 
     assert (
-        app._recall_prompt_history(direction=-1, current_value="draft message")
-        == "second prompt"
+        app._recall_prompt_history(direction=-1, current_value="draft message") == "second prompt"
     )
     assert app._recall_prompt_history(direction=1, current_value="ignored") == "draft message"
 

@@ -62,9 +62,7 @@ class KeyRing:
 
     def trusted_keys(self) -> dict[str, SigningKey]:
         return {
-            key_id: key
-            for key_id, key in self._keys.items()
-            if key.trust in {"org", "registry"}
+            key_id: key for key_id, key in self._keys.items() if key.trust in {"org", "registry"}
         }
 
 

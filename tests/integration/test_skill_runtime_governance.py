@@ -138,9 +138,7 @@ async def test_m4_t10_skill_with_undeclared_capability_blocked_at_runtime(
     )
     try:
         skill_manifest = _manifest_payload(name="runtime-guard-skill")
-        skill_manifest["capabilities"]["network"] = [
-            {"domain": "api.good.com", "reason": "api"}
-        ]
+        skill_manifest["capabilities"]["network"] = [{"domain": "api.good.com", "reason": "api"}]
         skill = _write_skill(
             tmp_path / "skill_runtime",
             manifest=skill_manifest,
@@ -272,7 +270,7 @@ async def test_m4_rr10_default_tool_execute_omission_uses_fail_closed_posture(
 ) -> None:
     # Restrict capabilities so shell.exec triggers stage2 → confirmation.
     (tmp_path / "policy.yaml").write_text(
-        "version: \"1\"\ndefault_deny: false\n"
+        'version: "1"\ndefault_deny: false\n'
         "default_capabilities:\n"
         "  - file.read\n  - memory.read\n",
         encoding="utf-8",
@@ -360,9 +358,7 @@ async def test_m4_rr12_skill_runtime_extracts_network_hosts_from_command_tokens(
     )
     try:
         skill_manifest = _manifest_payload(name="token-url-guard")
-        skill_manifest["capabilities"]["network"] = [
-            {"domain": "api.good.com", "reason": "api"}
-        ]
+        skill_manifest["capabilities"]["network"] = [{"domain": "api.good.com", "reason": "api"}]
         skill_manifest["capabilities"]["shell"] = [
             {"command": "curl", "reason": "fetch"},
         ]
@@ -471,7 +467,7 @@ async def test_m4_t27_audit_durable_prelaunch_failure_blocks_execution(
     monkeypatch.setattr(EventBus, "publish", _patched_publish)
     # Restrict capabilities so shell_exec triggers stage2 → confirmation.
     (tmp_path / "policy.yaml").write_text(
-        "version: \"1\"\ndefault_deny: false\n"
+        'version: "1"\ndefault_deny: false\n'
         "default_capabilities:\n"
         "  - file.read\n  - memory.read\n",
         encoding="utf-8",
@@ -551,10 +547,7 @@ async def test_m4_t29_weaker_sandbox_type_request_rejected_and_audited(
             "audit.query",
             {"event_type": "ToolRejected", "session_id": sid, "limit": 20},
         )
-        reasons = [
-            str(item.get("data", {}).get("reason", ""))
-            for item in rejected["events"]
-        ]
+        reasons = [str(item.get("data", {}).get("reason", "")) for item in rejected["events"]]
         assert any("sandbox_type weaker than server floor" in reason for reason in reasons)
     finally:
         await _shutdown(daemon_task, client)
@@ -572,7 +565,7 @@ async def test_m4_t33_network_enabled_execution_blocks_without_isolated_boundary
     )
     # Restrict capabilities so http_request triggers stage2 → confirmation.
     (tmp_path / "policy.yaml").write_text(
-        "version: \"1\"\ndefault_deny: false\n"
+        'version: "1"\ndefault_deny: false\n'
         "default_capabilities:\n"
         "  - file.read\n  - memory.read\n",
         encoding="utf-8",
@@ -626,7 +619,7 @@ async def test_m4_t34_write_ahead_audit_envelope_pairs_action_hash(
 ) -> None:
     # Restrict capabilities so shell_exec triggers stage2 → confirmation.
     (tmp_path / "policy.yaml").write_text(
-        "version: \"1\"\ndefault_deny: false\n"
+        'version: "1"\ndefault_deny: false\n'
         "default_capabilities:\n"
         "  - file.read\n  - memory.read\n",
         encoding="utf-8",

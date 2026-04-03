@@ -361,10 +361,7 @@ async def test_m1_rlc4_planner_skips_unknown_content_tool_calls_but_keeps_valid_
 async def test_m2_planner_enforces_content_tool_call_count_bound() -> None:
     registry = _make_registry()
     pep = PEP(PolicyBundle(default_require_confirmation=False), registry)
-    calls = [
-        '<tool_call>{"name":"echo","arguments":{"text":"x"}}</tool_call>'
-        for _ in range(11)
-    ]
+    calls = ['<tool_call>{"name":"echo","arguments":{"text":"x"}}</tool_call>' for _ in range(11)]
     provider = _StaticProvider([Message(role="assistant", content=" ".join(calls))])
     planner = Planner(
         provider,
@@ -390,9 +387,7 @@ async def test_m2_planner_enforces_content_tool_call_count_bound() -> None:
 async def test_m2_planner_enforces_json_array_tool_call_count_bound() -> None:
     registry = _make_registry()
     pep = PEP(PolicyBundle(default_require_confirmation=False), registry)
-    payload = json.dumps(
-        [{"name": "echo", "arguments": {"text": f"x-{idx}"}} for idx in range(11)]
-    )
+    payload = json.dumps([{"name": "echo", "arguments": {"text": f"x-{idx}"}} for idx in range(11)])
     provider = _StaticProvider([Message(role="assistant", content=payload)])
     planner = Planner(
         provider,
@@ -424,9 +419,7 @@ async def test_m2_planner_enforces_content_tool_argument_size_bound() -> None:
             Message(
                 role="assistant",
                 content=(
-                    "<tool_call>"
-                    f"{{\"name\":\"echo\",\"arguments\":{{\"text\":\"{oversized}\"}}}}"
-                    "</tool_call>"
+                    f'<tool_call>{{"name":"echo","arguments":{{"text":"{oversized}"}}}}</tool_call>'
                 ),
             )
         ]
@@ -455,9 +448,8 @@ async def test_m2_planner_enforces_content_tool_argument_size_bound() -> None:
 async def test_m2_planner_enforces_content_tool_total_payload_size_bound() -> None:
     registry = _make_registry()
     pep = PEP(PolicyBundle(default_require_confirmation=False), registry)
-    oversized_content = (
-        '<tool_call>{"name":"echo","arguments":{"text":"ok"}}</tool_call>'
-        + ("x" * 120_000)
+    oversized_content = '<tool_call>{"name":"echo","arguments":{"text":"ok"}}</tool_call>' + (
+        "x" * 120_000
     )
     provider = _StaticProvider([Message(role="assistant", content=oversized_content)])
     planner = Planner(

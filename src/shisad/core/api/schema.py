@@ -712,9 +712,7 @@ class TaskCreateParams(_StrictParams):
     credential_refs: list[str] = Field(default_factory=list)
     resource_scope_ids: list[str] = Field(default_factory=list)
     resource_scope_prefixes: list[str] = Field(default_factory=list)
-    untrusted_payload_action: Literal["require_confirmation", "reject"] = (
-        "require_confirmation"
-    )
+    untrusted_payload_action: Literal["require_confirmation", "reject"] = "require_confirmation"
     max_runs: int = Field(default=0, ge=0)
 
 

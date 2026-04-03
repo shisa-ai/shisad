@@ -528,10 +528,15 @@ class ConsensusVotingSystem:
         blocks = [vote for vote in votes if vote.decision == VoteKind.BLOCK]
         flags = [vote for vote in votes if vote.decision == VoteKind.FLAG]
 
-        if self._policy.veto_for_high_and_critical and risk_tier in {
-            RiskTier.HIGH,
-            RiskTier.CRITICAL,
-        } and blocks:
+        if (
+            self._policy.veto_for_high_and_critical
+            and risk_tier
+            in {
+                RiskTier.HIGH,
+                RiskTier.CRITICAL,
+            }
+            and blocks
+        ):
             decision = ConsensusDecision(
                 decision=ControlDecision.BLOCK,
                 risk_tier=risk_tier,

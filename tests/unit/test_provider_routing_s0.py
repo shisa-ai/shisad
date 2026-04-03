@@ -184,9 +184,9 @@ def test_s0_implicit_shisa_remote_enable_only_applies_to_default_base_route(
     _clean_api_key_env(monkeypatch)
     monkeypatch.setenv("SHISA_API_KEY", "shisa-key")
 
-    route = ModelRouter(
-        ModelConfig(planner_base_url="https://planner.example.com/v1")
-    ).route_for(ModelComponent.PLANNER)
+    route = ModelRouter(ModelConfig(planner_base_url="https://planner.example.com/v1")).route_for(
+        ModelComponent.PLANNER
+    )
 
     assert route.remote_enabled is False
     assert route.remote_enabled_source == "global"

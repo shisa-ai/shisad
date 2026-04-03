@@ -112,9 +112,7 @@ class SessionManager:
         state_dir: Path | None = None,
         default_capabilities: set[Capability] | None = None,
         supplemental_state_provider: Callable[[Session], dict[str, Any]] | None = None,
-        supplemental_state_restorer: (
-            Callable[[Session, dict[str, Any], str], None] | None
-        ) = None,
+        supplemental_state_restorer: (Callable[[Session, dict[str, Any], str], None] | None) = None,
     ) -> None:
         self._sessions: dict[SessionId, Session] = {}
         self._audit_hook = audit_hook
@@ -529,15 +527,12 @@ class SessionManager:
     def _migrate_loaded_session(self, session: Session) -> _SessionMigrationOutcome:
         before_caps = set(session.capabilities)
         role_changed = False
-        session_kind_is_subagent = (
-            session.role == SessionRole.ORCHESTRATOR
-            and (
-                session.mode == SessionMode.TASK
-                or str(session.channel).strip().lower() in {"task", "scheduler"}
-                or str(session.metadata.get("parent_session_id", "")).strip()
-                or str(session.metadata.get("background_task_id", "")).strip()
-                or bool(session.metadata.get("task_envelope"))
-            )
+        session_kind_is_subagent = session.role == SessionRole.ORCHESTRATOR and (
+            session.mode == SessionMode.TASK
+            or str(session.channel).strip().lower() in {"task", "scheduler"}
+            or str(session.metadata.get("parent_session_id", "")).strip()
+            or str(session.metadata.get("background_task_id", "")).strip()
+            or bool(session.metadata.get("task_envelope"))
         )
         if session_kind_is_subagent:
             role_changed = session.migrate_role(SessionRole.SUBAGENT)
@@ -588,11 +583,7 @@ class SessionManager:
                         reason = "legacy_empty_mark_policy_default"
 
         after_caps = set(session.capabilities)
-        changed = (
-            before_caps != after_caps
-            or sync_mode_before != sync_mode_after
-            or role_changed
-        )
+        changed = before_caps != after_caps or sync_mode_before != sync_mode_after or role_changed
         return _SessionMigrationOutcome(
             changed=changed,
             reason=reason,
@@ -629,9 +620,7 @@ class SessionManager:
             except (TypeError, ValueError) as exc:
                 raise SessionRehydrateError("invalid_schema_version") from exc
             if schema_version != _PERSISTED_SESSION_SCHEMA_VERSION:
-                raise SessionRehydrateError(
-                    f"unsupported_schema_version:{schema_version}"
-                )
+                raise SessionRehydrateError(f"unsupported_schema_version:{schema_version}")
             session_payload = payload.get("session")
             if not isinstance(session_payload, dict):
                 raise SessionRehydrateError("missing_session_payload")
@@ -839,9 +828,7 @@ class CheckpointStore:
         path = self._checkpoint_path(checkpoint.checkpoint_id)
         path.write_text(checkpoint.model_dump_json(indent=2))
 
-        logger.debug(
-            "Checkpoint created: %s (session: %s)", checkpoint.checkpoint_id, session.id
-        )
+        logger.debug("Checkpoint created: %s (session: %s)", checkpoint.checkpoint_id, session.id)
         return checkpoint
 
     def restore(self, checkpoint_id: str) -> Checkpoint | None:

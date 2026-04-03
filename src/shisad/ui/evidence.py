@@ -109,11 +109,7 @@ def _render_stub(parsed: _ParsedEvidenceStub) -> str:
     source = _sanitize_terminal_field(parsed.source)
     taint = _sanitize_terminal_field(parsed.taint)
     summary = _sanitize_terminal_field(parsed.summary)
-    heading = (
-        f"[Evidence {ref_id}]"
-        if parsed.available and ref_id
-        else "[Evidence unavailable]"
-    )
+    heading = f"[Evidence {ref_id}]" if parsed.available and ref_id else "[Evidence unavailable]"
     lines = [heading]
     if source:
         lines.append(f"source: {source}")

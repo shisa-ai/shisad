@@ -49,4 +49,3 @@ def test_request_context_accepts_firewall_result() -> None:
 
 def test_typed_handler_protocol_conformance() -> None:
     assert isinstance(_DummyHandler(), TypedHandler)
-

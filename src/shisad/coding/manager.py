@@ -435,11 +435,7 @@ class CodingAgentManager:
         config: CodingAgentConfig,
         agent_name: str,
     ) -> str | None:
-        if (
-            cost_usd is None
-            or config.max_budget_usd is None
-            or cost_usd <= config.max_budget_usd
-        ):
+        if cost_usd is None or config.max_budget_usd is None or cost_usd <= config.max_budget_usd:
             return None
         warning = (
             f"Coding agent '{agent_name}' reported ${cost_usd:.2f} cost against "

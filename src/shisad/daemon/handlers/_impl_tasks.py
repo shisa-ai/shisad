@@ -137,9 +137,7 @@ class TasksImplMixin(HandlerMixinBase):
             return "background:recipient_scope_mismatch"
 
         domain_allowlist = [
-            str(item).strip()
-            for item in getattr(task, "allowed_domains", [])
-            if str(item).strip()
+            str(item).strip() for item in getattr(task, "allowed_domains", []) if str(item).strip()
         ]
         if domain_allowlist:
             destination_domain = _recipient_domain(recipient)
@@ -174,9 +172,7 @@ class TasksImplMixin(HandlerMixinBase):
                 "trust_level": "internal",
                 "background_task_id": str(getattr(task, "id", "")),
                 "task_envelope": (
-                    task_envelope.model_dump(mode="json")
-                    if task_envelope is not None
-                    else {}
+                    task_envelope.model_dump(mode="json") if task_envelope is not None else {}
                 ),
             },
         )
@@ -366,8 +362,7 @@ class TasksImplMixin(HandlerMixinBase):
             session_tainted=bool(_payload_taints(str(getattr(run, "payload_taint", "")))),
             trusted_input=trust_level in {"trusted", "verified", "internal"},
             raw_user_text=(
-                str(getattr(run, "trigger_payload", ""))
-                or str(getattr(task, "goal", ""))
+                str(getattr(run, "trigger_payload", "")) or str(getattr(task, "goal", ""))
             ),
         )
         await self._publish_control_plane_evaluation(
@@ -418,8 +413,7 @@ class TasksImplMixin(HandlerMixinBase):
                 final_kind = PEPDecisionKind.REQUIRE_CONFIRMATION.value
                 final_reason = ",".join(cp_eval.reason_codes) or "trace:stage2_upgrade_required"
             elif (
-                trace_only_stage2_block
-                and final_kind == PEPDecisionKind.REQUIRE_CONFIRMATION.value
+                trace_only_stage2_block and final_kind == PEPDecisionKind.REQUIRE_CONFIRMATION.value
             ):
                 final_reason = _join_reason_codes(
                     final_reason,
@@ -454,9 +448,11 @@ class TasksImplMixin(HandlerMixinBase):
             else:
                 final_reason = _join_reason_codes(final_reason, scope_reason)
 
-        payload_policy = str(
-            getattr(task_envelope, "untrusted_payload_action", "require_confirmation")
-        ).strip().lower()
+        payload_policy = (
+            str(getattr(task_envelope, "untrusted_payload_action", "require_confirmation"))
+            .strip()
+            .lower()
+        )
         if str(getattr(run, "payload_taint", "")).strip().lower() != "trusted_scheduler":
             if payload_policy == "reject":
                 final_kind = PEPDecisionKind.REJECT.value

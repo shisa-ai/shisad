@@ -186,8 +186,10 @@ async def test_m2_task_session_isolates_command_context_and_returns_structured_h
         completed_event = await _wait_for_event(
             client,
             event_type="TaskSessionCompleted",
-            predicate=lambda item: str(item.get("session_id", "")).strip()
-            == str(task_result.get("task_session_id", "")).strip(),
+            predicate=lambda item: (
+                str(item.get("session_id", "")).strip()
+                == str(task_result.get("task_session_id", "")).strip()
+            ),
         )
 
         assert task_result["success"] is True
@@ -271,8 +273,10 @@ async def test_m4_task_summary_firewall_checkpoint_is_mandatory(
         completed_event = await _wait_for_event(
             client,
             event_type="TaskSessionCompleted",
-            predicate=lambda item: str(item.get("session_id", "")).strip()
-            == str(task_result.get("task_session_id", "")).strip(),
+            predicate=lambda item: (
+                str(item.get("session_id", "")).strip()
+                == str(task_result.get("task_session_id", "")).strip()
+            ),
         )
 
         assert task_result["success"] is False
@@ -544,10 +548,7 @@ async def test_m4_task_approval_nonce_and_provenance_stay_bound_to_origin_task(
             rejected_event["data"]["approval_task_envelope_id"]
             == first_pending["approval_task_envelope_id"]
         )
-        assert (
-            rejected_event["data"]["approval_decision_nonce"]
-            == first_pending["decision_nonce"]
-        )
+        assert rejected_event["data"]["approval_decision_nonce"] == first_pending["decision_nonce"]
     finally:
         await _shutdown_daemon(daemon_task, client)
 
@@ -926,8 +927,10 @@ async def test_m1_task_close_gate_blocks_incomplete_handoff_before_task_session_
         completed_event = await _wait_for_event(
             client,
             event_type="TaskSessionCompleted",
-            predicate=lambda item: str(item.get("session_id", "")).strip()
-            == str(task_result.get("task_session_id", "")).strip(),
+            predicate=lambda item: (
+                str(item.get("session_id", "")).strip()
+                == str(task_result.get("task_session_id", "")).strip()
+            ),
         )
 
         assert task_result["success"] is False
@@ -1079,8 +1082,10 @@ async def test_m1_task_close_gate_inconclusive_blocks_handoff(
         completed_event = await _wait_for_event(
             client,
             event_type="TaskSessionCompleted",
-            predicate=lambda item: str(item.get("session_id", "")).strip()
-            == str(task_result.get("task_session_id", "")).strip(),
+            predicate=lambda item: (
+                str(item.get("session_id", "")).strip()
+                == str(task_result.get("task_session_id", "")).strip()
+            ),
         )
 
         assert task_result["success"] is False
@@ -1324,8 +1329,9 @@ async def test_m1_untrusted_parent_task_session_does_not_upgrade_trust_level(
         started = await _wait_for_event(
             observer,
             event_type="TaskSessionStarted",
-            predicate=lambda item: str(item.get("data", {}).get("parent_session_id", "")).strip()
-            == sid,
+            predicate=lambda item: (
+                str(item.get("data", {}).get("parent_session_id", "")).strip() == sid
+            ),
         )
         task_sid = str(started.get("session_id", "")).strip()
         await asyncio.wait_for(planner_entered.wait(), timeout=2.0)
@@ -1413,8 +1419,9 @@ async def test_m1_task_session_terminates_even_if_completion_event_publish_fails
         started = await _wait_for_event(
             observer,
             event_type="TaskSessionStarted",
-            predicate=lambda item: str(item.get("data", {}).get("parent_session_id", "")).strip()
-            == sid,
+            predicate=lambda item: (
+                str(item.get("data", {}).get("parent_session_id", "")).strip() == sid
+            ),
         )
         task_sid = str(started.get("session_id", "")).strip()
 
@@ -1508,8 +1515,9 @@ async def test_m1_concurrent_raw_task_handoffs_serialize_parent_state(
         await _wait_for_event(
             observer,
             event_type="TaskSessionStarted",
-            predicate=lambda item: str(item.get("data", {}).get("parent_session_id", "")).strip()
-            == sid,
+            predicate=lambda item: (
+                str(item.get("data", {}).get("parent_session_id", "")).strip() == sid
+            ),
         )
 
         second_call = asyncio.create_task(client_two.call("session.message", params))
@@ -1698,8 +1706,7 @@ async def test_m2_task_session_inherits_parent_allowlist_and_has_distinct_sessio
         if "TASK CLOSE-GATE SELF-CHECK" in user_content:
             return _complete_close_gate_result()
         observed_tool_names[:] = [
-            str(item.get("function", {}).get("name", ""))
-            for item in (tools or [])
+            str(item.get("function", {}).get("name", "")) for item in (tools or [])
         ]
         planner_entered.set()
         await release_task.wait()
@@ -1748,8 +1755,9 @@ async def test_m2_task_session_inherits_parent_allowlist_and_has_distinct_sessio
         started = await _wait_for_event(
             observer,
             event_type="TaskSessionStarted",
-            predicate=lambda item: str(item.get("data", {}).get("parent_session_id", "")).strip()
-            == sid,
+            predicate=lambda item: (
+                str(item.get("data", {}).get("parent_session_id", "")).strip() == sid
+            ),
         )
         task_sid = str(started.get("session_id", "")).strip()
         await asyncio.wait_for(planner_entered.wait(), timeout=2.0)
@@ -1794,8 +1802,7 @@ async def test_m1_report_anomaly_manifest_tracks_orchestrator_vs_subagent_contex
         if "TASK CLOSE-GATE SELF-CHECK" in user_content:
             return _complete_close_gate_result()
         observed_tool_names = [
-            str(item.get("function", {}).get("name", ""))
-            for item in (tools or [])
+            str(item.get("function", {}).get("name", "")) for item in (tools or [])
         ]
         if "TASK REQUEST:" in user_content:
             task_tool_names[:] = observed_tool_names
@@ -1850,8 +1857,9 @@ async def test_m1_report_anomaly_manifest_tracks_orchestrator_vs_subagent_contex
         started = await _wait_for_event(
             observer,
             event_type="TaskSessionStarted",
-            predicate=lambda item: str(item.get("data", {}).get("parent_session_id", "")).strip()
-            == sid,
+            predicate=lambda item: (
+                str(item.get("data", {}).get("parent_session_id", "")).strip() == sid
+            ),
         )
         task_sid = str(started.get("session_id", "")).strip()
         await asyncio.wait_for(planner_entered.wait(), timeout=2.0)

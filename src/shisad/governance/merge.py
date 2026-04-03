@@ -136,15 +136,11 @@ class PolicyMerge:
         allowed_domains = list(server.allowed_domains)
         if "allowed_domains" in patch.model_fields_set and patch.allowed_domains is not None:
             caller_domains = [
-                item.strip().lower()
-                for item in patch.allowed_domains
-                if item.strip()
+                item.strip().lower() for item in patch.allowed_domains if item.strip()
             ]
             caller_set = set(caller_domains)
             server_domains = [
-                item.strip().lower()
-                for item in server.allowed_domains
-                if item.strip()
+                item.strip().lower() for item in server.allowed_domains if item.strip()
             ]
             server_set = set(server_domains)
             if "*" in server_set:
@@ -188,10 +184,7 @@ class PolicyMerge:
 
         mounts = list(server.mounts)
         if "mounts" in patch.model_fields_set and patch.mounts is not None:
-            requested = [
-                MountRule.model_validate(item)
-                for item in patch.mounts
-            ]
+            requested = [MountRule.model_validate(item) for item in patch.mounts]
             mounts = _intersect_mounts(server.mounts, requested)
 
         denylist = list(server.denylist)

@@ -111,9 +111,7 @@ async def fetch_snapshot(socket_path: Path) -> TuiSnapshot:
         await client.close()
     return TuiSnapshot(
         sessions=[
-            dict(item)
-            for item in sessions_result.get("sessions", [])
-            if isinstance(item, Mapping)
+            dict(item) for item in sessions_result.get("sessions", []) if isinstance(item, Mapping)
         ],
         pending_actions=[
             {
@@ -150,8 +148,8 @@ def render_plain(snapshot: TuiSnapshot) -> str:
     for row in snapshot.sessions:
         lines.append(
             "  "
-            f"{row.get('id','')} user={row.get('user_id','')} "
-            f"lockdown={row.get('lockdown_level','')}"
+            f"{row.get('id', '')} user={row.get('user_id', '')} "
+            f"lockdown={row.get('lockdown_level', '')}"
         )
     lines.append("PENDING CONFIRMATIONS:")
     if not snapshot.pending_actions:
@@ -159,9 +157,9 @@ def render_plain(snapshot: TuiSnapshot) -> str:
     for row in snapshot.pending_actions:
         lines.append(
             "  "
-            f"{row.get('confirmation_id','')} "
-            f"tool={row.get('tool_name','')} "
-            f"status={row.get('status','')}"
+            f"{row.get('confirmation_id', '')} "
+            f"tool={row.get('tool_name', '')} "
+            f"status={row.get('status', '')}"
         )
     lines.append("TASKS:")
     if not snapshot.tasks:
@@ -169,10 +167,10 @@ def render_plain(snapshot: TuiSnapshot) -> str:
     for row in snapshot.tasks:
         lines.append(
             "  "
-            f"{row.get('id','')} "
+            f"{row.get('id', '')} "
             f"enabled={row.get('enabled', False)} "
-            f"schedule={row.get('schedule_kind','')} "
-            f"delivery={row.get('delivery_channel','')}"
+            f"schedule={row.get('schedule_kind', '')} "
+            f"delivery={row.get('delivery_channel', '')}"
         )
     lines.append("CHANNEL HEALTH:")
     if not snapshot.channel_health:
@@ -180,7 +178,7 @@ def render_plain(snapshot: TuiSnapshot) -> str:
     for row in snapshot.channel_health:
         lines.append(
             "  "
-            f"{row.get('channel','')} "
+            f"{row.get('channel', '')} "
             f"enabled={row.get('enabled', False)} "
             f"available={row.get('available', False)} "
             f"connected={row.get('connected', False)}"
@@ -189,19 +187,15 @@ def render_plain(snapshot: TuiSnapshot) -> str:
     if not snapshot.alerts:
         lines.append("  (none)")
     for row in snapshot.alerts:
-        lines.append(
-            "  "
-            f"{row.get('event_type','')} "
-            f"ack={row.get('acknowledged_reason','')}"
-        )
+        lines.append(f"  {row.get('event_type', '')} ack={row.get('acknowledged_reason', '')}")
     lines.append("AUDIT EVENTS:")
     if not snapshot.audit_events:
         lines.append("  (none)")
     for row in snapshot.audit_events:
         lines.append(
             "  "
-            f"{row.get('timestamp','')} {row.get('event_type','')} "
-            f"session={row.get('session_id','')}"
+            f"{row.get('timestamp', '')} {row.get('event_type', '')} "
+            f"session={row.get('session_id', '')}"
         )
     return "\n".join(lines)
 

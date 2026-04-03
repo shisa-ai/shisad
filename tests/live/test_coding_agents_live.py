@@ -22,8 +22,7 @@ def _live_agents() -> list[str]:
 pytestmark = pytest.mark.skipif(
     not _live_agents(),
     reason=(
-        "set SHISAD_LIVE_CODING_AGENTS=claude,codex,opencode "
-        "to run live coding-agent smoke tests"
+        "set SHISAD_LIVE_CODING_AGENTS=claude,codex,opencode to run live coding-agent smoke tests"
     ),
 )
 

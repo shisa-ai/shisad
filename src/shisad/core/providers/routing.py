@@ -136,8 +136,7 @@ class ModelRouter:
     def __init__(self, config: ModelConfig) -> None:
         self._config = config
         self._routes: dict[ModelComponent, ModelRoute] = {
-            component: self._resolve_component_route(component)
-            for component in ModelComponent
+            component: self._resolve_component_route(component) for component in ModelComponent
         }
 
     def route_for(self, component: ModelComponent) -> ModelRoute:
@@ -240,9 +239,7 @@ class ModelRouter:
                 request_parameters=request_parameters,
             )
         except RequestProfileError as exc:
-            raise ValueError(
-                f"{component.value} route request parameters invalid: {exc}"
-            ) from exc
+            raise ValueError(f"{component.value} route request parameters invalid: {exc}") from exc
 
         return ModelRoute(
             component=component,

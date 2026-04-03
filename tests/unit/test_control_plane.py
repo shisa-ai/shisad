@@ -571,14 +571,20 @@ async def test_m5_rt3_consensus_runs_voters_in_parallel() -> None:
 
 def test_m5_t15_action_normalization_maps_aliases_to_canonical_kind() -> None:
     assert infer_action_kind("file_read", {"path": "README.md"}) == ActionKind.FS_READ
-    assert infer_action_kind(
-        "shell.exec",
-        {"command": ["python", "-c", "print('ok')"]},
-    ) == ActionKind.SHELL_EXEC
-    assert infer_action_kind(
-        "shell.exec",
-        {"command": ["curl", "https://example.com"]},
-    ) == ActionKind.EGRESS
+    assert (
+        infer_action_kind(
+            "shell.exec",
+            {"command": ["python", "-c", "print('ok')"]},
+        )
+        == ActionKind.SHELL_EXEC
+    )
+    assert (
+        infer_action_kind(
+            "shell.exec",
+            {"command": ["curl", "https://example.com"]},
+        )
+        == ActionKind.EGRESS
+    )
 
 
 def test_s9_infer_action_kind_treats_web_search_as_egress() -> None:
@@ -591,9 +597,7 @@ def test_m6_infer_action_kind_treats_browser_tools_as_browser_read_write() -> No
     )
     assert infer_action_kind("browser.read_page", {}) == ActionKind.BROWSER_READ
     assert infer_action_kind("browser.screenshot", {}) == ActionKind.BROWSER_READ
-    assert infer_action_kind("browser.click", {"target": "#continue"}) == (
-        ActionKind.BROWSER_WRITE
-    )
+    assert infer_action_kind("browser.click", {"target": "#continue"}) == (ActionKind.BROWSER_WRITE)
     assert infer_action_kind("browser.type_text", {"target": "#search", "text": "hello"}) == (
         ActionKind.BROWSER_WRITE
     )

@@ -107,8 +107,7 @@ def test_m2_t10_burst_detection_reachable_before_per_tool_limit() -> None:
         )
     )
     decisions = [
-        limiter.evaluate(session_id="s1", user_id="u1", tool_name="http_request")
-        for _ in range(6)
+        limiter.evaluate(session_id="s1", user_id="u1", tool_name="http_request") for _ in range(6)
     ]
     assert all(not decision.block for decision in decisions[:5])
     assert decisions[5].block is True

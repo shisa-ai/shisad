@@ -63,6 +63,7 @@ class DiscordChannel(InMemoryChannel):
         self._client = client_ctor(intents=intents)
         event_decorator = getattr(self._client, "event", None)
         if callable(event_decorator):
+
             async def on_message(message: Any) -> None:
                 message_id = str(getattr(message, "id", ""))
                 guild = getattr(message, "guild", None)
@@ -115,9 +116,7 @@ class DiscordChannel(InMemoryChannel):
                         bot_id = str(getattr(bot_user, "id", "")).strip()
                         mention_ids = self._message_mention_ids(message)
                         addressed_by_resolved = bot_id in mention_ids
-                        addressed_by_content_tag = self._content_mentions_bot(
-                            content, bot_id
-                        )
+                        addressed_by_content_tag = self._content_mentions_bot(content, bot_id)
                         name_aliases = self._bot_name_aliases(bot_user)
                         addressed_by_name_prefix = self._content_mentions_bot_name_prefix(
                             content, name_aliases
@@ -137,9 +136,7 @@ class DiscordChannel(InMemoryChannel):
                                 mention_id
                                 for mention_id in (
                                     str(raw_mention).strip()
-                                    for raw_mention in (
-                                        getattr(message, "raw_mentions", []) or []
-                                    )
+                                    for raw_mention in (getattr(message, "raw_mentions", []) or [])
                                 )
                                 if mention_id
                             )
@@ -167,9 +164,7 @@ class DiscordChannel(InMemoryChannel):
                     if bot_user is not None:
                         bot_id = str(getattr(bot_user, "id", ""))
                         if bot_id:
-                            content = re.sub(
-                                rf"<@!?{re.escape(bot_id)}>\s*", "", content
-                            ).strip()
+                            content = re.sub(rf"<@!?{re.escape(bot_id)}>\s*", "", content).strip()
                         content = self._strip_plain_name_prefix(
                             content, self._bot_name_aliases(bot_user)
                         )
@@ -279,7 +274,7 @@ class DiscordChannel(InMemoryChannel):
             for member in (getattr(message, "mentions", []) or [])
         }
         mention_ids.discard("")
-        for raw_mention in (getattr(message, "raw_mentions", []) or []):
+        for raw_mention in getattr(message, "raw_mentions", []) or []:
             mention_id = str(raw_mention).strip()
             if mention_id:
                 mention_ids.add(mention_id)
@@ -298,7 +293,7 @@ class DiscordChannel(InMemoryChannel):
             for role in (getattr(message, "role_mentions", []) or [])
         }
         role_ids.discard("")
-        for raw_role in (getattr(message, "raw_role_mentions", []) or []):
+        for raw_role in getattr(message, "raw_role_mentions", []) or []:
             role_id = str(raw_role).strip()
             if role_id:
                 role_ids.add(role_id)
@@ -332,9 +327,7 @@ class DiscordChannel(InMemoryChannel):
         return tuple(sorted(aliases, key=len, reverse=True))
 
     @staticmethod
-    def _content_mentions_bot_name_prefix(
-        content: str, aliases: tuple[str, ...]
-    ) -> bool:
+    def _content_mentions_bot_name_prefix(content: str, aliases: tuple[str, ...]) -> bool:
         if not content:
             return False
         for alias in aliases:

@@ -249,9 +249,7 @@ def parse_manifest(
         raise SkillManifestError(f"Manifest validation failed: {exc}") from exc
 
     if previous_manifest is not None and requires_major_bump(previous_manifest, manifest):
-        raise SkillManifestError(
-            "Breaking manifest surface change requires major version bump"
-        )
+        raise SkillManifestError("Breaking manifest surface change requires major version bump")
 
     dependency_errors = validate_dependency_metadata(
         manifest,

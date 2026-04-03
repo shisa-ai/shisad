@@ -72,10 +72,7 @@ async def _wait_for_confirmation_to_leave_pending(
         ):
             return latest
         await asyncio.sleep(0.1)
-    message = (
-        "Timed out waiting for confirmation to leave pending "
-        f"for task {task_id}: {latest}"
-    )
+    message = f"Timed out waiting for confirmation to leave pending for task {task_id}: {latest}"
     raise AssertionError(message)
 
 
@@ -89,10 +86,7 @@ def _event_reason(event: dict[str, Any]) -> str:
 
 
 def _event_description(event: dict[str, Any]) -> str:
-    return str(
-        event.get("description")
-        or event.get("data", {}).get("description", "")
-    )
+    return str(event.get("description") or event.get("data", {}).get("description", ""))
 
 
 async def _wait_for_audit_event(
@@ -127,8 +121,10 @@ async def _wait_for_task_session_id(
     event = await _wait_for_audit_event(
         client,
         event_type="TaskTriggered",
-        predicate=lambda item: str(item.get("data", {}).get("task_id", "")) == task_id
-        and bool(str(item.get("session_id", "")).strip()),
+        predicate=lambda item: (
+            str(item.get("data", {}).get("task_id", "")) == task_id
+            and bool(str(item.get("session_id", "")).strip())
+        ),
         timeout=timeout,
     )
     session_id = str(event.get("session_id", "")).strip()
@@ -172,8 +168,7 @@ async def _confirm_pending_action(
         retry_after = float(latest.get("retry_after_seconds", 0.1) or 0.1)
         await asyncio.sleep(max(0.05, retry_after))
     raise AssertionError(
-        "Timed out waiting for confirmation cooldown to expire: "
-        f"{confirmation_id} latest={latest}"
+        f"Timed out waiting for confirmation cooldown to expire: {confirmation_id} latest={latest}"
     )
 
 
@@ -491,8 +486,7 @@ async def test_g3_task_confirmation_replay_updates_scheduler_state_and_outcome(
             confirmation_id=confirmation_id,
         )
         assert not any(
-            str(item.get("confirmation_id", "")) == confirmation_id
-            for item in remaining["pending"]
+            str(item.get("confirmation_id", "")) == confirmation_id for item in remaining["pending"]
         )
 
         tasks_payload = json.loads(
@@ -503,15 +497,11 @@ async def test_g3_task_confirmation_replay_updates_scheduler_state_and_outcome(
         assert int(task_row.get("success_count", 0)) == 0
 
         pending_payload = json.loads(
-            (tmp_path / "data" / "tasks" / "pending_confirmations.json").read_text(
-                encoding="utf-8"
-            )
+            (tmp_path / "data" / "tasks" / "pending_confirmations.json").read_text(encoding="utf-8")
         )
         rows = list(pending_payload.get(str(created["id"]), []))
         matching = next(
-            item
-            for item in rows
-            if str(item.get("confirmation_id", "")) == confirmation_id
+            item for item in rows if str(item.get("confirmation_id", "")) == confirmation_id
         )
         assert str(matching.get("status", "")) == "failed"
         assert str(matching.get("status_reason", "")) == "approve for regression test"
@@ -550,8 +540,7 @@ async def test_g3_due_run_with_capability_mismatch_stays_non_confirmable(
 
         action_pending = await client.call("action.pending", {"status": "pending", "limit": 20})
         assert not any(
-            str(item.get("session_id", "")) == background_sid
-            for item in action_pending["actions"]
+            str(item.get("session_id", "")) == background_sid for item in action_pending["actions"]
         )
 
         rejected = await _wait_for_audit_event(
@@ -611,16 +600,14 @@ async def test_g3_due_run_control_plane_block_vote_does_not_become_confirmable(
             predicate=lambda event: any(
                 str(vote.get("voter", "")) == "ActionMonitorVoter"
                 and str(vote.get("decision", "")) == "BLOCK"
-                and "test:forced_background_block"
-                in list(vote.get("reason_codes", []))
+                and "test:forced_background_block" in list(vote.get("reason_codes", []))
                 for vote in event.get("data", {}).get("votes", [])
             ),
         )
         assert any(
             str(vote.get("voter", "")) == "ActionMonitorVoter"
             and str(vote.get("decision", "")) == "BLOCK"
-            and "test:forced_background_block"
-            in list(vote.get("reason_codes", []))
+            and "test:forced_background_block" in list(vote.get("reason_codes", []))
             for vote in consensus.get("data", {}).get("votes", [])
         )
 

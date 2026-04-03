@@ -117,10 +117,9 @@ def _deterministic_summary_line(episode: ConversationEpisode) -> str:
         role = message.role.strip().lower() or "unknown"
         role_counts[role] = role_counts.get(role, 0) + 1
         tool_names.update(message.tool_names)
-    role_fragment = ",".join(
-        f"{role}:{role_counts[role]}"
-        for role in sorted(role_counts)
-    ) or "none"
+    role_fragment = (
+        ",".join(f"{role}:{role_counts[role]}" for role in sorted(role_counts)) or "none"
+    )
     tools_fragment = ",".join(sorted(tool_names)) if tool_names else "none"
     start = _normalize_timestamp(episode.start_ts).isoformat(timespec="seconds")
     end = _normalize_timestamp(episode.end_ts).isoformat(timespec="seconds")

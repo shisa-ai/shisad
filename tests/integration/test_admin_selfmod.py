@@ -88,9 +88,7 @@ def _write_signed_skill_bundle(root: Path, *, key_path: Path, version: str = "1.
                     {
                         "name": "lookup",
                         "description": "Look up calendar entries.",
-                        "parameters": [
-                            {"name": "query", "type": "string", "required": True}
-                        ],
+                        "parameters": [{"name": "query", "type": "string", "required": True}],
                         "destinations": ["api.good.example"],
                     }
                 ],

@@ -33,7 +33,7 @@ def test_m2_t23_ci_generates_coverage_and_validates_baseline() -> None:
     assert "actions/upload-artifact@" in ci
     assert "# v4" in ci
     assert ci.index("scripts/test_function_audit.py") < ci.index(
-        "pytest -v -m \"not requires_cap_net_admin\""
+        'pytest -v -m "not requires_cap_net_admin"'
     )
 
 
@@ -131,8 +131,8 @@ def test_m2_yara_parity_report_script_writes_metrics(tmp_path: Path) -> None:
     )
     assert result.returncode == 0, result.stdout + result.stderr
     payload = output.read_text()
-    assert "\"modes\"" in payload
-    assert "\"delta\"" in payload
+    assert '"modes"' in payload
+    assert '"delta"' in payload
 
 
 def test_m2_coverage_trend_script_writes_per_package_metrics(tmp_path: Path) -> None:
@@ -173,7 +173,7 @@ def test_m2_coverage_trend_script_writes_per_package_metrics(tmp_path: Path) -> 
     )
     assert result.returncode == 0, result.stdout + result.stderr
     payload = output.read_text()
-    assert "\"package\": \"security\"" in payload
+    assert '"package": "security"' in payload
 
 
 def test_m6_coverage_module_gate_fails_when_no_modules_checked(tmp_path: Path) -> None:

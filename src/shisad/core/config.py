@@ -186,8 +186,7 @@ class DaemonConfig(BaseSettings):
         default=5,
         ge=1,
         description=(
-            "Maximum number of retrieved memory snippets injected into planner "
-            "context per turn."
+            "Maximum number of retrieved memory snippets injected into planner context per turn."
         ),
     )
     web_search_enabled: bool = Field(
@@ -315,10 +314,7 @@ class DaemonConfig(BaseSettings):
     )
     coding_agent_registry_overrides: dict[str, str] = Field(
         default_factory=dict,
-        description=(
-            "Optional trusted operator overrides for the coding-agent registry "
-            "commands."
-        ),
+        description=("Optional trusted operator overrides for the coding-agent registry commands."),
     )
     coding_agent_timeout_seconds: float = Field(
         default=900.0,
@@ -364,9 +360,7 @@ class DaemonConfig(BaseSettings):
                     raise ValueError(f"{field_name} JSON must be a list")
                 return [Path(str(item)).expanduser() for item in parsed if str(item).strip()]
             return [
-                Path(entry.strip()).expanduser()
-                for entry in stripped.split(",")
-                if entry.strip()
+                Path(entry.strip()).expanduser() for entry in stripped.split(",") if entry.strip()
             ]
         if isinstance(value, list):
             return [Path(str(item)).expanduser() for item in value if str(item).strip()]

@@ -222,9 +222,7 @@ class ControlServer:
             request = JsonRpcRequest.model_validate(data)
         except ValidationError as e:
             request_id = (
-                self._sanitize_request_id(data.get("id"))
-                if isinstance(data, dict)
-                else None
+                self._sanitize_request_id(data.get("id")) if isinstance(data, dict) else None
             )
             return self._error_response(
                 request_id,
@@ -503,9 +501,7 @@ class ControlClient:
 
     async def connect(self) -> None:
         """Connect to the daemon."""
-        self._reader, self._writer = await asyncio.open_unix_connection(
-            str(self._socket_path)
-        )
+        self._reader, self._writer = await asyncio.open_unix_connection(str(self._socket_path))
 
     async def close(self) -> None:
         """Close the connection."""

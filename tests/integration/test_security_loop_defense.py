@@ -64,11 +64,14 @@ async def _wait_for_future_started(
 ) -> None:
     end = asyncio.get_running_loop().time() + timeout
     while asyncio.get_running_loop().time() < end:
-        if getattr(future, "running", lambda: False)() or getattr(
-            future,
-            "done",
-            lambda: False,
-        )():
+        if (
+            getattr(future, "running", lambda: False)()
+            or getattr(
+                future,
+                "done",
+                lambda: False,
+            )()
+        ):
             return
         await asyncio.sleep(0.01)
     raise TimeoutError("Timed out waiting for background future to start")
@@ -1300,8 +1303,7 @@ async def test_m2_task_trigger_runtime_checks_degrade_missing_delivery_target(
             {"event_type": "AnomalyReported", "limit": 20},
         )
         assert any(
-            "missing delivery target"
-            in str(event.get("data", {}).get("description", "")).lower()
+            "missing delivery target" in str(event.get("data", {}).get("description", "")).lower()
             for event in anomalies["events"]
         )
     finally:

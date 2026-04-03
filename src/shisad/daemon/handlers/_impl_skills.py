@@ -92,9 +92,11 @@ class SkillsImplMixin(HandlerMixinBase):
         self._reputation_scorer.record_submission(author_id=author_id)
         payload = decision.model_dump(mode="json")
         raw_findings = payload.get("findings")
-        findings = [
-            item for item in raw_findings if isinstance(item, dict)
-        ] if isinstance(raw_findings, list) else []
+        findings = (
+            [item for item in raw_findings if isinstance(item, dict)]
+            if isinstance(raw_findings, list)
+            else []
+        )
         reputation = self._skill_reputation(
             manifest=manifest,
             signature_status="trusted" if decision.allowed else "unknown",

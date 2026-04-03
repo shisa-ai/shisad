@@ -160,8 +160,12 @@ class ExecutionTraceVerifier:
                 risk_tier=RiskTier.HIGH,
             )
 
-        if plan.allowed_resources and action.resource_id and not any(
-            fnmatch.fnmatch(action.resource_id, pattern) for pattern in plan.allowed_resources
+        if (
+            plan.allowed_resources
+            and action.resource_id
+            and not any(
+                fnmatch.fnmatch(action.resource_id, pattern) for pattern in plan.allowed_resources
+            )
         ):
             return PlanVerificationResult(
                 allowed=False,

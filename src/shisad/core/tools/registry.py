@@ -76,11 +76,7 @@ def is_valid_semantic_value(value: Any, expected: str) -> bool:
         if any(char.isspace() for char in candidate):
             return False
         parsed = urlparse(candidate)
-        return (
-            parsed.scheme in {"http", "https"}
-            and bool(parsed.hostname)
-            and bool(parsed.netloc)
-        )
+        return parsed.scheme in {"http", "https"} and bool(parsed.hostname) and bool(parsed.netloc)
     if expected == "workspace_path":
         if _looks_like_instructional_text(candidate):
             return False
@@ -216,9 +212,7 @@ class ToolRegistry:
                 value,
                 str(semantic_type),
             ):
-                errors.append(
-                    f"Argument '{key}': expected validated atom '{semantic_type}'"
-                )
+                errors.append(f"Argument '{key}': expected validated atom '{semantic_type}'")
                 continue
 
             item_schema = properties[key].get("items", {})
@@ -227,13 +221,10 @@ class ToolRegistry:
                 items_semantic_type is not None
                 and isinstance(value, list)
                 and not all(
-                    self._check_semantic_value(item, str(items_semantic_type))
-                    for item in value
+                    self._check_semantic_value(item, str(items_semantic_type)) for item in value
                 )
             ):
-                errors.append(
-                    f"Argument '{key}': expected validated atoms '{items_semantic_type}'"
-                )
+                errors.append(f"Argument '{key}': expected validated atoms '{items_semantic_type}'")
                 continue
 
             # Enum validation

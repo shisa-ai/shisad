@@ -226,9 +226,7 @@ def build_planner_input_v2(
     frontmatter = scaffold.trusted_frontmatter.strip()
     if frontmatter:
         trusted_sections.append(
-            "=== TRUSTED FRONTMATTER (TRUSTED) ===\n"
-            f"{frontmatter}\n"
-            "=== END TRUSTED FRONTMATTER ==="
+            f"=== TRUSTED FRONTMATTER (TRUSTED) ===\n{frontmatter}\n=== END TRUSTED FRONTMATTER ==="
         )
     if trusted_context.strip():
         trusted_sections.append(trusted_context.strip())

@@ -114,8 +114,7 @@ async def test_m3_pairing_artifact_parser_rejects_oversized_identifiers(
         assert proposal["count"] == 1
         assert proposal["entries"][0]["external_user_id"] == "safe-user"
         assert any(
-            item.get("error") == "missing_required_fields"
-            for item in proposal["invalid_entries"]
+            item.get("error") == "missing_required_fields" for item in proposal["invalid_entries"]
         )
     finally:
         with suppress(Exception):
@@ -160,8 +159,7 @@ async def test_m3_pairing_artifact_parser_rejects_json_escaped_control_chars(
         assert proposal["count"] == 1
         assert proposal["entries"][0]["external_user_id"] == "safe-user"
         assert any(
-            item.get("error") == "missing_required_fields"
-            for item in proposal["invalid_entries"]
+            item.get("error") == "missing_required_fields" for item in proposal["invalid_entries"]
         )
     finally:
         with suppress(Exception):

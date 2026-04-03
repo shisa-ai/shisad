@@ -93,16 +93,13 @@ class WebToolkit:
                 query=normalized_query,
             )
 
-        request_url = (
-            f"{backend}/search?"
-            + urlencode(
-                {
-                    "q": normalized_query,
-                    "format": "json",
-                    "language": "en",
-                    "safesearch": 1,
-                }
-            )
+        request_url = f"{backend}/search?" + urlencode(
+            {
+                "q": normalized_query,
+                "format": "json",
+                "language": "en",
+                "safesearch": 1,
+            }
         )
         request = Request(
             request_url,
@@ -331,9 +328,7 @@ class WebToolkit:
         if lowered in {"localhost"}:
             return True
         return (
-            lowered.endswith(".local")
-            or lowered.endswith(".internal")
-            or lowered.endswith(".lan")
+            lowered.endswith(".local") or lowered.endswith(".internal") or lowered.endswith(".lan")
         )
 
     def _redirect_allowed(self, *, initial_host: str, target_host: str) -> bool:
@@ -394,9 +389,7 @@ class WebToolkit:
                     status_code = int(getattr(response, "status", 200) or 200)
                     content_type = str(response.headers.get("Content-Type", ""))
                     response_geturl = getattr(response, "geturl", None)
-                    final_url = (
-                        str(response_geturl()) if callable(response_geturl) else current_url
-                    )
+                    final_url = str(response_geturl()) if callable(response_geturl) else current_url
                     final_parsed = urlparse(final_url)
                     final_scheme = final_parsed.scheme.lower()
                     final_host = (final_parsed.hostname or "").lower()

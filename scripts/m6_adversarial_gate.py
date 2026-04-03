@@ -77,9 +77,7 @@ def main() -> int:
     regressions = detect_regression(baseline=baseline, current=metrics)
 
     allowed = (
-        ci_decision.allowed
-        and perf_decision.allowed
-        and (args.allow_regression or not regressions)
+        ci_decision.allowed and perf_decision.allowed and (args.allow_regression or not regressions)
     )
     report = {
         "lane": args.lane,

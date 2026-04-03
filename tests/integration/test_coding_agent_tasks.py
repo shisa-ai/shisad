@@ -93,9 +93,7 @@ def _fake_coding_agent_command(agent_name: str) -> str:
 
 def _broken_protocol_agent_command() -> str:
     script = Path(__file__).resolve().parents[1] / "fixtures" / "fake_acp_agent.py"
-    return (
-        f"{sys.executable} {script} --agent-name broken --fail-initialize"
-    )
+    return f"{sys.executable} {script} --agent-name broken --fail-initialize"
 
 
 @pytest.fixture(autouse=True)
@@ -181,20 +179,23 @@ async def test_m3_coding_task_runs_in_worktree_and_emits_coding_audit_events(
         selected_event = await _wait_for_event(
             client,
             event_type="CodingAgentSelected",
-            predicate=lambda item: str(item.get("session_id", "")).strip()
-            == str(task_result["task_session_id"]),
+            predicate=lambda item: (
+                str(item.get("session_id", "")).strip() == str(task_result["task_session_id"])
+            ),
         )
         started_event = await _wait_for_event(
             client,
             event_type="CodingAgentSessionStarted",
-            predicate=lambda item: str(item.get("session_id", "")).strip()
-            == str(task_result["task_session_id"]),
+            predicate=lambda item: (
+                str(item.get("session_id", "")).strip() == str(task_result["task_session_id"])
+            ),
         )
         completed_event = await _wait_for_event(
             client,
             event_type="CodingAgentSessionCompleted",
-            predicate=lambda item: str(item.get("session_id", "")).strip()
-            == str(task_result["task_session_id"]),
+            predicate=lambda item: (
+                str(item.get("session_id", "")).strip() == str(task_result["task_session_id"])
+            ),
         )
 
         assert selected_event["data"]["selected_agent"] == "codex"
@@ -382,8 +383,9 @@ async def test_m3_review_task_kind_implies_read_only_without_flag(
         started_event = await _wait_for_event(
             client,
             event_type="CodingAgentSessionStarted",
-            predicate=lambda item: str(item.get("session_id", "")).strip()
-            == str(task_result["task_session_id"]),
+            predicate=lambda item: (
+                str(item.get("session_id", "")).strip() == str(task_result["task_session_id"])
+            ),
         )
         assert started_event["data"]["read_only"] is True
     finally:
@@ -431,11 +433,12 @@ async def test_m3_terminal_protocol_failure_updates_selection_attempt_reason(
         selected_event = await _wait_for_event(
             client,
             event_type="CodingAgentSelected",
-            predicate=lambda item: str(item.get("session_id", "")).strip()
-            == str(task_result["task_session_id"])
-            and any(
-                attempt.get("agent") == "codex" and attempt.get("reason") == "protocol_error"
-                for attempt in item["data"].get("attempts", [])
+            predicate=lambda item: (
+                str(item.get("session_id", "")).strip() == str(task_result["task_session_id"])
+                and any(
+                    attempt.get("agent") == "codex" and attempt.get("reason") == "protocol_error"
+                    for attempt in item["data"].get("attempts", [])
+                )
             ),
         )
         assert selected_event["data"]["selected_agent"] == "codex"
@@ -485,15 +488,17 @@ async def test_m3_coding_task_worktree_failure_is_actionable_and_emits_completio
         started_event = await _wait_for_event(
             client,
             event_type="CodingAgentSessionStarted",
-            predicate=lambda item: str(item.get("session_id", "")).strip()
-            == str(task_result["task_session_id"]),
+            predicate=lambda item: (
+                str(item.get("session_id", "")).strip() == str(task_result["task_session_id"])
+            ),
         )
         completed_event = await _wait_for_event(
             client,
             event_type="CodingAgentSessionCompleted",
-            predicate=lambda item: str(item.get("session_id", "")).strip()
-            == str(task_result["task_session_id"])
-            and item["data"].get("reason") == "worktree_setup_failed",
+            predicate=lambda item: (
+                str(item.get("session_id", "")).strip() == str(task_result["task_session_id"])
+                and item["data"].get("reason") == "worktree_setup_failed"
+            ),
         )
 
         assert started_event["data"]["worktree_path"]

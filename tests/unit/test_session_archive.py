@@ -155,11 +155,14 @@ def test_m2_session_archive_rejects_checksum_tamper(tmp_path: Path) -> None:
     exported = archive_manager.export_session(session.id)
     tampered = tmp_path / "tampered.shisad-session.zip"
 
-    with zipfile.ZipFile(exported.archive_path, "r") as original, zipfile.ZipFile(
-        tampered,
-        "w",
-        compression=zipfile.ZIP_DEFLATED,
-    ) as rewritten:
+    with (
+        zipfile.ZipFile(exported.archive_path, "r") as original,
+        zipfile.ZipFile(
+            tampered,
+            "w",
+            compression=zipfile.ZIP_DEFLATED,
+        ) as rewritten,
+    ):
         for info in original.infolist():
             payload = original.read(info.filename)
             if info.filename == "session.json":

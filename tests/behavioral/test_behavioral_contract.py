@@ -230,6 +230,72 @@ async def _stub_complete(
             usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
         )
 
+    if "browser read page" in goal_lower or "read the browser page" in goal_lower:
+        return ProviderResponse(
+            message=Message(
+                role="assistant",
+                content="Reading the browser page.",
+                tool_calls=[_tool_call("browser.read_page", {}, call_id="t-browser-read-page")],
+            ),
+            model="behavioral-stub",
+            finish_reason="tool_calls",
+            usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+        )
+
+    if "browser screenshot" in goal_lower or "take a browser screenshot" in goal_lower:
+        return ProviderResponse(
+            message=Message(
+                role="assistant",
+                content="Capturing the browser page.",
+                tool_calls=[_tool_call("browser.screenshot", {}, call_id="t-browser-screenshot")],
+            ),
+            model="behavioral-stub",
+            finish_reason="tool_calls",
+            usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+        )
+
+    if "browser end session" in goal_lower or "end the browser session" in goal_lower:
+        return ProviderResponse(
+            message=Message(
+                role="assistant",
+                content="Closing the browser session.",
+                tool_calls=[_tool_call("browser.end_session", {}, call_id="t-browser-end")],
+            ),
+            model="behavioral-stub",
+            finish_reason="tool_calls",
+            usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+        )
+
+    if "browser type " in goal_lower and "name field" in goal_lower:
+        submit = "submit" in goal_lower
+        match = re.search(
+            r"browser type (?P<text>.+?) into the name field(?: and submit)?$",
+            goal,
+            flags=re.IGNORECASE,
+        )
+        text = match.group("text").strip() if match else "hello"
+        return ProviderResponse(
+            message=Message(
+                role="assistant",
+                content="Typing into the browser form.",
+                tool_calls=[
+                    _tool_call(
+                        "browser.type_text",
+                        {
+                            "target": "#name",
+                            "text": text,
+                            "submit": submit,
+                            "description": "name field",
+                        },
+                        call_id="t-browser-type",
+                    )
+                ],
+            ),
+            model="behavioral-stub",
+            finish_reason="tool_calls",
+            usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+        )
+
     tool_calls: list[dict[str, Any]] = []
     note_create_call = None
     if "add a note" in goal_lower or goal_lower.startswith("note:"):
@@ -323,9 +389,7 @@ async def _stub_complete(
         else None
     )
     git_status_call = (
-        _tool_call("git.status", {}, call_id="t-git-status")
-        if "git status" in goal_lower
-        else None
+        _tool_call("git.status", {}, call_id="t-git-status") if "git status" in goal_lower else None
     )
     git_log_call = (
         _tool_call("git.log", {"limit": 5}, call_id="t-git-log")
@@ -394,7 +458,9 @@ async def _stub_complete(
         tool_calls.append(fs_write_call)
 
     assistant_response = (
-        "Working on it." if tool_calls else "Hello! How can I help?"
+        "Working on it."
+        if tool_calls
+        else "Hello! How can I help?"
         if "hello" in goal_lower or goal_lower.strip() in {"hi", "hello"}
         else "OK."
     )
@@ -459,6 +525,37 @@ class _StubSearchHandler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(body)
             return
+        if parsed.path == "/browser-form":
+            body = (
+                b"<html><head><title>Browser Form</title></head><body>"
+                b"<h1>Browser Form</h1>"
+                b"<form action='/browser-submitted' method='get'>"
+                b"<label for='name'>Name</label>"
+                b"<input id='name' name='name' />"
+                b"<button id='send' type='submit'>Send</button>"
+                b"</form>"
+                b"</body></html>"
+            )
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        if parsed.path == "/browser-submitted":
+            qs = parse_qs(parsed.query)
+            submitted = qs.get("name", [""])[0]
+            body = (
+                b"<html><head><title>Browser Submitted</title></head><body>"
+                + f"Submitted: {submitted}".encode()
+                + b"</body></html>"
+            )
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
         if parsed.path != "/search":
             body = b"stub page content for behavioral test"
             self.send_response(200)
@@ -498,7 +595,7 @@ def _start_stub_search_backend() -> tuple[ThreadingHTTPServer, threading.Thread,
     return server, thread, f"http://localhost:{port}", int(port)
 
 
-async def _wait_for_socket(path: Path, timeout: float = 2.0) -> None:
+async def _wait_for_socket(path: Path, timeout: float = 5.0) -> None:
     end = asyncio.get_running_loop().time() + timeout
     while asyncio.get_running_loop().time() < end:
         if path.exists():
@@ -1084,8 +1181,10 @@ async def test_contract_reminder_create_executes_and_due_run_delivers_without_lo
         contract_harness.client,
         event_type="ToolExecuted",
         session_id=background_sid,
-        predicate=lambda event: str(event.get("data", {}).get("tool_name", "")) == "message.send"
-        and bool(event.get("data", {}).get("success")) is True,
+        predicate=lambda event: (
+            str(event.get("data", {}).get("tool_name", "")) == "message.send"
+            and bool(event.get("data", {}).get("success")) is True
+        ),
         timeout=5.0,
     )
 
@@ -1098,8 +1197,7 @@ async def test_contract_reminder_create_executes_and_due_run_delivers_without_lo
     reminder_list_payload = reminder_outputs["reminder.list"][0]
     assert reminder_list_payload.get("ok") is True
     assert any(
-        str(item.get("id", "")) == task_id
-        for item in reminder_list_payload.get("tasks", [])
+        str(item.get("id", "")) == task_id for item in reminder_list_payload.get("tasks", [])
     )
 
 
@@ -1230,9 +1328,178 @@ async def test_contract_browser_click_confirmation_approve_executes_after_confir
         contract_harness.client,
         event_type="ToolExecuted",
         session_id=sid,
-        predicate=lambda event: str(event.get("data", {}).get("tool_name", "")) == "browser.click"
-        and bool(event.get("data", {}).get("success")) is True,
+        predicate=lambda event: (
+            str(event.get("data", {}).get("tool_name", "")) == "browser.click"
+            and bool(event.get("data", {}).get("success")) is True
+        ),
     )
+
+
+@pytest.mark.asyncio
+async def test_contract_browser_read_page_executes_and_returns_page(
+    contract_harness: ContractHarness,
+) -> None:
+    sid = await _create_session(contract_harness.client)
+    await contract_harness.client.call(
+        "session.message",
+        {
+            "session_id": sid,
+            "content": f"browser navigate {contract_harness.browser_base_url}/browser",
+        },
+    )
+    reply = await contract_harness.client.call(
+        "session.message",
+        {"session_id": sid, "content": "browser read page"},
+    )
+    assert reply.get("lockdown_level") == "normal"
+    assert int(reply.get("blocked_actions", 0)) == 0
+    assert int(reply.get("confirmation_required_actions", 0)) == 0
+    assert int(reply.get("executed_actions", 0)) == 1
+    outputs = _extract_tool_outputs(reply)
+    assert "browser.read_page" in outputs
+    payload = outputs["browser.read_page"][0]
+    assert payload.get("ok") is True
+    assert payload.get("title") == "Browser Home"
+    assert "Hello browser" in str(payload.get("content", ""))
+
+
+@pytest.mark.asyncio
+async def test_contract_browser_screenshot_executes_and_returns_artifact(
+    contract_harness: ContractHarness,
+) -> None:
+    sid = await _create_session(contract_harness.client)
+    await contract_harness.client.call(
+        "session.message",
+        {
+            "session_id": sid,
+            "content": f"browser navigate {contract_harness.browser_base_url}/browser",
+        },
+    )
+    reply = await contract_harness.client.call(
+        "session.message",
+        {"session_id": sid, "content": "browser screenshot"},
+    )
+    assert reply.get("lockdown_level") == "normal"
+    assert int(reply.get("blocked_actions", 0)) == 0
+    assert int(reply.get("confirmation_required_actions", 0)) == 0
+    assert int(reply.get("executed_actions", 0)) == 1
+    outputs = _extract_tool_outputs(reply)
+    assert "browser.screenshot" in outputs
+    payload = outputs["browser.screenshot"][0]
+    assert payload.get("ok") is True
+    assert str(payload.get("screenshot_id", "")).strip()
+    assert str(payload.get("path", "")).strip()
+    assert payload.get("taint_labels") == ["untrusted"]
+
+
+@pytest.mark.asyncio
+async def test_contract_browser_type_text_routes_to_confirmation_not_lockdown(
+    contract_harness: ContractHarness,
+) -> None:
+    sid = await _create_session(contract_harness.client)
+    await contract_harness.client.call(
+        "session.message",
+        {
+            "session_id": sid,
+            "content": f"browser navigate {contract_harness.browser_base_url}/browser-form",
+        },
+    )
+    reply = await contract_harness.client.call(
+        "session.message",
+        {
+            "session_id": sid,
+            "content": "browser type hello into the name field and submit",
+        },
+    )
+    assert reply.get("lockdown_level") == "normal"
+    assert int(reply.get("blocked_actions", 0)) == 0
+    assert int(reply.get("confirmation_required_actions", 0)) >= 1
+    pending_ids = reply.get("pending_confirmation_ids")
+    assert isinstance(pending_ids, list)
+    assert pending_ids
+    pending = await contract_harness.client.call(
+        "action.pending",
+        {"confirmation_id": str(pending_ids[0])},
+    )
+    actions = pending.get("actions", [])
+    assert actions
+    arguments = dict(actions[0].get("arguments", {}))
+    assert arguments.get("resolved_target", arguments.get("target")) == "#name"
+    assert str(arguments.get("destination", "")).endswith("/browser-submitted")
+    assert str(arguments.get("source_url", "")).endswith("/browser-form")
+    assert str(arguments.get("source_binding", "")).strip()
+
+
+@pytest.mark.asyncio
+async def test_contract_browser_type_text_confirmation_approve_executes_after_confirmation(
+    contract_harness: ContractHarness,
+) -> None:
+    sid = await _create_session(contract_harness.client)
+    await contract_harness.client.call(
+        "session.message",
+        {
+            "session_id": sid,
+            "content": f"browser navigate {contract_harness.browser_base_url}/browser-form",
+        },
+    )
+    proposed = await contract_harness.client.call(
+        "session.message",
+        {
+            "session_id": sid,
+            "content": "browser type hello into the name field and submit",
+        },
+    )
+    assert proposed.get("lockdown_level") == "normal"
+    pending_ids = proposed.get("pending_confirmation_ids")
+    assert isinstance(pending_ids, list)
+    assert pending_ids
+
+    confirmed = await _confirm_pending_action(contract_harness.client, str(pending_ids[0]))
+    assert confirmed.get("confirmed") is True
+    await _wait_for_audit_event(
+        contract_harness.client,
+        event_type="ToolExecuted",
+        session_id=sid,
+        predicate=lambda event: (
+            str(event.get("data", {}).get("tool_name", "")) == "browser.type_text"
+            and bool(event.get("data", {}).get("success")) is True
+        ),
+    )
+    reread = await contract_harness.client.call(
+        "session.message",
+        {"session_id": sid, "content": "browser read page"},
+    )
+    outputs = _extract_tool_outputs(reread)
+    assert "browser.read_page" in outputs
+    payload = outputs["browser.read_page"][0]
+    assert "Submitted: hello" in str(payload.get("content", ""))
+
+
+@pytest.mark.asyncio
+async def test_contract_browser_end_session_executes_without_lockdown(
+    contract_harness: ContractHarness,
+) -> None:
+    sid = await _create_session(contract_harness.client)
+    await contract_harness.client.call(
+        "session.message",
+        {
+            "session_id": sid,
+            "content": f"browser navigate {contract_harness.browser_base_url}/browser",
+        },
+    )
+    reply = await contract_harness.client.call(
+        "session.message",
+        {"session_id": sid, "content": "end the browser session"},
+    )
+    assert reply.get("lockdown_level") == "normal"
+    assert int(reply.get("blocked_actions", 0)) == 0
+    assert int(reply.get("confirmation_required_actions", 0)) == 0
+    assert int(reply.get("executed_actions", 0)) == 1
+    outputs = _extract_tool_outputs(reply)
+    assert "browser.end_session" in outputs
+    payload = outputs["browser.end_session"][0]
+    assert payload.get("ok") is True
+    assert payload.get("closed") is True
 
 
 @pytest.mark.asyncio
@@ -1245,8 +1512,13 @@ async def test_contract_git_status_executes_and_returns_output(
         ["git", "-C", str(ws), "commit", "--allow-empty", "-m", "init"],
         check=True,
         capture_output=True,
-        env={**os.environ, "GIT_AUTHOR_NAME": "test", "GIT_AUTHOR_EMAIL": "t@t",
-             "GIT_COMMITTER_NAME": "test", "GIT_COMMITTER_EMAIL": "t@t"},
+        env={
+            **os.environ,
+            "GIT_AUTHOR_NAME": "test",
+            "GIT_AUTHOR_EMAIL": "t@t",
+            "GIT_COMMITTER_NAME": "test",
+            "GIT_COMMITTER_EMAIL": "t@t",
+        },
     )
     sid = await _create_session(contract_harness.client)
     reply = await contract_harness.client.call(
@@ -1272,8 +1544,13 @@ async def test_contract_git_log_executes_and_returns_entries(
         ["git", "-C", str(ws), "commit", "--allow-empty", "-m", "init"],
         check=True,
         capture_output=True,
-        env={**os.environ, "GIT_AUTHOR_NAME": "test", "GIT_AUTHOR_EMAIL": "t@t",
-             "GIT_COMMITTER_NAME": "test", "GIT_COMMITTER_EMAIL": "t@t"},
+        env={
+            **os.environ,
+            "GIT_AUTHOR_NAME": "test",
+            "GIT_AUTHOR_EMAIL": "t@t",
+            "GIT_COMMITTER_NAME": "test",
+            "GIT_COMMITTER_EMAIL": "t@t",
+        },
     )
     sid = await _create_session(contract_harness.client)
     reply = await contract_harness.client.call(
@@ -1361,8 +1638,10 @@ async def test_contract_web_fetch_confirmation_approve_executes_after_confirmati
         contract_harness.client,
         event_type="ToolExecuted",
         session_id=sid,
-        predicate=lambda event: str(event.get("data", {}).get("tool_name", "")) == "web.fetch"
-        and bool(event.get("data", {}).get("success")) is True,
+        predicate=lambda event: (
+            str(event.get("data", {}).get("tool_name", "")) == "web.fetch"
+            and bool(event.get("data", {}).get("success")) is True
+        ),
     )
 
 

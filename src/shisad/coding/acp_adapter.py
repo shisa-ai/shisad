@@ -353,9 +353,10 @@ class AcpAdapter(CodingAgentAdapter):
                 session_id = str(new_session.session_id)
 
                 available_modes = _extract_mode_ids(getattr(new_session, "modes", None))
-                current_mode = str(
-                    getattr(getattr(new_session, "modes", None), "current_mode_id", "")
-                ).strip() or None
+                current_mode = (
+                    str(getattr(getattr(new_session, "modes", None), "current_mode_id", "")).strip()
+                    or None
+                )
                 selected_mode = await self._apply_mode(
                     conn=conn,
                     session_id=session_id,

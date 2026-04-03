@@ -413,6 +413,7 @@ class AdminImplMixin(HandlerMixinBase):
             "checks": checks,
             "error": "",
         }
+
     async def do_lockdown_set(self, params: Mapping[str, Any]) -> dict[str, Any]:
         sid = SessionId(str(params.get("session_id", "")))
         action = str(params.get("action", "caution"))
@@ -539,19 +540,13 @@ class AdminImplMixin(HandlerMixinBase):
             )
         elif self._discord_channel is not None and message.channel == "discord":
             discord_workspace = self._discord_channel.workspace_for_guild(message.workspace_hint)
-            message = message.model_copy(
-                update={"workspace_hint": discord_workspace}
-            )
+            message = message.model_copy(update={"workspace_hint": discord_workspace})
         elif self._telegram_channel is not None and message.channel == "telegram":
             telegram_workspace = self._telegram_channel.workspace_for_chat(message.workspace_hint)
-            message = message.model_copy(
-                update={"workspace_hint": telegram_workspace}
-            )
+            message = message.model_copy(update={"workspace_hint": telegram_workspace})
         elif self._slack_channel is not None and message.channel == "slack":
             slack_workspace = self._slack_channel.workspace_for_team(message.workspace_hint)
-            message = message.model_copy(
-                update={"workspace_hint": slack_workspace}
-            )
+            message = message.model_copy(update={"workspace_hint": slack_workspace})
 
         if not self._identity_map.is_allowed(
             channel=message.channel,

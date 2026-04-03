@@ -237,10 +237,9 @@ async def test_m1_adversarial_task_output_returns_to_command_with_untrusted_tain
         last_assistant = parent_entries[-1]
         assert last_assistant.role == "assistant"
         assert TaintLabel.UNTRUSTED in last_assistant.taint_labels
-        assert (
-            last_assistant.metadata.get("task_result", {}).get("taint_labels")
-            == [TaintLabel.UNTRUSTED.value]
-        )
+        assert last_assistant.metadata.get("task_result", {}).get("taint_labels") == [
+            TaintLabel.UNTRUSTED.value
+        ]
 
         await handlers.handle_session_message(
             SessionMessageParams(

@@ -427,8 +427,7 @@ async def test_m5_t21_tool_execute_has_declared_threat_model_path_and_no_bypass(
             {"event_type": "ConsensusEvaluated", "session_id": sid, "limit": 50},
         )
         assert any(
-            event.get("data", {}).get("tool_name") == "shell.exec"
-            for event in consensus["events"]
+            event.get("data", {}).get("tool_name") == "shell.exec" for event in consensus["events"]
         )
     finally:
         await _shutdown(daemon_task, client)
@@ -771,9 +770,7 @@ async def test_m1_d11_confirmation_replay_uses_persisted_merged_policy_snapshot_
             {"session_id": sid, "status": "pending", "limit": 20},
         )
         row = next(
-            item
-            for item in pending["actions"]
-            if item["confirmation_id"] == confirmation_id
+            item for item in pending["actions"] if item["confirmation_id"] == confirmation_id
         )
 
         confirmed = await client.call(
@@ -847,8 +844,7 @@ async def test_m5_rt3_session_message_execution_reuses_preflight_action_timestam
             if str(payload.get("execution_status", "")).strip():
                 statuses.add("execution")
         assert any(
-            {"decision", "execution"}.issubset(statuses)
-            for statuses in grouped_statuses.values()
+            {"decision", "execution"}.issubset(statuses) for statuses in grouped_statuses.values()
         )
     finally:
         await _shutdown(daemon_task, client)

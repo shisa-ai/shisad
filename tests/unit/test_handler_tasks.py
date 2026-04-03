@@ -27,9 +27,7 @@ class _StubImpl:
     async def do_task_trigger_event(self, _payload: dict[str, object]) -> dict[str, object]:
         return {"runs": [{"task_id": "task-1"}], "count": 1, "queued_confirmations": 1}
 
-    async def do_task_pending_confirmations(
-        self, payload: dict[str, object]
-    ) -> dict[str, object]:
+    async def do_task_pending_confirmations(self, payload: dict[str, object]) -> dict[str, object]:
         return {"task_id": str(payload["task_id"]), "pending": [], "count": 0}
 
 

@@ -113,8 +113,10 @@ class _HTMLSummaryParser(HTMLParser):
         marker_values = " ".join(
             value.lower() for key, value in attrs_dict.items() if key in {"id", "class", "role"}
         )
-        if self._skip_depth > 0 or normalized in _SKIP_TAGS or any(
-            hint in marker_values for hint in _COOKIE_HINTS
+        if (
+            self._skip_depth > 0
+            or normalized in _SKIP_TAGS
+            or any(hint in marker_values for hint in _COOKIE_HINTS)
         ):
             self._skip_depth += 1
             return
@@ -169,9 +171,7 @@ def _html_to_text(content: str) -> str:
 
 def _extractive_summary_sentences(content: str) -> list[str]:
     source_text = (
-        _html_to_text(content)
-        if _looks_like_html(content)
-        else _compact_whitespace(content)
+        _html_to_text(content) if _looks_like_html(content) else _compact_whitespace(content)
     )
     if not source_text:
         return []
@@ -227,15 +227,10 @@ def _generate_safe_summary(
 def format_evidence_stub(ref: EvidenceRef) -> str:
     """Render a single-line evidence stub for transcript/context use."""
 
-    summary = (
-        ref.summary
-        .replace("\\", "\\\\")
-        .replace("]", "\\]")
-        .replace('"', '\\"')
-    )
+    summary = ref.summary.replace("\\", "\\\\").replace("]", "\\]").replace('"', '\\"')
     taint_value = ",".join(sorted(label.value.upper() for label in ref.taint_labels)) or "NONE"
     return (
-        f'[EVIDENCE ref={ref.ref_id} source={ref.source} taint={taint_value} '
+        f"[EVIDENCE ref={ref.ref_id} source={ref.source} taint={taint_value} "
         f'size={ref.byte_size} summary="{summary}" '
         f'Use evidence.read("{ref.ref_id}") for full content, or '
         f'evidence.promote("{ref.ref_id}") to add it to the conversation.]'
@@ -274,9 +269,7 @@ class ArtifactLedger:
         metadata_ready_for_cleanup = metadata_load.loaded_ok
         if metadata_load.dirty:
             metadata_ready_for_cleanup = metadata_ready_for_cleanup and (
-                self._try_persist_metadata_index(
-                    "sanitizing persisted evidence metadata index"
-                )
+                self._try_persist_metadata_index("sanitizing persisted evidence metadata index")
             )
         if metadata_ready_for_cleanup:
             self._quarantine_orphaned_blobs()
@@ -655,8 +648,7 @@ class ArtifactLedger:
     def _persist_metadata_index(self) -> None:
         serialized = {
             session_key: {
-                ref_id: ref.model_dump(mode="json")
-                for ref_id, ref in session_refs.items()
+                ref_id: ref.model_dump(mode="json") for ref_id, ref in session_refs.items()
             }
             for session_key, session_refs in self._refs.items()
             if session_refs

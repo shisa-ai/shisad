@@ -92,9 +92,7 @@ async def test_tui_fetch_snapshot_uses_control_client(monkeypatch: pytest.Monkey
                     ]
                 },
                 "daemon.status": {
-                    "channels": {
-                        "discord": {"enabled": True, "available": True, "connected": True}
-                    }
+                    "channels": {"discord": {"enabled": True, "available": True, "connected": True}}
                 },
                 "dashboard.alerts": {"alerts": [{"event_type": "AlertRaised"}]},
                 "dashboard.audit_explorer": {"events": [{"event_type": "AuditLogged"}]},

@@ -32,6 +32,7 @@ Rather than ignoring the elephant in the room, our design targets the [lethal tr
 
 ## Features
 
+- **COMMAND/TASK orchestration runtime** — persistent COMMAND sessions hand off delegated work to isolated TASK sessions with taint-safe summaries, approval provenance, and explicit task envelopes
 - **Per-call policy enforcement** — 8-layer PEP pipeline (registry, schema, capability, DLP, resource authorization, egress allowlisting, credential scoping, taint sink enforcement) runs on every tool call, not just at session start
 - **Taint-aware content handling** — ingress/egress content firewalls track provenance of untrusted input through the execution path
 - **Confirmation gates, not blanket denial** — user-requested actions proceed; ambiguous or tainted actions route to confirmation; only genuine anomalies trigger lockdown
@@ -39,21 +40,27 @@ Rather than ignoring the elephant in the room, our design targets the [lethal tr
 - **Destructive command protection** — enforced at the sandbox policy layer before execution, not by LLM judgment; structurally incapable of `rm -rf /` regardless of prompt injection or misconfiguration
 - **Clean-room workflows** — admin operations run in a taint-isolated session mode with no auto-apply
 - **Multi-channel messaging** — Matrix, Discord, Telegram, Slack (Socket Mode), with default-deny identity allowlisting per channel
-- **Assistant primitives** — notes/todos, scheduler with shared delivery, web search/fetch, filesystem/git helpers, evidence references for large untrusted output
+- **Assistant primitives** — notes/todos, scheduler with shared delivery, web search/fetch, baseline browser automation, filesystem/git helpers, and evidence references for large untrusted output
+- **Artifact and evidence boundaries** — restart-stable evidence refs, structured ArtifactLedger storage, and terminal-safe evidence rendering keep large untrusted content off the raw prompt path by default
 - **Provider routing** — pluggable LLM provider presets (Shisa, OpenAI, OpenRouter, Google, local vLLM) with per-route auth, model selection, and mixed-mode deployment
+- **Tool-surface integrity** — reviewed local skills can declare tools, but their schema hashes are pinned across install/restart/runtime and dynamic remote tool discovery remains fail-closed
 - **Observability** — comprehensive audit trail, TUI dashboard (pending actions, tasks, channel health, alerts), and `doctor` diagnostics
 
 ## Status
 
-This repo is currently an initial development release (pre-alpha). This repo is being made public as of v0.5.
+This repo is public and still pre-alpha. `v0.6.0` is the current release line.
 
 | Version | Focus |
 |---------|-------|
-| **v0.5** | **First public release — evidence references, repo split, zero-config SHISA provider** |
+| **v0.6** | **Orchestration foundation + tool-surface expansion (COMMAND/TASK runtime, credential scoping, web tools, browser baseline)** |
+| v0.5 | First public release — evidence references, repo split, zero-config SHISA provider |
 | v0.4 | Self-modification, coding-agent runtime, COMMAND/TASK isolation |
 | v0.3 | Provider routing, channels, assistant tools, destructive command protection |
 | v0.2 | Structural refactor (typed handlers, decomposed runtime, coverage) |
 | v0.1 | Core daemon, PEP security pipeline, control API |
+
+This table tracks major release lines for operator orientation; patch releases
+like `v0.5.1` and `v0.5.2` stay in the changelog rather than being listed here.
 
 See [`docs/ROADMAP.md`](docs/ROADMAP.md) for more details.
 
@@ -197,6 +204,12 @@ export SHISAD_WEB_ALLOWED_DOMAINS='["search.example.com","docs.example.com"]'
 
 # Verify the configured tool surface from a live daemon:
 # uv run python scripts/live_tool_matrix.py --tool-status
+
+# Optional: browser automation baseline (read-mostly navigation plus
+# confirmation-gated write actions) via a Playwright-compatible CLI wrapper.
+export SHISAD_BROWSER_ENABLED=true
+export SHISAD_BROWSER_COMMAND="/path/to/playwright-cli"
+export SHISAD_BROWSER_ALLOWED_DOMAINS='["example.com"]'
 
 export SHISAD_ASSISTANT_FS_ROOTS='["/tmp/shisad-workspace"]'
 ```

@@ -30,15 +30,15 @@ def test_s0_doctor_check_provider_component_prints_provider_diagnostics(
                 "checks": {
                     "provider": {
                         "status": "ok",
-                    "routes": {
-                        "planner": {
-                            "preset": "openai_default",
-                            "base_url": "https://api.openai.com/v1",
-                            "auth_mode": "bearer",
-                            "key_source": "preset_provider:OPENAI_API_KEY",
-                            "request_parameter_profile": "openai_chat_general",
-                        }
-                    },
+                        "routes": {
+                            "planner": {
+                                "preset": "openai_default",
+                                "base_url": "https://api.openai.com/v1",
+                                "auth_mode": "bearer",
+                                "key_source": "preset_provider:OPENAI_API_KEY",
+                                "request_parameter_profile": "openai_chat_general",
+                            }
+                        },
                     }
                 },
                 "error": "",
