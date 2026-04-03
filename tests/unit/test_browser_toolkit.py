@@ -33,6 +33,7 @@ def _make_browser_fixture_handler(
         def do_GET(self) -> None:
             current_link_href = str((state or {}).get("link_href", link_href))
             current_form_action = str((state or {}).get("form_action", form_action))
+            current_prefix_html = str((state or {}).get("prefix_html", ""))
             if self.path.startswith("/submitted"):
                 body = (
                     "<html><head><title>Submitted</title></head><body>"
@@ -51,6 +52,7 @@ def _make_browser_fixture_handler(
                     "<html><head><title>Browser Home</title></head><body>"
                     "<h1>Hello browser</h1>"
                     "<p>Read only content for testing.</p>"
+                    f"{current_prefix_html}"
                     f"<a id='continue' href='{current_link_href}'>Continue</a>"
                     f"<form action='{current_form_action}' method='get'>"
                     "<input id='search' name='q' type='text' />"
@@ -570,6 +572,46 @@ async def test_m6_browser_toolkit_click_confirmation_fails_if_bound_element_chan
         assert new_configs
         assert not any("click" in config.command for config in new_configs)
         assert toolkit._current_url(session) == f"{browser_server.base_url}/"
+    finally:
+        browser_server.close()
+
+
+@pytest.mark.asyncio
+async def test_m6_browser_toolkit_click_confirmation_allows_same_url_sibling_reordering(
+    tmp_path: Path,
+) -> None:
+    state = {"link_href": "/next-a"}
+    browser_server = _start_fixture_server(state=state)
+    try:
+        runner = _DirectRunner()
+        toolkit = _toolkit(tmp_path, runner=runner)
+        session = _session()
+
+        opened = await toolkit.navigate(session=session, url=f"{browser_server.base_url}/")
+        assert opened["ok"] is True
+        prepared = await toolkit.prepare_action_arguments(
+            session=session,
+            tool_name="browser.click",
+            arguments={"target": "the continue button in the browser"},
+        )
+
+        assert str(prepared["destination"]).endswith("/next-a")
+        assert str(prepared.get("source_binding", "")).strip()
+
+        state["prefix_html"] = "<a id='noise' href='/noise'>Noise</a>"
+
+        clicked = await toolkit.click(
+            session=session,
+            target=str(prepared["target"]),
+            resolved_target=str(prepared["resolved_target"]),
+            destination=str(prepared["destination"]),
+            source_url=str(prepared["source_url"]),
+            source_binding=str(prepared["source_binding"]),
+        )
+
+        assert clicked["ok"] is True
+        assert clicked["url"] == f"{browser_server.base_url}/next-a"
+        assert clicked["destination"] == f"{browser_server.base_url}/next-a"
     finally:
         browser_server.close()
 

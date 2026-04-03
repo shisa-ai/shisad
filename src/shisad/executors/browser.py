@@ -974,7 +974,6 @@ class BrowserToolkit:
         submit: bool,
     ) -> str:
         payload = {
-            "ref": element.ref.strip(),
             "kind": element.kind.strip(),
             "label": element.label.strip(),
             "selector": element.selector.strip(),
