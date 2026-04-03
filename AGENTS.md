@@ -345,7 +345,7 @@ If you encounter:
 - Treat the active task-scoped doc or worklog notes as the authoritative execution punchlist; keep checkboxes/worklog in sync with code changes.
 - Require a pre-analysis entry in the active task-scoped doc or worklog notes at milestone start, and refresh it when scope/risk assumptions materially change.
 - Fix doc↔code drift immediately (especially around security guarantees and runtime enforcement semantics).
-- During release-close, explicitly include `README.md` and the top-level public docs under `docs/` in docs-parity review.
+- During release-close, explicitly include `README.md` and the top-level public docs under `docs/` in docs-parity review. If dependency resolutions or workflow/action trust anchors changed, include `docs/AUDIT-supply-chain.md` in the same parity pass.
 - When writing release stats or quoting numbers (tests, churn, LOC), scope calculations to a specific tag/commit and include the exact commands used.
 
 ### Claim Integrity (Done/Shipped/Complete)

@@ -42,6 +42,9 @@ Version must be updated in both places:
 - [ ] Review `README.md` and top-level operator docs for release parity:
       `docs/ROADMAP.md`, `docs/ENV-VARS.md`, `docs/TOOL-STATUS.md`,
       `docs/USE-CASES.md`
+- [ ] If release-close changes dependency resolutions or workflow/action pins,
+      update `docs/AUDIT-supply-chain.md` in the same lane so the recorded
+      package inventory and CI/release trust notes stay current
 - [ ] Update release-version/status tables while doing the docs parity pass:
       make sure the current release line is presented as current, prior
       releases are de-emphasized, and any version/focus tables stay in sync.

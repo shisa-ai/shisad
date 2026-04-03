@@ -1,7 +1,7 @@
 # shisad Supply Chain Audit
 
 *Created: 2026-03-31*  
-*Updated: 2026-04-02 (v0.5.3 supply chain hardening: CI integrity + trusted publishing)*  
+*Updated: 2026-04-03 (v0.6.0 release-close remediation: dependency audit/export fixes, vulnerability bump refresh, and workflow-linting action repair)*
 *Status: In Progress*  
 *Snapshot basis: repository state on `main` at audit time (clean tree)*
 
@@ -37,6 +37,34 @@ Goals:
 - Accepted risk decision: Python interpreter version remains `>=3.12` and is not treated as a primary attack vector for this audit lane.
 
 ## Follow-up Worklog
+
+### 2026-04-03 — v0.6.0 release-close dependency audit remediation
+
+- Scope: repair the release-time `pip-audit` path after the first OIDC publish
+  run failed on the editable root package, refresh vulnerable locked packages
+  (`aiohttp`, `Pygments`), and replace the broken `zizmor` container action in
+  CI with the maintained `zizmor-action` path.
+- Threat/risk read before implementation:
+  - `publish.yml` was exporting `-e .` into the audit input, which makes
+    `pip-audit --require-hashes` fail before it can evaluate the lock-derived
+    dependency set.
+  - Locked `aiohttp==3.13.3` and `Pygments==2.19.2` were behind currently
+    available security fixes.
+  - The pinned `zizmorcore/zizmor` action SHA started failing internally during
+    its own Docker build because `ZIZMOR_VERSION` was no longer set in the
+    action image build path.
+- Execution and outcomes:
+  - `uv lock --upgrade-package aiohttp --upgrade-package pygments` ->
+    `Updated aiohttp v3.13.3 -> v3.13.5`, `Updated pygments v2.19.2 -> v2.20.0`.
+  - `uvx pip-audit --require-hashes --disable-pip -r <(uv export --all-groups --frozen --format requirements.txt --no-emit-project)` ->
+    `No known vulnerabilities found`.
+  - `publish.yml` now audits the lock-derived requirements export with
+    `--no-emit-project`, preserving hash enforcement while omitting the local
+    editable root package that `pip-audit` cannot validate.
+  - `ci.yml` now uses `zizmorcore/zizmor-action` pinned by SHA with explicit
+    `version: v1.23.1` and `advanced-security: false`, keeping the workflow
+    lint job blocking on actual findings while avoiding the broken upstream
+    container-action build path.
 
 ### 2026-04-01 — `cryptography` 46.0.6 upgrade lane
 
@@ -86,7 +114,8 @@ Goals:
 
 - Proceed with the `cryptography` bump to `46.0.6`.
 - Applied lock update: `pyproject.toml` now declares `cryptography>=46.0.6,<47` and `uv.lock` resolves `46.0.6`.
-- Defer `Pygments`; it is transitive in this repo and lower urgency than the direct runtime/security delta in `cryptography`.
+- `Pygments` was deferred at the time and later upgraded to `2.20.0` in the
+  2026-04-03 release-close remediation lane after the first release audit pass.
 
 ## Dependency Change-Control Plan
 
@@ -138,10 +167,7 @@ New packages should meet a higher bar than upgrades:
 
 ## DEFERRALS
 
-- `SC-2026-04-01-1` — `Pygments` review/upgrade deferred
-  - Rationale: `Pygments` is transitive/dev-tooling in this repo and lower priority than `cryptography`.
-  - Risk: medium-low; deferred churn in syntax-highlighting tooling, but no known direct runtime/security dependency in the current product path.
-  - Target milestone: next supply-chain hygiene pass.
+No open supply-chain deferrals are tracked in this document today.
 
 ## Immediate Hardening Applied (2026-03-31)
 
@@ -173,6 +199,7 @@ uv tree --only-group coverage
 uv tree --only-group security-runtime
 uv export --all-groups --frozen --format requirements.txt --no-hashes --no-header --no-annotate
 uv export --all-groups --frozen --format requirements.txt --no-hashes --no-header
+uv export --all-groups --frozen --format requirements.txt --no-emit-project
 rg -o "source = \\{[^\\}]+\\}" uv.lock | sort | uniq -c
 rg -c "^\\[\\[package\\]\\]" uv.lock
 rg -n "hatchling|build-system" pyproject.toml uv.lock
@@ -221,7 +248,7 @@ The full locked package set (third-party only) at snapshot time:
 agent-client-protocol==0.8.1
 aiofiles==24.1.0
 aiohappyeyeballs==2.6.1
-aiohttp==3.13.3
+aiohttp==3.13.5
 aiohttp-socks==0.11.0
 aiosignal==1.4.0
 annotated-types==0.7.0
@@ -269,7 +296,7 @@ pycryptodome==3.23.0
 pydantic==2.12.5
 pydantic-core==2.41.5
 pydantic-settings==2.12.0
-pygments==2.19.2
+pygments==2.20.0
 pytest==8.4.2
 pytest-asyncio==0.26.0
 pytest-cov==6.3.0
@@ -306,7 +333,7 @@ aiofiles==24.1.0
     # via matrix-nio
 aiohappyeyeballs==2.6.1
     # via aiohttp
-aiohttp==3.13.3
+aiohttp==3.13.5
     # via
     #   aiohttp-socks
     #   discord-py
@@ -498,12 +525,15 @@ Note: packages with no `# via` comments in this export are direct dependencies o
    - `claude`, `codex`, and `opencode` adapters now all include explicit package versions.
    - None of these runtime npm resolves are hash-pinned in-repo.
 
-3. **CI action references are mutable tags**
-   - `.github/workflows/ci.yml` uses tags such as:
-     - `actions/checkout@v4`
-     - `astral-sh/setup-uv@v4`
-     - `actions/upload-artifact@v4`
-   - Tags are not immutable trust anchors compared to full commit SHAs.
+3. **Some workflow tooling still depends on upstream registries at run time**
+   - GitHub Actions references are SHA-pinned, but that does not by itself make
+     every action internally immutable if it downloads tools or images at run
+     time.
+   - `ci.yml` now pins `zizmor-action` by SHA and requests an exact
+     `zizmor` version (`v1.23.1`), which materially reduces that drift for the
+     workflow-linting lane.
+   - Remaining CI/release jobs still depend on external registries (PyPI,
+     GitHub Container Registry) as an accepted operational tradeoff.
 
 4. **Bootstrap/install path includes mutable upstream installers**
    - `docs/DEPLOY.md` bootstrap includes:
@@ -527,16 +557,16 @@ Note: packages with no `# via` comments in this export are direct dependencies o
 | Age gate enforced | Yes | `--exclude-newer P7D` in all CI jobs |
 | Hashes enforced at install surface | Yes | `uv.lock` records artifact hashes; CI uses `--frozen` |
 | Build scripts deny-by-default | N/A | Python ecosystem; no install scripts in dependency chain |
-| GitHub Actions pinned by SHA | Yes | All actions pinned to immutable commit SHAs (v0.5.3) |
+| GitHub Actions pinned by SHA | Yes | All actions pinned to immutable commit SHAs; `zizmor-action` refreshed at v0.6.0 release-close |
 | Release workflows avoid attacker-controlled triggers | Yes | `publish.yml` uses `workflow_dispatch` only |
 | Workflow inputs sanitized before shell execution | Yes | Tag input compared via shell variable, not interpolated |
 | Publish environment requires approval | Yes | `pypi-publish` GitHub Environment with required reviewers |
-| Workflow linting (zizmor) | Yes | `zizmor` job runs on push + PR (v0.5.3) |
+| Workflow linting (zizmor) | Yes | `zizmor-action` job runs on push + PR with exact `zizmor` version input (v0.6.0 release-close) |
 | Dependency review in CI | Yes | `dependency-review-action` runs on PRs (v0.5.3) |
 | SBOM / attestation | Yes | SPDX SBOM + build provenance attestation in `publish.yml` (v0.5.3) |
 | Lockfile drift guard | Yes | `uv lock --check` as early CI gate (v0.5.3) |
 | Trusted publishing (OIDC) | Yes | PyPI OIDC trusted publisher configured (v0.5.3) |
-| Top-level permissions hardening | Yes | `permissions: read-all` on CI workflow (v0.5.3) |
+| Top-level permissions hardening | Yes | CI defaults to `contents: read` and expands only per job where needed (v0.6.0 release-close) |
 
 ## Minimum-Age Controls (uv + pip fallback note)
 
@@ -579,9 +609,10 @@ Current GitHub Actions coverage is useful but not complete for supply-chain assu
      pinned versions for ease of use.
    - Residual: operators must opt in via the env var; default remains `npx`.
 
-2. **Dependency audit runs at release time** (CLOSED v0.5.3)
-   - Evidence: `publish.yml` now runs `pip-audit` against the lockfile and
-     exports a full dependency tree snapshot as an artifact on every release.
+2. **Dependency audit runs at release time** (CLOSED v0.5.3; refreshed v0.6.0)
+   - Evidence: `publish.yml` now runs `pip-audit` against the lock-derived
+     requirements export with `--no-emit-project` and exports a full dependency
+     tree snapshot as an artifact on every release.
    - Risk: Low. Dependabot handles reactive CVE alerts between releases.
    - Residual: no automated diff against previous release's tree (compare
      artifacts manually or add a diff step later).
@@ -600,7 +631,7 @@ Current GitHub Actions coverage is useful but not complete for supply-chain assu
 1. ~~Pin GitHub Actions to immutable commit SHAs.~~ Done.
 2. ~~Add explicit lock/policy drift guard jobs for dependency metadata.~~ Done (`uv lock --check` gate).
 3. ~~Keep the uv cooldown and modernize syntax.~~ Done (`--exclude-newer P7D`).
-4. ~~Add top-level `permissions: read-all` to CI workflow.~~ Done.
+4. ~~Add top-level `permissions: read-all` to CI workflow.~~ Superseded by narrower default `contents: read` plus job-local expansion at v0.6.0 release-close.
 5. ~~Add dependency-review action for PRs.~~ Done.
 6. ~~Add zizmor workflow linting.~~ Done.
 
@@ -630,7 +661,8 @@ Current GitHub Actions coverage is useful but not complete for supply-chain assu
 ## Current Bottom Line
 
 - Python package supply chain is strong at the lockfile layer and now also
-  at the CI/release layer after v0.5.3 hardening.
+  at the CI/release layer after the v0.5.3 hardening pass plus the v0.6.0
+  release-close refresh.
 - All CI actions are SHA-pinned, GITHUB_TOKEN is read-only by default,
   dependency review and workflow linting are active, and the publish path
   uses OIDC trusted publishing with SBOM and attestations.
@@ -641,7 +673,8 @@ Current GitHub Actions coverage is useful but not complete for supply-chain assu
 
 ## Decision Summary
 
-This repo is **partially hardened and converging on baseline**. The v0.5.3
-hardening pass closed all Priority 0 and Priority 2 items. Remaining open
-items (runtime npx lockdown, periodic audit job, internal mirror) are
-lower priority and have documented deferral targets.
+This repo is **baseline-hardened with a small set of accepted operational
+risks**. The v0.5.3 hardening pass and the v0.6.0 release-close refresh closed
+the immediate CI/release-path gaps. Remaining open items (runtime `npx`
+lockdown, periodic audit job, internal mirror) are lower priority and have
+documented deferral targets.
