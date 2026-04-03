@@ -107,6 +107,15 @@ Version must be updated in both places:
 - [ ] Verify the GitHub Release, tag, and PyPI project page all show the new
       version
 - [ ] Verify attestation is visible on the PyPI project page
+- [ ] If GitHub code scanning raises new alerts on the release commit, triage
+      them with `gh` before assuming manual UI work is required:
+      `gh api '/repos/<owner>/<repo>/code-scanning/alerts?state=open&tool_name=CodeQL&per_page=100'`
+      `gh api '/repos/<owner>/<repo>/code-scanning/alerts/<id>/instances'`
+      After human review confirms a false positive or test-only hit, dismiss
+      programmatically with:
+      `gh api --method PATCH '/repos/<owner>/<repo>/code-scanning/alerts/<id>' -f state=dismissed -f dismissed_reason='false positive' -f dismissed_comment='...'`
+      or `dismissed_reason='used in tests'` as appropriate. Record alert IDs
+      and disposition in the active worklog when they affect release-close.
 - [ ] Confirm the tree is clean: `git status -sb`
 
 ## Trusted Publishing Setup

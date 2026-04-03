@@ -296,6 +296,14 @@ checklist. Key points:
 - `CHANGELOG.md` gets a new topmost section per release (no "Unreleased" section).
 - Run the full validation gate before building artifacts.
 - Never publish from a dirty tree or reuse stale `dist/` artifacts.
+- If GitHub CodeQL/code-scanning raises alerts on the release commit or a
+  release remediation branch, inspect them with `gh api` before assuming manual
+  UI work is required. Use:
+  `gh api '/repos/<owner>/<repo>/code-scanning/alerts?state=open&tool_name=CodeQL&per_page=100'`
+  and `gh api '/repos/<owner>/<repo>/code-scanning/alerts/<id>/instances'`.
+  Only dismiss alerts programmatically after human review confirms a test-only
+  hit or false positive, and record the alert IDs plus disposition in the
+  active worklog when they affect release-close.
 
 ## Code Quality
 
