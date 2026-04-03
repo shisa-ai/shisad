@@ -18,8 +18,18 @@ from shisad.daemon.handlers._mixin_typing import (
     call_control_plane as _call_control_plane,
 )
 from shisad.security.control_plane.schema import RiskTier, build_action
+from shisad.security.control_plane.sidecar import ControlPlaneRpcError
 
 logger = logging.getLogger(__name__)
+
+
+def _confirmation_control_plane_reason(exc: ControlPlaneRpcError) -> str:
+    message = str(exc.message).strip().lower()
+    if exc.reason_code == "rpc.invalid_params" and "inactive plan" in message:
+        return "plan_missing_or_inactive"
+    if exc.reason_code == "rpc.permission_denied":
+        return "control_plane_permission_denied"
+    return "control_plane_rejected"
 
 
 class ConfirmationImplMixin(HandlerMixinBase):
@@ -266,12 +276,52 @@ class ConfirmationImplMixin(HandlerMixinBase):
                 "active_plan_hash",
                 str(pending.session_id),
             )
-            plan_hash = await _call_control_plane(
-                self,
-                "approve_stage2",
-                action=approved_action,
-                approved_by="human_confirmation",
-            )
+            try:
+                plan_hash = await _call_control_plane(
+                    self,
+                    "approve_stage2",
+                    action=approved_action,
+                    approved_by="human_confirmation",
+                )
+            except ControlPlaneRpcError as exc:
+                reason = _confirmation_control_plane_reason(exc)
+                pending.status = "failed"
+                pending.status_reason = reason
+                decision_timestamp = datetime.now(UTC).isoformat()
+                await self._event_bus.publish(
+                    ToolRejected(
+                        session_id=pending.session_id,
+                        actor="human_confirmation",
+                        tool_name=pending.tool_name,
+                        reason=reason,
+                        approval_session_id=str(pending.session_id),
+                        approval_task_envelope_id=str(
+                            getattr(pending, "approval_task_envelope_id", "")
+                        ).strip(),
+                        approval_confirmation_id=str(pending.confirmation_id),
+                        approval_decision_nonce=str(pending.decision_nonce),
+                        approval_timestamp=decision_timestamp,
+                    )
+                )
+                self._sync_task_confirmation_status(pending)
+                self._record_task_confirmation_outcome(pending, success=False)
+                self._persist_pending_actions()
+                self._confirmation_analytics.record(
+                    user_id=str(pending.user_id),
+                    decision="reject",
+                    created_at=pending.created_at,
+                )
+                await self._maybe_emit_confirmation_hygiene_alert(
+                    user_id=str(pending.user_id),
+                    session_id=pending.session_id,
+                )
+                return {
+                    "confirmed": False,
+                    "confirmation_id": confirmation_id,
+                    "reason": reason,
+                    "status": pending.status,
+                    "status_reason": pending.status_reason,
+                }
             await self._event_bus.publish(
                 PlanAmended(
                     session_id=pending.session_id,

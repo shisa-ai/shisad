@@ -101,6 +101,7 @@ from shisad.security.control_plane.schema import (
     RiskTier,
     infer_action_kind,
 )
+from shisad.security.control_plane.sidecar import ControlPlaneUnavailableError
 from shisad.security.firewall import FirewallResult
 from shisad.security.host_extraction import extract_hosts_from_text, host_patterns
 from shisad.security.intent_matching import (
@@ -2783,10 +2784,19 @@ class SessionImplMixin(HandlerMixinBase):
                 risk_score=firewall_result.risk_score,
             )
         )
+        plan_hash = ""
+        try:
+            plan_hash = await _call_control_plane(self, "active_plan_hash", str(sid))
+        except ControlPlaneUnavailableError:
+            logger.warning(
+                "Chat confirmation response could not fetch active plan hash; continuing empty",
+                extra={"session_id": str(sid)},
+                exc_info=True,
+            )
         return {
             "session_id": sid,
             "response": response_text,
-            "plan_hash": await _call_control_plane(self, "active_plan_hash", str(sid)),
+            "plan_hash": plan_hash,
             "risk_score": firewall_result.risk_score,
             "blocked_actions": blocked_actions,
             "confirmation_required_actions": len(pending_confirmation_ids),

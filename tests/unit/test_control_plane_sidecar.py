@@ -2,13 +2,23 @@
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import json
+import os
+import signal
+import sys
 
 import pytest
 
+from shisad.core.api.transport import ControlClient, JsonRpcCallError
 from shisad.core.types import Capability
 from shisad.security.control_plane.schema import Origin, RiskTier
-from shisad.security.control_plane.sidecar import start_control_plane_sidecar
+from shisad.security.control_plane.sidecar import (
+    ControlPlaneRpcError,
+    ControlPlaneUnavailableError,
+    start_control_plane_sidecar,
+)
 
 
 def _clear_remote_provider_env(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -85,3 +95,112 @@ async def test_h1_control_plane_sidecar_round_trips_evaluation_and_audit_writes(
 
     assert handle.process.returncode is not None
     assert not handle.socket_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_h1_control_plane_sidecar_surfaces_semantic_rpc_errors(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clear_remote_provider_env(monkeypatch)
+    handle = await start_control_plane_sidecar(
+        data_dir=tmp_path / "data",
+        policy_path=tmp_path / "policy.yaml",
+    )
+    try:
+        action = (
+            await handle.client.evaluate_action(
+                tool_name="web.fetch",
+                arguments={"url": "https://example.com"},
+                origin=Origin(
+                    session_id="sess-h1",
+                    user_id="alice",
+                    workspace_id="ws-h1",
+                    actor="planner",
+                ),
+                risk_tier=RiskTier.LOW,
+                declared_domains=["example.com"],
+                session_tainted=False,
+                trusted_input=True,
+                raw_user_text="fetch example.com",
+            )
+        ).action
+        with pytest.raises(ControlPlaneRpcError) as excinfo:
+            await handle.client.approve_stage2(
+                action=action,
+                approved_by="human_confirmation",
+            )
+        assert excinfo.value.reason_code == "rpc.invalid_params"
+        assert "inactive plan" in excinfo.value.message
+    finally:
+        await handle.close()
+
+
+@pytest.mark.asyncio
+async def test_h1_control_plane_sidecar_fails_closed_after_midrun_exit(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clear_remote_provider_env(monkeypatch)
+    handle = await start_control_plane_sidecar(
+        data_dir=tmp_path / "data",
+        policy_path=tmp_path / "policy.yaml",
+    )
+    try:
+        handle.process.kill()
+        await handle.process.wait()
+        with pytest.raises(ControlPlaneUnavailableError):
+            await handle.client.ping()
+    finally:
+        await handle.close()
+
+
+@pytest.mark.asyncio
+async def test_h1_control_plane_sidecar_rejects_client_when_parent_pid_mismatches(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clear_remote_provider_env(monkeypatch)
+    socket_path = tmp_path / "data" / "control_plane" / "sidecar.sock"
+    socket_path.parent.mkdir(parents=True, exist_ok=True)
+    process = await asyncio.create_subprocess_exec(
+        sys.executable,
+        "-m",
+        "shisad.security.control_plane.sidecar",
+        "--socket-path",
+        str(socket_path),
+        "--data-dir",
+        str(tmp_path / "data"),
+        "--policy-path",
+        str(tmp_path / "policy.yaml"),
+        "--parent-pid",
+        str(os.getpid() + 99999),
+    )
+    client = ControlClient(socket_path)
+    try:
+        deadline = asyncio.get_running_loop().time() + 5.0
+        last_error: Exception | None = None
+        while asyncio.get_running_loop().time() < deadline:
+            if process.returncode is not None:
+                raise AssertionError(f"sidecar exited early: {process.returncode}") from last_error
+            try:
+                await client.connect()
+                with pytest.raises(JsonRpcCallError) as excinfo:
+                    await client.call("control_plane.ping", {})
+                assert excinfo.value.reason_code == "rpc.permission_denied"
+                return
+            except (ConnectionError, FileNotFoundError, OSError) as exc:
+                last_error = exc
+                await asyncio.sleep(0.05)
+            finally:
+                with contextlib.suppress(OSError, RuntimeError):
+                    await client.close()
+        raise AssertionError("sidecar socket never became ready for authorization check")
+    finally:
+        if process.returncode is None:
+            process.send_signal(signal.SIGTERM)
+            try:
+                await asyncio.wait_for(process.wait(), timeout=5.0)
+            except TimeoutError:
+                process.kill()
+                await process.wait()

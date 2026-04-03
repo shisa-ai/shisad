@@ -49,3 +49,29 @@ async def test_admin_only_method_rejects_non_admin_peer(tmp_path: Path) -> None:
     response = await server._process_message(raw, non_admin_peer)
 
     assert "Permission denied" in response
+
+
+@pytest.mark.asyncio
+async def test_peer_authorizer_rejects_mismatched_pid(tmp_path: Path) -> None:
+    server = ControlServer(
+        socket_path=tmp_path / "sock",
+        peer_authorizer=lambda _method, peer: peer.pid == 1234,
+    )
+
+    async def handler(params: object, ctx: RequestContext) -> dict[str, str]:
+        _ = (params, ctx)
+        return {"ok": "yes"}
+
+    server.register_method("control_plane.ping", handler)
+
+    request = {
+        "jsonrpc": "2.0",
+        "method": "control_plane.ping",
+        "params": {},
+        "id": 7,
+    }
+    raw = json.dumps(request).encode("utf-8")
+    unauthorized_peer = PeerCredentials(pid=4321, uid=os.getuid(), gid=os.getgid())
+    response = await server._process_message(raw, unauthorized_peer)
+
+    assert "Permission denied" in response

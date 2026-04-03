@@ -12,6 +12,7 @@ import json
 import logging
 import os
 import struct
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, cast
@@ -67,6 +68,24 @@ class PeerCredentials:
         return f"pid={self.pid} uid={self.uid} gid={self.gid}"
 
 
+class JsonRpcCallError(RuntimeError):
+    """Structured client-side JSON-RPC error."""
+
+    def __init__(
+        self,
+        *,
+        code: int,
+        message: str,
+        reason_code: str | None = None,
+        details: dict[str, Any] | None = None,
+    ) -> None:
+        self.code = code
+        self.message = message
+        self.reason_code = reason_code or ControlServer._default_reason_code(code)
+        self.details = dict(details or {})
+        super().__init__(f"RPC error {code}: {message}")
+
+
 @dataclass(slots=True)
 class _EventSubscription:
     writer: asyncio.StreamWriter
@@ -90,12 +109,19 @@ class ControlServer:
     Each connection is handled in a separate asyncio task.
     """
 
-    def __init__(self, socket_path: Path, *, event_queue_size: int = 256) -> None:
+    def __init__(
+        self,
+        socket_path: Path,
+        *,
+        event_queue_size: int = 256,
+        peer_authorizer: Callable[[str, PeerCredentials], bool] | None = None,
+    ) -> None:
         self._socket_path = socket_path
         self._server: asyncio.Server | None = None
         self._methods: dict[str, TypedMethodRegistration] = {}
         self._event_subscribers: dict[asyncio.StreamWriter, _EventSubscription] = {}
         self._event_queue_size = event_queue_size
+        self._peer_authorizer = peer_authorizer
 
     @property
     def subscriber_count(self) -> int:
@@ -229,6 +255,14 @@ class ControlServer:
                 INVALID_REQUEST,
                 f"Invalid request: {e}",
                 reason_code="rpc.invalid_request",
+            )
+
+        if self._peer_authorizer is not None and not self._peer_authorizer(request.method, peer):
+            return self._error_response(
+                request.id,
+                PERMISSION_DENIED,
+                "Permission denied: peer credentials rejected",
+                reason_code="rpc.permission_denied",
             )
 
         # Handle event subscription
@@ -532,7 +566,23 @@ class ControlClient:
 
         response = JsonRpcResponse.model_validate_json(line)
         if response.error is not None:
-            raise RuntimeError(f"RPC error {response.error.code}: {response.error.message}")
+            error_data = response.error.data if isinstance(response.error.data, dict) else {}
+            reason_code = (
+                str(error_data.get("reason_code", "")).strip() or None
+                if isinstance(error_data, dict)
+                else None
+            )
+            details = (
+                dict(cast(dict[str, Any], error_data.get("details", {})))
+                if isinstance(error_data.get("details"), dict)
+                else {}
+            )
+            raise JsonRpcCallError(
+                code=response.error.code,
+                message=response.error.message,
+                reason_code=reason_code,
+                details=details,
+            )
 
         return response.result
 

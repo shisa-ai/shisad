@@ -31,6 +31,7 @@ from shisad.daemon.handlers._impl import PendingAction
 from shisad.daemon.handlers._impl_confirmation import ConfirmationImplMixin
 from shisad.daemon.handlers.confirmation import ConfirmationHandlers
 from shisad.security.control_plane.schema import Origin, RiskTier
+from shisad.security.control_plane.sidecar import ControlPlaneRpcError
 from shisad.security.pep import PEP, PolicyContext
 from shisad.security.policy import PolicyBundle
 
@@ -386,6 +387,38 @@ async def test_m1_rlc3_stage2_fallback_confirmation_uses_low_risk_tier(tmp_path)
     assert harness._control_plane.approved_actions
     approved = harness._control_plane.approved_actions[0]
     assert getattr(approved, "risk_tier", None) == RiskTier.LOW
+
+
+@pytest.mark.asyncio
+async def test_h1_confirmation_returns_plan_state_failure_when_stage2_amend_rejected(
+    tmp_path,
+) -> None:
+    harness = _ConfirmationImplHarness(tmp_path, allow_amendment=True)
+
+    class _RejectingControlPlane:
+        def active_plan_hash(self, _session_id: str) -> str:
+            return ""
+
+        def approve_stage2(self, *, action: object, approved_by: str) -> str:
+            _ = (action, approved_by)
+            raise ControlPlaneRpcError(
+                message="cannot amend missing or inactive plan",
+                reason_code="rpc.invalid_params",
+            )
+
+    harness._control_plane = _RejectingControlPlane()
+    pending = _pending_action(nonce="expected")
+    pending.reason = "trace:stage2_upgrade_required"
+    harness._pending_actions["c-1"] = pending
+
+    result = await harness.do_action_confirm(
+        {"confirmation_id": "c-1", "decision_nonce": "expected"}
+    )
+
+    assert result["confirmed"] is False
+    assert result["reason"] == "plan_missing_or_inactive"
+    assert result["status"] == "failed"
+    assert pending.status_reason == "plan_missing_or_inactive"
 
 
 @pytest.mark.asyncio

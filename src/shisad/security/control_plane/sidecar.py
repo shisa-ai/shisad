@@ -15,7 +15,12 @@ from typing import Any, Protocol, TypeVar, cast, runtime_checkable
 
 from pydantic import BaseModel, Field, ValidationError
 
-from shisad.core.api.transport import ControlClient, ControlServer
+from shisad.core.api.transport import (
+    ControlClient,
+    ControlServer,
+    JsonRpcCallError,
+    PeerCredentials,
+)
 from shisad.core.config import ModelConfig
 from shisad.core.errors import ShisadError
 from shisad.core.log import setup_logging
@@ -48,6 +53,14 @@ class ControlPlaneUnavailableError(ShisadError):
     default_message = "Control-plane sidecar unavailable; retry or restart the daemon."
     rpc_code = -32603
     expose_message = True
+
+
+class ControlPlaneRpcError(ShisadError):
+    """Semantic sidecar RPC error that should not be collapsed into transport loss."""
+
+    default_reason_code = "control_plane.rpc_error"
+    default_message = "Control-plane sidecar rejected the request."
+    expose_message = False
 
 
 @runtime_checkable
@@ -497,11 +510,21 @@ class ControlPlaneSidecarClient(ControlPlaneGateway):
             await asyncio.wait_for(client.connect(), timeout=timeout)
             payload = await asyncio.wait_for(client.call(method, params), timeout=timeout)
             return result_model.model_validate(payload)
+        except JsonRpcCallError as exc:
+            raise ControlPlaneRpcError(
+                message=exc.message,
+                reason_code=exc.reason_code,
+                details={
+                    "method": method,
+                    "rpc_code": exc.code,
+                    **({"rpc_details": exc.details} if exc.details else {}),
+                },
+                rpc_code=exc.code,
+            ) from exc
         except (
             ConnectionError,
             FileNotFoundError,
             OSError,
-            RuntimeError,
             TimeoutError,
             ValidationError,
         ) as exc:
@@ -587,7 +610,7 @@ async def _wait_for_sidecar_ready(handle: ControlPlaneSidecarHandle) -> None:
         try:
             if await handle.client.ping():
                 return
-        except ControlPlaneUnavailableError as exc:
+        except (ControlPlaneRpcError, ControlPlaneUnavailableError) as exc:
             last_error = exc
         await asyncio.sleep(0.05)
     if last_error is not None:
@@ -621,7 +644,13 @@ async def _run_sidecar(
 ) -> None:
     setup_logging(level=os.getenv("SHISAD_LOG_LEVEL", "INFO"))
     engine = _build_control_plane_engine(data_dir=data_dir, policy_path=policy_path)
-    server = ControlServer(socket_path)
+    server = ControlServer(
+        socket_path,
+        peer_authorizer=lambda _method_name, peer: _is_authorized_sidecar_peer(
+            peer=peer,
+            expected_parent_pid=parent_pid,
+        ),
+    )
     handlers = _ControlPlaneSidecarHandlers(engine=engine)
     shutdown_event = asyncio.Event()
 
@@ -683,6 +712,14 @@ async def _run_sidecar(
         with contextlib.suppress(asyncio.CancelledError):
             await watcher
         await server.stop()
+
+
+def _is_authorized_sidecar_peer(*, peer: PeerCredentials, expected_parent_pid: int) -> bool:
+    if expected_parent_pid <= 0:
+        return False
+    if peer.uid != os.getuid():
+        return False
+    return peer.pid == expected_parent_pid
 
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
