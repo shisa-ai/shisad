@@ -5,6 +5,7 @@ from __future__ import annotations
 import fnmatch
 import hashlib
 import json
+import re
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from pathlib import Path
@@ -20,6 +21,7 @@ from shisad.security.control_plane.schema import (
     RiskTier,
     action_kinds_for_capabilities,
 )
+from shisad.security.host_extraction import extract_hosts_from_text, host_patterns
 
 
 class PlanStage(StrEnum):
@@ -27,11 +29,95 @@ class PlanStage(StrEnum):
     STAGE2_POSTEVIDENCE = "stage2_postevidence"
 
 
+TRACE_CONFIRMATION_REASON_CODES: frozenset[str] = frozenset(
+    {
+        "trace:stage2_upgrade_required",
+        "trace:tdg_confirmation_required",
+    }
+)
+
+_TDG_CONFIRMATION_REASON = "trace:tdg_confirmation_required"
+_TDG_BLOCK_REASON = "trace:tdg_dependency_path_missing"
+_TDG_ENFORCED_ACTION_KINDS: frozenset[ActionKind] = frozenset(
+    {
+        ActionKind.FS_READ,
+        ActionKind.FS_LIST,
+        ActionKind.FS_WRITE,
+        ActionKind.EGRESS,
+        ActionKind.BROWSER_READ,
+        ActionKind.BROWSER_WRITE,
+    }
+)
+_TDG_READ_LIKE_ACTION_KINDS: frozenset[ActionKind] = frozenset(
+    {
+        ActionKind.FS_READ,
+        ActionKind.FS_LIST,
+        ActionKind.BROWSER_READ,
+    }
+)
+_TDG_READ_LIKE_TOOLS: frozenset[str] = frozenset(
+    {
+        "file.read",
+        "fs.list",
+        "fs.read",
+        "git.diff",
+        "git.log",
+        "git.status",
+        "web.fetch",
+        "web.search",
+        "browser.navigate",
+        "browser.read_page",
+        "browser.screenshot",
+    }
+)
+_GOAL_PATH_TOKEN_RE = re.compile(r"[^\s<>()\"'`]+")
+_GOAL_LOCAL_FILE_EXTENSIONS: frozenset[str] = frozenset(
+    {
+        ".txt",
+        ".md",
+        ".rst",
+        ".json",
+        ".yaml",
+        ".yml",
+        ".toml",
+        ".ini",
+        ".conf",
+        ".cfg",
+        ".csv",
+        ".tsv",
+        ".log",
+        ".xml",
+        ".py",
+        ".ts",
+        ".js",
+        ".sh",
+        ".bash",
+        ".zsh",
+        ".ps1",
+        ".sql",
+    }
+)
+_GOAL_BARE_FILE_NAMES: frozenset[str] = frozenset(
+    {
+        "README",
+        "LICENSE",
+        "CHANGELOG",
+        "MAKEFILE",
+    }
+)
+
+
+def trace_reason_requires_confirmation(reason_code: str) -> bool:
+    return reason_code.strip() in TRACE_CONFIRMATION_REASON_CODES
+
+
 class CommittedPlan(BaseModel):
     session_id: str
     plan_hash: str
     allowed_actions: set[ActionKind] = Field(default_factory=set)
     allowed_resources: set[str] = Field(default_factory=set)
+    goal_resource_patterns: set[str] = Field(default_factory=set)
+    reachable_resources: set[str] = Field(default_factory=set)
     forbidden_actions: set[ActionKind] = Field(default_factory=set)
     max_actions: int = 10
     committed_at: datetime
@@ -80,11 +166,13 @@ class ExecutionTraceVerifier:
         ttl = ttl_seconds or self._default_ttl_seconds
         max_allowed = max_actions or self._default_max_actions
         allowed_actions = self._stage1_allowed_actions(goal, capabilities=capabilities)
+        goal_resource_patterns = self._goal_resource_patterns(goal)
 
         plan = self._commit_plan(
             session_id=session_id,
             allowed_actions=allowed_actions,
             allowed_resources=set(),
+            goal_resource_patterns=goal_resource_patterns,
             forbidden_actions=set(),
             max_actions=max_allowed,
             committed_at=now,
@@ -173,6 +261,16 @@ class ExecutionTraceVerifier:
                 risk_tier=RiskTier.HIGH,
             )
 
+        tdg_reason = self._tdg_reason(plan=plan, action=action)
+        if tdg_reason:
+            return PlanVerificationResult(
+                allowed=False,
+                reason_code=tdg_reason,
+                risk_tier=(
+                    RiskTier.MEDIUM if tdg_reason == _TDG_CONFIRMATION_REASON else RiskTier.HIGH
+                ),
+            )
+
         if plan.executed_actions >= plan.max_actions:
             return PlanVerificationResult(
                 allowed=False,
@@ -191,6 +289,20 @@ class ExecutionTraceVerifier:
         if plan is None:
             return
         plan.executed_actions += 1
+        self._persist()
+
+    def record_dependency_path(
+        self,
+        *,
+        session_id: str,
+        action: ControlPlaneAction,
+    ) -> None:
+        plan = self._plans.get(session_id)
+        if plan is None:
+            return
+        if not self._tdg_enforcement_applies(action):
+            return
+        plan.reachable_resources.update(item for item in action.resource_ids if item)
         self._persist()
 
     def cancel(self, *, session_id: str, reason: str) -> bool:
@@ -222,6 +334,7 @@ class ExecutionTraceVerifier:
             session_id=session_id,
             allowed_actions=set(current.allowed_actions) | set(allow_actions),
             allowed_resources=set(current.allowed_resources) | set(allow_resources),
+            goal_resource_patterns=set(current.goal_resource_patterns),
             forbidden_actions=set(current.forbidden_actions) - set(allow_actions),
             max_actions=current.max_actions,
             committed_at=now,
@@ -229,6 +342,7 @@ class ExecutionTraceVerifier:
             stage=PlanStage.STAGE2_POSTEVIDENCE,
             amendment_of=current.plan_hash,
         )
+        amended.reachable_resources = set(current.reachable_resources)
         self._plans[session_id] = amended
         self._persist()
         return amended
@@ -239,6 +353,7 @@ class ExecutionTraceVerifier:
         session_id: str,
         allowed_actions: set[ActionKind],
         allowed_resources: set[str],
+        goal_resource_patterns: set[str],
         forbidden_actions: set[ActionKind],
         max_actions: int,
         committed_at: datetime,
@@ -250,6 +365,7 @@ class ExecutionTraceVerifier:
             "session_id": session_id,
             "allowed_actions": sorted(item.value for item in allowed_actions),
             "allowed_resources": sorted(allowed_resources),
+            "goal_resource_patterns": sorted(goal_resource_patterns),
             "forbidden_actions": sorted(item.value for item in forbidden_actions),
             "max_actions": max_actions,
             "committed_at": committed_at.isoformat(),
@@ -264,6 +380,7 @@ class ExecutionTraceVerifier:
             plan_hash=plan_hash,
             allowed_actions=set(allowed_actions),
             allowed_resources=set(allowed_resources),
+            goal_resource_patterns=set(goal_resource_patterns),
             forbidden_actions=set(forbidden_actions),
             max_actions=max_actions,
             committed_at=committed_at,
@@ -289,6 +406,114 @@ class ExecutionTraceVerifier:
         if capabilities:
             base = base | action_kinds_for_capabilities(capabilities)
         return base
+
+    def _goal_resource_patterns(self, goal: str) -> set[str]:
+        patterns = host_patterns(extract_hosts_from_text(goal))
+        patterns.update(self._extract_goal_path_patterns(goal))
+        return patterns
+
+    def _tdg_reason(self, *, plan: CommittedPlan, action: ControlPlaneAction) -> str:
+        if not self._tdg_enforcement_applies(action):
+            return ""
+        candidate_resources = [item for item in action.resource_ids if item]
+        if not candidate_resources:
+            return ""
+        dependency_roots = (
+            set(plan.goal_resource_patterns)
+            | set(plan.reachable_resources)
+            | set(plan.allowed_resources)
+        )
+        if self._has_dependency_path(candidate_resources, dependency_roots):
+            return ""
+        if self._tdg_read_like_action(action):
+            return _TDG_CONFIRMATION_REASON
+        return _TDG_BLOCK_REASON
+
+    @staticmethod
+    def _tdg_enforcement_applies(action: ControlPlaneAction) -> bool:
+        if action.origin.actor == "control_api":
+            return False
+        return action.action_kind in _TDG_ENFORCED_ACTION_KINDS
+
+    @staticmethod
+    def _tdg_read_like_action(action: ControlPlaneAction) -> bool:
+        if action.tool_name in _TDG_READ_LIKE_TOOLS:
+            return True
+        return action.action_kind in _TDG_READ_LIKE_ACTION_KINDS
+
+    def _has_dependency_path(
+        self,
+        candidate_resources: list[str],
+        dependency_roots: set[str],
+    ) -> bool:
+        for candidate in candidate_resources:
+            for root in dependency_roots:
+                if self._resource_matches(root=root, candidate=candidate):
+                    return True
+        return False
+
+    @staticmethod
+    def _resource_matches(*, root: str, candidate: str) -> bool:
+        normalized_root = root.strip()
+        normalized_candidate = candidate.strip()
+        if not normalized_root or not normalized_candidate:
+            return False
+        if any(char in normalized_root for char in "*?[]"):
+            return fnmatch.fnmatch(normalized_candidate.lower(), normalized_root.lower())
+        if ExecutionTraceVerifier._looks_like_path_resource(normalized_root) and (
+            ExecutionTraceVerifier._looks_like_path_resource(normalized_candidate)
+        ):
+            root_prefix = normalized_root.rstrip("/")
+            candidate_prefix = normalized_candidate.rstrip("/")
+            if candidate_prefix == root_prefix or candidate_prefix.startswith(
+                f"{root_prefix}/"
+            ):
+                return True
+            root_name = Path(root_prefix).name
+            candidate_name = Path(candidate_prefix).name
+            if root_name and candidate_name and "." not in root_name:
+                candidate_stem = Path(candidate_name).stem
+                return candidate_stem.lower() == root_name.lower()
+            return False
+        return normalized_candidate.lower() == normalized_root.lower()
+
+    @staticmethod
+    def _looks_like_path_resource(value: str) -> bool:
+        stripped = value.strip()
+        if not stripped:
+            return False
+        return stripped.startswith(("/", "./", "../", "~/")) or "/" in stripped or "\\" in stripped
+
+    def _extract_goal_path_patterns(self, goal: str) -> set[str]:
+        patterns: set[str] = set()
+        for match in _GOAL_PATH_TOKEN_RE.finditer(goal):
+            token = match.group(0).strip(" \t\r\n\"'`.,;:!?)]}>")
+            if not self._looks_like_goal_path_token(token):
+                continue
+            normalized = self._normalize_goal_path(token)
+            if normalized:
+                patterns.add(normalized)
+        return patterns
+
+    @staticmethod
+    def _looks_like_goal_path_token(token: str) -> bool:
+        if not token or "://" in token or "@" in token:
+            return False
+        if token.startswith(("/", "./", "../", "~/", ".\\", "..\\")):
+            return True
+        if "/" in token or "\\" in token:
+            return True
+        suffix = Path(token).suffix.lower()
+        if token.strip().upper() in _GOAL_BARE_FILE_NAMES:
+            return True
+        return suffix in _GOAL_LOCAL_FILE_EXTENSIONS
+
+    @staticmethod
+    def _normalize_goal_path(token: str) -> str:
+        try:
+            return str(Path(token).expanduser().resolve(strict=False))
+        except (OSError, RuntimeError, ValueError):
+            return token.strip()
 
     def _persist(self) -> None:
         if self._storage_path is None:

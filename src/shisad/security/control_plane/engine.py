@@ -335,6 +335,10 @@ class ControlPlaneEngine:
             execution_status="success" if success else "failed",
         )
         if success:
+            self._trace_verifier.record_dependency_path(
+                session_id=action.origin.session_id,
+                action=action,
+            )
             self._trace_verifier.record_action(session_id=action.origin.session_id)
 
     def observe_denied_action(

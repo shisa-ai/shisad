@@ -59,6 +59,43 @@ async def test_egress_tool_does_not_trigger_lockdown(
     assert "trace:stage2_upgrade_required" not in result.reason_codes
 
 
+@pytest.mark.asyncio
+async def test_h4_explicit_goal_rooted_web_fetch_stays_allowed(
+    cp_engine: ControlPlaneEngine,
+    planner_origin: Origin,
+) -> None:
+    """A directly requested destination should keep a TDG path and remain
+    usable without extra friction."""
+    cp_engine.begin_precontent_plan(
+        session_id="h4-explicit-fetch",
+        goal="fetch https://example.com",
+        origin=Origin(
+            session_id="h4-explicit-fetch",
+            user_id="test-user",
+            workspace_id="test-ws",
+            actor="planner",
+            trust_level="untrusted",
+        ),
+        ttl_seconds=600,
+        max_actions=10,
+        capabilities={Capability.HTTP_REQUEST},
+    )
+    result = await cp_engine.evaluate_action(
+        tool_name="web.fetch",
+        arguments={"url": "https://example.com"},
+        origin=planner_origin.model_copy(update={"session_id": "h4-explicit-fetch"}),
+        risk_tier=RiskTier.LOW,
+        declared_domains=["example.com"],
+        session_tainted=False,
+        trusted_input=True,
+    )
+    assert result.decision != ControlDecision.BLOCK, (
+        f"goal-rooted web.fetch blocked with reason: {result.reason_codes}"
+    )
+    assert "trace:tdg_confirmation_required" not in result.reason_codes
+    assert "trace:tdg_dependency_path_missing" not in result.reason_codes
+
+
 # ---------------------------------------------------------------------------
 # CC.7 Test 2: Session capabilities are reflected in the stage1 plan
 # ---------------------------------------------------------------------------

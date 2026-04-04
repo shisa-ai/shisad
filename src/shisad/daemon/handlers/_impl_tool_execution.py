@@ -20,6 +20,7 @@ from shisad.executors.sandbox import DegradedModePolicy, SandboxResult
 from shisad.governance.merge import PolicyMergeError, normalize_patch
 from shisad.security.control_plane.consensus import TRACE_VOTER_NAME
 from shisad.security.control_plane.schema import ControlDecision
+from shisad.security.control_plane.trace import trace_reason_requires_confirmation
 from shisad.skills.sandbox import SkillExecutionRequest
 
 logger = logging.getLogger(__name__)
@@ -291,13 +292,16 @@ class ToolExecutionImplMixin(HandlerMixinBase):
             evaluation=cp_eval,
         )
 
-        stage2_upgrade_required = (
-            cp_eval.trace_result.reason_code == "trace:stage2_upgrade_required"
-        )
-        trace_only_stage2_block = stage2_upgrade_required and not any(
+        trace_only_confirmation_block = trace_reason_requires_confirmation(
+            cp_eval.trace_result.reason_code
+        ) and not any(
             vote.decision.value == "BLOCK" and vote.voter != TRACE_VOTER_NAME
             for vote in cp_eval.consensus.votes
         )
+        stage2_upgrade_required = (
+            cp_eval.trace_result.reason_code == "trace:stage2_upgrade_required"
+        )
+        trace_only_stage2_block = stage2_upgrade_required and trace_only_confirmation_block
         if trace_only_stage2_block and not bool(
             self._policy_loader.policy.control_plane.trace.allow_amendment
         ):
@@ -316,10 +320,14 @@ class ToolExecutionImplMixin(HandlerMixinBase):
                 origin=cp_eval.action.origin.model_dump(mode="json"),
             ).model_dump(mode="json")
 
-        if trace_only_stage2_block or cp_eval.decision == ControlDecision.REQUIRE_CONFIRMATION:
+        if (
+            trace_only_confirmation_block
+            or cp_eval.decision == ControlDecision.REQUIRE_CONFIRMATION
+        ):
             reason_codes = list(cp_eval.reason_codes)
-            if trace_only_stage2_block and "trace:stage2_upgrade_required" not in reason_codes:
-                reason_codes.append("trace:stage2_upgrade_required")
+            trace_reason = cp_eval.trace_result.reason_code
+            if trace_only_confirmation_block and trace_reason not in reason_codes:
+                reason_codes.append(trace_reason)
             reason = ",".join(reason_codes) or "control_plane_confirmation_required"
             effective_caps = self._lockdown_manager.apply_capability_restrictions(
                 sid,

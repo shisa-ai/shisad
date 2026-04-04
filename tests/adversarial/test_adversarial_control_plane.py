@@ -38,7 +38,7 @@ async def test_m5_a1_compromised_planner_fs_read_then_egress_is_blocked(tmp_path
     origin = _origin("a1")
     engine.begin_precontent_plan(
         session_id=origin.session_id,
-        goal="summarize",
+        goal="read README.md and summarize it",
         origin=origin,
         ttl_seconds=600,
         max_actions=10,

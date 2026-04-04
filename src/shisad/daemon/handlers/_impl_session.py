@@ -107,6 +107,7 @@ from shisad.security.control_plane.schema import (
     infer_action_kind,
 )
 from shisad.security.control_plane.sidecar import ControlPlaneUnavailableError
+from shisad.security.control_plane.trace import trace_reason_requires_confirmation
 from shisad.security.firewall import FirewallResult
 from shisad.security.host_extraction import extract_hosts_from_text, host_patterns
 from shisad.security.intent_matching import (
@@ -1478,6 +1479,16 @@ def _blocked_action_feedback(reasons: list[str]) -> str:
         return (
             "I couldn't complete that request because it requires elevated runtime actions "
             "(for example network or write operations) that are blocked without approval."
+        )
+    if any(code == "trace:tdg_dependency_path_missing" for code in codes):
+        return (
+            "I couldn't complete that request because the proposed side-effect action "
+            "was not grounded in the committed goal or an approved prior step."
+        )
+    if any(code == "trace:tdg_confirmation_required" for code in codes):
+        return (
+            "I need explicit confirmation because the proposed read action was not "
+            "grounded in the committed goal or a prior approved step."
         )
     if any(code == "session_in_lockdown" for code in codes):
         return (
@@ -3615,12 +3626,16 @@ class SessionImplMixin(HandlerMixinBase):
                 trusted_input=validated.trusted_input,
                 raw_user_text=validated.content,
             )
-            trace_only_stage2_block = (
-                cp_eval.trace_result.reason_code == "trace:stage2_upgrade_required"
+            trace_only_confirmation_block = (
+                trace_reason_requires_confirmation(cp_eval.trace_result.reason_code)
                 and not any(
                     vote.decision.value == "BLOCK" and vote.voter != TRACE_VOTER_NAME
                     for vote in cp_eval.consensus.votes
                 )
+            )
+            trace_only_stage2_block = (
+                cp_eval.trace_result.reason_code == "trace:stage2_upgrade_required"
+                and trace_only_confirmation_block
             )
             trace_only_stage2_shell_exec = (
                 trace_only_stage2_block
@@ -3654,11 +3669,13 @@ class SessionImplMixin(HandlerMixinBase):
                 # Trace-only stage2 can route to confirmation, but only when the
                 # underlying PEP result is already confirmable or can be retried
                 # under an explicit, scoped elevation request.
-                if trace_only_stage2_block and (
+                if trace_only_confirmation_block and (
                     pep_decision.kind.value != "reject" or pep_elevation is not None
                 ):
                     final_kind = "require_confirmation"
-                    final_reason = ",".join(cp_eval.reason_codes) or "trace:stage2_upgrade_required"
+                    final_reason = (
+                        ",".join(cp_eval.reason_codes) or cp_eval.trace_result.reason_code
+                    )
                 elif pep_decision.kind.value == "reject":
                     final_kind = "reject"
                     final_reason = pep_decision.reason or "pep_reject"
@@ -3780,12 +3797,14 @@ class SessionImplMixin(HandlerMixinBase):
                     logger.debug(
                         (
                             "Trace gate decision: tool=%s action_kind=%s reason=%s "
-                            "trace_only_stage2=%s trace_only_stage2_shell_exec=%s "
+                            "trace_only_confirmation=%s trace_only_stage2=%s "
+                            "trace_only_stage2_shell_exec=%s "
                             "blocking_voters=%s"
                         ),
                         proposal.tool_name,
                         cp_eval.action.action_kind,
                         cp_eval.trace_result.reason_code,
+                        trace_only_confirmation_block,
                         trace_only_stage2_block,
                         trace_only_stage2_shell_exec,
                         [
@@ -3794,7 +3813,7 @@ class SessionImplMixin(HandlerMixinBase):
                             if vote.decision.value == "BLOCK"
                         ],
                     )
-                if not cp_eval.trace_result.allowed and not trace_only_stage2_block:
+                if not cp_eval.trace_result.allowed and not trace_only_confirmation_block:
                     await self._record_plan_violation(
                         sid=sid,
                         tool_name=proposal.tool_name,

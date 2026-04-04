@@ -379,7 +379,7 @@ def normalize_resource_ids(*, action_kind: ActionKind, arguments: dict[str, Any]
 def extract_network_hosts(arguments: dict[str, Any]) -> list[str]:
     hosts: list[str] = []
 
-    for key in ("url", "endpoint", "destination", "webhook_url"):
+    for key in ("url", "endpoint", "destination", "webhook_url", "source_url"):
         value = arguments.get(key)
         if isinstance(value, str):
             host = _host_from_token(value)

@@ -50,7 +50,7 @@ async def test_h1_control_plane_sidecar_round_trips_evaluation_and_audit_writes(
         )
         plan_hash = await handle.client.begin_precontent_plan(
             session_id="sess-h1",
-            goal="fetch example",
+            goal="fetch https://example.com",
             origin=origin,
             ttl_seconds=300,
             max_actions=5,

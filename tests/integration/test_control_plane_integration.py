@@ -144,7 +144,7 @@ async def test_m5_t13_consensus_blocks_when_high_voter_rejects(tmp_path: Path) -
     )
     engine.begin_precontent_plan(
         session_id=origin.session_id,
-        goal="summarize",
+        goal="read README.md and summarize it",
         origin=origin,
         ttl_seconds=600,
         max_actions=10,
@@ -192,7 +192,7 @@ async def test_m5_t14_end_to_end_control_plane_happy_and_compromise_paths(tmp_pa
     )
     plan_hash = engine.begin_precontent_plan(
         session_id=origin.session_id,
-        goal="summarize",
+        goal="read README.md and summarize it",
         origin=origin,
         ttl_seconds=600,
         max_actions=10,
@@ -249,7 +249,7 @@ async def test_m6_amv_tainted_session_yes_allows_side_effect(tmp_path: Path) -> 
     )
     engine.begin_precontent_plan(
         session_id=origin.session_id,
-        goal="write the status file",
+        goal="write status.txt",
         origin=origin,
         ttl_seconds=600,
         max_actions=10,
@@ -270,7 +270,9 @@ async def test_m6_amv_tainted_session_yes_allows_side_effect(tmp_path: Path) -> 
 
 
 @pytest.mark.asyncio
-async def test_m6_amv_tainted_session_no_routes_to_confirmation(tmp_path: Path) -> None:
+async def test_m6_amv_tainted_session_no_blocks_when_h4_path_is_missing(
+    tmp_path: Path,
+) -> None:
     provider = _StubMonitorProvider(
         content='{"decision":"NO","explanation":"User asked to summarize, not write files."}'
     )
@@ -299,7 +301,8 @@ async def test_m6_amv_tainted_session_no_routes_to_confirmation(tmp_path: Path) 
         trusted_input=True,
         raw_user_text="summarize docs",
     )
-    assert evaluation.decision == ControlDecision.REQUIRE_CONFIRMATION
+    assert evaluation.decision == ControlDecision.BLOCK
+    assert "trace:tdg_dependency_path_missing" in evaluation.reason_codes
     amv_vote = next(
         vote for vote in evaluation.consensus.votes if vote.voter == "ActionMonitorVoter"
     )
@@ -320,7 +323,7 @@ async def test_m6_rr2_amv_clean_session_multiline_user_text_does_not_hard_block(
     )
     engine.begin_precontent_plan(
         session_id=origin.session_id,
-        goal="read the README",
+        goal="read README.md",
         origin=origin,
         ttl_seconds=600,
         max_actions=10,
@@ -387,6 +390,151 @@ async def test_m5_t19_trace_stage2_routes_to_confirmation_not_lockdown(
         sessions = await client.call("session.list")
         row = next(item for item in sessions["sessions"] if item["id"] == sid)
         assert row["lockdown_level"] == "normal"
+    finally:
+        await _shutdown(daemon_task, client)
+
+
+@pytest.mark.asyncio
+async def test_h4_missing_path_read_routes_to_confirmation(
+    model_env: None,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _forced_unjustified_read(
+        self: Planner,
+        user_content: str,
+        context: object,
+        *,
+        tools: list[dict[str, object]] | None = None,
+        persona_tone_override: str | None = None,
+    ) -> PlannerResult:
+        _ = user_content, tools, persona_tone_override
+        proposal = ActionProposal(
+            action_id="h4-unjustified-read",
+            tool_name=ToolName("fs.read"),
+            arguments={"path": "README.md"},
+            reasoning="attempt a read with no dependency path back to the user goal",
+            data_sources=[],
+        )
+        decision = self._pep.evaluate(proposal.tool_name, proposal.arguments, context)
+        return PlannerResult(
+            output=PlannerOutput(actions=[proposal], assistant_response="read pending approval"),
+            evaluated=[EvaluatedProposal(proposal=proposal, decision=decision)],
+            attempts=1,
+            provider_response=None,
+            messages_sent=(),
+        )
+
+    monkeypatch.setattr(Planner, "propose", _forced_unjustified_read)
+
+    daemon_task, client = await _start_daemon_with_policy(
+        tmp_path,
+        policy={
+            "version": "1",
+            "default_deny": False,
+            "default_require_confirmation": False,
+            "default_capabilities": ["file.read"],
+        },
+    )
+    try:
+        created = await client.call("session.create", {"channel": "cli"})
+        sid = created["session_id"]
+        response = await client.call(
+            "session.message",
+            {"session_id": sid, "content": "say hello"},
+        )
+        assert int(response.get("blocked_actions", 0)) == 0
+        assert int(response.get("confirmation_required_actions", 0)) >= 1
+        assert response.get("lockdown_level", "normal") == "normal"
+
+        pending = await client.call(
+            "action.pending",
+            {"session_id": sid, "status": "pending", "limit": 20},
+        )
+        assert any(
+            "trace:tdg_confirmation_required" in str(item.get("reason", ""))
+            for item in pending["actions"]
+        )
+
+        violations = await client.call(
+            "audit.query",
+            {"event_type": "PlanViolationDetected", "session_id": sid, "limit": 20},
+        )
+        assert violations["total"] == 0
+    finally:
+        await _shutdown(daemon_task, client)
+
+
+@pytest.mark.asyncio
+async def test_h4_missing_path_side_effect_stays_blocked(
+    model_env: None,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target_path = str((Path.cwd() / "H4-rogue.txt").resolve())
+
+    async def _forced_unjustified_write(
+        self: Planner,
+        user_content: str,
+        context: object,
+        *,
+        tools: list[dict[str, object]] | None = None,
+        persona_tone_override: str | None = None,
+    ) -> PlannerResult:
+        _ = user_content, tools, persona_tone_override
+        proposal = ActionProposal(
+            action_id="h4-unjustified-write",
+            tool_name=ToolName("fs.write"),
+            arguments={"path": target_path, "content": "hello"},
+            reasoning="attempt a write with no dependency path back to the user goal",
+            data_sources=[],
+        )
+        decision = self._pep.evaluate(proposal.tool_name, proposal.arguments, context)
+        return PlannerResult(
+            output=PlannerOutput(actions=[proposal], assistant_response="write blocked"),
+            evaluated=[EvaluatedProposal(proposal=proposal, decision=decision)],
+            attempts=1,
+            provider_response=None,
+            messages_sent=(),
+        )
+
+    monkeypatch.setattr(Planner, "propose", _forced_unjustified_write)
+
+    daemon_task, client = await _start_daemon_with_policy(
+        tmp_path,
+        policy={
+            "version": "1",
+            "default_deny": False,
+            "default_require_confirmation": False,
+            "default_capabilities": ["file.write"],
+        },
+    )
+    try:
+        created = await client.call("session.create", {"channel": "cli"})
+        sid = created["session_id"]
+        response = await client.call(
+            "session.message",
+            {"session_id": sid, "content": "say hello"},
+        )
+        assert int(response.get("blocked_actions", 0)) == 1
+        assert int(response.get("confirmation_required_actions", 0)) == 0
+        assert response.get("lockdown_level", "normal") == "normal"
+
+        pending = await client.call(
+            "action.pending",
+            {"session_id": sid, "status": "pending", "limit": 20},
+        )
+        assert int(pending.get("count", 0)) == 0
+
+        violations = await client.call(
+            "audit.query",
+            {"event_type": "PlanViolationDetected", "session_id": sid, "limit": 20},
+        )
+        assert any(
+            str(event.get("data", {}).get("reason_code", ""))
+            == "trace:tdg_dependency_path_missing"
+            for event in violations["events"]
+        )
     finally:
         await _shutdown(daemon_task, client)
 
@@ -481,7 +629,7 @@ async def test_g2_t1_direct_structured_tool_execute_matches_session_execution_ev
 
         session_reply = await client.call(
             "session.message",
-            {"session_id": session_sid, "content": "read the pipeline note"},
+            {"session_id": session_sid, "content": "read README.md"},
         )
         assert session_reply["executed_actions"] >= 1
 
