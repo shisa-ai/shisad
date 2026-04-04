@@ -13,7 +13,7 @@ import pytest
 
 from shisad.core.api.transport import ControlClient, JsonRpcCallError
 from shisad.core.types import Capability
-from shisad.security.control_plane.schema import Origin, RiskTier
+from shisad.security.control_plane.schema import Origin, RiskTier, build_action
 from shisad.security.control_plane.sidecar import (
     ControlPlaneRpcError,
     ControlPlaneUnavailableError,
@@ -204,3 +204,50 @@ async def test_h1_control_plane_sidecar_rejects_client_when_parent_pid_mismatche
             except TimeoutError:
                 process.kill()
                 await process.wait()
+
+
+@pytest.mark.asyncio
+async def test_h3_control_plane_sidecar_round_trips_denied_action_observation(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clear_remote_provider_env(monkeypatch)
+    handle = await start_control_plane_sidecar(
+        data_dir=tmp_path / "data",
+        policy_path=tmp_path / "policy.yaml",
+    )
+    try:
+        origin = Origin(
+            session_id="sess-h3",
+            user_id="alice",
+            workspace_id="ws-h3",
+            actor="planner",
+        )
+        findings = []
+        for index in range(3):
+            findings = await handle.client.observe_denied_action(
+                action=build_action(
+                    tool_name="file.read",
+                    arguments={"path": f"/tmp/h3-{index}.txt"},
+                    origin=origin,
+                ),
+                source="policy_loop",
+                reason_code="pep:missing_capabilities",
+                reason="Missing capabilities: FILE_READ",
+            )
+            if index < 2:
+                assert findings == []
+
+        assert len(findings) == 1
+        assert findings[0].pattern_name == "phantom_capability_probe"
+
+        audit_path = tmp_path / "data" / "control_plane" / "audit.jsonl"
+        event_types = [
+            json.loads(line)["event_type"]
+            for line in audit_path.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        assert event_types.count("denied_action_observed") == 3
+        assert "phantom_action_detected" in event_types
+    finally:
+        await handle.close()

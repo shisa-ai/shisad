@@ -479,6 +479,17 @@ class TasksImplMixin(HandlerMixinBase):
                 )
 
         if final_kind == PEPDecisionKind.REJECT.value:
+            await self._observe_final_pep_reject(
+                sid=sid,
+                tool_name=_BACKGROUND_MESSAGE_SEND,
+                action=cp_eval.action,
+                final_kind=final_kind,
+                final_reason=final_reason or pep_decision.reason,
+                pep_kind=pep_decision.kind.value,
+                pep_reason=pep_decision.reason,
+                pep_reason_code=str(getattr(pep_decision, "reason_code", "")).strip(),
+                source="scheduler",
+            )
             return await self._reject_task_run(
                 sid=sid,
                 task=task,

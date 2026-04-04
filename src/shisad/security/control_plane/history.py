@@ -23,8 +23,11 @@ class ActionHistoryRecord(BaseModel, frozen=True):
     action_kind: ActionKind
     resource_id: str = ""
     tool_name: str
+    observation_kind: str = "action"
     decision_status: str = ""
     execution_status: str = ""
+    reason_code: str = ""
+    source: str = ""
 
 
 class SessionActionHistoryStore:
@@ -50,6 +53,9 @@ class SessionActionHistoryStore:
         *,
         decision_status: str = "",
         execution_status: str = "",
+        observation_kind: str = "action",
+        reason_code: str = "",
+        source: str = "",
     ) -> ActionHistoryRecord:
         record = ActionHistoryRecord(
             timestamp=action.timestamp,
@@ -58,8 +64,34 @@ class SessionActionHistoryStore:
             action_kind=action.action_kind,
             resource_id=action.resource_id,
             tool_name=action.tool_name,
+            observation_kind=observation_kind,
             decision_status=decision_status,
             execution_status=execution_status,
+            reason_code=reason_code,
+            source=source,
+        )
+        self.append(record)
+        return record
+
+    def append_denied_action(
+        self,
+        action: ControlPlaneAction,
+        *,
+        reason_code: str,
+        source: str,
+        timestamp: datetime | None = None,
+    ) -> ActionHistoryRecord:
+        record = ActionHistoryRecord(
+            timestamp=timestamp or datetime.now(UTC),
+            session_id=action.origin.session_id,
+            origin=action.origin,
+            action_kind=action.action_kind,
+            resource_id=action.resource_id,
+            tool_name=action.tool_name,
+            observation_kind="denied_action",
+            decision_status="deny",
+            reason_code=reason_code,
+            source=source,
         )
         self.append(record)
         return record
@@ -96,6 +128,7 @@ class SessionActionHistoryStore:
         window_seconds: int | None = None,
         last_n: int | None = None,
         now: datetime | None = None,
+        observation_kinds: set[str] | None = None,
     ) -> list[ActionHistoryRecord]:
         rows: list[ActionHistoryRecord]
         if window_seconds is not None:
@@ -104,12 +137,14 @@ class SessionActionHistoryStore:
             rows = self.last_n(session_id, last_n)
         else:
             rows = self.all_for_session(session_id)
+        if observation_kinds is not None:
+            rows = [row for row in rows if row.observation_kind in observation_kinds]
         return self.dedupe_for_analysis(rows)
 
     @classmethod
     def dedupe_for_analysis(cls, rows: list[ActionHistoryRecord]) -> list[ActionHistoryRecord]:
         deduped: list[ActionHistoryRecord] = []
-        seen: set[tuple[str, str, str, str]] = set()
+        seen: set[tuple[str, str, str, str, str, str]] = set()
         for row in rows:
             key = cls._analysis_key(row)
             if key in seen:
@@ -119,12 +154,14 @@ class SessionActionHistoryStore:
         return deduped
 
     @staticmethod
-    def _analysis_key(record: ActionHistoryRecord) -> tuple[str, str, str, str]:
+    def _analysis_key(record: ActionHistoryRecord) -> tuple[str, str, str, str, str, str]:
         return (
             record.timestamp.isoformat(),
             record.action_kind.value,
             record.resource_id,
             record.tool_name,
+            record.observation_kind,
+            record.reason_code,
         )
 
     def _load(self) -> None:

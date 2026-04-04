@@ -6,7 +6,7 @@ from shisad.core.tools.registry import ToolRegistry
 from shisad.core.tools.schema import ToolDefinition, ToolParameter
 from shisad.core.types import Capability, PEPDecisionKind, ToolName
 from shisad.security.pep import PEP, PolicyContext
-from shisad.security.policy import PolicyBundle, ToolPolicy
+from shisad.security.policy import EgressRule, PolicyBundle, ToolPolicy
 
 
 def _make_pep() -> tuple[PEP, ToolRegistry]:
@@ -175,3 +175,49 @@ class TestPepAllowedArgsPolicy:
         ctx = PolicyContext(capabilities={Capability.HTTP_REQUEST})
         decision = pep.evaluate(ToolName("test_tool"), {"query": "hello"}, ctx)
         assert decision.kind == PEPDecisionKind.ALLOW
+
+
+class TestPepReasonCodes:
+    """H3: structured reject reason codes for deny-signal wiring."""
+
+    def test_missing_capabilities_reject_has_reason_code(self) -> None:
+        pep, _ = _make_pep()
+        ctx = PolicyContext(capabilities=set())
+        decision = pep.evaluate(ToolName("test_tool"), {"query": "hello"}, ctx)
+        assert decision.kind == PEPDecisionKind.REJECT
+        assert decision.reason_code == "pep:missing_capabilities"
+
+    def test_tool_allowlist_reject_has_reason_code(self) -> None:
+        pep, _ = _make_pep()
+        ctx = PolicyContext(
+            capabilities={Capability.HTTP_REQUEST},
+            tool_allowlist={ToolName("different_tool")},
+        )
+        decision = pep.evaluate(ToolName("test_tool"), {"query": "hello"}, ctx)
+        assert decision.kind == PEPDecisionKind.REJECT
+        assert decision.reason_code == "pep:tool_not_permitted"
+
+    def test_unattributed_destination_reject_has_reason_code(self) -> None:
+        registry = ToolRegistry()
+        registry.register(
+            ToolDefinition(
+                name=ToolName("http_request"),
+                description="HTTP",
+                parameters=[ToolParameter(name="url", type="string", required=True)],
+                capabilities_required=[Capability.HTTP_REQUEST],
+            )
+        )
+        pep = PEP(
+            PolicyBundle(
+                default_require_confirmation=False,
+                egress=[EgressRule(host="api.allowed.com", protocols=["https"], ports=[443])],
+            ),
+            registry,
+        )
+        decision = pep.evaluate(
+            ToolName("http_request"),
+            {"url": "https://evil.example/upload"},
+            PolicyContext(capabilities={Capability.HTTP_REQUEST}),
+        )
+        assert decision.kind == PEPDecisionKind.REJECT
+        assert decision.reason_code == "pep:destination_unattributed"

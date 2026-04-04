@@ -145,7 +145,11 @@ class PEP:
         tool_name = canonical_tool_name_typed(tool_name)
         # 1. Tool allowlist check (default-deny)
         if not self._tool_registry.has_tool(tool_name):
-            return self._reject(tool_name, f"Unknown tool: {tool_name}")
+            return self._reject(
+                tool_name,
+                f"Unknown tool: {tool_name}",
+                reason_code="pep:unknown_tool",
+            )
 
         # 1.5. Per-session/policy tool allowlist
         allowed_tools = self._effective_tool_allowlist(context)
@@ -153,6 +157,7 @@ class PEP:
             return self._reject(
                 tool_name,
                 f"Tool '{tool_name}' not permitted by session/policy allowlist",
+                reason_code="pep:tool_not_permitted",
             )
 
         # 2. Schema validation
@@ -161,16 +166,25 @@ class PEP:
             return self._reject(
                 tool_name,
                 f"Schema validation failed: {'; '.join(validation_errors)}",
+                reason_code="pep:schema_validation_failed",
             )
 
         tool = self._tool_registry.get_tool(tool_name)
         if tool is None:
-            return self._reject(tool_name, f"Unknown tool: {tool_name}")
+            return self._reject(
+                tool_name,
+                f"Unknown tool: {tool_name}",
+                reason_code="pep:unknown_tool",
+            )
         tool_policy = self._policy.tools.get(tool_name)
 
         allowed_arg_error = self._check_allowed_args(tool_name, arguments, tool_policy)
         if allowed_arg_error is not None:
-            return self._reject(tool_name, allowed_arg_error)
+            return self._reject(
+                tool_name,
+                allowed_arg_error,
+                reason_code="pep:allowed_args_violation",
+            )
 
         # 3. Capability check
         missing = set(tool.capabilities_required) - context.capabilities
@@ -178,6 +192,7 @@ class PEP:
             return self._reject(
                 tool_name,
                 f"Missing capabilities: {', '.join(sorted(m.value for m in missing))}",
+                reason_code="pep:missing_capabilities",
             )
 
         # 4. Argument DLP checks (raw secrets only; do not block PII-by-default)
@@ -186,6 +201,7 @@ class PEP:
             return self._reject(
                 tool_name,
                 "Blocked by DLP policy: " + "; ".join(dlp_issues),
+                reason_code="pep:argument_dlp",
             )
 
         # 5. Object-level resource authorization checks
@@ -194,6 +210,7 @@ class PEP:
             return self._reject(
                 tool_name,
                 "Resource authorization failed: " + "; ".join(auth_issues),
+                reason_code="pep:resource_authorization_failed",
             )
 
         evidence_ref_error = self._check_evidence_ref(tool_name, arguments, context)
@@ -216,6 +233,7 @@ class PEP:
                     "Egress blocked: malformed destination URL. "
                     "Fix the destination and retry with a valid host/port."
                 ),
+                reason_code="pep:egress_malformed_destination",
             )
 
         # 6.5 Credential reference checks (host-scoped binding)
@@ -253,6 +271,7 @@ class PEP:
                         f"Egress blocked: unsupported protocol '{destination.protocol}'. "
                         "Use http(s) destinations only."
                     ),
+                    reason_code="pep:unsupported_protocol",
                 )
 
             allowlisted = self._is_egress_allowed(destination) or tool_declared_destination
@@ -280,6 +299,7 @@ class PEP:
                         f"Egress blocked: destination '{destination.host}' is an IP literal "
                         "and is not allowlisted by operator policy."
                     ),
+                    reason_code="pep:ip_literal_not_allowlisted",
                 )
             if self._looks_like_local_destination(destination.host) and not allowlisted:
                 self.egress_attempts.append(
@@ -298,6 +318,7 @@ class PEP:
                         f"Egress blocked: destination '{destination.host}' looks like a local/"
                         "private network target and is not allowlisted by operator policy."
                     ),
+                    reason_code="pep:local_destination_not_allowlisted",
                 )
 
             if tool_declared_destination:
@@ -364,6 +385,7 @@ class PEP:
                         "and was not explicitly requested by the (trusted) user goal. "
                         "If the user wants this destination, have them request it directly."
                     ),
+                    reason_code="pep:destination_unattributed",
                 )
 
         # 7. Taint sink enforcement
@@ -375,6 +397,7 @@ class PEP:
                     "Blocked by taint sink rule: "
                     f"{taint_decision.reason}. If this is unexpected, report_anomaly."
                 ),
+                reason_code="pep:taint_sink_block",
             )
 
         # 8. Risk scoring and policy-driven decision
@@ -406,6 +429,7 @@ class PEP:
                     "Choose a lower-risk path or request user confirmation. "
                     "If behavior seems malicious, call report_anomaly."
                 ),
+                reason_code="pep:risk_policy_block",
             )
 
         needs_confirmation = (
@@ -463,14 +487,23 @@ class PEP:
             return None
         ref_id = str(arguments.get("ref_id", "")).strip()
         if not ref_id:
-            return self._reject(tool_name, "invalid or unknown evidence reference")
+            return self._reject(
+                tool_name,
+                "invalid or unknown evidence reference",
+                reason_code="pep:invalid_evidence_ref",
+            )
         if self._evidence_store is None:
             return self._reject(
                 tool_name,
                 "invalid or unknown evidence reference",
+                reason_code="pep:invalid_evidence_ref",
             )
         if not self._evidence_store.validate_ref_id(context.session_id, ref_id):
-            return self._reject(tool_name, "invalid or unknown evidence reference")
+            return self._reject(
+                tool_name,
+                "invalid or unknown evidence reference",
+                reason_code="pep:invalid_evidence_ref",
+            )
         return None
 
     def _check_artifact_endorsement(
@@ -482,13 +515,25 @@ class PEP:
         if str(tool_name) != "evidence.promote":
             return None
         if self._evidence_store is None:
-            return self._reject(tool_name, "invalid or unknown evidence reference")
+            return self._reject(
+                tool_name,
+                "invalid or unknown evidence reference",
+                reason_code="pep:invalid_evidence_ref",
+            )
         ref_id = str(arguments.get("ref_id", "")).strip()
         if not ref_id:
-            return self._reject(tool_name, "invalid or unknown evidence reference")
+            return self._reject(
+                tool_name,
+                "invalid or unknown evidence reference",
+                reason_code="pep:invalid_evidence_ref",
+            )
         ref = self._evidence_store.get_ref(context.session_id, ref_id)
         if ref is None:
-            return self._reject(tool_name, "invalid or unknown evidence reference")
+            return self._reject(
+                tool_name,
+                "invalid or unknown evidence reference",
+                reason_code="pep:invalid_evidence_ref",
+            )
         if ref.endorsement_state == ArtifactEndorsementState.USER_ENDORSED:
             return None
         return PEPDecision(
@@ -625,6 +670,7 @@ class PEP:
                 return self._reject(
                     tool_name,
                     f"credential_ref '{credential_ref}' is out of scope for this task/session",
+                    reason_code="pep:credential_ref_out_of_scope",
                 )
 
         if destination is None:
@@ -641,6 +687,7 @@ class PEP:
             return self._reject(
                 tool_name,
                 "credential_ref requires explicit destination host in tool arguments",
+                reason_code="pep:credential_destination_required",
             )
 
         if not tool.destinations:
@@ -660,6 +707,7 @@ class PEP:
                     f"Tool '{tool_name}' uses credential_ref but has no declared destinations; "
                     "define tool destinations before credential use"
                 ),
+                reason_code="pep:credential_tool_destinations_missing",
             )
 
         for credential_ref in credential_refs:
@@ -676,6 +724,7 @@ class PEP:
                 return self._reject(
                     tool_name,
                     "credential_ref cannot be validated because credential store is unavailable",
+                    reason_code="pep:credential_store_unavailable",
                 )
 
             if not self._credential_store.has_credential(credential_ref):
@@ -691,6 +740,7 @@ class PEP:
                 return self._reject(
                     tool_name,
                     f"Unknown credential_ref: {credential_ref}",
+                    reason_code="pep:unknown_credential_ref",
                 )
 
             allowed_hosts = self._credential_store.allowed_hosts(credential_ref)
@@ -710,6 +760,7 @@ class PEP:
                         f"credential_ref '{credential_ref}' is not allowed for destination "
                         f"'{destination.host}'"
                     ),
+                    reason_code="pep:credential_host_mismatch",
                 )
 
             declared_destination_hosts = [
@@ -734,6 +785,7 @@ class PEP:
                         f"Destination '{destination.host}' is not declared for tool '{tool_name}' "
                         "credential use"
                     ),
+                    reason_code="pep:tool_destination_mismatch",
                 )
 
             self._record_credential_attempt(
@@ -931,9 +983,15 @@ class PEP:
         return min(score, 1.0)
 
     @staticmethod
-    def _reject(tool_name: ToolName, reason: str) -> PEPDecision:
+    def _reject(
+        tool_name: ToolName,
+        reason: str,
+        *,
+        reason_code: str = "",
+    ) -> PEPDecision:
         return PEPDecision(
             kind=PEPDecisionKind.REJECT,
             reason=reason,
+            reason_code=reason_code,
             tool_name=tool_name,
         )

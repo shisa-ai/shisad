@@ -81,6 +81,14 @@ the deferred M7 connector/skill expansion lane lives in `v0.6.4`.
 - Phantom action detection
 - Tool Dependency Graph verification
 
+Current execution note (2026-04-04): control-plane isolation, PromptGuard 2,
+and the YARA runtime-parity fix are complete. Phantom-action detection is now
+implemented on a warning-only metadata baseline: final PEP denies carry
+structured reason codes into the control-plane history/audit path, repeated
+qualifying denies raise an operator-visible warning after the configured
+threshold/window, and single denies still deny only the action without
+lockdown. TDG verification is the next `v0.6.1` lane.
+
 #### v0.6.2 — Hardware-backed approval and signing
 
 - Ledger / hardware wallet integration for high-value operations

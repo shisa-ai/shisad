@@ -1211,6 +1211,47 @@ class HandlerImplementation(
                 )
             )
 
+    async def _observe_final_pep_reject(
+        self,
+        *,
+        sid: SessionId,
+        tool_name: ToolName,
+        action: ControlPlaneAction,
+        final_kind: str,
+        final_reason: str,
+        pep_kind: str,
+        pep_reason: str,
+        pep_reason_code: str,
+        source: str,
+    ) -> None:
+        if pep_kind != "reject" or final_kind != "reject":
+            return
+        normalized_final_reason = final_reason.strip()
+        normalized_pep_reason = pep_reason.strip()
+        if normalized_final_reason not in {normalized_pep_reason, "pep_reject"}:
+            return
+        findings = await _call_control_plane(
+            self,
+            "observe_denied_action",
+            action=action,
+            source=source,
+            reason_code=pep_reason_code,
+            reason=pep_reason,
+        )
+        for finding in findings:
+            await self._event_bus.publish(
+                AnomalyReported(
+                    session_id=sid,
+                    actor="control_plane",
+                    severity="warning",
+                    description=(
+                        "Repeated denied action pattern detected: "
+                        f"{getattr(finding, 'pattern_name', 'phantom_action')}"
+                    ),
+                    recommended_action="review recent denied-action audit events",
+                )
+            )
+
     @staticmethod
     def _structured_tool_reason(tool_output: ToolOutputRecord | None) -> str:
         if tool_output is None or not tool_output.content:

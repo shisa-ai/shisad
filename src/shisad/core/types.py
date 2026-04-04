@@ -106,6 +106,7 @@ class PEPDecision(BaseModel):
 
     kind: PEPDecisionKind
     reason: str = ""
+    reason_code: str = ""
     tool_name: ToolName | None = None
     risk_score: float | None = None
     timestamp: datetime | None = None

@@ -3713,6 +3713,17 @@ class SessionImplMixin(HandlerMixinBase):
             if final_kind == "reject":
                 rejected += 1
                 rejection_reasons_for_user.append(final_reason or pep_decision.reason)
+                await self._observe_final_pep_reject(
+                    sid=sid,
+                    tool_name=proposal.tool_name,
+                    action=cp_eval.action,
+                    final_kind=final_kind,
+                    final_reason=final_reason or pep_decision.reason,
+                    pep_kind=pep_decision.kind.value,
+                    pep_reason=pep_decision.reason,
+                    pep_reason_code=str(getattr(pep_decision, "reason_code", "")).strip(),
+                    source="policy_loop",
+                )
                 await self._event_bus.publish(
                     ToolRejected(
                         session_id=sid,

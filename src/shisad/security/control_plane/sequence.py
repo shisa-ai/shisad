@@ -25,6 +25,15 @@ class SequenceFinding(BaseModel, frozen=True):
     risk_tier: RiskTier
     reason_code: str
     evidence: list[str] = Field(default_factory=list)
+    observation_count: int = 0
+
+
+class PhantomDenyRule(BaseModel, frozen=True):
+    name: str
+    reason_codes: list[str] = Field(default_factory=list)
+    threshold: int = 3
+    window_seconds: int = 120
+    risk_tier: RiskTier = RiskTier.HIGH
 
 
 DEFAULT_SEQUENCE_PATTERNS: list[SequencePattern] = [
@@ -70,8 +79,13 @@ DEFAULT_SEQUENCE_PATTERNS: list[SequencePattern] = [
 class BehavioralSequenceAnalyzer:
     """Detects suspicious action sequences using session history windows."""
 
-    def __init__(self, patterns: list[SequencePattern] | None = None) -> None:
+    def __init__(
+        self,
+        patterns: list[SequencePattern] | None = None,
+        phantom_rules: list[PhantomDenyRule] | None = None,
+    ) -> None:
         self._patterns = patterns or list(DEFAULT_SEQUENCE_PATTERNS)
+        self._phantom_rules = phantom_rules or []
 
     def analyze(
         self,
@@ -122,6 +136,51 @@ class BehavioralSequenceAnalyzer:
             )
         return findings
 
+    def analyze_denied_action(
+        self,
+        *,
+        history: SessionActionHistoryStore,
+        candidate_record: ActionHistoryRecord,
+        now: datetime | None = None,
+    ) -> list[SequenceFinding]:
+        if candidate_record.observation_kind != "denied_action":
+            return []
+        session_id = candidate_record.session_id
+        if not session_id:
+            return []
+
+        current = now or datetime.now(UTC)
+        findings: list[SequenceFinding] = []
+        for rule in self._phantom_rules:
+            if candidate_record.reason_code not in rule.reason_codes:
+                continue
+            recent = history.for_analysis(
+                session_id,
+                window_seconds=rule.window_seconds,
+                now=current,
+                observation_kinds={"denied_action"},
+            )
+            qualifying = [record for record in recent if record.reason_code in rule.reason_codes]
+            if len(qualifying) < rule.threshold:
+                continue
+            prior_count = len([record for record in qualifying if record is not candidate_record])
+            if prior_count >= rule.threshold:
+                continue
+            evidence = [
+                f"{record.action_kind.value}:{record.reason_code}:{record.tool_name}"
+                for record in qualifying[-rule.threshold :]
+            ]
+            findings.append(
+                SequenceFinding(
+                    pattern_name=rule.name,
+                    risk_tier=rule.risk_tier,
+                    reason_code=f"sequence:{rule.name}",
+                    evidence=evidence,
+                    observation_count=len(qualifying),
+                )
+            )
+        return findings
+
     @staticmethod
     def _matches_pattern(kinds: list[str], pattern: list[str]) -> bool:
         if len(kinds) < len(pattern):
@@ -150,11 +209,16 @@ class BehavioralSequenceAnalyzer:
                 session_id,
                 window_seconds=pattern.window_seconds,
                 now=now,
+                observation_kinds={"action"},
             )
         elif pattern.window_actions is not None:
-            records = history.for_analysis(session_id, last_n=pattern.window_actions)
+            records = history.for_analysis(
+                session_id,
+                last_n=pattern.window_actions,
+                observation_kinds={"action"},
+            )
         else:
-            records = history.for_analysis(session_id)
+            records = history.for_analysis(session_id, observation_kinds={"action"})
         records = list(records)
         records.append(candidate_record)
         records = history.dedupe_for_analysis(records)

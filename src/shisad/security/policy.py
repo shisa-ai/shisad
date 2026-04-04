@@ -97,6 +97,8 @@ class ControlPlaneSequencePolicy(BaseModel):
     exfil_after_read_window_actions: int = 5
     env_then_egress_window_actions: int = 3
     mass_enum_window_actions: int = 10
+    phantom_deny_threshold: int = 3
+    phantom_deny_window_seconds: int = 120
 
 
 class ControlPlaneResourcePolicy(BaseModel):

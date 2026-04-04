@@ -39,7 +39,11 @@ from shisad.security.control_plane.schema import (
     extract_request_size_bytes,
     sanitize_metadata_payload,
 )
-from shisad.security.control_plane.sequence import BehavioralSequenceAnalyzer
+from shisad.security.control_plane.sequence import (
+    BehavioralSequenceAnalyzer,
+    PhantomDenyRule,
+    SequenceFinding,
+)
 from shisad.security.control_plane.trace import ExecutionTraceVerifier, PlanVerificationResult
 
 
@@ -118,6 +122,8 @@ class ControlPlaneEngine:
         low_medium_timeout_action: str = "FLAG",
         trace_ttl_seconds: int = 1800,
         trace_max_actions: int = 10,
+        phantom_deny_threshold: int = 3,
+        phantom_deny_window_seconds: int = 120,
         consensus_policy: ConsensusPolicy | None = None,
     ) -> ControlPlaneEngine:
         control_plane_dir = data_dir / "control_plane"
@@ -127,7 +133,38 @@ class ControlPlaneEngine:
             default_ttl_seconds=trace_ttl_seconds,
             default_max_actions=trace_max_actions,
         )
-        sequence_analyzer = BehavioralSequenceAnalyzer()
+        threshold = max(1, int(phantom_deny_threshold))
+        window_seconds = max(1, int(phantom_deny_window_seconds))
+        sequence_analyzer = BehavioralSequenceAnalyzer(
+            phantom_rules=[
+                PhantomDenyRule(
+                    name="phantom_capability_probe",
+                    reason_codes=[
+                        "pep:missing_capabilities",
+                        "pep:tool_not_permitted",
+                        "pep:resource_authorization_failed",
+                    ],
+                    threshold=threshold,
+                    window_seconds=window_seconds,
+                ),
+                PhantomDenyRule(
+                    name="phantom_unattributed_egress",
+                    reason_codes=[
+                        "pep:destination_unattributed",
+                        "pep:ip_literal_not_allowlisted",
+                        "pep:local_destination_not_allowlisted",
+                    ],
+                    threshold=threshold,
+                    window_seconds=window_seconds,
+                ),
+                PhantomDenyRule(
+                    name="phantom_taint_bypass_attempt",
+                    reason_codes=["pep:taint_sink_block"],
+                    threshold=threshold,
+                    window_seconds=window_seconds,
+                ),
+            ]
+        )
         resource_monitor = ResourceAccessMonitor()
         baseline_db = BaselineDatabase(
             storage_path=str(control_plane_dir / "network_baseline.json"),
@@ -299,6 +336,55 @@ class ControlPlaneEngine:
         )
         if success:
             self._trace_verifier.record_action(session_id=action.origin.session_id)
+
+    def observe_denied_action(
+        self,
+        *,
+        action: ControlPlaneAction,
+        source: str,
+        reason_code: str,
+        reason: str,
+    ) -> list[SequenceFinding]:
+        record = self._history_store.append_denied_action(
+            action,
+            reason_code=reason_code,
+            source=source,
+        )
+        self._audit_log.append(
+            event_type="denied_action_observed",
+            session_id=action.origin.session_id,
+            actor=action.origin.actor,
+            data={
+                "tool_name": action.tool_name,
+                "action_kind": action.action_kind.value,
+                "resource_id": action.resource_id,
+                "network_hosts": list(action.network_hosts),
+                "reason_code": reason_code,
+                "reason": reason,
+                "source": source,
+            },
+        )
+        findings = self._sequence_analyzer.analyze_denied_action(
+            history=self._history_store,
+            candidate_record=record,
+        )
+        for finding in findings:
+            self._audit_log.append(
+                event_type="phantom_action_detected",
+                session_id=action.origin.session_id,
+                actor=action.origin.actor,
+                data={
+                    "pattern_name": finding.pattern_name,
+                    "risk_tier": finding.risk_tier.value,
+                    "reason_code": finding.reason_code,
+                    "observation_count": finding.observation_count,
+                    "evidence": list(finding.evidence),
+                    "trigger_tool_name": action.tool_name,
+                    "trigger_action_kind": action.action_kind.value,
+                    "source": source,
+                },
+            )
+        return findings
 
     def approve_stage2(
         self,

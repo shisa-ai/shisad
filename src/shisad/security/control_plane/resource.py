@@ -95,6 +95,7 @@ class ResourceAccessMonitor:
             session_id,
             window_seconds=self._enum_window_seconds,
             now=current,
+            observation_kinds={"action"},
         )
         recent = list(recent)
         recent.append(candidate_record)

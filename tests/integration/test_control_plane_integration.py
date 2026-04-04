@@ -563,6 +563,85 @@ async def test_g2_t1_direct_structured_tool_execute_matches_session_execution_ev
 
 
 @pytest.mark.asyncio
+async def test_h3_session_message_repeated_pep_rejects_emit_warning_without_lockdown(
+    model_env: None,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = Path.cwd() / "README.md"
+
+    async def _forced_fs_read_without_capability(
+        self: Planner,
+        user_content: str,
+        context: object,
+        *,
+        tools: list[dict[str, object]] | None = None,
+        persona_tone_override: str | None = None,
+    ) -> PlannerResult:
+        _ = user_content, tools, persona_tone_override
+        proposal = ActionProposal(
+            action_id="h3-missing-capability",
+            tool_name=ToolName("fs.read"),
+            arguments={"path": str(target)},
+            reasoning="h3 repeated deny signal",
+            data_sources=[],
+        )
+        decision = self._pep.evaluate(proposal.tool_name, proposal.arguments, context)
+        return PlannerResult(
+            output=PlannerOutput(actions=[proposal], assistant_response="read blocked"),
+            evaluated=[EvaluatedProposal(proposal=proposal, decision=decision)],
+            attempts=1,
+            provider_response=None,
+            messages_sent=(),
+        )
+
+    monkeypatch.setattr(Planner, "propose", _forced_fs_read_without_capability)
+
+    daemon_task, client = await _start_daemon_with_policy(
+        tmp_path,
+        policy={
+            "version": "1",
+            "default_require_confirmation": False,
+            "default_capabilities": [],
+        },
+    )
+    try:
+        created = await client.call("session.create", {"channel": "cli"})
+        sid = created["session_id"]
+
+        for attempt in range(3):
+            reply = await client.call(
+                "session.message",
+                {"session_id": sid, "content": "say hello"},
+            )
+            assert int(reply.get("blocked_actions", 0)) >= 1
+            anomalies = await client.call(
+                "audit.query",
+                {"event_type": "AnomalyReported", "session_id": sid, "limit": 20},
+            )
+            if attempt < 2:
+                assert len(anomalies["events"]) == 0
+
+        anomalies = await client.call(
+            "audit.query",
+            {"event_type": "AnomalyReported", "session_id": sid, "limit": 20},
+        )
+        assert len(anomalies["events"]) == 1
+        assert any(
+            "phantom_capability_probe" in str(event.get("data", {}).get("description", ""))
+            for event in anomalies["events"]
+        )
+
+        lockdowns = await client.call(
+            "audit.query",
+            {"event_type": "LockdownChanged", "session_id": sid, "limit": 20},
+        )
+        assert len(lockdowns["events"]) == 0
+    finally:
+        await _shutdown(daemon_task, client)
+
+
+@pytest.mark.asyncio
 async def test_g2_t2_direct_structured_tool_failure_preserves_policy_allow_semantics(
     model_env: None,
     tmp_path: Path,

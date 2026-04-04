@@ -33,6 +33,7 @@ from shisad.core.types import Capability
 from shisad.security.control_plane.consensus import ConsensusPolicy
 from shisad.security.control_plane.engine import ControlPlaneEngine, ControlPlaneEvaluation
 from shisad.security.control_plane.schema import ControlPlaneAction, Origin, RiskTier
+from shisad.security.control_plane.sequence import SequenceFinding
 from shisad.security.policy import PolicyLoader
 
 logger = logging.getLogger(__name__)
@@ -94,6 +95,15 @@ class ControlPlaneGateway(Protocol):
     ) -> ControlPlaneEvaluation: ...
 
     async def record_execution(self, *, action: ControlPlaneAction, success: bool) -> None: ...
+
+    async def observe_denied_action(
+        self,
+        *,
+        action: ControlPlaneAction,
+        source: str,
+        reason_code: str,
+        reason: str,
+    ) -> list[SequenceFinding]: ...
 
     async def approve_stage2(
         self,
@@ -175,6 +185,17 @@ class _ApproveStage2Params(BaseModel):
     approved_by: str
 
 
+class _ObserveDeniedActionParams(BaseModel):
+    action: ControlPlaneAction
+    source: str
+    reason_code: str
+    reason: str
+
+
+class _ObserveDeniedActionResult(BaseModel):
+    findings: list[SequenceFinding] = Field(default_factory=list)
+
+
 class _CancelPlanParams(BaseModel):
     session_id: str
     reason: str
@@ -231,6 +252,10 @@ def _build_control_plane_engine(*, data_dir: Path, policy_path: Path) -> Control
         low_medium_timeout_action=control_plane_policy.network.low_medium_timeout_action,
         trace_ttl_seconds=int(control_plane_policy.trace.ttl_seconds),
         trace_max_actions=int(control_plane_policy.trace.max_actions),
+        phantom_deny_threshold=int(control_plane_policy.sequence.phantom_deny_threshold),
+        phantom_deny_window_seconds=int(
+            control_plane_policy.sequence.phantom_deny_window_seconds
+        ),
         consensus_policy=ConsensusPolicy(
             required_approvals_low=int(control_plane_policy.consensus.required_approvals_low),
             required_approvals_medium=int(control_plane_policy.consensus.required_approvals_medium),
@@ -302,6 +327,21 @@ class _ControlPlaneSidecarHandlers:
         _ = ctx
         self._engine.record_execution(action=params.action, success=params.success)
         return _AckResult()
+
+    async def handle_observe_denied_action(
+        self,
+        params: _ObserveDeniedActionParams,
+        ctx: RequestContext,
+    ) -> _ObserveDeniedActionResult:
+        _ = ctx
+        return _ObserveDeniedActionResult(
+            findings=self._engine.observe_denied_action(
+                action=params.action,
+                source=params.source,
+                reason_code=params.reason_code,
+                reason=params.reason,
+            )
+        )
 
     async def handle_approve_stage2(
         self,
@@ -435,6 +475,26 @@ class ControlPlaneSidecarClient(ControlPlaneGateway):
             _RecordExecutionParams(action=action, success=success).model_dump(mode="json"),
             _AckResult,
         )
+
+    async def observe_denied_action(
+        self,
+        *,
+        action: ControlPlaneAction,
+        source: str,
+        reason_code: str,
+        reason: str,
+    ) -> list[SequenceFinding]:
+        result = await self._call(
+            "control_plane.observe_denied_action",
+            _ObserveDeniedActionParams(
+                action=action,
+                source=source,
+                reason_code=reason_code,
+                reason=reason,
+            ).model_dump(mode="json"),
+            _ObserveDeniedActionResult,
+        )
+        return list(result.findings)
 
     async def approve_stage2(
         self,
@@ -681,6 +741,11 @@ async def _run_sidecar(
         "control_plane.record_execution",
         cast(Any, handlers.handle_record_execution),
         params_model=_RecordExecutionParams,
+    )
+    server.register_method(
+        "control_plane.observe_denied_action",
+        cast(Any, handlers.handle_observe_denied_action),
+        params_model=_ObserveDeniedActionParams,
     )
     server.register_method(
         "control_plane.approve_stage2",

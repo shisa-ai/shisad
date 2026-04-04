@@ -28,6 +28,7 @@ from shisad.security.control_plane.consensus import (
     VoteKind,
     VoterDecision,
 )
+from shisad.security.control_plane.engine import ControlPlaneEngine
 from shisad.security.control_plane.history import ActionHistoryRecord, SessionActionHistoryStore
 from shisad.security.control_plane.network import (
     BaselineDatabase,
@@ -212,6 +213,73 @@ def test_m5_t2_sequence_detects_rapid_fire_pattern() -> None:
     )
     findings = analyzer.analyze(history=history, candidate_action=candidate, now=base)
     assert any(item.pattern_name == "rapid_fire" for item in findings)
+
+
+def test_h3_phantom_action_threshold_crossing_emits_single_finding(tmp_path) -> None:
+    engine = ControlPlaneEngine.build(data_dir=tmp_path / "cp-h3-threshold")
+    origin = _origin("h3-threshold")
+
+    findings = []
+    for index in range(3):
+        findings = engine.observe_denied_action(
+            action=build_action(
+                tool_name="file.read",
+                arguments={"path": f"/tmp/secret-{index}.txt"},
+                origin=origin,
+            ),
+            source="policy_loop",
+            reason_code="pep:missing_capabilities",
+            reason="Missing capabilities: FILE_READ",
+        )
+        if index < 2:
+            assert findings == []
+
+    assert len(findings) == 1
+    assert findings[0].pattern_name == "phantom_capability_probe"
+    assert findings[0].reason_code == "sequence:phantom_capability_probe"
+    assert findings[0].observation_count == 3
+
+    deny_rows = engine.audit.query(
+        event_type="denied_action_observed",
+        session_id=origin.session_id,
+    )
+    phantom_rows = engine.audit.query(
+        event_type="phantom_action_detected",
+        session_id=origin.session_id,
+    )
+    assert len(deny_rows) == 3
+    assert len(phantom_rows) == 1
+    assert phantom_rows[0]["data"]["pattern_name"] == "phantom_capability_probe"
+    assert phantom_rows[0]["data"]["observation_count"] == 3
+
+
+def test_h3_nonqualifying_denies_do_not_emit_phantom_signal(tmp_path) -> None:
+    engine = ControlPlaneEngine.build(data_dir=tmp_path / "cp-h3-filter")
+    origin = _origin("h3-filter")
+
+    for index in range(4):
+        findings = engine.observe_denied_action(
+            action=build_action(
+                tool_name="file.read",
+                arguments={"path": f"/tmp/schema-{index}.txt"},
+                origin=origin,
+            ),
+            source="policy_loop",
+            reason_code="pep:schema_validation_failed",
+            reason="Schema validation failed: missing path",
+        )
+        assert findings == []
+
+    deny_rows = engine.audit.query(
+        event_type="denied_action_observed",
+        session_id=origin.session_id,
+    )
+    phantom_rows = engine.audit.query(
+        event_type="phantom_action_detected",
+        session_id=origin.session_id,
+    )
+    assert len(deny_rows) == 4
+    assert phantom_rows == []
 
 
 def test_m5_t3_resource_monitor_detects_credential_access() -> None:
