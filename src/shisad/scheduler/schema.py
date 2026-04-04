@@ -48,6 +48,7 @@ class TaskEnvelope(BaseModel):
     credential_refs: tuple[str, ...] = ()
     resource_scope_ids: tuple[str, ...] = ()
     resource_scope_prefixes: tuple[str, ...] = ()
+    resource_scope_authority: str = ""
     untrusted_payload_action: str = "require_confirmation"
 
     @model_validator(mode="before")
@@ -72,6 +73,10 @@ class TaskEnvelope(BaseModel):
         payload["resource_scope_prefixes"] = _normalized_sequence(
             payload.get("resource_scope_prefixes", ())
         )
+        authority = str(payload.get("resource_scope_authority", "")).strip().lower()
+        if authority not in {"", "command_clean"}:
+            authority = ""
+        payload["resource_scope_authority"] = authority
         action = (
             str(payload.get("untrusted_payload_action", "require_confirmation")).strip().lower()
         )
@@ -128,6 +133,7 @@ class ScheduledTask(BaseModel):
                 "credential_refs": [],
                 "resource_scope_ids": [],
                 "resource_scope_prefixes": [],
+                "resource_scope_authority": "",
                 "untrusted_payload_action": "require_confirmation",
             }
         return payload
@@ -153,6 +159,7 @@ class ScheduledTask(BaseModel):
                 "credential_refs": sorted(self.task_envelope.credential_refs),
                 "resource_scope_ids": sorted(self.task_envelope.resource_scope_ids),
                 "resource_scope_prefixes": sorted(self.task_envelope.resource_scope_prefixes),
+                "resource_scope_authority": self.task_envelope.resource_scope_authority,
                 "untrusted_payload_action": self.task_envelope.untrusted_payload_action,
             },
             "allowed_recipients": sorted(self.allowed_recipients),

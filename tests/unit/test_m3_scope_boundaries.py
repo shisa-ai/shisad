@@ -339,12 +339,14 @@ def test_m3_task_envelope_tracks_scope_fields_and_normalizes_duplicates() -> Non
         credential_refs=["mail_read", "mail_read", "mail_send"],
         resource_scope_ids=["thread:ops", "thread:ops"],
         resource_scope_prefixes=["artifact:task:", "artifact:task:"],
+        resource_scope_authority="COMMAND_CLEAN",
         untrusted_payload_action="reject",
     )
 
     assert envelope.credential_refs == ("mail_read", "mail_send")
     assert envelope.resource_scope_ids == ("thread:ops",)
     assert envelope.resource_scope_prefixes == ("artifact:task:",)
+    assert envelope.resource_scope_authority == "command_clean"
     assert envelope.untrusted_payload_action == "reject"
 
 
@@ -372,7 +374,25 @@ def test_m3_scheduler_commitment_hash_binds_scope_envelope_fields() -> None:
         resource_scope_ids=["thread:ops"],
         untrusted_payload_action="reject",
     )
+    command_scoped = scheduler.create_task(
+        name="ops-reminder",
+        goal="Ping ops",
+        schedule=Schedule.from_event("message.received"),
+        capability_snapshot={Capability.MESSAGE_SEND},
+        policy_snapshot_ref="p1",
+        created_by=UserId("alice"),
+        credential_refs=["mail_read"],
+        resource_scope_ids=["thread:ops"],
+        untrusted_payload_action="require_confirmation",
+    )
+    command_scoped.task_envelope = TaskEnvelope.model_validate(
+        {
+            **command_scoped.task_envelope.model_dump(mode="json"),
+            "resource_scope_authority": "command_clean",
+        }
+    )
 
     assert base.task_envelope.untrusted_payload_action == "require_confirmation"
     assert hardened.task_envelope.untrusted_payload_action == "reject"
     assert base.commitment_hash() != hardened.commitment_hash()
+    assert base.commitment_hash() != command_scoped.commitment_hash()

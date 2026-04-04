@@ -20,6 +20,7 @@ from shisad.security.control_plane.schema import (
     Origin,
     RiskTier,
     action_kinds_for_capabilities,
+    normalize_workspace_path,
 )
 from shisad.security.host_extraction import extract_hosts_from_text, host_patterns
 
@@ -105,6 +106,15 @@ _GOAL_BARE_FILE_NAMES: frozenset[str] = frozenset(
         "MAKEFILE",
     }
 )
+_WORKSPACE_ROOT_MARKER = "workspace_root:"
+_WORKSPACE_ROOT_GOAL_HINTS_RE = re.compile(
+    r"\b("
+    r"current folder|current directory|working directory|folder you're in|directory you're in|"
+    r"git status|git diff|git log|repo status|repo diff|repo log|repository status|"
+    r"repository diff|repository log"
+    r")\b",
+    re.IGNORECASE,
+)
 
 
 def trace_reason_requires_confirmation(reason_code: str) -> bool:
@@ -117,6 +127,7 @@ class CommittedPlan(BaseModel):
     allowed_actions: set[ActionKind] = Field(default_factory=set)
     allowed_resources: set[str] = Field(default_factory=set)
     goal_resource_patterns: set[str] = Field(default_factory=set)
+    declared_resource_roots: set[str] = Field(default_factory=set)
     reachable_resources: set[str] = Field(default_factory=set)
     forbidden_actions: set[ActionKind] = Field(default_factory=set)
     max_actions: int = 10
@@ -144,10 +155,14 @@ class ExecutionTraceVerifier:
         storage_path: Path | None = None,
         default_ttl_seconds: int = 1800,
         default_max_actions: int = 10,
+        workspace_roots: list[Path] | None = None,
     ) -> None:
         self._storage_path = storage_path
         self._default_ttl_seconds = default_ttl_seconds
         self._default_max_actions = default_max_actions
+        self._workspace_roots = [
+            item.expanduser().resolve(strict=False) for item in (workspace_roots or [Path.cwd()])
+        ]
         self._plans: dict[str, CommittedPlan] = {}
         self._load()
 
@@ -160,6 +175,7 @@ class ExecutionTraceVerifier:
         ttl_seconds: int | None = None,
         max_actions: int | None = None,
         capabilities: set[Capability] | None = None,
+        declared_resource_roots: set[str] | None = None,
     ) -> CommittedPlan:
         _ = origin
         now = datetime.now(UTC)
@@ -167,12 +183,16 @@ class ExecutionTraceVerifier:
         max_allowed = max_actions or self._default_max_actions
         allowed_actions = self._stage1_allowed_actions(goal, capabilities=capabilities)
         goal_resource_patterns = self._goal_resource_patterns(goal)
+        normalized_declared_roots = self._normalize_declared_resource_roots(
+            declared_resource_roots or set()
+        )
 
         plan = self._commit_plan(
             session_id=session_id,
             allowed_actions=allowed_actions,
             allowed_resources=set(),
             goal_resource_patterns=goal_resource_patterns,
+            declared_resource_roots=normalized_declared_roots,
             forbidden_actions=set(),
             max_actions=max_allowed,
             committed_at=now,
@@ -335,6 +355,7 @@ class ExecutionTraceVerifier:
             allowed_actions=set(current.allowed_actions) | set(allow_actions),
             allowed_resources=set(current.allowed_resources) | set(allow_resources),
             goal_resource_patterns=set(current.goal_resource_patterns),
+            declared_resource_roots=set(current.declared_resource_roots),
             forbidden_actions=set(current.forbidden_actions) - set(allow_actions),
             max_actions=current.max_actions,
             committed_at=now,
@@ -354,6 +375,7 @@ class ExecutionTraceVerifier:
         allowed_actions: set[ActionKind],
         allowed_resources: set[str],
         goal_resource_patterns: set[str],
+        declared_resource_roots: set[str],
         forbidden_actions: set[ActionKind],
         max_actions: int,
         committed_at: datetime,
@@ -366,6 +388,7 @@ class ExecutionTraceVerifier:
             "allowed_actions": sorted(item.value for item in allowed_actions),
             "allowed_resources": sorted(allowed_resources),
             "goal_resource_patterns": sorted(goal_resource_patterns),
+            "declared_resource_roots": sorted(declared_resource_roots),
             "forbidden_actions": sorted(item.value for item in forbidden_actions),
             "max_actions": max_actions,
             "committed_at": committed_at.isoformat(),
@@ -381,6 +404,7 @@ class ExecutionTraceVerifier:
             allowed_actions=set(allowed_actions),
             allowed_resources=set(allowed_resources),
             goal_resource_patterns=set(goal_resource_patterns),
+            declared_resource_roots=set(declared_resource_roots),
             forbidden_actions=set(forbidden_actions),
             max_actions=max_actions,
             committed_at=committed_at,
@@ -410,6 +434,7 @@ class ExecutionTraceVerifier:
     def _goal_resource_patterns(self, goal: str) -> set[str]:
         patterns = host_patterns(extract_hosts_from_text(goal))
         patterns.update(self._extract_goal_path_patterns(goal))
+        patterns.update(self._goal_workspace_root_patterns(goal))
         return patterns
 
     def _tdg_reason(self, *, plan: CommittedPlan, action: ControlPlaneAction) -> str:
@@ -420,10 +445,11 @@ class ExecutionTraceVerifier:
             return ""
         dependency_roots = (
             set(plan.goal_resource_patterns)
+            | set(plan.declared_resource_roots)
             | set(plan.reachable_resources)
             | set(plan.allowed_resources)
         )
-        if self._has_dependency_path(candidate_resources, dependency_roots):
+        if self._all_resources_grounded(candidate_resources, dependency_roots):
             return ""
         if self._tdg_read_like_action(action):
             return _TDG_CONFIRMATION_REASON
@@ -441,16 +467,18 @@ class ExecutionTraceVerifier:
             return True
         return action.action_kind in _TDG_READ_LIKE_ACTION_KINDS
 
-    def _has_dependency_path(
+    def _all_resources_grounded(
         self,
         candidate_resources: list[str],
         dependency_roots: set[str],
     ) -> bool:
         for candidate in candidate_resources:
-            for root in dependency_roots:
-                if self._resource_matches(root=root, candidate=candidate):
-                    return True
-        return False
+            if not any(
+                self._resource_matches(root=root, candidate=candidate)
+                for root in dependency_roots
+            ):
+                return False
+        return True
 
     @staticmethod
     def _resource_matches(*, root: str, candidate: str) -> bool:
@@ -458,6 +486,9 @@ class ExecutionTraceVerifier:
         normalized_candidate = candidate.strip()
         if not normalized_root or not normalized_candidate:
             return False
+        if normalized_root.startswith(_WORKSPACE_ROOT_MARKER):
+            exact_root = normalized_root.removeprefix(_WORKSPACE_ROOT_MARKER).strip()
+            return normalized_candidate == exact_root
         if any(char in normalized_root for char in "*?[]"):
             return fnmatch.fnmatch(normalized_candidate.lower(), normalized_root.lower())
         if ExecutionTraceVerifier._looks_like_path_resource(normalized_root) and (
@@ -473,7 +504,10 @@ class ExecutionTraceVerifier:
             candidate_name = Path(candidate_prefix).name
             if root_name and candidate_name and "." not in root_name:
                 candidate_stem = Path(candidate_name).stem
-                return candidate_stem.lower() == root_name.lower()
+                return (
+                    candidate_stem.lower() == root_name.lower()
+                    and Path(candidate_prefix).parent == Path(root_prefix).parent
+                )
             return False
         return normalized_candidate.lower() == normalized_root.lower()
 
@@ -495,6 +529,29 @@ class ExecutionTraceVerifier:
                 patterns.add(normalized)
         return patterns
 
+    def _goal_workspace_root_patterns(self, goal: str) -> set[str]:
+        if not _WORKSPACE_ROOT_GOAL_HINTS_RE.search(goal):
+            return set()
+        if not self._workspace_roots:
+            return set()
+        return {f"{_WORKSPACE_ROOT_MARKER}{self._workspace_roots[0]}"}
+
+    def _normalize_declared_resource_roots(self, roots: set[str]) -> set[str]:
+        normalized: set[str] = set()
+        for raw in roots:
+            value = self._normalize_declared_resource_root(raw)
+            if value:
+                normalized.add(value)
+        return normalized
+
+    def _normalize_declared_resource_root(self, raw: str) -> str:
+        value = str(raw).strip()
+        if not value:
+            return ""
+        if self._looks_like_path_resource(value) or self._looks_like_goal_path_token(value):
+            return normalize_workspace_path(value, workspace_roots=self._workspace_roots)
+        return value.lower()
+
     @staticmethod
     def _looks_like_goal_path_token(token: str) -> bool:
         if not token or "://" in token or "@" in token:
@@ -508,12 +565,8 @@ class ExecutionTraceVerifier:
             return True
         return suffix in _GOAL_LOCAL_FILE_EXTENSIONS
 
-    @staticmethod
-    def _normalize_goal_path(token: str) -> str:
-        try:
-            return str(Path(token).expanduser().resolve(strict=False))
-        except (OSError, RuntimeError, ValueError):
-            return token.strip()
+    def _normalize_goal_path(self, token: str) -> str:
+        return normalize_workspace_path(token, workspace_roots=self._workspace_roots)
 
     def _persist(self) -> None:
         if self._storage_path is None:

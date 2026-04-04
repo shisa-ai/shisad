@@ -94,7 +94,7 @@ from shisad.daemon.handlers._pending_approval import (
     capability_elevation_for_missing_capabilities,
     pep_arguments_for_policy_evaluation,
 )
-from shisad.daemon.handlers._task_scope import task_resource_authorizer
+from shisad.daemon.handlers._task_scope import task_declared_tdg_roots, task_resource_authorizer
 from shisad.governance.merge import PolicyMergeError
 from shisad.memory.ingestion import IngestionPipeline
 from shisad.memory.schema import MemorySource
@@ -3259,6 +3259,7 @@ class SessionImplMixin(HandlerMixinBase):
             ttl_seconds=int(trace_policy.ttl_seconds),
             max_actions=int(trace_policy.max_actions),
             capabilities=effective_caps,
+            declared_resource_roots=list(task_declared_tdg_roots(task_envelope)),
         )
         if previous_plan_hash:
             await self._event_bus.publish(
@@ -4183,6 +4184,7 @@ class SessionImplMixin(HandlerMixinBase):
         self,
         *,
         params: Mapping[str, Any],
+        validated: SessionMessageValidationResult,
         parent_session: Session,
         parent_capabilities: set[Capability],
         default_description: str,
@@ -4353,6 +4355,17 @@ class SessionImplMixin(HandlerMixinBase):
             credential_refs=credential_refs,
             resource_scope_ids=resource_scope_ids,
             resource_scope_prefixes=resource_scope_prefixes,
+            resource_scope_authority=(
+                "command_clean"
+                if (
+                    parent_session.role == SessionRole.ORCHESTRATOR
+                    and parent_session.mode == SessionMode.DEFAULT
+                    and _task_command_context_status(parent_session) == "clean"
+                    and validated.trusted_input
+                    and not validated.is_internal_ingress
+                )
+                else ""
+            ),
             untrusted_payload_action="require_confirmation",
         )
 
@@ -5405,6 +5418,7 @@ class SessionImplMixin(HandlerMixinBase):
             return validated.early_response
         task_request = self._task_request_from_params(
             params=params,
+            validated=validated,
             parent_session=validated.session,
             parent_capabilities=self._effective_session_capabilities(
                 session_id=validated.sid,

@@ -79,6 +79,7 @@ class ControlPlaneGateway(Protocol):
         ttl_seconds: int,
         max_actions: int,
         capabilities: set[Capability] | None = None,
+        declared_resource_roots: list[str] | None = None,
     ) -> str: ...
 
     async def evaluate_action(
@@ -157,6 +158,7 @@ class _BeginPrecontentPlanParams(BaseModel):
     ttl_seconds: int
     max_actions: int
     capabilities: list[Capability] = Field(default_factory=list)
+    declared_resource_roots: list[str] = Field(default_factory=list)
 
 
 class _EvaluateActionParams(BaseModel):
@@ -234,7 +236,12 @@ def _build_sidecar_monitor_provider() -> MonitorProviderAdapter | None:
     return MonitorProviderAdapter(provider)
 
 
-def _build_control_plane_engine(*, data_dir: Path, policy_path: Path) -> ControlPlaneEngine:
+def _build_control_plane_engine(
+    *,
+    data_dir: Path,
+    policy_path: Path,
+    workspace_roots: list[Path] | None = None,
+) -> ControlPlaneEngine:
     policy_loader = PolicyLoader(policy_path)
     policy_loader.load()
     control_plane_policy = policy_loader.policy.control_plane
@@ -254,6 +261,7 @@ def _build_control_plane_engine(*, data_dir: Path, policy_path: Path) -> Control
         phantom_deny_window_seconds=int(
             control_plane_policy.sequence.phantom_deny_window_seconds
         ),
+        workspace_roots=workspace_roots,
         consensus_policy=ConsensusPolicy(
             required_approvals_low=int(control_plane_policy.consensus.required_approvals_low),
             required_approvals_medium=int(control_plane_policy.consensus.required_approvals_medium),
@@ -294,6 +302,7 @@ class _ControlPlaneSidecarHandlers:
             ttl_seconds=params.ttl_seconds,
             max_actions=params.max_actions,
             capabilities=set(params.capabilities),
+            declared_resource_roots=set(params.declared_resource_roots),
         )
         return _PlanHashResult(plan_hash=plan_hash)
 
@@ -423,6 +432,7 @@ class ControlPlaneSidecarClient(ControlPlaneGateway):
         ttl_seconds: int,
         max_actions: int,
         capabilities: set[Capability] | None = None,
+        declared_resource_roots: list[str] | None = None,
     ) -> str:
         result = await self._call(
             "control_plane.begin_precontent_plan",
@@ -433,6 +443,7 @@ class ControlPlaneSidecarClient(ControlPlaneGateway):
                 ttl_seconds=ttl_seconds,
                 max_actions=max_actions,
                 capabilities=sorted(capabilities or set(), key=str),
+                declared_resource_roots=list(declared_resource_roots or ()),
             ).model_dump(mode="json"),
             _PlanHashResult,
         )
@@ -620,6 +631,7 @@ async def start_control_plane_sidecar(
     *,
     data_dir: Path,
     policy_path: Path,
+    assistant_fs_roots: list[Path] | None = None,
 ) -> ControlPlaneSidecarHandle:
     socket_path = data_dir / "control_plane" / "sidecar.sock"
     socket_path.parent.mkdir(parents=True, exist_ok=True)
@@ -635,6 +647,11 @@ async def start_control_plane_sidecar(
         str(policy_path),
         "--parent-pid",
         str(os.getpid()),
+        *[
+            token
+            for root in (assistant_fs_roots or [])
+            for token in ("--assistant-fs-root", str(root))
+        ],
     )
     handle = ControlPlaneSidecarHandle(
         socket_path=socket_path,
@@ -696,9 +713,14 @@ async def _run_sidecar(
     data_dir: Path,
     policy_path: Path,
     parent_pid: int,
+    assistant_fs_roots: list[Path] | None = None,
 ) -> None:
     setup_logging(level=os.getenv("SHISAD_LOG_LEVEL", "INFO"))
-    engine = _build_control_plane_engine(data_dir=data_dir, policy_path=policy_path)
+    engine = _build_control_plane_engine(
+        data_dir=data_dir,
+        policy_path=policy_path,
+        workspace_roots=assistant_fs_roots,
+    )
     server = ControlServer(
         socket_path,
         peer_authorizer=lambda _method_name, peer: _is_authorized_sidecar_peer(
@@ -788,6 +810,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--data-dir", required=True)
     parser.add_argument("--policy-path", required=True)
     parser.add_argument("--parent-pid", type=int, default=0)
+    parser.add_argument("--assistant-fs-root", action="append", default=[])
     return parser.parse_args(argv)
 
 
@@ -800,6 +823,7 @@ def main(argv: list[str] | None = None) -> int:
                 data_dir=Path(args.data_dir),
                 policy_path=Path(args.policy_path),
                 parent_pid=int(args.parent_pid),
+                assistant_fs_roots=[Path(item) for item in args.assistant_fs_root],
             )
         )
     except KeyboardInterrupt:

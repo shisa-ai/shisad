@@ -273,10 +273,16 @@ def build_action(
     arguments: dict[str, Any],
     origin: Origin,
     risk_tier: RiskTier = RiskTier.LOW,
+    workspace_roots: list[Path] | None = None,
 ) -> ControlPlaneAction:
     canonical_tool = _canonical_tool_name(tool_name)
     action_kind = infer_action_kind(canonical_tool, arguments)
-    resource_ids = normalize_resource_ids(action_kind=action_kind, arguments=arguments)
+    resource_ids = normalize_resource_ids(
+        action_kind=action_kind,
+        tool_name=canonical_tool,
+        arguments=arguments,
+        workspace_roots=workspace_roots,
+    )
     network_hosts = extract_network_hosts(arguments)
     primary_resource = (
         resource_ids[0] if resource_ids else (network_hosts[0] if network_hosts else "")
@@ -332,24 +338,54 @@ def infer_action_kind(tool_name: str, arguments: dict[str, Any]) -> ActionKind:
     return ActionKind.UNKNOWN
 
 
-def normalize_resource_ids(*, action_kind: ActionKind, arguments: dict[str, Any]) -> list[str]:
+def normalize_resource_ids(
+    *,
+    action_kind: ActionKind,
+    tool_name: str = "",
+    arguments: dict[str, Any],
+    workspace_roots: list[Path] | None = None,
+) -> list[str]:
     resources: list[str] = []
     if action_kind in {ActionKind.FS_READ, ActionKind.FS_WRITE, ActionKind.FS_LIST}:
         for key in ("read_paths", "write_paths"):
             value = arguments.get(key)
             if isinstance(value, list):
                 for item in value:
-                    normalized = _normalize_path(str(item))
+                    normalized = normalize_workspace_path(
+                        str(item),
+                        workspace_roots=workspace_roots,
+                    )
                     if normalized:
                         resources.append(normalized)
-        for key in ("path", "file_path", "output_path", "target_path", "cwd"):
+        for key in ("path", "file_path", "output_path", "target_path", "cwd", "repo_path"):
             value = arguments.get(key)
             if isinstance(value, str) and value.strip():
-                normalized = _normalize_path(value)
+                normalized = normalize_workspace_path(
+                    value,
+                    workspace_roots=workspace_roots,
+                )
+                if normalized:
+                    resources.append(normalized)
+        if not resources:
+            implicit_workspace_target = _implicit_workspace_target(
+                action_kind=action_kind,
+                tool_name=tool_name,
+            )
+            if implicit_workspace_target:
+                normalized = normalize_workspace_path(
+                    implicit_workspace_target,
+                    workspace_roots=workspace_roots,
+                )
                 if normalized:
                     resources.append(normalized)
     elif action_kind in {ActionKind.EGRESS, ActionKind.BROWSER_READ, ActionKind.BROWSER_WRITE}:
-        resources.extend(extract_network_hosts(arguments))
+        resources.extend(
+            extract_tdg_resource_ids(
+                action_kind=action_kind,
+                tool_name=tool_name,
+                arguments=arguments,
+            )
+        )
     elif action_kind == ActionKind.ENV_ACCESS:
         env_obj = arguments.get("env")
         if isinstance(env_obj, dict):
@@ -402,6 +438,53 @@ def extract_network_hosts(arguments: dict[str, Any]) -> list[str]:
     for host in hosts:
         lowered = host.lower()
         if lowered not in seen:
+            deduped.append(lowered)
+            seen.add(lowered)
+    return deduped
+
+
+def extract_tdg_resource_ids(
+    *,
+    action_kind: ActionKind,
+    tool_name: str,
+    arguments: dict[str, Any],
+) -> list[str]:
+    resources: list[str] = []
+
+    if action_kind == ActionKind.EGRESS:
+        for key in ("url", "endpoint", "destination", "webhook_url"):
+            value = arguments.get(key)
+            if isinstance(value, str):
+                host = _host_from_token(value)
+                if host:
+                    resources.append(host)
+        value = arguments.get("network_urls")
+        if isinstance(value, list):
+            for item in value:
+                host = _host_from_token(str(item))
+                if host:
+                    resources.append(host)
+        command = arguments.get("command")
+        if isinstance(command, list):
+            resources.extend(_extract_hosts_from_command_tokens(command))
+    elif action_kind in {ActionKind.BROWSER_READ, ActionKind.BROWSER_WRITE}:
+        destination = _host_from_token(str(arguments.get("destination", "")))
+        if destination:
+            resources.append(destination)
+        elif tool_name == "browser.navigate":
+            host = _host_from_token(str(arguments.get("url", "")))
+            if host:
+                resources.append(host)
+        else:
+            source = _host_from_token(str(arguments.get("source_url", "")))
+            if source:
+                resources.append(source)
+
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for item in resources:
+        lowered = item.strip().lower()
+        if lowered and lowered not in seen:
             deduped.append(lowered)
             seen.add(lowered)
     return deduped
@@ -467,14 +550,33 @@ def sanitize_metadata_payload(payload: dict[str, Any]) -> dict[str, Any]:
     return cleaned
 
 
-def _normalize_path(value: str) -> str:
+def normalize_workspace_path(value: str, *, workspace_roots: list[Path] | None = None) -> str:
     text = value.strip()
     if not text:
         return ""
     try:
-        return str(Path(text).expanduser().resolve(strict=False))
+        roots = _normalized_workspace_roots(workspace_roots)
+        candidate = Path(text).expanduser()
+        if not candidate.is_absolute():
+            candidate = roots[0] / candidate
+        return str(candidate.resolve(strict=False))
     except (OSError, RuntimeError, ValueError):
         return text
+
+
+def _normalized_workspace_roots(workspace_roots: list[Path] | None) -> list[Path]:
+    roots = [item.expanduser().resolve(strict=False) for item in (workspace_roots or [])]
+    if roots:
+        return roots
+    return [Path.cwd().expanduser().resolve(strict=False)]
+
+
+def _implicit_workspace_target(*, action_kind: ActionKind, tool_name: str) -> str:
+    if action_kind == ActionKind.FS_LIST:
+        return "."
+    if tool_name in {"git.status", "git.diff", "git.log"}:
+        return "."
+    return ""
 
 
 def _host_from_token(token: str) -> str:

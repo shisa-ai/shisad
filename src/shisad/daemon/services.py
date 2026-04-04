@@ -428,6 +428,7 @@ class DaemonServices:
             control_plane_sidecar = await start_control_plane_sidecar(
                 data_dir=config.data_dir,
                 policy_path=config.policy_path,
+                assistant_fs_roots=list(config.assistant_fs_roots),
             )
             control_plane = control_plane_sidecar.client
 

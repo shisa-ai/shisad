@@ -216,6 +216,183 @@ async def test_m2_task_session_isolates_command_context_and_returns_structured_h
 
 
 @pytest.mark.asyncio
+async def test_h4_task_session_uses_clean_command_declared_scope_as_tdg_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _planner(
+        self: Planner,
+        user_content: str,
+        context: object,
+        *,
+        tools: list[dict[str, object]] | None = None,
+        persona_tone_override: str | None = None,
+    ) -> PlannerResult:
+        _ = user_content, tools, persona_tone_override
+        if "TASK CLOSE-GATE SELF-CHECK" in user_content:
+            return _complete_close_gate_result()
+        proposal = ActionProposal(
+            action_id="h4-task-read",
+            tool_name=ToolName("fs.read"),
+            arguments={"path": "README.md"},
+            reasoning="Use the COMMAND-declared task scope to inspect the file.",
+        )
+        decision = self._pep.evaluate(proposal.tool_name, proposal.arguments, context)
+        return PlannerResult(
+            output=PlannerOutput(assistant_response="Delegated read complete.", actions=[proposal]),
+            evaluated=[EvaluatedProposal(proposal=proposal, decision=decision)],
+            attempts=1,
+            provider_response=None,
+            messages_sent=(),
+        )
+
+    monkeypatch.setattr(Planner, "propose", _planner)
+    daemon_task, client = await _start_daemon(
+        tmp_path,
+        policy_text=_policy_with_caps("file.read"),
+    )
+    try:
+        created = await client.call(
+            "session.create",
+            {"channel": "cli", "user_id": "alice", "workspace_id": "ws1"},
+        )
+        sid = str(created["session_id"])
+
+        result = await client.call(
+            "session.message",
+            {
+                "session_id": sid,
+                "content": "run delegated review",
+                "task": {
+                    "enabled": True,
+                    "task_description": "Inspect the relevant document in isolation.",
+                    "capabilities": ["file.read"],
+                    "resource_scope_ids": ["README.md"],
+                },
+            },
+        )
+
+        task_result = dict(result.get("task_result") or {})
+        assert task_result["success"] is True
+        assert int(result.get("executed_actions", 0)) == 1
+        assert int(result.get("confirmation_required_actions", 0)) == 0
+
+        executed_event = await _wait_for_event(
+            client,
+            event_type="ToolExecuted",
+            predicate=lambda item: (
+                str(item.get("session_id", "")).strip()
+                == str(task_result.get("task_session_id", "")).strip()
+                and str(item.get("data", {}).get("tool_name", "")).strip() == "fs.read"
+            ),
+        )
+        assert executed_event["data"]["tool_name"] == "fs.read"
+    finally:
+        await _shutdown_daemon(daemon_task, client)
+
+
+@pytest.mark.asyncio
+async def test_h4_task_session_ignores_declared_scope_after_command_context_degrades(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _planner(
+        self: Planner,
+        user_content: str,
+        context: object,
+        *,
+        tools: list[dict[str, object]] | None = None,
+        persona_tone_override: str | None = None,
+    ) -> PlannerResult:
+        _ = context, tools, persona_tone_override
+        if "TASK CLOSE-GATE SELF-CHECK" in user_content:
+            return _complete_close_gate_result()
+        if "Return the raw task log." in user_content:
+            return PlannerResult(
+                output=PlannerOutput(assistant_response="raw task log", actions=[]),
+                evaluated=[],
+                attempts=1,
+                provider_response=None,
+                messages_sent=(),
+            )
+        proposal = ActionProposal(
+            action_id="h4-task-read-degraded",
+            tool_name=ToolName("fs.read"),
+            arguments={"path": "README.md"},
+            reasoning="Attempt the same delegated read after command degradation.",
+        )
+        decision = self._pep.evaluate(proposal.tool_name, proposal.arguments, context)
+        return PlannerResult(
+            output=PlannerOutput(assistant_response="Delegated read blocked.", actions=[proposal]),
+            evaluated=[EvaluatedProposal(proposal=proposal, decision=decision)],
+            attempts=1,
+            provider_response=None,
+            messages_sent=(),
+        )
+
+    monkeypatch.setattr(Planner, "propose", _planner)
+    daemon_task, client = await _start_daemon(
+        tmp_path,
+        policy_text=_policy_with_caps("file.read"),
+    )
+    try:
+        created = await client.call(
+            "session.create",
+            {"channel": "cli", "user_id": "alice", "workspace_id": "ws1"},
+        )
+        sid = str(created["session_id"])
+
+        degraded = await client.call(
+            "session.message",
+            {
+                "session_id": sid,
+                "content": "debug the raw task output",
+                "task": {
+                    "enabled": True,
+                    "task_description": "Return the raw task log.",
+                    "capabilities": ["file.read"],
+                    "handoff_mode": "raw_passthrough",
+                },
+            },
+        )
+        assert dict(degraded.get("task_result") or {})["command_context"] == "degraded"
+
+        sessions = await client.call("session.list")
+        session_row = next(item for item in sessions["sessions"] if item["id"] == sid)
+        assert session_row["command_context"] == "degraded"
+
+        result = await client.call(
+            "session.message",
+            {
+                "session_id": sid,
+                "content": "run delegated review again",
+                "task": {
+                    "enabled": True,
+                    "task_description": "Inspect the relevant document in isolation.",
+                    "capabilities": ["file.read"],
+                    "resource_scope_ids": ["README.md"],
+                },
+            },
+        )
+
+        task_result = dict(result.get("task_result") or {})
+        assert task_result["success"] is True
+        assert int(result.get("executed_actions", 0)) == 0
+        assert int(result.get("confirmation_required_actions", 0)) == 1
+        executed = await client.call(
+            "audit.query",
+            {
+                "event_type": "ToolExecuted",
+                "session_id": task_result["task_session_id"],
+                "limit": 10,
+            },
+        )
+        assert executed["events"] == []
+    finally:
+        await _shutdown_daemon(daemon_task, client)
+
+
+@pytest.mark.asyncio
 async def test_m4_task_summary_firewall_checkpoint_is_mandatory(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

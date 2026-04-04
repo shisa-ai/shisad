@@ -6,6 +6,7 @@ import json
 import logging
 from collections.abc import Mapping
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 from shisad.core.events import PlanAmended, ToolRejected
@@ -275,6 +276,9 @@ class ConfirmationImplMixin(HandlerMixinBase):
                 arguments=dict(pending.arguments),
                 origin=self._origin_for(session=session, actor="human_confirmation"),
                 risk_tier=fallback_risk_tier,
+                workspace_roots=list(
+                    getattr(getattr(self, "_config", None), "assistant_fs_roots", [Path.cwd()])
+                ),
             )
             previous_hash = await _call_control_plane(
                 self,

@@ -2052,6 +2052,9 @@ class HandlerImplementation(
             arguments=dict(arguments),
             origin=origin,
             risk_tier=RiskTier.LOW,
+            workspace_roots=list(
+                getattr(getattr(self, "_config", None), "assistant_fs_roots", [Path.cwd()])
+            ),
         )
 
         self._rate_limiter.consume(

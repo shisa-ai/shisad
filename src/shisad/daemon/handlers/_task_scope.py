@@ -35,3 +35,20 @@ def task_resource_authorizer(
         return any(normalized.startswith(prefix) for prefix in allowed_prefixes)
 
     return _authorize
+
+
+def task_declared_tdg_roots(task_envelope: Any) -> tuple[str, ...]:
+    if task_envelope is None:
+        return ()
+    authority = str(getattr(task_envelope, "resource_scope_authority", "")).strip().lower()
+    if authority != "command_clean":
+        return ()
+    roots: list[str] = []
+    for raw in (
+        *getattr(task_envelope, "resource_scope_ids", ()),
+        *getattr(task_envelope, "resource_scope_prefixes", ()),
+    ):
+        normalized = str(raw).strip()
+        if normalized and normalized not in roots:
+            roots.append(normalized)
+    return tuple(roots)

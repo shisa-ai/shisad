@@ -89,6 +89,7 @@ class ControlPlaneEngine:
         consensus_policy: ConsensusPolicy,
         audit_log: ControlPlaneAuditLog,
         action_monitor_provider: Any | None = None,
+        workspace_roots: list[Path] | None = None,
     ) -> None:
         self._history_store = history_store
         self._trace_verifier = trace_verifier
@@ -96,6 +97,7 @@ class ControlPlaneEngine:
         self._resource_monitor = resource_monitor
         self._network_monitor = network_monitor
         self._audit_log = audit_log
+        self._workspace_roots = [item for item in (workspace_roots or [Path.cwd()]) if item]
         self._consensus = ConsensusVotingSystem(
             voters=[
                 NetworkVoter(monitor=self._network_monitor),
@@ -125,6 +127,7 @@ class ControlPlaneEngine:
         phantom_deny_threshold: int = 3,
         phantom_deny_window_seconds: int = 120,
         consensus_policy: ConsensusPolicy | None = None,
+        workspace_roots: list[Path] | None = None,
     ) -> ControlPlaneEngine:
         control_plane_dir = data_dir / "control_plane"
         history_store = SessionActionHistoryStore(control_plane_dir / "history.jsonl")
@@ -132,6 +135,7 @@ class ControlPlaneEngine:
             storage_path=control_plane_dir / "plans.json",
             default_ttl_seconds=trace_ttl_seconds,
             default_max_actions=trace_max_actions,
+            workspace_roots=workspace_roots,
         )
         threshold = max(2, int(phantom_deny_threshold))
         window_seconds = max(1, int(phantom_deny_window_seconds))
@@ -189,6 +193,7 @@ class ControlPlaneEngine:
             consensus_policy=consensus_policy or ConsensusPolicy(),
             audit_log=audit_log,
             action_monitor_provider=action_monitor_provider or monitor_provider,
+            workspace_roots=workspace_roots,
         )
 
     @property
@@ -204,6 +209,7 @@ class ControlPlaneEngine:
         ttl_seconds: int,
         max_actions: int,
         capabilities: set[Capability] | None = None,
+        declared_resource_roots: set[str] | None = None,
     ) -> str:
         active = self._trace_verifier.active_plan(session_id)
         if active is not None:
@@ -221,6 +227,7 @@ class ControlPlaneEngine:
             ttl_seconds=ttl_seconds,
             max_actions=max_actions,
             capabilities=capabilities,
+            declared_resource_roots=declared_resource_roots,
         )
         self._audit_log.append(
             event_type="plan_committed",
@@ -232,6 +239,7 @@ class ControlPlaneEngine:
                 "expires_at": committed.expires_at.isoformat(),
                 "allowed_actions": sorted(item.value for item in committed.allowed_actions),
                 "forbidden_actions": sorted(item.value for item in committed.forbidden_actions),
+                "declared_resource_roots": sorted(committed.declared_resource_roots),
                 "max_actions": committed.max_actions,
             },
         )
@@ -257,6 +265,7 @@ class ControlPlaneEngine:
             arguments=metadata_arguments,
             origin=origin,
             risk_tier=risk_tier,
+            workspace_roots=self._workspace_roots,
         )
 
         trace_result = self._trace_verifier.verify_action(

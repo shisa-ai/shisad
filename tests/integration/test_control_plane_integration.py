@@ -51,6 +51,7 @@ async def _start_daemon_with_policy(
     *,
     policy: dict[str, object] | None = None,
     checkpoint_trigger: str | None = None,
+    assistant_fs_roots: list[Path] | None = None,
 ) -> tuple[asyncio.Task[None], ControlClient]:
     if policy is not None:
         (tmp_path / "policy.yaml").write_text(
@@ -64,7 +65,7 @@ async def _start_daemon_with_policy(
         "log_level": "INFO",
         # Make fs/git helper tools deterministic in CI and avoid depending on the
         # host environment's SHISAD_ASSISTANT_FS_ROOTS value.
-        "assistant_fs_roots": [Path.cwd()],
+        "assistant_fs_roots": list(assistant_fs_roots or [Path.cwd()]),
     }
     if checkpoint_trigger is not None:
         config_kwargs["checkpoint_trigger"] = checkpoint_trigger
@@ -534,6 +535,91 @@ async def test_h4_missing_path_side_effect_stays_blocked(
             str(event.get("data", {}).get("reason_code", ""))
             == "trace:tdg_dependency_path_missing"
             for event in violations["events"]
+        )
+    finally:
+        await _shutdown(daemon_task, client)
+
+
+@pytest.mark.asyncio
+async def test_h4_runtime_path_normalization_uses_assistant_fs_root(
+    model_env: None,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    (workspace_root / "README.md").write_text("h4-custom-root\n", encoding="utf-8")
+
+    async def _forced_workspace_read(
+        self: Planner,
+        user_content: str,
+        context: object,
+        *,
+        tools: list[dict[str, object]] | None = None,
+        persona_tone_override: str | None = None,
+    ) -> PlannerResult:
+        _ = user_content, tools, persona_tone_override
+        proposal = ActionProposal(
+            action_id="h4-workspace-read",
+            tool_name=ToolName("fs.read"),
+            arguments={"path": "README.md"},
+            reasoning="read the workspace README from the configured assistant root",
+            data_sources=[],
+        )
+        decision = self._pep.evaluate(proposal.tool_name, proposal.arguments, context)
+        return PlannerResult(
+            output=PlannerOutput(actions=[proposal], assistant_response="workspace read"),
+            evaluated=[EvaluatedProposal(proposal=proposal, decision=decision)],
+            attempts=1,
+            provider_response=None,
+            messages_sent=(),
+        )
+
+    monkeypatch.setattr(Planner, "propose", _forced_workspace_read)
+
+    daemon_task, client = await _start_daemon_with_policy(
+        tmp_path,
+        policy={
+            "version": "1",
+            "default_deny": False,
+            "default_require_confirmation": False,
+            "default_capabilities": ["file.read"],
+        },
+        assistant_fs_roots=[workspace_root],
+    )
+    try:
+        created = await client.call("session.create", {"channel": "cli"})
+        sid = created["session_id"]
+        response = await client.call(
+            "session.message",
+            {"session_id": sid, "content": "read README.md"},
+        )
+        assert int(response.get("blocked_actions", 0)) == 0
+        assert int(response.get("confirmation_required_actions", 0)) == 0
+        assert int(response.get("executed_actions", 0)) == 1
+
+        outputs = response.get("tool_outputs", [])
+        read_payload = next(
+            item.get("payload", {})
+            for item in outputs
+            if item.get("tool_name") == "fs.read"
+        )
+        assert read_payload.get("ok") is True
+        assert "h4-custom-root" in str(read_payload.get("content", ""))
+
+        audit_rows = [
+            json.loads(line)
+            for line in (tmp_path / "data" / "control_plane" / "audit.jsonl").read_text(
+                encoding="utf-8"
+            ).splitlines()
+            if line.strip()
+        ]
+        assert any(
+            row.get("event_type") == "action_observed"
+            and str(row.get("session_id", "")) == sid
+            and str(row.get("data", {}).get("resource_id", ""))
+            == str((workspace_root / "README.md").resolve())
+            for row in audit_rows
         )
     finally:
         await _shutdown(daemon_task, client)

