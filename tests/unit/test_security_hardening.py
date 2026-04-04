@@ -104,6 +104,18 @@ def test_m2_9_2_yara_and_fallback_modes_have_parity(monkeypatch: pytest.MonkeyPa
     assert fallback_benign <= 0.4
 
 
+def test_m2_yara_runtime_compiles_shipped_rules_when_available() -> None:
+    pytest.importorskip("yara")
+
+    rules_dir = Path("src/shisad/security/rules/yara")
+    classifier = PatternInjectionClassifier(yara_rules_dir=rules_dir)
+
+    assert classifier.mode == "yara"
+    result = classifier.classify("status\u200breport")
+    assert "yara:prompt_injection_unicode_steganography" in result.risk_factors
+    assert result.risk_score > 0.0
+
+
 def test_m2_provenance_script_verify_succeeds() -> None:
     result = subprocess.run(
         [sys.executable, "scripts/security_assets.py", "verify"],

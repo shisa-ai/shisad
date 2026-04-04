@@ -1,7 +1,7 @@
 # shisad Roadmap
 
 *Created: 2026-02-26*
-*Updated: 2026-04-03*
+*Updated: 2026-04-04*
 *Status: Active*
 
 ## Goal
@@ -77,6 +77,7 @@ the deferred M7 connector/skill expansion lane lives in `v0.6.4`.
 
 - Minimal control-plane isolation boundary (OS-level process/container)
 - PromptGuard 2 ML classifier integration
+- YARA rulepack runtime-parity closure for the shipped unicode-steganography rule
 - Phantom action detection
 - Tool Dependency Graph verification
 

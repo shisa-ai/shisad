@@ -42,7 +42,7 @@
     },
     {
       "path": "yara/prompt_injection_unicode_steganography.yara",
-      "sha256": "0ff48ab3575706d46e3862fd97cf8f4d03dafce1c72c2ed4369c0bf044a9cd53"
+      "sha256": "05c7cc0892870cf2090991a9b45bd2067f0d7a707383ff577b054f1ed9174d7f"
     },
     {
       "path": "yara/system_manipulation.yara",
