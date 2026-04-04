@@ -18,6 +18,7 @@ from pydantic import BaseModel, Field
 from shisad.security.firewall.promptguard_pack import inspect_promptguard_model_pack
 
 logger = logging.getLogger(__name__)
+_REMOTE_PATH_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*://")
 
 
 class InjectionClassification(BaseModel):
@@ -234,33 +235,69 @@ class OnnxPromptGuardBackend:
         except Exception as exc:
             raise PromptGuardLoadError("promptguard_tokenization_failed") from exc
 
-        model_inputs = self._truncate_batch(batch)
-        input_feed = {
-            key: value
-            for key, value in model_inputs.items()
-            if key in self._input_names
-        }
-
-        try:
-            logits = self._session.run([self._output_name], input_feed)[0]
-            probabilities = self._softmax(logits)
-        except Exception as exc:
-            raise PromptGuardLoadError("promptguard_inference_failed") from exc
-
-        label_count = int(getattr(probabilities, "shape", [0, 0])[-1])
-        malicious_index = self._malicious_index(label_count)
-        score_tensor = probabilities[:, malicious_index]
-        raw_scores = score_tensor.tolist() if hasattr(score_tensor, "tolist") else [score_tensor]
-        return [min(max(float(item), 0.0), 1.0) for item in raw_scores]
-
-    def _truncate_batch(self, batch: Any) -> dict[str, Any]:
         payload = dict(batch)
         payload.pop("overflow_to_sample_mapping", None)
+        segment_count = self._segment_count(payload)
+        if segment_count > self._max_segments:
+            logger.debug(
+                "PromptGuard scoring long input in %s batches (%s segments total)",
+                ((segment_count - 1) // self._max_segments) + 1,
+                segment_count,
+            )
+
+        all_scores: list[float] = []
+        for model_inputs in self._iter_model_batches(payload):
+            input_feed = {
+                key: value
+                for key, value in model_inputs.items()
+                if key in self._input_names
+            }
+
+            try:
+                logits = self._session.run([self._output_name], input_feed)[0]
+                probabilities = self._softmax(logits)
+            except Exception as exc:
+                raise PromptGuardLoadError("promptguard_inference_failed") from exc
+
+            label_count = int(getattr(probabilities, "shape", [0, 0])[-1])
+            malicious_index = self._malicious_index(label_count)
+            score_tensor = probabilities[:, malicious_index]
+            raw_scores = (
+                score_tensor.tolist() if hasattr(score_tensor, "tolist") else [score_tensor]
+            )
+            all_scores.extend(min(max(float(item), 0.0), 1.0) for item in raw_scores)
+        return all_scores
+
+    def _iter_model_batches(self, payload: dict[str, Any]) -> list[dict[str, Any]]:
+        segment_count = self._segment_count(payload)
+        if segment_count <= 0 or segment_count <= self._max_segments:
+            return [payload]
+        return [
+            self._slice_batch(payload, start, start + self._max_segments)
+            for start in range(0, segment_count, self._max_segments)
+        ]
+
+    def _segment_count(self, payload: dict[str, Any]) -> int:
+        for value in payload.values():
+            shape = getattr(value, "shape", None)
+            if shape:
+                try:
+                    return int(shape[0])
+                except (TypeError, ValueError):
+                    pass
+            if hasattr(value, "__len__") and hasattr(value, "__getitem__"):
+                try:
+                    return len(value)
+                except (TypeError, ValueError):
+                    pass
+        return 0
+
+    def _slice_batch(self, payload: dict[str, Any], start: int, stop: int) -> dict[str, Any]:
         truncated: dict[str, Any] = {}
         for key, value in payload.items():
             if hasattr(value, "__getitem__"):
                 try:
-                    truncated[key] = value[: self._max_segments]
+                    truncated[key] = value[start:stop]
                     continue
                 except Exception:
                     pass
@@ -270,17 +307,16 @@ class OnnxPromptGuardBackend:
     def _malicious_index(self, label_count: int) -> int:
         id2label = getattr(self._config, "id2label", {}) if self._config is not None else {}
         if isinstance(id2label, dict):
+            benign_indices: set[int] = set()
             for raw_index, raw_label in id2label.items():
-                if str(raw_label).strip().lower() == "malicious":
-                    try:
-                        return int(raw_index)
-                    except (TypeError, ValueError):
-                        break
-            benign_indices = {
-                int(raw_index)
-                for raw_index, raw_label in id2label.items()
-                if str(raw_label).strip().lower() == "benign"
-            }
+                index = _coerce_promptguard_label_index(raw_index)
+                if index is None:
+                    continue
+                label = str(raw_label).strip().lower()
+                if label == "malicious":
+                    return index
+                if label == "benign":
+                    benign_indices.add(index)
             if label_count == 2 and benign_indices == {0}:
                 return 1
         if label_count <= 1:
@@ -309,11 +345,25 @@ class PromptGuardSemanticClassifier:
         self._backend = backend
         self._thresholds = thresholds
         self._posture = posture
+        self._status = PromptGuardRuntimeStatus(
+            posture=posture,
+            status="active",
+            thresholds=thresholds.as_dict(),
+        )
+
+    def runtime_status(self) -> PromptGuardRuntimeStatus:
+        return self._status
 
     def classify(self, text: str) -> InjectionClassification:
         try:
             scores = self._backend.score_text(text)
         except PromptGuardLoadError as exc:
+            self._status = PromptGuardRuntimeStatus(
+                posture=self._posture,
+                status="degraded",
+                reason=exc.reason,
+                thresholds=self._thresholds.as_dict(),
+            )
             if self._posture == "required":
                 raise
             logger.warning(
@@ -322,7 +372,28 @@ class PromptGuardSemanticClassifier:
                 exc_info=True,
             )
             return InjectionClassification(semantic_classifier_id=self.classifier_id)
+        except Exception as exc:
+            reason = "promptguard_unexpected_error"
+            self._status = PromptGuardRuntimeStatus(
+                posture=self._posture,
+                status="degraded",
+                reason=reason,
+                thresholds=self._thresholds.as_dict(),
+            )
+            if self._posture == "required":
+                raise PromptGuardLoadError(reason) from exc
+            logger.warning(
+                "PromptGuard degraded; reason_code=%s",
+                reason,
+                exc_info=True,
+            )
+            return InjectionClassification(semantic_classifier_id=self.classifier_id)
 
+        self._status = PromptGuardRuntimeStatus(
+            posture=self._posture,
+            status="active",
+            thresholds=self._thresholds.as_dict(),
+        )
         score = max((float(item) for item in scores), default=0.0)
         tier = self._thresholds.tier_for(score)
         risk_factors = [] if tier is SemanticRiskTier.NONE else [f"promptguard:{tier.value}"]
@@ -354,7 +425,13 @@ def build_promptguard_classifier(
         reason = "model_path_must_be_local"
         return _promptguard_unavailable(settings=settings, reason=reason)
 
-    model_path = Path(raw_model_path).expanduser()
+    try:
+        model_path = _expand_local_path(
+            raw_model_path,
+            reason="model_path_expanduser_failed",
+        )
+    except PromptGuardLoadError as exc:
+        return _promptguard_unavailable(settings=settings, reason=exc.reason)
     if not model_path.exists():
         reason = "model_path_missing"
         return _promptguard_unavailable(settings=settings, reason=reason)
@@ -367,7 +444,13 @@ def build_promptguard_classifier(
         allowed_signers_path = None
         raw_allowed_signers_path = settings.allowed_signers_path.strip()
         if raw_allowed_signers_path:
-            allowed_signers_path = Path(raw_allowed_signers_path).expanduser()
+            try:
+                allowed_signers_path = _expand_local_path(
+                    raw_allowed_signers_path,
+                    reason="promptguard_pack_trust_store_path_invalid",
+                )
+            except PromptGuardLoadError as exc:
+                return _promptguard_unavailable(settings=settings, reason=exc.reason)
         inspection = inspect_promptguard_model_pack(
             model_path,
             allowed_signers_path=allowed_signers_path,
@@ -393,7 +476,25 @@ def build_promptguard_classifier(
 
 
 def _looks_like_local_path(candidate: str) -> bool:
-    return candidate.startswith(("/", ".", "~"))
+    return not _REMOTE_PATH_RE.match(candidate.strip())
+
+
+def _expand_local_path(raw_path: str, *, reason: str) -> Path:
+    try:
+        return Path(raw_path).expanduser()
+    except RuntimeError as exc:
+        raise PromptGuardLoadError(reason) from exc
+
+
+def _coerce_promptguard_label_index(raw_index: object) -> int | None:
+    if isinstance(raw_index, int):
+        return raw_index
+    if isinstance(raw_index, str):
+        try:
+            return int(raw_index)
+        except ValueError:
+            return None
+    return None
 
 
 def _resolve_promptguard_onnx_path(model_path: Path) -> Path | None:

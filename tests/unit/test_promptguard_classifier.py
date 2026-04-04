@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 
+import numpy as np
 import pytest
 
 from shisad.core.types import TaintLabel
@@ -13,6 +15,7 @@ from shisad.security.firewall import classifier as classifier_module
 from shisad.security.firewall.classifier import (
     OnnxPromptGuardBackend,
     PromptGuardComparisonCase,
+    PromptGuardLoadError,
     PromptGuardRuntimeStatus,
     PromptGuardSemanticClassifier,
     PromptGuardSettings,
@@ -35,6 +38,63 @@ class _FakePromptGuardBackend:
     def score_text(self, text: str) -> list[float]:
         assert text
         return list(self._scores)
+
+
+class _ExplodingPromptGuardBackend:
+    model_source = "/opt/shisad/promptguard"
+
+    def __init__(self, exc: Exception) -> None:
+        self._exc = exc
+
+    def score_text(self, text: str) -> list[float]:
+        assert text
+        raise self._exc
+
+
+class _OverflowingTokenizer:
+    def __call__(self, text: str, **_kwargs: object) -> dict[str, np.ndarray]:
+        _ = text
+        segment_ids = np.arange(10, dtype=np.int64)
+        input_ids = np.stack(
+            [
+                segment_ids,
+                segment_ids + 100,
+                segment_ids + 200,
+                segment_ids + 300,
+            ],
+            axis=1,
+        )
+        return {
+            "input_ids": input_ids,
+            "attention_mask": np.ones_like(input_ids),
+            "overflow_to_sample_mapping": np.zeros(len(segment_ids), dtype=np.int64),
+        }
+
+
+class _SegmentAwareSession:
+    def __init__(self) -> None:
+        self.calls: list[list[int]] = []
+
+    def get_inputs(self) -> list[SimpleNamespace]:
+        return [
+            SimpleNamespace(name="input_ids"),
+            SimpleNamespace(name="attention_mask"),
+        ]
+
+    def get_outputs(self) -> list[SimpleNamespace]:
+        return [SimpleNamespace(name="logits")]
+
+    def run(self, _output_names: list[str], input_feed: dict[str, np.ndarray]) -> list[np.ndarray]:
+        segments = [int(item) for item in input_feed["input_ids"][:, 0].tolist()]
+        self.calls.append(segments)
+        logits = np.array(
+            [
+                [0.0, 10.0] if segment == 9 else [10.0, 0.0]
+                for segment in segments
+            ],
+            dtype=np.float32,
+        )
+        return [logits]
 
 
 def _generate_ssh_keypair(tmp_path: Path, *, name: str) -> Path:
@@ -77,13 +137,35 @@ def test_h2_promptguard_rejects_non_local_model_refs() -> None:
     classifier, status = build_promptguard_classifier(
         PromptGuardSettings(
             posture="best_effort",
-            model_path="meta-llama/Llama-Prompt-Guard-2-22M",
+            model_path="https://huggingface.co/meta-llama/Llama-Prompt-Guard-2-22M",
         )
     )
 
     assert classifier is None
     assert status.status == "unavailable"
     assert status.reason == "model_path_must_be_local"
+
+
+def test_h2_promptguard_accepts_bare_relative_local_paths(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    artifact_dir = tmp_path / "models" / "promptguard"
+    artifact_dir.mkdir(parents=True)
+    (artifact_dir / "model.onnx").write_bytes(b"fake")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        OnnxPromptGuardBackend,
+        "from_local_path",
+        classmethod(lambda cls, model_path: _FakePromptGuardBackend([0.81])),
+    )
+
+    classifier, status = build_promptguard_classifier(
+        PromptGuardSettings(posture="best_effort", model_path="models/promptguard")
+    )
+
+    assert classifier is not None
+    assert status.status == "active"
 
 
 def test_h2_promptguard_requires_local_onnx_artifact_dir(tmp_path: Path) -> None:
@@ -122,6 +204,23 @@ def test_h2_promptguard_activates_with_local_onnx_artifact(
     result = classifier.classify("Routine project update")
     assert result.semantic_risk_score == pytest.approx(0.81)
     assert result.semantic_risk_tier == "high"
+
+
+def test_h2_promptguard_best_effort_unknown_home_path_reports_unavailable() -> None:
+    classifier, status = build_promptguard_classifier(
+        PromptGuardSettings(posture="best_effort", model_path="~nosuch-user/pg2")
+    )
+
+    assert classifier is None
+    assert status.status == "unavailable"
+    assert status.reason == "model_path_expanduser_failed"
+
+
+def test_h2_promptguard_required_unknown_home_path_fails_closed() -> None:
+    with pytest.raises(ValueError, match="model_path_expanduser_failed"):
+        build_promptguard_classifier(
+            PromptGuardSettings(posture="required", model_path="~nosuch-user/pg2")
+        )
 
 
 def test_h2_promptguard_signed_model_pack_verifies_and_loads_payload_dir(
@@ -277,6 +376,70 @@ def test_h2_promptguard_classifier_maps_backend_scores_to_risk_tiers() -> None:
     assert result.semantic_risk_tier == "high"
     assert result.semantic_classifier_id == "promptguard-v2"
     assert "promptguard:high" in result.risk_factors
+
+
+def test_h2_promptguard_best_effort_degrades_on_runtime_inference_failure() -> None:
+    classifier = PromptGuardSemanticClassifier(
+        backend=_ExplodingPromptGuardBackend(PromptGuardLoadError("promptguard_inference_failed")),
+        thresholds=PromptGuardThresholds(),
+        posture="best_effort",
+    )
+    firewall = ContentFirewall(
+        semantic_classifier=classifier,
+        semantic_classifier_status=PromptGuardRuntimeStatus(posture="best_effort", status="active"),
+    )
+
+    status_before = firewall.status_snapshot()
+    result = firewall.inspect("Routine status update")
+    status_after = firewall.status_snapshot()
+
+    assert status_before["semantic_classifier"]["status"] == "active"
+    assert result.semantic_risk_score == pytest.approx(0.0)
+    assert status_after["semantic_classifier"]["status"] == "degraded"
+    assert status_after["semantic_classifier"]["reason"] == "promptguard_inference_failed"
+
+
+def test_h2_promptguard_best_effort_degrades_on_unexpected_backend_exception() -> None:
+    classifier = PromptGuardSemanticClassifier(
+        backend=_ExplodingPromptGuardBackend(RuntimeError("boom")),
+        thresholds=PromptGuardThresholds(),
+        posture="best_effort",
+    )
+
+    result = classifier.classify("Routine status update")
+    assert result.semantic_risk_score == pytest.approx(0.0)
+    assert classifier.runtime_status().status == "degraded"
+    assert classifier.runtime_status().reason == "promptguard_unexpected_error"
+
+
+def test_h2_promptguard_backend_scores_all_overflow_segments() -> None:
+    session = _SegmentAwareSession()
+    backend = OnnxPromptGuardBackend(
+        model_source="/models/22m",
+        tokenizer=_OverflowingTokenizer(),
+        config=SimpleNamespace(id2label={"0": "benign", "1": "malicious"}),
+        session=session,
+        numpy_module=np,
+    )
+
+    scores = backend.score_text("very long prompt")
+
+    assert len(scores) == 10
+    assert max(scores) > 0.99
+    assert session.calls == [list(range(8)), [8, 9]]
+
+
+def test_h2_promptguard_malicious_index_ignores_invalid_label_keys() -> None:
+    session = _SegmentAwareSession()
+    backend = OnnxPromptGuardBackend(
+        model_source="/models/22m",
+        tokenizer=_OverflowingTokenizer(),
+        config=SimpleNamespace(id2label={"foo": "benign", "1": "malicious"}),
+        session=session,
+        numpy_module=np,
+    )
+
+    assert backend._malicious_index(2) == 1
 
 
 def test_h2_content_firewall_surfaces_promptguard_metadata() -> None:

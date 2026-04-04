@@ -39,7 +39,8 @@ uv sync --dev
 Optional groups:
 
 ```bash
-uv sync --group security-runtime    # YARA runtime checks
+uv sync --group security-runtime    # YARA + local ONNX PromptGuard runtime checks
+uv sync --group security-build      # PromptGuard download/export/model-pack build tooling
 uv sync --group channels-runtime    # Matrix, Discord, Telegram, Slack
 uv sync --group coverage            # pytest-cov
 ```

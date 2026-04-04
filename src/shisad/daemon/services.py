@@ -382,6 +382,7 @@ class DaemonServices:
             )
             ingestion = IngestionPipeline(
                 config.data_dir / "memory",
+                firewall=firewall,
                 embedding_fingerprint=EmbeddingFingerprint(
                     model_id=embeddings_route.model_id,
                     base_url=embeddings_route.base_url,

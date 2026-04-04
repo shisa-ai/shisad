@@ -58,6 +58,24 @@ async def test_daemon_services_builds_with_local_provider(
 
 
 @pytest.mark.asyncio
+async def test_h2_daemon_services_reuses_firewall_for_ingestion_pipeline(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clear_remote_provider_env(monkeypatch)
+    config = DaemonConfig(
+        data_dir=tmp_path / "data",
+        socket_path=tmp_path / "control.sock",
+        policy_path=tmp_path / "policy.yaml",
+    )
+    services = await DaemonServices.build(config)
+    try:
+        assert services.ingestion._firewall is services.firewall
+    finally:
+        await services.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_h1_daemon_services_builds_with_supervised_control_plane_sidecar(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,

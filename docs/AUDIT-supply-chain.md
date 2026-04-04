@@ -238,7 +238,13 @@ sed -n '1,140p' docs/DEPLOY.md
 | `dev` | `pytest`, `pytest-asyncio`, `ruff`, `mypy`, `types-pyyaml`, `textual` | All exact in lock; all declared as ranges |
 | `channels-runtime` | `matrix-nio[e2e]`, `discord.py`, `python-telegram-bot`, `slack-bolt`, `slack-sdk` | All exact in lock; all declared as ranges |
 | `coverage` | `pytest-cov` | Exact in lock; declared as range |
-| `security-runtime` | `yara-python` | Exact in lock; declared as range |
+| `security-runtime` | `yara-python`, `transformers`, `onnxruntime`, `safetensors`, `sentencepiece` | All exact in lock; all declared as ranges |
+| `security-build` | `transformers`, `torch`, `onnx`, `onnxscript`, `onnxruntime`, `huggingface-hub`, `safetensors`, `sentencepiece` | All exact in lock; all declared as ranges |
+
+`security-build` is intentionally heavier than `security-runtime`: it carries the
+local PromptGuard download/export/model-pack toolchain and, on Linux, the
+current `torch` build lane resolves CUDA-family packages in the lock. The live
+daemon runtime does not require that group.
 
 ### C. Full upstream package inventory (all groups)
 
@@ -259,38 +265,73 @@ audioop-lts==0.2.2 ; python_full_version >= '3.13'
 cachetools==5.5.2
 certifi==2026.1.4
 cffi==2.0.0
+charset-normalizer==3.4.7
 click==8.3.1
 colorama==0.4.6 ; sys_platform == 'win32'
 coverage==7.13.4
 cryptography==46.0.6
+cuda-bindings==13.2.0 ; sys_platform == 'linux'
+cuda-pathfinder==1.5.1 ; sys_platform == 'linux'
+cuda-toolkit==13.0.2 ; sys_platform == 'linux'
 discord-py==2.6.4
+filelock==3.25.2
+flatbuffers==25.12.19
 frozenlist==1.8.0
+fsspec==2026.3.0
 h11==0.16.0
 h2==4.3.0
+hf-xet==1.4.3 ; platform_machine == 'aarch64' or platform_machine == 'amd64' or platform_machine == 'arm64' or platform_machine == 'x86_64'
 hpack==4.1.0
 httpcore==1.0.9
 httpx==0.28.1
+huggingface-hub==0.36.2
 hyperframe==6.1.0
 idna==3.11
 iniconfig==2.3.0
+jinja2==3.1.6
 jsonschema==4.26.0
 jsonschema-specifications==2025.9.1
 librt==0.7.8 ; platform_python_implementation != 'PyPy'
 linkify-it-py==2.0.3
 loguru==0.7.3
 markdown-it-py==4.0.0
+markupsafe==3.0.3
 matrix-nio==0.25.2
 mdit-py-plugins==0.5.0
 mdurl==0.1.2
+ml-dtypes==0.5.4
+mpmath==1.3.0
 multidict==6.7.1
 mypy==1.19.1
 mypy-extensions==1.1.0
+networkx==3.6.1
+numpy==2.4.4
+nvidia-cublas==13.1.0.3 ; sys_platform == 'linux'
+nvidia-cuda-cupti==13.0.85 ; sys_platform == 'linux'
+nvidia-cuda-nvrtc==13.0.88 ; sys_platform == 'linux'
+nvidia-cuda-runtime==13.0.96 ; sys_platform == 'linux'
+nvidia-cudnn-cu13==9.19.0.56 ; sys_platform == 'linux'
+nvidia-cufft==12.0.0.61 ; sys_platform == 'linux'
+nvidia-cufile==1.15.1.6 ; sys_platform == 'linux'
+nvidia-curand==10.4.0.35 ; sys_platform == 'linux'
+nvidia-cusolver==12.0.4.66 ; sys_platform == 'linux'
+nvidia-cusparse==12.6.3.3 ; sys_platform == 'linux'
+nvidia-cusparselt-cu13==0.8.0 ; sys_platform == 'linux'
+nvidia-nccl-cu13==2.28.9 ; sys_platform == 'linux'
+nvidia-nvjitlink==13.0.88 ; sys_platform == 'linux'
+nvidia-nvshmem-cu13==3.4.5 ; sys_platform == 'linux'
+nvidia-nvtx==13.0.85 ; sys_platform == 'linux'
+onnx==1.21.0
+onnx-ir==0.2.0
+onnxruntime==1.24.4
+onnxscript==0.6.2
 packaging==26.0
 pathspec==1.0.4
 peewee==3.19.0
 platformdirs==4.9.2
 pluggy==1.6.0
 propcache==0.4.1
+protobuf==7.34.1
 pycparser==3.0 ; implementation_name != 'PyPy'
 pycryptodome==3.23.0
 pydantic==2.12.5
@@ -306,17 +347,29 @@ python-socks==2.8.0
 python-telegram-bot==21.11.1
 pyyaml==6.0.3
 referencing==0.37.0
+regex==2026.4.4
+requests==2.33.1
 rich==14.3.2
 rpds-py==0.30.0
 ruff==0.15.0
+safetensors==0.7.0
+sentencepiece==0.2.1
+setuptools==81.0.0
 slack-bolt==1.27.0
 slack-sdk==3.40.0
+sympy==1.14.0
 textual==0.89.1
+tokenizers==0.22.2
+torch==2.11.0
+tqdm==4.67.3
+transformers==4.57.6
+triton==3.6.0 ; sys_platform == 'linux'
 types-pyyaml==6.0.12.20250915
 typing-extensions==4.15.0
 typing-inspection==0.4.2
 uc-micro-py==1.0.3
 unpaddedbase64==2.1.0
+urllib3==2.6.3
 win32-setctime==1.2.0 ; sys_platform == 'win32'
 yara-python==4.5.4
 yarl==1.22.0

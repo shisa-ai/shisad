@@ -51,6 +51,7 @@ class ContentFirewall:
         semantic_classifier: SemanticClassifier | None = None,
         semantic_classifier_status: PromptGuardRuntimeStatus | None = None,
     ) -> None:
+        self._semantic_classifier = semantic_classifier
         rules_dir = Path(__file__).resolve().parent.parent / "rules" / "yara"
         self._classifier = PatternInjectionClassifier(
             semantic_classifier=semantic_classifier,
@@ -66,9 +67,18 @@ class ContentFirewall:
         return self._classifier.mode
 
     def status_snapshot(self) -> dict[str, Any]:
+        semantic_status = self._semantic_classifier_status
+        runtime_status = getattr(self._semantic_classifier, "runtime_status", None)
+        if callable(runtime_status):
+            try:
+                observed = runtime_status()
+                if isinstance(observed, PromptGuardRuntimeStatus):
+                    semantic_status = observed
+            except Exception:
+                pass
         return {
             "pattern_mode": self.classifier_mode,
-            "semantic_classifier": self._semantic_classifier_status.as_dict(),
+            "semantic_classifier": semantic_status.as_dict(),
         }
 
     def inspect(

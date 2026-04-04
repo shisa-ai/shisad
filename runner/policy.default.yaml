@@ -12,6 +12,8 @@ default_require_confirmation: false
 
 content_firewall:
   semantic_classifier:
+    # Intentionally surfaces "unavailable" on a fresh dev runner until the
+    # operator points this at a local PromptGuard ONNX artifact or signed pack.
     posture: best_effort
     model_path: ""
 
