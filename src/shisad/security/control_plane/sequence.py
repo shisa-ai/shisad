@@ -163,7 +163,12 @@ class BehavioralSequenceAnalyzer:
             qualifying = [record for record in recent if record.reason_code in rule.reason_codes]
             if len(qualifying) < rule.threshold:
                 continue
-            prior_count = len([record for record in qualifying if record is not candidate_record])
+            # Compare against the stable analysis key so threshold crossing stays
+            # correct even if rows are later copied or reloaded before analysis.
+            candidate_key = history.analysis_key(candidate_record)
+            prior_count = len(
+                [record for record in qualifying if history.analysis_key(record) != candidate_key]
+            )
             if prior_count >= rule.threshold:
                 continue
             evidence = [

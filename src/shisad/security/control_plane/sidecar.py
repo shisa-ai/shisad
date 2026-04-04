@@ -102,7 +102,6 @@ class ControlPlaneGateway(Protocol):
         action: ControlPlaneAction,
         source: str,
         reason_code: str,
-        reason: str,
     ) -> list[SequenceFinding]: ...
 
     async def approve_stage2(
@@ -189,7 +188,6 @@ class _ObserveDeniedActionParams(BaseModel):
     action: ControlPlaneAction
     source: str
     reason_code: str
-    reason: str
 
 
 class _ObserveDeniedActionResult(BaseModel):
@@ -339,7 +337,6 @@ class _ControlPlaneSidecarHandlers:
                 action=params.action,
                 source=params.source,
                 reason_code=params.reason_code,
-                reason=params.reason,
             )
         )
 
@@ -482,7 +479,6 @@ class ControlPlaneSidecarClient(ControlPlaneGateway):
         action: ControlPlaneAction,
         source: str,
         reason_code: str,
-        reason: str,
     ) -> list[SequenceFinding]:
         result = await self._call(
             "control_plane.observe_denied_action",
@@ -490,7 +486,6 @@ class ControlPlaneSidecarClient(ControlPlaneGateway):
                 action=action,
                 source=source,
                 reason_code=reason_code,
-                reason=reason,
             ).model_dump(mode="json"),
             _ObserveDeniedActionResult,
         )

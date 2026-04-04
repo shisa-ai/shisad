@@ -146,7 +146,7 @@ class SessionActionHistoryStore:
         deduped: list[ActionHistoryRecord] = []
         seen: set[tuple[str, str, str, str, str, str]] = set()
         for row in rows:
-            key = cls._analysis_key(row)
+            key = cls.analysis_key(row)
             if key in seen:
                 continue
             seen.add(key)
@@ -154,7 +154,7 @@ class SessionActionHistoryStore:
         return deduped
 
     @staticmethod
-    def _analysis_key(record: ActionHistoryRecord) -> tuple[str, str, str, str, str, str]:
+    def analysis_key(record: ActionHistoryRecord) -> tuple[str, str, str, str, str, str]:
         return (
             record.timestamp.isoformat(),
             record.action_kind.value,

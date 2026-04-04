@@ -642,6 +642,84 @@ async def test_h3_session_message_repeated_pep_rejects_emit_warning_without_lock
 
 
 @pytest.mark.asyncio
+async def test_h3_trace_only_stage2_confirmation_still_records_underlying_pep_denies(
+    model_env: None,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _forced_web_fetch_without_capability(
+        self: Planner,
+        user_content: str,
+        context: object,
+        *,
+        tools: list[dict[str, object]] | None = None,
+        persona_tone_override: str | None = None,
+    ) -> PlannerResult:
+        _ = user_content, tools, persona_tone_override
+        proposal = ActionProposal(
+            action_id="h3-trace-only-hard-reject",
+            tool_name=ToolName("web.fetch"),
+            arguments={"url": "https://example.com"},
+            reasoning="h3 hard reject must stay reject",
+            data_sources=[],
+        )
+        decision = self._pep.evaluate(proposal.tool_name, proposal.arguments, context)
+        return PlannerResult(
+            output=PlannerOutput(actions=[proposal], assistant_response="fetch blocked"),
+            evaluated=[EvaluatedProposal(proposal=proposal, decision=decision)],
+            attempts=1,
+            provider_response=None,
+            messages_sent=(),
+        )
+
+    monkeypatch.setattr(Planner, "propose", _forced_web_fetch_without_capability)
+
+    daemon_task, client = await _start_daemon_with_policy(
+        tmp_path,
+        policy={
+            "version": "1",
+            "default_require_confirmation": False,
+            "default_capabilities": [],
+        },
+    )
+    try:
+        created = await client.call("session.create", {"channel": "cli"})
+        sid = created["session_id"]
+
+        for attempt in range(3):
+            reply = await client.call(
+                "session.message",
+                {"session_id": sid, "content": "say hello"},
+            )
+            assert int(reply.get("blocked_actions", 0)) == 0
+            assert int(reply.get("confirmation_required_actions", 0)) >= 1
+            anomalies = await client.call(
+                "audit.query",
+                {"event_type": "AnomalyReported", "session_id": sid, "limit": 20},
+            )
+            if attempt < 2:
+                assert len(anomalies["events"]) == 0
+
+        anomalies = await client.call(
+            "audit.query",
+            {"event_type": "AnomalyReported", "session_id": sid, "limit": 20},
+        )
+        assert len(anomalies["events"]) == 1
+        assert any(
+            "phantom_capability_probe" in str(event.get("data", {}).get("description", ""))
+            for event in anomalies["events"]
+        )
+
+        pending = await client.call(
+            "action.pending",
+            {"session_id": sid, "status": "pending", "limit": 20},
+        )
+        assert len(pending["actions"]) >= 1
+    finally:
+        await _shutdown(daemon_task, client)
+
+
+@pytest.mark.asyncio
 async def test_g2_t2_direct_structured_tool_failure_preserves_policy_allow_semantics(
     model_env: None,
     tmp_path: Path,

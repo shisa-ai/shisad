@@ -233,7 +233,6 @@ async def test_h3_control_plane_sidecar_round_trips_denied_action_observation(
                 ),
                 source="policy_loop",
                 reason_code="pep:missing_capabilities",
-                reason="Missing capabilities: FILE_READ",
             )
             if index < 2:
                 assert findings == []
@@ -242,12 +241,18 @@ async def test_h3_control_plane_sidecar_round_trips_denied_action_observation(
         assert findings[0].pattern_name == "phantom_capability_probe"
 
         audit_path = tmp_path / "data" / "control_plane" / "audit.jsonl"
-        event_types = [
-            json.loads(line)["event_type"]
+        audit_rows = [
+            json.loads(line)
             for line in audit_path.read_text(encoding="utf-8").splitlines()
             if line.strip()
         ]
+        event_types = [row["event_type"] for row in audit_rows]
         assert event_types.count("denied_action_observed") == 3
         assert "phantom_action_detected" in event_types
+        deny_event = next(
+            row for row in audit_rows if row["event_type"] == "denied_action_observed"
+        )
+        assert deny_event["data"]["reason_code"] == "pep:missing_capabilities"
+        assert "reason" not in deny_event["data"]
     finally:
         await handle.close()

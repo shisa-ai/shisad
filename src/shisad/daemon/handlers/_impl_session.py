@@ -3713,7 +3713,7 @@ class SessionImplMixin(HandlerMixinBase):
             if final_kind == "reject":
                 rejected += 1
                 rejection_reasons_for_user.append(final_reason or pep_decision.reason)
-                await self._observe_final_pep_reject(
+                await self._observe_pep_reject_signal(
                     sid=sid,
                     tool_name=proposal.tool_name,
                     action=cp_eval.action,
@@ -3721,7 +3721,7 @@ class SessionImplMixin(HandlerMixinBase):
                     final_reason=final_reason or pep_decision.reason,
                     pep_kind=pep_decision.kind.value,
                     pep_reason=pep_decision.reason,
-                    pep_reason_code=str(getattr(pep_decision, "reason_code", "")).strip(),
+                    pep_reason_code=pep_decision.reason_code.strip(),
                     source="policy_loop",
                 )
                 await self._event_bus.publish(
@@ -3777,6 +3777,20 @@ class SessionImplMixin(HandlerMixinBase):
                         )
                     )
                 continue
+
+            if trace_only_stage2_block and pep_decision.kind.value == "reject":
+                await self._observe_pep_reject_signal(
+                    sid=sid,
+                    tool_name=proposal.tool_name,
+                    action=cp_eval.action,
+                    final_kind=final_kind,
+                    final_reason=final_reason or pep_decision.reason,
+                    pep_kind=pep_decision.kind.value,
+                    pep_reason=pep_decision.reason,
+                    pep_reason_code=pep_decision.reason_code.strip(),
+                    source="policy_loop",
+                    trace_only_stage2_confirmation=True,
+                )
 
             if final_kind == "require_confirmation":
                 pending_confirmation += 1

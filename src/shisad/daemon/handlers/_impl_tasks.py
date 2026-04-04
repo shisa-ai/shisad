@@ -431,6 +431,8 @@ class TasksImplMixin(HandlerMixinBase):
                     final_reason,
                     ",".join(cp_eval.reason_codes) or "trace:stage2_upgrade_required",
                 )
+            elif trace_only_stage2_block and final_kind == PEPDecisionKind.REJECT.value:
+                final_reason = final_reason or pep_decision.reason or "pep_reject"
             else:
                 final_kind = PEPDecisionKind.REJECT.value
                 final_reason = ",".join(cp_eval.reason_codes) or "control_plane_block"
@@ -479,7 +481,7 @@ class TasksImplMixin(HandlerMixinBase):
                 )
 
         if final_kind == PEPDecisionKind.REJECT.value:
-            await self._observe_final_pep_reject(
+            await self._observe_pep_reject_signal(
                 sid=sid,
                 tool_name=_BACKGROUND_MESSAGE_SEND,
                 action=cp_eval.action,
@@ -487,7 +489,7 @@ class TasksImplMixin(HandlerMixinBase):
                 final_reason=final_reason or pep_decision.reason,
                 pep_kind=pep_decision.kind.value,
                 pep_reason=pep_decision.reason,
-                pep_reason_code=str(getattr(pep_decision, "reason_code", "")).strip(),
+                pep_reason_code=pep_decision.reason_code.strip(),
                 source="scheduler",
             )
             return await self._reject_task_run(

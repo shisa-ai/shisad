@@ -229,7 +229,6 @@ def test_h3_phantom_action_threshold_crossing_emits_single_finding(tmp_path) -> 
             ),
             source="policy_loop",
             reason_code="pep:missing_capabilities",
-            reason="Missing capabilities: FILE_READ",
         )
         if index < 2:
             assert findings == []
@@ -266,7 +265,6 @@ def test_h3_nonqualifying_denies_do_not_emit_phantom_signal(tmp_path) -> None:
             ),
             source="policy_loop",
             reason_code="pep:schema_validation_failed",
-            reason="Schema validation failed: missing path",
         )
         assert findings == []
 
@@ -280,6 +278,67 @@ def test_h3_nonqualifying_denies_do_not_emit_phantom_signal(tmp_path) -> None:
     )
     assert len(deny_rows) == 4
     assert phantom_rows == []
+
+
+def test_h3_mixed_capability_rule_reason_codes_still_cross_threshold(tmp_path) -> None:
+    engine = ControlPlaneEngine.build(data_dir=tmp_path / "cp-h3-mixed")
+    origin = _origin("h3-mixed")
+
+    findings = []
+    for index, reason_code in enumerate(
+        (
+            "pep:missing_capabilities",
+            "pep:tool_not_permitted",
+            "pep:resource_authorization_failed",
+        )
+    ):
+        findings = engine.observe_denied_action(
+            action=build_action(
+                tool_name="file.read",
+                arguments={"path": f"/tmp/mixed-{index}.txt"},
+                origin=origin,
+            ),
+            source="policy_loop",
+            reason_code=reason_code,
+        )
+        if index < 2:
+            assert findings == []
+
+    assert len(findings) == 1
+    assert findings[0].pattern_name == "phantom_capability_probe"
+    assert findings[0].observation_count == 3
+
+
+def test_h3_unattributed_egress_audit_stays_metadata_only(tmp_path) -> None:
+    engine = ControlPlaneEngine.build(
+        data_dir=tmp_path / "cp-h3-egress",
+        phantom_deny_threshold=0,
+    )
+    origin = _origin("h3-egress")
+
+    findings = []
+    for host in ("one.example", "two.example"):
+        findings = engine.observe_denied_action(
+            action=build_action(
+                tool_name="http_request",
+                arguments={"url": f"https://{host}/upload"},
+                origin=origin,
+            ),
+            source="policy_loop",
+            reason_code="pep:destination_unattributed",
+        )
+
+    assert len(findings) == 1
+    assert findings[0].pattern_name == "phantom_unattributed_egress"
+    assert findings[0].observation_count == 2
+
+    deny_rows = engine.audit.query(
+        event_type="denied_action_observed",
+        session_id=origin.session_id,
+    )
+    assert len(deny_rows) == 2
+    assert deny_rows[0]["data"]["reason_code"] == "pep:destination_unattributed"
+    assert "reason" not in deny_rows[0]["data"]
 
 
 def test_m5_t3_resource_monitor_detects_credential_access() -> None:

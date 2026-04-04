@@ -100,6 +100,10 @@ from shisad.security.control_plane.schema import (
     build_action,
     extract_request_size_bytes,
 )
+from shisad.security.control_plane.sidecar import (
+    ControlPlaneRpcError,
+    ControlPlaneUnavailableError,
+)
 from shisad.security.leakcheck import CrossThreadLeakDetector
 from shisad.security.reputation import ReputationScorer
 from shisad.security.taint import label_tool_output, normalize_retrieval_taints
@@ -1211,7 +1215,7 @@ class HandlerImplementation(
                 )
             )
 
-    async def _observe_final_pep_reject(
+    async def _observe_pep_reject_signal(
         self,
         *,
         sid: SessionId,
@@ -1223,21 +1227,37 @@ class HandlerImplementation(
         pep_reason: str,
         pep_reason_code: str,
         source: str,
+        trace_only_stage2_confirmation: bool = False,
     ) -> None:
-        if pep_kind != "reject" or final_kind != "reject":
+        if pep_kind != "reject":
             return
-        normalized_final_reason = final_reason.strip()
-        normalized_pep_reason = pep_reason.strip()
-        if normalized_final_reason not in {normalized_pep_reason, "pep_reject"}:
+        if trace_only_stage2_confirmation:
+            if final_kind != "require_confirmation":
+                return
+        else:
+            if final_kind != "reject":
+                return
+            normalized_final_reason = final_reason.strip()
+            normalized_pep_reason = pep_reason.strip()
+            if normalized_final_reason not in {normalized_pep_reason, "pep_reject"}:
+                return
+        try:
+            findings = await _call_control_plane(
+                self,
+                "observe_denied_action",
+                action=action,
+                source=source,
+                reason_code=pep_reason_code,
+            )
+        except (ControlPlaneRpcError, ControlPlaneUnavailableError) as exc:
+            logger.warning(
+                "Denied-action observation unavailable; continuing without H3 warning "
+                "(session_id=%s tool_name=%s reason_code=%s)",
+                sid,
+                tool_name,
+                getattr(exc, "reason_code", "control_plane.unavailable"),
+            )
             return
-        findings = await _call_control_plane(
-            self,
-            "observe_denied_action",
-            action=action,
-            source=source,
-            reason_code=pep_reason_code,
-            reason=pep_reason,
-        )
         for finding in findings:
             await self._event_bus.publish(
                 AnomalyReported(

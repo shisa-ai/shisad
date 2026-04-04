@@ -133,7 +133,7 @@ class ControlPlaneEngine:
             default_ttl_seconds=trace_ttl_seconds,
             default_max_actions=trace_max_actions,
         )
-        threshold = max(1, int(phantom_deny_threshold))
+        threshold = max(2, int(phantom_deny_threshold))
         window_seconds = max(1, int(phantom_deny_window_seconds))
         sequence_analyzer = BehavioralSequenceAnalyzer(
             phantom_rules=[
@@ -343,7 +343,6 @@ class ControlPlaneEngine:
         action: ControlPlaneAction,
         source: str,
         reason_code: str,
-        reason: str,
     ) -> list[SequenceFinding]:
         record = self._history_store.append_denied_action(
             action,
@@ -360,7 +359,6 @@ class ControlPlaneEngine:
                 "resource_id": action.resource_id,
                 "network_hosts": list(action.network_hosts),
                 "reason_code": reason_code,
-                "reason": reason,
                 "source": source,
             },
         )
