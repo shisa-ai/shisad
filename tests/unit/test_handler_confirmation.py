@@ -29,6 +29,10 @@ from shisad.core.types import (
 from shisad.daemon.context import RequestContext
 from shisad.daemon.handlers._impl import PendingAction
 from shisad.daemon.handlers._impl_confirmation import ConfirmationImplMixin
+from shisad.daemon.handlers._pending_approval import (
+    PendingPepContextSnapshot,
+    PendingPepElevationRequest,
+)
 from shisad.daemon.handlers.confirmation import ConfirmationHandlers
 from shisad.security.control_plane.schema import Origin, RiskTier
 from shisad.security.control_plane.sidecar import ControlPlaneRpcError
@@ -111,6 +115,29 @@ def _registry_for_evidence() -> ToolRegistry:
     return registry
 
 
+def _registry_for_confirmation() -> ToolRegistry:
+    registry = _registry_for_evidence()
+    registry.register(
+        ToolDefinition(
+            name=ToolName("web.fetch"),
+            description="fetch a URL",
+            parameters=[ToolParameter(name="url", type="string", required=True)],
+            capabilities_required=[Capability.HTTP_REQUEST],
+            require_confirmation=False,
+        )
+    )
+    registry.register(
+        ToolDefinition(
+            name=ToolName("web.search"),
+            description="search the web",
+            parameters=[ToolParameter(name="query", type="string", required=True)],
+            capabilities_required=[Capability.HTTP_REQUEST],
+            require_confirmation=False,
+        )
+    )
+    return registry
+
+
 class _ControlPlaneRecorder:
     def __init__(self) -> None:
         self.approved_actions: list[object] = []
@@ -156,6 +183,10 @@ class _ConfirmationImplHarness(ConfirmationImplMixin):
         self._transcript_store = TranscriptStore(tmp_path / "sessions")
         self._evidence_store = EvidenceStore(tmp_path / "evidence", salt=b"a" * 32)
         self._execute_success = execute_success
+        self._pep = PEP(
+            PolicyBundle(default_require_confirmation=False),
+            _registry_for_confirmation(),
+        )
 
     async def _noop_publish(self, _event: object) -> None:
         self.published_events.append(_event)
@@ -207,6 +238,7 @@ class _ConfirmationImplHarness(ConfirmationImplMixin):
         self.execution_kwargs.append(
             {
                 "tool_name": str(tool_name),
+                "capabilities": sorted(cap.value for cap in capabilities),
                 "approval_confirmation_id": approval_confirmation_id,
                 "approval_decision_nonce": approval_decision_nonce,
                 "approval_task_envelope_id": approval_task_envelope_id,
@@ -266,6 +298,22 @@ def _pending_action(*, nonce: str, execute_after: datetime | None = None) -> Pen
         capabilities={Capability.HTTP_REQUEST},
         created_at=datetime.now(UTC),
         execute_after=execute_after,
+    )
+
+
+def _pep_context_snapshot(
+    *,
+    capabilities: set[Capability],
+) -> PendingPepContextSnapshot:
+    return PendingPepContextSnapshot(
+        capabilities=set(capabilities),
+        taint_labels=set(),
+        user_goal_host_patterns={"example.com"},
+        untrusted_host_patterns=set(),
+        tool_allowlist=None,
+        trust_level="trusted",
+        credential_refs=set(),
+        enforce_explicit_credential_refs=False,
     )
 
 
@@ -387,6 +435,60 @@ async def test_m1_rlc3_stage2_fallback_confirmation_uses_low_risk_tier(tmp_path)
     assert harness._control_plane.approved_actions
     approved = harness._control_plane.approved_actions[0]
     assert getattr(approved, "risk_tier", None) == RiskTier.LOW
+
+
+@pytest.mark.asyncio
+async def test_trace_only_capability_elevation_rechecks_pep_and_executes(tmp_path) -> None:
+    harness = _ConfirmationImplHarness(tmp_path, allow_amendment=True)
+    pending = _pending_action(nonce="expected")
+    pending.tool_name = ToolName("web.fetch")
+    pending.arguments = {"url": "https://example.com"}
+    pending.reason = "trace:stage2_upgrade_required"
+    pending.capabilities = set()
+    pending.pep_context = _pep_context_snapshot(capabilities=set())
+    pending.pep_elevation = PendingPepElevationRequest(
+        kind="capability_grant",
+        reason_code="pep:missing_capabilities",
+        capability_grants={Capability.HTTP_REQUEST},
+    )
+    harness._pending_actions["c-1"] = pending
+
+    result = await harness.do_action_confirm(
+        {"confirmation_id": "c-1", "decision_nonce": "expected"}
+    )
+
+    assert result["confirmed"] is True
+    assert len(harness.execution_kwargs) == 1
+    assert harness.execution_kwargs[0]["tool_name"] == "web.fetch"
+    assert harness.execution_kwargs[0]["capabilities"] == ["http.request"]
+
+
+@pytest.mark.asyncio
+async def test_trace_only_capability_elevation_fails_closed_when_pep_still_rejects(
+    tmp_path,
+) -> None:
+    harness = _ConfirmationImplHarness(tmp_path, allow_amendment=True)
+    pending = _pending_action(nonce="expected")
+    pending.tool_name = ToolName("web.fetch")
+    pending.arguments = {}
+    pending.reason = "trace:stage2_upgrade_required"
+    pending.capabilities = set()
+    pending.pep_context = _pep_context_snapshot(capabilities=set())
+    pending.pep_elevation = PendingPepElevationRequest(
+        kind="capability_grant",
+        reason_code="pep:missing_capabilities",
+        capability_grants={Capability.HTTP_REQUEST},
+    )
+    harness._pending_actions["c-1"] = pending
+
+    result = await harness.do_action_confirm(
+        {"confirmation_id": "c-1", "decision_nonce": "expected"}
+    )
+
+    assert result["confirmed"] is False
+    assert result["status"] == "rejected"
+    assert result["status_reason"] == "pep:schema_validation_failed"
+    assert harness.execution_kwargs == []
 
 
 @pytest.mark.asyncio

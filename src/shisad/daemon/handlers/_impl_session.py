@@ -89,6 +89,11 @@ from shisad.daemon.handlers._mixin_typing import (
 from shisad.daemon.handlers._mixin_typing import (
     call_control_plane as _call_control_plane,
 )
+from shisad.daemon.handlers._pending_approval import (
+    PendingPepContextSnapshot,
+    capability_elevation_for_missing_capabilities,
+    pep_arguments_for_policy_evaluation,
+)
 from shisad.daemon.handlers._task_scope import task_resource_authorizer
 from shisad.governance.merge import PolicyMergeError
 from shisad.memory.ingestion import IngestionPipeline
@@ -969,6 +974,21 @@ def _planner_runtime_tool_allowlist(
         for tool_name in base_allowlist
         if canonical_tool_name_typed(str(tool_name)) != report_tool
     }
+
+
+def _pending_pep_context_snapshot(context: PolicyContext) -> PendingPepContextSnapshot:
+    return PendingPepContextSnapshot(
+        capabilities=set(context.capabilities),
+        taint_labels=set(context.taint_labels),
+        user_goal_host_patterns=set(context.user_goal_host_patterns),
+        untrusted_host_patterns=set(context.untrusted_host_patterns),
+        tool_allowlist=(
+            set(context.tool_allowlist) if context.tool_allowlist is not None else None
+        ),
+        trust_level=context.trust_level,
+        credential_refs=set(context.credential_refs),
+        enforce_explicit_credential_refs=bool(context.enforce_explicit_credential_refs),
+    )
 
 
 def _normalize_explicit_memory_intent_text(text: str) -> str:
@@ -3540,8 +3560,10 @@ class SessionImplMixin(HandlerMixinBase):
                 tool_name=proposal.tool_name,
                 arguments=proposal.arguments,
             )
-            pep_arguments = dict(proposal_arguments)
-            pep_arguments.pop("resolved_target", None)
+            pep_arguments = pep_arguments_for_policy_evaluation(
+                proposal.tool_name,
+                proposal_arguments,
+            )
             pep_decision = self._pep.evaluate(
                 proposal.tool_name,
                 pep_arguments,
@@ -3605,6 +3627,15 @@ class SessionImplMixin(HandlerMixinBase):
                 and str(getattr(cp_eval.action.action_kind, "value", cp_eval.action.action_kind))
                 == ActionKind.SHELL_EXEC.value
             )
+            pep_elevation = None
+            if trace_only_stage2_block and pep_decision.kind.value == "reject":
+                pep_elevation = capability_elevation_for_missing_capabilities(
+                    reason_code=pep_decision.reason_code.strip(),
+                    session_capabilities=set(planner_context.context.capabilities),
+                    required_capabilities=(
+                        set(tool_def.capabilities_required) if tool_def is not None else set()
+                    ),
+                )
             await self._publish_control_plane_evaluation(
                 sid=sid,
                 tool_name=proposal.tool_name,
@@ -3620,9 +3651,17 @@ class SessionImplMixin(HandlerMixinBase):
                 block_threshold=self._policy_loader.policy.risk_policy.block_threshold,
             )
             if cp_eval.decision == ControlDecision.BLOCK:
-                if trace_only_stage2_block:
+                # Trace-only stage2 can route to confirmation, but only when the
+                # underlying PEP result is already confirmable or can be retried
+                # under an explicit, scoped elevation request.
+                if trace_only_stage2_block and (
+                    pep_decision.kind.value != "reject" or pep_elevation is not None
+                ):
                     final_kind = "require_confirmation"
                     final_reason = ",".join(cp_eval.reason_codes) or "trace:stage2_upgrade_required"
+                elif pep_decision.kind.value == "reject":
+                    final_kind = "reject"
+                    final_reason = pep_decision.reason or "pep_reject"
                 else:
                     final_kind = "reject"
                     final_reason = ",".join(cp_eval.reason_codes) or "control_plane_block"
@@ -3778,7 +3817,7 @@ class SessionImplMixin(HandlerMixinBase):
                     )
                 continue
 
-            if trace_only_stage2_block and pep_decision.kind.value == "reject":
+            if pep_elevation is not None:
                 await self._observe_pep_reject_signal(
                     sid=sid,
                     tool_name=proposal.tool_name,
@@ -3843,6 +3882,12 @@ class SessionImplMixin(HandlerMixinBase):
                     merged_policy=merged_policy,
                     taint_labels=list(planner_context.context.taint_labels),
                     extra_warnings=extra_warnings,
+                    pep_context=(
+                        _pending_pep_context_snapshot(planner_context.context)
+                        if pep_elevation is not None
+                        else None
+                    ),
+                    pep_elevation=pep_elevation,
                 )
                 pending_confirmation_ids.append(pending.confirmation_id)
                 await self._event_bus.publish(

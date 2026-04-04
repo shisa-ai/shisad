@@ -17,6 +17,10 @@ from shisad.daemon.handlers._mixin_typing import (
 from shisad.daemon.handlers._mixin_typing import (
     call_control_plane as _call_control_plane,
 )
+from shisad.daemon.handlers._pending_approval import (
+    build_policy_context_for_pending_action,
+    pep_arguments_for_policy_evaluation,
+)
 from shisad.security.control_plane.schema import RiskTier, build_action
 from shisad.security.control_plane.sidecar import ControlPlaneRpcError
 
@@ -98,6 +102,7 @@ class ConfirmationImplMixin(HandlerMixinBase):
             if status_filter and item.status.lower() != status_filter:
                 continue
             payload = self._pending_to_dict(item)
+            payload.pop("pep_context", None)
             if not include_ui:
                 payload.pop("safe_preview", None)
                 payload.pop("warnings", None)
@@ -332,6 +337,106 @@ class ConfirmationImplMixin(HandlerMixinBase):
                 )
             )
 
+        execution_capabilities = set(pending.capabilities)
+        pep_elevation = getattr(pending, "pep_elevation", None)
+        if pep_elevation is not None:
+            # Human approval authorizes a scoped retry; it does not directly
+            # execute an action that the original PEP evaluation rejected.
+            pep_context = getattr(pending, "pep_context", None)
+            if pep_context is None:
+                pending.status = "failed"
+                pending.status_reason = "pep_elevation_context_missing"
+                decision_timestamp = datetime.now(UTC).isoformat()
+                await self._event_bus.publish(
+                    ToolRejected(
+                        session_id=pending.session_id,
+                        actor="human_confirmation",
+                        tool_name=pending.tool_name,
+                        reason="pep_elevation_context_missing",
+                        approval_session_id=str(pending.session_id),
+                        approval_task_envelope_id=str(
+                            getattr(pending, "approval_task_envelope_id", "")
+                        ).strip(),
+                        approval_confirmation_id=str(pending.confirmation_id),
+                        approval_decision_nonce=str(pending.decision_nonce),
+                        approval_timestamp=decision_timestamp,
+                    )
+                )
+                self._sync_task_confirmation_status(pending)
+                self._record_task_confirmation_outcome(pending, success=False)
+                self._persist_pending_actions()
+                self._confirmation_analytics.record(
+                    user_id=str(pending.user_id),
+                    decision="reject",
+                    created_at=pending.created_at,
+                )
+                await self._maybe_emit_confirmation_hygiene_alert(
+                    user_id=str(pending.user_id),
+                    session_id=pending.session_id,
+                )
+                return {
+                    "confirmed": False,
+                    "confirmation_id": confirmation_id,
+                    "reason": "pep_elevation_context_missing",
+                    "status": pending.status,
+                    "status_reason": pending.status_reason,
+                }
+            policy_context = build_policy_context_for_pending_action(
+                session=session,
+                pending_session_id=pending.session_id,
+                pending_workspace_id=pending.workspace_id,
+                pending_user_id=pending.user_id,
+                snapshot=pep_context,
+                elevation=pep_elevation,
+            )
+            pep_decision = self._pep.evaluate(
+                pending.tool_name,
+                pep_arguments_for_policy_evaluation(pending.tool_name, pending.arguments),
+                policy_context,
+            )
+            execution_capabilities = set(policy_context.capabilities)
+            if pep_decision.kind.value == "reject":
+                pending.status = "rejected"
+                pending.status_reason = (
+                    pep_decision.reason_code.strip() or "pep_reject_after_confirmation"
+                )
+                decision_timestamp = datetime.now(UTC).isoformat()
+                await self._event_bus.publish(
+                    ToolRejected(
+                        session_id=pending.session_id,
+                        actor="human_confirmation",
+                        tool_name=pending.tool_name,
+                        reason=pep_decision.reason or pending.status_reason,
+                        approval_session_id=str(pending.session_id),
+                        approval_task_envelope_id=str(
+                            getattr(pending, "approval_task_envelope_id", "")
+                        ).strip(),
+                        approval_confirmation_id=str(pending.confirmation_id),
+                        approval_decision_nonce=str(pending.decision_nonce),
+                        approval_timestamp=decision_timestamp,
+                    )
+                )
+                self._sync_task_confirmation_status(pending)
+                self._record_task_confirmation_outcome(pending, success=False)
+                self._persist_pending_actions()
+                self._confirmation_analytics.record(
+                    user_id=str(pending.user_id),
+                    decision="reject",
+                    created_at=pending.created_at,
+                )
+                await self._maybe_emit_confirmation_hygiene_alert(
+                    user_id=str(pending.user_id),
+                    session_id=pending.session_id,
+                )
+                return {
+                    "confirmed": False,
+                    "confirmation_id": confirmation_id,
+                    "decision_nonce": pending.decision_nonce,
+                    "status": pending.status,
+                    "status_reason": pending.status_reason,
+                    "reason": pending.status_reason,
+                }
+
         decision_timestamp = datetime.now(UTC).isoformat()
         decision_at = datetime.fromisoformat(decision_timestamp)
         promote_ref_id = str(pending.arguments.get("ref_id", "")).strip()
@@ -340,7 +445,7 @@ class ConfirmationImplMixin(HandlerMixinBase):
             user_id=pending.user_id,
             tool_name=pending.tool_name,
             arguments=pending.arguments,
-            capabilities=set(pending.capabilities),
+            capabilities=execution_capabilities,
             approval_actor="human_confirmation",
             execution_action=pending_preflight_action,
             merged_policy=pending.merged_policy,

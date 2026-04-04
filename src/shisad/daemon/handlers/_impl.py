@@ -68,6 +68,15 @@ from shisad.daemon.handlers._impl_skills import SkillsImplMixin
 from shisad.daemon.handlers._impl_tasks import TasksImplMixin
 from shisad.daemon.handlers._impl_tool_execution import ToolExecutionImplMixin
 from shisad.daemon.handlers._mixin_typing import call_control_plane as _call_control_plane
+from shisad.daemon.handlers._pending_approval import (
+    PendingPepContextSnapshot,
+    PendingPepElevationRequest,
+    pending_pep_context_from_payload,
+    pending_pep_context_to_payload,
+    pending_pep_elevation_from_payload,
+    pending_pep_elevation_to_payload,
+    pending_pep_elevation_warning,
+)
 from shisad.daemon.handlers._side_effects import is_side_effect_tool
 from shisad.daemon.handlers._string_utils import optional_string
 from shisad.daemon.handlers._tool_exec_helpers import execute_structured_tool
@@ -724,6 +733,8 @@ class PendingAction:
     leak_check: dict[str, Any] = field(default_factory=dict)
     merged_policy: ToolExecutionPolicy | None = None
     approval_task_envelope_id: str = ""
+    pep_context: PendingPepContextSnapshot | None = None
+    pep_elevation: PendingPepElevationRequest | None = None
     status: str = "pending"
     status_reason: str = ""
 
@@ -1680,6 +1691,10 @@ class HandlerImplementation(
             payload["preflight_action"] = pending.preflight_action.model_dump(mode="json")
         if pending.merged_policy is not None:
             payload["merged_policy"] = pending.merged_policy.model_dump(mode="json")
+        if pending.pep_context is not None:
+            payload["pep_context"] = pending_pep_context_to_payload(pending.pep_context)
+        if pending.pep_elevation is not None:
+            payload["pep_elevation"] = pending_pep_elevation_to_payload(pending.pep_elevation)
         return payload
 
     @staticmethod
@@ -1729,6 +1744,8 @@ class HandlerImplementation(
         merged_policy: ToolExecutionPolicy | None = None,
         taint_labels: list[TaintLabel] | None = None,
         extra_warnings: list[str] | None = None,
+        pep_context: PendingPepContextSnapshot | None = None,
+        pep_elevation: PendingPepElevationRequest | None = None,
     ) -> PendingAction:
         created_at = datetime.now(UTC)
         decision_nonce = uuid.uuid4().hex
@@ -1746,6 +1763,9 @@ class HandlerImplementation(
             arguments=arguments,
             taint_labels=[label.value for label in taint_labels or []],
         )
+        elevation_warning = pending_pep_elevation_warning(pep_elevation)
+        if elevation_warning:
+            warnings.append(elevation_warning)
         if extra_warnings:
             warnings.extend(str(item).strip() for item in extra_warnings if str(item).strip())
         leak_result_payload: dict[str, Any] = {}
@@ -1804,6 +1824,35 @@ class HandlerImplementation(
             approval_task_envelope_id=HandlerImplementation._approval_task_envelope_id_for_session(
                 session
             ),
+            pep_context=(
+                PendingPepContextSnapshot(
+                    capabilities=set(pep_context.capabilities),
+                    taint_labels=set(pep_context.taint_labels),
+                    user_goal_host_patterns=set(pep_context.user_goal_host_patterns),
+                    untrusted_host_patterns=set(pep_context.untrusted_host_patterns),
+                    tool_allowlist=(
+                        set(pep_context.tool_allowlist)
+                        if pep_context.tool_allowlist is not None
+                        else None
+                    ),
+                    trust_level=pep_context.trust_level,
+                    credential_refs=set(pep_context.credential_refs),
+                    enforce_explicit_credential_refs=bool(
+                        pep_context.enforce_explicit_credential_refs
+                    ),
+                )
+                if pep_context is not None
+                else None
+            ),
+            pep_elevation=(
+                PendingPepElevationRequest(
+                    kind=pep_elevation.kind,
+                    reason_code=pep_elevation.reason_code,
+                    capability_grants=set(pep_elevation.capability_grants),
+                )
+                if pep_elevation is not None
+                else None
+            ),
         )
         self._pending_actions[confirmation_id] = pending
         self._pending_by_session.setdefault(session_id, []).append(confirmation_id)
@@ -1853,6 +1902,18 @@ class HandlerImplementation(
                 execute_after = (
                     datetime.fromisoformat(execute_after_raw) if execute_after_raw else None
                 )
+                pep_context_payload = item.get("pep_context")
+                pep_context = (
+                    pending_pep_context_from_payload(pep_context_payload)
+                    if isinstance(pep_context_payload, Mapping)
+                    else None
+                )
+                pep_elevation_payload = item.get("pep_elevation")
+                pep_elevation = (
+                    pending_pep_elevation_from_payload(pep_elevation_payload)
+                    if isinstance(pep_elevation_payload, Mapping)
+                    else None
+                )
                 pending = PendingAction(
                     confirmation_id=confirmation_id,
                     decision_nonce=str(item.get("decision_nonce", "")) or uuid.uuid4().hex,
@@ -1876,6 +1937,8 @@ class HandlerImplementation(
                     approval_task_envelope_id=str(
                         item.get("approval_task_envelope_id", "")
                     ).strip(),
+                    pep_context=pep_context,
+                    pep_elevation=pep_elevation,
                     status=str(item.get("status", "pending")),
                     status_reason=str(item.get("status_reason", "")),
                 )

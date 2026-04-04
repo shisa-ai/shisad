@@ -642,7 +642,7 @@ async def test_h3_session_message_repeated_pep_rejects_emit_warning_without_lock
 
 
 @pytest.mark.asyncio
-async def test_h3_trace_only_stage2_confirmation_still_records_underlying_pep_denies(
+async def test_h3_trace_only_stage2_capability_elevation_still_records_underlying_pep_denies(
     model_env: None,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -660,7 +660,7 @@ async def test_h3_trace_only_stage2_confirmation_still_records_underlying_pep_de
             action_id="h3-trace-only-hard-reject",
             tool_name=ToolName("web.fetch"),
             arguments={"url": "https://example.com"},
-            reasoning="h3 hard reject must stay reject",
+            reasoning="h3 capability elevation should stay explicit",
             data_sources=[],
         )
         decision = self._pep.evaluate(proposal.tool_name, proposal.arguments, context)
@@ -680,6 +680,12 @@ async def test_h3_trace_only_stage2_confirmation_still_records_underlying_pep_de
             "version": "1",
             "default_require_confirmation": False,
             "default_capabilities": [],
+            "egress": [
+                {
+                    "host": "example.com",
+                    "protocols": ["https"],
+                }
+            ],
         },
     )
     try:
@@ -715,6 +721,165 @@ async def test_h3_trace_only_stage2_confirmation_still_records_underlying_pep_de
             {"session_id": sid, "status": "pending", "limit": 20},
         )
         assert len(pending["actions"]) >= 1
+        assert any(
+            dict(item.get("pep_elevation", {})).get("capability_grants") == ["http.request"]
+            for item in pending["actions"]
+        )
+    finally:
+        await _shutdown(daemon_task, client)
+
+
+@pytest.mark.asyncio
+async def test_h3_trace_only_capability_elevation_confirmation_rechecks_pep_and_executes(
+    model_env: None,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _forced_web_fetch_without_capability(
+        self: Planner,
+        user_content: str,
+        context: object,
+        *,
+        tools: list[dict[str, object]] | None = None,
+        persona_tone_override: str | None = None,
+    ) -> PlannerResult:
+        _ = user_content, tools, persona_tone_override
+        proposal = ActionProposal(
+            action_id="h3-explicit-elevation-confirm",
+            tool_name=ToolName("web.fetch"),
+            arguments={"url": "https://example.com"},
+            reasoning="user-approved capability elevation should re-run PEP",
+            data_sources=[],
+        )
+        decision = self._pep.evaluate(proposal.tool_name, proposal.arguments, context)
+        return PlannerResult(
+            output=PlannerOutput(actions=[proposal], assistant_response="fetch pending approval"),
+            evaluated=[EvaluatedProposal(proposal=proposal, decision=decision)],
+            attempts=1,
+            provider_response=None,
+            messages_sent=(),
+        )
+
+    monkeypatch.setattr(Planner, "propose", _forced_web_fetch_without_capability)
+
+    daemon_task, client = await _start_daemon_with_policy(
+        tmp_path,
+        policy={
+            "version": "1",
+            "default_require_confirmation": False,
+            "default_capabilities": [],
+            "egress": [
+                {
+                    "host": "example.com",
+                    "protocols": ["https"],
+                }
+            ],
+        },
+    )
+    try:
+        created = await client.call("session.create", {"channel": "cli"})
+        sid = created["session_id"]
+
+        reply = await client.call(
+            "session.message",
+            {"session_id": sid, "content": "fetch https://example.com"},
+        )
+        assert int(reply.get("blocked_actions", 0)) == 0
+        assert int(reply.get("confirmation_required_actions", 0)) >= 1
+        pending_ids = list(reply.get("pending_confirmation_ids", []))
+        assert pending_ids
+
+        pending = await client.call(
+            "action.pending",
+            {"confirmation_id": str(pending_ids[0])},
+        )
+        actions = list(pending.get("actions", []))
+        assert len(actions) == 1
+        action = actions[0]
+        assert dict(action.get("pep_elevation", {})).get("capability_grants") == ["http.request"]
+
+        await asyncio.sleep(3.1)
+        confirmed = await client.call(
+            "action.confirm",
+            {
+                "confirmation_id": str(pending_ids[0]),
+                "decision_nonce": str(action["decision_nonce"]),
+                "reason": "operator_approved",
+            },
+        )
+        assert confirmed["confirmed"] is True
+        assert confirmed["status"] == "approved"
+
+        executed = await client.call(
+            "audit.query",
+            {"event_type": "ToolExecuted", "session_id": sid, "limit": 20},
+        )
+        assert any(
+            str(event.get("data", {}).get("tool_name", "")) == "web.fetch"
+            and bool(event.get("data", {}).get("success")) is True
+            for event in executed["events"]
+        )
+    finally:
+        await _shutdown(daemon_task, client)
+
+
+@pytest.mark.asyncio
+async def test_h3_trace_only_non_elevatable_pep_reject_stays_blocked(
+    model_env: None,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _forced_invalid_web_fetch(
+        self: Planner,
+        user_content: str,
+        context: object,
+        *,
+        tools: list[dict[str, object]] | None = None,
+        persona_tone_override: str | None = None,
+    ) -> PlannerResult:
+        _ = user_content, tools, persona_tone_override
+        proposal = ActionProposal(
+            action_id="h3-schema-invalid-must-stay-blocked",
+            tool_name=ToolName("web.fetch"),
+            arguments={},
+            reasoning="schema-invalid action must not become confirmable",
+            data_sources=[],
+        )
+        decision = self._pep.evaluate(proposal.tool_name, proposal.arguments, context)
+        return PlannerResult(
+            output=PlannerOutput(actions=[proposal], assistant_response="fetch blocked"),
+            evaluated=[EvaluatedProposal(proposal=proposal, decision=decision)],
+            attempts=1,
+            provider_response=None,
+            messages_sent=(),
+        )
+
+    monkeypatch.setattr(Planner, "propose", _forced_invalid_web_fetch)
+
+    daemon_task, client = await _start_daemon_with_policy(
+        tmp_path,
+        policy={
+            "version": "1",
+            "default_require_confirmation": False,
+            "default_capabilities": [],
+        },
+    )
+    try:
+        created = await client.call("session.create", {"channel": "cli"})
+        sid = created["session_id"]
+
+        reply = await client.call(
+            "session.message",
+            {"session_id": sid, "content": "fetch the page"},
+        )
+        assert int(reply.get("blocked_actions", 0)) >= 1
+        assert int(reply.get("confirmation_required_actions", 0)) == 0
+
+        pending = await client.call(
+            "action.pending",
+            {"session_id": sid, "status": "pending", "limit": 20},
+        )
+        assert pending["count"] == 0
     finally:
         await _shutdown(daemon_task, client)
 
