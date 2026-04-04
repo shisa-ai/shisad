@@ -168,6 +168,7 @@ class AdminImplMixin(HandlerMixinBase):
             "tools_registered": [tool.name for tool in self._registry.list_tools()],
             "model_routes": dict(self._model_routes),
             "classifier_mode": self._classifier_mode,
+            "content_firewall": self._firewall.status_snapshot(),
             "yara_required": self._policy_loader.policy.yara_required,
             "risk_policy_version": self._policy_loader.policy.risk_policy.version,
             "risk_thresholds": {

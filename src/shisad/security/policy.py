@@ -12,7 +12,7 @@ import hashlib
 import logging
 import signal
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import yaml
 from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
@@ -243,6 +243,32 @@ class SkillPolicy(BaseModel):
     )
 
 
+class ContentFirewallSemanticClassifierPolicy(BaseModel):
+    """PromptGuard 2 posture and threshold settings."""
+
+    posture: Literal["off", "best_effort", "required"] = "best_effort"
+    model_path: str = ""
+    medium_threshold: float = Field(default=0.35, ge=0.0, le=1.0)
+    high_threshold: float = Field(default=0.7, ge=0.0, le=1.0)
+    critical_threshold: float = Field(default=0.9, ge=0.0, le=1.0)
+
+    @model_validator(mode="after")
+    def _validate_thresholds(self) -> ContentFirewallSemanticClassifierPolicy:
+        if not self.medium_threshold < self.high_threshold < self.critical_threshold:
+            raise ValueError(
+                "content_firewall.semantic_classifier thresholds must be strictly increasing"
+            )
+        return self
+
+
+class ContentFirewallPolicy(BaseModel):
+    """Content-firewall configuration knobs."""
+
+    semantic_classifier: ContentFirewallSemanticClassifierPolicy = Field(
+        default_factory=ContentFirewallSemanticClassifierPolicy
+    )
+
+
 class PolicyBundle(BaseModel):
     """Top-level policy bundle matching the public security architecture docs."""
 
@@ -280,6 +306,7 @@ class PolicyBundle(BaseModel):
     control_plane: ControlPlanePolicy = Field(default_factory=ControlPlanePolicy)
     sandbox: SandboxPolicy = Field(default_factory=SandboxPolicy)
     skills: SkillPolicy = Field(default_factory=SkillPolicy)
+    content_firewall: ContentFirewallPolicy = Field(default_factory=ContentFirewallPolicy)
     yara_required: bool = False
     safe_output_domains: list[str] = Field(default_factory=list)
 

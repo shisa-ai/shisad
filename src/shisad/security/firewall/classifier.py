@@ -1,4 +1,4 @@
-"""Prompt injection classifier (pattern fast-path + semantic stub hook)."""
+"""Prompt injection classifier primitives."""
 
 from __future__ import annotations
 
@@ -6,6 +6,8 @@ import base64
 import binascii
 import logging
 import re
+from dataclasses import dataclass, field
+from enum import StrEnum
 from pathlib import Path
 from typing import Any, ClassVar, Protocol
 
@@ -20,12 +22,325 @@ class InjectionClassification(BaseModel):
     risk_score: float = 0.0
     risk_factors: list[str] = Field(default_factory=list)
     matched_patterns: list[str] = Field(default_factory=list)
+    semantic_risk_score: float = 0.0
+    semantic_risk_tier: str = "none"
+    semantic_classifier_id: str = ""
 
 
 class SemanticClassifier(Protocol):
     """Optional semantic classifier integration point."""
 
     def classify(self, text: str) -> InjectionClassification: ...
+
+
+class PromptGuardBackend(Protocol):
+    """Backend that returns PromptGuard maliciousness scores per chunk."""
+
+    model_source: str
+
+    def score_text(self, text: str) -> list[float]: ...
+
+
+class SemanticRiskTier(StrEnum):
+    NONE = "none"
+    MEDIUM = "medium"
+    HIGH = "high"
+    CRITICAL = "critical"
+
+
+@dataclass(slots=True, frozen=True)
+class PromptGuardThresholds:
+    medium: float = 0.35
+    high: float = 0.7
+    critical: float = 0.9
+
+    def __post_init__(self) -> None:
+        values = (self.medium, self.high, self.critical)
+        if any(item < 0.0 or item > 1.0 for item in values):
+            raise ValueError("PromptGuard thresholds must stay within [0.0, 1.0]")
+        if not self.medium < self.high < self.critical:
+            raise ValueError("PromptGuard thresholds must be strictly increasing")
+
+    def tier_for(self, score: float) -> SemanticRiskTier:
+        normalized = min(max(float(score), 0.0), 1.0)
+        if normalized >= self.critical:
+            return SemanticRiskTier.CRITICAL
+        if normalized >= self.high:
+            return SemanticRiskTier.HIGH
+        if normalized >= self.medium:
+            return SemanticRiskTier.MEDIUM
+        return SemanticRiskTier.NONE
+
+    def as_dict(self) -> dict[str, float]:
+        return {
+            "medium": self.medium,
+            "high": self.high,
+            "critical": self.critical,
+        }
+
+
+@dataclass(slots=True, frozen=True)
+class PromptGuardSettings:
+    posture: str = "best_effort"
+    model_path: str = ""
+    thresholds: PromptGuardThresholds = field(default_factory=PromptGuardThresholds)
+
+    def __post_init__(self) -> None:
+        if self.posture not in {"off", "best_effort", "required"}:
+            raise ValueError(f"Unsupported PromptGuard posture: {self.posture}")
+
+
+@dataclass(slots=True, frozen=True)
+class PromptGuardRuntimeStatus:
+    posture: str
+    status: str
+    reason: str = ""
+    classifier_id: str = "promptguard-v2"
+    thresholds: dict[str, float] = field(default_factory=dict)
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "posture": self.posture,
+            "status": self.status,
+            "reason": self.reason,
+            "classifier_id": self.classifier_id,
+            "thresholds": dict(self.thresholds),
+        }
+
+
+class PromptGuardLoadError(RuntimeError):
+    """PromptGuard loader or inference failure with machine-readable reason."""
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
+
+
+class TransformersPromptGuardBackend:
+    """Local-only PromptGuard 2 backend using Transformers + PyTorch."""
+
+    def __init__(
+        self,
+        *,
+        model_source: str,
+        tokenizer: Any,
+        model: Any,
+        torch_module: Any,
+        max_length: int = 512,
+        stride: int = 64,
+        max_segments: int = 8,
+    ) -> None:
+        self.model_source = model_source
+        self._tokenizer = tokenizer
+        self._model = model
+        self._torch = torch_module
+        self._max_length = max_length
+        self._stride = stride
+        self._max_segments = max_segments
+
+    @classmethod
+    def from_local_path(cls, model_path: Path) -> TransformersPromptGuardBackend:
+        try:
+            import torch  # type: ignore
+            from transformers import (  # type: ignore
+                AutoModelForSequenceClassification,
+                AutoTokenizer,
+            )
+        except ImportError as exc:  # pragma: no cover - exercised via loader surface
+            raise PromptGuardLoadError("promptguard_runtime_missing") from exc
+
+        try:
+            tokenizer = AutoTokenizer.from_pretrained(
+                str(model_path),
+                local_files_only=True,
+                trust_remote_code=False,
+            )
+            model = AutoModelForSequenceClassification.from_pretrained(
+                str(model_path),
+                local_files_only=True,
+                trust_remote_code=False,
+            )
+            model.eval()
+        except Exception as exc:  # pragma: no cover - exercised via loader surface
+            raise PromptGuardLoadError("promptguard_model_load_failed") from exc
+
+        return cls(
+            model_source=str(model_path),
+            tokenizer=tokenizer,
+            model=model,
+            torch_module=torch,
+        )
+
+    def score_text(self, text: str) -> list[float]:
+        try:
+            batch = self._tokenizer(
+                text,
+                return_tensors="pt",
+                truncation=True,
+                padding=True,
+                max_length=self._max_length,
+                stride=self._stride,
+                return_overflowing_tokens=True,
+            )
+        except Exception as exc:
+            raise PromptGuardLoadError("promptguard_tokenization_failed") from exc
+
+        model_inputs = self._truncate_batch(batch)
+
+        try:
+            with self._torch.inference_mode():
+                logits = self._model(**model_inputs).logits
+            probabilities = self._torch.softmax(logits, dim=-1)
+        except Exception as exc:
+            raise PromptGuardLoadError("promptguard_inference_failed") from exc
+
+        label_count = int(getattr(probabilities, "shape", [0, 0])[-1])
+        malicious_index = self._malicious_index(label_count)
+        score_tensor = probabilities[:, malicious_index]
+        raw_scores = score_tensor.tolist() if hasattr(score_tensor, "tolist") else [score_tensor]
+        return [min(max(float(item), 0.0), 1.0) for item in raw_scores]
+
+    def _truncate_batch(self, batch: Any) -> dict[str, Any]:
+        payload = dict(batch)
+        payload.pop("overflow_to_sample_mapping", None)
+        truncated: dict[str, Any] = {}
+        for key, value in payload.items():
+            if hasattr(value, "__getitem__"):
+                try:
+                    truncated[key] = value[: self._max_segments]
+                    continue
+                except Exception:
+                    pass
+            truncated[key] = value
+        return truncated
+
+    def _malicious_index(self, label_count: int) -> int:
+        config = getattr(self._model, "config", None)
+        id2label = getattr(config, "id2label", {}) if config is not None else {}
+        if isinstance(id2label, dict):
+            for raw_index, raw_label in id2label.items():
+                if str(raw_label).strip().lower() == "malicious":
+                    try:
+                        return int(raw_index)
+                    except (TypeError, ValueError):
+                        break
+            benign_indices = {
+                int(raw_index)
+                for raw_index, raw_label in id2label.items()
+                if str(raw_label).strip().lower() == "benign"
+            }
+            if label_count == 2 and benign_indices == {0}:
+                return 1
+        if label_count <= 1:
+            return 0
+        return 1
+
+
+class PromptGuardSemanticClassifier:
+    """PromptGuard 2 wrapper behind the semantic-classifier protocol."""
+
+    classifier_id = "promptguard-v2"
+
+    def __init__(
+        self,
+        *,
+        backend: PromptGuardBackend,
+        thresholds: PromptGuardThresholds,
+        posture: str = "best_effort",
+    ) -> None:
+        self._backend = backend
+        self._thresholds = thresholds
+        self._posture = posture
+
+    def classify(self, text: str) -> InjectionClassification:
+        try:
+            scores = self._backend.score_text(text)
+        except PromptGuardLoadError as exc:
+            if self._posture == "required":
+                raise
+            logger.warning(
+                "PromptGuard degraded; reason_code=%s",
+                exc.reason,
+                exc_info=True,
+            )
+            return InjectionClassification(semantic_classifier_id=self.classifier_id)
+
+        score = max((float(item) for item in scores), default=0.0)
+        tier = self._thresholds.tier_for(score)
+        risk_factors = [] if tier is SemanticRiskTier.NONE else [f"promptguard:{tier.value}"]
+        return InjectionClassification(
+            risk_score=score,
+            risk_factors=risk_factors,
+            semantic_risk_score=score,
+            semantic_risk_tier=tier.value,
+            semantic_classifier_id=self.classifier_id,
+        )
+
+
+def build_promptguard_classifier(
+    settings: PromptGuardSettings,
+) -> tuple[PromptGuardSemanticClassifier | None, PromptGuardRuntimeStatus]:
+    thresholds = settings.thresholds.as_dict()
+    if settings.posture == "off":
+        return None, PromptGuardRuntimeStatus(
+            posture="off",
+            status="disabled",
+            thresholds=thresholds,
+        )
+
+    raw_model_path = settings.model_path.strip()
+    if not raw_model_path:
+        reason = "model_path_unconfigured"
+        return _promptguard_unavailable(settings=settings, reason=reason)
+    if not _looks_like_local_path(raw_model_path):
+        reason = "model_path_must_be_local"
+        return _promptguard_unavailable(settings=settings, reason=reason)
+
+    model_path = Path(raw_model_path).expanduser()
+    if not model_path.exists():
+        reason = "model_path_missing"
+        return _promptguard_unavailable(settings=settings, reason=reason)
+    if not model_path.is_dir():
+        reason = "model_path_not_directory"
+        return _promptguard_unavailable(settings=settings, reason=reason)
+
+    try:
+        backend = TransformersPromptGuardBackend.from_local_path(model_path)
+    except PromptGuardLoadError as exc:
+        return _promptguard_unavailable(settings=settings, reason=exc.reason)
+    classifier = PromptGuardSemanticClassifier(
+        backend=backend,
+        thresholds=settings.thresholds,
+        posture=settings.posture,
+    )
+    return classifier, PromptGuardRuntimeStatus(
+        posture=settings.posture,
+        status="active",
+        thresholds=thresholds,
+    )
+
+
+def _looks_like_local_path(candidate: str) -> bool:
+    return candidate.startswith(("/", ".", "~"))
+
+
+def _promptguard_unavailable(
+    *,
+    settings: PromptGuardSettings,
+    reason: str,
+) -> tuple[PromptGuardSemanticClassifier | None, PromptGuardRuntimeStatus]:
+    status = PromptGuardRuntimeStatus(
+        posture=settings.posture,
+        status="unavailable",
+        reason=reason,
+        thresholds=settings.thresholds.as_dict(),
+    )
+    if settings.posture == "required":
+        raise ValueError(
+            "PromptGuard semantic classifier is required but unavailable: "
+            f"{status.reason}"
+        )
+    return None, status
 
 
 class PatternInjectionClassifier:
@@ -119,6 +434,9 @@ class PatternInjectionClassifier:
         score = 0.0
         factors: list[str] = []
         matches: list[str] = []
+        semantic_risk_score = 0.0
+        semantic_risk_tier = SemanticRiskTier.NONE.value
+        semantic_classifier_id = ""
 
         for name, pattern, weight in [*self._BASE_PATTERNS, *self._extra_patterns]:
             if pattern.search(text):
@@ -131,7 +449,6 @@ class PatternInjectionClassifier:
                 factors.append(f"yara:{match.rule}")
                 score += 0.15
 
-        # Base64 payloads with executable-looking text are suspicious.
         if self._looks_like_encoded_payload(text):
             factors.append("encoded_payload")
             score += 0.25
@@ -141,6 +458,9 @@ class PatternInjectionClassifier:
             factors.extend(semantic.risk_factors)
             matches.extend(semantic.matched_patterns)
             score = max(score, semantic.risk_score)
+            semantic_risk_score = semantic.semantic_risk_score
+            semantic_risk_tier = semantic.semantic_risk_tier
+            semantic_classifier_id = semantic.semantic_classifier_id
 
         if context_factors and score > 0.0:
             factors.extend(str(item) for item in context_factors)
@@ -149,6 +469,9 @@ class PatternInjectionClassifier:
             risk_score=min(score, 1.0),
             risk_factors=sorted(set(factors)),
             matched_patterns=sorted(set(matches)),
+            semantic_risk_score=min(max(semantic_risk_score, 0.0), 1.0),
+            semantic_risk_tier=semantic_risk_tier,
+            semantic_classifier_id=semantic_classifier_id,
         )
 
     @classmethod
@@ -220,7 +543,6 @@ class PatternInjectionClassifier:
                 marker = "="
                 if marker not in line or "/" not in line:
                     continue
-                # Parse lines like: $a = /.../i
                 lhs, rhs = line.split(marker, 1)
                 if "$" not in lhs:
                     continue

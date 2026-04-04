@@ -701,6 +701,8 @@ async def test_m2_t22_daemon_status_exposes_classifier_mode(
         await client.connect()
         status = await client.call("daemon.status")
         assert status["classifier_mode"] in {"yara", "fallback_regex", "base_patterns"}
+        assert "content_firewall" in status
+        assert "semantic_classifier" in status["content_firewall"]
         assert "risk_policy_version" in status
         assert "delivery" in status
     finally:
@@ -786,6 +788,86 @@ async def test_m2_t22_daemon_honors_yara_required_policy(
         staticmethod(lambda _rules_dir: None),
     )
     with pytest.raises(ValueError):
+        await run_daemon(config)
+
+
+@pytest.mark.asyncio
+async def test_h2_daemon_status_exposes_promptguard_best_effort_state(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SHISAD_MODEL_BASE_URL", "https://api.example.com/v1")
+    monkeypatch.setenv("SHISAD_MODEL_PLANNER_BASE_URL", "https://planner.example.com/v1")
+    monkeypatch.setenv("SHISAD_MODEL_EMBEDDINGS_BASE_URL", "https://embed.example.com/v1")
+    monkeypatch.setenv("SHISAD_MODEL_MONITOR_BASE_URL", "https://monitor.example.com/v1")
+
+    policy_path = tmp_path / "policy.yaml"
+    policy_path.write_text(
+        textwrap.dedent(
+            """
+            version: "1"
+            content_firewall:
+              semantic_classifier:
+                posture: best_effort
+            """
+        ).strip()
+        + "\n"
+    )
+    config = DaemonConfig(
+        data_dir=tmp_path / "data",
+        socket_path=tmp_path / "control.sock",
+        policy_path=policy_path,
+        log_level="INFO",
+    )
+    daemon_task = asyncio.create_task(run_daemon(config))
+    client = ControlClient(config.socket_path)
+    try:
+        await _wait_for_socket(config.socket_path)
+        await client.connect()
+        status = await client.call("daemon.status")
+        semantic = status["content_firewall"]["semantic_classifier"]
+        assert semantic["posture"] == "best_effort"
+        assert semantic["status"] == "unavailable"
+        assert semantic["reason"] == "model_path_unconfigured"
+        assert semantic["thresholds"]["medium"] < semantic["thresholds"]["high"]
+        assert semantic["thresholds"]["high"] < semantic["thresholds"]["critical"]
+    finally:
+        with suppress(Exception):
+            await client.call("daemon.shutdown")
+        await client.close()
+        await asyncio.wait_for(daemon_task, timeout=3)
+
+
+@pytest.mark.asyncio
+async def test_h2_daemon_fails_closed_when_promptguard_required_but_unconfigured(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SHISAD_MODEL_BASE_URL", "https://api.example.com/v1")
+    monkeypatch.setenv("SHISAD_MODEL_PLANNER_BASE_URL", "https://planner.example.com/v1")
+    monkeypatch.setenv("SHISAD_MODEL_EMBEDDINGS_BASE_URL", "https://embed.example.com/v1")
+    monkeypatch.setenv("SHISAD_MODEL_MONITOR_BASE_URL", "https://monitor.example.com/v1")
+
+    policy_path = tmp_path / "policy.yaml"
+    policy_path.write_text(
+        textwrap.dedent(
+            """
+            version: "1"
+            content_firewall:
+              semantic_classifier:
+                posture: required
+            """
+        ).strip()
+        + "\n"
+    )
+    config = DaemonConfig(
+        data_dir=tmp_path / "data",
+        socket_path=tmp_path / "control.sock",
+        policy_path=policy_path,
+        log_level="INFO",
+    )
+
+    with pytest.raises(ValueError, match="model_path_unconfigured"):
         await run_daemon(config)
 
 

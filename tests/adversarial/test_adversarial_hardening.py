@@ -13,6 +13,7 @@ from shisad.core.tools.schema import ToolDefinition, ToolParameter
 from shisad.core.types import Capability, TaintLabel, ToolName
 from shisad.executors.browser import BrowserSandbox, BrowserSandboxPolicy
 from shisad.executors.proxy import EgressProxy, NetworkPolicy
+from shisad.memory.ingestion import IngestionPipeline
 from shisad.memory.manager import MemoryManager
 from shisad.memory.schema import MemorySource
 from shisad.security.control_plane.network import (
@@ -22,6 +23,7 @@ from shisad.security.control_plane.network import (
 )
 from shisad.security.control_plane.schema import Origin, RiskTier, sanitize_metadata_payload
 from shisad.security.firewall import ContentFirewall
+from shisad.security.firewall.classifier import InjectionClassification
 from shisad.security.firewall.output import OutputFirewall
 from shisad.security.pep import PEP, PolicyContext
 from shisad.security.policy import PolicyBundle
@@ -38,6 +40,22 @@ def _origin() -> Origin:
         workspace_id="ws-1",
         actor="planner",
     )
+
+
+class _CapturingSemanticClassifier:
+    def __init__(self, score: float) -> None:
+        self._score = score
+        self.calls: list[str] = []
+
+    def classify(self, text: str) -> InjectionClassification:
+        self.calls.append(text)
+        return InjectionClassification(
+            risk_score=self._score,
+            risk_factors=["promptguard:critical"],
+            semantic_risk_score=self._score,
+            semantic_risk_tier="critical",
+            semantic_classifier_id="promptguard-v2",
+        )
 
 
 def test_m6_a1_prompt_injection_direct_fixture_matrix_has_50_plus_variants() -> None:
@@ -74,6 +92,27 @@ def test_m6_t18_layered_mixed_encoding_fixture_matrix_is_deterministic_and_flagg
         expected = [str(item) for item in case.get("expected_reasons", [])]
         for reason in expected:
             assert reason in result.risk_factors
+
+
+def test_h2_tool_content_semantic_classifier_quarantines_high_risk_ingest(tmp_path: Path) -> None:
+    semantic = _CapturingSemanticClassifier(score=0.96)
+    pipeline = IngestionPipeline(
+        tmp_path / "memory",
+        firewall=ContentFirewall(semantic_classifier=semantic),
+        quarantine_threshold=0.9,
+    )
+
+    result = pipeline.ingest(
+        source_id="tool-1",
+        source_type="tool",
+        content="Fetched page content with hidden execution instructions.",
+    )
+
+    assert semantic.calls
+    assert "Fetched page content" in semantic.calls[0]
+    assert result.quarantined is True
+    assert result.risk_score == pytest.approx(0.96)
+    assert TaintLabel.UNTRUSTED in result.taint_labels
 
 
 def test_m6_a2_memory_poisoning_fixtures_are_blocked_or_confirmation_gated(tmp_path: Path) -> None:

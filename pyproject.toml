@@ -64,6 +64,10 @@ dev = [
 ]
 security-runtime = [
     "yara-python>=4.5,<5",
+    "transformers>=4.53,<5",
+    "torch>=2.7,<3",
+    "safetensors>=0.5,<1",
+    "sentencepiece>=0.2,<1",
 ]
 coverage = [
     "pytest-cov>=5.0,<7",

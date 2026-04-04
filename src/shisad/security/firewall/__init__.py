@@ -6,11 +6,16 @@ import hashlib
 import re
 from enum import StrEnum
 from pathlib import Path
+from typing import Any
 
 from pydantic import BaseModel, Field
 
 from shisad.core.types import TaintLabel
-from shisad.security.firewall.classifier import PatternInjectionClassifier
+from shisad.security.firewall.classifier import (
+    PatternInjectionClassifier,
+    PromptGuardRuntimeStatus,
+    SemanticClassifier,
+)
 from shisad.security.firewall.normalize import decode_text_layers, normalize_text
 from shisad.security.firewall.secrets import SecretFinding, redact_ingress_secrets
 
@@ -32,18 +37,39 @@ class FirewallResult(BaseModel):
     secret_findings: list[str] = Field(default_factory=list)
     decode_depth: int = 0
     decode_reason_codes: list[str] = Field(default_factory=list)
+    semantic_risk_score: float = 0.0
+    semantic_risk_tier: str = "none"
+    semantic_classifier_id: str = ""
 
 
 class ContentFirewall:
     """Normalizes, classifies, and sanitizes untrusted content."""
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        semantic_classifier: SemanticClassifier | None = None,
+        semantic_classifier_status: PromptGuardRuntimeStatus | None = None,
+    ) -> None:
         rules_dir = Path(__file__).resolve().parent.parent / "rules" / "yara"
-        self._classifier = PatternInjectionClassifier(yara_rules_dir=rules_dir)
+        self._classifier = PatternInjectionClassifier(
+            semantic_classifier=semantic_classifier,
+            yara_rules_dir=rules_dir,
+        )
+        self._semantic_classifier_status = semantic_classifier_status or PromptGuardRuntimeStatus(
+            posture="best_effort" if semantic_classifier is not None else "off",
+            status="active" if semantic_classifier is not None else "disabled",
+        )
 
     @property
     def classifier_mode(self) -> str:
         return self._classifier.mode
+
+    def status_snapshot(self) -> dict[str, Any]:
+        return {
+            "pattern_mode": self.classifier_mode,
+            "semantic_classifier": self._semantic_classifier_status.as_dict(),
+        }
 
     def inspect(
         self,
@@ -84,6 +110,9 @@ class ContentFirewall:
             secret_findings=[f.kind for f in secret_findings],
             decode_depth=decoded.decode_depth,
             decode_reason_codes=list(decoded.reason_codes),
+            semantic_risk_score=classification.semantic_risk_score,
+            semantic_risk_tier=classification.semantic_risk_tier,
+            semantic_classifier_id=classification.semantic_classifier_id,
         )
 
     @staticmethod

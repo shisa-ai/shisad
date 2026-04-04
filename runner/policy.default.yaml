@@ -10,6 +10,11 @@ version: "1"
 default_deny: false
 default_require_confirmation: false
 
+content_firewall:
+  semantic_classifier:
+    posture: best_effort
+    model_path: ""
+
 default_capabilities:
   - file.read
   - file.write

@@ -59,6 +59,11 @@ from shisad.security.control_plane.sidecar import (
 )
 from shisad.security.credentials import CredentialConfig, InMemoryCredentialStore
 from shisad.security.firewall import ContentFirewall
+from shisad.security.firewall.classifier import (
+    PromptGuardSettings,
+    PromptGuardThresholds,
+    build_promptguard_classifier,
+)
 from shisad.security.firewall.output import OutputFirewall
 from shisad.security.lockdown import LockdownManager
 from shisad.security.monitor import ActionMonitor
@@ -246,7 +251,31 @@ class DaemonServices:
                 config.data_dir / "checkpoints",
                 supplemental_state_provider=_lockdown_snapshot_provider,
             )
-            firewall = ContentFirewall()
+            semantic_policy = policy_loader.policy.content_firewall.semantic_classifier
+            semantic_classifier, semantic_status = build_promptguard_classifier(
+                PromptGuardSettings(
+                    posture=semantic_policy.posture,
+                    model_path=semantic_policy.model_path,
+                    thresholds=PromptGuardThresholds(
+                        medium=semantic_policy.medium_threshold,
+                        high=semantic_policy.high_threshold,
+                        critical=semantic_policy.critical_threshold,
+                    ),
+                )
+            )
+            if (
+                semantic_status.status == "unavailable"
+                and semantic_status.reason != "model_path_unconfigured"
+            ):
+                logger.warning(
+                    "PromptGuard degraded at startup; posture=%s reason_code=%s",
+                    semantic_status.posture,
+                    semantic_status.reason,
+                )
+            firewall = ContentFirewall(
+                semantic_classifier=semantic_classifier,
+                semantic_classifier_status=semantic_status,
+            )
             if policy_loader.policy.yara_required and firewall.classifier_mode != "yara":
                 raise ValueError(
                     "Policy requires yara mode, but classifier is not running with yara-python"

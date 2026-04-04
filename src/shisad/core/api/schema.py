@@ -1024,6 +1024,7 @@ class DaemonStatusResult(BaseModel):
     tools_registered: list[str] = Field(default_factory=list)
     model_routes: dict[str, str] = Field(default_factory=dict)
     classifier_mode: str = ""
+    content_firewall: dict[str, Any] = Field(default_factory=dict)
     yara_required: bool = False
     risk_policy_version: str = ""
     risk_thresholds: dict[str, float] = Field(default_factory=dict)
