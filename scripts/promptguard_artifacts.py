@@ -65,7 +65,11 @@ def _resolve_hf_token() -> str | None:
         value = os.environ.get(name)
         if value:
             return value
-    return None
+    try:
+        from huggingface_hub import get_token  # type: ignore
+    except ImportError:
+        return None
+    return get_token()
 
 
 def _cmd_compare(args: argparse.Namespace) -> int:
@@ -80,7 +84,8 @@ def _cmd_download(args: argparse.Namespace) -> int:
     token = _resolve_hf_token()
     if token is None:
         raise SystemExit(
-            "PromptGuard download requires a Hugging Face token in one of: "
+            "PromptGuard download requires Hugging Face authentication. "
+            "Use `hf auth login` or set one of: "
             + ", ".join(_HF_TOKEN_ENV_CANDIDATES)
         )
 
