@@ -60,6 +60,13 @@ def _reset_output_dir(output_dir: Path, *, force: bool) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
 
 
+def _copy_if_present(source_dir: Path, output_dir: Path, filenames: Iterable[str]) -> None:
+    for filename in filenames:
+        source = source_dir / filename
+        if source.is_file():
+            shutil.copy2(source, output_dir / filename)
+
+
 def _resolve_hf_token() -> str | None:
     for name in _HF_TOKEN_ENV_CANDIDATES:
         value = os.environ.get(name)
@@ -106,7 +113,7 @@ def _cmd_download(args: argparse.Namespace) -> int:
 def _cmd_export_onnx(args: argparse.Namespace) -> int:
     _reset_output_dir(args.output_dir, force=args.force)
 
-    from transformers import AutoConfig, AutoTokenizer  # type: ignore
+    from transformers import AutoConfig  # type: ignore
 
     command = [
         sys.executable,
@@ -128,11 +135,20 @@ def _cmd_export_onnx(args: argparse.Namespace) -> int:
         local_files_only=True,
         trust_remote_code=False,
     ).save_pretrained(str(args.output_dir))
-    AutoTokenizer.from_pretrained(
-        str(args.source_dir),
-        local_files_only=True,
-        trust_remote_code=False,
-    ).save_pretrained(str(args.output_dir))
+    _copy_if_present(
+        args.source_dir,
+        args.output_dir,
+        (
+            "tokenizer.json",
+            "tokenizer_config.json",
+            "special_tokens_map.json",
+            "added_tokens.json",
+            "spm.model",
+            "sentencepiece.bpe.model",
+            "vocab.json",
+            "merges.txt",
+        ),
+    )
     return 0
 
 

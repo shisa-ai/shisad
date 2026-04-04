@@ -73,6 +73,7 @@ security-build = [
     "transformers>=4.53,<5",
     "torch>=2.7,<3",
     "onnx>=1.16,<2",
+    "onnxscript>=0.1,<1",
     "onnxruntime>=1.18,<2",
     "huggingface-hub>=0.36,<1",
     "safetensors>=0.5,<1",
