@@ -11,9 +11,11 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
-from typing import Any, ClassVar, Protocol
+from typing import Any, ClassVar, Protocol, cast
 
 from pydantic import BaseModel, Field
+
+from shisad.security.firewall.promptguard_pack import inspect_promptguard_model_pack
 
 logger = logging.getLogger(__name__)
 
@@ -85,6 +87,7 @@ class PromptGuardThresholds:
 class PromptGuardSettings:
     posture: str = "best_effort"
     model_path: str = ""
+    allowed_signers_path: str = ""
     thresholds: PromptGuardThresholds = field(default_factory=PromptGuardThresholds)
 
     def __post_init__(self) -> None:
@@ -180,9 +183,9 @@ class OnnxPromptGuardBackend:
             raise PromptGuardLoadError("promptguard_onnx_model_missing")
 
         try:
-            import numpy as np  # type: ignore
-            import onnxruntime as ort  # type: ignore
-            from transformers import AutoConfig, AutoTokenizer  # type: ignore
+            import numpy as np
+            import onnxruntime as ort  # type: ignore[import-untyped]
+            from transformers import AutoConfig, AutoTokenizer
         except ImportError as exc:  # pragma: no cover - exercised via loader surface
             raise PromptGuardLoadError("promptguard_runtime_missing") from exc
 
@@ -190,12 +193,14 @@ class OnnxPromptGuardBackend:
             raise PromptGuardLoadError("promptguard_cpu_provider_unavailable")
 
         try:
-            tokenizer = AutoTokenizer.from_pretrained(
+            tokenizer_loader = cast(Any, AutoTokenizer)
+            config_loader = cast(Any, AutoConfig)
+            tokenizer = tokenizer_loader.from_pretrained(
                 str(model_path),
                 local_files_only=True,
                 trust_remote_code=False,
             )
-            config = AutoConfig.from_pretrained(
+            config = config_loader.from_pretrained(
                 str(model_path),
                 local_files_only=True,
                 trust_remote_code=False,
@@ -357,8 +362,22 @@ def build_promptguard_classifier(
         reason = "model_path_not_directory"
         return _promptguard_unavailable(settings=settings, reason=reason)
 
+    runtime_model_path = model_path
+    if (model_path / "manifest.json").is_file():
+        allowed_signers_path = None
+        raw_allowed_signers_path = settings.allowed_signers_path.strip()
+        if raw_allowed_signers_path:
+            allowed_signers_path = Path(raw_allowed_signers_path).expanduser()
+        inspection = inspect_promptguard_model_pack(
+            model_path,
+            allowed_signers_path=allowed_signers_path,
+        )
+        if not inspection.valid or inspection.payload_dir is None:
+            return _promptguard_unavailable(settings=settings, reason=inspection.reason)
+        runtime_model_path = inspection.payload_dir
+
     try:
-        backend = OnnxPromptGuardBackend.from_local_path(model_path)
+        backend = OnnxPromptGuardBackend.from_local_path(runtime_model_path)
     except PromptGuardLoadError as exc:
         return _promptguard_unavailable(settings=settings, reason=exc.reason)
     classifier = PromptGuardSemanticClassifier(
@@ -418,6 +437,7 @@ def compare_promptguard_artifacts(
     artifacts: Mapping[str, Path],
     samples: Sequence[PromptGuardComparisonCase],
     *,
+    allowed_signers_path: Path | None = None,
     timer: Callable[[], float] = time.perf_counter,
 ) -> list[PromptGuardComparisonResult]:
     if not artifacts:
@@ -428,7 +448,11 @@ def compare_promptguard_artifacts(
     reports: list[PromptGuardComparisonResult] = []
     for artifact_label, artifact_path in artifacts.items():
         classifier, status = build_promptguard_classifier(
-            PromptGuardSettings(posture="required", model_path=str(artifact_path))
+            PromptGuardSettings(
+                posture="required",
+                model_path=str(artifact_path),
+                allowed_signers_path=str(allowed_signers_path) if allowed_signers_path else "",
+            )
         )
         if classifier is None or status.status != "active":
             raise ValueError(

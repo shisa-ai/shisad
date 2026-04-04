@@ -256,6 +256,7 @@ class DaemonServices:
                 PromptGuardSettings(
                     posture=semantic_policy.posture,
                     model_path=semantic_policy.model_path,
+                    allowed_signers_path=str(config.selfmod_allowed_signers_path),
                     thresholds=PromptGuardThresholds(
                         medium=semantic_policy.medium_threshold,
                         high=semantic_policy.high_threshold,

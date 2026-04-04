@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -15,6 +16,10 @@ from pathlib import Path
 from shisad.security.firewall.classifier import (
     PromptGuardComparisonCase,
     compare_promptguard_artifacts,
+)
+from shisad.security.firewall.promptguard_pack import (
+    build_promptguard_model_pack,
+    inspect_promptguard_model_pack,
 )
 
 _HF_TOKEN_ENV_CANDIDATES = (
@@ -82,7 +87,11 @@ def _resolve_hf_token() -> str | None:
 def _cmd_compare(args: argparse.Namespace) -> int:
     artifacts = dict(args.artifact)
     cases = _load_sample_cases(args.sample, args.sample_file)
-    reports = compare_promptguard_artifacts(artifacts, cases)
+    reports = compare_promptguard_artifacts(
+        artifacts,
+        cases,
+        allowed_signers_path=args.allowed_signers,
+    )
     print(json.dumps([report.as_dict() for report in reports], indent=2))
     return 0
 
@@ -152,6 +161,49 @@ def _cmd_export_onnx(args: argparse.Namespace) -> int:
     return 0
 
 
+def _model_pack_name(model_id: str) -> str:
+    tail = model_id.strip().split("/")[-1].strip().lower()
+    return re.sub(r"[^a-z0-9._-]+", "-", tail).strip("-") or "promptguard-model-pack"
+
+
+def _cmd_build_model_pack(args: argparse.Namespace) -> int:
+    manifest = build_promptguard_model_pack(
+        artifact_dir=args.artifact_dir,
+        output_dir=args.output_dir,
+        source_dir=args.source_dir,
+        name=args.name or _model_pack_name(args.source_model_id),
+        version=args.version,
+        source_model_id=args.source_model_id,
+        signing_key_path=args.signing_key,
+        signer_principal=args.signer_principal,
+        builder_id=args.builder_id,
+        quantization=args.quantization,
+        created_at=args.created_at,
+        force=args.force,
+    )
+    print(
+        json.dumps(
+            {
+                "output_dir": str(args.output_dir),
+                "manifest_digest": manifest.digest(),
+                "name": manifest.name,
+                "version": manifest.version,
+            },
+            indent=2,
+        )
+    )
+    return 0
+
+
+def _cmd_verify_model_pack(args: argparse.Namespace) -> int:
+    inspection = inspect_promptguard_model_pack(
+        args.pack_dir,
+        allowed_signers_path=args.allowed_signers,
+    )
+    print(json.dumps(inspection.as_dict(), indent=2))
+    return 0 if inspection.valid else 1
+
+
 def _add_compare_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     parser = subparsers.add_parser(
         "compare",
@@ -175,6 +227,11 @@ def _add_compare_parser(subparsers: argparse._SubParsersAction[argparse.Argument
         "--sample-file",
         type=Path,
         help="UTF-8 text file with one prompt sample per line.",
+    )
+    parser.add_argument(
+        "--allowed-signers",
+        type=Path,
+        help="Trusted SSH allowed_signers file for signed model-pack verification.",
     )
     parser.set_defaults(func=_cmd_compare)
 
@@ -238,6 +295,102 @@ def _add_export_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentP
     parser.set_defaults(func=_cmd_export_onnx)
 
 
+def _add_build_model_pack_parser(
+    subparsers: argparse._SubParsersAction[argparse.ArgumentParser],
+) -> None:
+    parser = subparsers.add_parser(
+        "build-model-pack",
+        help="Build a signed PromptGuard model pack from a local ONNX artifact directory.",
+    )
+    parser.add_argument(
+        "--artifact-dir",
+        required=True,
+        type=Path,
+        help="Local exported ONNX artifact directory to package under payload/.",
+    )
+    parser.add_argument(
+        "--source-dir",
+        type=Path,
+        help="Optional source checkpoint directory used to copy license/policy files.",
+    )
+    parser.add_argument(
+        "--output-dir",
+        required=True,
+        type=Path,
+        help="Destination directory for the signed PromptGuard model pack.",
+    )
+    parser.add_argument(
+        "--source-model-id",
+        required=True,
+        help="Upstream model identifier recorded in the pack manifest.",
+    )
+    parser.add_argument(
+        "--name",
+        help="Model-pack name. Defaults to a sanitized name derived from --source-model-id.",
+    )
+    parser.add_argument(
+        "--version",
+        default="onnx-fp32",
+        help="Model-pack version label recorded in the manifest.",
+    )
+    parser.add_argument(
+        "--quantization",
+        default="fp32",
+        help="Quantization label recorded in the manifest runtime metadata.",
+    )
+    parser.add_argument(
+        "--builder-id",
+        default="promptguard_artifacts.py",
+        help="Builder identifier recorded in the manifest provenance.",
+    )
+    parser.add_argument(
+        "--created-at",
+        help=(
+            "Explicit RFC3339/ISO8601 timestamp for reproducible manifests. "
+            "Defaults to SOURCE_DATE_EPOCH when set, otherwise current UTC."
+        ),
+    )
+    parser.add_argument(
+        "--signing-key",
+        required=True,
+        type=Path,
+        help="SSH private key used to sign manifest.json.",
+    )
+    parser.add_argument(
+        "--signer-principal",
+        required=True,
+        help="Principal name expected by the trusted allowed_signers file.",
+    )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Replace the destination directory if it already exists.",
+    )
+    parser.set_defaults(func=_cmd_build_model_pack)
+
+
+def _add_verify_model_pack_parser(
+    subparsers: argparse._SubParsersAction[argparse.ArgumentParser],
+) -> None:
+    parser = subparsers.add_parser(
+        "verify-model-pack",
+        help="Verify a signed PromptGuard model pack against a trusted allowed_signers file.",
+    )
+    parser.add_argument(
+        "--pack-dir",
+        required=True,
+        type=Path,
+        help="PromptGuard model-pack directory containing manifest.json and payload/.",
+    )
+    parser.add_argument(
+        "--allowed-signers",
+        required=True,
+        type=Path,
+        help="Trusted SSH allowed_signers file used to verify manifest.json.sig.",
+    )
+    parser.set_defaults(func=_cmd_verify_model_pack)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
@@ -249,6 +402,8 @@ def build_parser() -> argparse.ArgumentParser:
     _add_compare_parser(subparsers)
     _add_download_parser(subparsers)
     _add_export_parser(subparsers)
+    _add_build_model_pack_parser(subparsers)
+    _add_verify_model_pack_parser(subparsers)
     return parser
 
 
