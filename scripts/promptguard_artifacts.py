@@ -1,0 +1,241 @@
+#!/usr/bin/env python3
+"""Manage local PromptGuard 2 artifacts for export and comparison."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import shutil
+import subprocess
+import sys
+from collections.abc import Iterable
+from pathlib import Path
+
+from shisad.security.firewall.classifier import (
+    PromptGuardComparisonCase,
+    compare_promptguard_artifacts,
+)
+
+_HF_TOKEN_ENV_CANDIDATES = (
+    "HF_TOKEN",
+    "HUGGINGFACE_HUB_TOKEN",
+    "HUGGING_FACE_HUB_TOKEN",
+)
+
+
+def _artifact_argument(raw: str) -> tuple[str, Path]:
+    label, separator, raw_path = raw.partition("=")
+    if not separator or not label or not raw_path:
+        raise argparse.ArgumentTypeError(
+            "Artifacts must be provided as <label>=<local-artifact-dir>"
+        )
+    return label, Path(raw_path).expanduser().resolve()
+
+
+def _load_sample_cases(
+    raw_samples: list[str],
+    sample_file: Path | None,
+) -> tuple[PromptGuardComparisonCase, ...]:
+    cases: list[PromptGuardComparisonCase] = []
+    for index, raw_sample in enumerate(raw_samples, start=1):
+        text = raw_sample.strip()
+        if text:
+            cases.append(PromptGuardComparisonCase(label=f"inline-{index}", text=text))
+
+    if sample_file is not None:
+        lines = sample_file.read_text(encoding="utf-8").splitlines()
+        for index, raw_line in enumerate(lines, start=1):
+            text = raw_line.strip()
+            if not text or text.startswith("#"):
+                continue
+            cases.append(PromptGuardComparisonCase(label=f"{sample_file.stem}-{index}", text=text))
+
+    return tuple(cases)
+
+
+def _reset_output_dir(output_dir: Path, *, force: bool) -> None:
+    if output_dir.exists() and force:
+        shutil.rmtree(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+
+def _resolve_hf_token() -> str | None:
+    for name in _HF_TOKEN_ENV_CANDIDATES:
+        value = os.environ.get(name)
+        if value:
+            return value
+    return None
+
+
+def _cmd_compare(args: argparse.Namespace) -> int:
+    artifacts = dict(args.artifact)
+    cases = _load_sample_cases(args.sample, args.sample_file)
+    reports = compare_promptguard_artifacts(artifacts, cases)
+    print(json.dumps([report.as_dict() for report in reports], indent=2))
+    return 0
+
+
+def _cmd_download(args: argparse.Namespace) -> int:
+    token = _resolve_hf_token()
+    if token is None:
+        raise SystemExit(
+            "PromptGuard download requires a Hugging Face token in one of: "
+            + ", ".join(_HF_TOKEN_ENV_CANDIDATES)
+        )
+
+    _reset_output_dir(args.output_dir, force=args.force)
+
+    from huggingface_hub import snapshot_download  # type: ignore
+
+    snapshot_download(
+        repo_id=args.model_id,
+        local_dir=str(args.output_dir),
+        local_dir_use_symlinks=False,
+        token=token,
+        resume_download=True,
+    )
+    return 0
+
+
+def _cmd_export_onnx(args: argparse.Namespace) -> int:
+    _reset_output_dir(args.output_dir, force=args.force)
+
+    from transformers import AutoConfig, AutoTokenizer  # type: ignore
+
+    command = [
+        sys.executable,
+        "-m",
+        "transformers.onnx",
+        "-m",
+        str(args.source_dir),
+        "--feature",
+        args.feature,
+        "--framework",
+        args.framework,
+        "--export_with_transformers",
+    ]
+    command.append(str(args.output_dir))
+    subprocess.run(command, check=True)
+
+    AutoConfig.from_pretrained(
+        str(args.source_dir),
+        local_files_only=True,
+        trust_remote_code=False,
+    ).save_pretrained(str(args.output_dir))
+    AutoTokenizer.from_pretrained(
+        str(args.source_dir),
+        local_files_only=True,
+        trust_remote_code=False,
+    ).save_pretrained(str(args.output_dir))
+    return 0
+
+
+def _add_compare_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
+    parser = subparsers.add_parser(
+        "compare",
+        help="Compare local PromptGuard artifact directories against sample prompts.",
+    )
+    parser.add_argument(
+        "--artifact",
+        action="append",
+        required=True,
+        type=_artifact_argument,
+        metavar="LABEL=PATH",
+        help="Local exported PromptGuard artifact directory.",
+    )
+    parser.add_argument(
+        "--sample",
+        action="append",
+        default=[],
+        help="Inline prompt sample text. May be repeated.",
+    )
+    parser.add_argument(
+        "--sample-file",
+        type=Path,
+        help="UTF-8 text file with one prompt sample per line.",
+    )
+    parser.set_defaults(func=_cmd_compare)
+
+
+def _add_download_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
+    parser = subparsers.add_parser(
+        "download",
+        help="Download a gated PromptGuard checkpoint into a local directory.",
+    )
+    parser.add_argument("--model-id", required=True, help="Hugging Face model ID to download.")
+    parser.add_argument(
+        "--output-dir",
+        required=True,
+        type=Path,
+        help="Destination directory for the downloaded local checkpoint.",
+    )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Replace the destination directory if it already exists.",
+    )
+    parser.set_defaults(func=_cmd_download)
+
+
+def _add_export_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
+    parser = subparsers.add_parser(
+        "export-onnx",
+        help=(
+            "Export a local PromptGuard checkpoint directory into a local "
+            "ONNX artifact directory."
+        ),
+    )
+    parser.add_argument(
+        "--source-dir",
+        required=True,
+        type=Path,
+        help="Local checkpoint directory previously acquired with the download step.",
+    )
+    parser.add_argument(
+        "--output-dir",
+        required=True,
+        type=Path,
+        help="Destination directory for the exported ONNX artifact bundle.",
+    )
+    parser.add_argument(
+        "--feature",
+        default="sequence-classification",
+        help="Transformers ONNX export feature. Defaults to sequence-classification.",
+    )
+    parser.add_argument(
+        "--framework",
+        choices=("pt", "tf"),
+        default="pt",
+        help="Framework to use for the ONNX export.",
+    )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Replace the destination directory if it already exists.",
+    )
+    parser.set_defaults(func=_cmd_export_onnx)
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description=(
+            "Manage local PromptGuard artifacts. Runtime inference remains local-only; "
+            "download/export are explicit operator build steps."
+        )
+    )
+    subparsers = parser.add_subparsers(dest="command", required=True)
+    _add_compare_parser(subparsers)
+    _add_download_parser(subparsers)
+    _add_export_parser(subparsers)
+    return parser
+
+
+def main(argv: Iterable[str] | None = None) -> int:
+    parser = build_parser()
+    args = parser.parse_args(list(argv) if argv is not None else None)
+    return int(args.func(args))
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

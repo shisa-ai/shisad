@@ -614,16 +614,20 @@ class DaemonServices:
                 await slack_channel.disconnect()
             except (OSError, RuntimeError):
                 logger.exception("Error disconnecting slack channel")
+        shutdown_tasks: list[asyncio.Task[None]] = []
         sidecar = getattr(self, "control_plane_sidecar", None)
         if sidecar is not None:
-            try:
-                await sidecar.close()
-            except (OSError, RuntimeError):
-                logger.exception("Error stopping control-plane sidecar")
-        try:
-            await self.server.stop()
-        except (OSError, RuntimeError):
-            logger.exception("Error stopping control server")
+            shutdown_tasks.append(asyncio.create_task(sidecar.close()))
+        shutdown_tasks.append(asyncio.create_task(self.server.stop()))
+        results = await asyncio.gather(*shutdown_tasks, return_exceptions=True)
+        for result in results:
+            if isinstance(result, BaseException):
+                if result.__class__.__name__ == "CancelledError":
+                    continue
+                logger.error(
+                    "Error stopping daemon service",
+                    exc_info=(type(result), result, result.__traceback__),
+                )
 
 
 async def _build_matrix_channel(config: DaemonConfig) -> MatrixChannel | None:

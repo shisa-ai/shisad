@@ -6,6 +6,8 @@ import base64
 import binascii
 import logging
 import re
+import time
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
@@ -108,6 +110,34 @@ class PromptGuardRuntimeStatus:
         }
 
 
+@dataclass(slots=True, frozen=True)
+class PromptGuardComparisonCase:
+    label: str
+    text: str
+
+
+@dataclass(slots=True, frozen=True)
+class PromptGuardComparisonResult:
+    artifact_label: str
+    artifact_path: str
+    sample_label: str
+    elapsed_ms: float
+    semantic_risk_score: float
+    semantic_risk_tier: str
+    semantic_classifier_id: str
+
+    def as_dict(self) -> dict[str, str | float]:
+        return {
+            "artifact_label": self.artifact_label,
+            "artifact_path": self.artifact_path,
+            "sample_label": self.sample_label,
+            "elapsed_ms": self.elapsed_ms,
+            "semantic_risk_score": self.semantic_risk_score,
+            "semantic_risk_tier": self.semantic_risk_tier,
+            "semantic_classifier_id": self.semantic_classifier_id,
+        }
+
+
 class PromptGuardLoadError(RuntimeError):
     """PromptGuard loader or inference failure with machine-readable reason."""
 
@@ -116,38 +146,48 @@ class PromptGuardLoadError(RuntimeError):
         self.reason = reason
 
 
-class TransformersPromptGuardBackend:
-    """Local-only PromptGuard 2 backend using Transformers + PyTorch."""
+class OnnxPromptGuardBackend:
+    """Local-only PromptGuard 2 backend using Transformers tokenizer + ONNX Runtime."""
 
     def __init__(
         self,
         *,
         model_source: str,
         tokenizer: Any,
-        model: Any,
-        torch_module: Any,
+        config: Any,
+        session: Any,
+        numpy_module: Any,
         max_length: int = 512,
         stride: int = 64,
         max_segments: int = 8,
     ) -> None:
         self.model_source = model_source
         self._tokenizer = tokenizer
-        self._model = model
-        self._torch = torch_module
+        self._config = config
+        self._session = session
+        self._np = numpy_module
         self._max_length = max_length
         self._stride = stride
         self._max_segments = max_segments
+        self._input_names = tuple(item.name for item in self._session.get_inputs())
+        outputs = self._session.get_outputs()
+        self._output_name = outputs[0].name if outputs else "logits"
 
     @classmethod
-    def from_local_path(cls, model_path: Path) -> TransformersPromptGuardBackend:
+    def from_local_path(cls, model_path: Path) -> OnnxPromptGuardBackend:
+        onnx_path = _resolve_promptguard_onnx_path(model_path)
+        if onnx_path is None:
+            raise PromptGuardLoadError("promptguard_onnx_model_missing")
+
         try:
-            import torch  # type: ignore
-            from transformers import (  # type: ignore
-                AutoModelForSequenceClassification,
-                AutoTokenizer,
-            )
+            import numpy as np  # type: ignore
+            import onnxruntime as ort  # type: ignore
+            from transformers import AutoConfig, AutoTokenizer  # type: ignore
         except ImportError as exc:  # pragma: no cover - exercised via loader surface
             raise PromptGuardLoadError("promptguard_runtime_missing") from exc
+
+        if "CPUExecutionProvider" not in ort.get_available_providers():
+            raise PromptGuardLoadError("promptguard_cpu_provider_unavailable")
 
         try:
             tokenizer = AutoTokenizer.from_pretrained(
@@ -155,27 +195,31 @@ class TransformersPromptGuardBackend:
                 local_files_only=True,
                 trust_remote_code=False,
             )
-            model = AutoModelForSequenceClassification.from_pretrained(
+            config = AutoConfig.from_pretrained(
                 str(model_path),
                 local_files_only=True,
                 trust_remote_code=False,
             )
-            model.eval()
+            session = ort.InferenceSession(
+                str(onnx_path),
+                providers=["CPUExecutionProvider"],
+            )
         except Exception as exc:  # pragma: no cover - exercised via loader surface
             raise PromptGuardLoadError("promptguard_model_load_failed") from exc
 
         return cls(
             model_source=str(model_path),
             tokenizer=tokenizer,
-            model=model,
-            torch_module=torch,
+            config=config,
+            session=session,
+            numpy_module=np,
         )
 
     def score_text(self, text: str) -> list[float]:
         try:
             batch = self._tokenizer(
                 text,
-                return_tensors="pt",
+                return_tensors="np",
                 truncation=True,
                 padding=True,
                 max_length=self._max_length,
@@ -186,11 +230,15 @@ class TransformersPromptGuardBackend:
             raise PromptGuardLoadError("promptguard_tokenization_failed") from exc
 
         model_inputs = self._truncate_batch(batch)
+        input_feed = {
+            key: value
+            for key, value in model_inputs.items()
+            if key in self._input_names
+        }
 
         try:
-            with self._torch.inference_mode():
-                logits = self._model(**model_inputs).logits
-            probabilities = self._torch.softmax(logits, dim=-1)
+            logits = self._session.run([self._output_name], input_feed)[0]
+            probabilities = self._softmax(logits)
         except Exception as exc:
             raise PromptGuardLoadError("promptguard_inference_failed") from exc
 
@@ -215,8 +263,7 @@ class TransformersPromptGuardBackend:
         return truncated
 
     def _malicious_index(self, label_count: int) -> int:
-        config = getattr(self._model, "config", None)
-        id2label = getattr(config, "id2label", {}) if config is not None else {}
+        id2label = getattr(self._config, "id2label", {}) if self._config is not None else {}
         if isinstance(id2label, dict):
             for raw_index, raw_label in id2label.items():
                 if str(raw_label).strip().lower() == "malicious":
@@ -234,6 +281,12 @@ class TransformersPromptGuardBackend:
         if label_count <= 1:
             return 0
         return 1
+
+    def _softmax(self, logits: Any) -> Any:
+        array = self._np.asarray(logits, dtype="float32")
+        shifted = array - array.max(axis=-1, keepdims=True)
+        exponents = self._np.exp(shifted)
+        return exponents / exponents.sum(axis=-1, keepdims=True)
 
 
 class PromptGuardSemanticClassifier:
@@ -305,7 +358,7 @@ def build_promptguard_classifier(
         return _promptguard_unavailable(settings=settings, reason=reason)
 
     try:
-        backend = TransformersPromptGuardBackend.from_local_path(model_path)
+        backend = OnnxPromptGuardBackend.from_local_path(model_path)
     except PromptGuardLoadError as exc:
         return _promptguard_unavailable(settings=settings, reason=exc.reason)
     classifier = PromptGuardSemanticClassifier(
@@ -322,6 +375,24 @@ def build_promptguard_classifier(
 
 def _looks_like_local_path(candidate: str) -> bool:
     return candidate.startswith(("/", ".", "~"))
+
+
+def _resolve_promptguard_onnx_path(model_path: Path) -> Path | None:
+    candidates = (
+        model_path / "model.onnx",
+        model_path / "onnx" / "model.onnx",
+    )
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
+    root_matches = sorted(model_path.glob("*.onnx"))
+    if len(root_matches) == 1:
+        return root_matches[0]
+    nested_dir = model_path / "onnx"
+    nested_matches = sorted(nested_dir.glob("*.onnx")) if nested_dir.is_dir() else []
+    if len(nested_matches) == 1:
+        return nested_matches[0]
+    return None
 
 
 def _promptguard_unavailable(
@@ -341,6 +412,45 @@ def _promptguard_unavailable(
             f"{status.reason}"
         )
     return None, status
+
+
+def compare_promptguard_artifacts(
+    artifacts: Mapping[str, Path],
+    samples: Sequence[PromptGuardComparisonCase],
+    *,
+    timer: Callable[[], float] = time.perf_counter,
+) -> list[PromptGuardComparisonResult]:
+    if not artifacts:
+        raise ValueError("At least one PromptGuard artifact is required for comparison")
+    if not samples:
+        raise ValueError("At least one PromptGuard sample is required for comparison")
+
+    reports: list[PromptGuardComparisonResult] = []
+    for artifact_label, artifact_path in artifacts.items():
+        classifier, status = build_promptguard_classifier(
+            PromptGuardSettings(posture="required", model_path=str(artifact_path))
+        )
+        if classifier is None or status.status != "active":
+            raise ValueError(
+                "PromptGuard artifact is unavailable for comparison: "
+                f"{artifact_label} ({artifact_path})"
+            )
+        for sample in samples:
+            started = timer()
+            result = classifier.classify(sample.text)
+            elapsed_ms = (timer() - started) * 1000.0
+            reports.append(
+                PromptGuardComparisonResult(
+                    artifact_label=artifact_label,
+                    artifact_path=str(artifact_path),
+                    sample_label=sample.label,
+                    elapsed_ms=elapsed_ms,
+                    semantic_risk_score=result.semantic_risk_score,
+                    semantic_risk_tier=result.semantic_risk_tier,
+                    semantic_classifier_id=result.semantic_classifier_id,
+                )
+            )
+    return reports
 
 
 class PatternInjectionClassifier:

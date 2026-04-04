@@ -65,7 +65,16 @@ dev = [
 security-runtime = [
     "yara-python>=4.5,<5",
     "transformers>=4.53,<5",
+    "onnxruntime>=1.18,<2",
+    "safetensors>=0.5,<1",
+    "sentencepiece>=0.2,<1",
+]
+security-build = [
+    "transformers>=4.53,<5",
     "torch>=2.7,<3",
+    "onnx>=1.16,<2",
+    "onnxruntime>=1.18,<2",
+    "huggingface-hub>=0.36,<1",
     "safetensors>=0.5,<1",
     "sentencepiece>=0.2,<1",
 ]
