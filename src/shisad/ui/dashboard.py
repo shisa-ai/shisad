@@ -101,6 +101,7 @@ class SecurityDashboard:
             "SkillInstalled",
             "SkillProfiled",
             "SkillRevoked",
+            "SkillToolRegistrationDropped",
         }
         result = [row for row in rows if str(row.get("event_type", "")) in wanted_event_types]
         return {"events": result, "total": len(result)}

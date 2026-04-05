@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel, Field
 
+from shisad.core.events import SkillToolRegistrationDropped
 from shisad.core.tools.registry import ToolRegistry
 from shisad.core.tools.schema import ToolDefinition
 from shisad.core.types import Capability, ToolName
@@ -30,6 +32,8 @@ from shisad.skills.meta_analyzer import MetaAnalyzer
 from shisad.skills.profile import SkillProfiler
 from shisad.skills.sandbox import SkillExecutionRequest, SkillRuntimeSandbox, SkillSandboxDecision
 from shisad.skills.signatures import KeyRing, SignatureStatus, verify_manifest_signature
+
+logger = logging.getLogger(__name__)
 
 
 class SkillInstallDecision(BaseModel):
@@ -85,6 +89,7 @@ class SkillManager:
         )
         self._inventory = self._load_inventory()
         self._skill_tool_map: dict[str, list[ToolName]] = {}
+        self._pending_registration_events: list[SkillToolRegistrationDropped] = []
         self._register_inventory_tools()
 
     def review(self, skill_path: Path) -> dict[str, Any]:
@@ -276,11 +281,17 @@ class SkillManager:
             self._register_skill_tools(
                 bundle.manifest,
                 expected_hashes=installed.tool_schema_hashes,
+                registration_source="activate_bundle",
             )
         return installed
 
     def tool_names_for_skill(self, skill_name: str) -> list[str]:
         return [str(name) for name in self._skill_tool_map.get(skill_name, [])]
+
+    def drain_registration_events(self) -> list[SkillToolRegistrationDropped]:
+        events = list(self._pending_registration_events)
+        self._pending_registration_events.clear()
+        return events
 
     def authorize_runtime(
         self,
@@ -370,6 +381,7 @@ class SkillManager:
             self._register_skill_tools(
                 bundle.manifest,
                 expected_hashes=getattr(installed, "tool_schema_hashes", {}),
+                registration_source="inventory_reload",
             )
 
     def _register_skill_tools(
@@ -377,6 +389,7 @@ class SkillManager:
         manifest: Any,
         *,
         expected_hashes: dict[str, str] | None = None,
+        registration_source: str = "",
     ) -> list[ToolName]:
         if self._tool_registry is None:
             return []
@@ -392,10 +405,21 @@ class SkillManager:
                 destinations=list(declared_tool.destinations),
                 require_confirmation=bool(declared_tool.require_confirmation),
             )
+            expected_hash = str((expected_hashes or {}).get(declared_tool.name, "")).strip()
+            actual_hash = tool_def.schema_hash()
+            if expected_hash and expected_hash != actual_hash:
+                self._record_registration_drop(
+                    manifest=manifest,
+                    tool_name=tool_name,
+                    registration_source=registration_source,
+                    expected_hash=expected_hash,
+                    actual_hash=actual_hash,
+                )
+                continue
             try:
                 self._tool_registry.register(
                     tool_def,
-                    expected_hash=(expected_hashes or {}).get(declared_tool.name),
+                    expected_hash=expected_hash or None,
                 )
             except ValueError:
                 continue
@@ -409,6 +433,37 @@ class SkillManager:
         for tool_name in self._skill_tool_map.get(skill_name, []):
             self._tool_registry.unregister(tool_name)
         self._skill_tool_map.pop(skill_name, None)
+
+    def _record_registration_drop(
+        self,
+        *,
+        manifest: Any,
+        tool_name: ToolName,
+        registration_source: str,
+        expected_hash: str,
+        actual_hash: str,
+    ) -> None:
+        event = SkillToolRegistrationDropped(
+            actor="skill_manager",
+            skill_name=str(getattr(manifest, "name", "")),
+            version=str(getattr(manifest, "version", "")),
+            tool_name=tool_name,
+            reason_code="skill:tool_schema_drift",
+            registration_source=registration_source or "registration",
+            expected_hash_prefix=_hash_prefix(expected_hash),
+            actual_hash_prefix=_hash_prefix(actual_hash),
+        )
+        self._pending_registration_events.append(event)
+        logger.warning(
+            "Dropping reviewed skill tool during %s due to schema drift: skill=%s version=%s "
+            "tool=%s expected=%s actual=%s",
+            event.registration_source,
+            event.skill_name,
+            event.version,
+            event.tool_name,
+            event.expected_hash_prefix,
+            event.actual_hash_prefix,
+        )
 
 
 def _risk_score(findings: list[Finding]) -> float:
@@ -465,3 +520,7 @@ def _declared_tool_schema_hashes(manifest: Any) -> dict[str, str]:
         )
         hashes[declared_tool.name] = tool_def.schema_hash()
     return hashes
+
+
+def _hash_prefix(value: str) -> str:
+    return value[:12]

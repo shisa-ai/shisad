@@ -299,6 +299,18 @@ class SkillRevoked(BaseEvent):
     previous_state: str = ""
 
 
+class SkillToolRegistrationDropped(BaseEvent):
+    """Reviewed skill tool was fail-closed during registration/reload."""
+
+    skill_name: str = ""
+    version: str = ""
+    tool_name: ToolName
+    reason_code: str = ""
+    registration_source: str = ""
+    expected_hash_prefix: str = ""
+    actual_hash_prefix: str = ""
+
+
 class TaskScheduled(BaseEvent):
     """Background task created."""
 
@@ -564,6 +576,11 @@ type AnyEvent = (
     | RateLimitTriggered
     | MemoryEntryStored
     | MemoryEntryDeleted
+    | SkillReviewRequested
+    | SkillInstalled
+    | SkillProfiled
+    | SkillRevoked
+    | SkillToolRegistrationDropped
     | TaskScheduled
     | TaskTriggered
     | TaskDelegationAdvisory
@@ -612,6 +629,11 @@ EVENT_TYPES: dict[str, type[BaseEvent]] = {
     "RateLimitTriggered": RateLimitTriggered,
     "MemoryEntryStored": MemoryEntryStored,
     "MemoryEntryDeleted": MemoryEntryDeleted,
+    "SkillReviewRequested": SkillReviewRequested,
+    "SkillInstalled": SkillInstalled,
+    "SkillProfiled": SkillProfiled,
+    "SkillRevoked": SkillRevoked,
+    "SkillToolRegistrationDropped": SkillToolRegistrationDropped,
     "TaskScheduled": TaskScheduled,
     "TaskTriggered": TaskTriggered,
     "TaskDelegationAdvisory": TaskDelegationAdvisory,

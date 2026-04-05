@@ -13,6 +13,7 @@ from shisad.core.events import (
     LockdownChanged,
     ProxyRequestEvaluated,
     SkillInstalled,
+    SkillToolRegistrationDropped,
 )
 from shisad.core.types import SessionId, ToolName
 from shisad.ui.dashboard import DashboardQuery, SecurityDashboard
@@ -65,6 +66,19 @@ async def _seed(log: AuditLog) -> None:
         )
     )
     await log.persist(
+        SkillToolRegistrationDropped(
+            actor="skill_manager",
+            timestamp=now,
+            skill_name="calendar-helper",
+            version="1.2.0",
+            tool_name=ToolName("skill.calendar-helper.lookup"),
+            reason_code="skill:tool_schema_drift",
+            registration_source="inventory_reload",
+            expected_hash_prefix="abc123def456",
+            actual_hash_prefix="fed654cba321",
+        )
+    )
+    await log.persist(
         AnomalyReported(
             session_id=SessionId("s1"),
             actor="monitor",
@@ -100,7 +114,7 @@ def test_m6_dashboard_queries(tmp_path: Path) -> None:
     assert egress["total"] >= 2
 
     provenance = dashboard.skill_provenance(limit=20)
-    assert provenance["total"] == 1
+    assert provenance["total"] == 2
 
     alerts = dashboard.alerts(limit=20)
     assert alerts["total"] >= 2

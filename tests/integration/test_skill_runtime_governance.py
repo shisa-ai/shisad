@@ -23,6 +23,7 @@ def _manifest_payload(
     version: str = "1.0.0",
     description: str = "safe skill",
     signature: str = "",
+    tools: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     return {
         "manifest_version": "1.0.0",
@@ -39,6 +40,7 @@ def _manifest_payload(
             "environment": [],
         },
         "dependencies": [],
+        "tools": tools or [],
     }
 
 
@@ -204,6 +206,98 @@ async def test_m4_t11_skill_update_requires_review_when_policy_demands(
         assert second["reason"] == "update_requires_review"
     finally:
         await _shutdown(daemon_task, client)
+
+
+@pytest.mark.asyncio
+async def test_h5_skill_tool_schema_drift_startup_drop_is_audited(
+    model_env: None,
+    tmp_path: Path,
+) -> None:
+    daemon_task, client = await _start_daemon_with_policy(
+        tmp_path,
+        policy={"skills": {"require_signature_for_auto_install": False}},
+    )
+    manifest = _manifest_payload(
+        name="restart-drift-skill",
+        tools=[
+            {
+                "name": "lookup",
+                "description": "Look up calendar entries.",
+                "parameters": [
+                    {
+                        "name": "query",
+                        "type": "string",
+                        "required": True,
+                    }
+                ],
+                "destinations": ["api.good.example"],
+            }
+        ],
+    )
+    manifest["capabilities"]["network"] = [{"domain": "api.good.example", "reason": "api"}]
+    skill = _write_skill(
+        tmp_path / "restart_drift_skill",
+        manifest=manifest,
+        files={"SKILL.md": "safe helper"},
+    )
+    try:
+        decision = await client.call(
+            "skill.install",
+            {"skill_path": str(skill), "approve_untrusted": True},
+        )
+        assert decision["status"] == "installed"
+    finally:
+        await _shutdown(daemon_task, client)
+
+    drifted_manifest = _manifest_payload(
+        name="restart-drift-skill",
+        tools=[
+            {
+                "name": "lookup",
+                "description": "Look up calendar entries but do something else.",
+                "parameters": [
+                    {
+                        "name": "query",
+                        "type": "string",
+                        "required": True,
+                    }
+                ],
+                "destinations": ["api.good.example"],
+            }
+        ],
+    )
+    drifted_manifest["capabilities"]["network"] = [{"domain": "api.good.example", "reason": "api"}]
+    (skill / "skill.manifest.yaml").write_text(
+        yaml.safe_dump(drifted_manifest, sort_keys=False),
+        encoding="utf-8",
+    )
+
+    restarted_task, restarted_client = await _start_daemon_with_policy(
+        tmp_path,
+        policy={"skills": {"require_signature_for_auto_install": False}},
+    )
+    try:
+        audit = await restarted_client.call(
+            "audit.query",
+            {"event_type": "SkillToolRegistrationDropped", "limit": 20},
+        )
+        drift_rows = [
+            item
+            for item in audit["events"]
+            if str(item.get("data", {}).get("skill_name", "")) == "restart-drift-skill"
+        ]
+        assert len(drift_rows) == 1
+        payload = drift_rows[0]["data"]
+        assert payload["tool_name"] == "skill.restart-drift-skill.lookup"
+        assert payload["reason_code"] == "skill:tool_schema_drift"
+        assert payload["registration_source"] == "inventory_reload"
+        assert len(str(payload["expected_hash_prefix"])) == 12
+        assert len(str(payload["actual_hash_prefix"])) == 12
+        assert "expected_hash" not in payload
+        assert "actual_hash" not in payload
+        assert "parameters" not in payload
+    finally:
+        await _shutdown(restarted_task, restarted_client)
 
 
 @pytest.mark.asyncio

@@ -483,6 +483,7 @@ class DaemonServices:
                 policy=policy_loader.policy.skills,
                 tool_registry=registry,
             )
+            await _flush_skill_registration_events(event_bus=event_bus, skill_manager=skill_manager)
             coding_manager = CodingAgentManager(
                 repo_root=config.coding_repo_root,
                 data_dir=config.data_dir,
@@ -1443,6 +1444,22 @@ def _validate_model_endpoints(model_config: ModelConfig, router: ModelRouter) ->
         if errors:
             raise ValueError(
                 f"Invalid {component.value} model endpoint '{route.base_url}': {'; '.join(errors)}"
+            )
+
+
+async def _flush_skill_registration_events(
+    *,
+    event_bus: EventBus,
+    skill_manager: SkillManager,
+) -> None:
+    for event in skill_manager.drain_registration_events():
+        try:
+            await event_bus.publish(event)
+        except Exception as exc:
+            logger.warning(
+                "Failed to persist skill registration diagnostic for %s: %s",
+                event.tool_name,
+                exc,
             )
 
 

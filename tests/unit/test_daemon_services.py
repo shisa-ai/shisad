@@ -103,8 +103,8 @@ async def test_h1_daemon_services_build_fails_closed_when_control_plane_sidecar_
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    async def _raise_sidecar(*, data_dir, policy_path):  # type: ignore[no-untyped-def]
-        _ = (data_dir, policy_path)
+    async def _raise_sidecar(*, data_dir, policy_path, assistant_fs_roots):  # type: ignore[no-untyped-def]
+        _ = (data_dir, policy_path, assistant_fs_roots)
         raise ControlPlaneUnavailableError(reason_code="control_plane.startup_failed")
 
     monkeypatch.setattr("shisad.daemon.services.start_control_plane_sidecar", _raise_sidecar)
@@ -137,8 +137,8 @@ async def test_h1_daemon_services_closes_started_sidecar_on_late_build_failure(
         async def close(self) -> None:
             closed.append(True)
 
-    async def _fake_start(*, data_dir, policy_path):  # type: ignore[no-untyped-def]
-        _ = (data_dir, policy_path)
+    async def _fake_start(*, data_dir, policy_path, assistant_fs_roots):  # type: ignore[no-untyped-def]
+        _ = (data_dir, policy_path, assistant_fs_roots)
         return _FakeSidecar()
 
     monkeypatch.setattr("shisad.daemon.services.start_control_plane_sidecar", _fake_start)

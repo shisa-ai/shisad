@@ -8,6 +8,7 @@ from typing import Any
 import pytest
 import yaml
 
+from shisad.core.events import SkillToolRegistrationDropped
 from shisad.core.tools.registry import ToolRegistry
 from shisad.core.tools.schema import tool_definitions_to_openai
 from shisad.core.types import Capability, ToolName
@@ -379,6 +380,98 @@ async def test_m6_skill_tool_schema_drift_blocks_reregistration_on_restart(
     _ = restarted
 
     assert restarted_registry.has_tool(ToolName("skill.calendar-helper.lookup")) is False
+
+
+@pytest.mark.asyncio
+async def test_h5_skill_tool_schema_drift_emits_metadata_only_restart_diagnostic(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    first_registry = ToolRegistry()
+    manager = SkillManager(
+        storage_dir=tmp_path / "state",
+        policy=SkillPolicy(
+            require_signature_for_auto_install=False,
+            require_review_on_update=False,
+        ),
+        tool_registry=first_registry,
+    )
+    skill = _write_skill(
+        tmp_path / "skill",
+        manifest=_manifest_payload(
+            tools=[
+                {
+                    "name": "lookup",
+                    "description": "Look up calendar entries.",
+                    "parameters": [
+                        {
+                            "name": "query",
+                            "type": "string",
+                            "required": True,
+                        }
+                    ],
+                    "destinations": ["api.good.example"],
+                }
+            ]
+        ),
+        files={"SKILL.md": "safe helper"},
+    )
+
+    decision = await manager.install(skill, approve_untrusted=True)
+    assert decision.allowed is True
+
+    manifest = _manifest_payload(
+        tools=[
+            {
+                "name": "lookup",
+                "description": "Look up calendar entries but do something else.",
+                "parameters": [
+                    {
+                        "name": "query",
+                        "type": "string",
+                        "required": True,
+                    }
+                ],
+                "destinations": ["api.good.example"],
+            }
+        ]
+    )
+    (skill / "skill.manifest.yaml").write_text(
+        yaml.safe_dump(manifest, sort_keys=False),
+        encoding="utf-8",
+    )
+
+    restarted_registry = ToolRegistry()
+    with caplog.at_level("WARNING"):
+        restarted = SkillManager(
+            storage_dir=tmp_path / "state",
+            policy=SkillPolicy(
+                require_signature_for_auto_install=False,
+                require_review_on_update=False,
+            ),
+            tool_registry=restarted_registry,
+        )
+
+    assert restarted_registry.has_tool(ToolName("skill.calendar-helper.lookup")) is False
+
+    events = restarted.drain_registration_events()
+    assert len(events) == 1
+    event = events[0]
+    assert isinstance(event, SkillToolRegistrationDropped)
+    assert event.skill_name == "calendar-helper"
+    assert event.version == "1.0.0"
+    assert event.tool_name == ToolName("skill.calendar-helper.lookup")
+    assert event.reason_code == "skill:tool_schema_drift"
+    assert event.registration_source == "inventory_reload"
+    assert len(event.expected_hash_prefix) == 12
+    assert len(event.actual_hash_prefix) == 12
+    payload = event.model_dump(mode="json")
+    assert "expected_hash" not in payload
+    assert "actual_hash" not in payload
+    assert "parameters" not in payload
+    assert "destinations" not in payload
+    assert any("schema drift" in record.message.lower() for record in caplog.records)
+    assert restarted.drain_registration_events() == []
 
 
 @pytest.mark.asyncio
