@@ -180,7 +180,7 @@ The CHANGELOG is a user-facing document. Write it so someone who uses shisad
 
 9. **Prefer everyday product language over internal threat language.** Write
    what the end-user can notice or act on. For example:
-   - Better: "The daemon now warns you when suspicious denied actions repeat."
+   - Better: "The daemon now warns when suspicious denied actions repeat."
    - Worse: "The daemon records structured deny metadata for taint bypass attempts and unattributed egress probes."
 
 ## Trusted Publishing Setup
