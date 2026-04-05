@@ -92,7 +92,7 @@ async def _replay_complete(
             usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
         )
 
-    if "git info please" in goal_lower:
+    if "git info please" in goal_lower or "git status" in goal_lower:
         return ProviderResponse(
             message=Message(
                 role="assistant",
@@ -253,7 +253,7 @@ async def test_m1_rlc5_session_replay_latest_news_then_git_info_no_lockdown(
 
         git_reply = await client.call(
             "session.message",
-            {"session_id": sid, "content": "git info please"},
+            {"session_id": sid, "content": "git status"},
         )
         assert git_reply.get("lockdown_level") == "normal"
         assert int(git_reply.get("executed_actions", 0)) >= 1

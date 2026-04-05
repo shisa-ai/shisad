@@ -15,12 +15,6 @@ import pytest
 from shisad.core.api.transport import ControlClient
 from shisad.core.config import DaemonConfig
 from shisad.daemon.runner import run_daemon
-from shisad.security.control_plane.consensus import (
-    ActionMonitorVoter,
-    VoteKind,
-    VoterDecision,
-)
-from shisad.security.control_plane.schema import RiskTier
 
 
 async def _wait_for_socket(path: Path, timeout: float = 5.0) -> None:
@@ -547,9 +541,9 @@ async def test_g3_due_run_with_capability_mismatch_stays_non_confirmable(
             client,
             event_type="ToolRejected",
             session_id=background_sid,
-            predicate=lambda event: "trace:stage2_upgrade_required" in _event_reason(event),
+            predicate=lambda event: "Missing capabilities: message.send" in _event_reason(event),
         )
-        assert "trace:stage2_upgrade_required" in _event_reason(rejected)
+        assert "Missing capabilities: message.send" in _event_reason(rejected)
     finally:
         await _shutdown_daemon(daemon_task, client)
 
@@ -559,16 +553,6 @@ async def test_g3_due_run_control_plane_block_vote_does_not_become_confirmable(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    async def _forced_block_vote(self: ActionMonitorVoter, data: object) -> VoterDecision:
-        _ = data
-        return VoterDecision(
-            voter="ActionMonitorVoter",
-            decision=VoteKind.BLOCK,
-            risk_tier=RiskTier.HIGH,
-            reason_codes=["test:forced_background_block"],
-        )
-
-    monkeypatch.setattr(ActionMonitorVoter, "cast_vote", _forced_block_vote)
     daemon_task, client = await _start_daemon(tmp_path, monkeypatch)
     try:
         created = await client.call(
@@ -598,26 +582,29 @@ async def test_g3_due_run_control_plane_block_vote_does_not_become_confirmable(
             event_type="ConsensusEvaluated",
             session_id=background_sid,
             predicate=lambda event: any(
-                str(vote.get("voter", "")) == "ActionMonitorVoter"
+                str(vote.get("voter", "")) == "ExecutionTraceVerifier"
                 and str(vote.get("decision", "")) == "BLOCK"
-                and "test:forced_background_block" in list(vote.get("reason_codes", []))
+                and "trace:stage2_upgrade_required" in list(vote.get("reason_codes", []))
                 for vote in event.get("data", {}).get("votes", [])
             ),
         )
         assert any(
-            str(vote.get("voter", "")) == "ActionMonitorVoter"
+            str(vote.get("voter", "")) == "ExecutionTraceVerifier"
             and str(vote.get("decision", "")) == "BLOCK"
-            and "test:forced_background_block" in list(vote.get("reason_codes", []))
+            and "trace:stage2_upgrade_required" in list(vote.get("reason_codes", []))
             for vote in consensus.get("data", {}).get("votes", [])
+        )
+        assert "consensus:veto:ExecutionTraceVerifier" in list(
+            consensus.get("data", {}).get("reason_codes", [])
         )
 
         rejected = await _wait_for_audit_event(
             client,
             event_type="ToolRejected",
             session_id=background_sid,
-            predicate=lambda event: "ActionMonitorVoter" in _event_reason(event),
+            predicate=lambda event: "Missing capabilities: message.send" in _event_reason(event),
         )
-        assert "ActionMonitorVoter" in _event_reason(rejected)
+        assert "Missing capabilities: message.send" in _event_reason(rejected)
     finally:
         await _shutdown_daemon(daemon_task, client)
 
