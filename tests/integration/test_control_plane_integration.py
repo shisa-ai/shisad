@@ -1364,6 +1364,11 @@ async def test_m1_d11_confirmation_replay_uses_persisted_merged_policy_snapshot_
         row = next(
             item for item in pending["actions"] if item["confirmation_id"] == confirmation_id
         )
+        assert row["required_level"] == "software"
+        assert row["selected_backend_id"] == "software.default"
+        assert row["approval_envelope"]["schema_version"] == "shisad.approval.v1"
+        assert str(row["approval_envelope"]["action_digest"]).startswith("sha256:")
+        assert str(row["approval_envelope_hash"]).startswith("sha256:")
 
         confirmed = await client.call(
             "action.confirm",
@@ -1376,6 +1381,19 @@ async def test_m1_d11_confirmation_replay_uses_persisted_merged_policy_snapshot_
 
         assert confirmed["confirmed"] is True
         assert confirmed["status"] == "approved"
+        assert confirmed["approval_level"] == "software"
+        assert confirmed["approval_method"] == "software"
+
+        approved = await client.call(
+            "audit.query",
+            {"event_type": "ToolApproved", "session_id": sid, "limit": 20},
+        )
+        assert any(
+            str(event.get("data", {}).get("approval_level", "")) == "software"
+            and str(event.get("data", {}).get("approval_method", "")) == "software"
+            and str(event.get("data", {}).get("approval_evidence_hash", "")).startswith("sha256:")
+            for event in approved["events"]
+        )
     finally:
         await _shutdown(daemon_task, client)
 

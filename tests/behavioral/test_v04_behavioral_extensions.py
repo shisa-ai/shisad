@@ -434,6 +434,102 @@ async def test_behavioral_out_of_scope_background_action_routes_to_confirmation(
 
 
 @pytest.mark.asyncio
+async def test_behavioral_tool_execute_confirmation_surfaces_approval_protocol_metadata(
+    tmp_path: Path,
+) -> None:
+    policy_text = "\n".join(
+        [
+            'version: "1"',
+            "default_require_confirmation: false",
+            "default_capabilities:",
+            "  - file.read",
+            "  - memory.read",
+            "tools:",
+            "  shell.exec:",
+            "    capabilities_required:",
+            "      - shell.exec",
+        ]
+    )
+    daemon_task, client, _config = await _start_daemon(tmp_path, policy_text=policy_text + "\n")
+    try:
+        created = await client.call(
+            "session.create",
+            {"channel": "cli", "user_id": "alice", "workspace_id": "ws1"},
+        )
+        sid = str(created["session_id"])
+
+        proposed = await client.call(
+            "tool.execute",
+            {
+                "session_id": sid,
+                "tool_name": "shell.exec",
+                "command": [sys.executable, "-c", "print('behavioral-a0')"],
+                "limits": {"timeout_seconds": 5, "output_bytes": 2048},
+                "degraded_mode": "fail_open",
+                "security_critical": False,
+            },
+        )
+        assert proposed["allowed"] is False
+        assert proposed["confirmation_required"] is True
+        confirmation_id = str(proposed["confirmation_id"])
+
+        pending = await client.call("action.pending", {"confirmation_id": confirmation_id})
+        actions = list(pending.get("actions", []))
+        assert len(actions) == 1
+        action = actions[0]
+        assert action["required_level"] == "software"
+        assert action["selected_backend_id"] == "software.default"
+        assert action["approval_envelope"]["schema_version"] == "shisad.approval.v1"
+        assert str(action["approval_envelope"]["action_digest"]).startswith("sha256:")
+        assert str(action["approval_envelope_hash"]).startswith("sha256:")
+
+        confirmed = await client.call(
+            "action.confirm",
+            {
+                "confirmation_id": confirmation_id,
+                "decision_nonce": str(action["decision_nonce"]),
+                "reason": "behavioral_a0",
+            },
+        )
+        assert confirmed["confirmed"] is True
+        assert confirmed["status"] == "approved"
+        assert confirmed["approval_level"] == "software"
+        assert confirmed["approval_method"] == "software"
+
+        approved = await _wait_for_audit_event(
+            client,
+            event_type="ToolApproved",
+            session_id=sid,
+            predicate=lambda event: (
+                str(event.get("data", {}).get("tool_name", "")) == "shell.exec"
+                and str(event.get("data", {}).get("approval_level", "")) == "software"
+                and str(event.get("data", {}).get("approval_method", "")) == "software"
+                and str(event.get("data", {}).get("approval_evidence_hash", "")).startswith(
+                    "sha256:"
+                )
+            ),
+        )
+        executed = await _wait_for_audit_event(
+            client,
+            event_type="ToolExecuted",
+            session_id=sid,
+            predicate=lambda event: (
+                str(event.get("data", {}).get("tool_name", "")) == "shell.exec"
+                and bool(event.get("data", {}).get("success")) is True
+                and str(event.get("data", {}).get("approval_level", "")) == "software"
+                and str(event.get("data", {}).get("approval_method", "")) == "software"
+                and str(event.get("data", {}).get("approval_evidence_hash", "")).startswith(
+                    "sha256:"
+                )
+            ),
+        )
+        assert approved["event_type"] == "ToolApproved"
+        assert executed["event_type"] == "ToolExecuted"
+    finally:
+        await _shutdown_daemon(daemon_task, client)
+
+
+@pytest.mark.asyncio
 async def test_behavioral_trusted_admin_message_reroutes_to_cleanroom_and_auto_drops(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

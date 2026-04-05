@@ -95,7 +95,18 @@ reviewed-skill schema-drift observability. The next planned lane is `v0.6.2`.
 
 #### v0.6.2 — Hardware-backed approval and signing
 
-- Ledger / hardware wallet integration for high-value operations
+Current execution note (2026-04-05): the `A0` approval-protocol foundation is
+now implemented on the active branch and ready for review. That foundation
+adds canonical `ApprovalEnvelope` / `action_digest` hashing, approval levels
+(`L0`-`L4`) plus policy-driven escalation, selected-backend metadata on pending
+approvals, richer approval audit fields, and the `L0/software` backend that
+preserves the existing nonce confirmation UX inside the new protocol. The
+follow-on v0.6.2 work is now backend-specific:
+
+- TOTP / re-auth approval backend
+- WebAuthn / passkey bound-approval backend
+- Local helper bridge for SSH-only / private deployments
+- Ledger / signer integration for high-value operations
 - Hardware token signing and artifact signing flows
 
 #### v0.6.3 — MCP/A2A interop

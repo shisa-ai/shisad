@@ -21,6 +21,7 @@ from pydantic import ValidationError
 
 from shisad.channels.base import DeliveryTarget
 from shisad.coding.models import CodingAgentConfig
+from shisad.core.approval import ApprovalRoutingError, ConfirmationRequirement
 from shisad.core.context import (
     DEFAULT_EPISODE_GAP_THRESHOLD,
     DEFAULT_INTERNAL_TIER_TOKEN_BUDGET,
@@ -3899,25 +3900,56 @@ class SessionImplMixin(HandlerMixinBase):
                                 )
                             )
                         continue
-                pending = self._queue_pending_action(
-                    session_id=sid,
-                    user_id=validated.user_id,
-                    workspace_id=validated.workspace_id,
-                    tool_name=proposal.tool_name,
-                    arguments=proposal_arguments,
-                    reason=final_reason or "requires_confirmation",
-                    capabilities=planner_context.effective_caps,
-                    preflight_action=cp_eval.action,
-                    merged_policy=merged_policy,
-                    taint_labels=list(planner_context.context.taint_labels),
-                    extra_warnings=extra_warnings,
-                    pep_context=(
-                        _pending_pep_context_snapshot(planner_context.context)
-                        if pep_elevation is not None
-                        else None
-                    ),
-                    pep_elevation=pep_elevation,
-                )
+                try:
+                    pending = self._queue_pending_action(
+                        session_id=sid,
+                        user_id=validated.user_id,
+                        workspace_id=validated.workspace_id,
+                        tool_name=proposal.tool_name,
+                        arguments=proposal_arguments,
+                        reason=final_reason or "requires_confirmation",
+                        capabilities=planner_context.effective_caps,
+                        preflight_action=cp_eval.action,
+                        merged_policy=merged_policy,
+                        taint_labels=list(planner_context.context.taint_labels),
+                        extra_warnings=extra_warnings,
+                        pep_context=(
+                            _pending_pep_context_snapshot(planner_context.context)
+                            if pep_elevation is not None
+                            else None
+                        ),
+                        pep_elevation=pep_elevation,
+                        confirmation_requirement=(
+                            ConfirmationRequirement.model_validate(pep_decision.confirmation_requirement)
+                            if pep_decision.confirmation_requirement is not None
+                            else None
+                        ),
+                    )
+                except ApprovalRoutingError as exc:
+                    rejected += 1
+                    rejection_reasons_for_user.append(str(exc.reason))
+                    await self._event_bus.publish(
+                        ToolRejected(
+                            session_id=sid,
+                            actor="policy_loop",
+                            tool_name=proposal.tool_name,
+                            reason=str(exc.reason),
+                        )
+                    )
+                    if self._trace_recorder is not None:
+                        trace_tool_calls.append(
+                            TraceToolCall(
+                                tool_name=str(proposal.tool_name),
+                                arguments=dict(proposal_arguments),
+                                pep_decision=pep_decision.kind.value,
+                                monitor_decision=monitor_decision.kind.value,
+                                control_plane_decision=cp_eval.decision.value,
+                                final_decision="reject",
+                                executed=False,
+                                execution_success=None,
+                            )
+                        )
+                    continue
                 pending_confirmation_ids.append(pending.confirmation_id)
                 await self._event_bus.publish(
                     ToolRejected(

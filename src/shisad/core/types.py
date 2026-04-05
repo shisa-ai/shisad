@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import StrEnum
-from typing import NewType
+from typing import Any, NewType
 
 from pydantic import BaseModel
 
@@ -110,6 +110,7 @@ class PEPDecision(BaseModel):
     tool_name: ToolName | None = None
     risk_score: float | None = None
     timestamp: datetime | None = None
+    confirmation_requirement: dict[str, Any] | None = None
 
 
 class SessionState(StrEnum):

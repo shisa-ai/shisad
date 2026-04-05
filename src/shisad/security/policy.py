@@ -17,6 +17,11 @@ from typing import Any, Literal
 import yaml
 from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 
+from shisad.core.approval import (
+    ConfirmationRequirement,
+    RiskConfirmationLevelRule,
+    legacy_software_confirmation_requirement,
+)
 from shisad.core.tools.names import canonical_tool_name
 from shisad.core.types import Capability, ToolName
 
@@ -31,8 +36,15 @@ class ToolPolicy(BaseModel):
 
     capabilities_required: list[Capability] = Field(default_factory=list)
     require_confirmation: bool = False
+    confirmation: ConfirmationRequirement | None = None
     allowed_args: dict[str, Any] | None = None
     description: str = ""
+
+    @model_validator(mode="after")
+    def _migrate_legacy_confirmation(self) -> ToolPolicy:
+        if self.require_confirmation and self.confirmation is None:
+            self.confirmation = legacy_software_confirmation_requirement()
+        return self
 
 
 class EgressRule(BaseModel):
@@ -77,6 +89,15 @@ class RiskPolicy(BaseModel):
     version: str = "v1"
     auto_approve_threshold: float = 0.45
     block_threshold: float = 0.85
+    confirmation_levels: list[RiskConfirmationLevelRule] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _sort_confirmation_levels(self) -> RiskPolicy:
+        self.confirmation_levels = sorted(
+            self.confirmation_levels,
+            key=lambda item: (item.threshold, item.level.priority),
+        )
+        return self
 
 
 class RateLimitPolicy(BaseModel):

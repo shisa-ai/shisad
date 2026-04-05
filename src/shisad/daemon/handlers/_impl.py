@@ -24,6 +24,24 @@ from pydantic import ValidationError
 from shisad.assistant.fs_git import FsGitToolkit
 from shisad.assistant.web import WebToolkit
 from shisad.channels.base import DeliveryTarget
+from shisad.core.approval import (
+    ApprovalEnvelope,
+    ApprovalRoutingError,
+    ConfirmationBackendRegistry,
+    ConfirmationCapabilities,
+    ConfirmationEvidence,
+    ConfirmationFallbackPolicy,
+    ConfirmationLevel,
+    ConfirmationMethodLockoutTracker,
+    ConfirmationRequirement,
+    SoftwareConfirmationBackend,
+    approval_audit_fields,
+    approval_envelope_hash,
+    compute_action_digest,
+    legacy_software_confirmation_requirement,
+    new_approval_nonce,
+    resolve_confirmation_destinations,
+)
 from shisad.core.events import (
     AnomalyReported,
     BaseEvent,
@@ -76,6 +94,7 @@ from shisad.daemon.handlers._pending_approval import (
     pending_pep_elevation_from_payload,
     pending_pep_elevation_to_payload,
     pending_pep_elevation_warning,
+    pep_arguments_for_policy_evaluation,
 )
 from shisad.daemon.handlers._side_effects import is_side_effect_tool
 from shisad.daemon.handlers._string_utils import optional_string
@@ -735,6 +754,22 @@ class PendingAction:
     approval_task_envelope_id: str = ""
     pep_context: PendingPepContextSnapshot | None = None
     pep_elevation: PendingPepElevationRequest | None = None
+    required_level: ConfirmationLevel = ConfirmationLevel.SOFTWARE
+    required_methods: list[str] = field(default_factory=list)
+    allowed_principals: list[str] = field(default_factory=list)
+    allowed_credentials: list[str] = field(default_factory=list)
+    required_capabilities: ConfirmationCapabilities = field(
+        default_factory=ConfirmationCapabilities
+    )
+    approval_envelope: ApprovalEnvelope | None = None
+    approval_envelope_hash: str = ""
+    intent_envelope: dict[str, Any] | None = None
+    confirmation_evidence: ConfirmationEvidence | None = None
+    fallback: ConfirmationFallbackPolicy = field(default_factory=ConfirmationFallbackPolicy)
+    expires_at: datetime | None = None
+    selected_backend_id: str = ""
+    selected_backend_method: str = ""
+    fallback_used: bool = False
     status: str = "pending"
     status_reason: str = ""
 
@@ -831,6 +866,12 @@ class HandlerImplementation(
         self._confirmation_warning_generator = ConfirmationWarningGenerator()
         self._confirmation_analytics = ConfirmationAnalytics()
         self._confirmation_alerted_at: dict[str, datetime] = {}
+        self._confirmation_backend_registry = ConfirmationBackendRegistry()
+        self._confirmation_backend_registry.register(SoftwareConfirmationBackend())
+        self._confirmation_failure_tracker = ConfirmationMethodLockoutTracker()
+        self._daemon_id = hashlib.sha256(
+            str(self._config.data_dir.resolve()).encode("utf-8", errors="ignore")
+        ).hexdigest()[:32]
         self._leak_detector = CrossThreadLeakDetector()
         self._reputation_scorer = ReputationScorer(submission_limit=20)
         self._dashboard = SecurityDashboard(
@@ -1684,6 +1725,17 @@ class HandlerImplementation(
             "warnings": list(pending.warnings),
             "leak_check": dict(pending.leak_check),
             "approval_task_envelope_id": pending.approval_task_envelope_id,
+            "required_level": pending.required_level.value,
+            "required_methods": list(pending.required_methods),
+            "allowed_principals": list(pending.allowed_principals),
+            "allowed_credentials": list(pending.allowed_credentials),
+            "required_capabilities": pending.required_capabilities.model_dump(mode="json"),
+            "approval_envelope_hash": pending.approval_envelope_hash,
+            "fallback": pending.fallback.model_dump(mode="json"),
+            "expires_at": pending.expires_at.isoformat() if pending.expires_at else "",
+            "selected_backend_id": pending.selected_backend_id,
+            "selected_backend_method": pending.selected_backend_method,
+            "fallback_used": bool(pending.fallback_used),
             "status": pending.status,
             "status_reason": pending.status_reason,
         }
@@ -1695,6 +1747,14 @@ class HandlerImplementation(
             payload["pep_context"] = pending_pep_context_to_payload(pending.pep_context)
         if pending.pep_elevation is not None:
             payload["pep_elevation"] = pending_pep_elevation_to_payload(pending.pep_elevation)
+        if pending.approval_envelope is not None:
+            payload["approval_envelope"] = pending.approval_envelope.model_dump(mode="json")
+        if pending.intent_envelope is not None:
+            payload["intent_envelope"] = dict(pending.intent_envelope)
+        if pending.confirmation_evidence is not None:
+            payload["confirmation_evidence"] = pending.confirmation_evidence.model_dump(
+                mode="json"
+            )
         return payload
 
     @staticmethod
@@ -1746,10 +1806,19 @@ class HandlerImplementation(
         extra_warnings: list[str] | None = None,
         pep_context: PendingPepContextSnapshot | None = None,
         pep_elevation: PendingPepElevationRequest | None = None,
+        confirmation_requirement: ConfirmationRequirement | None = None,
     ) -> PendingAction:
         created_at = datetime.now(UTC)
         decision_nonce = uuid.uuid4().hex
         confirmation_id = uuid.uuid4().hex
+        requirement = (
+            confirmation_requirement.model_copy(deep=True)
+            if confirmation_requirement is not None
+            else legacy_software_confirmation_requirement()
+        )
+        backend_resolution = self._confirmation_backend_registry.resolve(requirement)
+        if backend_resolution is None:
+            raise ApprovalRoutingError("confirmation_backend_unavailable")
         summary = safe_summary(
             action=str(tool_name),
             risk_level=(
@@ -1766,6 +1835,13 @@ class HandlerImplementation(
         elevation_warning = pending_pep_elevation_warning(pep_elevation)
         if elevation_warning:
             warnings.append(elevation_warning)
+        if requirement.level != ConfirmationLevel.SOFTWARE:
+            warnings.append(f"Required approval level: {requirement.level.value}")
+        if backend_resolution.fallback_used:
+            warnings.append(
+                "Approval fallback engaged: "
+                f"{backend_resolution.backend.method}/{backend_resolution.backend.level.value}"
+            )
         if extra_warnings:
             warnings.extend(str(item).strip() for item in extra_warnings if str(item).strip())
         leak_result_payload: dict[str, Any] = {}
@@ -1800,7 +1876,53 @@ class HandlerImplementation(
         execute_after: datetime | None = None
         if self._is_high_risk_confirmation(tool_name, arguments):
             execute_after = created_at + timedelta(seconds=3)
+        expires_at = (
+            created_at + timedelta(seconds=int(requirement.timeout_seconds))
+            if requirement.timeout_seconds is not None
+            else None
+        )
         session = self._session_manager.get(session_id)
+        normalized_arguments = pep_arguments_for_policy_evaluation(tool_name, arguments)
+        tool_definition = self._registry.get_tool(tool_name)
+        action_digest = compute_action_digest(
+            tool_definition=tool_definition
+            or ToolDefinition(
+                name=tool_name,
+                description="",
+                parameters=[],
+                capabilities_required=[],
+            ),
+            arguments=normalized_arguments,
+            destinations=resolve_confirmation_destinations(
+                tool_definition=tool_definition
+                or ToolDefinition(
+                    name=tool_name,
+                    description="",
+                    parameters=[],
+                    capabilities_required=[],
+                ),
+                arguments=normalized_arguments,
+            ),
+        )
+        action_summary = f"{summary.action}: " + ", ".join(
+            f"{key}={value}" for key, value in summary.parameters[:6]
+        )
+        approval_envelope = ApprovalEnvelope(
+            approval_id=confirmation_id,
+            pending_action_id=confirmation_id,
+            workspace_id=str(workspace_id),
+            daemon_id=self._daemon_id,
+            session_id=str(session_id),
+            required_level=requirement.level,
+            policy_reason=reason,
+            action_digest=action_digest,
+            allowed_principals=list(requirement.allowed_principals),
+            allowed_credentials=list(requirement.allowed_credentials),
+            expires_at=expires_at,
+            nonce=new_approval_nonce(),
+            intent_envelope_hash=None,
+            action_summary=action_summary.strip(),
+        )
         pending = PendingAction(
             confirmation_id=confirmation_id,
             decision_nonce=decision_nonce,
@@ -1853,6 +1975,18 @@ class HandlerImplementation(
                 if pep_elevation is not None
                 else None
             ),
+            required_level=requirement.level,
+            required_methods=list(requirement.methods),
+            allowed_principals=list(requirement.allowed_principals),
+            allowed_credentials=list(requirement.allowed_credentials),
+            required_capabilities=requirement.require_capabilities.model_copy(deep=True),
+            approval_envelope=approval_envelope,
+            approval_envelope_hash=approval_envelope_hash(approval_envelope),
+            fallback=requirement.fallback.model_copy(deep=True),
+            expires_at=expires_at,
+            selected_backend_id=str(backend_resolution.backend.backend_id),
+            selected_backend_method=str(backend_resolution.backend.method),
+            fallback_used=bool(backend_resolution.fallback_used),
         )
         self._pending_actions[confirmation_id] = pending
         self._pending_by_session.setdefault(session_id, []).append(confirmation_id)
@@ -1902,6 +2036,8 @@ class HandlerImplementation(
                 execute_after = (
                     datetime.fromisoformat(execute_after_raw) if execute_after_raw else None
                 )
+                expires_at_raw = str(item.get("expires_at", "")).strip()
+                expires_at = datetime.fromisoformat(expires_at_raw) if expires_at_raw else None
                 pep_context_payload = item.get("pep_context")
                 pep_context = (
                     pending_pep_context_from_payload(pep_context_payload)
@@ -1912,6 +2048,18 @@ class HandlerImplementation(
                 pep_elevation = (
                     pending_pep_elevation_from_payload(pep_elevation_payload)
                     if isinstance(pep_elevation_payload, Mapping)
+                    else None
+                )
+                approval_envelope_payload = item.get("approval_envelope")
+                approval_envelope = (
+                    ApprovalEnvelope.model_validate(approval_envelope_payload)
+                    if isinstance(approval_envelope_payload, Mapping)
+                    else None
+                )
+                confirmation_evidence_payload = item.get("confirmation_evidence")
+                confirmation_evidence = (
+                    ConfirmationEvidence.model_validate(confirmation_evidence_payload)
+                    if isinstance(confirmation_evidence_payload, Mapping)
                     else None
                 )
                 pending = PendingAction(
@@ -1939,6 +2087,42 @@ class HandlerImplementation(
                     ).strip(),
                     pep_context=pep_context,
                     pep_elevation=pep_elevation,
+                    required_level=ConfirmationLevel(
+                        str(item.get("required_level", ConfirmationLevel.SOFTWARE.value))
+                    ),
+                    required_methods=[
+                        str(value).strip()
+                        for value in item.get("required_methods", [])
+                        if str(value).strip()
+                    ],
+                    allowed_principals=[
+                        str(value).strip()
+                        for value in item.get("allowed_principals", [])
+                        if str(value).strip()
+                    ],
+                    allowed_credentials=[
+                        str(value).strip()
+                        for value in item.get("allowed_credentials", [])
+                        if str(value).strip()
+                    ],
+                    required_capabilities=ConfirmationCapabilities.model_validate(
+                        item.get("required_capabilities", {})
+                    ),
+                    approval_envelope=approval_envelope,
+                    approval_envelope_hash=str(item.get("approval_envelope_hash", "")).strip(),
+                    intent_envelope=dict(item.get("intent_envelope", {}))
+                    if isinstance(item.get("intent_envelope"), Mapping)
+                    else None,
+                    confirmation_evidence=confirmation_evidence,
+                    fallback=ConfirmationFallbackPolicy.model_validate(item.get("fallback", {})),
+                    expires_at=expires_at,
+                    selected_backend_id=(
+                        str(item.get("selected_backend_id", "")).strip() or "software.default"
+                    ),
+                    selected_backend_method=(
+                        str(item.get("selected_backend_method", "")).strip() or "software"
+                    ),
+                    fallback_used=bool(item.get("fallback_used", False)),
                     status=str(item.get("status", "pending")),
                     status_reason=str(item.get("status_reason", "")),
                 )
@@ -2037,6 +2221,7 @@ class HandlerImplementation(
         approval_decision_nonce: str = "",
         approval_task_envelope_id: str = "",
         approval_timestamp: str = "",
+        approval_evidence: ConfirmationEvidence | None = None,
     ) -> ApprovedToolExecutionResult:
         session = self._session_manager.get(sid)
         if session is None:
@@ -2078,6 +2263,7 @@ class HandlerImplementation(
             "approval_confirmation_id": approval_confirmation_id,
             "approval_decision_nonce": approval_decision_nonce,
             "approval_timestamp": approval_timestamp or datetime.now(UTC).isoformat(),
+            **approval_audit_fields(approval_evidence),
         }
 
         await self._event_bus.publish(

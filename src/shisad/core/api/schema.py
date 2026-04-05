@@ -828,6 +828,10 @@ class ActionDecisionParams(_StrictParams):
     confirmation_id: str
     decision_nonce: str | None = None
     reason: str = ""
+    approval_method: str | None = None
+    principal_id: str | None = None
+    credential_id: str | None = None
+    proof: dict[str, Any] | None = None
 
 
 class ActionPendingEntry(BaseModel):
@@ -849,6 +853,18 @@ class ActionPendingEntry(BaseModel):
     warnings: list[str] = Field(default_factory=list)
     leak_check: dict[str, Any] = Field(default_factory=dict)
     approval_task_envelope_id: str = ""
+    required_level: str = ""
+    required_methods: list[str] = Field(default_factory=list)
+    allowed_principals: list[str] = Field(default_factory=list)
+    allowed_credentials: list[str] = Field(default_factory=list)
+    required_capabilities: dict[str, Any] = Field(default_factory=dict)
+    approval_envelope: dict[str, Any] | None = None
+    approval_envelope_hash: str = ""
+    fallback: dict[str, Any] = Field(default_factory=dict)
+    expires_at: str | None = None
+    selected_backend_id: str = ""
+    selected_backend_method: str = ""
+    fallback_used: bool = False
     status_reason: str | None = None
     preflight_action: dict[str, Any] | None = None
     merged_policy: dict[str, Any] | None = None
@@ -868,6 +884,8 @@ class ActionConfirmResult(BaseModel):
     checkpoint_id: str | None = None
     reason: str | None = None
     retry_after_seconds: float | None = None
+    approval_level: str | None = None
+    approval_method: str | None = None
 
 
 class ActionRejectResult(BaseModel):

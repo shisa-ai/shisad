@@ -7,6 +7,7 @@ from collections.abc import Mapping
 from typing import Any, cast
 from urllib.parse import urlparse
 
+from shisad.core.approval import ApprovalRoutingError
 from shisad.core.events import PlanCancelled, PlanCommitted, ToolRejected
 from shisad.core.tools.names import canonical_tool_name
 from shisad.core.types import Capability, SessionId, TaintLabel, ToolName
@@ -333,18 +334,33 @@ class ToolExecutionImplMixin(HandlerMixinBase):
                 sid,
                 session.capabilities,
             )
-            pending = self._queue_pending_action(
-                session_id=sid,
-                user_id=session.user_id,
-                workspace_id=session.workspace_id,
-                tool_name=tool_name,
-                arguments=dict(params),
-                reason=reason,
-                capabilities=effective_caps,
-                preflight_action=cp_eval.action,
-                merged_policy=merged_policy,
-                taint_labels=[],
-            )
+            try:
+                pending = self._queue_pending_action(
+                    session_id=sid,
+                    user_id=session.user_id,
+                    workspace_id=session.workspace_id,
+                    tool_name=tool_name,
+                    arguments=dict(params),
+                    reason=reason,
+                    capabilities=effective_caps,
+                    preflight_action=cp_eval.action,
+                    merged_policy=merged_policy,
+                    taint_labels=[],
+                )
+            except ApprovalRoutingError as exc:
+                await self._event_bus.publish(
+                    ToolRejected(
+                        session_id=sid,
+                        actor="control_api",
+                        tool_name=tool_name,
+                        reason=str(exc.reason),
+                    )
+                )
+                return SandboxResult(
+                    allowed=False,
+                    reason=str(exc.reason),
+                    origin=cp_eval.action.origin.model_dump(mode="json"),
+                ).model_dump(mode="json")
             await self._event_bus.publish(
                 ToolRejected(
                     session_id=sid,

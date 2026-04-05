@@ -1,0 +1,611 @@
+"""Shared approval protocol types and helpers."""
+
+from __future__ import annotations
+
+import base64
+import hashlib
+import json
+import math
+import os
+from collections import defaultdict
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
+from enum import StrEnum
+from typing import Any, Literal, Protocol
+from urllib.parse import urlparse
+
+from pydantic import BaseModel, Field, model_validator
+
+from shisad.core.tools.schema import ToolDefinition
+
+
+class ConfirmationLevel(StrEnum):
+    SOFTWARE = "software"
+    REAUTHENTICATED = "reauthenticated"
+    BOUND_APPROVAL = "bound_approval"
+    SIGNED_AUTHORIZATION = "signed_authorization"
+    TRUSTED_DISPLAY_AUTHORIZATION = "trusted_display_authorization"
+
+    @property
+    def priority(self) -> int:
+        return {
+            ConfirmationLevel.SOFTWARE: 0,
+            ConfirmationLevel.REAUTHENTICATED: 1,
+            ConfirmationLevel.BOUND_APPROVAL: 2,
+            ConfirmationLevel.SIGNED_AUTHORIZATION: 3,
+            ConfirmationLevel.TRUSTED_DISPLAY_AUTHORIZATION: 4,
+        }[self]
+
+
+class BindingScope(StrEnum):
+    NONE = "none"
+    APPROVAL_ENVELOPE = "approval_envelope"
+    ACTION_DIGEST = "action_digest"
+    FULL_INTENT = "full_intent"
+
+
+class ReviewSurface(StrEnum):
+    HOST_RENDERED = "host_rendered"
+    SECONDARY_APP = "secondary_app"
+    BROWSER_RENDERED = "browser_rendered"
+    PROVIDER_UI = "provider_ui"
+    TRUSTED_DEVICE_DISPLAY = "trusted_device_display"
+    OPAQUE_DEVICE = "opaque_device"
+
+
+class ConfirmationCapabilities(BaseModel):
+    """Capability flags advertised by confirmation backends."""
+
+    principal_binding: bool = False
+    approval_binding: bool = False
+    action_digest_binding: bool = False
+    full_intent_signature: bool = False
+    trusted_display: bool = False
+    third_party_verifiable: bool = False
+    blind_sign_detection: bool = False
+
+    model_config = {"frozen": True}
+
+    def covers(self, required: ConfirmationCapabilities) -> bool:
+        return all(
+            not getattr(required, field_name) or getattr(self, field_name)
+            for field_name in type(self).model_fields
+        )
+
+    def merge(self, other: ConfirmationCapabilities) -> ConfirmationCapabilities:
+        payload = {
+            field_name: bool(getattr(self, field_name) or getattr(other, field_name))
+            for field_name in type(self).model_fields
+        }
+        return ConfirmationCapabilities.model_validate(payload)
+
+
+class ConfirmationFallbackPolicy(BaseModel):
+    """Explicit fallback rules for approval routing."""
+
+    mode: Literal["deny", "allow_levels"] = "deny"
+    allow_levels: list[ConfirmationLevel] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _normalize(self) -> ConfirmationFallbackPolicy:
+        if self.mode != "allow_levels":
+            self.allow_levels = []
+            return self
+        deduped: list[ConfirmationLevel] = []
+        for level in self.allow_levels:
+            if level not in deduped:
+                deduped.append(level)
+        self.allow_levels = deduped
+        return self
+
+
+class ConfirmationRequirement(BaseModel):
+    """Runtime-normalized confirmation requirements."""
+
+    level: ConfirmationLevel = ConfirmationLevel.SOFTWARE
+    methods: list[str] = Field(default_factory=list)
+    allowed_principals: list[str] = Field(default_factory=list)
+    allowed_credentials: list[str] = Field(default_factory=list)
+    require_capabilities: ConfirmationCapabilities = Field(
+        default_factory=ConfirmationCapabilities
+    )
+    fallback: ConfirmationFallbackPolicy = Field(default_factory=ConfirmationFallbackPolicy)
+    timeout_seconds: int | None = None
+
+    @model_validator(mode="after")
+    def _normalize(self) -> ConfirmationRequirement:
+        def _dedupe(values: list[str]) -> list[str]:
+            rows: list[str] = []
+            for value in values:
+                text = str(value).strip()
+                if text and text not in rows:
+                    rows.append(text)
+            return rows
+
+        self.methods = _dedupe(self.methods)
+        self.allowed_principals = _dedupe(self.allowed_principals)
+        self.allowed_credentials = _dedupe(self.allowed_credentials)
+        if self.timeout_seconds is not None:
+            self.timeout_seconds = max(1, int(self.timeout_seconds))
+        return self
+
+
+class RiskConfirmationLevelRule(BaseModel):
+    """Risk-threshold -> confirmation-level escalation mapping."""
+
+    threshold: float = Field(ge=0.0, le=1.0)
+    level: ConfirmationLevel
+
+    model_config = {"frozen": True}
+
+
+class ApprovalEnvelope(BaseModel):
+    """Canonical approval request bound to a pending action."""
+
+    schema_version: str = "shisad.approval.v1"
+    approval_id: str
+    pending_action_id: str
+    workspace_id: str
+    daemon_id: str
+    session_id: str
+    required_level: ConfirmationLevel
+    policy_reason: str = ""
+    action_digest: str
+    allowed_principals: list[str] = Field(default_factory=list)
+    allowed_credentials: list[str] = Field(default_factory=list)
+    expires_at: datetime | None = None
+    nonce: str
+    intent_envelope_hash: str | None = None
+    action_summary: str = ""
+
+    model_config = {"frozen": True}
+
+    def core_payload(self) -> dict[str, Any]:
+        return self.model_dump(mode="json", exclude={"action_summary"})
+
+
+class ConfirmationEvidence(BaseModel):
+    """Verified evidence returned by a confirmation backend."""
+
+    schema_version: str = "shisad.confirmation_evidence.v1"
+    level: ConfirmationLevel
+    method: str
+    backend_id: str = ""
+    approver_principal_id: str = ""
+    credential_id: str = ""
+    binding_scope: BindingScope = BindingScope.NONE
+    review_surface: ReviewSurface = ReviewSurface.HOST_RENDERED
+    third_party_verifiable: bool = False
+    approval_envelope_hash: str = ""
+    action_digest: str = ""
+    decision_nonce: str = ""
+    fallback_used: bool = False
+    evidence_payload: dict[str, Any] = Field(default_factory=dict)
+    evidence_hash: str = ""
+    intent_envelope_hash: str = ""
+    signature: str = ""
+    signer_key_id: str = ""
+    blind_sign_detected: bool = False
+    verified_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+def legacy_software_confirmation_requirement() -> ConfirmationRequirement:
+    return ConfirmationRequirement(level=ConfirmationLevel.SOFTWARE)
+
+
+def merge_confirmation_requirements(
+    requirements: list[ConfirmationRequirement],
+) -> ConfirmationRequirement | None:
+    if not requirements:
+        return None
+
+    max_level = max(requirements, key=lambda item: item.level.priority).level
+    selected = [item for item in requirements if item.level == max_level]
+
+    def _merge_list(field_name: str) -> list[str]:
+        non_empty = [
+            list(getattr(item, field_name))
+            for item in selected
+            if getattr(item, field_name)
+        ]
+        if not non_empty:
+            return []
+        current = list(non_empty[0])
+        for values in non_empty[1:]:
+            intersected = [value for value in current if value in values]
+            current = intersected or current
+        return current
+
+    capabilities = ConfirmationCapabilities()
+    for requirement in selected:
+        capabilities = capabilities.merge(requirement.require_capabilities)
+
+    fallback_levels: list[ConfirmationLevel] = []
+    fallback_mode = "deny"
+    for requirement in selected:
+        if requirement.fallback.mode == "allow_levels":
+            fallback_mode = "allow_levels"
+            for level in requirement.fallback.allow_levels:
+                if level not in fallback_levels:
+                    fallback_levels.append(level)
+
+    timeouts = [item.timeout_seconds for item in selected if item.timeout_seconds is not None]
+    return ConfirmationRequirement(
+        level=max_level,
+        methods=_merge_list("methods"),
+        allowed_principals=_merge_list("allowed_principals"),
+        allowed_credentials=_merge_list("allowed_credentials"),
+        require_capabilities=capabilities,
+        fallback=ConfirmationFallbackPolicy(mode=fallback_mode, allow_levels=fallback_levels),
+        timeout_seconds=min(timeouts) if timeouts else None,
+    )
+
+
+def canonical_json_dumps(value: Any) -> str:
+    """Serialize a JSON payload deterministically for approval hashing."""
+
+    def _normalize(candidate: Any) -> Any:
+        if isinstance(candidate, BaseModel):
+            return _normalize(candidate.model_dump(mode="json"))
+        if isinstance(candidate, datetime):
+            return candidate.astimezone(UTC).isoformat().replace("+00:00", "Z")
+        if isinstance(candidate, dict):
+            return {
+                str(key): _normalize(val)
+                for key, val in sorted(candidate.items(), key=lambda item: str(item[0]))
+            }
+        if isinstance(candidate, (list, tuple)):
+            return [_normalize(item) for item in candidate]
+        if isinstance(candidate, float) and not math.isfinite(candidate):
+            raise ValueError("non-finite floats are not allowed in canonical JSON")
+        if isinstance(candidate, os.PathLike):
+            return os.fspath(candidate)
+        return candidate
+
+    normalized = _normalize(value)
+    return json.dumps(
+        normalized,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+        allow_nan=False,
+    )
+
+
+def canonical_sha256(value: Any) -> str:
+    return f"sha256:{hashlib.sha256(canonical_json_dumps(value).encode('utf-8')).hexdigest()}"
+
+
+def new_approval_nonce() -> str:
+    return "b64:" + base64.urlsafe_b64encode(os.urandom(32)).decode("ascii").rstrip("=")
+
+
+def resolve_confirmation_destinations(
+    *,
+    tool_definition: ToolDefinition,
+    arguments: dict[str, Any],
+) -> list[str]:
+    """Resolve destination/path sinks for action-digest binding."""
+
+    resolved: set[str] = set()
+
+    def _add_url(candidate: str) -> None:
+        text = candidate.strip()
+        if not text:
+            return
+        parsed = urlparse(text if "://" in text else f"https://{text}")
+        host = (parsed.hostname or "").strip().lower()
+        if not host:
+            return
+        resolved.add(host)
+
+    def _add_path(candidate: str) -> None:
+        text = candidate.strip()
+        if text:
+            resolved.add(os.path.abspath(text))
+
+    for destination in tool_definition.destinations:
+        _add_url(str(destination))
+
+    for key, value in arguments.items():
+        if isinstance(value, str):
+            if key in {"url", "destination", "recipient"}:
+                _add_url(value)
+            elif key == "credential_ref":
+                continue
+            elif key == "path" or key.endswith("_path") or key in {"cwd", "repo"}:
+                _add_path(value)
+        elif isinstance(value, list):
+            for item in value:
+                if not isinstance(item, str):
+                    continue
+                if key in {"network_urls", "urls"}:
+                    _add_url(item)
+                elif key in {"paths", "read_paths", "write_paths"} or key.endswith("_paths"):
+                    _add_path(item)
+
+    return sorted(resolved)
+
+
+def compute_action_digest(
+    *,
+    tool_definition: ToolDefinition,
+    arguments: dict[str, Any],
+    destinations: list[str] | None = None,
+) -> str:
+    payload = {
+        "schema_version": "shisad.action_digest.v1",
+        "tool_name": str(tool_definition.name),
+        "tool_schema_hash": f"sha256:{tool_definition.schema_hash()}",
+        "arguments": dict(arguments),
+        "destinations": sorted(
+            {str(item).strip() for item in (destinations or []) if str(item).strip()}
+        ),
+    }
+    return canonical_sha256(payload)
+
+
+def approval_envelope_hash(envelope: ApprovalEnvelope | dict[str, Any]) -> str:
+    payload = envelope.core_payload() if isinstance(envelope, ApprovalEnvelope) else dict(envelope)
+    payload.pop("action_summary", None)
+    return canonical_sha256(payload)
+
+
+class ConfirmationVerificationError(RuntimeError):
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
+
+
+class ApprovalRoutingError(RuntimeError):
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
+
+
+class ConfirmationBackend(Protocol):
+    backend_id: str
+    method: str
+    level: ConfirmationLevel
+    binding_scope: BindingScope
+    review_surface: ReviewSurface
+    available_principals: set[str]
+    available_credentials: set[str]
+    capabilities: ConfirmationCapabilities
+    third_party_verifiable: bool
+
+    def verify(
+        self,
+        *,
+        pending_action: Any,
+        params: dict[str, Any],
+    ) -> ConfirmationEvidence:
+        ...
+
+
+class SoftwareConfirmationBackend:
+    def __init__(self) -> None:
+        self.backend_id = "software.default"
+        self.method = "software"
+        self.level = ConfirmationLevel.SOFTWARE
+        self.binding_scope = BindingScope.NONE
+        self.review_surface = ReviewSurface.HOST_RENDERED
+        self.available_principals = {"workspace_owner"}
+        self.available_credentials: set[str] = set()
+        self.capabilities = ConfirmationCapabilities()
+        self.third_party_verifiable = False
+
+    def verify(
+        self,
+        *,
+        pending_action: Any,
+        params: dict[str, Any],
+    ) -> ConfirmationEvidence:
+        requested_method = str(
+            params.get("approval_method")
+            or params.get("method")
+            or self.method
+        ).strip()
+        if requested_method and requested_method != self.method:
+            raise ConfirmationVerificationError("confirmation_method_mismatch")
+
+        decision_nonce = str(params.get("decision_nonce", "")).strip()
+        principal_id = str(params.get("principal_id", "")).strip() or str(
+            getattr(pending_action, "user_id", "")
+        ).strip()
+        envelope_hash = str(getattr(pending_action, "approval_envelope_hash", "")).strip()
+        if not envelope_hash:
+            envelope = getattr(pending_action, "approval_envelope", None)
+            if envelope is not None:
+                envelope_hash = approval_envelope_hash(envelope)
+        payload = {
+            "schema_version": "shisad.confirmation_evidence.v1",
+            "backend_id": self.backend_id,
+            "method": self.method,
+            "confirmation_id": str(getattr(pending_action, "confirmation_id", "")),
+            "decision_nonce": decision_nonce,
+            "approval_envelope_hash": envelope_hash,
+            "action_digest": str(
+                getattr(
+                    getattr(pending_action, "approval_envelope", None),
+                    "action_digest",
+                    "",
+                )
+            ),
+            "approver_principal_id": principal_id,
+            "fallback_used": bool(getattr(pending_action, "fallback_used", False)),
+        }
+        return ConfirmationEvidence(
+            level=self.level,
+            method=self.method,
+            backend_id=self.backend_id,
+            approver_principal_id=principal_id,
+            binding_scope=self.binding_scope,
+            review_surface=self.review_surface,
+            third_party_verifiable=self.third_party_verifiable,
+            approval_envelope_hash=envelope_hash,
+            action_digest=str(payload["action_digest"]),
+            decision_nonce=decision_nonce,
+            fallback_used=bool(payload["fallback_used"]),
+            evidence_payload=payload,
+            evidence_hash=canonical_sha256(payload),
+        )
+
+
+@dataclass(slots=True)
+class ResolvedConfirmationBackend:
+    backend: ConfirmationBackend
+    fallback_used: bool = False
+
+
+class ConfirmationBackendRegistry:
+    """Deterministic confirmation-backend lookup and policy filtering."""
+
+    def __init__(self) -> None:
+        self._backends: dict[str, ConfirmationBackend] = {}
+
+    def register(self, backend: ConfirmationBackend) -> None:
+        self._backends[str(backend.backend_id)] = backend
+
+    def get_backend(self, backend_id: str) -> ConfirmationBackend | None:
+        return self._backends.get(backend_id)
+
+    def resolve(
+        self,
+        requirement: ConfirmationRequirement,
+    ) -> ResolvedConfirmationBackend | None:
+        direct = self._resolve_for_levels([requirement.level], requirement)
+        if direct is not None:
+            return direct
+        if requirement.fallback.mode != "allow_levels":
+            return None
+        fallback = self._resolve_for_levels(requirement.fallback.allow_levels, requirement)
+        if fallback is None:
+            return None
+        return ResolvedConfirmationBackend(backend=fallback.backend, fallback_used=True)
+
+    def _resolve_for_levels(
+        self,
+        levels: list[ConfirmationLevel],
+        requirement: ConfirmationRequirement,
+    ) -> ResolvedConfirmationBackend | None:
+        for level in levels:
+            candidates = [
+                backend
+                for backend in self._backends.values()
+                if backend.level == level
+                and backend.capabilities.covers(requirement.require_capabilities)
+                and (
+                    not requirement.allowed_principals
+                    or bool(set(requirement.allowed_principals) & set(backend.available_principals))
+                )
+                and (
+                    not requirement.allowed_credentials
+                    or bool(
+                        set(requirement.allowed_credentials)
+                        & set(backend.available_credentials)
+                    )
+                )
+            ]
+            selected = self._select_backend(candidates, methods=requirement.methods)
+            if selected is not None:
+                return ResolvedConfirmationBackend(backend=selected, fallback_used=False)
+        return None
+
+    @staticmethod
+    def _select_backend(
+        candidates: list[ConfirmationBackend],
+        *,
+        methods: list[str],
+    ) -> ConfirmationBackend | None:
+        if not candidates:
+            return None
+        if methods:
+            for method in methods:
+                matching = [backend for backend in candidates if backend.method == method]
+                if len(matching) == 1:
+                    return matching[0]
+                if len(matching) > 1:
+                    return None
+            return None
+        if len(candidates) == 1:
+            return candidates[0]
+        return None
+
+
+def approval_audit_fields(evidence: ConfirmationEvidence | None) -> dict[str, Any]:
+    if evidence is None:
+        return {
+            "approval_level": "",
+            "approval_method": "",
+            "approval_approver_principal_id": "",
+            "approval_credential_id": "",
+            "approval_binding_scope": "",
+            "approval_review_surface": "",
+            "approval_third_party_verifiable": False,
+            "approval_evidence_hash": "",
+            "approval_fallback_used": False,
+            "approval_intent_envelope_hash": "",
+            "approval_signature": "",
+            "approval_signer_key_id": "",
+        }
+    return {
+        "approval_level": evidence.level.value,
+        "approval_method": evidence.method,
+        "approval_approver_principal_id": evidence.approver_principal_id,
+        "approval_credential_id": evidence.credential_id,
+        "approval_binding_scope": evidence.binding_scope.value,
+        "approval_review_surface": evidence.review_surface.value,
+        "approval_third_party_verifiable": bool(evidence.third_party_verifiable),
+        "approval_evidence_hash": evidence.evidence_hash,
+        "approval_fallback_used": bool(evidence.fallback_used),
+        "approval_intent_envelope_hash": evidence.intent_envelope_hash,
+        "approval_signature": evidence.signature,
+        "approval_signer_key_id": evidence.signer_key_id,
+    }
+
+
+@dataclass(slots=True)
+class _FailureState:
+    failures: int = 0
+    locked_until: datetime | None = None
+
+
+class ConfirmationMethodLockoutTracker:
+    """Per-user, per-method failed-attempt lockout state."""
+
+    def __init__(
+        self,
+        *,
+        max_failures: int = 5,
+        lockout_seconds: int = 900,
+    ) -> None:
+        self._max_failures = max(1, int(max_failures))
+        self._lockout_seconds = max(1, int(lockout_seconds))
+        self._state: dict[tuple[str, str], _FailureState] = defaultdict(_FailureState)
+
+    def status(self, *, user_id: str, method: str, now: datetime | None = None) -> float | None:
+        now = now or datetime.now(UTC)
+        state = self._state[(user_id, method)]
+        if state.locked_until is None:
+            return None
+        if state.locked_until <= now:
+            state.locked_until = None
+            state.failures = 0
+            return None
+        return max(0.0, (state.locked_until - now).total_seconds())
+
+    def record_failure(self, *, user_id: str, method: str, now: datetime | None = None) -> None:
+        now = now or datetime.now(UTC)
+        state = self._state[(user_id, method)]
+        if state.locked_until is not None and state.locked_until > now:
+            return
+        state.failures += 1
+        if state.failures >= self._max_failures:
+            state.locked_until = now + timedelta(seconds=self._lockout_seconds)
+            state.failures = 0
+
+    def record_success(self, *, user_id: str, method: str) -> None:
+        state = self._state[(user_id, method)]
+        state.failures = 0
+        state.locked_until = None

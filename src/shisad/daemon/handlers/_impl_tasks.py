@@ -6,6 +6,7 @@ from collections.abc import Mapping
 from typing import Any, cast
 from urllib.parse import urlparse
 
+from shisad.core.approval import ApprovalRoutingError
 from shisad.core.events import (
     AnomalyReported,
     PlanCancelled,
@@ -497,16 +498,23 @@ class TasksImplMixin(HandlerMixinBase):
             )
 
         if final_kind == PEPDecisionKind.REQUIRE_CONFIRMATION.value:
-            self._queue_task_confirmation(
-                task=task,
-                run=run,
-                event_type=event_type,
-                session=session,
-                arguments=delivery_arguments,
-                reason=final_reason or "requires_confirmation",
-                capabilities=effective_capabilities,
-                preflight_action=cp_eval.action,
-            )
+            try:
+                self._queue_task_confirmation(
+                    task=task,
+                    run=run,
+                    event_type=event_type,
+                    session=session,
+                    arguments=delivery_arguments,
+                    reason=final_reason or "requires_confirmation",
+                    capabilities=effective_capabilities,
+                    preflight_action=cp_eval.action,
+                )
+            except ApprovalRoutingError as exc:
+                return await self._reject_task_run(
+                    sid=sid,
+                    task=task,
+                    reason=str(exc.reason),
+                )
             return {"accepted": True, "queued_confirmation": True, "executed": False}
 
         execution = await self._execute_approved_action(

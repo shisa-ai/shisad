@@ -176,6 +176,18 @@ class ToolApproved(BaseEvent):
     approval_confirmation_id: str = ""
     approval_decision_nonce: str = ""
     approval_timestamp: str = ""
+    approval_level: str = ""
+    approval_method: str = ""
+    approval_approver_principal_id: str = ""
+    approval_credential_id: str = ""
+    approval_binding_scope: str = ""
+    approval_review_surface: str = ""
+    approval_third_party_verifiable: bool = False
+    approval_evidence_hash: str = ""
+    approval_fallback_used: bool = False
+    approval_intent_envelope_hash: str = ""
+    approval_signature: str = ""
+    approval_signer_key_id: str = ""
 
 
 class ToolRejected(BaseEvent):
@@ -189,6 +201,18 @@ class ToolRejected(BaseEvent):
     approval_confirmation_id: str = ""
     approval_decision_nonce: str = ""
     approval_timestamp: str = ""
+    approval_level: str = ""
+    approval_method: str = ""
+    approval_approver_principal_id: str = ""
+    approval_credential_id: str = ""
+    approval_binding_scope: str = ""
+    approval_review_surface: str = ""
+    approval_third_party_verifiable: bool = False
+    approval_evidence_hash: str = ""
+    approval_fallback_used: bool = False
+    approval_intent_envelope_hash: str = ""
+    approval_signature: str = ""
+    approval_signer_key_id: str = ""
 
 
 class ToolExecuted(BaseEvent):
@@ -202,6 +226,18 @@ class ToolExecuted(BaseEvent):
     approval_confirmation_id: str = ""
     approval_decision_nonce: str = ""
     approval_timestamp: str = ""
+    approval_level: str = ""
+    approval_method: str = ""
+    approval_approver_principal_id: str = ""
+    approval_credential_id: str = ""
+    approval_binding_scope: str = ""
+    approval_review_surface: str = ""
+    approval_third_party_verifiable: bool = False
+    approval_evidence_hash: str = ""
+    approval_fallback_used: bool = False
+    approval_intent_envelope_hash: str = ""
+    approval_signature: str = ""
+    approval_signer_key_id: str = ""
 
 
 class AnomalyReported(BaseEvent):

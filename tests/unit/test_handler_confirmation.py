@@ -13,6 +13,12 @@ from shisad.core.api.schema import (
     ActionPendingParams,
     ConfirmationMetricsParams,
 )
+from shisad.core.approval import (
+    ConfirmationBackendRegistry,
+    ConfirmationLevel,
+    ConfirmationMethodLockoutTracker,
+    SoftwareConfirmationBackend,
+)
 from shisad.core.evidence import ArtifactEndorsementState, EvidenceStore
 from shisad.core.tools.registry import ToolRegistry
 from shisad.core.tools.schema import ToolDefinition, ToolParameter
@@ -178,6 +184,9 @@ class _ConfirmationImplHarness(ConfirmationImplMixin):
         )
         self._control_plane = _ControlPlaneRecorder()
         self._confirmation_analytics = SimpleNamespace(record=lambda **_kwargs: None)
+        self._confirmation_backend_registry = ConfirmationBackendRegistry()
+        self._confirmation_backend_registry.register(SoftwareConfirmationBackend())
+        self._confirmation_failure_tracker = ConfirmationMethodLockoutTracker()
         self.execution_merged_policies: list[object | None] = []
         self.execution_kwargs: list[dict[str, object]] = []
         self._transcript_store = TranscriptStore(tmp_path / "sessions")
@@ -224,6 +233,7 @@ class _ConfirmationImplHarness(ConfirmationImplMixin):
         approval_decision_nonce: str = "",
         approval_task_envelope_id: str = "",
         approval_timestamp: str = "",
+        approval_evidence: object | None = None,
     ) -> object:
         _ = (
             sid,
@@ -233,6 +243,7 @@ class _ConfirmationImplHarness(ConfirmationImplMixin):
             approval_actor,
             execution_action,
             user_confirmed,
+            approval_evidence,
         )
         self.execution_merged_policies.append(merged_policy)
         self.execution_kwargs.append(
@@ -243,6 +254,7 @@ class _ConfirmationImplHarness(ConfirmationImplMixin):
                 "approval_decision_nonce": approval_decision_nonce,
                 "approval_task_envelope_id": approval_task_envelope_id,
                 "approval_timestamp": approval_timestamp,
+                "approval_evidence": approval_evidence,
             }
         )
         tool_output = None
@@ -359,6 +371,51 @@ async def test_m1_pf11_confirmation_accepts_valid_nonce_and_rejects_missing_nonc
     missing = await harness.do_action_confirm({"confirmation_id": "c-1"})
     assert missing["confirmed"] is False
     assert missing["reason"] == "missing_decision_nonce"
+
+
+@pytest.mark.asyncio
+async def test_a0_confirmation_success_records_software_level_evidence(tmp_path) -> None:
+    harness = _ConfirmationImplHarness(tmp_path)
+    harness._pending_actions["c-1"] = _pending_action(nonce="expected")
+
+    result = await harness.do_action_confirm(
+        {"confirmation_id": "c-1", "decision_nonce": "expected"}
+    )
+
+    assert result["confirmed"] is True
+    assert result["approval_level"] == ConfirmationLevel.SOFTWARE.value
+    assert result["approval_method"] == "software"
+
+    pending = harness._pending_actions["c-1"]
+    assert pending.confirmation_evidence is not None
+    assert pending.confirmation_evidence.level == ConfirmationLevel.SOFTWARE
+    assert pending.confirmation_evidence.method == "software"
+    assert len(harness.execution_kwargs) == 1
+    forwarded_evidence = harness.execution_kwargs[0]["approval_evidence"]
+    assert forwarded_evidence is not None
+    assert getattr(forwarded_evidence, "level", None) == ConfirmationLevel.SOFTWARE
+    assert getattr(forwarded_evidence, "method", "") == "software"
+
+
+@pytest.mark.asyncio
+async def test_a0_confirmation_lockout_triggers_after_repeated_invalid_nonce(tmp_path) -> None:
+    harness = _ConfirmationImplHarness(tmp_path)
+    harness._pending_actions["c-1"] = _pending_action(nonce="expected")
+
+    for _ in range(5):
+        invalid = await harness.do_action_confirm(
+            {"confirmation_id": "c-1", "decision_nonce": "wrong"}
+        )
+        assert invalid["confirmed"] is False
+        assert invalid["reason"] == "invalid_decision_nonce"
+
+    locked = await harness.do_action_confirm(
+        {"confirmation_id": "c-1", "decision_nonce": "expected"}
+    )
+
+    assert locked["confirmed"] is False
+    assert locked["reason"] == "confirmation_method_locked_out"
+    assert float(locked["retry_after_seconds"]) > 0
 
 
 @pytest.mark.asyncio

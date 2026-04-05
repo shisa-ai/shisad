@@ -9,6 +9,11 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from shisad.core.approval import (
+    ConfirmationEvidence,
+    ConfirmationVerificationError,
+    approval_audit_fields,
+)
 from shisad.core.events import PlanAmended, ToolRejected
 from shisad.core.evidence import ArtifactEndorsementState
 from shisad.core.types import TaintLabel
@@ -38,6 +43,26 @@ def _confirmation_control_plane_reason(exc: ControlPlaneRpcError) -> str:
 
 
 class ConfirmationImplMixin(HandlerMixinBase):
+    @staticmethod
+    def _pending_approval_event_fields(
+        pending: Any,
+        *,
+        decision_timestamp: str,
+    ) -> dict[str, Any]:
+        fields = {
+            "approval_session_id": str(getattr(pending, "session_id", "")),
+            "approval_task_envelope_id": str(
+                getattr(pending, "approval_task_envelope_id", "")
+            ).strip(),
+            "approval_confirmation_id": str(getattr(pending, "confirmation_id", "")),
+            "approval_decision_nonce": str(getattr(pending, "decision_nonce", "")),
+            "approval_timestamp": decision_timestamp,
+        }
+        fields.update(
+            approval_audit_fields(getattr(pending, "confirmation_evidence", None))
+        )
+        return fields
+
     def _sync_task_confirmation_status(self, pending: Any) -> None:
         task_id = str(getattr(pending, "task_id", "")).strip()
         if not task_id:
@@ -123,6 +148,20 @@ class ConfirmationImplMixin(HandlerMixinBase):
         pending = self._pending_actions.get(confirmation_id)
         if pending is None:
             return {"confirmed": False, "confirmation_id": confirmation_id, "reason": "not_found"}
+        confirmation_method = str(
+            getattr(pending, "selected_backend_method", "") or "software"
+        ).strip() or "software"
+        retry_after = self._confirmation_failure_tracker.status(
+            user_id=str(pending.user_id),
+            method=confirmation_method,
+        )
+        if retry_after is not None:
+            return {
+                "confirmed": False,
+                "confirmation_id": confirmation_id,
+                "reason": "confirmation_method_locked_out",
+                "retry_after_seconds": round(retry_after, 3),
+            }
         raw_nonce = params.get("decision_nonce", "")
         provided_nonce = raw_nonce.strip() if isinstance(raw_nonce, str) else ""
         if not provided_nonce:
@@ -132,6 +171,10 @@ class ConfirmationImplMixin(HandlerMixinBase):
                 "reason": "missing_decision_nonce",
             }
         if provided_nonce != pending.decision_nonce:
+            self._confirmation_failure_tracker.record_failure(
+                user_id=str(pending.user_id),
+                method=confirmation_method,
+            )
             return {
                 "confirmed": False,
                 "confirmation_id": confirmation_id,
@@ -152,6 +195,21 @@ class ConfirmationImplMixin(HandlerMixinBase):
                     "reason": "cooldown_active",
                     "retry_after_seconds": round(remaining, 3),
                 }
+        if pending.expires_at is not None:
+            expires_at = pending.expires_at
+            if expires_at is not None and expires_at <= datetime.now(UTC):
+                pending.status = "failed"
+                pending.status_reason = "approval_expired"
+                self._sync_task_confirmation_status(pending)
+                self._record_task_confirmation_outcome(pending, success=False)
+                self._persist_pending_actions()
+                return {
+                    "confirmed": False,
+                    "confirmation_id": confirmation_id,
+                    "reason": "approval_expired",
+                    "status": pending.status,
+                    "status_reason": pending.status_reason,
+                }
         if self._lockdown_manager.should_block_all_actions(pending.session_id):
             pending.status = "rejected"
             pending.status_reason = "session_in_lockdown"
@@ -162,13 +220,10 @@ class ConfirmationImplMixin(HandlerMixinBase):
                     actor="human_confirmation",
                     tool_name=pending.tool_name,
                     reason="session_in_lockdown",
-                    approval_session_id=str(pending.session_id),
-                    approval_task_envelope_id=str(
-                        getattr(pending, "approval_task_envelope_id", "")
-                    ).strip(),
-                    approval_confirmation_id=str(pending.confirmation_id),
-                    approval_decision_nonce=str(pending.decision_nonce),
-                    approval_timestamp=decision_timestamp,
+                    **self._pending_approval_event_fields(
+                        pending,
+                        decision_timestamp=decision_timestamp,
+                    ),
                 )
             )
             self._sync_task_confirmation_status(pending)
@@ -200,13 +255,10 @@ class ConfirmationImplMixin(HandlerMixinBase):
                     actor="human_confirmation",
                     tool_name=pending.tool_name,
                     reason="session_missing",
-                    approval_session_id=str(pending.session_id),
-                    approval_task_envelope_id=str(
-                        getattr(pending, "approval_task_envelope_id", "")
-                    ).strip(),
-                    approval_confirmation_id=str(pending.confirmation_id),
-                    approval_decision_nonce=str(pending.decision_nonce),
-                    approval_timestamp=decision_timestamp,
+                    **self._pending_approval_event_fields(
+                        pending,
+                        decision_timestamp=decision_timestamp,
+                    ),
                 )
             )
             self._sync_task_confirmation_status(pending)
@@ -227,6 +279,68 @@ class ConfirmationImplMixin(HandlerMixinBase):
                 "reason": "session_missing",
             }
 
+        backend = self._confirmation_backend_registry.get_backend(
+            str(getattr(pending, "selected_backend_id", "")).strip() or "software.default"
+        )
+        if backend is None:
+            pending.status = "failed"
+            pending.status_reason = "confirmation_backend_unavailable"
+            decision_timestamp = datetime.now(UTC).isoformat()
+            await self._event_bus.publish(
+                ToolRejected(
+                    session_id=pending.session_id,
+                    actor="human_confirmation",
+                    tool_name=pending.tool_name,
+                    reason="confirmation_backend_unavailable",
+                    **self._pending_approval_event_fields(
+                        pending,
+                        decision_timestamp=decision_timestamp,
+                    ),
+                )
+            )
+            self._sync_task_confirmation_status(pending)
+            self._record_task_confirmation_outcome(pending, success=False)
+            self._persist_pending_actions()
+            return {
+                "confirmed": False,
+                "confirmation_id": confirmation_id,
+                "reason": "confirmation_backend_unavailable",
+                "status": pending.status,
+                "status_reason": pending.status_reason,
+            }
+
+        try:
+            evidence = backend.verify(
+                pending_action=pending,
+                params=dict(params),
+            )
+        except ConfirmationVerificationError as exc:
+            self._confirmation_failure_tracker.record_failure(
+                user_id=str(pending.user_id),
+                method=confirmation_method,
+            )
+            retry_after = self._confirmation_failure_tracker.status(
+                user_id=str(pending.user_id),
+                method=confirmation_method,
+            )
+            response: dict[str, Any] = {
+                "confirmed": False,
+                "confirmation_id": confirmation_id,
+                "reason": str(exc.reason),
+            }
+            if retry_after is not None:
+                response["retry_after_seconds"] = round(retry_after, 3)
+            return response
+        pending.confirmation_evidence = ConfirmationEvidence.model_validate(
+            evidence.model_dump(mode="json")
+            if isinstance(evidence, ConfirmationEvidence)
+            else evidence
+        )
+        self._confirmation_failure_tracker.record_success(
+            user_id=str(pending.user_id),
+            method=confirmation_method,
+        )
+
         pending_preflight_action = pending.preflight_action
         stage2_reason = "stage2_upgrade_required" in pending.reason
         if stage2_reason:
@@ -240,13 +354,10 @@ class ConfirmationImplMixin(HandlerMixinBase):
                         actor="human_confirmation",
                         tool_name=pending.tool_name,
                         reason="plan_amendment_disabled",
-                        approval_session_id=str(pending.session_id),
-                        approval_task_envelope_id=str(
-                            getattr(pending, "approval_task_envelope_id", "")
-                        ).strip(),
-                        approval_confirmation_id=str(pending.confirmation_id),
-                        approval_decision_nonce=str(pending.decision_nonce),
-                        approval_timestamp=decision_timestamp,
+                        **self._pending_approval_event_fields(
+                            pending,
+                            decision_timestamp=decision_timestamp,
+                        ),
                     )
                 )
                 self._sync_task_confirmation_status(pending)
@@ -303,13 +414,10 @@ class ConfirmationImplMixin(HandlerMixinBase):
                         actor="human_confirmation",
                         tool_name=pending.tool_name,
                         reason=reason,
-                        approval_session_id=str(pending.session_id),
-                        approval_task_envelope_id=str(
-                            getattr(pending, "approval_task_envelope_id", "")
-                        ).strip(),
-                        approval_confirmation_id=str(pending.confirmation_id),
-                        approval_decision_nonce=str(pending.decision_nonce),
-                        approval_timestamp=decision_timestamp,
+                        **self._pending_approval_event_fields(
+                            pending,
+                            decision_timestamp=decision_timestamp,
+                        ),
                     )
                 )
                 self._sync_task_confirmation_status(pending)
@@ -357,13 +465,10 @@ class ConfirmationImplMixin(HandlerMixinBase):
                         actor="human_confirmation",
                         tool_name=pending.tool_name,
                         reason="pep_elevation_context_missing",
-                        approval_session_id=str(pending.session_id),
-                        approval_task_envelope_id=str(
-                            getattr(pending, "approval_task_envelope_id", "")
-                        ).strip(),
-                        approval_confirmation_id=str(pending.confirmation_id),
-                        approval_decision_nonce=str(pending.decision_nonce),
-                        approval_timestamp=decision_timestamp,
+                        **self._pending_approval_event_fields(
+                            pending,
+                            decision_timestamp=decision_timestamp,
+                        ),
                     )
                 )
                 self._sync_task_confirmation_status(pending)
@@ -411,13 +516,10 @@ class ConfirmationImplMixin(HandlerMixinBase):
                         actor="human_confirmation",
                         tool_name=pending.tool_name,
                         reason=pep_decision.reason or pending.status_reason,
-                        approval_session_id=str(pending.session_id),
-                        approval_task_envelope_id=str(
-                            getattr(pending, "approval_task_envelope_id", "")
-                        ).strip(),
-                        approval_confirmation_id=str(pending.confirmation_id),
-                        approval_decision_nonce=str(pending.decision_nonce),
-                        approval_timestamp=decision_timestamp,
+                        **self._pending_approval_event_fields(
+                            pending,
+                            decision_timestamp=decision_timestamp,
+                        ),
                     )
                 )
                 self._sync_task_confirmation_status(pending)
@@ -460,6 +562,7 @@ class ConfirmationImplMixin(HandlerMixinBase):
                 getattr(pending, "approval_task_envelope_id", "")
             ).strip(),
             approval_timestamp=decision_timestamp,
+            approval_evidence=pending.confirmation_evidence,
         )
         success = execution_result.success
         checkpoint_id = execution_result.checkpoint_id
@@ -533,13 +636,10 @@ class ConfirmationImplMixin(HandlerMixinBase):
                         actor="human_confirmation",
                         tool_name=pending.tool_name,
                         reason=promote_followup_reason,
-                        approval_session_id=str(pending.session_id),
-                        approval_task_envelope_id=str(
-                            getattr(pending, "approval_task_envelope_id", "")
-                        ).strip(),
-                        approval_confirmation_id=str(pending.confirmation_id),
-                        approval_decision_nonce=str(pending.decision_nonce),
-                        approval_timestamp=decision_timestamp,
+                        **self._pending_approval_event_fields(
+                            pending,
+                            decision_timestamp=decision_timestamp,
+                        ),
                     )
                 )
         pending.status = "approved" if success else "failed"
@@ -565,6 +665,16 @@ class ConfirmationImplMixin(HandlerMixinBase):
             "status": pending.status,
             "status_reason": pending.status_reason,
             "checkpoint_id": checkpoint_id,
+            "approval_level": (
+                pending.confirmation_evidence.level.value
+                if pending.confirmation_evidence is not None
+                else None
+            ),
+            "approval_method": (
+                pending.confirmation_evidence.method
+                if pending.confirmation_evidence is not None
+                else None
+            ),
         }
 
     async def do_action_reject(self, params: Mapping[str, Any]) -> dict[str, Any]:
@@ -604,13 +714,10 @@ class ConfirmationImplMixin(HandlerMixinBase):
                 actor="human_confirmation",
                 tool_name=pending.tool_name,
                 reason=reason,
-                approval_session_id=str(pending.session_id),
-                approval_task_envelope_id=str(
-                    getattr(pending, "approval_task_envelope_id", "")
-                ).strip(),
-                approval_confirmation_id=str(pending.confirmation_id),
-                approval_decision_nonce=str(pending.decision_nonce),
-                approval_timestamp=decision_timestamp,
+                **self._pending_approval_event_fields(
+                    pending,
+                    decision_timestamp=decision_timestamp,
+                ),
             )
         )
         self._sync_task_confirmation_status(pending)

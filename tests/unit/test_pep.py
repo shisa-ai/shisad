@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from shisad.core.approval import ConfirmationLevel
 from shisad.core.tools.registry import ToolRegistry
 from shisad.core.tools.schema import ToolDefinition, ToolParameter
 from shisad.core.types import Capability, PEPDecisionKind, ToolName
@@ -221,3 +222,83 @@ class TestPepReasonCodes:
         )
         assert decision.kind == PEPDecisionKind.REJECT
         assert decision.reason_code == "pep:destination_unattributed"
+
+
+class TestPepConfirmationPolicy:
+    """A0 confirmation policy foundation coverage."""
+
+    def test_tool_policy_confirmation_level_requires_confirmation(self) -> None:
+        _, registry = _make_pep()
+        pep = PEP(
+            PolicyBundle.model_validate(
+                {
+                    "default_require_confirmation": False,
+                    "tools": {
+                        "test_tool": {
+                            "confirmation": {
+                                "level": "bound_approval",
+                            }
+                        }
+                    },
+                }
+            ),
+            registry,
+        )
+        ctx = PolicyContext(capabilities={Capability.HTTP_REQUEST})
+        decision = pep.evaluate(ToolName("test_tool"), {"query": "hello"}, ctx)
+        assert decision.kind == PEPDecisionKind.REQUIRE_CONFIRMATION
+        assert decision.confirmation_requirement is not None
+        assert decision.confirmation_requirement["level"] == "bound_approval"
+
+    def test_legacy_require_confirmation_migrates_to_software_level(self) -> None:
+        bundle = PolicyBundle.model_validate(
+            {
+                "tools": {
+                    "test_tool": {
+                        "require_confirmation": True,
+                    }
+                }
+            }
+        )
+        tool_policy = bundle.tools[ToolName("test_tool")]
+        assert tool_policy.confirmation is not None
+        assert tool_policy.confirmation.level == ConfirmationLevel.SOFTWARE
+
+    def test_risk_confirmation_levels_escalate_to_highest_threshold(self) -> None:
+        registry = ToolRegistry()
+        registry.register(
+            ToolDefinition(
+                name=ToolName("http.request"),
+                description="Issue an HTTP request.",
+                parameters=[ToolParameter(name="url", type="string", required=True)],
+                capabilities_required=[Capability.HTTP_REQUEST],
+            )
+        )
+        pep = PEP(
+            PolicyBundle.model_validate(
+                {
+                    "default_require_confirmation": False,
+                    "risk_policy": {
+                        "auto_approve_threshold": 0.95,
+                        "block_threshold": 0.99,
+                        "confirmation_levels": [
+                            {"threshold": 0.2, "level": "software"},
+                            {"threshold": 0.25, "level": "bound_approval"},
+                        ],
+                    },
+                }
+            ),
+            registry,
+        )
+        decision = pep.evaluate(
+            ToolName("http.request"),
+            {"url": "https://good.example/upload"},
+            PolicyContext(
+                capabilities={Capability.HTTP_REQUEST},
+                user_goal_host_patterns={"good.example"},
+                trust_level="trusted",
+            ),
+        )
+        assert decision.kind == PEPDecisionKind.REQUIRE_CONFIRMATION
+        assert decision.confirmation_requirement is not None
+        assert decision.confirmation_requirement["level"] == "bound_approval"

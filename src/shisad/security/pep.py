@@ -13,6 +13,11 @@ from dataclasses import dataclass
 from typing import Any, ClassVar
 from urllib.parse import urlparse
 
+from shisad.core.approval import (
+    ConfirmationRequirement,
+    legacy_software_confirmation_requirement,
+    merge_confirmation_requirements,
+)
 from shisad.core.evidence import ArtifactEndorsementState, ArtifactLedger
 from shisad.core.host_matching import host_matches
 from shisad.core.tools.names import canonical_tool_name_typed
@@ -407,7 +412,6 @@ class PEP:
             destination.host if destination else None,
         )
         block_threshold = self._policy.risk_policy.block_threshold
-        auto_approve_threshold = self._policy.risk_policy.auto_approve_threshold
 
         # Alarm bell must remain callable to surface suspected attacks.
         if str(tool_name) == "report_anomaly":
@@ -433,15 +437,16 @@ class PEP:
             )
 
         needs_confirmation = (
-            egress_requires_confirmation
-            or taint_decision.require_confirmation
-            or tool.require_confirmation
-            or (tool_policy is not None and tool_policy.require_confirmation)
-            or self._policy.default_require_confirmation
-            or risk_score >= auto_approve_threshold
+            self._confirmation_requirement(
+                tool=tool,
+                tool_policy=tool_policy,
+                risk_score=risk_score,
+                egress_requires_confirmation=egress_requires_confirmation,
+                taint_requires_confirmation=taint_decision.require_confirmation,
+            )
         )
 
-        if needs_confirmation:
+        if needs_confirmation is not None:
             reason_suffix = ""
             if destination is not None and egress_reason:
                 reason_suffix = (
@@ -451,12 +456,15 @@ class PEP:
             return PEPDecision(
                 kind=PEPDecisionKind.REQUIRE_CONFIRMATION,
                 reason=(
-                    f"Tool '{tool_name}' requires confirmation (risk={risk_score:.2f}). "
+                    f"Tool '{tool_name}' requires confirmation level "
+                    f"'{needs_confirmation.level.value}' (risk={risk_score:.2f}). "
                     "Use an approved destination/scope or ask for explicit user approval."
                     + reason_suffix
                 ),
+                reason_code="pep:confirmation_required",
                 tool_name=tool_name,
                 risk_score=risk_score,
+                confirmation_requirement=needs_confirmation.model_dump(mode="json"),
             )
 
         return PEPDecision(
@@ -476,6 +484,44 @@ class PEP:
         if self._policy.default_deny and self._policy.tools:
             return {canonical_tool_name_typed(item) for item in self._policy.tools}
         return None
+
+    def _confirmation_requirement(
+        self,
+        *,
+        tool: Any,
+        tool_policy: Any | None,
+        risk_score: float,
+        egress_requires_confirmation: bool,
+        taint_requires_confirmation: bool,
+    ) -> ConfirmationRequirement | None:
+        requirements: list[ConfirmationRequirement] = []
+
+        if egress_requires_confirmation or taint_requires_confirmation:
+            requirements.append(legacy_software_confirmation_requirement())
+
+        if (
+            bool(getattr(tool, "require_confirmation", False))
+            or bool(getattr(tool_policy, "require_confirmation", False))
+            or bool(self._policy.default_require_confirmation)
+        ):
+            requirements.append(legacy_software_confirmation_requirement())
+
+        explicit_policy = getattr(tool_policy, "confirmation", None)
+        if explicit_policy is not None:
+            requirements.append(explicit_policy)
+
+        matched_levels = [
+            item
+            for item in self._policy.risk_policy.confirmation_levels
+            if risk_score >= item.threshold
+        ]
+        if matched_levels:
+            highest = max(matched_levels, key=lambda item: item.level.priority)
+            requirements.append(ConfirmationRequirement(level=highest.level))
+        elif risk_score >= self._policy.risk_policy.auto_approve_threshold:
+            requirements.append(legacy_software_confirmation_requirement())
+
+        return merge_confirmation_requirements(requirements)
 
     def _check_evidence_ref(
         self,
