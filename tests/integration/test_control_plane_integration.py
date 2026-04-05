@@ -626,6 +626,45 @@ async def test_h4_runtime_path_normalization_uses_assistant_fs_root(
 
 
 @pytest.mark.asyncio
+async def test_h4_browser_write_without_destination_blocks_after_stage2(
+    tmp_path: Path,
+) -> None:
+    engine = ControlPlaneEngine.build(data_dir=tmp_path / "h4-browser-sink")
+    origin = Origin(
+        session_id="h4-browser-sink",
+        user_id="user-1",
+        workspace_id="ws-1",
+        actor="planner",
+    )
+    engine.begin_precontent_plan(
+        session_id=origin.session_id,
+        goal="review http://127.0.0.1:8765/",
+        origin=origin,
+        ttl_seconds=600,
+        max_actions=5,
+        capabilities={Capability.HTTP_REQUEST},
+    )
+    approved = build_action(
+        tool_name="browser.click",
+        arguments={"destination": "http://127.0.0.1:8765/", "target": "#continue"},
+        origin=origin,
+    )
+    engine.approve_stage2(action=approved, approved_by="human_confirmation")
+
+    evaluation = await engine.evaluate_action(
+        tool_name="browser.click",
+        arguments={"source_url": "http://127.0.0.1:8765/", "target": "#continue"},
+        origin=origin,
+        risk_tier=RiskTier.MEDIUM,
+        declared_domains=["127.0.0.1"],
+        session_tainted=False,
+        trusted_input=True,
+    )
+    assert evaluation.decision == ControlDecision.BLOCK
+    assert "trace:tdg_dependency_path_missing" in evaluation.reason_codes
+
+
+@pytest.mark.asyncio
 async def test_m5_t21_tool_execute_has_declared_threat_model_path_and_no_bypass(
     model_env: None,
     tmp_path: Path,

@@ -867,6 +867,21 @@ def test_h4_trace_plan_hash_binds_declared_resource_roots(tmp_path: Path) -> Non
     assert first.plan_hash != second.plan_hash
 
 
+def test_h4_trace_normalizes_declared_url_roots_to_hosts() -> None:
+    verifier = ExecutionTraceVerifier()
+    origin = _origin("s-h4-url-root")
+    verifier.begin_precontent_plan(
+        session_id=origin.session_id,
+        goal="review the docs",
+        origin=origin,
+        capabilities={Capability.HTTP_REQUEST},
+        declared_resource_roots={"https://example.com/docs/start"},
+    )
+    plan = verifier.active_plan(origin.session_id)
+    assert plan is not None
+    assert plan.declared_resource_roots == {"example.com"}
+
+
 def test_h4_trace_allows_goal_rooted_fs_read_for_bare_readme_request() -> None:
     verifier = ExecutionTraceVerifier()
     origin = _origin("s-h4-goal-readme")
@@ -944,6 +959,29 @@ def test_h4_trace_default_git_status_is_workspace_rooted(tmp_path: Path) -> None
     result = verifier.verify_action(session_id=origin.session_id, action=action)
     assert result.allowed is True
     assert result.reason_code == "trace:allowed"
+
+
+def test_h4_trace_conceptual_git_mentions_do_not_seed_workspace_root(tmp_path: Path) -> None:
+    verifier = ExecutionTraceVerifier(workspace_roots=[tmp_path])
+    origin = _origin("s-h4-git-concept")
+    verifier.begin_precontent_plan(
+        session_id=origin.session_id,
+        goal="Explain what git status means and when to use it.",
+        origin=origin,
+        capabilities={Capability.FILE_READ},
+    )
+    plan = verifier.active_plan(origin.session_id)
+    assert plan is not None
+    assert f"workspace_root:{tmp_path.resolve(strict=False)}" not in plan.goal_resource_patterns
+    action = build_action(
+        tool_name="git.status",
+        arguments={},
+        origin=origin,
+        workspace_roots=[tmp_path],
+    )
+    result = verifier.verify_action(session_id=origin.session_id, action=action)
+    assert result.allowed is False
+    assert result.reason_code == "trace:tdg_confirmation_required"
 
 
 def test_h4_trace_missing_path_side_effect_blocks() -> None:
@@ -1059,6 +1097,37 @@ def test_m6_trace_requires_stage2_for_browser_write_actions() -> None:
     result = verifier.verify_action(session_id=origin.session_id, action=action)
     assert result.allowed is False
     assert result.reason_code == "trace:stage2_upgrade_required"
+
+
+def test_h4_trace_browser_write_without_destination_stays_ungrounded_after_stage2() -> None:
+    verifier = ExecutionTraceVerifier()
+    origin = _origin("s-h4-browser-sink")
+    verifier.begin_precontent_plan(
+        session_id=origin.session_id,
+        goal="review http://127.0.0.1:8765/",
+        origin=origin,
+        capabilities={Capability.HTTP_REQUEST},
+    )
+    approved = build_action(
+        tool_name="browser.click",
+        arguments={"destination": "http://127.0.0.1:8765/", "target": "#continue"},
+        origin=origin,
+    )
+    verifier.amend(
+        session_id=origin.session_id,
+        approved_by="human_confirmation",
+        allow_actions={approved.action_kind},
+        allow_resources=set(approved.resource_ids),
+    )
+    action = build_action(
+        tool_name="browser.click",
+        arguments={"source_url": "http://127.0.0.1:8765/", "target": "#continue"},
+        origin=origin,
+    )
+    assert action.resource_ids == []
+    result = verifier.verify_action(session_id=origin.session_id, action=action)
+    assert result.allowed is False
+    assert result.reason_code == "trace:tdg_dependency_path_missing"
 
 
 def test_m5_t16_control_plane_metadata_events_exclude_raw_payload_fields() -> None:

@@ -475,7 +475,7 @@ def extract_tdg_resource_ids(
             host = _host_from_token(str(arguments.get("url", "")))
             if host:
                 resources.append(host)
-        else:
+        elif action_kind == ActionKind.BROWSER_READ:
             source = _host_from_token(str(arguments.get("source_url", "")))
             if source:
                 resources.append(source)

@@ -10,6 +10,7 @@ from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 from pydantic import BaseModel, Field, ValidationError
 
@@ -107,12 +108,16 @@ _GOAL_BARE_FILE_NAMES: frozenset[str] = frozenset(
     }
 )
 _WORKSPACE_ROOT_MARKER = "workspace_root:"
-_WORKSPACE_ROOT_GOAL_HINTS_RE = re.compile(
-    r"\b("
-    r"current folder|current directory|working directory|folder you're in|directory you're in|"
-    r"git status|git diff|git log|repo status|repo diff|repo log|repository status|"
-    r"repository diff|repository log"
-    r")\b",
+_WORKSPACE_ROOT_DIRECTORY_ACTION_RE = re.compile(
+    r"\b(?:list|show|display|inspect|explore|open|read|check|look at|review)\b"
+    r".{0,80}\b(?:current folder|current directory|working directory|"
+    r"folder you're in|directory you're in)\b",
+    re.IGNORECASE,
+)
+_WORKSPACE_ROOT_GIT_ACTION_RE = re.compile(
+    r"\b(?:show|display|check|inspect|run|get|look at|review)\b"
+    r".{0,80}\b(?:git status|git diff|git log|repo status|repo diff|repo log|"
+    r"repository status|repository diff|repository log)\b",
     re.IGNORECASE,
 )
 
@@ -442,6 +447,8 @@ class ExecutionTraceVerifier:
             return ""
         candidate_resources = [item for item in action.resource_ids if item]
         if not candidate_resources:
+            if action.action_kind == ActionKind.BROWSER_WRITE:
+                return _TDG_BLOCK_REASON
             return ""
         dependency_roots = (
             set(plan.goal_resource_patterns)
@@ -530,7 +537,7 @@ class ExecutionTraceVerifier:
         return patterns
 
     def _goal_workspace_root_patterns(self, goal: str) -> set[str]:
-        if not _WORKSPACE_ROOT_GOAL_HINTS_RE.search(goal):
+        if not self._goal_requests_workspace_root(goal):
             return set()
         if not self._workspace_roots:
             return set()
@@ -548,9 +555,21 @@ class ExecutionTraceVerifier:
         value = str(raw).strip()
         if not value:
             return ""
+        if "://" in value:
+            parsed = urlparse(value)
+            if parsed.hostname:
+                return parsed.hostname.lower().rstrip(".")
+            return ""
         if self._looks_like_path_resource(value) or self._looks_like_goal_path_token(value):
             return normalize_workspace_path(value, workspace_roots=self._workspace_roots)
         return value.lower()
+
+    @staticmethod
+    def _goal_requests_workspace_root(goal: str) -> bool:
+        return bool(
+            _WORKSPACE_ROOT_DIRECTORY_ACTION_RE.search(goal)
+            or _WORKSPACE_ROOT_GIT_ACTION_RE.search(goal)
+        )
 
     @staticmethod
     def _looks_like_goal_path_token(token: str) -> bool:
