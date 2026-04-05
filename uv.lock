@@ -2396,6 +2396,7 @@ coverage = [
 ]
 dev = [
     { name = "mypy" },
+    { name = "numpy" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
     { name = "ruff" },
@@ -2442,6 +2443,7 @@ channels-runtime = [
 coverage = [{ name = "pytest-cov", specifier = ">=5.0,<7" }]
 dev = [
     { name = "mypy", specifier = ">=1.14,<2" },
+    { name = "numpy", specifier = ">=2.3,<3" },
     { name = "pytest", specifier = ">=8.0,<9" },
     { name = "pytest-asyncio", specifier = ">=0.24,<1" },
     { name = "ruff", specifier = ">=0.9,<1" },

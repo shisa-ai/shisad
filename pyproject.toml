@@ -55,6 +55,7 @@ plugins = ["pydantic.mypy"]
 
 [dependency-groups]
 dev = [
+    "numpy>=2.3,<3",
     "pytest>=8.0,<9",
     "pytest-asyncio>=0.24,<1",
     "ruff>=0.9,<1",
