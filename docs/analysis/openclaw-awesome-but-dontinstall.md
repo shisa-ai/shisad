@@ -142,7 +142,7 @@ The common lesson: mutable trust anchors — version tags, publishing credential
 
 Defending against this requires layered controls: lockfiles, version age gates (never install a package less than 7 days old), disabling lifecycle scripts, hash verification, provenance attestation, egress filtering, and organizational measures like private registries and SBOMs. No single control is sufficient — lockfiles don't help if the version you pinned was the malicious one, hash verification doesn't help when the attacker published with legitimate stolen credentials, and provenance only works if you actually remove legacy publishing paths.
 
-I've written a practical guide covering the specific settings and defense tiers: [Supply Chain Security for Software Developers](https://gist.github.com/lhl/f171eaea45df31a0b9287d7bf380657a). The [ANALYSIS-supply-chain.md](ANALYSIS-supply-chain.md) doc covers how these incidents specifically map to AI agent supply chain surfaces.
+I've written a practical guide covering the specific settings and defense tiers: [Supply Chain Security for Software Developers](https://gist.github.com/lhl/f171eaea45df31a0b9287d7bf380657a). The shisad [ANALYSIS-supply-chain.md](ANALYSIS-supply-chain.md) doc covers how these incidents specifically map to AI agent supply chain surfaces.
 
 For shisad, supply chain hardening has been a priority since inception. A [comparative analysis of six production agent frameworks](https://github.com/lhl/agentic-security) rates shisad's supply chain posture as the most comprehensive in the landscape. As of v0.6.0, the concrete measures include:
 
@@ -156,6 +156,7 @@ For shisad, supply chain hardening has been a priority since inception. A [compa
 - **Workflow security linting** — `zizmor` catches CI/CD security issues; `dependency-review` GitHub Action gates on PRs for supply chain scanning
 - **Ed25519 skill signatures** — skill bundles require cryptographic signatures for auto-install; review required on update; manifests enforce exact-pinned dependencies with SHA256 digests
 - **Tool-schema-hash inventory** — persisted schema hashes detect skill tool tampering between install and runtime
+- **Signed ML model-packs** — PromptGuard 2 ONNX models ship as signed model-packs with Ed25519 manifest signatures and SHA256 per-file integrity hashes; the runtime rejects packs that fail verification
 - **Adapter runtime lockdown** — `SHISAD_REQUIRE_LOCAL_ADAPTERS` prevents runtime `npx` fetches from public registries (addressing the exact "run code from the public registry at execution time" risk)
 - **Credential broker with task-scoped credentials** — the LLM never sees raw secrets; credentials are injected at the network proxy layer and scoped per task envelope, so even a compromised task agent cannot access credentials outside its authorized set
 
