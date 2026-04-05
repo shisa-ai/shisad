@@ -66,15 +66,24 @@ class DashboardImplMixin(HandlerMixinBase):
             version = str(data.get("version") or "").strip()
             if version and version not in bucket["versions"]:
                 bucket["versions"].append(version)
-            bucket["events"].append(
-                {
-                    "event_type": row.get("event_type"),
-                    "timestamp": row.get("timestamp"),
-                    "signature_status": data.get("signature_status", ""),
-                    "capabilities": data.get("capabilities", {}),
-                    "status": data.get("status", ""),
-                }
-            )
+            event_payload = {
+                "event_type": row.get("event_type"),
+                "timestamp": row.get("timestamp"),
+                "signature_status": data.get("signature_status", ""),
+                "capabilities": data.get("capabilities", {}),
+                "status": data.get("status", ""),
+            }
+            for key in (
+                "tool_name",
+                "reason_code",
+                "registration_source",
+                "expected_hash_prefix",
+                "actual_hash_prefix",
+            ):
+                value = data.get(key)
+                if value not in (None, "", {}, []):
+                    event_payload[key] = value
+            bucket["events"].append(event_payload)
         payload["installed"] = installed
         payload["timeline"] = sorted(timeline.values(), key=lambda item: item["skill_name"])
         return cast(dict[str, Any], payload)

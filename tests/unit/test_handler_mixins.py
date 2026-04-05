@@ -191,14 +191,16 @@ async def test_dashboard_impl_mixin_smoke() -> None:
                 "limit": limit,
                 "events": [
                     {
-                        "event_type": "SkillInstalled",
+                        "event_type": "SkillToolRegistrationDropped",
                         "timestamp": "t",
                         "data": {
                             "skill_name": "demo",
                             "version": "1.0.0",
-                            "signature_status": "trusted",
-                            "capabilities": {"net": ["example.com"]},
-                            "status": "ok",
+                            "tool_name": "skill.demo.lookup",
+                            "reason_code": "skill:tool_schema_drift",
+                            "registration_source": "inventory_reload",
+                            "expected_hash_prefix": "abc123def456",
+                            "actual_hash_prefix": "fed654cba321",
                         },
                     }
                 ],
@@ -233,6 +235,8 @@ async def test_dashboard_impl_mixin_smoke() -> None:
     skill_prov = await impl.do_dashboard_skill_provenance({"limit": 2})
     assert skill_prov["installed"][0]["name"] == "demo"
     assert skill_prov["timeline"][0]["skill_name"] == "demo"
+    assert skill_prov["timeline"][0]["events"][0]["tool_name"] == "skill.demo.lookup"
+    assert skill_prov["timeline"][0]["events"][0]["reason_code"] == "skill:tool_schema_drift"
     assert (await impl.do_dashboard_alerts({"limit": 3}))["limit"] == 3
     with pytest.raises(ValueError):
         await impl.do_dashboard_mark_false_positive({"event_id": ""})

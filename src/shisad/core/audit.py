@@ -12,6 +12,7 @@ import json
 import logging
 import os
 import re
+from collections import deque
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -174,12 +175,17 @@ class AuditLog:
         session_id: str | None = None,
         actor: str | None = None,
         limit: int = 100,
+        tail: bool = False,
     ) -> list[dict[str, Any]]:
         """Query audit log entries with filters."""
         if not self._log_path.exists():
             return []
 
-        results: list[dict[str, Any]] = []
+        max_results = max(1, int(limit))
+        if tail:
+            results: list[dict[str, Any]] | deque[dict[str, Any]] = deque(maxlen=max_results)
+        else:
+            results = []
 
         with self._log_path.open() as f:
             for line in f:
@@ -205,10 +211,10 @@ class AuditLog:
 
                 results.append(entry.model_dump())
 
-                if len(results) >= limit:
+                if not tail and len(results) >= max_results:
                     break
 
-        return results
+        return list(results)
 
     def _resume_chain(self) -> None:
         """Resume the hash chain from an existing log file."""

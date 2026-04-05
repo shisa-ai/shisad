@@ -251,7 +251,25 @@ def test_cli_commands_route_through_rpc_wrapper(
                 }
             ]
         },
-        "dashboard.skill_provenance": {"timeline": [{"skill_name": "demo", "versions": ["1.0.0"]}]},
+        "dashboard.skill_provenance": {
+            "timeline": [
+                {
+                    "skill_name": "demo",
+                    "versions": ["1.0.0"],
+                    "events": [
+                        {
+                            "timestamp": "2026-02-13T00:00:00Z",
+                            "event_type": "SkillToolRegistrationDropped",
+                            "tool_name": "skill.demo.lookup",
+                            "reason_code": "skill:tool_schema_drift",
+                            "registration_source": "inventory_reload",
+                            "expected_hash_prefix": "abc123def456",
+                            "actual_hash_prefix": "fed654cba321",
+                        }
+                    ],
+                }
+            ]
+        },
         "dashboard.alerts": {
             "alerts": [
                 {
@@ -538,6 +556,13 @@ def test_cli_commands_route_through_rpc_wrapper(
     assert "host=example.com" in _invoke_ok(runner, ["dashboard", "egress", "--limit", "1"]).output
     assert (
         "demo versions=1.0.0"
+        in _invoke_ok(
+            runner,
+            ["dashboard", "skill-provenance", "--limit", "1"],
+        ).output
+    )
+    assert (
+        "reason=skill:tool_schema_drift"
         in _invoke_ok(
             runner,
             ["dashboard", "skill-provenance", "--limit", "1"],

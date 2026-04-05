@@ -18,6 +18,14 @@ ALERT_EVENT_TYPES = {
     "OutputFirewallAlert",
 }
 
+SKILL_PROVENANCE_EVENT_TYPES = {
+    "SkillReviewRequested",
+    "SkillInstalled",
+    "SkillProfiled",
+    "SkillRevoked",
+    "SkillToolRegistrationDropped",
+}
+
 
 def _as_datetime(value: str) -> datetime:
     parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
@@ -95,16 +103,21 @@ class SecurityDashboard:
         return {"events": rows[:limit], "total": len(rows)}
 
     def skill_provenance(self, *, limit: int = 200) -> dict[str, Any]:
-        rows = self._audit_log.query(limit=limit)
-        wanted_event_types = {
-            "SkillReviewRequested",
-            "SkillInstalled",
-            "SkillProfiled",
-            "SkillRevoked",
-            "SkillToolRegistrationDropped",
-        }
-        result = [row for row in rows if str(row.get("event_type", "")) in wanted_event_types]
-        return {"events": result, "total": len(result)}
+        rows: list[dict[str, Any]] = []
+        for event_type in sorted(SKILL_PROVENANCE_EVENT_TYPES):
+            rows.extend(
+                self._audit_log.query(
+                    event_type=event_type,
+                    limit=limit,
+                    tail=True,
+                )
+            )
+        result = sorted(
+            rows,
+            key=lambda row: _as_datetime(str(row.get("timestamp", "1970-01-01T00:00:00+00:00"))),
+            reverse=True,
+        )
+        return {"events": result[:limit], "total": len(result)}
 
     def alerts(self, *, limit: int = 200) -> dict[str, Any]:
         rows: list[dict[str, Any]] = []

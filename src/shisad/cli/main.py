@@ -1486,7 +1486,7 @@ def dashboard_egress(limit: int) -> None:
 @dashboard.command("skill-provenance")
 @click.option("--limit", default=100, help="Maximum rows")
 def dashboard_skill_provenance(limit: int) -> None:
-    """View skill installation/review/profile/revocation timeline."""
+    """View skill installation/review/profile/revocation/drift timeline."""
     config = _get_config()
     result = rpc_call(
         config,
@@ -1496,6 +1496,33 @@ def dashboard_skill_provenance(limit: int) -> None:
     )
     for row in result.timeline:
         click.echo(f"{row.skill_name} versions={','.join(row.versions)}")
+        for event in row.events:
+            parts = [
+                str(event.get("timestamp", "")).strip(),
+                str(event.get("event_type", "")).strip(),
+            ]
+            status = str(event.get("status", "")).strip()
+            if status:
+                parts.append(f"status={status}")
+            signature_status = str(event.get("signature_status", "")).strip()
+            if signature_status:
+                parts.append(f"signature={signature_status}")
+            tool_name = str(event.get("tool_name", "")).strip()
+            if tool_name:
+                parts.append(f"tool={tool_name}")
+            reason_code = str(event.get("reason_code", "")).strip()
+            if reason_code:
+                parts.append(f"reason={reason_code}")
+            registration_source = str(event.get("registration_source", "")).strip()
+            if registration_source:
+                parts.append(f"source={registration_source}")
+            expected_hash_prefix = str(event.get("expected_hash_prefix", "")).strip()
+            if expected_hash_prefix:
+                parts.append(f"expected={expected_hash_prefix}")
+            actual_hash_prefix = str(event.get("actual_hash_prefix", "")).strip()
+            if actual_hash_prefix:
+                parts.append(f"actual={actual_hash_prefix}")
+            click.echo("  " + " ".join(part for part in parts if part))
 
 
 @dashboard.command("alerts")

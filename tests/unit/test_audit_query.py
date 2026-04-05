@@ -40,6 +40,25 @@ async def test_audit_query_filters_actor_and_since(tmp_path: Path) -> None:
     assert results[0]["actor"] == "uid:2000"
 
 
+@pytest.mark.asyncio
+async def test_audit_query_tail_returns_recent_matches(tmp_path: Path) -> None:
+    log = AuditLog(tmp_path / "audit.jsonl")
+    now = datetime.now(UTC)
+    for index in range(3):
+        await log.persist(
+            SessionCreated(
+                session_id=SessionId(f"s-{index}"),
+                user_id=UserId(f"u-{index}"),
+                actor="uid:tail",
+                timestamp=now + timedelta(seconds=index),
+            )
+        )
+
+    results = log.query(actor="uid:tail", limit=2, tail=True)
+
+    assert [item["session_id"] for item in results] == ["s-1", "s-2"]
+
+
 def test_parse_since_supports_iso_and_relative_formats() -> None:
     fixed_now = datetime(2026, 2, 9, 12, 0, tzinfo=UTC)
 
