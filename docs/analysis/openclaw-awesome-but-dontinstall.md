@@ -6,9 +6,9 @@
 
 The latest generation of AI agents in many ways finally gives people what they imagined when they thought of sci-fi-inspired AI personal assistants. These agents can manage your email, calendar, smart home, dev workflows, travel planning, finances, and daily briefings. When given full agency, they can surprise you by proactively doing things you didn't even know you needed, and they are flexible enough to handle varied tasks with barely a whiff of a description. My [review of real deployments](USE-CASES.md) shows 62+ distinct use cases across 28 categories — from "summarize my inbox" to "draft replies in my voice" to "track my packages" to "manage my Kubernetes cluster."
 
-OpenClaw is the most capable open-source platform for this — you've heard of it, and for good reason. IMO it marks a clear step-change in agentic AI software. It connects to 20+ messaging platforms, has 80+ bundled plugins, runs on every OS, and has native mobile apps. Despite its much-maligned security reputation, it has a dedicated security lead, a documented threat model mapped to MITRE ATLAS, TLA+ formal verification models, and 3,300+ test files. It also has 1,000+ contributors, almost daily releases, and a 1.5M-line and growing codebase that is almost entirely AI-generated — the majority of which has never been looked at, much less reviewed, by any human.
+OpenClaw is the most capable open-source platform for this — you've heard of it, and for good reason. IMO it marks a clear step-change in agentic AI software. It connects to 20+ messaging platforms, has 80+ bundled plugins, runs on every OS, and has native mobile apps. Despite its much-maligned security reputation (it has [averaged 1.8 CVEs/day](https://days-since-openclaw-cve.com/) since project launch), it has a dedicated security lead, a documented threat model mapped to MITRE ATLAS, TLA+ formal verification models, and 3,300+ test files. It also has 1,000+ contributors, almost daily releases, and a 1.5M-line and growing codebase that is almost entirely AI-generated — the majority of which has never been looked at, much less reviewed, by any human. 
 
-While this writeup uses OpenClaw as the example because it's the most visible (and probably what someone is telling you to install), the risks here are not unique to it, and any agentic AI software you seek to install/use faces the same fundamental problems. This includes products being pushed by big tech/frontier labs like Claude Cowork.
+While this writeup uses OpenClaw as the example because it's the most visible (and probably what someone is telling you to install), the risks here are not unique to it, and ignoring code quality and attack surface, any agentic AI software you seek to install/use faces many of the same fundamental class of problems. This includes products being pushed by big tech/frontier labs like Claude Cowork.
 
 ## The lethal trifecta
 
@@ -131,6 +131,33 @@ Agentic AI security is genuinely unsolved right now. It's a bleeding-edge wild w
 in industry and academia. I've started maintaining a repo reviewing/tracking some of this work: [lhl/agentic-security](https://github.com/lhl/agentic-security).
 
 I've also been exploring what a secure agent architecture might actually look like. While it's still early in development, the [shisad security documentation](https://github.com/shisa-ai/shisad/blob/main/SECURITY.md) shows what I've come up with so far.
+
+## Aside: Supply Chain
+
+Everything above focuses on risks specific to AI agents — prompt injection, the lethal trifecta, credential exposure through agentic context. But there's a broader problem that affects all software, and it's getting worse (much worse) recently.
+
+Supply chain attacks are not new, and they are not caused by AI. But as of March–April 2026, a new meta seems to have surfaced where threat actors have realized that instead of spear phishing just a few rich people, compromising open source developers maintaining libraries, packages with large install bases might yield better returns.  In a single two-week window, three independent groups hit the software supply chain across three different ecosystems (Go/GitHub Actions, Python/PyPI, JavaScript/npm) using three different vectors. The Trivy compromise enabled the LiteLLM compromise — one supply chain attack directly cascading into the next. The axios attack was entirely separate, attributed to a North Korean state actor. These were different attackers, different techniques, overlapping timelines.
+
+The common lesson: mutable trust anchors — version tags, publishing credentials, CI pipeline state — are being systematically targeted. The Trivy attack force-pushed 75 of 76 `trivy-action` tags. The axios attack bypassed OIDC trusted publishing because a legacy npm token still existed. The LiteLLM payload used Python's `.pth` mechanism to run on every Python process on the machine, not just ones that imported LiteLLM. And each compromise harvested credentials that enabled follow-on attacks.
+
+Defending against this requires layered controls: lockfiles, version age gates (never install a package less than 7 days old), disabling lifecycle scripts, hash verification, provenance attestation, egress filtering, and organizational measures like private registries and SBOMs. No single control is sufficient — lockfiles don't help if the version you pinned was the malicious one, hash verification doesn't help when the attacker published with legitimate stolen credentials, and provenance only works if you actually remove legacy publishing paths.
+
+I've written a practical guide covering the specific settings and defense tiers: [Supply Chain Security for Software Developers](https://gist.github.com/lhl/f171eaea45df31a0b9287d7bf380657a). The [ANALYSIS-supply-chain.md](ANALYSIS-supply-chain.md) doc covers how these incidents specifically map to AI agent supply chain surfaces.
+
+For shisad, supply chain hardening has been a priority since inception. A [comparative analysis of six production agent frameworks](https://github.com/lhl/agentic-security) rates shisad's supply chain posture as the most comprehensive in the landscape. As of v0.6.0, the concrete measures include:
+
+- **OIDC trusted publishing** — publishes to PyPI use GitHub's OpenID Connect for identity verification, eliminating long-lived credentials entirely (the exact vector that enabled both the LiteLLM and axios compromises)
+- **SBOM generation** — SPDX 3.0 JSON attached to every GitHub Release, so consumers can query "am I affected?" instantly when the next incident hits
+- **Build provenance attestations** — verifiable attestations for wheel artifacts, linking the published package back to a specific source commit and CI workflow
+- **Dependency audit** — `pip-audit --require-hashes` in the publish workflow catches known vulnerabilities before release
+- **Lockfile with SHA256 integrity hashes** — `uv.lock` records hashes for every resolved dependency; CI uses `--frozen` to prevent drift; `uv lock --check` guards against lockfile manipulation
+- **7-day update exclusion** — `--exclude-newer P7D` on dev installs prevents surprise transitive dependency updates (the same age-gate principle that would have trivially avoided the axios compromise)
+- **Immutable CI action pinning** — all GitHub Actions pinned to full commit SHAs, not mutable version tags (the exact attack vector in the Trivy compromise)
+- **Workflow security linting** — `zizmor` catches CI/CD security issues; `dependency-review` GitHub Action gates on PRs for supply chain scanning
+- **Ed25519 skill signatures** — skill bundles require cryptographic signatures for auto-install; review required on update; manifests enforce exact-pinned dependencies with SHA256 digests
+- **Tool-schema-hash inventory** — persisted schema hashes detect skill tool tampering between install and runtime
+- **Adapter runtime lockdown** — `SHISAD_REQUIRE_LOCAL_ADAPTERS` prevents runtime `npx` fetches from public registries (addressing the exact "run code from the public registry at execution time" risk)
+- **Credential broker with task-scoped credentials** — the LLM never sees raw secrets; credentials are injected at the network proxy layer and scoped per task envelope, so even a compromised task agent cannot access credentials outside its authorized set
 
 ---
 
