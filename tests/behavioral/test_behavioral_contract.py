@@ -1600,6 +1600,53 @@ async def test_contract_git_diff_executes_and_returns_output(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("content", "expected_tool", "mutate_workspace"),
+    [
+        ("git status", "git.status", False),
+        ("git log", "git.log", False),
+        ("git diff", "git.diff", True),
+    ],
+)
+async def test_contract_bare_git_commands_execute_without_confirmation(
+    contract_harness: ContractHarness,
+    content: str,
+    expected_tool: str,
+    mutate_workspace: bool,
+) -> None:
+    ws = contract_harness.workspace_root
+    subprocess.run(["git", "init", str(ws)], check=True, capture_output=True)
+    subprocess.run(
+        ["git", "-C", str(ws), "commit", "--allow-empty", "-m", "init"],
+        check=True,
+        capture_output=True,
+        env={
+            **os.environ,
+            "GIT_AUTHOR_NAME": "test",
+            "GIT_AUTHOR_EMAIL": "t@t",
+            "GIT_COMMITTER_NAME": "test",
+            "GIT_COMMITTER_EMAIL": "t@t",
+        },
+    )
+    if mutate_workspace:
+        (ws / "README.md").write_text("behavioral-readme-updated\n", encoding="utf-8")
+
+    sid = await _create_session(contract_harness.client)
+    reply = await contract_harness.client.call(
+        "session.message",
+        {"session_id": sid, "content": content},
+    )
+    assert reply.get("lockdown_level") == "normal"
+    assert int(reply.get("blocked_actions", 0)) == 0
+    assert int(reply.get("confirmation_required_actions", 0)) == 0
+    assert int(reply.get("executed_actions", 0)) == 1
+    outputs = _extract_tool_outputs(reply)
+    assert expected_tool in outputs
+    payload = outputs[expected_tool][0]
+    assert payload.get("ok") is True
+
+
+@pytest.mark.asyncio
 async def test_contract_fs_write_routes_to_confirmation_not_lockdown(
     contract_harness: ContractHarness,
 ) -> None:

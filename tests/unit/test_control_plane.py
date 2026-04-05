@@ -961,6 +961,39 @@ def test_h4_trace_default_git_status_is_workspace_rooted(tmp_path: Path) -> None
     assert result.reason_code == "trace:allowed"
 
 
+@pytest.mark.parametrize(
+    ("goal", "tool_name"),
+    [
+        ("git status", "git.status"),
+        ("git diff", "git.diff"),
+        ("git log", "git.log"),
+    ],
+)
+def test_h4_trace_bare_git_commands_are_workspace_rooted(
+    tmp_path: Path,
+    goal: str,
+    tool_name: str,
+) -> None:
+    verifier = ExecutionTraceVerifier(workspace_roots=[tmp_path])
+    origin = _origin(f"s-h4-bare-{tool_name}")
+    verifier.begin_precontent_plan(
+        session_id=origin.session_id,
+        goal=goal,
+        origin=origin,
+        capabilities={Capability.FILE_READ},
+    )
+    action = build_action(
+        tool_name=tool_name,
+        arguments={},
+        origin=origin,
+        workspace_roots=[tmp_path],
+    )
+    assert action.resource_ids == [str(tmp_path.resolve(strict=False))]
+    result = verifier.verify_action(session_id=origin.session_id, action=action)
+    assert result.allowed is True
+    assert result.reason_code == "trace:allowed"
+
+
 def test_h4_trace_conceptual_git_mentions_do_not_seed_workspace_root(tmp_path: Path) -> None:
     verifier = ExecutionTraceVerifier(workspace_roots=[tmp_path])
     origin = _origin("s-h4-git-concept")

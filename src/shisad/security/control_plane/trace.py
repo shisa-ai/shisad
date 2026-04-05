@@ -120,6 +120,11 @@ _WORKSPACE_ROOT_GIT_ACTION_RE = re.compile(
     r"repository status|repository diff|repository log)\b",
     re.IGNORECASE,
 )
+_WORKSPACE_ROOT_GIT_COMMAND_RE = re.compile(
+    r"^\s*(?:git status|git diff|git log|repo status|repo diff|repo log|"
+    r"repository status|repository diff|repository log)\s*[.!?]?\s*$",
+    re.IGNORECASE,
+)
 
 
 def trace_reason_requires_confirmation(reason_code: str) -> bool:
@@ -569,6 +574,7 @@ class ExecutionTraceVerifier:
         return bool(
             _WORKSPACE_ROOT_DIRECTORY_ACTION_RE.search(goal)
             or _WORKSPACE_ROOT_GIT_ACTION_RE.search(goal)
+            or _WORKSPACE_ROOT_GIT_COMMAND_RE.match(goal)
         )
 
     @staticmethod
