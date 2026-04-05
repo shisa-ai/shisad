@@ -834,6 +834,16 @@ def _extract_files_changed_from_task_outputs(records: Sequence[dict[str, Any]]) 
     return tuple(files)
 
 
+def _normalized_task_executed_actions(
+    *, serialized_tool_outputs: Sequence[dict[str, Any]], reported_executed_actions: Any
+) -> int:
+    try:
+        reported = int(reported_executed_actions or 0)
+    except (TypeError, ValueError):
+        reported = 0
+    return max(reported, len(serialized_tool_outputs))
+
+
 def _looks_like_diff_content(text: str) -> bool:
     normalized = text.strip()
     if not normalized:
@@ -5183,6 +5193,10 @@ class SessionImplMixin(HandlerMixinBase):
                 if isinstance(task_response_payload.get("tool_outputs", []), list)
                 else []
             )
+            executed_actions = _normalized_task_executed_actions(
+                serialized_tool_outputs=serialized_tool_outputs,
+                reported_executed_actions=task_response_payload.get("executed_actions", 0),
+            )
             raw_log_ref = self._write_task_artifact(
                 task_session_id=task_session.id,
                 filename="raw_log.json",
@@ -5342,7 +5356,7 @@ class SessionImplMixin(HandlerMixinBase):
                 confirmation_required_actions=int(
                     task_response_payload.get("confirmation_required_actions", 0) or 0
                 ),
-                executed_actions=int(task_response_payload.get("executed_actions", 0) or 0),
+                executed_actions=executed_actions,
                 taint_labels=(TaintLabel.UNTRUSTED.value,),
                 self_check_status=self_check_status,
                 self_check_ref=self_check_ref,
