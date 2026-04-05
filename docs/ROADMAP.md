@@ -1,7 +1,7 @@
 # shisad Roadmap
 
 *Created: 2026-02-26*
-*Updated: 2026-04-04*
+*Updated: 2026-04-05*
 *Status: Active*
 
 ## Goal
@@ -23,6 +23,10 @@ Reach a genuinely useful personal-assistant baseline while preserving the projec
 - `v0.6.0` is published: G0, M1, M2, M3, M4, M5, and M6 are closed, and the
   first trusted-publishing/SBOM/attestation release path is live on the
   shipped public line.
+- `v0.6.1` closes the security-hardening lane on top of `v0.6.0`: minimal
+  control-plane isolation, PromptGuard 2 integration, shipped YARA parity for
+  the unicode-steganography rule, warning-only phantom-action detection, Tool
+  Dependency Graph verification, and reviewed skill-tool drift observability.
 
 ## Milestones
 
@@ -80,14 +84,14 @@ the deferred M7 connector/skill expansion lane lives in `v0.6.4`.
 - YARA rulepack runtime-parity closure for the shipped unicode-steganography rule
 - Phantom action detection
 - Tool Dependency Graph verification
+- Skill tool schema-drift observability
 
-Current execution note (2026-04-04): control-plane isolation, PromptGuard 2,
-and the YARA runtime-parity fix are complete. Phantom-action detection is now
-implemented on a warning-only metadata baseline: final PEP denies carry
-structured reason codes into the control-plane history/audit path, repeated
-qualifying denies raise an operator-visible warning after the configured
-threshold/window, and single denies still deny only the action without
-lockdown. TDG verification is the next `v0.6.1` lane.
+Current execution note (2026-04-05): `v0.6.1` is release-closed. The shipped
+lane adds sidecar-isolated control-plane analysis, PromptGuard 2 runtime
+screening, the fixed shipped YARA unicode-steganography detector, structured
+warning-only phantom-action detection, runtime Tool Dependency Graph
+verification with clean COMMAND-declared task roots, and metadata-only
+reviewed-skill schema-drift observability. The next planned lane is `v0.6.2`.
 
 #### v0.6.2 — Hardware-backed approval and signing
 

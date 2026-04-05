@@ -8,6 +8,40 @@ release tag. There is no standing "Unreleased" section.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Versioning follows semver (see `docs/PUBLISH.md` for policy and style guide).
 
+## [0.6.1] - 2026-04-05
+
+### Security
+
+- **Control-plane analysis is isolated from the main daemon path.** Runtime
+  security analysis now runs behind a minimal sidecar boundary so compromise
+  of one lane has less direct reach into the other.
+- **PromptGuard 2 now screens high-risk content paths.** Untrusted content and
+  tool arguments go through the new ML classifier before they reach the live
+  execution boundary.
+- **The shipped unicode-steganography detector now matches the documented
+  runtime.** The released YARA rulepack no longer depends on a broken compile
+  path for that detection.
+- **Repeated suspicious denied actions raise warnings instead of silently
+  disappearing.** The daemon now records structured deny metadata and alerts
+  operators when capability probes, unattributed egress probes, or taint
+  bypass attempts cross the configured threshold.
+- **Risky tool actions must trace back to committed intent.** The runtime now
+  checks a Tool Dependency Graph before execution, routes missing-path reads
+  to confirmation, and blocks missing-path side effects.
+- **Delegated TASK work can inherit trusted scope from a clean COMMAND
+  session.** When the parent COMMAND context is still clean, its declared
+  resource scope becomes a first-class runtime root instead of forcing vague
+  tasks through string matching or unnecessary confirmation.
+- **Reviewed skill-tool drift is visible instead of silent.** Modified
+  reviewed skill tools still fail closed on restart, and the daemon now emits
+  a metadata-only audit event explaining why the tool was dropped.
+
+### Changed
+
+- **Release notes are now written for operators, not just contributors.**
+  `CHANGELOG.md` and `docs/PUBLISH.md` now treat release notes as user-facing
+  explanations of what each version adds, changes, or hardens.
+
 ## [0.6.0] - 2026-04-03
 
 ### Added
@@ -103,6 +137,7 @@ Initial public release.
   recording.
 - **End-to-end demo** script and runner harness for live verification.
 
+[0.6.1]: https://github.com/shisa-ai/shisad/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/shisa-ai/shisad/compare/v0.5.2...v0.6.0
 [0.5.2]: https://github.com/shisa-ai/shisad/compare/v0.5.1...v0.5.2
 [0.5.1]: https://github.com/shisa-ai/shisad/compare/v0.5.0...v0.5.1

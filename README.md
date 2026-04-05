@@ -36,19 +36,26 @@ Rather than ignoring the elephant in the room, our design targets the [lethal tr
 - **Per-call policy enforcement** — 8-layer PEP pipeline (registry, schema, capability, DLP, resource authorization, egress allowlisting, credential scoping, taint sink enforcement) runs on every tool call, not just at session start
 - **Taint-aware content handling** — ingress/egress content firewalls track provenance of untrusted input through the execution path
 - **Confirmation gates, not blanket denial** — user-requested actions proceed; ambiguous or tainted actions route to confirmation; only genuine anomalies trigger lockdown
-- **Behavioral anomaly detection** — control plane consensus (5 independent voters) for runtime anomaly detection, rate limiting, and lockdown escalation
+- **Behavioral anomaly detection** — control plane consensus (5 independent voters) for runtime anomaly detection, rate limiting, lockdown escalation, and operator-visible warnings on repeated suspicious deny patterns
 - **Destructive command protection** — enforced at the sandbox policy layer before execution, not by LLM judgment; structurally incapable of `rm -rf /` regardless of prompt injection or misconfiguration
 - **Clean-room workflows** — admin operations run in a taint-isolated session mode with no auto-apply
 - **Multi-channel messaging** — Matrix, Discord, Telegram, Slack (Socket Mode), with default-deny identity allowlisting per channel
 - **Assistant primitives** — notes/todos, scheduler with shared delivery, web search/fetch, baseline browser automation, filesystem/git helpers, and evidence references for large untrusted output
 - **Artifact and evidence boundaries** — restart-stable evidence refs, structured ArtifactLedger storage, and terminal-safe evidence rendering keep large untrusted content off the raw prompt path by default
+- **Intent-grounded execution** — risky actions must trace back to committed user or clean COMMAND intent, with missing-path reads routed to confirmation and missing-path side effects blocked
 - **Provider routing** — pluggable LLM provider presets (Shisa, OpenAI, OpenRouter, Google, local vLLM) with per-route auth, model selection, and mixed-mode deployment
-- **Tool-surface integrity** — reviewed local skills can declare tools, but their schema hashes are pinned across install/restart/runtime and dynamic remote tool discovery remains fail-closed
+- **Tool-surface integrity** — reviewed local skills can declare tools, but their schema hashes are pinned across install/restart/runtime, drifted reviewed tools fail closed with explicit audit visibility, and dynamic remote tool discovery remains fail-closed
 - **Observability** — comprehensive audit trail, TUI dashboard (pending actions, tasks, channel health, alerts), and `doctor` diagnostics
 
 ## Status
 
-This repo is public and still pre-alpha. `v0.6.0` is the current release line.
+This repo is public and still pre-alpha. `v0.6.1` is the current release line.
+
+`v0.6.1` is the security-hardening follow-up to `v0.6.0`: isolated
+control-plane analysis, PromptGuard 2 runtime screening, shipped YARA parity
+for unicode-steganography detection, warning-only phantom-action detection,
+runtime Tool Dependency Graph verification, and explicit reviewed-skill drift
+observability.
 
 | Version | Focus |
 |---------|-------|
