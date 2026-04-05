@@ -125,34 +125,63 @@ The CHANGELOG is a user-facing document. Write it so someone who uses shisad
 
 ### Principles
 
-1. **Lead with what users can now do**, not how it's built internally.
-   - Good: "The agent can now delegate work to isolated task sessions."
-   - Bad: "Formal COMMAND/TASK orchestration runtime with taint-safe handoffs."
+1. **Lead with the end-user-visible effect, not the subsystem.**
+   Start with what changed for the end-user: what is safer, easier,
+   faster, clearer, or newly possible. If the bold lead starts with an
+   internal component name, architecture term, or implementation mechanism,
+   rewrite it.
+   - Good: "Security analysis runs in a separate process from the main daemon."
+   - Bad: "Control-plane analysis is isolated from the main daemon path."
+   - Good: "Tool actions are checked against what the user actually asked for."
+   - Bad: "Risky tool actions must trace back to committed intent."
+   - Good: "Subtasks can inherit their parent session's approved scope."
+   - Bad: "Delegated TASK work can inherit trusted scope from a clean COMMAND session."
 
 2. **One feature per bullet.** If a bullet has commas separating five things,
    break it into five bullets.
 
-3. **Use plain language.** Avoid internal jargon, milestone IDs, component
-   names, and compound-adjective chains. If a term only makes sense after
-   reading the architecture docs, rephrase it.
+3. **Write for an end-user who has not read our internals.**
+   Assume the reader uses the software, but does not know our ADRs, milestone
+   plan, or internal vocabulary. Avoid milestone IDs, component names, and
+   compound-adjective chains. If a sentence depends on a term like
+   "control-plane", "sidecar boundary", "lane", "COMMAND/TASK", "taint",
+   "TDG", "runtime root", or similar internal shorthand, rewrite it unless
+   that term is part of the actual user-facing product surface.
 
 4. **Bold the headline, then explain.** Start each Added/Security bullet with
    a short bold phrase, then follow with a plain sentence.
    - Example: `**Browser writes require user confirmation** and are scoped to
      the approved page context.`
 
-5. **Separate user-facing from infrastructure.** Supply-chain hardening, CI
-   gates, and release pipeline changes matter — but most users will skip past
-   them. Use sub-bullets under a parent item so readers can scan past if they
-   don't care.
+5. **Separate end-user changes from infrastructure.** Supply-chain hardening,
+   CI gates, and release pipeline changes matter, but most end-users will
+   skip past them. Use sub-bullets under a parent item so readers can scan
+   past if they don't care.
 
 6. **Stay truth-scoped.** Don't overclaim. If a feature requires configuration
    or only works in certain modes, say so. Prefer "when X is configured" over
    implying it works universally.
 
-7. **Drop implementation details.** Internal class names, registry names,
-   schema types, and layer numbers belong in commit messages or architecture
-   docs, not the changelog.
+7. **Drop implementation details unless they matter to the end-user.**
+   Internal class names, registry names, schema types, layer numbers, and
+   enforcement mechanics belong in commit messages or architecture docs, not
+   the changelog. Rewrite phrases like "committed intent", "Tool Dependency
+   Graph", "missing-path side effects", "metadata-only audit event", and
+   "structured deny metadata" into plain descriptions of what the user sees.
+   Mention the mechanism only after the end-user-facing effect is already
+   clear, and only when it helps explain limits or setup.
+
+8. **Use a quick jargon smell test before you ship it.** Read each bullet and
+   ask:
+   - Would an end-user understand this without knowing our internal system names?
+   - Does the first sentence say what changed for them, not what we built?
+   - Could they explain it back after one read?
+   If not, rewrite it.
+
+9. **Prefer everyday product language over internal threat language.** Write
+   what the end-user can notice or act on. For example:
+   - Better: "The daemon now warns you when suspicious denied actions repeat."
+   - Worse: "The daemon records structured deny metadata for taint bypass attempts and unattributed egress probes."
 
 ## Trusted Publishing Setup
 
