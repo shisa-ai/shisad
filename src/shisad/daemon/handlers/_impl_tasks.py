@@ -338,9 +338,7 @@ class TasksImplMixin(HandlerMixinBase):
             PlanCommitted(
                 session_id=sid,
                 actor="control_plane",
-                plan_hash=(
-                    await _call_control_plane(self, "active_plan_hash", str(sid))
-                )
+                plan_hash=(await _call_control_plane(self, "active_plan_hash", str(sid)))
                 or committed_plan_hash,
                 stage="stage1_precontent",
                 expires_at="",

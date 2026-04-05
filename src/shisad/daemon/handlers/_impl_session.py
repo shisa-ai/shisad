@@ -3627,12 +3627,11 @@ class SessionImplMixin(HandlerMixinBase):
                 trusted_input=validated.trusted_input,
                 raw_user_text=validated.content,
             )
-            trace_only_confirmation_block = (
-                trace_reason_requires_confirmation(cp_eval.trace_result.reason_code)
-                and not any(
-                    vote.decision.value == "BLOCK" and vote.voter != TRACE_VOTER_NAME
-                    for vote in cp_eval.consensus.votes
-                )
+            trace_only_confirmation_block = trace_reason_requires_confirmation(
+                cp_eval.trace_result.reason_code
+            ) and not any(
+                vote.decision.value == "BLOCK" and vote.voter != TRACE_VOTER_NAME
+                for vote in cp_eval.consensus.votes
             )
             trace_only_stage2_block = (
                 cp_eval.trace_result.reason_code == "trace:stage2_upgrade_required"

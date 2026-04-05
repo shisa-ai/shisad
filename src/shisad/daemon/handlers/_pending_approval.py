@@ -72,9 +72,7 @@ def capability_elevation_for_missing_capabilities(
     if normalized_reason_code != "pep:missing_capabilities":
         return None
     missing = {
-        capability
-        for capability in required_capabilities
-        if capability not in session_capabilities
+        capability for capability in required_capabilities if capability not in session_capabilities
     }
     if not missing:
         return None
@@ -91,10 +89,7 @@ def pending_pep_elevation_warning(elevation: PendingPepElevationRequest | None) 
     if elevation.kind != "capability_grant":
         return ""
     granted = ", ".join(sorted(capability.value for capability in elevation.capability_grants))
-    return (
-        "Approval will re-run policy with a per-action capability grant: "
-        f"{granted}."
-    )
+    return f"Approval will re-run policy with a per-action capability grant: {granted}."
 
 
 def pending_pep_context_to_payload(
@@ -123,9 +118,7 @@ def pending_pep_context_from_payload(raw: Mapping[str, Any]) -> PendingPepContex
         if not isinstance(tool_allowlist_raw, list):
             raise TypeError("tool_allowlist must be a list or null")
         tool_allowlist = {
-            ToolName(str(tool_name))
-            for tool_name in tool_allowlist_raw
-            if str(tool_name).strip()
+            ToolName(str(tool_name)) for tool_name in tool_allowlist_raw if str(tool_name).strip()
         }
     return PendingPepContextSnapshot(
         capabilities={
@@ -134,9 +127,7 @@ def pending_pep_context_from_payload(raw: Mapping[str, Any]) -> PendingPepContex
             if str(capability).strip()
         },
         taint_labels={
-            TaintLabel(str(label))
-            for label in raw.get("taint_labels", [])
-            if str(label).strip()
+            TaintLabel(str(label)) for label in raw.get("taint_labels", []) if str(label).strip()
         },
         user_goal_host_patterns={
             str(pattern).strip()
@@ -165,9 +156,7 @@ def pending_pep_elevation_to_payload(
     return {
         "kind": elevation.kind,
         "reason_code": elevation.reason_code,
-        "capability_grants": sorted(
-            capability.value for capability in elevation.capability_grants
-        ),
+        "capability_grants": sorted(capability.value for capability in elevation.capability_grants),
     }
 
 

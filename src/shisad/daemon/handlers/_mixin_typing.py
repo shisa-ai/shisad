@@ -19,8 +19,9 @@ if TYPE_CHECKING:
     class HandlerMixinBase:
         """Allow extracted mixins to access HandlerImplementation attributes."""
 
-        async def _call_control_plane(self, method_name: str, /, *args: Any, **kwargs: Any) -> Any:
-            ...
+        async def _call_control_plane(
+            self, method_name: str, /, *args: Any, **kwargs: Any
+        ) -> Any: ...
 
         def __getattr__(self, name: str) -> Any: ...
 

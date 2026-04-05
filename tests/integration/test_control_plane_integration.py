@@ -532,8 +532,7 @@ async def test_h4_missing_path_side_effect_stays_blocked(
             {"event_type": "PlanViolationDetected", "session_id": sid, "limit": 20},
         )
         assert any(
-            str(event.get("data", {}).get("reason_code", ""))
-            == "trace:tdg_dependency_path_missing"
+            str(event.get("data", {}).get("reason_code", "")) == "trace:tdg_dependency_path_missing"
             for event in violations["events"]
         )
     finally:
@@ -600,18 +599,16 @@ async def test_h4_runtime_path_normalization_uses_assistant_fs_root(
 
         outputs = response.get("tool_outputs", [])
         read_payload = next(
-            item.get("payload", {})
-            for item in outputs
-            if item.get("tool_name") == "fs.read"
+            item.get("payload", {}) for item in outputs if item.get("tool_name") == "fs.read"
         )
         assert read_payload.get("ok") is True
         assert "h4-custom-root" in str(read_payload.get("content", ""))
 
         audit_rows = [
             json.loads(line)
-            for line in (tmp_path / "data" / "control_plane" / "audit.jsonl").read_text(
-                encoding="utf-8"
-            ).splitlines()
+            for line in (tmp_path / "data" / "control_plane" / "audit.jsonl")
+            .read_text(encoding="utf-8")
+            .splitlines()
             if line.strip()
         ]
         assert any(

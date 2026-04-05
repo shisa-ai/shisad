@@ -486,8 +486,7 @@ class ExecutionTraceVerifier:
     ) -> bool:
         for candidate in candidate_resources:
             if not any(
-                self._resource_matches(root=root, candidate=candidate)
-                for root in dependency_roots
+                self._resource_matches(root=root, candidate=candidate) for root in dependency_roots
             ):
                 return False
         return True
@@ -508,9 +507,7 @@ class ExecutionTraceVerifier:
         ):
             root_prefix = normalized_root.rstrip("/")
             candidate_prefix = normalized_candidate.rstrip("/")
-            if candidate_prefix == root_prefix or candidate_prefix.startswith(
-                f"{root_prefix}/"
-            ):
+            if candidate_prefix == root_prefix or candidate_prefix.startswith(f"{root_prefix}/"):
                 return True
             root_name = Path(root_prefix).name
             candidate_name = Path(candidate_prefix).name

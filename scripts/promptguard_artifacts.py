@@ -101,8 +101,7 @@ def _cmd_download(args: argparse.Namespace) -> int:
     if token is None:
         raise SystemExit(
             "PromptGuard download requires Hugging Face authentication. "
-            "Use `hf auth login` or set one of: "
-            + ", ".join(_HF_TOKEN_ENV_CANDIDATES)
+            "Use `hf auth login` or set one of: " + ", ".join(_HF_TOKEN_ENV_CANDIDATES)
         )
 
     _reset_output_dir(args.output_dir, force=args.force)
@@ -260,8 +259,7 @@ def _add_export_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentP
     parser = subparsers.add_parser(
         "export-onnx",
         help=(
-            "Export a local PromptGuard checkpoint directory into a local "
-            "ONNX artifact directory."
+            "Export a local PromptGuard checkpoint directory into a local ONNX artifact directory."
         ),
     )
     parser.add_argument(

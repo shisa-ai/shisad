@@ -248,9 +248,7 @@ class OnnxPromptGuardBackend:
         all_scores: list[float] = []
         for model_inputs in self._iter_model_batches(payload):
             input_feed = {
-                key: value
-                for key, value in model_inputs.items()
-                if key in self._input_names
+                key: value for key, value in model_inputs.items() if key in self._input_names
             }
 
             try:
@@ -528,8 +526,7 @@ def _promptguard_unavailable(
     )
     if settings.posture == "required":
         raise ValueError(
-            "PromptGuard semantic classifier is required but unavailable: "
-            f"{status.reason}"
+            f"PromptGuard semantic classifier is required but unavailable: {status.reason}"
         )
     return None, status
 

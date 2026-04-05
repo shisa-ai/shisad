@@ -253,7 +253,7 @@ class ToolExecutionImplMixin(HandlerMixinBase):
                     plan_hash=previous_plan_hash,
                     reason="superseded_by_tool_execute",
                 )
-        )
+            )
         plan_hash = (
             await _call_control_plane(self, "active_plan_hash", str(sid))
         ) or committed_plan_hash

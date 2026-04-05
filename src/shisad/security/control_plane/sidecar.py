@@ -258,9 +258,7 @@ def _build_control_plane_engine(
         trace_ttl_seconds=int(control_plane_policy.trace.ttl_seconds),
         trace_max_actions=int(control_plane_policy.trace.max_actions),
         phantom_deny_threshold=int(control_plane_policy.sequence.phantom_deny_threshold),
-        phantom_deny_window_seconds=int(
-            control_plane_policy.sequence.phantom_deny_window_seconds
-        ),
+        phantom_deny_window_seconds=int(control_plane_policy.sequence.phantom_deny_window_seconds),
         workspace_roots=workspace_roots,
         consensus_policy=ConsensusPolicy(
             required_approvals_low=int(control_plane_policy.consensus.required_approvals_low),

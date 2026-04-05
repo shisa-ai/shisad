@@ -88,10 +88,7 @@ class _SegmentAwareSession:
         segments = [int(item) for item in input_feed["input_ids"][:, 0].tolist()]
         self.calls.append(segments)
         logits = np.array(
-            [
-                [0.0, 10.0] if segment == 9 else [10.0, 0.0]
-                for segment in segments
-            ],
+            [[0.0, 10.0] if segment == 9 else [10.0, 0.0] for segment in segments],
             dtype=np.float32,
         )
         return [logits]
