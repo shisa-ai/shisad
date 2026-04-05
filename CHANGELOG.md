@@ -6,61 +6,73 @@ This changelog is release-oriented: a new section is added when cutting a
 release tag. There is no standing "Unreleased" section.
 
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
-Versioning follows semver (see `docs/PUBLISH.md` for policy).
+Versioning follows semver (see `docs/PUBLISH.md` for policy and style guide).
 
 ## [0.6.0] - 2026-04-03
 
 ### Added
 
-- Formal COMMAND/TASK orchestration runtime with isolated task sessions,
-  taint-safe handoffs, a TASK close-gate self-check, restart-safe session
-  migration/archival flows, task-scoped credential refs, typed boundary
-  validation, live resource-scope enforcement, and a structured ArtifactLedger
-  with approval provenance.
-- Web/browser tool-surface expansion: skill-declared tools via
-  `ToolRegistry`, `web.search`, evidence-wrapped `web.fetch`, text-first
-  evidence rendering in the terminal UI, and the baseline browser toolkit
-  (`browser.navigate`, `browser.read_page`, `browser.screenshot`,
-  `browser.click`, `browser.type_text`, `browser.end_session`).
-- Supply-chain and release hardening for the shipped tool surface: persisted
-  schema hashes for reviewed local skill tools, dependency-review and zizmor
-  CI gates, pinned GitHub Actions, and the first trusted-publishing workflow
-  with SBOM generation and attestations.
+- **Multi-step task orchestration.** The agent can now delegate work to
+  isolated task sessions with safe data handoffs, result validation, and
+  credential scoping — a long-running task can't leak context or credentials
+  back to the main session.
+- **Session migration and archival.** Sessions survive daemon restarts with
+  their security state intact, and completed sessions can be exported/imported
+  with integrity checks.
+- **Artifact tracking with approval history.** Delegated task outputs are
+  tracked in a structured ledger that records who approved what and when.
+- **Web search tool** (`web.search`) for querying the web from within a
+  session (requires a configured search backend).
+- **Web fetch tool** (`web.fetch`) for retrieving web pages, with content
+  stored as evidence references to keep large untrusted payloads out of the
+  main conversation context.
+- **Browser automation tools**: `browser.navigate`, `browser.read_page`,
+  `browser.screenshot`, `browser.click`, `browser.type_text`, and
+  `browser.end_session` for interacting with web pages directly (requires
+  `SHISAD_BROWSER_ENABLED=1` and a configured browser command).
+- **Web content rendered as text in the terminal** — fetched pages and browser
+  reads display as readable text rather than raw HTML.
+- **Skill tool integrity checks.** Local skill tools are validated against
+  persisted schema hashes — modified or revoked tools are rejected at runtime.
+- **Hardened release pipeline.** Releases now use PyPI OIDC trusted publishing
+  with SBOM generation and provenance attestations.
+  - Dependency-review and zizmor CI gates added.
+  - GitHub Actions pinned to SHA digests.
+  - `SHISAD_REQUIRE_LOCAL_ADAPTERS` env var locks down runtime adapter
+    downloads.
 
 ### Security
 
-- Browser writes are confirmation-gated and bound to the approved page/source
-  context, while hardened browser isolation now defaults fail-closed and
-  rejects wildcard browser scope that cannot be safely enforced.
-- Evidence refs are restart-stable, cross-session isolated, terminal-safe, and
-  continue to keep large untrusted content on the extractive/tainted path by
-  default.
-- Runtime skill authorization now rejects revoked or drifted artifacts, and
-  dynamic remote tool discovery remains explicitly unsupported until the later
-  MCP/A2A interop lane.
+- **Browser writes require user confirmation** and are scoped to the approved
+  page context.
+- **Hardened browser isolation is on by default.** Wildcard browser scope
+  entries are rejected because they can't be safely enforced.
+- **Evidence references persist across restarts and sessions**, keeping large
+  untrusted content isolated from the main conversation by default.
+- **Skill authorization rejects modified or revoked artifacts** at runtime;
+  dynamic remote tool discovery is not yet supported (planned for v0.6.3).
 
 ### Changed
 
-- Public operator docs now truth-scope the browser/web status surface, channel
-  evidence rendering contract, and current release roadmap after the
-  `v0.6.0` orchestration/tooling baseline.
+- Updated public docs (`ROADMAP.md`, `TOOL-STATUS.md`) to reflect actual
+  browser and web tool status after the v0.6.0 release.
 
 ## [0.5.2] - 2026-04-01
 
 ### Fixed
 
-- Added `[project.urls]` to `pyproject.toml` so PyPI links to the GitHub repo,
-  issues, and changelog.
+- Added project URL links to `pyproject.toml` so PyPI shows links to the
+  GitHub repo, issues, and changelog.
 - Added `license` field (Apache-2.0) to `pyproject.toml`.
 
 ## [0.5.1] - 2026-04-01
 
 ### Added
 
-- Auto-detect fallback API key (`ANTHROPIC_API_KEY`) when `SHISA_API_KEY` is
-  not set, reducing first-run friction.
-- Supply chain dependency audit map (`docs/AUDIT-supply-chain.md`).
-- `CHANGELOG.md` and `docs/PUBLISH.md` release checklist.
+- **Automatic API key fallback.** If `SHISA_API_KEY` is not set, shisad
+  auto-detects `ANTHROPIC_API_KEY`, reducing first-run friction.
+- Supply-chain dependency audit map (`docs/AUDIT-supply-chain.md`).
+- `CHANGELOG.md` and release checklist (`docs/PUBLISH.md`).
 - First PyPI publication to claim the `shisad` package name.
 
 ### Security
@@ -70,8 +82,8 @@ Versioning follows semver (see `docs/PUBLISH.md` for policy).
 
 ### Fixed
 
-- `__init__.py` version string synced to match `pyproject.toml` (was stuck at
-  0.3.4).
+- Version string in `__init__.py` synced to match `pyproject.toml` (was stuck
+  at 0.3.4).
 
 ## [0.5.0] - 2026-03-30
 
@@ -79,18 +91,16 @@ Initial public release.
 
 ### Highlights
 
-- **Security-first agent framework** with per-call policy enforcement pipeline
-  (PEP), prompt injection defense, and data exfiltration prevention.
-- **Sandbox execution stack** with namespace isolation, filesystem jails, and
+- **Security-first agent framework** with per-call policy enforcement — every
+  tool call is checked against the security policy before execution.
+- **Sandbox execution** with namespace isolation, filesystem jails, and
   fail-closed runtime guards.
-- **Control plane** with hot-reloadable skills/plugins, connection management,
-  and session lifecycle.
-- **Defense in depth**: multi-layer security (M0-M6) covering auth, egress
-  auditing, supply-chain hardening, multi-encoding injection defense, and
-  adversarial gates.
+- **Hot-reloadable skills and plugins** managed by the control plane.
+- **Multi-layer security** covering auth, egress auditing, supply-chain
+  hardening, multi-encoding injection defense, and adversarial gates.
 - **Structured memory** with semantic search.
-- **Observability**: audit trails, anomaly detection, training-ready LLM trace
-  recorder.
+- **Audit trails** and anomaly detection, with training-ready LLM trace
+  recording.
 - **End-to-end demo** script and runner harness for live verification.
 
 [0.6.0]: https://github.com/shisa-ai/shisad/compare/v0.5.2...v0.6.0

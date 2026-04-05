@@ -38,7 +38,7 @@ Version must be updated in both places:
 - [ ] Sync the lockfile: `uv lock`
 - [ ] Update `CHANGELOG.md`:
       add a new topmost `## [X.Y.Z] - YYYY-MM-DD` section and update the
-      version comparison links at the bottom
+      version comparison links at the bottom (see **CHANGELOG Style** below)
 - [ ] Review `README.md` and top-level operator docs for release parity:
       `docs/ROADMAP.md`, `docs/ENV-VARS.md`, `docs/TOOL-STATUS.md`,
       `docs/USE-CASES.md`
@@ -117,6 +117,42 @@ Version must be updated in both places:
       or `dismissed_reason='used in tests'` as appropriate. Record alert IDs
       and disposition in the active worklog when they affect release-close.
 - [ ] Confirm the tree is clean: `git status -sb`
+
+## CHANGELOG Style
+
+The CHANGELOG is a user-facing document. Write it so someone who uses shisad
+(but doesn't develop it) can understand what changed and why they should care.
+
+### Principles
+
+1. **Lead with what users can now do**, not how it's built internally.
+   - Good: "The agent can now delegate work to isolated task sessions."
+   - Bad: "Formal COMMAND/TASK orchestration runtime with taint-safe handoffs."
+
+2. **One feature per bullet.** If a bullet has commas separating five things,
+   break it into five bullets.
+
+3. **Use plain language.** Avoid internal jargon, milestone IDs, component
+   names, and compound-adjective chains. If a term only makes sense after
+   reading the architecture docs, rephrase it.
+
+4. **Bold the headline, then explain.** Start each Added/Security bullet with
+   a short bold phrase, then follow with a plain sentence.
+   - Example: `**Browser writes require user confirmation** and are scoped to
+     the approved page context.`
+
+5. **Separate user-facing from infrastructure.** Supply-chain hardening, CI
+   gates, and release pipeline changes matter — but most users will skip past
+   them. Use sub-bullets under a parent item so readers can scan past if they
+   don't care.
+
+6. **Stay truth-scoped.** Don't overclaim. If a feature requires configuration
+   or only works in certain modes, say so. Prefer "when X is configured" over
+   implying it works universally.
+
+7. **Drop implementation details.** Internal class names, registry names,
+   schema types, and layer numbers belong in commit messages or architecture
+   docs, not the changelog.
 
 ## Trusted Publishing Setup
 
