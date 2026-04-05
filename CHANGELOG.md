@@ -12,35 +12,35 @@ Versioning follows semver (see `docs/PUBLISH.md` for policy and style guide).
 
 ### Security
 
-- **Control-plane analysis is isolated from the main daemon path.** Runtime
-  security analysis now runs behind a minimal sidecar boundary so compromise
-  of one lane has less direct reach into the other.
-- **PromptGuard 2 now screens high-risk content paths.** Untrusted content and
-  tool arguments go through the new ML classifier before they reach the live
-  execution boundary.
-- **The shipped unicode-steganography detector now matches the documented
-  runtime.** The released YARA rulepack no longer depends on a broken compile
-  path for that detection.
-- **Repeated suspicious denied actions raise warnings instead of silently
-  disappearing.** The daemon now records structured deny metadata and alerts
-  operators when capability probes, unattributed egress probes, or taint
-  bypass attempts cross the configured threshold.
-- **Risky tool actions must trace back to committed intent.** The runtime now
-  checks a Tool Dependency Graph before execution, routes missing-path reads
-  to confirmation, and blocks missing-path side effects.
-- **Delegated TASK work can inherit trusted scope from a clean COMMAND
-  session.** When the parent COMMAND context is still clean, its declared
-  resource scope becomes a first-class runtime root instead of forcing vague
-  tasks through string matching or unnecessary confirmation.
-- **Reviewed skill-tool drift is visible instead of silent.** Modified
-  reviewed skill tools still fail closed on restart, and the daemon now emits
-  a metadata-only audit event explaining why the tool was dropped.
+- **Security analysis runs in a separate process from the main daemon.** If
+  one is compromised, the other is not directly reachable.
+- **ML-based injection screening for untrusted content.** Tool arguments and
+  untrusted inputs now pass through a PromptGuard 2 classifier before the
+  agent can act on them.
+- **Unicode-steganography detection works in the shipped build.** The YARA
+  rule for hidden-character detection was broken in prior releases due to a
+  build issue; it now compiles and runs correctly.
+- **Operators get alerts when denied actions repeat.** When the daemon denies
+  a suspicious action (e.g., an unexpected capability request or outbound
+  connection), it now logs structured details and warns operators once the
+  pattern crosses a configurable threshold — previously these were silently
+  dropped.
+- **Tool actions are checked against what the user actually asked for.** Before
+  executing a tool, the runtime verifies the action traces back to the user's
+  request. Reads without a clear link are routed to user confirmation; writes
+  without a clear link are blocked.
+- **Subtasks can inherit their parent session's approved scope.** When a parent
+  session is still clean, delegated subtasks reuse its approved resource scope
+  instead of requiring re-confirmation for every file access.
+- **Modified skill tools are rejected with an explanation.** If a skill's tools
+  have changed since they were last reviewed, the daemon logs why the tool was
+  dropped instead of silently ignoring it.
 
 ### Changed
 
-- **Release notes are now written for operators, not just contributors.**
-  `CHANGELOG.md` and `docs/PUBLISH.md` now treat release notes as user-facing
-  explanations of what each version adds, changes, or hardens.
+- **Changelog now follows end-user-facing style guidelines.** See
+  `docs/PUBLISH.md` for the principles; the short version is: plainly state
+  how functionality has changed, not how it's built internally.
 
 ## [0.6.0] - 2026-04-03
 
