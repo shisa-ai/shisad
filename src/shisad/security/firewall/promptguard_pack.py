@@ -154,6 +154,55 @@ def build_promptguard_model_pack(
     return manifest
 
 
+def resign_promptguard_model_pack(
+    pack_dir: Path,
+    *,
+    signing_key_path: Path,
+) -> PromptGuardModelPackManifest:
+    """Re-sign an existing model pack in place.
+
+    Rebuilds ``manifest.json`` from the current file set (preserving all
+    non-file metadata from the existing manifest) and produces a fresh
+    ``manifest.json.sig``.  Use this after modifying wrapper files (README,
+    NOTICE, etc.) without rebuilding the full pack from scratch.
+    """
+    manifest_path = pack_dir / "manifest.json"
+    if not manifest_path.is_file():
+        raise ValueError("pack_manifest_missing")
+    if not signing_key_path.is_file():
+        raise ValueError("signing_key_missing")
+
+    old_manifest = _load_manifest(manifest_path)
+    if old_manifest is None:
+        raise ValueError("pack_invalid_manifest")
+
+    manifest = PromptGuardModelPackManifest(
+        schema_version=old_manifest.schema_version,
+        type=old_manifest.type,
+        name=old_manifest.name,
+        version=old_manifest.version,
+        created_at=old_manifest.created_at,
+        files=_collect_model_pack_files(pack_dir),
+        provenance=old_manifest.provenance,
+        runtime=old_manifest.runtime,
+    )
+    manifest_path.write_text(
+        json.dumps(
+            manifest.model_dump(mode="json"),
+            indent=2,
+            ensure_ascii=True,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    sig_path = pack_dir / "manifest.json.sig"
+    if sig_path.exists():
+        sig_path.unlink()
+    _sign_manifest(manifest_path=manifest_path, signing_key_path=signing_key_path)
+    return manifest
+
+
 def inspect_promptguard_model_pack(
     pack_dir: Path,
     *,

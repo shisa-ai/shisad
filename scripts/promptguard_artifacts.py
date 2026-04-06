@@ -20,6 +20,7 @@ from shisad.security.firewall.classifier import (
 from shisad.security.firewall.promptguard_pack import (
     build_promptguard_model_pack,
     inspect_promptguard_model_pack,
+    resign_promptguard_model_pack,
 )
 
 _HF_TOKEN_ENV_CANDIDATES = (
@@ -187,6 +188,26 @@ def _cmd_build_model_pack(args: argparse.Namespace) -> int:
                 "manifest_digest": manifest.digest(),
                 "name": manifest.name,
                 "version": manifest.version,
+            },
+            indent=2,
+        )
+    )
+    return 0
+
+
+def _cmd_resign_model_pack(args: argparse.Namespace) -> int:
+    manifest = resign_promptguard_model_pack(
+        pack_dir=args.pack_dir,
+        signing_key_path=args.signing_key,
+    )
+    print(
+        json.dumps(
+            {
+                "pack_dir": str(args.pack_dir),
+                "manifest_digest": manifest.digest(),
+                "name": manifest.name,
+                "version": manifest.version,
+                "file_count": len(manifest.files),
             },
             indent=2,
         )
@@ -367,6 +388,28 @@ def _add_build_model_pack_parser(
     parser.set_defaults(func=_cmd_build_model_pack)
 
 
+def _add_resign_model_pack_parser(
+    subparsers: argparse._SubParsersAction[argparse.ArgumentParser],
+) -> None:
+    parser = subparsers.add_parser(
+        "resign-model-pack",
+        help="Re-sign an existing model pack after modifying wrapper files (README, NOTICE, etc.).",
+    )
+    parser.add_argument(
+        "--pack-dir",
+        required=True,
+        type=Path,
+        help="Existing model-pack directory to re-sign in place.",
+    )
+    parser.add_argument(
+        "--signing-key",
+        required=True,
+        type=Path,
+        help="SSH private key used to sign manifest.json.",
+    )
+    parser.set_defaults(func=_cmd_resign_model_pack)
+
+
 def _add_verify_model_pack_parser(
     subparsers: argparse._SubParsersAction[argparse.ArgumentParser],
 ) -> None:
@@ -401,6 +444,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_download_parser(subparsers)
     _add_export_parser(subparsers)
     _add_build_model_pack_parser(subparsers)
+    _add_resign_model_pack_parser(subparsers)
     _add_verify_model_pack_parser(subparsers)
     return parser
 
