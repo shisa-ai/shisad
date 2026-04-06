@@ -7,7 +7,12 @@ from collections.abc import Mapping
 from typing import Any, cast
 from urllib.parse import urlparse
 
-from shisad.core.approval import ApprovalRoutingError
+from shisad.core.approval import (
+    ApprovalRoutingError,
+    ConfirmationRequirement,
+    legacy_software_confirmation_requirement,
+    merge_confirmation_requirements,
+)
 from shisad.core.events import PlanCancelled, PlanCommitted, ToolRejected
 from shisad.core.tools.names import canonical_tool_name
 from shisad.core.types import Capability, SessionId, TaintLabel, ToolName
@@ -58,6 +63,25 @@ _RESERVED_TOOL_EXECUTION_ARGUMENT_KEYS: frozenset[str] = frozenset(
 
 
 class ToolExecutionImplMixin(HandlerMixinBase):
+    def _operator_confirmation_requirement(
+        self,
+        *,
+        tool_name: ToolName,
+        tool_definition: Any,
+    ) -> ConfirmationRequirement | None:
+        tool_policy = self._policy_loader.policy.tools.get(str(tool_name))
+        requirements: list[ConfirmationRequirement] = []
+        if (
+            bool(getattr(tool_definition, "require_confirmation", False))
+            or bool(getattr(tool_policy, "require_confirmation", False))
+            or bool(self._policy_loader.policy.default_require_confirmation)
+        ):
+            requirements.append(legacy_software_confirmation_requirement())
+        explicit = getattr(tool_policy, "confirmation", None)
+        if explicit is not None:
+            requirements.append(explicit)
+        return merge_confirmation_requirements(requirements)
+
     async def do_tool_execute(self, params: Mapping[str, Any]) -> dict[str, Any]:
         sid = SessionId(str(params.get("session_id", "")))
         if not sid:
@@ -303,6 +327,10 @@ class ToolExecutionImplMixin(HandlerMixinBase):
             cp_eval.trace_result.reason_code == "trace:stage2_upgrade_required"
         )
         trace_only_stage2_block = stage2_upgrade_required and trace_only_confirmation_block
+        operator_confirmation_requirement = self._operator_confirmation_requirement(
+            tool_name=tool_name,
+            tool_definition=tool_def,
+        )
         if trace_only_stage2_block and not bool(
             self._policy_loader.policy.control_plane.trace.allow_amendment
         ):
@@ -324,16 +352,31 @@ class ToolExecutionImplMixin(HandlerMixinBase):
         if (
             trace_only_confirmation_block
             or cp_eval.decision == ControlDecision.REQUIRE_CONFIRMATION
+            or operator_confirmation_requirement is not None
         ):
             reason_codes = list(cp_eval.reason_codes)
             trace_reason = cp_eval.trace_result.reason_code
             if trace_only_confirmation_block and trace_reason not in reason_codes:
                 reason_codes.append(trace_reason)
+            if (
+                operator_confirmation_requirement is not None
+                and "policy:confirmation_required" not in reason_codes
+            ):
+                reason_codes.append("policy:confirmation_required")
             reason = ",".join(reason_codes) or "control_plane_confirmation_required"
             effective_caps = self._lockdown_manager.apply_capability_restrictions(
                 sid,
                 session.capabilities,
             )
+            confirmation_requirement = operator_confirmation_requirement
+            if (
+                trace_only_confirmation_block
+                or cp_eval.decision == ControlDecision.REQUIRE_CONFIRMATION
+            ):
+                requirements = [legacy_software_confirmation_requirement()]
+                if operator_confirmation_requirement is not None:
+                    requirements.append(operator_confirmation_requirement)
+                confirmation_requirement = merge_confirmation_requirements(requirements)
             try:
                 pending = self._queue_pending_action(
                     session_id=sid,
@@ -346,6 +389,7 @@ class ToolExecutionImplMixin(HandlerMixinBase):
                     preflight_action=cp_eval.action,
                     merged_policy=merged_policy,
                     taint_labels=[],
+                    confirmation_requirement=confirmation_requirement,
                 )
             except ApprovalRoutingError as exc:
                 await self._event_bus.publish(

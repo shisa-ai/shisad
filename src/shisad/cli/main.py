@@ -78,6 +78,10 @@ from shisad.core.api.schema import (
     TodoGetResult,
     TodoListResult,
     TodoVerifyResult,
+    TwoFactorListResult,
+    TwoFactorRegisterBeginResult,
+    TwoFactorRegisterConfirmResult,
+    TwoFactorRevokeResult,
     WebFetchResult,
     WebSearchResult,
 )
@@ -1298,7 +1302,21 @@ def _resolve_pending_decision_nonce(
 @click.argument("confirmation_id")
 @click.option("--nonce", default="", help="Decision nonce for replay-safe confirmation")
 @click.option("--reason", default="", help="Operator note")
-def action_confirm(confirmation_id: str, nonce: str, reason: str) -> None:
+@click.option("--approval-method", default="", help="Explicit approval method override.")
+@click.option("--principal-id", default="", help="Explicit approver principal id.")
+@click.option("--credential-id", default="", help="Explicit credential id.")
+@click.option("--totp-code", default="", help="TOTP code for reauthenticated approvals.")
+@click.option("--recovery-code", default="", help="Single-use recovery code for L1 approvals.")
+def action_confirm(
+    confirmation_id: str,
+    nonce: str,
+    reason: str,
+    approval_method: str,
+    principal_id: str,
+    credential_id: str,
+    totp_code: str,
+    recovery_code: str,
+) -> None:
     """Approve one pending confirmation."""
     config = _get_config()
     decision_nonce = nonce.strip()
@@ -1312,14 +1330,32 @@ def action_confirm(confirmation_id: str, nonce: str, reason: str) -> None:
             "Decision nonce not found for confirmation_id; run 'shisad action pending' and retry "
             "with --nonce."
         )
+    if totp_code.strip() and recovery_code.strip():
+        raise click.ClickException("Use either --totp-code or --recovery-code, not both.")
+    payload: dict[str, object] = {
+        "confirmation_id": confirmation_id,
+        "decision_nonce": decision_nonce,
+        "reason": reason,
+    }
+    method_value = approval_method.strip()
+    principal_value = principal_id.strip()
+    credential_value = credential_id.strip()
+    if principal_value:
+        payload["principal_id"] = principal_value
+    if credential_value:
+        payload["credential_id"] = credential_value
+    if totp_code.strip():
+        payload["approval_method"] = method_value or "totp"
+        payload["proof"] = {"totp_code": totp_code.strip()}
+    elif recovery_code.strip():
+        payload["approval_method"] = method_value or "recovery_code"
+        payload["proof"] = {"recovery_code": recovery_code.strip()}
+    elif method_value:
+        payload["approval_method"] = method_value
     result = rpc_call(
         config,
         "action.confirm",
-        {
-            "confirmation_id": confirmation_id,
-            "decision_nonce": decision_nonce,
-            "reason": reason,
-        },
+        payload,
         response_model=ActionConfirmResult,
     )
     click.echo(_dump_model(result))
@@ -1354,6 +1390,116 @@ def action_reject(confirmation_id: str, nonce: str, reason: str) -> None:
         response_model=ActionRejectResult,
     )
     click.echo(_dump_model(result))
+
+
+@cli.group("2fa")
+def two_factor() -> None:
+    """Manage operator approval factors."""
+
+
+@two_factor.command("register")
+@click.option(
+    "--method",
+    default="totp",
+    type=click.Choice(["totp"]),
+    show_default=True,
+    help="Approval method to enroll.",
+)
+@click.option("--user", "user_id", required=True, help="Target user ID.")
+@click.option("--name", default="", help="Audit principal label (defaults to local username).")
+def two_factor_register(method: str, user_id: str, name: str) -> None:
+    """Enroll a new approval factor and verify it before activation."""
+    config = _get_config()
+    begin = rpc_call(
+        config,
+        "2fa.register_begin",
+        {
+            "method": method,
+            "user_id": user_id,
+            "name": name.strip() or None,
+        },
+        response_model=TwoFactorRegisterBeginResult,
+    )
+    if not begin.started:
+        raise click.ClickException(begin.reason or "2fa enrollment could not be started")
+    click.echo(f"User: {begin.user_id}")
+    click.echo(f"Method: {begin.method}")
+    click.echo(f"Principal: {begin.principal_id}")
+    click.echo(f"Credential: {begin.credential_id}")
+    click.echo(f"Secret: {begin.secret}")
+    click.echo(f"otpauth URI: {begin.otpauth_uri}")
+    if begin.expires_at:
+        click.echo(f"Enrollment expires at: {begin.expires_at}")
+    verify_code = click.prompt("Verification code").strip()
+    confirm = rpc_call(
+        config,
+        "2fa.register_confirm",
+        {
+            "enrollment_id": begin.enrollment_id,
+            "verify_code": verify_code,
+        },
+        response_model=TwoFactorRegisterConfirmResult,
+    )
+    if not confirm.registered:
+        raise click.ClickException(confirm.reason or "2fa enrollment verification failed")
+    click.echo(f"Registered {confirm.method} factor {confirm.credential_id} for {confirm.user_id}")
+    if confirm.recovery_codes:
+        click.echo("Recovery codes:")
+        for code in confirm.recovery_codes:
+            click.echo(code)
+
+
+@two_factor.command("list")
+@click.option("--user", "user_id", default="", help="Filter by user ID.")
+@click.option("--method", default="", help="Filter by method.")
+def two_factor_list(user_id: str, method: str) -> None:
+    """List enrolled approval factors."""
+    config = _get_config()
+    result = rpc_call(
+        config,
+        "2fa.list",
+        {
+            "user_id": user_id or None,
+            "method": method or None,
+        },
+        response_model=TwoFactorListResult,
+    )
+    if not result.entries:
+        click.echo("No registered 2FA factors")
+        return
+    for entry in result.entries:
+        click.echo(
+            f"{entry.user_id} method={entry.method} principal={entry.principal_id} "
+            f"credential={entry.credential_id} recovery_codes={entry.recovery_codes_remaining}"
+        )
+
+
+@two_factor.command("revoke")
+@click.option(
+    "--method",
+    default="totp",
+    type=click.Choice(["totp"]),
+    show_default=True,
+    help="Approval method to revoke.",
+)
+@click.option("--user", "user_id", required=True, help="Target user ID.")
+@click.option("--credential-id", default="", help="Optional credential ID to revoke.")
+def two_factor_revoke(method: str, user_id: str, credential_id: str) -> None:
+    """Revoke one or more enrolled approval factors."""
+    config = _get_config()
+    result = rpc_call(
+        config,
+        "2fa.revoke",
+        {
+            "method": method,
+            "user_id": user_id,
+            "credential_id": credential_id or None,
+        },
+        response_model=TwoFactorRevokeResult,
+    )
+    if not result.revoked:
+        raise click.ClickException(result.reason or "matching 2FA factor not found")
+    click.echo(f"Revoked {result.removed} factor(s) for {user_id}")
 
 
 @cli.group()

@@ -1594,3 +1594,132 @@ def test_chat_command_surfaces_non_textual_import_failures(
     result = runner.invoke(cli_main.cli, ["chat"])
     assert result.exit_code == 1
     assert "chat TUI import failed" in result.output
+
+
+def test_action_confirm_includes_totp_proof_payload(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _config(tmp_path)
+    monkeypatch.setattr(cli_main, "_get_config", lambda: config)
+    calls: list[tuple[str, dict[str, object] | None]] = []
+
+    def _fake_rpc_call(
+        effective_config: DaemonConfig,
+        method: str,
+        params: dict[str, object] | None = None,
+        *,
+        response_model: type[object] | None = None,
+    ) -> object:
+        assert effective_config is config
+        calls.append((method, params))
+        if method == "action.pending":
+            payload = {
+                "actions": [
+                    {
+                        "confirmation_id": "c-1",
+                        "decision_nonce": "n-1",
+                        "status": "pending",
+                        "tool_name": "shell.exec",
+                        "reason": "manual",
+                    }
+                ],
+                "count": 1,
+            }
+        else:
+            assert method == "action.confirm"
+            payload = {
+                "confirmed": True,
+                "confirmation_id": "c-1",
+                "status": "approved",
+                "approval_level": "reauthenticated",
+                "approval_method": "totp",
+            }
+        if response_model is None:
+            return payload
+        return response_model.model_validate(payload)  # type: ignore[attr-defined]
+
+    monkeypatch.setattr(cli_main, "rpc_call", _fake_rpc_call)
+    runner = CliRunner()
+
+    result = runner.invoke(cli_main.cli, ["action", "confirm", "c-1", "--totp-code", "123456"])
+
+    assert result.exit_code == 0, result.output
+    assert calls[0][0] == "action.pending"
+    assert calls[1] == (
+        "action.confirm",
+        {
+            "confirmation_id": "c-1",
+            "decision_nonce": "n-1",
+            "reason": "",
+            "approval_method": "totp",
+            "proof": {"totp_code": "123456"},
+        },
+    )
+
+
+def test_two_factor_register_prompts_for_verification_and_confirms(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _config(tmp_path)
+    monkeypatch.setattr(cli_main, "_get_config", lambda: config)
+    calls: list[tuple[str, dict[str, object] | None]] = []
+
+    def _fake_rpc_call(
+        effective_config: DaemonConfig,
+        method: str,
+        params: dict[str, object] | None = None,
+        *,
+        response_model: type[object] | None = None,
+    ) -> object:
+        assert effective_config is config
+        calls.append((method, params))
+        if method == "2fa.register_begin":
+            payload = {
+                "started": True,
+                "enrollment_id": "enroll-1",
+                "user_id": "alice",
+                "method": "totp",
+                "principal_id": "ops-laptop",
+                "credential_id": "totp-1",
+                "secret": "SECRETBASE32",
+                "otpauth_uri": "otpauth://totp/shisad:alice?secret=SECRETBASE32",
+                "expires_at": "2026-04-06T12:10:00Z",
+            }
+        else:
+            assert method == "2fa.register_confirm"
+            payload = {
+                "registered": True,
+                "user_id": "alice",
+                "method": "totp",
+                "principal_id": "ops-laptop",
+                "credential_id": "totp-1",
+                "recovery_codes": ["RCODE-1", "RCODE-2"],
+            }
+        if response_model is None:
+            return payload
+        return response_model.model_validate(payload)  # type: ignore[attr-defined]
+
+    monkeypatch.setattr(cli_main, "rpc_call", _fake_rpc_call)
+    runner = CliRunner()
+
+    result = runner.invoke(
+        cli_main.cli,
+        ["2fa", "register", "--method", "totp", "--user", "alice", "--name", "ops-laptop"],
+        input="123456\n",
+    )
+
+    assert result.exit_code == 0, result.output
+    assert calls == [
+        (
+            "2fa.register_begin",
+            {"method": "totp", "user_id": "alice", "name": "ops-laptop"},
+        ),
+        (
+            "2fa.register_confirm",
+            {"enrollment_id": "enroll-1", "verify_code": "123456"},
+        ),
+    ]
+    assert "SECRETBASE32" in result.output
+    assert "RCODE-1" in result.output

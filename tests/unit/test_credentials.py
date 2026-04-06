@@ -2,15 +2,19 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 import pytest
 
 from shisad.core.tools.registry import ToolRegistry
 from shisad.core.tools.schema import ToolDefinition, ToolParameter
 from shisad.core.types import Capability, PEPDecisionKind, ToolName
 from shisad.security.credentials import (
+    ApprovalFactorRecord,
     CredentialConfig,
     CredentialRef,
     InMemoryCredentialStore,
+    RecoveryCodeRecord,
     generate_placeholder,
     is_placeholder,
 )
@@ -222,3 +226,57 @@ class TestPepCredentialRefValidation:
         )
         assert decision.kind == PEPDecisionKind.REJECT
         assert "credential_ref" in decision.reason
+
+
+class TestApprovalFactorStore:
+    def test_approval_factor_store_persists_and_round_trips(self, tmp_path) -> None:
+        store_path = tmp_path / "credentials.json"
+        store = InMemoryCredentialStore()
+        store.set_approval_store_path(store_path)
+        factor = ApprovalFactorRecord(
+            credential_id="totp-1",
+            user_id="alice",
+            method="totp",
+            principal_id="ops-laptop",
+            secret_b32="GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ",
+            created_at=datetime(2026, 4, 6, 12, 0, 0, tzinfo=UTC),
+            recovery_codes=[RecoveryCodeRecord(code_hash="recovery-hash")],
+        )
+
+        store.register_approval_factor(factor)
+
+        reloaded = InMemoryCredentialStore()
+        reloaded.set_approval_store_path(store_path)
+        entries = reloaded.list_approval_factors(user_id="alice", method="totp")
+
+        assert len(entries) == 1
+        assert entries[0].credential_id == "totp-1"
+        assert entries[0].principal_id == "ops-laptop"
+        assert entries[0].recovery_codes[0].code_hash == "recovery-hash"
+
+    def test_approval_factor_revoke_filters_by_user_and_method(self, tmp_path) -> None:
+        store = InMemoryCredentialStore()
+        store.set_approval_store_path(tmp_path / "credentials.json")
+        store.register_approval_factor(
+            ApprovalFactorRecord(
+                credential_id="totp-a",
+                user_id="alice",
+                method="totp",
+                principal_id="alice-device",
+                secret_b32="GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ",
+            )
+        )
+        store.register_approval_factor(
+            ApprovalFactorRecord(
+                credential_id="totp-b",
+                user_id="bob",
+                method="totp",
+                principal_id="bob-device",
+                secret_b32="GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ",
+            )
+        )
+
+        removed = store.revoke_approval_factor(user_id="alice", method="totp")
+
+        assert removed == 1
+        assert [item.credential_id for item in store.list_approval_factors()] == ["totp-b"]

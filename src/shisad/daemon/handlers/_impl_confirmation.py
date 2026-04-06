@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import getpass
 import json
 import logging
+import uuid
 from collections.abc import Mapping
-from datetime import UTC, datetime
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -13,8 +16,13 @@ from shisad.core.approval import (
     ConfirmationEvidence,
     ConfirmationRequirement,
     ConfirmationVerificationError,
+    TOTPBackend,
     approval_audit_fields,
     confirmation_evidence_satisfies_requirement,
+    generate_recovery_codes,
+    generate_totp_secret,
+    hash_recovery_code,
+    match_totp_window,
 )
 from shisad.core.events import PlanAmended, ToolRejected
 from shisad.core.evidence import ArtifactEndorsementState
@@ -31,6 +39,7 @@ from shisad.daemon.handlers._pending_approval import (
 )
 from shisad.security.control_plane.schema import RiskTier, build_action
 from shisad.security.control_plane.sidecar import ControlPlaneRpcError
+from shisad.security.credentials import ApprovalFactorRecord, RecoveryCodeRecord
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +51,18 @@ def _confirmation_control_plane_reason(exc: ControlPlaneRpcError) -> str:
     if exc.reason_code == "rpc.permission_denied":
         return "control_plane_permission_denied"
     return "control_plane_rejected"
+
+
+@dataclass(slots=True)
+class PendingTwoFactorEnrollment:
+    enrollment_id: str
+    user_id: str
+    method: str
+    principal_id: str
+    credential_id: str
+    secret_b32: str
+    created_at: datetime
+    expires_at: datetime
 
 
 class ConfirmationImplMixin(HandlerMixinBase):
@@ -107,6 +128,157 @@ class ConfirmationImplMixin(HandlerMixinBase):
             for user in self._confirmation_analytics.users()
         ]
         return {"metrics": rows, "count": len(rows)}
+
+    def _totp_backend(self) -> TOTPBackend:
+        backend = self._confirmation_backend_registry.get_backend("totp.default")
+        if not isinstance(backend, TOTPBackend):
+            raise RuntimeError("totp backend is unavailable")
+        return backend
+
+    def _prune_two_factor_enrollments(self, *, now: datetime | None = None) -> None:
+        current = now or datetime.now(UTC)
+        pending = getattr(self, "_pending_two_factor_enrollments", {})
+        expired = [
+            enrollment_id
+            for enrollment_id, enrollment in pending.items()
+            if isinstance(enrollment, PendingTwoFactorEnrollment)
+            and enrollment.expires_at <= current
+        ]
+        for enrollment_id in expired:
+            pending.pop(enrollment_id, None)
+
+    async def do_two_factor_register_begin(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        self._prune_two_factor_enrollments()
+        method = str(params.get("method") or "totp").strip().lower()
+        if method != "totp":
+            return {"started": False, "reason": "unsupported_2fa_method"}
+        user_id = str(params.get("user_id") or "").strip()
+        if not user_id:
+            raise ValueError("user_id is required")
+        requested_name = str(params.get("name") or "").strip()
+        principal_id = requested_name or getpass.getuser().strip() or user_id
+        now = datetime.now(UTC)
+        enrollment_id = uuid.uuid4().hex
+        credential_id = f"totp.{uuid.uuid4().hex[:12]}"
+        secret_b32 = generate_totp_secret()
+        expires_at = now + timedelta(minutes=10)
+        enrollment = PendingTwoFactorEnrollment(
+            enrollment_id=enrollment_id,
+            user_id=user_id,
+            method=method,
+            principal_id=principal_id,
+            credential_id=credential_id,
+            secret_b32=secret_b32,
+            created_at=now,
+            expires_at=expires_at,
+        )
+        self._pending_two_factor_enrollments[enrollment_id] = enrollment
+        backend = self._totp_backend()
+        return {
+            "started": True,
+            "enrollment_id": enrollment_id,
+            "user_id": user_id,
+            "method": method,
+            "principal_id": principal_id,
+            "credential_id": credential_id,
+            "secret": secret_b32,
+            "otpauth_uri": backend.enrollment_uri(
+                user_id=user_id,
+                principal_id=principal_id,
+                secret_b32=secret_b32,
+            ),
+            "expires_at": expires_at.isoformat().replace("+00:00", "Z"),
+        }
+
+    async def do_two_factor_register_confirm(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        now = datetime.now(UTC)
+        self._prune_two_factor_enrollments(now=now)
+        enrollment_id = str(params.get("enrollment_id") or "").strip()
+        if not enrollment_id:
+            raise ValueError("enrollment_id is required")
+        enrollment = self._pending_two_factor_enrollments.get(enrollment_id)
+        if not isinstance(enrollment, PendingTwoFactorEnrollment):
+            return {"registered": False, "reason": "enrollment_not_found"}
+        verify_code = str(params.get("verify_code") or "").strip()
+        if not verify_code:
+            raise ValueError("verify_code is required")
+        matched = match_totp_window(
+            secret_b32=enrollment.secret_b32,
+            code=verify_code,
+            now=now,
+        )
+        if matched is None:
+            return {"registered": False, "reason": "invalid_totp_code"}
+
+        recovery_codes = generate_recovery_codes()
+        factor = ApprovalFactorRecord(
+            credential_id=enrollment.credential_id,
+            user_id=enrollment.user_id,
+            method=enrollment.method,
+            principal_id=enrollment.principal_id,
+            secret_b32=enrollment.secret_b32,
+            created_at=enrollment.created_at,
+            recovery_codes=[
+                RecoveryCodeRecord(code_hash=hash_recovery_code(code))
+                for code in recovery_codes
+            ],
+        )
+        self._credential_store.register_approval_factor(factor)
+        self._pending_two_factor_enrollments.pop(enrollment_id, None)
+        return {
+            "registered": True,
+            "user_id": enrollment.user_id,
+            "method": enrollment.method,
+            "principal_id": enrollment.principal_id,
+            "credential_id": enrollment.credential_id,
+            "recovery_codes": recovery_codes,
+        }
+
+    async def do_two_factor_list(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        user_id = str(params.get("user_id") or "").strip() or None
+        method = str(params.get("method") or "").strip().lower() or None
+        entries = self._credential_store.list_approval_factors(user_id=user_id, method=method)
+        rows = [
+            {
+                "user_id": item.user_id,
+                "method": item.method,
+                "principal_id": item.principal_id,
+                "credential_id": item.credential_id,
+                "created_at": item.created_at.isoformat().replace("+00:00", "Z"),
+                "last_verified_at": (
+                    item.last_verified_at.isoformat().replace("+00:00", "Z")
+                    if item.last_verified_at is not None
+                    else None
+                ),
+                "last_used_at": (
+                    item.last_used_at.isoformat().replace("+00:00", "Z")
+                    if item.last_used_at is not None
+                    else None
+                ),
+                "recovery_codes_remaining": sum(
+                    1 for code in item.recovery_codes if code.consumed_at is None
+                ),
+            }
+            for item in entries
+        ]
+        return {"entries": rows, "count": len(rows)}
+
+    async def do_two_factor_revoke(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        user_id = str(params.get("user_id") or "").strip()
+        if not user_id:
+            raise ValueError("user_id is required")
+        method = str(params.get("method") or "totp").strip().lower() or "totp"
+        credential_id = str(params.get("credential_id") or "").strip() or None
+        removed = self._credential_store.revoke_approval_factor(
+            user_id=user_id,
+            method=method,
+            credential_id=credential_id,
+        )
+        return {
+            "revoked": removed > 0,
+            "removed": removed,
+            "reason": "" if removed > 0 else "not_found",
+        }
 
     async def do_action_pending(self, params: Mapping[str, Any]) -> dict[str, Any]:
         confirmation_filter = str(params.get("confirmation_id") or "").strip()

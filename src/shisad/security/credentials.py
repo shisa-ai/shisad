@@ -12,7 +12,11 @@ are injected only at the egress proxy boundary for pre-approved hosts.
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
+import os
+from datetime import UTC, datetime
+from pathlib import Path
 from typing import Protocol
 
 from pydantic import BaseModel, Field
@@ -54,6 +58,29 @@ class CredentialEntry(BaseModel):
     config: CredentialConfig
 
 
+class RecoveryCodeRecord(BaseModel):
+    """Single recovery code entry for an approval factor."""
+
+    code_hash: str
+    consumed_at: datetime | None = None
+    consumed_confirmation_id: str = ""
+
+
+class ApprovalFactorRecord(BaseModel):
+    """Durable approval-factor state stored alongside broker secrets."""
+
+    credential_id: str
+    user_id: str
+    method: str
+    principal_id: str
+    secret_b32: str
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    last_verified_at: datetime | None = None
+    last_used_at: datetime | None = None
+    used_time_steps: dict[str, str] = Field(default_factory=dict)
+    recovery_codes: list[RecoveryCodeRecord] = Field(default_factory=list)
+
+
 class CredentialStore(Protocol):
     """Protocol for credential storage backends."""
 
@@ -75,6 +102,45 @@ class CredentialStore(Protocol):
 
     def allowed_hosts(self, ref: CredentialRef) -> list[str]:
         """Get the allowed hosts for a credential."""
+        ...
+
+
+class ApprovalFactorStore(Protocol):
+    """Protocol for durable approval-factor storage."""
+
+    def set_approval_store_path(self, path: Path) -> None:
+        """Bind the store to a durable approval-factor path and load state."""
+        ...
+
+    def register_approval_factor(self, factor: ApprovalFactorRecord) -> None:
+        """Persist a newly enrolled approval factor."""
+        ...
+
+    def list_approval_factors(
+        self,
+        *,
+        user_id: str | None = None,
+        method: str | None = None,
+    ) -> list[ApprovalFactorRecord]:
+        """List persisted approval factors."""
+        ...
+
+    def get_approval_factor(self, credential_id: str) -> ApprovalFactorRecord | None:
+        """Fetch one approval factor by credential id."""
+        ...
+
+    def update_approval_factor(self, factor: ApprovalFactorRecord) -> None:
+        """Persist an updated approval factor record."""
+        ...
+
+    def revoke_approval_factor(
+        self,
+        *,
+        user_id: str | None = None,
+        method: str | None = None,
+        credential_id: str | None = None,
+    ) -> int:
+        """Delete matching approval factors and return the removed count."""
         ...
 
 
@@ -104,6 +170,8 @@ class InMemoryCredentialStore:
     def __init__(self) -> None:
         self._credentials: dict[CredentialRef, CredentialEntry] = {}
         self._placeholders: dict[str, CredentialRef] = {}  # placeholder → ref
+        self._approval_store_path: Path | None = None
+        self._approval_factors: dict[str, ApprovalFactorRecord] = {}
 
     def register(self, ref: CredentialRef, value: str, config: CredentialConfig) -> None:
         """Register a credential with its configuration."""
@@ -162,7 +230,111 @@ class InMemoryCredentialStore:
 
         return entry.value
 
+    def set_approval_store_path(self, path: Path) -> None:
+        """Bind durable approval-factor storage to a JSON file."""
+        self._approval_store_path = Path(path)
+        self._load_approval_factors()
+
+    def register_approval_factor(self, factor: ApprovalFactorRecord) -> None:
+        """Persist a newly enrolled approval factor."""
+        self._approval_factors[factor.credential_id] = factor.model_copy(deep=True)
+        self._persist_approval_factors()
+
+    def list_approval_factors(
+        self,
+        *,
+        user_id: str | None = None,
+        method: str | None = None,
+    ) -> list[ApprovalFactorRecord]:
+        """List approval factors, optionally filtered by user and method."""
+        rows = [
+            factor.model_copy(deep=True)
+            for factor in self._approval_factors.values()
+            if (user_id is None or factor.user_id == user_id)
+            and (method is None or factor.method == method)
+        ]
+        rows.sort(key=lambda item: (item.created_at, item.user_id, item.method, item.credential_id))
+        return rows
+
+    def get_approval_factor(self, credential_id: str) -> ApprovalFactorRecord | None:
+        """Fetch one approval factor by credential id."""
+        factor = self._approval_factors.get(str(credential_id))
+        if factor is None:
+            return None
+        return factor.model_copy(deep=True)
+
+    def update_approval_factor(self, factor: ApprovalFactorRecord) -> None:
+        """Persist an updated approval factor record."""
+        if factor.credential_id not in self._approval_factors:
+            raise KeyError(f"Unknown approval factor: {factor.credential_id}")
+        self._approval_factors[factor.credential_id] = factor.model_copy(deep=True)
+        self._persist_approval_factors()
+
+    def revoke_approval_factor(
+        self,
+        *,
+        user_id: str | None = None,
+        method: str | None = None,
+        credential_id: str | None = None,
+    ) -> int:
+        """Delete matching approval factors and return the removed count."""
+        removed = 0
+        candidates = [
+            factor_id
+            for factor_id, factor in self._approval_factors.items()
+            if (credential_id is None or factor.credential_id == credential_id)
+            and (user_id is None or factor.user_id == user_id)
+            and (method is None or factor.method == method)
+        ]
+        for factor_id in candidates:
+            removed += 1
+            self._approval_factors.pop(factor_id, None)
+        if removed:
+            self._persist_approval_factors()
+        return removed
+
     @staticmethod
     def _host_allowed(host: str, allowed: list[str]) -> bool:
         """Check if a host matches any pattern in the allowlist."""
         return any(host_matches(host, pattern) for pattern in allowed)
+
+    def _load_approval_factors(self) -> None:
+        path = self._approval_store_path
+        if path is None or not path.exists():
+            self._approval_factors = {}
+            return
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        factors = payload.get("approval_factors", [])
+        self._approval_factors = {
+            factor.credential_id: factor
+            for factor in (
+                ApprovalFactorRecord.model_validate(item)
+                for item in factors
+                if isinstance(item, dict)
+            )
+        }
+
+    def _persist_approval_factors(self) -> None:
+        path = self._approval_store_path
+        if path is None:
+            return
+        path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            path.parent.chmod(0o700)
+        except OSError:
+            logger.debug("Unable to chmod approval-factor store directory: %s", path.parent)
+        payload = {
+            "schema_version": "shisad.approval_factor_store.v1",
+            "approval_factors": [
+                factor.model_dump(mode="json")
+                for factor in self.list_approval_factors()
+            ],
+        }
+        tmp_path = path.with_suffix(f"{path.suffix}.tmp")
+        tmp_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        os.chmod(tmp_path, 0o600)
+        os.replace(tmp_path, path)
+        try:
+            os.chmod(path, 0o600)
+        except OSError:
+            logger.debug("Unable to chmod approval-factor store file: %s", path)

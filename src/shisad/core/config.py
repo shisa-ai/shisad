@@ -570,6 +570,23 @@ class SecurityConfig(BaseSettings):
     )
 
 
+def effective_credential_store_path(*, data_dir: Path) -> Path:
+    """Resolve the credential-store path for a daemon instance.
+
+    The global security setting is honored when explicitly configured. When the
+    security config is still at its default value, prefer the daemon's active
+    data dir so local test and review instances do not write into the user's
+    shared home-directory path.
+    """
+
+    security = SecurityConfig()
+    configured = security.credential_store_path
+    default_path = SecurityConfig.model_fields["credential_store_path"].default
+    if configured == default_path:
+        return data_dir / "credentials.enc"
+    return configured
+
+
 class ModelConfig(BaseSettings):
     """Model provider configuration."""
 

@@ -10,6 +10,14 @@ from shisad.core.api.schema import (
     ActionRejectResult,
     ConfirmationMetricsParams,
     ConfirmationMetricsResult,
+    TwoFactorListParams,
+    TwoFactorListResult,
+    TwoFactorRegisterBeginParams,
+    TwoFactorRegisterBeginResult,
+    TwoFactorRegisterConfirmParams,
+    TwoFactorRegisterConfirmResult,
+    TwoFactorRevokeParams,
+    TwoFactorRevokeResult,
 )
 from shisad.daemon.context import RequestContext
 from shisad.daemon.handlers._helpers import build_params_payload
@@ -72,3 +80,55 @@ class ConfirmationHandlers:
         return ConfirmationMetricsResult.model_validate(
             await self._impl.do_confirmation_metrics(payload)
         )
+
+    async def handle_two_factor_register_begin(
+        self,
+        params: TwoFactorRegisterBeginParams,
+        ctx: RequestContext,
+    ) -> TwoFactorRegisterBeginResult:
+        payload = build_params_payload(
+            params,
+            ctx,
+            internal_ingress_marker=self._internal_ingress_marker,
+        )
+        return TwoFactorRegisterBeginResult.model_validate(
+            await self._impl.do_two_factor_register_begin(payload)
+        )
+
+    async def handle_two_factor_register_confirm(
+        self,
+        params: TwoFactorRegisterConfirmParams,
+        ctx: RequestContext,
+    ) -> TwoFactorRegisterConfirmResult:
+        payload = build_params_payload(
+            params,
+            ctx,
+            internal_ingress_marker=self._internal_ingress_marker,
+        )
+        return TwoFactorRegisterConfirmResult.model_validate(
+            await self._impl.do_two_factor_register_confirm(payload)
+        )
+
+    async def handle_two_factor_list(
+        self,
+        params: TwoFactorListParams,
+        ctx: RequestContext,
+    ) -> TwoFactorListResult:
+        payload = build_params_payload(
+            params,
+            ctx,
+            internal_ingress_marker=self._internal_ingress_marker,
+        )
+        return TwoFactorListResult.model_validate(await self._impl.do_two_factor_list(payload))
+
+    async def handle_two_factor_revoke(
+        self,
+        params: TwoFactorRevokeParams,
+        ctx: RequestContext,
+    ) -> TwoFactorRevokeResult:
+        payload = build_params_payload(
+            params,
+            ctx,
+            internal_ingress_marker=self._internal_ingress_marker,
+        )
+        return TwoFactorRevokeResult.model_validate(await self._impl.do_two_factor_revoke(payload))

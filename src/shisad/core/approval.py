@@ -4,19 +4,24 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import hmac
 import json
 import math
 import os
+import secrets
 from collections import defaultdict
+from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
+from pathlib import Path
 from typing import Any, Literal, Protocol
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 from pydantic import BaseModel, Field, model_validator
 
 from shisad.core.tools.schema import ToolDefinition
+from shisad.security.credentials import ApprovalFactorRecord, ApprovalFactorStore
 
 
 class ConfirmationLevel(StrEnum):
@@ -375,6 +380,121 @@ def approval_envelope_hash(envelope: ApprovalEnvelope | dict[str, Any]) -> str:
     return canonical_sha256(payload)
 
 
+def generate_totp_secret(*, num_bytes: int = 20) -> str:
+    raw = secrets.token_bytes(max(20, int(num_bytes)))
+    return base64.b32encode(raw).decode("ascii").rstrip("=")
+
+
+def build_totp_otpauth_uri(
+    *,
+    issuer: str,
+    user_id: str,
+    secret_b32: str,
+    principal_id: str,
+    digits: int = 6,
+    period_seconds: int = 30,
+) -> str:
+    label = quote(f"{issuer}:{user_id}")
+    issuer_value = quote(issuer)
+    principal_value = quote(principal_id)
+    return (
+        f"otpauth://totp/{label}"
+        f"?secret={secret_b32}"
+        f"&issuer={issuer_value}"
+        f"&algorithm=SHA1"
+        f"&digits={digits}"
+        f"&period={period_seconds}"
+        f"&principal={principal_value}"
+    )
+
+
+def _normalize_recovery_code(value: str) -> str:
+    return "".join(ch for ch in value.strip().upper() if ch.isalnum())
+
+
+def hash_recovery_code(value: str) -> str:
+    normalized = _normalize_recovery_code(value)
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
+
+def generate_recovery_codes(*, count: int = 8) -> list[str]:
+    alphabet = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ"
+    rows: list[str] = []
+    for _ in range(max(1, int(count))):
+        token = "".join(secrets.choice(alphabet) for _unused in range(8))
+        rows.append(f"{token[:4]}-{token[4:]}")
+    return rows
+
+
+def _totp_counter(*, now: datetime, period_seconds: int) -> int:
+    return int(now.astimezone(UTC).timestamp() // period_seconds)
+
+
+def generate_totp_code(
+    secret_b32: str,
+    *,
+    now: datetime | None = None,
+    digits: int = 6,
+    period_seconds: int = 30,
+) -> str:
+    current = now or datetime.now(UTC)
+    counter = _totp_counter(now=current, period_seconds=period_seconds)
+    secret = base64.b32decode(secret_b32.upper() + "=" * ((8 - len(secret_b32) % 8) % 8))
+    mac = hmac.new(secret, counter.to_bytes(8, byteorder="big"), hashlib.sha1).digest()
+    offset = mac[-1] & 0x0F
+    truncated = (
+        ((mac[offset] & 0x7F) << 24)
+        | (mac[offset + 1] << 16)
+        | (mac[offset + 2] << 8)
+        | mac[offset + 3]
+    )
+    code = truncated % (10**digits)
+    return f"{code:0{digits}d}"
+
+
+def _match_totp_window(
+    *,
+    secret_b32: str,
+    code: str,
+    now: datetime,
+    digits: int = 6,
+    period_seconds: int = 30,
+    window: int = 1,
+) -> int | None:
+    expected = str(code).strip()
+    base_counter = _totp_counter(now=now, period_seconds=period_seconds)
+    for offset in range(-window, window + 1):
+        candidate_time = now + timedelta(seconds=offset * period_seconds)
+        candidate_code = generate_totp_code(
+            secret_b32,
+            now=candidate_time,
+            digits=digits,
+            period_seconds=period_seconds,
+        )
+        if hmac.compare_digest(candidate_code, expected):
+            return base_counter + offset
+    return None
+
+
+def match_totp_window(
+    *,
+    secret_b32: str,
+    code: str,
+    now: datetime,
+    digits: int = 6,
+    period_seconds: int = 30,
+    window: int = 1,
+) -> int | None:
+    return _match_totp_window(
+        secret_b32=secret_b32,
+        code=code,
+        now=now,
+        digits=digits,
+        period_seconds=period_seconds,
+        window=window,
+    )
+
+
 class ConfirmationVerificationError(RuntimeError):
     def __init__(self, reason: str) -> None:
         super().__init__(reason)
@@ -385,6 +505,26 @@ class ApprovalRoutingError(RuntimeError):
     def __init__(self, reason: str) -> None:
         super().__init__(reason)
         self.reason = reason
+
+
+def _approval_binding_inputs(pending_action: Any) -> tuple[str, str]:
+    envelope_hash = str(getattr(pending_action, "approval_envelope_hash", "")).strip()
+    if not envelope_hash:
+        envelope = getattr(pending_action, "approval_envelope", None)
+        if envelope is not None:
+            envelope_hash = approval_envelope_hash(envelope)
+    if not envelope_hash:
+        raise ConfirmationVerificationError("approval_envelope_missing")
+    action_digest = str(
+        getattr(
+            getattr(pending_action, "approval_envelope", None),
+            "action_digest",
+            "",
+        )
+    ).strip()
+    if not action_digest:
+        raise ConfirmationVerificationError("action_digest_missing")
+    return envelope_hash, action_digest
 
 
 class ConfirmationBackend(Protocol):
@@ -398,11 +538,21 @@ class ConfirmationBackend(Protocol):
     capabilities: ConfirmationCapabilities
     third_party_verifiable: bool
 
+    def is_available_for(self, *, user_id: str) -> bool:
+        ...
+
+    def principals_for_user(self, *, user_id: str) -> set[str]:
+        ...
+
+    def credentials_for_user(self, *, user_id: str) -> set[str]:
+        ...
+
     def verify(
         self,
         *,
         pending_action: Any,
         params: dict[str, Any],
+        now: datetime | None = None,
     ) -> ConfirmationEvidence:
         ...
 
@@ -419,12 +569,26 @@ class SoftwareConfirmationBackend:
         self.capabilities = ConfirmationCapabilities()
         self.third_party_verifiable = False
 
+    def is_available_for(self, *, user_id: str) -> bool:
+        _ = user_id
+        return True
+
+    def principals_for_user(self, *, user_id: str) -> set[str]:
+        _ = user_id
+        return set()
+
+    def credentials_for_user(self, *, user_id: str) -> set[str]:
+        _ = user_id
+        return set()
+
     def verify(
         self,
         *,
         pending_action: Any,
         params: dict[str, Any],
+        now: datetime | None = None,
     ) -> ConfirmationEvidence:
+        _ = now
         requested_method = str(
             params.get("approval_method")
             or params.get("method")
@@ -440,22 +604,7 @@ class SoftwareConfirmationBackend:
             raise ConfirmationVerificationError("confirmation_credential_binding_unavailable")
 
         principal_id = ""
-        envelope_hash = str(getattr(pending_action, "approval_envelope_hash", "")).strip()
-        if not envelope_hash:
-            envelope = getattr(pending_action, "approval_envelope", None)
-            if envelope is not None:
-                envelope_hash = approval_envelope_hash(envelope)
-        if not envelope_hash:
-            raise ConfirmationVerificationError("approval_envelope_missing")
-        action_digest = str(
-            getattr(
-                getattr(pending_action, "approval_envelope", None),
-                "action_digest",
-                "",
-            )
-        ).strip()
-        if not action_digest:
-            raise ConfirmationVerificationError("action_digest_missing")
+        envelope_hash, action_digest = _approval_binding_inputs(pending_action)
         payload = {
             "schema_version": "shisad.confirmation_evidence.v1",
             "backend_id": self.backend_id,
@@ -484,6 +633,248 @@ class SoftwareConfirmationBackend:
         )
 
 
+class TOTPBackend:
+    def __init__(
+        self,
+        *,
+        credential_store: ApprovalFactorStore,
+        issuer: str = "shisad",
+    ) -> None:
+        self.backend_id = "totp.default"
+        self.method = "totp"
+        self.level = ConfirmationLevel.REAUTHENTICATED
+        self.binding_scope = BindingScope.NONE
+        self.review_surface = ReviewSurface.HOST_RENDERED
+        self.available_principals: set[str] = set()
+        self.available_credentials: set[str] = set()
+        self.capabilities = ConfirmationCapabilities(principal_binding=True)
+        self.third_party_verifiable = False
+        self._credential_store = credential_store
+        self._issuer = issuer
+
+    def is_available_for(self, *, user_id: str) -> bool:
+        return bool(self._candidate_factors(user_id=user_id))
+
+    def principals_for_user(self, *, user_id: str) -> set[str]:
+        return {factor.principal_id for factor in self._candidate_factors(user_id=user_id)}
+
+    def credentials_for_user(self, *, user_id: str) -> set[str]:
+        return {factor.credential_id for factor in self._candidate_factors(user_id=user_id)}
+
+    def enrollment_uri(
+        self,
+        *,
+        user_id: str,
+        principal_id: str,
+        secret_b32: str,
+    ) -> str:
+        return build_totp_otpauth_uri(
+            issuer=self._issuer,
+            user_id=user_id,
+            secret_b32=secret_b32,
+            principal_id=principal_id,
+        )
+
+    def verify(
+        self,
+        *,
+        pending_action: Any,
+        params: dict[str, Any],
+        now: datetime | None = None,
+    ) -> ConfirmationEvidence:
+        current = now or datetime.now(UTC)
+        requested_method = str(
+            params.get("approval_method")
+            or params.get("method")
+            or self.method
+        ).strip() or self.method
+        if requested_method not in {self.method, "recovery_code"}:
+            raise ConfirmationVerificationError("confirmation_method_mismatch")
+
+        decision_nonce = str(params.get("decision_nonce", "")).strip()
+        proof = params.get("proof")
+        proof_payload = proof if isinstance(proof, dict) else {}
+        user_id = str(getattr(pending_action, "user_id", "")).strip()
+        if not user_id:
+            raise ConfirmationVerificationError("confirmation_user_missing")
+
+        factors = self._matching_factors(
+            user_id=user_id,
+            pending_action=pending_action,
+            requested_credential_id=str(params.get("credential_id", "")).strip(),
+        )
+        if not factors:
+            raise ConfirmationVerificationError("confirmation_credential_missing")
+
+        envelope_hash, action_digest = _approval_binding_inputs(pending_action)
+
+        if requested_method == "recovery_code":
+            recovery_code = str(proof_payload.get("recovery_code", "")).strip()
+            if not recovery_code:
+                raise ConfirmationVerificationError("missing_recovery_code")
+            factor = self._consume_recovery_code(
+                factors=factors,
+                recovery_code=recovery_code,
+                confirmation_id=str(getattr(pending_action, "confirmation_id", "")),
+                now=current,
+            )
+        else:
+            totp_code = str(
+                proof_payload.get("totp_code")
+                or proof_payload.get("code")
+                or ""
+            ).strip()
+            if not totp_code:
+                raise ConfirmationVerificationError("missing_totp_code")
+            factor = self._verify_totp_code(
+                factors=factors,
+                totp_code=totp_code,
+                confirmation_id=str(getattr(pending_action, "confirmation_id", "")),
+                now=current,
+            )
+
+        if (
+            getattr(pending_action, "allowed_principals", ())
+            and factor.principal_id not in getattr(pending_action, "allowed_principals", ())
+        ):
+            raise ConfirmationVerificationError("confirmation_principal_not_allowed")
+        if (
+            getattr(pending_action, "allowed_credentials", ())
+            and factor.credential_id not in getattr(pending_action, "allowed_credentials", ())
+        ):
+            raise ConfirmationVerificationError("confirmation_credential_not_allowed")
+
+        payload = {
+            "schema_version": "shisad.confirmation_evidence.v1",
+            "backend_id": self.backend_id,
+            "method": requested_method,
+            "confirmation_id": str(getattr(pending_action, "confirmation_id", "")),
+            "decision_nonce": decision_nonce,
+            "approval_envelope_hash": envelope_hash,
+            "action_digest": action_digest,
+            "approver_principal_id": factor.principal_id,
+            "credential_id": factor.credential_id,
+            "fallback_used": bool(getattr(pending_action, "fallback_used", False)),
+        }
+        return ConfirmationEvidence(
+            level=self.level,
+            method=requested_method,
+            backend_id=self.backend_id,
+            approver_principal_id=factor.principal_id,
+            credential_id=factor.credential_id,
+            binding_scope=self.binding_scope,
+            review_surface=self.review_surface,
+            third_party_verifiable=self.third_party_verifiable,
+            approval_envelope_hash=envelope_hash,
+            action_digest=action_digest,
+            decision_nonce=decision_nonce,
+            fallback_used=bool(payload["fallback_used"]),
+            evidence_payload=payload,
+            evidence_hash=canonical_sha256(payload),
+        )
+
+    def _candidate_factors(self, *, user_id: str) -> list[ApprovalFactorRecord]:
+        return self._credential_store.list_approval_factors(user_id=user_id, method=self.method)
+
+    def _matching_factors(
+        self,
+        *,
+        user_id: str,
+        pending_action: Any,
+        requested_credential_id: str,
+    ) -> list[ApprovalFactorRecord]:
+        candidates = self._candidate_factors(user_id=user_id)
+        allowed_credentials = [
+            item.strip()
+            for item in getattr(pending_action, "allowed_credentials", ())
+            if str(item).strip()
+        ]
+        if requested_credential_id:
+            candidates = [
+                factor for factor in candidates if factor.credential_id == requested_credential_id
+            ]
+        if allowed_credentials:
+            allowed = set(allowed_credentials)
+            candidates = [factor for factor in candidates if factor.credential_id in allowed]
+        allowed_principals = [
+            item.strip()
+            for item in getattr(pending_action, "allowed_principals", ())
+            if str(item).strip()
+        ]
+        if allowed_principals:
+            allowed = set(allowed_principals)
+            candidates = [factor for factor in candidates if factor.principal_id in allowed]
+        return candidates
+
+    def _verify_totp_code(
+        self,
+        *,
+        factors: list[ApprovalFactorRecord],
+        totp_code: str,
+        confirmation_id: str,
+        now: datetime,
+    ) -> ApprovalFactorRecord:
+        matches: list[tuple[ApprovalFactorRecord, int]] = []
+        for factor in factors:
+            step = _match_totp_window(secret_b32=factor.secret_b32, code=totp_code, now=now)
+            if step is None:
+                continue
+            previous = factor.used_time_steps.get(str(step), "")
+            if previous and previous != confirmation_id:
+                raise ConfirmationVerificationError("totp_code_reused")
+            matches.append((factor, step))
+        if not matches:
+            raise ConfirmationVerificationError("invalid_totp_code")
+        if len(matches) > 1:
+            raise ConfirmationVerificationError("confirmation_credential_ambiguous")
+        factor, matched_step = matches[0]
+        updated = factor.model_copy(deep=True)
+        updated.used_time_steps = {
+            key: value
+            for key, value in updated.used_time_steps.items()
+            if abs(int(key) - matched_step) <= 3
+        }
+        updated.used_time_steps[str(matched_step)] = confirmation_id
+        updated.last_verified_at = now
+        updated.last_used_at = now
+        self._credential_store.update_approval_factor(updated)
+        return updated
+
+    def _consume_recovery_code(
+        self,
+        *,
+        factors: list[ApprovalFactorRecord],
+        recovery_code: str,
+        confirmation_id: str,
+        now: datetime,
+    ) -> ApprovalFactorRecord:
+        hashed = hash_recovery_code(recovery_code)
+        consumed_match = False
+        for factor in factors:
+            for record in factor.recovery_codes:
+                if record.code_hash != hashed:
+                    continue
+                if (
+                    record.consumed_at is not None
+                    and record.consumed_confirmation_id != confirmation_id
+                ):
+                    consumed_match = True
+                    continue
+                updated = factor.model_copy(deep=True)
+                for entry in updated.recovery_codes:
+                    if entry.code_hash == hashed:
+                        entry.consumed_at = now
+                        entry.consumed_confirmation_id = confirmation_id
+                        break
+                updated.last_verified_at = now
+                updated.last_used_at = now
+                self._credential_store.update_approval_factor(updated)
+                return updated
+        if consumed_match:
+            raise ConfirmationVerificationError("recovery_code_reused")
+        raise ConfirmationVerificationError("invalid_recovery_code")
+
+
 @dataclass(slots=True)
 class ResolvedConfirmationBackend:
     backend: ConfirmationBackend
@@ -505,15 +896,21 @@ class ConfirmationBackendRegistry:
     def resolve(
         self,
         requirement: ConfirmationRequirement,
+        *,
+        user_id: str = "",
     ) -> ResolvedConfirmationBackend | None:
         if not requirement.routeable:
             return None
-        direct = self._resolve_for_levels([requirement.level], requirement)
+        direct = self._resolve_for_levels([requirement.level], requirement, user_id=user_id)
         if direct is not None:
             return direct
         if requirement.fallback.mode != "allow_levels":
             return None
-        fallback = self._resolve_for_levels(requirement.fallback.allow_levels, requirement)
+        fallback = self._resolve_for_levels(
+            requirement.fallback.allow_levels,
+            requirement,
+            user_id=user_id,
+        )
         if fallback is None:
             return None
         return ResolvedConfirmationBackend(backend=fallback.backend, fallback_used=True)
@@ -522,12 +919,15 @@ class ConfirmationBackendRegistry:
         self,
         levels: list[ConfirmationLevel],
         requirement: ConfirmationRequirement,
+        *,
+        user_id: str,
     ) -> ResolvedConfirmationBackend | None:
         for level in levels:
             candidates = [
                 backend
                 for backend in self._backends.values()
                 if backend.level == level
+                and backend.is_available_for(user_id=user_id)
                 and backend.capabilities.covers(requirement.require_capabilities)
                 and (
                     not requirement.allowed_principals
@@ -535,7 +935,7 @@ class ConfirmationBackendRegistry:
                         backend.capabilities.principal_binding
                         and bool(
                             set(requirement.allowed_principals)
-                            & set(backend.available_principals)
+                            & backend.principals_for_user(user_id=user_id)
                         )
                     )
                 )
@@ -543,7 +943,7 @@ class ConfirmationBackendRegistry:
                     not requirement.allowed_credentials
                     or bool(
                         set(requirement.allowed_credentials)
-                        & set(backend.available_credentials)
+                        & backend.credentials_for_user(user_id=user_id)
                     )
                 )
             ]
@@ -652,10 +1052,13 @@ class ConfirmationMethodLockoutTracker:
         *,
         max_failures: int = 5,
         lockout_seconds: int = 900,
+        state_path: Path | None = None,
     ) -> None:
         self._max_failures = max(1, int(max_failures))
         self._lockout_seconds = max(1, int(lockout_seconds))
         self._state: dict[tuple[str, str], _FailureState] = defaultdict(_FailureState)
+        self._state_path = Path(state_path) if state_path is not None else None
+        self._load()
 
     def status(self, *, user_id: str, method: str, now: datetime | None = None) -> float | None:
         now = now or datetime.now(UTC)
@@ -665,6 +1068,7 @@ class ConfirmationMethodLockoutTracker:
         if state.locked_until <= now:
             state.locked_until = None
             state.failures = 0
+            self._persist()
             return None
         return max(0.0, (state.locked_until - now).total_seconds())
 
@@ -677,8 +1081,64 @@ class ConfirmationMethodLockoutTracker:
         if state.failures >= self._max_failures:
             state.locked_until = now + timedelta(seconds=self._lockout_seconds)
             state.failures = 0
+        self._persist()
 
     def record_success(self, *, user_id: str, method: str) -> None:
         state = self._state[(user_id, method)]
         state.failures = 0
         state.locked_until = None
+        self._persist()
+
+    def _load(self) -> None:
+        path = self._state_path
+        if path is None or not path.exists():
+            return
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        for item in payload.get("entries", []):
+            if not isinstance(item, dict):
+                continue
+            user_id = str(item.get("user_id", "")).strip()
+            method = str(item.get("method", "")).strip()
+            if not user_id or not method:
+                continue
+            locked_until_raw = item.get("locked_until")
+            locked_until: datetime | None = None
+            if isinstance(locked_until_raw, str) and locked_until_raw.strip():
+                locked_until = datetime.fromisoformat(
+                    locked_until_raw.replace("Z", "+00:00")
+                ).astimezone(UTC)
+            self._state[(user_id, method)] = _FailureState(
+                failures=max(0, int(item.get("failures", 0) or 0)),
+                locked_until=locked_until,
+            )
+
+    def _persist(self) -> None:
+        path = self._state_path
+        if path is None:
+            return
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with suppress(OSError):
+            path.parent.chmod(0o700)
+        payload = {
+            "schema_version": "shisad.confirmation_lockout.v1",
+            "entries": [
+                {
+                    "user_id": user_id,
+                    "method": method,
+                    "failures": state.failures,
+                    "locked_until": (
+                        state.locked_until.astimezone(UTC).isoformat().replace("+00:00", "Z")
+                        if state.locked_until is not None
+                        else None
+                    ),
+                }
+                for (user_id, method), state in sorted(self._state.items())
+                if state.failures or state.locked_until is not None
+            ],
+        }
+        tmp_path = path.with_suffix(f"{path.suffix}.tmp")
+        tmp_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        os.chmod(tmp_path, 0o600)
+        os.replace(tmp_path, path)
+        with suppress(OSError):
+            os.chmod(path, 0o600)

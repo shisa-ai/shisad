@@ -18,6 +18,7 @@ import yaml
 from shisad.channels.base import DeliveryTarget
 from shisad.channels.delivery import ChannelDeliveryService, DeliveryResult
 from shisad.core.api.transport import ControlClient
+from shisad.core.approval import generate_totp_code
 from shisad.core.config import DaemonConfig
 from shisad.core.planner import Planner, PlannerOutput, PlannerResult
 from shisad.core.transcript import TranscriptStore
@@ -525,6 +526,113 @@ async def test_behavioral_tool_execute_confirmation_surfaces_approval_protocol_m
         )
         assert approved["event_type"] == "ToolApproved"
         assert executed["event_type"] == "ToolExecuted"
+    finally:
+        await _shutdown_daemon(daemon_task, client)
+
+
+@pytest.mark.asyncio
+async def test_behavioral_totp_confirmation_executes_and_records_l1_audit(
+    tmp_path: Path,
+) -> None:
+    policy_text = "\n".join(
+            [
+                'version: "1"',
+                "default_require_confirmation: false",
+                "default_capabilities:",
+                "  - shell.exec",
+                "tools:",
+                "  shell.exec:",
+                "    capabilities_required:",
+                "      - shell.exec",
+                "    confirmation:",
+                "      level: reauthenticated",
+                "      methods:",
+                "        - totp",
+            ]
+    )
+    daemon_task, client, _config = await _start_daemon(tmp_path, policy_text=policy_text + "\n")
+    try:
+        started = await client.call(
+            "2fa.register_begin",
+            {"method": "totp", "user_id": "alice", "name": "ops-laptop"},
+        )
+        confirmed_factor = await client.call(
+            "2fa.register_confirm",
+            {
+                "enrollment_id": started["enrollment_id"],
+                "verify_code": generate_totp_code(str(started["secret"])),
+            },
+        )
+        assert confirmed_factor["registered"] is True
+
+        created = await client.call(
+            "session.create",
+            {"channel": "cli", "user_id": "alice", "workspace_id": "ws1"},
+        )
+        sid = str(created["session_id"])
+
+        proposed = await client.call(
+            "tool.execute",
+            {
+                "session_id": sid,
+                "tool_name": "shell.exec",
+                "command": [sys.executable, "-c", "print('behavioral-a1')"],
+                "limits": {"timeout_seconds": 5, "output_bytes": 2048},
+                "degraded_mode": "fail_open",
+                "security_critical": False,
+            },
+        )
+        assert proposed["allowed"] is False
+        assert proposed["confirmation_required"] is True
+        confirmation_id = str(proposed["confirmation_id"])
+
+        pending = await client.call("action.pending", {"confirmation_id": confirmation_id})
+        action = pending["actions"][0]
+        assert action["required_level"] == "reauthenticated"
+        assert action["selected_backend_id"] == "totp.default"
+        assert action["selected_backend_method"] == "totp"
+
+        approved = await client.call(
+            "action.confirm",
+            {
+                "confirmation_id": confirmation_id,
+                "decision_nonce": str(action["decision_nonce"]),
+                "approval_method": "totp",
+                "proof": {"totp_code": generate_totp_code(str(started["secret"]))},
+            },
+        )
+        assert approved["confirmed"] is True
+        assert approved["status"] == "approved"
+        assert approved["approval_level"] == "reauthenticated"
+        assert approved["approval_method"] == "totp"
+
+        approved_event = await _wait_for_audit_event(
+            client,
+            event_type="ToolApproved",
+            session_id=sid,
+            predicate=lambda event: (
+                str(event.get("data", {}).get("tool_name", "")) == "shell.exec"
+                and str(event.get("data", {}).get("approval_level", "")) == "reauthenticated"
+                and str(event.get("data", {}).get("approval_method", "")) == "totp"
+                and str(
+                    event.get("data", {}).get("approval_approver_principal_id", "")
+                )
+                == "ops-laptop"
+            ),
+        )
+        executed_event = await _wait_for_audit_event(
+            client,
+            event_type="ToolExecuted",
+            session_id=sid,
+            predicate=lambda event: (
+                str(event.get("data", {}).get("tool_name", "")) == "shell.exec"
+                and bool(event.get("data", {}).get("success")) is True
+                and str(event.get("data", {}).get("approval_level", "")) == "reauthenticated"
+                and str(event.get("data", {}).get("approval_method", "")) == "totp"
+            ),
+        )
+        assert approved_event["event_type"] == "ToolApproved"
+        assert executed_event["event_type"] == "ToolExecuted"
     finally:
         await _shutdown_daemon(daemon_task, client)
 

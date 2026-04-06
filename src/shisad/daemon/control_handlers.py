@@ -141,6 +141,14 @@ from shisad.core.api.schema import (
     TodoVerifyResult,
     ToolExecuteParams,
     ToolExecuteResult,
+    TwoFactorListParams,
+    TwoFactorListResult,
+    TwoFactorRegisterBeginParams,
+    TwoFactorRegisterBeginResult,
+    TwoFactorRegisterConfirmParams,
+    TwoFactorRegisterConfirmResult,
+    TwoFactorRevokeParams,
+    TwoFactorRevokeResult,
     WebFetchParams,
     WebFetchResult,
     WebSearchParams,
@@ -343,6 +351,34 @@ class DaemonControlHandlers:
         self, params: ConfirmationMetricsParams, ctx: RequestContext
     ) -> ConfirmationMetricsResult:
         return await self._confirmation.handle_confirmation_metrics(params, ctx)
+
+    async def handle_two_factor_register_begin(
+        self,
+        params: TwoFactorRegisterBeginParams,
+        ctx: RequestContext,
+    ) -> TwoFactorRegisterBeginResult:
+        return await self._confirmation.handle_two_factor_register_begin(params, ctx)
+
+    async def handle_two_factor_register_confirm(
+        self,
+        params: TwoFactorRegisterConfirmParams,
+        ctx: RequestContext,
+    ) -> TwoFactorRegisterConfirmResult:
+        return await self._confirmation.handle_two_factor_register_confirm(params, ctx)
+
+    async def handle_two_factor_list(
+        self,
+        params: TwoFactorListParams,
+        ctx: RequestContext,
+    ) -> TwoFactorListResult:
+        return await self._confirmation.handle_two_factor_list(params, ctx)
+
+    async def handle_two_factor_revoke(
+        self,
+        params: TwoFactorRevokeParams,
+        ctx: RequestContext,
+    ) -> TwoFactorRevokeResult:
+        return await self._confirmation.handle_two_factor_revoke(params, ctx)
 
     async def handle_memory_ingest(
         self, params: MemoryIngestParams, ctx: RequestContext

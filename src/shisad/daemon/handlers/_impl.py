@@ -35,6 +35,7 @@ from shisad.core.approval import (
     ConfirmationMethodLockoutTracker,
     ConfirmationRequirement,
     SoftwareConfirmationBackend,
+    TOTPBackend,
     approval_audit_fields,
     approval_envelope_hash,
     compute_action_digest,
@@ -834,6 +835,7 @@ class HandlerImplementation(
         self._discord_channel = services.discord_channel
         self._telegram_channel = services.telegram_channel
         self._slack_channel = services.slack_channel
+        self._credential_store = services.credential_store
         self._lockdown_manager = services.lockdown_manager
         self._rate_limiter = services.rate_limiter
         self._monitor = services.monitor
@@ -866,9 +868,15 @@ class HandlerImplementation(
         self._confirmation_warning_generator = ConfirmationWarningGenerator()
         self._confirmation_analytics = ConfirmationAnalytics()
         self._confirmation_alerted_at: dict[str, datetime] = {}
+        self._pending_two_factor_enrollments: dict[str, object] = {}
         self._confirmation_backend_registry = ConfirmationBackendRegistry()
         self._confirmation_backend_registry.register(SoftwareConfirmationBackend())
-        self._confirmation_failure_tracker = ConfirmationMethodLockoutTracker()
+        self._confirmation_backend_registry.register(
+            TOTPBackend(credential_store=services.credential_store)
+        )
+        self._confirmation_failure_tracker = ConfirmationMethodLockoutTracker(
+            state_path=self._config.data_dir / "confirmation_lockouts.json"
+        )
         self._daemon_id = hashlib.sha256(
             str(self._config.data_dir.resolve()).encode("utf-8", errors="ignore")
         ).hexdigest()[:32]
@@ -1820,7 +1828,10 @@ class HandlerImplementation(
             raise ApprovalRoutingError(
                 requirement.route_reason or "confirmation_requirement_conflict"
             )
-        backend_resolution = self._confirmation_backend_registry.resolve(requirement)
+        backend_resolution = self._confirmation_backend_registry.resolve(
+            requirement,
+            user_id=str(user_id),
+        )
         if backend_resolution is None:
             raise ApprovalRoutingError("confirmation_backend_unavailable")
         summary = safe_summary(

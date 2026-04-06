@@ -896,6 +896,73 @@ class ActionRejectResult(BaseModel):
     reason: str | None = None
 
 
+class TwoFactorRegisterBeginParams(_StrictParams):
+    method: str = "totp"
+    user_id: str
+    name: str | None = None
+
+
+class TwoFactorRegisterBeginResult(BaseModel):
+    started: bool
+    enrollment_id: str = ""
+    user_id: str = ""
+    method: str = ""
+    principal_id: str = ""
+    credential_id: str = ""
+    secret: str = ""
+    otpauth_uri: str = ""
+    expires_at: str | None = None
+    reason: str = ""
+
+
+class TwoFactorRegisterConfirmParams(_StrictParams):
+    enrollment_id: str
+    verify_code: str
+
+
+class TwoFactorRegisterConfirmResult(BaseModel):
+    registered: bool
+    user_id: str = ""
+    method: str = ""
+    principal_id: str = ""
+    credential_id: str = ""
+    recovery_codes: list[str] = Field(default_factory=list)
+    reason: str = ""
+
+
+class TwoFactorListParams(_StrictParams):
+    user_id: str | None = None
+    method: str | None = None
+
+
+class TwoFactorEntry(BaseModel):
+    user_id: str = ""
+    method: str = ""
+    principal_id: str = ""
+    credential_id: str = ""
+    created_at: str = ""
+    last_verified_at: str | None = None
+    last_used_at: str | None = None
+    recovery_codes_remaining: int = 0
+
+
+class TwoFactorListResult(BaseModel):
+    entries: list[TwoFactorEntry] = Field(default_factory=list)
+    count: int = 0
+
+
+class TwoFactorRevokeParams(_StrictParams):
+    method: str = "totp"
+    user_id: str
+    credential_id: str | None = None
+
+
+class TwoFactorRevokeResult(BaseModel):
+    revoked: bool
+    removed: int = 0
+    reason: str = ""
+
+
 class PolicyExplainParams(_StrictParams):
     session_id: str | None = None
     action: str = ""
