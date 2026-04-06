@@ -202,6 +202,7 @@ def merge_confirmation_requirements(
         return None
 
     max_level = max(requirements, key=lambda item: item.level.priority).level
+    selected = [item for item in requirements if item.level == max_level]
     conflicts: list[str] = []
 
     def _merge_list(field_name: str) -> list[str]:
@@ -226,9 +227,9 @@ def merge_confirmation_requirements(
     fallback_mode = "deny"
     fallback_levels: list[ConfirmationLevel] = []
     allow_fallbacks = [
-        item.fallback for item in requirements if item.fallback.mode == "allow_levels"
+        item.fallback for item in selected if item.fallback.mode == "allow_levels"
     ]
-    if allow_fallbacks and len(allow_fallbacks) == len(requirements):
+    if allow_fallbacks and len(allow_fallbacks) == len(selected):
         fallback_levels = list(allow_fallbacks[0].allow_levels)
         for fallback in allow_fallbacks[1:]:
             fallback_levels = [level for level in fallback_levels if level in fallback.allow_levels]
@@ -253,6 +254,13 @@ def merge_confirmation_requirements(
         routeable=not conflicts,
         route_reason=route_reason,
     )
+
+
+def confirmation_requirement_payload(requirement: ConfirmationRequirement) -> dict[str, Any]:
+    payload = requirement.model_dump(mode="json")
+    payload["routeable"] = requirement.routeable
+    payload["route_reason"] = requirement.route_reason
+    return payload
 
 
 def canonical_json_dumps(value: Any) -> str:
@@ -573,7 +581,15 @@ def confirmation_evidence_satisfies_requirement(
 ) -> bool:
     if not requirement.routeable:
         return False
-    if evidence.level.priority < requirement.level.priority:
+
+    if (
+        evidence.level.priority < requirement.level.priority
+        and (
+            requirement.fallback.mode != "allow_levels"
+            or not evidence.fallback_used
+            or evidence.level not in requirement.fallback.allow_levels
+        )
+    ):
         return False
     if requirement.methods and evidence.method not in requirement.methods:
         return False

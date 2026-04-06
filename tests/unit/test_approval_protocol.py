@@ -12,6 +12,7 @@ from shisad.core.approval import (
     ApprovalEnvelope,
     ConfirmationBackendRegistry,
     ConfirmationCapabilities,
+    ConfirmationEvidence,
     ConfirmationFallbackPolicy,
     ConfirmationLevel,
     ConfirmationRequirement,
@@ -20,6 +21,8 @@ from shisad.core.approval import (
     approval_envelope_hash,
     canonical_json_dumps,
     compute_action_digest,
+    confirmation_evidence_satisfies_requirement,
+    confirmation_requirement_payload,
     merge_confirmation_requirements,
 )
 from shisad.core.tools.schema import ToolDefinition, ToolParameter
@@ -195,6 +198,25 @@ def test_merge_fallback_requires_consensus_for_downgrade() -> None:
     assert merged.fallback.allow_levels == []
 
 
+def test_merge_high_tier_fallback_survives_lower_tier_confirmation_signals() -> None:
+    merged = merge_confirmation_requirements(
+        [
+            ConfirmationRequirement(level=ConfirmationLevel.SOFTWARE),
+            ConfirmationRequirement(
+                level=ConfirmationLevel.BOUND_APPROVAL,
+                fallback=ConfirmationFallbackPolicy(
+                    mode="allow_levels",
+                    allow_levels=[ConfirmationLevel.SOFTWARE],
+                ),
+            ),
+        ]
+    )
+    assert merged is not None
+    assert merged.level == ConfirmationLevel.BOUND_APPROVAL
+    assert merged.fallback.mode == "allow_levels"
+    assert merged.fallback.allow_levels == [ConfirmationLevel.SOFTWARE]
+
+
 def test_registry_rejects_principal_restricted_software_backend() -> None:
     registry = ConfirmationBackendRegistry()
     registry.register(SoftwareConfirmationBackend())
@@ -221,6 +243,49 @@ def test_software_backend_requires_approval_envelope_hash() -> None:
 
     with pytest.raises(ConfirmationVerificationError, match="approval_envelope_missing"):
         backend.verify(pending_action=pending, params={"decision_nonce": "nonce-1"})
+
+
+def test_confirmation_requirement_payload_preserves_routeable_round_trip() -> None:
+    merged = merge_confirmation_requirements(
+        [
+            ConfirmationRequirement(level=ConfirmationLevel.SOFTWARE, methods=["totp"]),
+            ConfirmationRequirement(level=ConfirmationLevel.SOFTWARE, methods=["webauthn"]),
+        ]
+    )
+    assert merged is not None
+
+    restored = ConfirmationRequirement.model_validate(confirmation_requirement_payload(merged))
+
+    assert restored.routeable is False
+    assert restored.route_reason == "confirmation_requirement_conflict:methods"
+
+
+def test_confirmation_evidence_accepts_explicit_allowed_fallback_level() -> None:
+    requirement = ConfirmationRequirement(
+        level=ConfirmationLevel.BOUND_APPROVAL,
+        fallback=ConfirmationFallbackPolicy(
+            mode="allow_levels",
+            allow_levels=[ConfirmationLevel.SOFTWARE],
+        ),
+    )
+    evidence = ConfirmationEvidence(
+        level=ConfirmationLevel.SOFTWARE,
+        method="software",
+        backend_id="software.default",
+        approval_envelope_hash="sha256:test-envelope",
+        action_digest="sha256:test-action",
+        decision_nonce="nonce-1",
+        fallback_used=True,
+    )
+
+    assert (
+        confirmation_evidence_satisfies_requirement(
+            requirement=requirement,
+            evidence=evidence,
+            backend=SoftwareConfirmationBackend(),
+        )
+        is True
+    )
 
 
 def test_canonical_json_rejects_naive_datetime() -> None:

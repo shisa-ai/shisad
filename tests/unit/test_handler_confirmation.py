@@ -633,6 +633,60 @@ async def test_trace_only_capability_elevation_fails_closed_when_pep_requires_st
 
 
 @pytest.mark.asyncio
+async def test_trace_only_capability_elevation_accepts_explicit_fallback_confirmation(
+    tmp_path,
+) -> None:
+    harness = _ConfirmationImplHarness(tmp_path, allow_amendment=True)
+    harness._pep = PEP(
+        PolicyBundle.model_validate(
+            {
+                "default_require_confirmation": False,
+                "tools": {
+                    "web.fetch": {
+                        "confirmation": {
+                            "level": "bound_approval",
+                            "fallback": {
+                                "mode": "allow_levels",
+                                "allow_levels": ["software"],
+                            },
+                        }
+                    }
+                },
+            }
+        ),
+        _registry_for_confirmation(),
+    )
+    pending = _pending_action(nonce="expected")
+    pending.tool_name = ToolName("web.fetch")
+    pending.arguments = {"url": "https://example.com"}
+    pending.reason = "trace:stage2_upgrade_required"
+    pending.capabilities = set()
+    pending.required_level = ConfirmationLevel.BOUND_APPROVAL
+    pending.fallback_used = True
+    pending.approval_envelope = _software_approval_envelope(
+        tool_name=ToolName("web.fetch")
+    ).model_copy(update={"required_level": ConfirmationLevel.BOUND_APPROVAL})
+    pending.approval_envelope_hash = approval_envelope_hash(pending.approval_envelope)
+    pending.pep_context = _pep_context_snapshot(capabilities=set())
+    pending.pep_elevation = PendingPepElevationRequest(
+        kind="capability_grant",
+        reason_code="pep:missing_capabilities",
+        capability_grants={Capability.HTTP_REQUEST},
+    )
+    harness._pending_actions["c-1"] = pending
+
+    result = await harness.do_action_confirm(
+        {"confirmation_id": "c-1", "decision_nonce": "expected"}
+    )
+
+    assert result["confirmed"] is True
+    assert result["status"] == "approved"
+    assert result["approval_level"] == ConfirmationLevel.SOFTWARE.value
+    assert harness.execution_kwargs[0]["tool_name"] == "web.fetch"
+    assert harness.execution_kwargs[0]["capabilities"] == ["http.request"]
+
+
+@pytest.mark.asyncio
 async def test_h1_confirmation_returns_plan_state_failure_when_stage2_amend_rejected(
     tmp_path,
 ) -> None:

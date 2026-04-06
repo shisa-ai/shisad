@@ -15,6 +15,7 @@ from urllib.parse import urlparse
 
 from shisad.core.approval import (
     ConfirmationRequirement,
+    confirmation_requirement_payload,
     legacy_software_confirmation_requirement,
     merge_confirmation_requirements,
 )
@@ -464,7 +465,7 @@ class PEP:
                 reason_code="pep:confirmation_required",
                 tool_name=tool_name,
                 risk_score=risk_score,
-                confirmation_requirement=needs_confirmation.model_dump(mode="json"),
+                confirmation_requirement=confirmation_requirement_payload(needs_confirmation),
             )
 
         return PEPDecision(

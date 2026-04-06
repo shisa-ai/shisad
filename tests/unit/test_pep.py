@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from shisad.core.approval import ConfirmationLevel
+from shisad.core.approval import ConfirmationLevel, ConfirmationRequirement
 from shisad.core.tools.registry import ToolRegistry
 from shisad.core.tools.schema import ToolDefinition, ToolParameter
 from shisad.core.types import Capability, PEPDecisionKind, ToolName
@@ -302,3 +302,34 @@ class TestPepConfirmationPolicy:
         assert decision.kind == PEPDecisionKind.REQUIRE_CONFIRMATION
         assert decision.confirmation_requirement is not None
         assert decision.confirmation_requirement["level"] == "bound_approval"
+
+    def test_explicit_high_tier_fallback_survives_lower_tier_default_confirmation(self) -> None:
+        _, registry = _make_pep()
+        pep = PEP(
+            PolicyBundle.model_validate(
+                {
+                    "default_require_confirmation": True,
+                    "tools": {
+                        "test_tool": {
+                            "confirmation": {
+                                "level": "bound_approval",
+                                "fallback": {
+                                    "mode": "allow_levels",
+                                    "allow_levels": ["software"],
+                                },
+                            }
+                        }
+                    },
+                }
+            ),
+            registry,
+        )
+        ctx = PolicyContext(capabilities={Capability.HTTP_REQUEST})
+        decision = pep.evaluate(ToolName("test_tool"), {"query": "hello"}, ctx)
+
+        assert decision.kind == PEPDecisionKind.REQUIRE_CONFIRMATION
+        assert decision.confirmation_requirement is not None
+        requirement = ConfirmationRequirement.model_validate(decision.confirmation_requirement)
+        assert requirement.level == ConfirmationLevel.BOUND_APPROVAL
+        assert requirement.fallback.mode == "allow_levels"
+        assert requirement.fallback.allow_levels == [ConfirmationLevel.SOFTWARE]
