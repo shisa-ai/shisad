@@ -8,16 +8,18 @@ import json
 import logging
 import uuid
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 from shisad.core.approval import (
     ConfirmationEvidence,
+    ConfirmationLevel,
     ConfirmationRequirement,
     ConfirmationVerificationError,
     TOTPBackend,
+    WebAuthnBackend,
     approval_audit_fields,
     confirmation_evidence_satisfies_requirement,
     generate_recovery_codes,
@@ -61,9 +63,13 @@ class PendingTwoFactorEnrollment:
     method: str
     principal_id: str
     credential_id: str
-    secret_b32: str
     created_at: datetime
     expires_at: datetime
+    secret_b32: str = ""
+    webauthn_creation_options: dict[str, Any] = field(default_factory=dict)
+    webauthn_registration_state: dict[str, Any] = field(default_factory=dict)
+    webauthn_rp_id: str = ""
+    webauthn_origin: str = ""
 
 
 class ConfirmationImplMixin(HandlerMixinBase):
@@ -158,6 +164,12 @@ class ConfirmationImplMixin(HandlerMixinBase):
             raise RuntimeError("totp backend is unavailable")
         return backend
 
+    def _webauthn_backend(self) -> WebAuthnBackend:
+        backend = self._confirmation_backend_registry.get_backend("webauthn.default")
+        if not isinstance(backend, WebAuthnBackend):
+            raise RuntimeError("webauthn backend is unavailable")
+        return backend
+
     def _prune_two_factor_enrollments(self, *, now: datetime | None = None) -> None:
         current = now or datetime.now(UTC)
         pending = getattr(self, "_pending_two_factor_enrollments", {})
@@ -170,10 +182,211 @@ class ConfirmationImplMixin(HandlerMixinBase):
         for enrollment_id in expired:
             pending.pop(enrollment_id, None)
 
+    async def _webauthn_registration_ceremony_context(
+        self,
+        enrollment_id: str,
+    ) -> dict[str, Any]:
+        now = datetime.now(UTC)
+        self._prune_two_factor_enrollments(now=now)
+        enrollment = self._pending_two_factor_enrollments.get(enrollment_id)
+        if not isinstance(enrollment, PendingTwoFactorEnrollment):
+            return {
+                "ok": False,
+                "status": "not_found",
+                "reason": "enrollment_not_found",
+                "message": "This passkey registration link is no longer available.",
+            }
+        if enrollment.method != "webauthn":
+            return {
+                "ok": False,
+                "status": "invalid_method",
+                "reason": "unsupported_2fa_method",
+                "message": "This enrollment is not a WebAuthn registration.",
+            }
+        if enrollment.expires_at <= now:
+            return {
+                "ok": False,
+                "status": "expired",
+                "reason": "enrollment_expired",
+                "message": "This passkey registration link has expired.",
+            }
+        return {
+            "ok": True,
+            "status": "pending",
+            "summary": (
+                f"Register a passkey for user={enrollment.user_id} "
+                f"principal={enrollment.principal_id} credential={enrollment.credential_id}"
+            ),
+            "public_key": dict(enrollment.webauthn_creation_options),
+            "expires_at": enrollment.expires_at.isoformat().replace("+00:00", "Z"),
+            "credential_id": enrollment.credential_id,
+            "principal_id": enrollment.principal_id,
+            "user_id": enrollment.user_id,
+            "rp_id": enrollment.webauthn_rp_id,
+            "origin": enrollment.webauthn_origin,
+        }
+
+    async def _complete_webauthn_registration_ceremony(
+        self,
+        enrollment_id: str,
+        response_payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        now = datetime.now(UTC)
+        self._prune_two_factor_enrollments(now=now)
+        enrollment = self._pending_two_factor_enrollments.get(enrollment_id)
+        if not isinstance(enrollment, PendingTwoFactorEnrollment):
+            return {"registered": False, "reason": "enrollment_not_found"}
+        if enrollment.method != "webauthn":
+            return {"registered": False, "reason": "unsupported_2fa_method"}
+        if enrollment.expires_at <= now:
+            self._pending_two_factor_enrollments.pop(enrollment_id, None)
+            return {"registered": False, "reason": "enrollment_expired"}
+
+        try:
+            factor = self._webauthn_backend().registration_complete(
+                credential_id=enrollment.credential_id,
+                user_id=enrollment.user_id,
+                principal_id=enrollment.principal_id,
+                created_at=enrollment.created_at,
+                state=dict(enrollment.webauthn_registration_state),
+                response_payload=dict(response_payload),
+            )
+        except ConfirmationVerificationError as exc:
+            return {"registered": False, "reason": exc.reason}
+
+        self._credential_store.register_approval_factor(factor)
+        self._pending_two_factor_enrollments.pop(enrollment_id, None)
+        await self._event_bus.publish(
+            TwoFactorEnrolled(
+                actor="control_plane",
+                user_id=factor.user_id,
+                method=factor.method,
+                credential_id=factor.credential_id,
+                principal_id=factor.principal_id,
+            )
+        )
+        return {
+            "registered": True,
+            "user_id": factor.user_id,
+            "method": factor.method,
+            "principal_id": factor.principal_id,
+            "credential_id": factor.credential_id,
+        }
+
+    async def _webauthn_approval_ceremony_context(
+        self,
+        confirmation_id: str,
+    ) -> dict[str, Any]:
+        pending = self._pending_actions.get(confirmation_id)
+        if pending is None:
+            return {
+                "ok": False,
+                "status": "not_found",
+                "reason": "not_found",
+                "message": "This approval request is no longer available.",
+            }
+        if pending.status != "pending":
+            return {
+                "ok": False,
+                "status": pending.status,
+                "reason": f"already_{pending.status}",
+                "message": f"This approval request is already {pending.status}.",
+            }
+        if pending.expires_at is not None and pending.expires_at <= datetime.now(UTC):
+            return {
+                "ok": False,
+                "status": "expired",
+                "reason": "approval_expired",
+                "message": "This approval request has expired.",
+            }
+        if str(getattr(pending, "selected_backend_method", "")).strip() != "webauthn":
+            return {
+                "ok": False,
+                "status": "invalid_method",
+                "reason": "confirmation_method_not_allowed",
+                "message": "This approval request is not waiting for WebAuthn confirmation.",
+            }
+        try:
+            public_key = self._webauthn_backend().approval_request_options(
+                pending_action=pending,
+            )
+        except ConfirmationVerificationError as exc:
+            return {
+                "ok": False,
+                "status": "invalid_request",
+                "reason": exc.reason,
+                "message": "This approval request cannot be completed with WebAuthn.",
+            }
+        return {
+            "ok": True,
+            "status": "pending",
+            "summary": pending.safe_preview or pending.reason,
+            "public_key": public_key,
+            "expires_at": (
+                pending.expires_at.isoformat().replace("+00:00", "Z")
+                if pending.expires_at is not None
+                else None
+            ),
+            "confirmation_id": confirmation_id,
+            "required_level": pending.required_level.value,
+        }
+
+    async def _complete_webauthn_approval_ceremony(
+        self,
+        confirmation_id: str,
+        response_payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        pending = self._pending_actions.get(confirmation_id)
+        if pending is None:
+            return {"confirmed": False, "reason": "not_found", "confirmation_id": confirmation_id}
+        return await self.do_action_confirm(
+            {
+                "confirmation_id": confirmation_id,
+                "decision_nonce": str(pending.decision_nonce),
+                "approval_method": "webauthn",
+                "proof": dict(response_payload),
+            }
+        )
+
+    async def _send_chat_approval_link_notifications(
+        self,
+        *,
+        confirmation_ids: list[str],
+        delivery_target: Any,
+    ) -> None:
+        approval_web = getattr(self, "_approval_web", None)
+        if approval_web is None or not approval_web.enabled:
+            return
+        for confirmation_id in confirmation_ids:
+            pending = self._pending_actions.get(str(confirmation_id))
+            if pending is None:
+                continue
+            if pending.required_level.priority < ConfirmationLevel.REAUTHENTICATED.priority:
+                continue
+            if str(getattr(pending, "selected_backend_method", "")).strip() != "webauthn":
+                continue
+            approval_url = approval_web.issue_approval_link(str(pending.confirmation_id))
+            if not approval_url:
+                continue
+            qr_ascii = approval_web.qr_ascii(approval_url)
+            lines = [
+                "Approval required",
+                pending.safe_preview or pending.reason,
+                f"Level: {pending.required_level.value}",
+                "Open this link in a system browser:",
+                approval_url,
+            ]
+            if qr_ascii:
+                lines.extend(["QR:", qr_ascii])
+            await self._delivery.send(
+                target=delivery_target,
+                message="\n".join(lines).strip(),
+            )
+
     async def do_two_factor_register_begin(self, params: Mapping[str, Any]) -> dict[str, Any]:
         self._prune_two_factor_enrollments()
         method = str(params.get("method") or "totp").strip().lower()
-        if method != "totp":
+        if method not in {"totp", "webauthn"}:
             return {"started": False, "reason": "unsupported_2fa_method"}
         user_id = str(params.get("user_id") or "").strip()
         if not user_id:
@@ -182,21 +395,65 @@ class ConfirmationImplMixin(HandlerMixinBase):
         principal_id = requested_name or getpass.getuser().strip() or user_id
         now = datetime.now(UTC)
         enrollment_id = uuid.uuid4().hex
-        credential_id = f"totp.{uuid.uuid4().hex[:12]}"
-        secret_b32 = generate_totp_secret()
         expires_at = now + timedelta(minutes=10)
+        credential_id = f"{method}.{uuid.uuid4().hex[:12]}"
+
+        if method == "totp":
+            secret_b32 = generate_totp_secret()
+            enrollment = PendingTwoFactorEnrollment(
+                enrollment_id=enrollment_id,
+                user_id=user_id,
+                method=method,
+                principal_id=principal_id,
+                credential_id=credential_id,
+                created_at=now,
+                expires_at=expires_at,
+                secret_b32=secret_b32,
+            )
+            self._pending_two_factor_enrollments[enrollment_id] = enrollment
+            totp_backend = self._totp_backend()
+            return {
+                "started": True,
+                "enrollment_id": enrollment_id,
+                "user_id": user_id,
+                "method": method,
+                "principal_id": principal_id,
+                "credential_id": credential_id,
+                "secret": secret_b32,
+                "otpauth_uri": totp_backend.enrollment_uri(
+                    user_id=user_id,
+                    principal_id=principal_id,
+                    secret_b32=secret_b32,
+                ),
+                "expires_at": expires_at.isoformat().replace("+00:00", "Z"),
+            }
+
+        if not getattr(self, "_approval_web", None) or not self._approval_web.enabled:
+            return {"started": False, "reason": "approval_origin_not_configured"}
+        try:
+            webauthn_backend = self._webauthn_backend()
+        except RuntimeError:
+            return {"started": False, "reason": "approval_origin_not_configured"}
+
+        creation_options, registration_state = webauthn_backend.registration_begin(
+            user_id=user_id,
+            principal_id=principal_id,
+            credential_id=credential_id,
+        )
         enrollment = PendingTwoFactorEnrollment(
             enrollment_id=enrollment_id,
             user_id=user_id,
             method=method,
             principal_id=principal_id,
             credential_id=credential_id,
-            secret_b32=secret_b32,
             created_at=now,
             expires_at=expires_at,
+            webauthn_creation_options=creation_options,
+            webauthn_registration_state=registration_state,
+            webauthn_rp_id=webauthn_backend.rp_id,
+            webauthn_origin=webauthn_backend.approval_origin,
         )
         self._pending_two_factor_enrollments[enrollment_id] = enrollment
-        backend = self._totp_backend()
         return {
             "started": True,
             "enrollment_id": enrollment_id,
@@ -204,12 +461,9 @@ class ConfirmationImplMixin(HandlerMixinBase):
             "method": method,
             "principal_id": principal_id,
             "credential_id": credential_id,
-            "secret": secret_b32,
-            "otpauth_uri": backend.enrollment_uri(
-                user_id=user_id,
-                principal_id=principal_id,
-                secret_b32=secret_b32,
-            ),
+            "registration_url": self._approval_web.issue_registration_link(enrollment_id),
+            "approval_origin": webauthn_backend.approval_origin,
+            "rp_id": webauthn_backend.rp_id,
             "expires_at": expires_at.isoformat().replace("+00:00", "Z"),
         }
 
@@ -222,6 +476,8 @@ class ConfirmationImplMixin(HandlerMixinBase):
         enrollment = self._pending_two_factor_enrollments.get(enrollment_id)
         if not isinstance(enrollment, PendingTwoFactorEnrollment):
             return {"registered": False, "reason": "enrollment_not_found"}
+        if enrollment.method != "totp":
+            return {"registered": False, "reason": "unsupported_2fa_method"}
         verify_code = str(params.get("verify_code") or "").strip()
         if not verify_code:
             raise ValueError("verify_code is required")
@@ -353,6 +609,18 @@ class ConfirmationImplMixin(HandlerMixinBase):
             if status_filter and item.status.lower() != status_filter:
                 continue
             payload = self._pending_to_dict(item)
+            if (
+                getattr(self, "_approval_web", None) is not None
+                and self._approval_web.enabled
+                and str(getattr(item, "selected_backend_method", "")).strip() == "webauthn"
+                and str(getattr(item, "status", "")).strip() == "pending"
+            ):
+                approval_url = self._approval_web.issue_approval_link(
+                    str(getattr(item, "confirmation_id", ""))
+                )
+                if approval_url:
+                    payload["approval_url"] = approval_url
+                    payload["approval_qr_ascii"] = self._approval_web.qr_ascii(approval_url)
             payload.pop("pep_context", None)
             if not include_ui:
                 payload.pop("safe_preview", None)

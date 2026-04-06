@@ -73,7 +73,11 @@ class ApprovalFactorRecord(BaseModel):
     user_id: str
     method: str
     principal_id: str
-    secret_b32: str
+    secret_b32: str = ""
+    webauthn_attested_credential_data_b64: str = ""
+    webauthn_sign_count: int = 0
+    webauthn_rp_id: str = ""
+    webauthn_transports: list[str] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     last_verified_at: datetime | None = None
     last_used_at: datetime | None = None

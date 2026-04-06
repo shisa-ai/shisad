@@ -5,8 +5,11 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import socket
 import subprocess
 import sys
+import urllib.error
+import urllib.request
 from collections.abc import Callable
 from contextlib import suppress
 from pathlib import Path
@@ -23,10 +26,47 @@ from shisad.core.config import DaemonConfig
 from shisad.core.planner import Planner, PlannerOutput, PlannerResult
 from shisad.core.transcript import TranscriptStore
 from shisad.daemon.runner import run_daemon
+from tests.helpers.webauthn import make_authentication_payload, make_registration_payload
 
 
 def _base_policy() -> str:
     return 'version: "1"\ndefault_require_confirmation: false\n'
+
+
+def _reserve_local_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        return int(sock.getsockname()[1])
+
+
+def _approval_json_url(url: str) -> str:
+    separator = "&" if "?" in url else "?"
+    return f"{url}{separator}format=json"
+
+
+def _http_get_json(url: str) -> tuple[int, dict[str, Any]]:
+    request = urllib.request.Request(_approval_json_url(url), method="GET")
+    try:
+        with urllib.request.urlopen(request, timeout=5.0) as response:
+            return response.status, json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode("utf-8")
+        return exc.code, json.loads(body) if body else {}
+
+
+def _http_post_json(url: str, payload: dict[str, Any]) -> tuple[int, dict[str, Any]]:
+    request = urllib.request.Request(
+        url,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=5.0) as response:
+            return response.status, json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode("utf-8")
+        return exc.code, json.loads(body) if body else {}
 
 
 async def _wait_for_socket(path: Path, timeout: float = 5.0) -> None:
@@ -629,6 +669,144 @@ async def test_behavioral_totp_confirmation_executes_and_records_l1_audit(
                 and bool(event.get("data", {}).get("success")) is True
                 and str(event.get("data", {}).get("approval_level", "")) == "reauthenticated"
                 and str(event.get("data", {}).get("approval_method", "")) == "totp"
+            ),
+        )
+        assert approved_event["event_type"] == "ToolApproved"
+        assert executed_event["event_type"] == "ToolExecuted"
+    finally:
+        await _shutdown_daemon(daemon_task, client)
+
+
+@pytest.mark.asyncio
+async def test_behavioral_webauthn_confirmation_executes_and_records_l2_audit(
+    tmp_path: Path,
+) -> None:
+    port = _reserve_local_port()
+    origin = f"http://127.0.0.1:{port}"
+    policy_text = "\n".join(
+        [
+            'version: "1"',
+            "default_require_confirmation: false",
+            "default_capabilities:",
+            "  - shell.exec",
+            "tools:",
+            "  shell.exec:",
+            "    capabilities_required:",
+            "      - shell.exec",
+            "    confirmation:",
+            "      level: bound_approval",
+            "      methods:",
+            "        - webauthn",
+        ]
+    )
+    daemon_task, client, _config = await _start_daemon(
+        tmp_path,
+        policy_text=policy_text + "\n",
+        config_overrides={
+            "approval_origin": origin,
+            "approval_bind_host": "127.0.0.1",
+            "approval_bind_port": port,
+        },
+    )
+    try:
+        started = await client.call(
+            "2fa.register_begin",
+            {"method": "webauthn", "user_id": "alice", "name": "ops-phone"},
+        )
+        assert started["started"] is True
+        register_status, register_context = await asyncio.to_thread(
+            _http_get_json,
+            str(started["registration_url"]),
+        )
+        assert register_status == 200
+        assert register_context["ok"] is True
+        credential, registration_payload = make_registration_payload(
+            public_key_options=register_context["public_key"],
+            origin=register_context["origin"],
+            rp_id=register_context["rp_id"],
+        )
+        complete_status, registered = await asyncio.to_thread(
+            _http_post_json,
+            str(started["registration_url"]),
+            registration_payload,
+        )
+        assert complete_status == 200
+        assert registered["registered"] is True
+
+        created = await client.call(
+            "session.create",
+            {"channel": "cli", "user_id": "alice", "workspace_id": "ws1"},
+        )
+        sid = str(created["session_id"])
+
+        proposed = await client.call(
+            "tool.execute",
+            {
+                "session_id": sid,
+                "tool_name": "shell.exec",
+                "command": [sys.executable, "-c", "print('behavioral-a2')"],
+                "limits": {"timeout_seconds": 5, "output_bytes": 2048},
+                "degraded_mode": "fail_open",
+                "security_critical": False,
+            },
+        )
+        assert proposed["allowed"] is False
+        assert proposed["confirmation_required"] is True
+        confirmation_id = str(proposed["confirmation_id"])
+
+        pending = await client.call("action.pending", {"confirmation_id": confirmation_id})
+        action = pending["actions"][0]
+        assert action["required_level"] == "bound_approval"
+        assert action["selected_backend_id"] == "webauthn.default"
+        assert action["selected_backend_method"] == "webauthn"
+        assert str(action["approval_url"]).startswith(f"{origin}/approve/")
+
+        approve_status, approve_context = await asyncio.to_thread(
+            _http_get_json,
+            str(action["approval_url"]),
+        )
+        assert approve_status == 200
+        assert approve_context["ok"] is True
+        assertion = make_authentication_payload(
+            public_key_options=approve_context["public_key"],
+            credential=credential,
+        )
+        confirmed_status, approved = await asyncio.to_thread(
+            _http_post_json,
+            str(action["approval_url"]),
+            assertion,
+        )
+        assert confirmed_status == 200
+        assert approved["confirmed"] is True
+        assert approved["status"] == "approved"
+        assert approved["approval_level"] == "bound_approval"
+        assert approved["approval_method"] == "webauthn"
+
+        approved_event = await _wait_for_audit_event(
+            client,
+            event_type="ToolApproved",
+            session_id=sid,
+            predicate=lambda event: (
+                str(event.get("data", {}).get("tool_name", "")) == "shell.exec"
+                and str(event.get("data", {}).get("approval_level", "")) == "bound_approval"
+                and str(event.get("data", {}).get("approval_method", "")) == "webauthn"
+                and str(event.get("data", {}).get("approval_credential_id", ""))
+                == registered["credential_id"]
+                and str(event.get("data", {}).get("approval_review_surface", ""))
+                == "browser_rendered"
+            ),
+        )
+        executed_event = await _wait_for_audit_event(
+            client,
+            event_type="ToolExecuted",
+            session_id=sid,
+            predicate=lambda event: (
+                str(event.get("data", {}).get("tool_name", "")) == "shell.exec"
+                and bool(event.get("data", {}).get("success")) is True
+                and str(event.get("data", {}).get("approval_level", "")) == "bound_approval"
+                and str(event.get("data", {}).get("approval_method", "")) == "webauthn"
+                and str(event.get("data", {}).get("approval_credential_id", ""))
+                == registered["credential_id"]
             ),
         )
         assert approved_event["event_type"] == "ToolApproved"

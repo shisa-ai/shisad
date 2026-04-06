@@ -12,7 +12,9 @@ dependencies = [
     "click>=8.1,<9",
     "pyyaml>=6.0,<7",
     "cryptography>=46.0.6,<47",
+    "fido2>=2.1,<3",
     "loguru>=0.7,<1",
+    "qrcode>=8.2,<9",
 ]
 
 [project.urls]

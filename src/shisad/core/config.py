@@ -6,6 +6,7 @@ and treated as read-only at runtime (immutability principle).
 
 from __future__ import annotations
 
+import ipaddress
 import json
 from pathlib import Path
 from typing import Literal, Self
@@ -42,6 +43,16 @@ def _destination_host_pattern(destination: str) -> str:
 def _contains_wildcard_host_pattern(destination: str) -> bool:
     host_pattern = _destination_host_pattern(destination)
     return bool(host_pattern and any(token in host_pattern for token in _WILDCARD_HOST_TOKENS))
+
+
+def _is_loopback_host(host: str) -> bool:
+    lowered = host.strip().lower()
+    if lowered in {"localhost", "127.0.0.1", "::1"}:
+        return True
+    try:
+        return ipaddress.ip_address(lowered).is_loopback
+    except ValueError:
+        return False
 
 
 class DaemonConfig(BaseSettings):
@@ -243,6 +254,42 @@ class DaemonConfig(BaseSettings):
         default=262144,
         ge=1024,
         description="Maximum bytes returned for browser page text/snapshots.",
+    )
+    approval_origin: str = Field(
+        default="",
+        description=(
+            "Public approval origin used for browser-based registration and approval ceremonies "
+            "(for example https://approve.example.com)."
+        ),
+    )
+    approval_rp_id: str = Field(
+        default="",
+        description="Optional WebAuthn rpId override; defaults to approval_origin hostname.",
+    )
+    approval_bind_host: str = Field(
+        default="",
+        description="Local interface for the daemon-owned approval HTTP listener.",
+    )
+    approval_bind_port: int = Field(
+        default=0,
+        ge=0,
+        le=65535,
+        description="Local TCP port for the daemon-owned approval HTTP listener.",
+    )
+    approval_link_ttl_seconds: int = Field(
+        default=600,
+        ge=60,
+        description="Link expiry window for approval and registration browser ceremonies.",
+    )
+    approval_rate_limit_window_seconds: int = Field(
+        default=60,
+        ge=1,
+        description="Rate-limit window for approval-ceremony POST attempts.",
+    )
+    approval_rate_limit_max_attempts: int = Field(
+        default=8,
+        ge=1,
+        description="Maximum POST attempts per ceremony token inside one rate-limit window.",
     )
     assistant_fs_roots: list[Path] = Field(
         default_factory=list,
@@ -531,6 +578,53 @@ class DaemonConfig(BaseSettings):
                 "browser_require_hardened_isolation does not support wildcard browser scope "
                 f"entries: {', '.join(sorted(wildcard_scope))}"
             )
+        return self
+
+    @model_validator(mode="after")
+    def _validate_approval_origin(self) -> Self:
+        origin = self.approval_origin.strip()
+        if not origin:
+            if not self.approval_bind_host.strip():
+                self.approval_bind_host = "127.0.0.1"
+            if self.approval_bind_port <= 0:
+                self.approval_bind_port = 8787
+            self.approval_rp_id = self.approval_rp_id.strip()
+            return self
+
+        parsed = urlparse(origin)
+        scheme = (parsed.scheme or "").lower()
+        host = (parsed.hostname or "").strip().lower()
+        if scheme not in {"http", "https"} or not host:
+            raise ValueError(
+                "approval_origin must be a full http(s) URL with a hostname "
+                "(for example https://approve.example.com)"
+            )
+        if parsed.path not in {"", "/"} or parsed.params or parsed.query or parsed.fragment:
+            raise ValueError("approval_origin must be an origin only (no path, query, or fragment)")
+
+        loopback = _is_loopback_host(host)
+        if scheme != "https" and not loopback:
+            raise ValueError(
+                "approval_origin must use https unless it targets localhost / loopback for local "
+                "development or tests"
+            )
+
+        self.approval_origin = (
+            f"{scheme}://{host}"
+            if parsed.port is None
+            else f"{scheme}://{host}:{parsed.port}"
+        )
+        self.approval_rp_id = self.approval_rp_id.strip() or host
+
+        if not self.approval_bind_host.strip():
+            self.approval_bind_host = host if loopback else "127.0.0.1"
+        if self.approval_bind_port <= 0:
+            if loopback and parsed.port is not None:
+                self.approval_bind_port = parsed.port
+            elif loopback:
+                self.approval_bind_port = 80 if scheme == "http" else 443
+            else:
+                self.approval_bind_port = 8787
         return self
 
 

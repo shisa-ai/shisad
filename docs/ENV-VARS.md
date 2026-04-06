@@ -127,6 +127,25 @@ Browser notes:
 - Loopback/private browser targets remain blocked by the sandbox unless the target host is explicitly allowlisted for the browser surface in the current configuration.
 - `SHISAD_BROWSER_REQUIRE_HARDENED_ISOLATION` defaults to `1`. Keep it enabled unless you are deliberately running a non-production browser integration and understand that disabling it weakens the browser isolation boundary.
 
+Approval / WebAuthn:
+
+- `SHISAD_APPROVAL_ORIGIN`
+- `SHISAD_APPROVAL_RP_ID`
+- `SHISAD_APPROVAL_BIND_HOST`
+- `SHISAD_APPROVAL_BIND_PORT`
+- `SHISAD_APPROVAL_LINK_TTL_SECONDS`
+- `SHISAD_APPROVAL_RATE_LIMIT_WINDOW_SECONDS`
+- `SHISAD_APPROVAL_RATE_LIMIT_MAX_ATTEMPTS`
+
+Approval notes:
+
+- `SHISAD_APPROVAL_ORIGIN` enables the daemon-owned browser ceremony surface used for passkey registration and `bound_approval` action confirmation.
+- `SHISAD_APPROVAL_ORIGIN` must be a full origin only (`scheme://host[:port]` with no path/query/fragment). Non-loopback origins must use `https`; loopback `http` is allowed only for local development and tests.
+- `SHISAD_APPROVAL_RP_ID` defaults to the approval-origin hostname when unset.
+- `SHISAD_APPROVAL_BIND_HOST` and `SHISAD_APPROVAL_BIND_PORT` control the local listener that serves the ceremony pages. They can differ from the public approval origin when a reverse proxy or tailnet HTTPS endpoint fronts the daemon.
+- `SHISAD_APPROVAL_LINK_TTL_SECONDS` sets the expiry for registration and approval links. POST attempts against those links are rate-limited by `SHISAD_APPROVAL_RATE_LIMIT_WINDOW_SECONDS` and `SHISAD_APPROVAL_RATE_LIMIT_MAX_ATTEMPTS`.
+- If `SHISAD_APPROVAL_ORIGIN` is unset, WebAuthn/browser approval stays unavailable and the existing `software` / `totp` confirmation flows remain the available approval surfaces.
+
 Filesystem/git:
 
 - `SHISAD_ASSISTANT_FS_ROOTS`

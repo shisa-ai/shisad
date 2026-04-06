@@ -15,6 +15,7 @@ from contextlib import contextmanager, suppress
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 import click
 import yaml
@@ -24,6 +25,7 @@ from pydantic import BaseModel
 from shisad.cli.rpc import rpc_call, rpc_run, run_async
 from shisad.core.api.schema import (
     ActionConfirmResult,
+    ActionPendingEntry,
     ActionPendingResult,
     ActionRejectResult,
     AdminSelfModApplyResult,
@@ -78,6 +80,7 @@ from shisad.core.api.schema import (
     TodoGetResult,
     TodoListResult,
     TodoVerifyResult,
+    TwoFactorEntry,
     TwoFactorListResult,
     TwoFactorRegisterBeginResult,
     TwoFactorRegisterConfirmResult,
@@ -1272,7 +1275,40 @@ def action_pending(session_id: str, status: str, limit: int, raw: bool) -> None:
         preview = (row.safe_preview or "").strip()
         if preview:
             click.echo(preview)
+        approval_url = (row.approval_url or "").strip()
+        if approval_url:
+            click.echo(f"approval_url={approval_url}")
+        approval_qr_ascii = (row.approval_qr_ascii or "").rstrip()
+        if approval_qr_ascii:
+            click.echo("approval_qr:")
+            click.echo(approval_qr_ascii)
+        if preview or approval_url or approval_qr_ascii:
             click.echo("")
+
+
+def _pending_action_row(
+    *,
+    config: DaemonConfig,
+    confirmation_id: str,
+    status: str = "",
+    include_ui: bool = True,
+) -> ActionPendingEntry | None:
+    pending = rpc_call(
+        config,
+        "action.pending",
+        {
+            "confirmation_id": confirmation_id,
+            "status": status or None,
+            "limit": 1,
+            "include_ui": include_ui,
+        },
+        response_model=ActionPendingResult,
+    )
+    for row in pending.actions:
+        if row.confirmation_id != confirmation_id:
+            continue
+        return row
+    return None
 
 
 def _resolve_pending_decision_nonce(
@@ -1280,22 +1316,108 @@ def _resolve_pending_decision_nonce(
     config: DaemonConfig,
     confirmation_id: str,
 ) -> str:
-    pending = rpc_call(
-        config,
-        "action.pending",
-        {
-            "confirmation_id": confirmation_id,
-            "status": "pending",
-            "limit": 1,
-            "include_ui": False,
-        },
-        response_model=ActionPendingResult,
+    pending = _pending_action_row(
+        config=config,
+        confirmation_id=confirmation_id,
+        status="pending",
+        include_ui=False,
     )
-    for row in pending.actions:
-        if row.confirmation_id != confirmation_id:
-            continue
-        return (row.decision_nonce or "").strip()
-    return ""
+    return (pending.decision_nonce or "").strip() if pending is not None else ""
+
+
+def _synthetic_pending_confirm_result(row: ActionPendingEntry) -> ActionConfirmResult:
+    return ActionConfirmResult(
+        confirmed=row.status == "approved",
+        confirmation_id=row.confirmation_id,
+        decision_nonce=row.decision_nonce or None,
+        status=row.status or None,
+        status_reason=row.status_reason,
+        reason=None if row.status == "approved" else row.status_reason,
+        approval_level=row.required_level or None,
+        approval_method=row.selected_backend_method or None,
+    )
+
+
+def _wait_for_pending_action_resolution(
+    *,
+    config: DaemonConfig,
+    confirmation_id: str,
+    timeout_seconds: float,
+    poll_interval_seconds: float = 1.0,
+) -> ActionPendingEntry:
+    deadline = time.monotonic() + timeout_seconds
+    latest: ActionPendingEntry | None = None
+    while True:
+        latest = _pending_action_row(
+            config=config,
+            confirmation_id=confirmation_id,
+            include_ui=False,
+        )
+        if latest is not None and latest.status.lower() != "pending":
+            return latest
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        time.sleep(min(poll_interval_seconds, remaining))
+    detail = latest.status if latest is not None else "not_found"
+    raise click.ClickException(
+        f"Timed out waiting for browser approval on {confirmation_id} (last status: {detail})."
+    )
+
+
+def _wait_for_registered_factor(
+    *,
+    config: DaemonConfig,
+    user_id: str,
+    method: str,
+    credential_id: str,
+    timeout_seconds: float,
+    poll_interval_seconds: float = 1.0,
+) -> TwoFactorEntry:
+    deadline = time.monotonic() + timeout_seconds
+    while True:
+        listed = rpc_call(
+            config,
+            "2fa.list",
+            {"user_id": user_id, "method": method},
+            response_model=TwoFactorListResult,
+        )
+        for entry in listed.entries:
+            if entry.credential_id == credential_id:
+                return entry
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        time.sleep(min(poll_interval_seconds, remaining))
+    raise click.ClickException(
+        f"Timed out waiting for {method} factor {credential_id} to finish registration."
+    )
+
+
+def _open_browser_url(url: str) -> None:
+    launched = click.launch(url, locate=False)
+    if launched is False:
+        _echo("Automatic browser launch failed; open the URL manually.", fg="yellow", err=True)
+
+
+def _resolved_approval_setup_config(
+    *,
+    config: DaemonConfig,
+    origin: str,
+    bind_host: str,
+    bind_port: int | None,
+    rp_id: str,
+) -> DaemonConfig:
+    payload = config.model_dump(mode="python")
+    if origin.strip():
+        payload["approval_origin"] = origin.strip()
+    if bind_host.strip():
+        payload["approval_bind_host"] = bind_host.strip()
+    if bind_port is not None:
+        payload["approval_bind_port"] = bind_port
+    if rp_id.strip():
+        payload["approval_rp_id"] = rp_id.strip()
+    return DaemonConfig.model_validate(payload)
 
 
 @action.command("confirm")
@@ -1307,6 +1429,14 @@ def _resolve_pending_decision_nonce(
 @click.option("--credential-id", default="", help="Explicit credential id.")
 @click.option("--totp-code", default="", help="TOTP code for reauthenticated approvals.")
 @click.option("--recovery-code", default="", help="Single-use recovery code for L1 approvals.")
+@click.option("--no-open", is_flag=True, help="Print the browser URL but do not auto-open it.")
+@click.option(
+    "--wait-timeout",
+    default=180.0,
+    show_default=True,
+    type=click.FloatRange(min=1.0),
+    help="Seconds to wait for browser-based approval to complete.",
+)
 def action_confirm(
     confirmation_id: str,
     nonce: str,
@@ -1316,16 +1446,29 @@ def action_confirm(
     credential_id: str,
     totp_code: str,
     recovery_code: str,
+    no_open: bool,
+    wait_timeout: float,
 ) -> None:
     """Approve one pending confirmation."""
     config = _get_config()
+    pending_row = _pending_action_row(
+        config=config,
+        confirmation_id=confirmation_id,
+        status="pending",
+        include_ui=True,
+    )
     decision_nonce = nonce.strip()
     if not decision_nonce:
-        decision_nonce = _resolve_pending_decision_nonce(
+        decision_nonce = (pending_row.decision_nonce or "").strip() if pending_row else ""
+    if not decision_nonce:
+        existing_row = _pending_action_row(
             config=config,
             confirmation_id=confirmation_id,
+            include_ui=False,
         )
-    if not decision_nonce:
+        if existing_row is not None and existing_row.status.lower() != "pending":
+            click.echo(_dump_model(_synthetic_pending_confirm_result(existing_row)))
+            return
         raise click.ClickException(
             "Decision nonce not found for confirmation_id; run 'shisad action pending' and retry "
             "with --nonce."
@@ -1340,6 +1483,9 @@ def action_confirm(
     method_value = approval_method.strip()
     principal_value = principal_id.strip()
     credential_value = credential_id.strip()
+    selected_backend_method = (
+        (pending_row.selected_backend_method or "").strip() if pending_row else ""
+    )
     if principal_value:
         payload["principal_id"] = principal_value
     if credential_value:
@@ -1354,6 +1500,31 @@ def action_confirm(
             raise click.ClickException("--approval-method conflicts with --recovery-code.")
         payload["approval_method"] = "recovery_code"
         payload["proof"] = {"recovery_code": recovery_code.strip()}
+    elif selected_backend_method == "webauthn":
+        if method_value and method_value != "webauthn":
+            raise click.ClickException(
+                "--approval-method conflicts with the pending WebAuthn approval flow."
+            )
+        approval_url = (pending_row.approval_url or "").strip() if pending_row else ""
+        if not approval_url:
+            raise click.ClickException(
+                "WebAuthn approval URL unavailable; run 'shisad action pending' and retry."
+            )
+        click.echo(f"Open this approval URL in a system browser:\n{approval_url}")
+        approval_qr_ascii = (pending_row.approval_qr_ascii or "").rstrip() if pending_row else ""
+        if approval_qr_ascii:
+            click.echo("QR:")
+            click.echo(approval_qr_ascii)
+        if not no_open:
+            _open_browser_url(approval_url)
+        _echo(f"Waiting for browser approval ({wait_timeout:.0f}s timeout)", fg="cyan")
+        resolved_row = _wait_for_pending_action_resolution(
+            config=config,
+            confirmation_id=confirmation_id,
+            timeout_seconds=wait_timeout,
+        )
+        click.echo(_dump_model(_synthetic_pending_confirm_result(resolved_row)))
+        return
     elif method_value:
         payload["approval_method"] = method_value
     result = rpc_call(
@@ -1405,13 +1576,27 @@ def two_factor() -> None:
 @click.option(
     "--method",
     default="totp",
-    type=click.Choice(["totp"]),
+    type=click.Choice(["totp", "webauthn"]),
     show_default=True,
     help="Approval method to enroll.",
 )
 @click.option("--user", "user_id", required=True, help="Target user ID.")
 @click.option("--name", default="", help="Audit principal label (defaults to local username).")
-def two_factor_register(method: str, user_id: str, name: str) -> None:
+@click.option("--no-open", is_flag=True, help="Print the browser URL but do not auto-open it.")
+@click.option(
+    "--wait-timeout",
+    default=180.0,
+    show_default=True,
+    type=click.FloatRange(min=1.0),
+    help="Seconds to wait for browser-based registration to complete.",
+)
+def two_factor_register(
+    method: str,
+    user_id: str,
+    name: str,
+    no_open: bool,
+    wait_timeout: float,
+) -> None:
     """Enroll a new approval factor and verify it before activation."""
     config = _get_config()
     begin = rpc_call(
@@ -1430,10 +1615,32 @@ def two_factor_register(method: str, user_id: str, name: str) -> None:
     click.echo(f"Method: {begin.method}")
     click.echo(f"Principal: {begin.principal_id}")
     click.echo(f"Credential: {begin.credential_id}")
-    click.echo(f"Secret: {begin.secret}")
-    click.echo(f"otpauth URI: {begin.otpauth_uri}")
     if begin.expires_at:
         click.echo(f"Enrollment expires at: {begin.expires_at}")
+    if begin.method == "webauthn":
+        registration_url = begin.registration_url.strip()
+        if not registration_url:
+            raise click.ClickException(begin.reason or "WebAuthn registration URL is unavailable")
+        click.echo(f"Registration URL: {registration_url}")
+        click.echo(f"Approval origin: {begin.approval_origin}")
+        click.echo(f"rp_id: {begin.rp_id}")
+        if not no_open:
+            _open_browser_url(registration_url)
+        _echo(f"Waiting for browser registration ({wait_timeout:.0f}s timeout)", fg="cyan")
+        registered = _wait_for_registered_factor(
+            config=config,
+            user_id=begin.user_id,
+            method=begin.method,
+            credential_id=begin.credential_id,
+            timeout_seconds=wait_timeout,
+        )
+        click.echo(
+            f"Registered {registered.method} factor {registered.credential_id} for "
+            f"{registered.user_id}"
+        )
+        return
+    click.echo(f"Secret: {begin.secret}")
+    click.echo(f"otpauth URI: {begin.otpauth_uri}")
     verify_code = click.prompt("Verification code").strip()
     confirm = rpc_call(
         config,
@@ -1482,7 +1689,7 @@ def two_factor_list(user_id: str, method: str) -> None:
 @click.option(
     "--method",
     default="totp",
-    type=click.Choice(["totp"]),
+    type=click.Choice(["totp", "webauthn"]),
     show_default=True,
     help="Approval method to revoke.",
 )
@@ -1504,6 +1711,73 @@ def two_factor_revoke(method: str, user_id: str, credential_id: str) -> None:
     if not result.revoked:
         raise click.ClickException(result.reason or "matching 2FA factor not found")
     click.echo(f"Revoked {result.removed} factor(s) for {user_id}")
+
+
+@cli.group()
+def approval() -> None:
+    """Approval-origin setup helpers and browser UX guidance."""
+
+
+@approval.command("setup")
+@click.option(
+    "--provider",
+    default="caddy",
+    show_default=True,
+    type=click.Choice(["caddy", "tailscale"]),
+    help="Provisioning helper to print.",
+)
+@click.option(
+    "--origin",
+    default="",
+    help="Approval origin override (for example https://approve.example.com).",
+)
+@click.option("--rp-id", default="", help="Optional WebAuthn rpId override.")
+@click.option("--bind-host", default="", help="Daemon listener host override.")
+@click.option("--bind-port", type=int, default=None, help="Daemon listener port override.")
+def approval_setup(
+    provider: str,
+    origin: str,
+    rp_id: str,
+    bind_host: str,
+    bind_port: int | None,
+) -> None:
+    """Print approval-origin env vars plus reverse-proxy guidance."""
+    config = _get_config()
+    effective = _resolved_approval_setup_config(
+        config=config,
+        origin=origin,
+        bind_host=bind_host,
+        bind_port=bind_port,
+        rp_id=rp_id,
+    )
+    if not effective.approval_origin:
+        raise click.ClickException(
+            "Set SHISAD_APPROVAL_ORIGIN or pass --origin before using approval setup."
+        )
+    parsed = urlparse(effective.approval_origin)
+    if parsed.scheme != "https":
+        raise click.ClickException(f"{provider} approval setup expects an https approval origin.")
+    click.echo("Environment:")
+    click.echo(f"export SHISAD_APPROVAL_ORIGIN={effective.approval_origin}")
+    click.echo(f"export SHISAD_APPROVAL_RP_ID={effective.approval_rp_id}")
+    click.echo(f"export SHISAD_APPROVAL_BIND_HOST={effective.approval_bind_host}")
+    click.echo(f"export SHISAD_APPROVAL_BIND_PORT={effective.approval_bind_port}")
+    click.echo("")
+    if provider == "caddy":
+        click.echo("Caddyfile:")
+        click.echo(f"{parsed.netloc} {{")
+        click.echo(
+            f"    reverse_proxy {effective.approval_bind_host}:{effective.approval_bind_port}"
+        )
+        click.echo("}")
+        return
+    click.echo("Tailscale Guidance:")
+    click.echo(f"Use {effective.approval_origin} as the HTTPS tailnet origin.")
+    click.echo(
+        "Expose the daemon listener below through your preferred Tailscale HTTPS path "
+        "(for example serve/funnel on the same hostname):"
+    )
+    click.echo(f"http://{effective.approval_bind_host}:{effective.approval_bind_port}")
 
 
 @cli.group()

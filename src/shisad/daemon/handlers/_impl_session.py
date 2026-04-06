@@ -4102,6 +4102,12 @@ class SessionImplMixin(HandlerMixinBase):
         if lockdown_notice:
             response_text = f"{response_text}\n\n[LOCKDOWN NOTICE] {lockdown_notice}"
 
+        if validated.delivery_target is not None and execution.pending_confirmation_ids:
+            await self._send_chat_approval_link_notifications(
+                confirmation_ids=list(execution.pending_confirmation_ids),
+                delivery_target=validated.delivery_target,
+            )
+
         response_taint_labels = set(planner_context.context.taint_labels)
         for tool_output in execution.executed_tool_outputs:
             response_taint_labels.update(tool_output.taint_labels)

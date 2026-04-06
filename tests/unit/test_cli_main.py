@@ -1827,3 +1827,246 @@ def test_two_factor_register_prompts_for_verification_and_confirms(
     ]
     assert "SECRETBASE32" in result.output
     assert "RCODE-1" in result.output
+
+
+def test_action_pending_renders_webauthn_link_and_qr(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _config(tmp_path)
+    monkeypatch.setattr(cli_main, "_get_config", lambda: config)
+
+    def _fake_rpc_call(
+        effective_config: DaemonConfig,
+        method: str,
+        params: dict[str, object] | None = None,
+        *,
+        response_model: type[object] | None = None,
+    ) -> object:
+        assert effective_config is config
+        assert method == "action.pending"
+        assert params == {
+            "session_id": None,
+            "status": None,
+            "limit": 50,
+            "include_ui": True,
+        }
+        payload = {
+            "actions": [
+                {
+                    "confirmation_id": "c-1",
+                    "decision_nonce": "n-1",
+                    "status": "pending",
+                    "tool_name": "shell.exec",
+                    "reason": "manual",
+                    "approval_url": "https://approve.example.com/approve/c-1?token=abc",
+                    "approval_qr_ascii": "##\n##",
+                }
+            ],
+            "count": 1,
+        }
+        if response_model is None:
+            return payload
+        return response_model.model_validate(payload)  # type: ignore[attr-defined]
+
+    monkeypatch.setattr(cli_main, "rpc_call", _fake_rpc_call)
+    runner = CliRunner()
+
+    result = runner.invoke(cli_main.cli, ["action", "pending"])
+
+    assert result.exit_code == 0, result.output
+    assert "approval_url=https://approve.example.com/approve/c-1?token=abc" in result.output
+    assert "approval_qr:" in result.output
+
+
+def test_action_confirm_webauthn_opens_browser_and_waits_for_resolution(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _config(tmp_path)
+    monkeypatch.setattr(cli_main, "_get_config", lambda: config)
+    calls: list[tuple[str, dict[str, object] | None]] = []
+    pending_responses = [
+        {
+            "actions": [
+                {
+                    "confirmation_id": "c-1",
+                    "decision_nonce": "n-1",
+                    "status": "pending",
+                    "tool_name": "shell.exec",
+                    "reason": "manual",
+                    "required_level": "bound_approval",
+                    "selected_backend_method": "webauthn",
+                    "approval_url": "https://approve.example.com/approve/c-1?token=abc",
+                    "approval_qr_ascii": "##\n##",
+                }
+            ],
+            "count": 1,
+        },
+        {
+            "actions": [
+                {
+                    "confirmation_id": "c-1",
+                    "decision_nonce": "n-1",
+                    "status": "approved",
+                    "status_reason": "",
+                    "tool_name": "shell.exec",
+                    "reason": "manual",
+                    "required_level": "bound_approval",
+                    "selected_backend_method": "webauthn",
+                }
+            ],
+            "count": 1,
+        },
+    ]
+    launched: list[tuple[str, bool]] = []
+
+    def _fake_rpc_call(
+        effective_config: DaemonConfig,
+        method: str,
+        params: dict[str, object] | None = None,
+        *,
+        response_model: type[object] | None = None,
+    ) -> object:
+        assert effective_config is config
+        calls.append((method, params))
+        assert method == "action.pending"
+        payload = pending_responses.pop(0)
+        if response_model is None:
+            return payload
+        return response_model.model_validate(payload)  # type: ignore[attr-defined]
+
+    def _fake_launch(url: str, locate: bool = False) -> bool:
+        launched.append((url, locate))
+        return True
+
+    monkeypatch.setattr(cli_main, "rpc_call", _fake_rpc_call)
+    monkeypatch.setattr(click, "launch", _fake_launch)
+    runner = CliRunner()
+
+    result = runner.invoke(cli_main.cli, ["action", "confirm", "c-1"])
+
+    assert result.exit_code == 0, result.output
+    assert launched == [("https://approve.example.com/approve/c-1?token=abc", False)]
+    assert all(method != "action.confirm" for method, _params in calls)
+    assert '"status": "approved"' in result.output
+    assert '"approval_method": "webauthn"' in result.output
+
+
+def test_two_factor_register_webauthn_opens_browser_and_waits(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _config(tmp_path)
+    monkeypatch.setattr(cli_main, "_get_config", lambda: config)
+    calls: list[tuple[str, dict[str, object] | None]] = []
+    launched: list[tuple[str, bool]] = []
+
+    def _fake_rpc_call(
+        effective_config: DaemonConfig,
+        method: str,
+        params: dict[str, object] | None = None,
+        *,
+        response_model: type[object] | None = None,
+    ) -> object:
+        assert effective_config is config
+        calls.append((method, params))
+        if method == "2fa.register_begin":
+            payload = {
+                "started": True,
+                "enrollment_id": "enroll-1",
+                "user_id": "alice",
+                "method": "webauthn",
+                "principal_id": "ops-phone",
+                "credential_id": "webauthn-1",
+                "registration_url": "https://approve.example.com/register/enroll-1?token=abc",
+                "approval_origin": "https://approve.example.com",
+                "rp_id": "approve.example.com",
+                "expires_at": "2026-04-06T12:10:00Z",
+            }
+        else:
+            assert method == "2fa.list"
+            payload = {
+                "entries": [
+                    {
+                        "user_id": "alice",
+                        "method": "webauthn",
+                        "principal_id": "ops-phone",
+                        "credential_id": "webauthn-1",
+                        "created_at": "2026-04-06T12:05:00Z",
+                        "last_verified_at": None,
+                        "last_used_at": None,
+                        "recovery_codes_remaining": 0,
+                    }
+                ],
+                "count": 1,
+            }
+        if response_model is None:
+            return payload
+        return response_model.model_validate(payload)  # type: ignore[attr-defined]
+
+    def _fake_launch(url: str, locate: bool = False) -> bool:
+        launched.append((url, locate))
+        return True
+
+    monkeypatch.setattr(cli_main, "rpc_call", _fake_rpc_call)
+    monkeypatch.setattr(click, "launch", _fake_launch)
+    runner = CliRunner()
+
+    result = runner.invoke(
+        cli_main.cli,
+        ["2fa", "register", "--method", "webauthn", "--user", "alice", "--name", "ops-phone"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert launched == [("https://approve.example.com/register/enroll-1?token=abc", False)]
+    assert (
+        "2fa.register_begin",
+        {"method": "webauthn", "user_id": "alice", "name": "ops-phone"},
+    ) in calls
+    assert ("2fa.list", {"user_id": "alice", "method": "webauthn"}) in calls
+    assert all(method != "2fa.register_confirm" for method, _params in calls)
+    assert "Approval origin: https://approve.example.com" in result.output
+    assert "Registered webauthn factor webauthn-1 for alice" in result.output
+
+
+def test_approval_setup_prints_caddy_template(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _config(tmp_path)
+    monkeypatch.setattr(cli_main, "_get_config", lambda: config)
+    runner = CliRunner()
+
+    result = runner.invoke(
+        cli_main.cli,
+        ["approval", "setup", "--provider", "caddy", "--origin", "https://approve.example.com"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "export SHISAD_APPROVAL_ORIGIN=https://approve.example.com" in result.output
+    assert "export SHISAD_APPROVAL_RP_ID=approve.example.com" in result.output
+    assert "export SHISAD_APPROVAL_BIND_HOST=127.0.0.1" in result.output
+    assert "export SHISAD_APPROVAL_BIND_PORT=8787" in result.output
+    assert "Caddyfile:" in result.output
+    assert "approve.example.com {" in result.output
+    assert "reverse_proxy 127.0.0.1:8787" in result.output
+
+
+def test_approval_setup_prints_tailscale_guidance(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _config(tmp_path)
+    monkeypatch.setattr(cli_main, "_get_config", lambda: config)
+    runner = CliRunner()
+
+    result = runner.invoke(
+        cli_main.cli,
+        ["approval", "setup", "--provider", "tailscale", "--origin", "https://ops-demo.ts.net"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "Tailscale Guidance:" in result.output
+    assert "Use https://ops-demo.ts.net as the HTTPS tailnet origin." in result.output
+    assert "http://127.0.0.1:8787" in result.output

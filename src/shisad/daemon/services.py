@@ -48,6 +48,7 @@ from shisad.core.tools.schema import ToolDefinition, ToolParameter
 from shisad.core.trace import TraceRecorder
 from shisad.core.transcript import TranscriptStore
 from shisad.core.types import Capability, CredentialRef, SessionId, ToolName
+from shisad.daemon.approval_web import ApprovalWebService
 from shisad.daemon.event_wiring import DaemonEventWiring
 from shisad.executors.browser import BrowserSandbox, BrowserSandboxPolicy
 from shisad.executors.connect_path import IptablesConnectPathProxy
@@ -140,6 +141,7 @@ class DaemonServices:
     identity_map: ChannelIdentityMap
     channels: dict[str, Channel]
     delivery: ChannelDeliveryService
+    approval_web: ApprovalWebService
     channel_state_store: ChannelStateStore
     matrix_channel: MatrixChannel | None
     discord_channel: DiscordChannel | None
@@ -212,6 +214,14 @@ class DaemonServices:
         event_wiring = DaemonEventWiring(event_bus=event_bus, server=server)
         event_bus.subscribe_all(event_wiring.forward_event_to_subscribers)
         internal_ingress_marker = object()
+        approval_web = ApprovalWebService(
+            origin=config.approval_origin,
+            bind_host=config.approval_bind_host,
+            bind_port=config.approval_bind_port,
+            link_ttl_seconds=config.approval_link_ttl_seconds,
+            rate_limit_window_seconds=config.approval_rate_limit_window_seconds,
+            rate_limit_max_attempts=config.approval_rate_limit_max_attempts,
+        )
         session_manager: SessionManager | None = None
         channels: dict[str, Channel] = {}
         matrix_channel: MatrixChannel | None = None
@@ -533,6 +543,7 @@ class DaemonServices:
                 identity_map=identity_map,
                 channels=channels,
                 delivery=delivery,
+                approval_web=approval_web,
                 channel_state_store=channel_state_store,
                 matrix_channel=matrix_channel,
                 discord_channel=discord_channel,
@@ -629,6 +640,9 @@ class DaemonServices:
         sidecar = getattr(self, "control_plane_sidecar", None)
         if sidecar is not None:
             shutdown_tasks.append(asyncio.create_task(sidecar.close()))
+        approval_web = getattr(self, "approval_web", None)
+        if approval_web is not None:
+            shutdown_tasks.append(asyncio.create_task(approval_web.stop()))
         shutdown_tasks.append(asyncio.create_task(self.server.stop()))
         results = await asyncio.gather(*shutdown_tasks, return_exceptions=True)
         for result in results:

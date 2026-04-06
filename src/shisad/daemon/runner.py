@@ -296,6 +296,7 @@ async def run_daemon(config: DaemonConfig) -> None:
     setup_logging(level=config.log_level)
     services = await DaemonServices.build(config)
     handlers = DaemonControlHandlers(services=services)
+    await services.approval_web.start()
 
     for method_name, method_handler, admin_only, params_model in _method_specs(handlers):
         services.server.register_method(

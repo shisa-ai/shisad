@@ -14,11 +14,20 @@ from collections import defaultdict
 from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from enum import StrEnum
+from enum import Enum, StrEnum
 from pathlib import Path
 from typing import Any, Literal, Protocol
 from urllib.parse import quote, urlparse
 
+from fido2.server import Fido2Server
+from fido2.webauthn import (
+    AttestedCredentialData,
+    AuthenticationResponse,
+    PublicKeyCredentialRpEntity,
+    PublicKeyCredentialUserEntity,
+    RegistrationResponse,
+    UserVerificationRequirement,
+)
 from pydantic import BaseModel, Field, ValidationError, model_validator
 
 from shisad.core.tools.schema import ToolDefinition
@@ -398,6 +407,40 @@ def approval_envelope_hash(envelope: ApprovalEnvelope | dict[str, Any]) -> str:
     payload = envelope.core_payload() if isinstance(envelope, ApprovalEnvelope) else dict(envelope)
     payload.pop("action_summary", None)
     return canonical_sha256(payload)
+
+
+def _b64url_encode(raw: bytes) -> str:
+    return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
+
+def _b64url_decode(value: str) -> bytes:
+    padded = value + "=" * ((4 - len(value) % 4) % 4)
+    return base64.urlsafe_b64decode(padded.encode("ascii"))
+
+
+def approval_envelope_hash_bytes(envelope_hash: str) -> bytes:
+    prefix = "sha256:"
+    if not envelope_hash.startswith(prefix):
+        raise ValueError("approval envelope hash must use sha256: prefix")
+    digest = envelope_hash[len(prefix) :].strip()
+    if len(digest) != 64:
+        raise ValueError("approval envelope hash must contain 32 raw digest bytes")
+    try:
+        return bytes.fromhex(digest)
+    except ValueError as exc:
+        raise ValueError("approval envelope hash is not valid hex") from exc
+
+
+def webauthn_jsonify(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {str(key): webauthn_jsonify(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [webauthn_jsonify(item) for item in value]
+    if isinstance(value, bytes):
+        return _b64url_encode(value)
+    if isinstance(value, Enum):
+        return value.value
+    return value
 
 
 def generate_totp_secret(*, num_bytes: int = 20) -> str:
@@ -893,6 +936,332 @@ class TOTPBackend:
         if consumed_match:
             raise ConfirmationVerificationError("recovery_code_reused")
         raise ConfirmationVerificationError("invalid_recovery_code")
+
+
+class WebAuthnBackend:
+    def __init__(
+        self,
+        *,
+        credential_store: ApprovalFactorStore,
+        approval_origin: str,
+        rp_id: str,
+        rp_name: str = "shisad",
+    ) -> None:
+        self.backend_id = "webauthn.default"
+        self.method = "webauthn"
+        self.level = ConfirmationLevel.BOUND_APPROVAL
+        self.binding_scope = BindingScope.APPROVAL_ENVELOPE
+        self.review_surface = ReviewSurface.BROWSER_RENDERED
+        self.available_principals: set[str] = set()
+        self.available_credentials: set[str] = set()
+        self.capabilities = ConfirmationCapabilities(
+            principal_binding=True,
+            approval_binding=True,
+        )
+        self.third_party_verifiable = False
+        self._credential_store = credential_store
+        self._approval_origin = approval_origin.strip()
+        self._rp_id = rp_id.strip()
+        self._server = Fido2Server(
+            PublicKeyCredentialRpEntity(id=self._rp_id, name=rp_name),
+            verify_origin=lambda origin: origin == self._approval_origin,
+        )
+
+    @property
+    def approval_origin(self) -> str:
+        return self._approval_origin
+
+    @property
+    def rp_id(self) -> str:
+        return self._rp_id
+
+    def is_available_for(self, *, user_id: str) -> bool:
+        return bool(self._candidate_factors(user_id=user_id))
+
+    def principals_for_user(self, *, user_id: str) -> set[str]:
+        return {factor.principal_id for factor in self._candidate_factors(user_id=user_id)}
+
+    def credentials_for_user(self, *, user_id: str) -> set[str]:
+        return {factor.credential_id for factor in self._candidate_factors(user_id=user_id)}
+
+    def registration_begin(
+        self,
+        *,
+        user_id: str,
+        principal_id: str,
+        credential_id: str,
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        user = PublicKeyCredentialUserEntity(
+            id=f"{user_id}:{credential_id}".encode(),
+            name=user_id,
+            display_name=principal_id or user_id,
+        )
+        existing_credentials = self._registered_attested_credentials(user_id=user_id)
+        options, state = self._server.register_begin(
+            user,
+            credentials=existing_credentials or None,
+            user_verification=UserVerificationRequirement.PREFERRED,
+        )
+        public_key = dict(options).get("publicKey", {})
+        return (
+            webauthn_jsonify(public_key) if isinstance(public_key, dict) else {},
+            webauthn_jsonify(state) if isinstance(state, dict) else {},
+        )
+
+    def registration_complete(
+        self,
+        *,
+        credential_id: str,
+        user_id: str,
+        principal_id: str,
+        created_at: datetime,
+        state: dict[str, Any],
+        response_payload: dict[str, Any],
+    ) -> ApprovalFactorRecord:
+        try:
+            response = RegistrationResponse.from_dict(response_payload)
+        except Exception as exc:  # pragma: no cover - library-specific decode failures
+            raise ConfirmationVerificationError("invalid_webauthn_registration") from exc
+        try:
+            auth_data = self._server.register_complete(dict(state), response)
+        except Exception as exc:  # pragma: no cover - library-specific verify failures
+            raise ConfirmationVerificationError("invalid_webauthn_registration") from exc
+
+        credential_data = getattr(auth_data, "credential_data", None)
+        if credential_data is None:
+            raise ConfirmationVerificationError("webauthn_credential_data_missing")
+        attested = AttestedCredentialData(bytes(credential_data))
+        existing = self._factor_for_attested_data(bytes(attested))
+        if existing is not None:
+            raise ConfirmationVerificationError("webauthn_credential_already_registered")
+
+        raw_transports = response_payload.get("transports", [])
+        transports = (
+            [str(item).strip() for item in raw_transports if str(item).strip()]
+            if isinstance(raw_transports, list)
+            else []
+        )
+        return ApprovalFactorRecord(
+            credential_id=credential_id,
+            user_id=user_id,
+            method=self.method,
+            principal_id=principal_id,
+            created_at=created_at,
+            webauthn_attested_credential_data_b64=_b64url_encode(bytes(attested)),
+            webauthn_sign_count=int(getattr(auth_data, "counter", 0) or 0),
+            webauthn_rp_id=self._rp_id,
+            webauthn_transports=transports,
+        )
+
+    def approval_request_options(self, *, pending_action: Any) -> dict[str, Any]:
+        envelope_hash, _action_digest = _approval_binding_inputs(pending_action)
+        challenge = approval_envelope_hash_bytes(envelope_hash)
+        user_id = str(getattr(pending_action, "user_id", "")).strip()
+        if not user_id:
+            raise ConfirmationVerificationError("confirmation_user_missing")
+        factors = self._matching_factors(
+            user_id=user_id,
+            pending_action=pending_action,
+            requested_credential_id=str(getattr(pending_action, "credential_id", "")).strip(),
+        )
+        credentials: list[AttestedCredentialData] = []
+        for candidate in factors:
+            credential = self._attested_credential_data(candidate)
+            if credential is not None:
+                credentials.append(credential)
+        if not credentials:
+            raise ConfirmationVerificationError("confirmation_credential_missing")
+        options, _state = self._server.authenticate_begin(
+            credentials=credentials,
+            challenge=challenge,
+            user_verification=UserVerificationRequirement.PREFERRED,
+        )
+        public_key = dict(options).get("publicKey", {})
+        return webauthn_jsonify(public_key) if isinstance(public_key, dict) else {}
+
+    def verify(
+        self,
+        *,
+        pending_action: Any,
+        params: dict[str, Any],
+        now: datetime | None = None,
+    ) -> ConfirmationEvidence:
+        current = now or datetime.now(UTC)
+        requested_method = str(
+            params.get("approval_method")
+            or params.get("method")
+            or self.method
+        ).strip() or self.method
+        if requested_method != self.method:
+            raise ConfirmationVerificationError("confirmation_method_mismatch")
+
+        decision_nonce = str(params.get("decision_nonce", "")).strip()
+        proof = params.get("proof")
+        proof_payload = proof if isinstance(proof, dict) else {}
+        response_payload = proof_payload.get("credential")
+        if isinstance(response_payload, dict):
+            assertion_payload = response_payload
+        else:
+            assertion_payload = proof_payload
+        if not isinstance(assertion_payload, dict) or not assertion_payload:
+            raise ConfirmationVerificationError("missing_webauthn_assertion")
+
+        user_id = str(getattr(pending_action, "user_id", "")).strip()
+        if not user_id:
+            raise ConfirmationVerificationError("confirmation_user_missing")
+
+        factors = self._matching_factors(
+            user_id=user_id,
+            pending_action=pending_action,
+            requested_credential_id=str(params.get("credential_id", "")).strip(),
+        )
+        credentials: list[AttestedCredentialData] = []
+        for candidate in factors:
+            credential = self._attested_credential_data(candidate)
+            if credential is not None:
+                credentials.append(credential)
+        if not credentials:
+            raise ConfirmationVerificationError("confirmation_credential_missing")
+
+        envelope_hash, action_digest = _approval_binding_inputs(pending_action)
+        challenge = approval_envelope_hash_bytes(envelope_hash)
+        try:
+            _options, state = self._server.authenticate_begin(
+                credentials=credentials,
+                challenge=challenge,
+                user_verification=UserVerificationRequirement.PREFERRED,
+            )
+            response = AuthenticationResponse.from_dict(assertion_payload)
+            matched = self._server.authenticate_complete(state, credentials, response)
+        except Exception as exc:  # pragma: no cover - library-specific verify failures
+            raise ConfirmationVerificationError("invalid_webauthn_assertion") from exc
+
+        factor = self._factor_for_attested_data(bytes(matched), factors=factors)
+        if factor is None:
+            raise ConfirmationVerificationError("confirmation_credential_missing")
+        if (
+            getattr(pending_action, "allowed_principals", ())
+            and factor.principal_id not in getattr(pending_action, "allowed_principals", ())
+        ):
+            raise ConfirmationVerificationError("confirmation_principal_not_allowed")
+        if (
+            getattr(pending_action, "allowed_credentials", ())
+            and factor.credential_id not in getattr(pending_action, "allowed_credentials", ())
+        ):
+            raise ConfirmationVerificationError("confirmation_credential_not_allowed")
+
+        counter = int(getattr(response.response.authenticator_data, "counter", 0) or 0)
+        if factor.webauthn_sign_count > 0 and counter > 0 and counter <= factor.webauthn_sign_count:
+            raise ConfirmationVerificationError("webauthn_sign_count_rollback")
+
+        updated = factor.model_copy(deep=True)
+        if counter > updated.webauthn_sign_count:
+            updated.webauthn_sign_count = counter
+        updated.last_verified_at = current
+        updated.last_used_at = current
+        self._credential_store.update_approval_factor(updated)
+
+        payload = {
+            "schema_version": "shisad.confirmation_evidence.v1",
+            "backend_id": self.backend_id,
+            "method": self.method,
+            "confirmation_id": str(getattr(pending_action, "confirmation_id", "")),
+            "decision_nonce": decision_nonce,
+            "approval_envelope_hash": envelope_hash,
+            "action_digest": action_digest,
+            "approver_principal_id": updated.principal_id,
+            "credential_id": updated.credential_id,
+            "rp_id": self._rp_id,
+            "origin": self._approval_origin,
+            "sign_count": counter,
+            "fallback_used": bool(getattr(pending_action, "fallback_used", False)),
+        }
+        return ConfirmationEvidence(
+            level=self.level,
+            method=self.method,
+            backend_id=self.backend_id,
+            approver_principal_id=updated.principal_id,
+            credential_id=updated.credential_id,
+            binding_scope=self.binding_scope,
+            review_surface=self.review_surface,
+            third_party_verifiable=self.third_party_verifiable,
+            approval_envelope_hash=envelope_hash,
+            action_digest=action_digest,
+            decision_nonce=decision_nonce,
+            fallback_used=bool(payload["fallback_used"]),
+            evidence_payload=payload,
+            evidence_hash=canonical_sha256(payload),
+        )
+
+    def _candidate_factors(self, *, user_id: str) -> list[ApprovalFactorRecord]:
+        return self._credential_store.list_approval_factors(user_id=user_id, method=self.method)
+
+    def _registered_attested_credentials(self, *, user_id: str) -> list[AttestedCredentialData]:
+        credentials: list[AttestedCredentialData] = []
+        for factor in self._candidate_factors(user_id=user_id):
+            credential = self._attested_credential_data(factor)
+            if credential is not None:
+                credentials.append(credential)
+        return credentials
+
+    def _matching_factors(
+        self,
+        *,
+        user_id: str,
+        pending_action: Any,
+        requested_credential_id: str,
+    ) -> list[ApprovalFactorRecord]:
+        candidates = self._candidate_factors(user_id=user_id)
+        allowed_credentials = [
+            item.strip()
+            for item in getattr(pending_action, "allowed_credentials", ())
+            if str(item).strip()
+        ]
+        if requested_credential_id:
+            candidates = [
+                factor for factor in candidates if factor.credential_id == requested_credential_id
+            ]
+        if allowed_credentials:
+            allowed = set(allowed_credentials)
+            candidates = [factor for factor in candidates if factor.credential_id in allowed]
+        allowed_principals = [
+            item.strip()
+            for item in getattr(pending_action, "allowed_principals", ())
+            if str(item).strip()
+        ]
+        if allowed_principals:
+            allowed = set(allowed_principals)
+            candidates = [factor for factor in candidates if factor.principal_id in allowed]
+        return candidates
+
+    @staticmethod
+    def _attested_credential_data(
+        factor: ApprovalFactorRecord,
+    ) -> AttestedCredentialData | None:
+        raw = factor.webauthn_attested_credential_data_b64.strip()
+        if not raw:
+            return None
+        try:
+            return AttestedCredentialData(_b64url_decode(raw))
+        except ValueError:
+            return None
+
+    def _factor_for_attested_data(
+        self,
+        raw_attested_credential_data: bytes,
+        *,
+        factors: list[ApprovalFactorRecord] | None = None,
+    ) -> ApprovalFactorRecord | None:
+        rows = (
+            list(factors)
+            if factors is not None
+            else self._credential_store.list_approval_factors(method=self.method)
+        )
+        encoded = _b64url_encode(raw_attested_credential_data)
+        for factor in rows:
+            if factor.webauthn_attested_credential_data_b64.strip() == encoded:
+                return factor
+        return None
 
 
 @dataclass(slots=True)

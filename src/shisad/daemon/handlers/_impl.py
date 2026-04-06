@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import binascii
 import contextlib
@@ -36,6 +37,7 @@ from shisad.core.approval import (
     ConfirmationRequirement,
     SoftwareConfirmationBackend,
     TOTPBackend,
+    WebAuthnBackend,
     approval_audit_fields,
     approval_envelope_hash,
     compute_action_digest,
@@ -830,6 +832,7 @@ class HandlerImplementation(
         self._channel_ingress = services.channel_ingress
         self._identity_map = services.identity_map
         self._delivery = services.delivery
+        self._approval_web = services.approval_web
         self._channels = services.channels
         self._matrix_channel = services.matrix_channel
         self._discord_channel = services.discord_channel
@@ -874,6 +877,14 @@ class HandlerImplementation(
         self._confirmation_backend_registry.register(
             TOTPBackend(credential_store=services.credential_store)
         )
+        if self._approval_web.enabled:
+            self._confirmation_backend_registry.register(
+                WebAuthnBackend(
+                    credential_store=services.credential_store,
+                    approval_origin=self._config.approval_origin,
+                    rp_id=self._config.approval_rp_id,
+                )
+            )
         self._confirmation_failure_tracker = ConfirmationMethodLockoutTracker(
             state_path=self._config.data_dir / "confirmation_lockouts.json"
         )
@@ -922,6 +933,13 @@ class HandlerImplementation(
             git_timeout_seconds=self._config.assistant_git_timeout_seconds,
         )
         self._load_pending_actions()
+        self._approval_web.bind_callbacks(
+            loop=asyncio.get_running_loop(),
+            registration_context=self._webauthn_registration_ceremony_context,
+            registration_complete=self._complete_webauthn_registration_ceremony,
+            approval_context=self._webauthn_approval_ceremony_context,
+            approval_complete=self._complete_webauthn_approval_ceremony,
+        )
 
     async def _prepare_browser_tool_arguments(
         self,

@@ -96,16 +96,18 @@ reviewed-skill schema-drift observability. The next planned lane is `v0.6.2`.
 #### v0.6.2 — Hardware-backed approval and signing
 
 Current execution note (2026-04-06): the `A0` approval-protocol foundation and
-the `A1` TOTP / re-auth backend are now both review-closed on the active
-branch. The current v0.6.2 tree adds canonical
-`ApprovalEnvelope` / `action_digest` hashing, approval levels (`L0`-`L4`),
-policy-driven escalation, selected-backend metadata on pending approvals,
-richer approval audit fields, the preserved `L0/software` backend, and now the
-first higher-tier backend: durable TOTP enrollment in the credential broker,
-user-aware backend routing, recovery codes, persisted lockout state, queued
-method enforcement on `action.confirm`, audit-visible 2FA
-enroll/revoke lifecycle events, and the `shisactl 2fa register/list/revoke`
-operator surface. The remaining v0.6.2 work is now backend-specific:
+the `A1` TOTP / re-auth backend are both review-closed on the active branch,
+and `A2` is now implemented there and queued for review. The current v0.6.2
+tree adds canonical `ApprovalEnvelope` / `action_digest` hashing, approval
+levels (`L0`-`L4`), policy-driven escalation, selected-backend metadata on
+pending approvals, richer approval audit fields, the preserved
+`L0/software` backend, durable TOTP enrollment in the credential broker, and
+now the WebAuthn / passkey `bound_approval` lane: approval-origin / rpId
+config, a daemon-owned browser ceremony endpoint, durable WebAuthn credential
+registration, chat/QR approval links, browser-bounce CLI flows for
+`2fa register --method webauthn` and `action confirm`, plus behavioral and
+adversarial coverage for the WebAuthn path. The remaining v0.6.2 work after
+`A2` review is backend-specific:
 
 - WebAuthn / passkey bound-approval backend
 - Local helper bridge for SSH-only / private deployments

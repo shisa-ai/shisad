@@ -868,6 +868,8 @@ class ActionPendingEntry(BaseModel):
     status_reason: str | None = None
     preflight_action: dict[str, Any] | None = None
     merged_policy: dict[str, Any] | None = None
+    approval_url: str | None = None
+    approval_qr_ascii: str | None = None
 
 
 class ActionPendingResult(BaseModel):
@@ -911,6 +913,9 @@ class TwoFactorRegisterBeginResult(BaseModel):
     credential_id: str = ""
     secret: str = ""
     otpauth_uri: str = ""
+    registration_url: str = ""
+    approval_origin: str = ""
+    rp_id: str = ""
     expires_at: str | None = None
     reason: str = ""
 

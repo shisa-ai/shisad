@@ -20,6 +20,7 @@ from shisad.core.approval import (
     ConfirmationVerificationError,
     SoftwareConfirmationBackend,
     TOTPBackend,
+    WebAuthnBackend,
     approval_envelope_hash,
     canonical_json_dumps,
     compute_action_digest,
@@ -36,6 +37,7 @@ from shisad.security.credentials import (
     InMemoryCredentialStore,
     RecoveryCodeRecord,
 )
+from tests.helpers.webauthn import make_authentication_payload, make_registration_payload
 
 
 def _deploy_tool() -> ToolDefinition:
@@ -496,6 +498,109 @@ def test_totp_backend_consumes_recovery_codes_once(tmp_path) -> None:
                 "proof": {"recovery_code": recovery_code},
             },
             now=now,
+        )
+
+
+def test_webauthn_backend_registers_and_verifies_bound_approval(tmp_path) -> None:
+    store = InMemoryCredentialStore()
+    store.set_approval_store_path(tmp_path / "credentials.json")
+    backend = WebAuthnBackend(
+        credential_store=store,
+        approval_origin="https://approve.example.com",
+        rp_id="approve.example.com",
+    )
+
+    public_key_options, state = backend.registration_begin(
+        user_id="alice",
+        principal_id="ops-phone",
+        credential_id="webauthn-1",
+    )
+    credential, registration_payload = make_registration_payload(
+        public_key_options=public_key_options,
+        origin="https://approve.example.com",
+        rp_id="approve.example.com",
+    )
+    factor = backend.registration_complete(
+        credential_id="webauthn-1",
+        user_id="alice",
+        principal_id="ops-phone",
+        created_at=datetime(2026, 4, 6, 12, 0, tzinfo=UTC),
+        state=state,
+        response_payload=registration_payload,
+    )
+    store.register_approval_factor(factor)
+
+    pending = _pending_action(
+        confirmation_id="c-1",
+        credential_ids=[factor.credential_id],
+        principal_ids=[factor.principal_id],
+    )
+    request_options = backend.approval_request_options(pending_action=pending)
+    assertion = make_authentication_payload(
+        public_key_options=request_options,
+        credential=credential,
+    )
+
+    evidence = backend.verify(
+        pending_action=pending,
+        params={
+            "decision_nonce": "nonce-1",
+            "approval_method": "webauthn",
+            "proof": assertion,
+        },
+        now=datetime(2026, 4, 6, 12, 1, tzinfo=UTC),
+    )
+
+    assert evidence.level == ConfirmationLevel.BOUND_APPROVAL
+    assert evidence.method == "webauthn"
+    assert evidence.credential_id == factor.credential_id
+    assert evidence.approver_principal_id == factor.principal_id
+    assert evidence.approval_envelope_hash == pending.approval_envelope_hash
+    stored = store.list_approval_factors(user_id="alice", method="webauthn")
+    assert len(stored) == 1
+    assert stored[0].webauthn_sign_count == credential.sign_count
+
+
+def test_webauthn_backend_rejects_duplicate_credential_registration(tmp_path) -> None:
+    store = InMemoryCredentialStore()
+    store.set_approval_store_path(tmp_path / "credentials.json")
+    backend = WebAuthnBackend(
+        credential_store=store,
+        approval_origin="https://approve.example.com",
+        rp_id="approve.example.com",
+    )
+
+    public_key_options, state = backend.registration_begin(
+        user_id="alice",
+        principal_id="ops-phone",
+        credential_id="webauthn-1",
+    )
+    _credential, registration_payload = make_registration_payload(
+        public_key_options=public_key_options,
+        origin="https://approve.example.com",
+        rp_id="approve.example.com",
+    )
+    factor = backend.registration_complete(
+        credential_id="webauthn-1",
+        user_id="alice",
+        principal_id="ops-phone",
+        created_at=datetime(2026, 4, 6, 12, 0, tzinfo=UTC),
+        state=state,
+        response_payload=registration_payload,
+    )
+    store.register_approval_factor(factor)
+
+    with pytest.raises(
+        ConfirmationVerificationError,
+        match="webauthn_credential_already_registered",
+    ):
+        backend.registration_complete(
+            credential_id="webauthn-2",
+            user_id="alice",
+            principal_id="ops-phone-2",
+            created_at=datetime(2026, 4, 6, 12, 1, tzinfo=UTC),
+            state=state,
+            response_payload=registration_payload,
         )
 
 
