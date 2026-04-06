@@ -73,6 +73,8 @@ See [`docs/ROADMAP.md`](docs/ROADMAP.md) for more details.
 
 ## Getting Started
 
+> `shisad` is currently **PRE-ALPHA** software and probably won't do what you think it will if you're not a developer. The easiest way to get setup is to point Claude Code, OpenAI Codex, or some other strong coding agent to install. When it's more baked, the installation procedure will be better.
+
 Users and agents looking to set up ShisaD on their own system should see [`docs/DEPLOY.md`](docs/DEPLOY.md) for the full bring-up guide — host bootstrap, provider configuration, channel setup (Discord, Telegram, Slack), and troubleshooting. ShisaD is designed to run on a dedicated instance or container, not inside your development environment.
 
 ### Quick Start
