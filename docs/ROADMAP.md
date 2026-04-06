@@ -1,7 +1,7 @@
 # shisad Roadmap
 
 *Created: 2026-02-26*
-*Updated: 2026-04-05*
+*Updated: 2026-04-06*
 *Status: Active*
 
 ## Goal
@@ -134,13 +134,32 @@ follow-on v0.6.2 work is now backend-specific:
 - Retrieval/schema precision and telemetry hardening
 - Memory poisoning and persistence-policy regression closure
 
-### v0.8 — Operator web UI and multitenant support
+### v0.8 — UX overhaul
 
+- TUI visual overhaul — theme system, chat/dashboard/confirmation chrome
+- CLI & config — TOML config file, help text, error messages, naming consistency
+- Onboarding — first-run wizard, tutorial bot, upgrade flow
 - Operator web UI on top of daemon/event-stream surfaces
-- Progress and status streaming for long-running tasks
-- Org/workspace isolation for multi-tenant deployments
+- Stats & dashboard — cost/token tracking, usage display, budget controls
 
-### v0.9+ — Collaborative workflows
+### v0.9 — Security quality and consolidation
+
+- Unify secret detection patterns across ingress, egress, and PEP (eliminate coverage gaps)
+- Unify URL/SSRF validation (eliminate duplicate private-range checks)
+- Simplify network enforcement layers (single PEP decision point)
+- Unify crypto key management across signing and encryption systems
+- Wire or remove unused policy scope compilation code
+- Verify and close ingress normalization ordering gap
+- Extract shared firewall core library (ingress + output)
+- Investigate lockdown level consolidation (4 → 3 if warranted)
+
+### v0.10 — Multitenant support
+
+- Org/workspace isolation for multi-tenant deployments
+- Tenant policy boundaries
+- Key/secrets isolation per tenant
+
+### v0.11+ — Collaborative workflows
 
 - Shared and collaborative agent workflows
 
@@ -158,7 +177,9 @@ follow-on v0.6.2 work is now backend-specific:
 | Email / calendar connectors | v0.6.4 |
 | Attachment pipeline | v0.6.4 |
 | Long-term memory | v0.7 |
-| Operator web UI | v0.8 |
+| UX overhaul + operator web UI | v0.8 |
+| Security infrastructure consolidation | v0.9 |
+| Multitenant support | v0.10 |
 
 ## Critical Path
 
@@ -169,7 +190,9 @@ follow-on v0.6.2 work is now backend-specific:
 5. Remote-tool trust and interop (`v0.6.3`)
 6. High-value connectors on top of stable orchestration + interop (`v0.6.4`)
 7. Durable memory with gated writes (`v0.7`)
-8. Operator UI and multi-tenant support (`v0.8`)
+8. UX overhaul and operator web UI (`v0.8`)
+9. Security infrastructure consolidation (`v0.9`)
+10. Multi-tenant support (`v0.10`)
 
 ## Public Announcement Criteria
 
