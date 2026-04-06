@@ -189,10 +189,12 @@ def _configure_model_env(monkeypatch: pytest.MonkeyPatch) -> None:
 async def _start_daemon(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    *,
+    policy_text: str | None = None,
 ) -> tuple[asyncio.Task[None], ControlClient]:
     _configure_model_env(monkeypatch)
     policy_path = tmp_path / "policy.yaml"
-    policy_path.write_text(_base_policy(), encoding="utf-8")
+    policy_path.write_text(policy_text or _base_policy(), encoding="utf-8")
     config = DaemonConfig(
         data_dir=tmp_path / "data",
         socket_path=tmp_path / "control.sock",
@@ -297,6 +299,64 @@ async def test_g3_triggered_task_queues_shared_pending_action_for_tainted_messag
             str(event.get("data", {}).get("tool_name", "")) == "message.send"
             for event in consensus["events"]
         )
+    finally:
+        await _shutdown_daemon(daemon_task, client)
+
+
+@pytest.mark.asyncio
+async def test_a0_scheduler_confirmation_preserves_pep_confirmation_requirement(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    policy_text = (
+        _base_policy()
+        + textwrap.dedent(
+            """
+            tools:
+              message.send:
+                confirmation:
+                  level: bound_approval
+                  fallback:
+                    mode: allow_levels
+                    allow_levels:
+                      - software
+            """
+        ).lstrip()
+    )
+    daemon_task, client = await _start_daemon(
+        tmp_path,
+        monkeypatch,
+        policy_text=policy_text,
+    )
+    try:
+        created = await client.call(
+            "task.create",
+            {
+                "name": "interval-reminder",
+                "goal": "Reminder: check deployment status",
+                "schedule": {"kind": "interval", "expression": "1s"},
+                "capability_snapshot": ["message.send"],
+                "policy_snapshot_ref": "p1",
+                "created_by": "alice",
+                "workspace_id": "ws1",
+                "delivery_target": {"channel": "discord", "recipient": "ops-room"},
+            },
+        )
+
+        pending = await _wait_for_task_pending_confirmation(client, task_id=str(created["id"]))
+        assert pending["count"] >= 1
+        confirmation_id = str(pending["pending"][0]["confirmation_id"])
+        assert confirmation_id
+
+        action_pending = await client.call(
+            "action.pending",
+            {"confirmation_id": confirmation_id},
+        )
+        row = action_pending["actions"][0]
+        assert row["required_level"] == "bound_approval"
+        assert row["selected_backend_id"] == "software.default"
+        assert row["selected_backend_method"] == "software"
+        assert row["fallback_used"] is True
     finally:
         await _shutdown_daemon(daemon_task, client)
 

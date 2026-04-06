@@ -14,10 +14,12 @@ from shisad.core.api.schema import (
     ConfirmationMetricsParams,
 )
 from shisad.core.approval import (
+    ApprovalEnvelope,
     ConfirmationBackendRegistry,
     ConfirmationLevel,
     ConfirmationMethodLockoutTracker,
     SoftwareConfirmationBackend,
+    approval_envelope_hash,
 )
 from shisad.core.evidence import ArtifactEndorsementState, EvidenceStore
 from shisad.core.tools.registry import ToolRegistry
@@ -298,6 +300,7 @@ class _ConfirmationImplHarness(ConfirmationImplMixin):
 
 
 def _pending_action(*, nonce: str, execute_after: datetime | None = None) -> PendingAction:
+    envelope = _software_approval_envelope(tool_name=ToolName("web.search"))
     return PendingAction(
         confirmation_id="c-1",
         decision_nonce=nonce,
@@ -310,6 +313,24 @@ def _pending_action(*, nonce: str, execute_after: datetime | None = None) -> Pen
         capabilities={Capability.HTTP_REQUEST},
         created_at=datetime.now(UTC),
         execute_after=execute_after,
+        approval_envelope=envelope,
+        approval_envelope_hash=approval_envelope_hash(envelope),
+        selected_backend_id="software.default",
+        selected_backend_method="software",
+    )
+
+
+def _software_approval_envelope(*, tool_name: ToolName) -> ApprovalEnvelope:
+    return ApprovalEnvelope(
+        approval_id="c-1",
+        pending_action_id="c-1",
+        workspace_id="w-1",
+        daemon_id="daemon-1",
+        session_id="s-1",
+        required_level=ConfirmationLevel.SOFTWARE,
+        policy_reason=f"{tool_name} confirmation",
+        action_digest="sha256:test-action-digest",
+        nonce="b64:test-nonce",
     )
 
 
@@ -416,6 +437,26 @@ async def test_a0_confirmation_lockout_triggers_after_repeated_invalid_nonce(tmp
     assert locked["confirmed"] is False
     assert locked["reason"] == "confirmation_method_locked_out"
     assert float(locked["retry_after_seconds"]) > 0
+
+
+@pytest.mark.asyncio
+async def test_a0_closed_confirmation_invalid_nonce_does_not_increment_lockout(tmp_path) -> None:
+    harness = _ConfirmationImplHarness(tmp_path)
+    pending = _pending_action(nonce="expected")
+    pending.status = "approved"
+    harness._pending_actions["c-1"] = pending
+
+    for _ in range(5):
+        result = await harness.do_action_confirm(
+            {"confirmation_id": "c-1", "decision_nonce": "wrong"}
+        )
+        assert result["confirmed"] is False
+        assert result["reason"] == "already_approved"
+
+    assert (
+        harness._confirmation_failure_tracker.status(user_id="alice", method="software")
+        is None
+    )
 
 
 @pytest.mark.asyncio
@@ -549,6 +590,49 @@ async def test_trace_only_capability_elevation_fails_closed_when_pep_still_rejec
 
 
 @pytest.mark.asyncio
+async def test_trace_only_capability_elevation_fails_closed_when_pep_requires_stronger_confirmation(
+    tmp_path,
+) -> None:
+    harness = _ConfirmationImplHarness(tmp_path, allow_amendment=True)
+    harness._pep = PEP(
+        PolicyBundle.model_validate(
+            {
+                "default_require_confirmation": False,
+                "tools": {
+                    "web.fetch": {
+                        "confirmation": {
+                            "level": "bound_approval",
+                        }
+                    }
+                },
+            }
+        ),
+        _registry_for_confirmation(),
+    )
+    pending = _pending_action(nonce="expected")
+    pending.tool_name = ToolName("web.fetch")
+    pending.arguments = {"url": "https://example.com"}
+    pending.reason = "trace:stage2_upgrade_required"
+    pending.capabilities = set()
+    pending.pep_context = _pep_context_snapshot(capabilities=set())
+    pending.pep_elevation = PendingPepElevationRequest(
+        kind="capability_grant",
+        reason_code="pep:missing_capabilities",
+        capability_grants={Capability.HTTP_REQUEST},
+    )
+    harness._pending_actions["c-1"] = pending
+
+    result = await harness.do_action_confirm(
+        {"confirmation_id": "c-1", "decision_nonce": "expected"}
+    )
+
+    assert result["confirmed"] is False
+    assert result["status"] == "rejected"
+    assert result["status_reason"] == "confirmation_requirement_unsatisfied_after_confirmation"
+    assert harness.execution_kwargs == []
+
+
+@pytest.mark.asyncio
 async def test_h1_confirmation_returns_plan_state_failure_when_stage2_amend_rejected(
     tmp_path,
 ) -> None:
@@ -604,6 +688,12 @@ async def test_m4_confirmation_endorses_promoted_evidence_and_passes_provenance(
         capabilities={Capability.MEMORY_READ},
         created_at=datetime.now(UTC),
         approval_task_envelope_id="env-task-1",
+        approval_envelope=_software_approval_envelope(tool_name=ToolName("evidence.promote")),
+        approval_envelope_hash=approval_envelope_hash(
+            _software_approval_envelope(tool_name=ToolName("evidence.promote"))
+        ),
+        selected_backend_id="software.default",
+        selected_backend_method="software",
     )
     harness._pending_actions[pending.confirmation_id] = pending
 
@@ -651,6 +741,12 @@ async def test_m4_failed_confirmed_promote_does_not_endorse_artifact(tmp_path) -
         reason="manual",
         capabilities={Capability.MEMORY_READ},
         created_at=datetime.now(UTC),
+        approval_envelope=_software_approval_envelope(tool_name=ToolName("evidence.promote")),
+        approval_envelope_hash=approval_envelope_hash(
+            _software_approval_envelope(tool_name=ToolName("evidence.promote"))
+        ),
+        selected_backend_id="software.default",
+        selected_backend_method="software",
     )
     harness._pending_actions[pending.confirmation_id] = pending
 
@@ -696,6 +792,12 @@ async def test_m4_endorsement_failure_rolls_back_promoted_transcript_entry(tmp_p
         reason="manual",
         capabilities={Capability.MEMORY_READ},
         created_at=datetime.now(UTC),
+        approval_envelope=_software_approval_envelope(tool_name=ToolName("evidence.promote")),
+        approval_envelope_hash=approval_envelope_hash(
+            _software_approval_envelope(tool_name=ToolName("evidence.promote"))
+        ),
+        selected_backend_id="software.default",
+        selected_backend_method="software",
     )
     harness._pending_actions[pending.confirmation_id] = pending
 
@@ -754,6 +856,12 @@ async def test_m4_promote_confirmation_fails_closed_when_transcript_snapshot_rea
         reason="manual",
         capabilities={Capability.MEMORY_READ},
         created_at=datetime.now(UTC),
+        approval_envelope=_software_approval_envelope(tool_name=ToolName("evidence.promote")),
+        approval_envelope_hash=approval_envelope_hash(
+            _software_approval_envelope(tool_name=ToolName("evidence.promote"))
+        ),
+        selected_backend_id="software.default",
+        selected_backend_method="software",
     )
     harness._pending_actions[pending.confirmation_id] = pending
 

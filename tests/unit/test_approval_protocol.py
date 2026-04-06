@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import hashlib
 from datetime import UTC, datetime
+from types import SimpleNamespace
+
+import pytest
 
 from shisad.core.approval import (
     ApprovalEnvelope,
@@ -12,9 +15,12 @@ from shisad.core.approval import (
     ConfirmationFallbackPolicy,
     ConfirmationLevel,
     ConfirmationRequirement,
+    ConfirmationVerificationError,
     SoftwareConfirmationBackend,
     approval_envelope_hash,
+    canonical_json_dumps,
     compute_action_digest,
+    merge_confirmation_requirements,
 )
 from shisad.core.tools.schema import ToolDefinition, ToolParameter
 from shisad.core.types import Capability, ToolName
@@ -134,3 +140,89 @@ def test_registry_filters_backends_by_required_capabilities() -> None:
         )
     )
     assert resolved is None
+
+
+def test_merge_preserves_lower_level_constraints_when_risk_escalation_wins() -> None:
+    merged = merge_confirmation_requirements(
+        [
+            ConfirmationRequirement(
+                level=ConfirmationLevel.SOFTWARE,
+                methods=["webauthn"],
+                allowed_principals=["alice"],
+            ),
+            ConfirmationRequirement(level=ConfirmationLevel.BOUND_APPROVAL),
+        ]
+    )
+    assert merged is not None
+    assert merged.level == ConfirmationLevel.BOUND_APPROVAL
+    assert merged.methods == ["webauthn"]
+    assert merged.allowed_principals == ["alice"]
+    assert merged.routeable is True
+
+
+def test_merge_conflicting_method_constraints_fail_closed() -> None:
+    merged = merge_confirmation_requirements(
+        [
+            ConfirmationRequirement(level=ConfirmationLevel.SOFTWARE, methods=["totp"]),
+            ConfirmationRequirement(level=ConfirmationLevel.SOFTWARE, methods=["webauthn"]),
+        ]
+    )
+    assert merged is not None
+    assert merged.methods == []
+    assert merged.routeable is False
+    assert merged.route_reason == "confirmation_requirement_conflict:methods"
+
+    registry = ConfirmationBackendRegistry()
+    registry.register(SoftwareConfirmationBackend())
+    assert registry.resolve(merged) is None
+
+
+def test_merge_fallback_requires_consensus_for_downgrade() -> None:
+    merged = merge_confirmation_requirements(
+        [
+            ConfirmationRequirement(level=ConfirmationLevel.BOUND_APPROVAL),
+            ConfirmationRequirement(
+                level=ConfirmationLevel.BOUND_APPROVAL,
+                fallback=ConfirmationFallbackPolicy(
+                    mode="allow_levels",
+                    allow_levels=[ConfirmationLevel.SOFTWARE],
+                ),
+            ),
+        ]
+    )
+    assert merged is not None
+    assert merged.fallback.mode == "deny"
+    assert merged.fallback.allow_levels == []
+
+
+def test_registry_rejects_principal_restricted_software_backend() -> None:
+    registry = ConfirmationBackendRegistry()
+    registry.register(SoftwareConfirmationBackend())
+
+    resolved = registry.resolve(
+        ConfirmationRequirement(
+            level=ConfirmationLevel.SOFTWARE,
+            allowed_principals=["workspace_owner"],
+        )
+    )
+    assert resolved is None
+
+
+def test_software_backend_requires_approval_envelope_hash() -> None:
+    backend = SoftwareConfirmationBackend()
+    pending = SimpleNamespace(
+        confirmation_id="c-1",
+        approval_envelope_hash="",
+        approval_envelope=None,
+        allowed_principals=[],
+        allowed_credentials=[],
+        fallback_used=False,
+    )
+
+    with pytest.raises(ConfirmationVerificationError, match="approval_envelope_missing"):
+        backend.verify(pending_action=pending, params={"decision_nonce": "nonce-1"})
+
+
+def test_canonical_json_rejects_naive_datetime() -> None:
+    with pytest.raises(ValueError, match="naive datetimes"):
+        canonical_json_dumps({"created_at": datetime(2026, 4, 6, 12, 0, 0)})

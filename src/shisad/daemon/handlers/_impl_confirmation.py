@@ -11,8 +11,10 @@ from typing import Any
 
 from shisad.core.approval import (
     ConfirmationEvidence,
+    ConfirmationRequirement,
     ConfirmationVerificationError,
     approval_audit_fields,
+    confirmation_evidence_satisfies_requirement,
 )
 from shisad.core.events import PlanAmended, ToolRejected
 from shisad.core.evidence import ArtifactEndorsementState
@@ -148,6 +150,36 @@ class ConfirmationImplMixin(HandlerMixinBase):
         pending = self._pending_actions.get(confirmation_id)
         if pending is None:
             return {"confirmed": False, "confirmation_id": confirmation_id, "reason": "not_found"}
+        if pending.status != "pending":
+            return {
+                "confirmed": False,
+                "confirmation_id": confirmation_id,
+                "reason": f"already_{pending.status}",
+            }
+        if pending.expires_at is not None:
+            expires_at = pending.expires_at
+            if expires_at is not None and expires_at <= datetime.now(UTC):
+                pending.status = "failed"
+                pending.status_reason = "approval_expired"
+                self._sync_task_confirmation_status(pending)
+                self._record_task_confirmation_outcome(pending, success=False)
+                self._persist_pending_actions()
+                return {
+                    "confirmed": False,
+                    "confirmation_id": confirmation_id,
+                    "reason": "approval_expired",
+                    "status": pending.status,
+                    "status_reason": pending.status_reason,
+                }
+        if pending.execute_after is not None:
+            remaining = (pending.execute_after - datetime.now(UTC)).total_seconds()
+            if remaining > 0:
+                return {
+                    "confirmed": False,
+                    "confirmation_id": confirmation_id,
+                    "reason": "cooldown_active",
+                    "retry_after_seconds": round(remaining, 3),
+                }
         confirmation_method = str(
             getattr(pending, "selected_backend_method", "") or "software"
         ).strip() or "software"
@@ -180,36 +212,6 @@ class ConfirmationImplMixin(HandlerMixinBase):
                 "confirmation_id": confirmation_id,
                 "reason": "invalid_decision_nonce",
             }
-        if pending.status != "pending":
-            return {
-                "confirmed": False,
-                "confirmation_id": confirmation_id,
-                "reason": f"already_{pending.status}",
-            }
-        if pending.execute_after is not None:
-            remaining = (pending.execute_after - datetime.now(UTC)).total_seconds()
-            if remaining > 0:
-                return {
-                    "confirmed": False,
-                    "confirmation_id": confirmation_id,
-                    "reason": "cooldown_active",
-                    "retry_after_seconds": round(remaining, 3),
-                }
-        if pending.expires_at is not None:
-            expires_at = pending.expires_at
-            if expires_at is not None and expires_at <= datetime.now(UTC):
-                pending.status = "failed"
-                pending.status_reason = "approval_expired"
-                self._sync_task_confirmation_status(pending)
-                self._record_task_confirmation_outcome(pending, success=False)
-                self._persist_pending_actions()
-                return {
-                    "confirmed": False,
-                    "confirmation_id": confirmation_id,
-                    "reason": "approval_expired",
-                    "status": pending.status,
-                    "status_reason": pending.status_reason,
-                }
         if self._lockdown_manager.should_block_all_actions(pending.session_id):
             pending.status = "rejected"
             pending.status_reason = "session_in_lockdown"
@@ -542,6 +544,67 @@ class ConfirmationImplMixin(HandlerMixinBase):
                     "status_reason": pending.status_reason,
                     "reason": pending.status_reason,
                 }
+            if pep_decision.kind.value == "require_confirmation":
+                payload = pep_decision.confirmation_requirement
+                if not isinstance(payload, Mapping):
+                    pending.status = "failed"
+                    pending.status_reason = "confirmation_requirement_missing_after_confirmation"
+                else:
+                    requirement = ConfirmationRequirement.model_validate(payload)
+                    backend = self._confirmation_backend_registry.get_backend(
+                        str(getattr(pending, "selected_backend_id", "")).strip()
+                        or "software.default"
+                    )
+                    if (
+                        pending.confirmation_evidence is None
+                        or backend is None
+                        or not confirmation_evidence_satisfies_requirement(
+                            requirement=requirement,
+                            evidence=pending.confirmation_evidence,
+                            backend=backend,
+                        )
+                    ):
+                        pending.status = "rejected"
+                        pending.status_reason = (
+                            "confirmation_requirement_unsatisfied_after_confirmation"
+                        )
+                    else:
+                        pending.status = "pending"
+                        pending.status_reason = ""
+                if pending.status != "pending":
+                    decision_timestamp = datetime.now(UTC).isoformat()
+                    await self._event_bus.publish(
+                        ToolRejected(
+                            session_id=pending.session_id,
+                            actor="human_confirmation",
+                            tool_name=pending.tool_name,
+                            reason=pep_decision.reason or pending.status_reason,
+                            **self._pending_approval_event_fields(
+                                pending,
+                                decision_timestamp=decision_timestamp,
+                            ),
+                        )
+                    )
+                    self._sync_task_confirmation_status(pending)
+                    self._record_task_confirmation_outcome(pending, success=False)
+                    self._persist_pending_actions()
+                    self._confirmation_analytics.record(
+                        user_id=str(pending.user_id),
+                        decision="reject",
+                        created_at=pending.created_at,
+                    )
+                    await self._maybe_emit_confirmation_hygiene_alert(
+                        user_id=str(pending.user_id),
+                        session_id=pending.session_id,
+                    )
+                    return {
+                        "confirmed": False,
+                        "confirmation_id": confirmation_id,
+                        "decision_nonce": pending.decision_nonce,
+                        "status": pending.status,
+                        "status_reason": pending.status_reason,
+                        "reason": pending.status_reason,
+                    }
 
         decision_timestamp = datetime.now(UTC).isoformat()
         decision_at = datetime.fromisoformat(decision_timestamp)

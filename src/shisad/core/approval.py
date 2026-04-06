@@ -39,8 +39,8 @@ class ConfirmationLevel(StrEnum):
 
 class BindingScope(StrEnum):
     NONE = "none"
-    APPROVAL_ENVELOPE = "approval_envelope"
     ACTION_DIGEST = "action_digest"
+    APPROVAL_ENVELOPE = "approval_envelope"
     FULL_INTENT = "full_intent"
 
 
@@ -111,6 +111,8 @@ class ConfirmationRequirement(BaseModel):
     )
     fallback: ConfirmationFallbackPolicy = Field(default_factory=ConfirmationFallbackPolicy)
     timeout_seconds: int | None = None
+    routeable: bool = Field(default=True, exclude=True)
+    route_reason: str = Field(default="", exclude=True)
 
     @model_validator(mode="after")
     def _normalize(self) -> ConfirmationRequirement:
@@ -200,44 +202,56 @@ def merge_confirmation_requirements(
         return None
 
     max_level = max(requirements, key=lambda item: item.level.priority).level
-    selected = [item for item in requirements if item.level == max_level]
+    conflicts: list[str] = []
 
     def _merge_list(field_name: str) -> list[str]:
         non_empty = [
             list(getattr(item, field_name))
-            for item in selected
+            for item in requirements
             if getattr(item, field_name)
         ]
         if not non_empty:
             return []
         current = list(non_empty[0])
         for values in non_empty[1:]:
-            intersected = [value for value in current if value in values]
-            current = intersected or current
+            current = [value for value in current if value in values]
+        if not current:
+            conflicts.append(field_name)
         return current
 
     capabilities = ConfirmationCapabilities()
-    for requirement in selected:
+    for requirement in requirements:
         capabilities = capabilities.merge(requirement.require_capabilities)
 
-    fallback_levels: list[ConfirmationLevel] = []
     fallback_mode = "deny"
-    for requirement in selected:
-        if requirement.fallback.mode == "allow_levels":
+    fallback_levels: list[ConfirmationLevel] = []
+    allow_fallbacks = [
+        item.fallback for item in requirements if item.fallback.mode == "allow_levels"
+    ]
+    if allow_fallbacks and len(allow_fallbacks) == len(requirements):
+        fallback_levels = list(allow_fallbacks[0].allow_levels)
+        for fallback in allow_fallbacks[1:]:
+            fallback_levels = [level for level in fallback_levels if level in fallback.allow_levels]
+        if fallback_levels:
             fallback_mode = "allow_levels"
-            for level in requirement.fallback.allow_levels:
-                if level not in fallback_levels:
-                    fallback_levels.append(level)
 
-    timeouts = [item.timeout_seconds for item in selected if item.timeout_seconds is not None]
+    methods = _merge_list("methods")
+    allowed_principals = _merge_list("allowed_principals")
+    allowed_credentials = _merge_list("allowed_credentials")
+    timeouts = [item.timeout_seconds for item in requirements if item.timeout_seconds is not None]
+    route_reason = (
+        "confirmation_requirement_conflict:" + ",".join(conflicts) if conflicts else ""
+    )
     return ConfirmationRequirement(
         level=max_level,
-        methods=_merge_list("methods"),
-        allowed_principals=_merge_list("allowed_principals"),
-        allowed_credentials=_merge_list("allowed_credentials"),
+        methods=methods,
+        allowed_principals=allowed_principals,
+        allowed_credentials=allowed_credentials,
         require_capabilities=capabilities,
         fallback=ConfirmationFallbackPolicy(mode=fallback_mode, allow_levels=fallback_levels),
         timeout_seconds=min(timeouts) if timeouts else None,
+        routeable=not conflicts,
+        route_reason=route_reason,
     )
 
 
@@ -248,6 +262,8 @@ def canonical_json_dumps(value: Any) -> str:
         if isinstance(candidate, BaseModel):
             return _normalize(candidate.model_dump(mode="json"))
         if isinstance(candidate, datetime):
+            if candidate.tzinfo is None or candidate.utcoffset() is None:
+                raise ValueError("naive datetimes are not allowed in canonical JSON")
             return candidate.astimezone(UTC).isoformat().replace("+00:00", "Z")
         if isinstance(candidate, dict):
             return {
@@ -390,7 +406,7 @@ class SoftwareConfirmationBackend:
         self.level = ConfirmationLevel.SOFTWARE
         self.binding_scope = BindingScope.NONE
         self.review_surface = ReviewSurface.HOST_RENDERED
-        self.available_principals = {"workspace_owner"}
+        self.available_principals: set[str] = set()
         self.available_credentials: set[str] = set()
         self.capabilities = ConfirmationCapabilities()
         self.third_party_verifiable = False
@@ -410,14 +426,28 @@ class SoftwareConfirmationBackend:
             raise ConfirmationVerificationError("confirmation_method_mismatch")
 
         decision_nonce = str(params.get("decision_nonce", "")).strip()
-        principal_id = str(params.get("principal_id", "")).strip() or str(
-            getattr(pending_action, "user_id", "")
-        ).strip()
+        if getattr(pending_action, "allowed_principals", ()):
+            raise ConfirmationVerificationError("confirmation_principal_binding_unavailable")
+        if getattr(pending_action, "allowed_credentials", ()):
+            raise ConfirmationVerificationError("confirmation_credential_binding_unavailable")
+
+        principal_id = ""
         envelope_hash = str(getattr(pending_action, "approval_envelope_hash", "")).strip()
         if not envelope_hash:
             envelope = getattr(pending_action, "approval_envelope", None)
             if envelope is not None:
                 envelope_hash = approval_envelope_hash(envelope)
+        if not envelope_hash:
+            raise ConfirmationVerificationError("approval_envelope_missing")
+        action_digest = str(
+            getattr(
+                getattr(pending_action, "approval_envelope", None),
+                "action_digest",
+                "",
+            )
+        ).strip()
+        if not action_digest:
+            raise ConfirmationVerificationError("action_digest_missing")
         payload = {
             "schema_version": "shisad.confirmation_evidence.v1",
             "backend_id": self.backend_id,
@@ -425,13 +455,7 @@ class SoftwareConfirmationBackend:
             "confirmation_id": str(getattr(pending_action, "confirmation_id", "")),
             "decision_nonce": decision_nonce,
             "approval_envelope_hash": envelope_hash,
-            "action_digest": str(
-                getattr(
-                    getattr(pending_action, "approval_envelope", None),
-                    "action_digest",
-                    "",
-                )
-            ),
+            "action_digest": action_digest,
             "approver_principal_id": principal_id,
             "fallback_used": bool(getattr(pending_action, "fallback_used", False)),
         }
@@ -474,6 +498,8 @@ class ConfirmationBackendRegistry:
         self,
         requirement: ConfirmationRequirement,
     ) -> ResolvedConfirmationBackend | None:
+        if not requirement.routeable:
+            return None
         direct = self._resolve_for_levels([requirement.level], requirement)
         if direct is not None:
             return direct
@@ -497,7 +523,13 @@ class ConfirmationBackendRegistry:
                 and backend.capabilities.covers(requirement.require_capabilities)
                 and (
                     not requirement.allowed_principals
-                    or bool(set(requirement.allowed_principals) & set(backend.available_principals))
+                    or (
+                        backend.capabilities.principal_binding
+                        and bool(
+                            set(requirement.allowed_principals)
+                            & set(backend.available_principals)
+                        )
+                    )
                 )
                 and (
                     not requirement.allowed_credentials
@@ -531,6 +563,31 @@ class ConfirmationBackendRegistry:
         if len(candidates) == 1:
             return candidates[0]
         return None
+
+
+def confirmation_evidence_satisfies_requirement(
+    *,
+    requirement: ConfirmationRequirement,
+    evidence: ConfirmationEvidence,
+    backend: ConfirmationBackend,
+) -> bool:
+    if not requirement.routeable:
+        return False
+    if evidence.level.priority < requirement.level.priority:
+        return False
+    if requirement.methods and evidence.method not in requirement.methods:
+        return False
+    if requirement.allowed_principals:
+        if not backend.capabilities.principal_binding:
+            return False
+        if evidence.approver_principal_id not in requirement.allowed_principals:
+            return False
+    if (
+        requirement.allowed_credentials
+        and evidence.credential_id not in requirement.allowed_credentials
+    ):
+        return False
+    return backend.capabilities.covers(requirement.require_capabilities)
 
 
 def approval_audit_fields(evidence: ConfirmationEvidence | None) -> dict[str, Any]:

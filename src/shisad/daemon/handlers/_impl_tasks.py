@@ -6,7 +6,7 @@ from collections.abc import Mapping
 from typing import Any, cast
 from urllib.parse import urlparse
 
-from shisad.core.approval import ApprovalRoutingError
+from shisad.core.approval import ApprovalRoutingError, ConfirmationRequirement
 from shisad.core.events import (
     AnomalyReported,
     PlanCancelled,
@@ -221,6 +221,7 @@ class TasksImplMixin(HandlerMixinBase):
         reason: str,
         capabilities: set[Capability],
         preflight_action: Any | None,
+        confirmation_requirement: ConfirmationRequirement | None = None,
     ) -> str:
         pending = self._queue_pending_action(
             session_id=session.id,
@@ -233,6 +234,7 @@ class TasksImplMixin(HandlerMixinBase):
             capabilities=set(capabilities),
             preflight_action=preflight_action,
             taint_labels=list(_payload_taints(str(getattr(run, "payload_taint", "")))),
+            confirmation_requirement=confirmation_requirement,
         )
         self._scheduler.queue_confirmation(
             str(getattr(task, "id", "")),
@@ -498,6 +500,11 @@ class TasksImplMixin(HandlerMixinBase):
             )
 
         if final_kind == PEPDecisionKind.REQUIRE_CONFIRMATION.value:
+            confirmation_requirement = (
+                ConfirmationRequirement.model_validate(pep_decision.confirmation_requirement)
+                if pep_decision.confirmation_requirement is not None
+                else None
+            )
             try:
                 self._queue_task_confirmation(
                     task=task,
@@ -508,6 +515,7 @@ class TasksImplMixin(HandlerMixinBase):
                     reason=final_reason or "requires_confirmation",
                     capabilities=effective_capabilities,
                     preflight_action=cp_eval.action,
+                    confirmation_requirement=confirmation_requirement,
                 )
             except ApprovalRoutingError as exc:
                 return await self._reject_task_run(

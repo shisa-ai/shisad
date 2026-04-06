@@ -1816,6 +1816,10 @@ class HandlerImplementation(
             if confirmation_requirement is not None
             else legacy_software_confirmation_requirement()
         )
+        if not requirement.routeable:
+            raise ApprovalRoutingError(
+                requirement.route_reason or "confirmation_requirement_conflict"
+            )
         backend_resolution = self._confirmation_backend_registry.resolve(requirement)
         if backend_resolution is None:
             raise ApprovalRoutingError("confirmation_backend_unavailable")
