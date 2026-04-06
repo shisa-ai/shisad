@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import getpass
+import hmac
 import json
 import logging
 import uuid
@@ -24,7 +25,7 @@ from shisad.core.approval import (
     hash_recovery_code,
     match_totp_window,
 )
-from shisad.core.events import PlanAmended, ToolRejected
+from shisad.core.events import PlanAmended, ToolRejected, TwoFactorEnrolled, TwoFactorRevoked
 from shisad.core.evidence import ArtifactEndorsementState
 from shisad.core.types import TaintLabel
 from shisad.daemon.handlers._mixin_typing import (
@@ -66,6 +67,28 @@ class PendingTwoFactorEnrollment:
 
 
 class ConfirmationImplMixin(HandlerMixinBase):
+    @staticmethod
+    def _requested_confirmation_method(*, params: Mapping[str, Any], pending: Any) -> str:
+        requested = str(
+            params.get("approval_method")
+            or params.get("method")
+            or getattr(pending, "selected_backend_method", "")
+            or "software"
+        ).strip()
+        return requested or "software"
+
+    @staticmethod
+    def _pending_confirmation_requirement(pending: Any) -> ConfirmationRequirement:
+        return ConfirmationRequirement(
+            level=getattr(pending, "required_level", ConfirmationRequirement().level),
+            methods=list(getattr(pending, "required_methods", ())),
+            allowed_principals=list(getattr(pending, "allowed_principals", ())),
+            allowed_credentials=list(getattr(pending, "allowed_credentials", ())),
+            require_capabilities=getattr(pending, "required_capabilities", None)
+            or ConfirmationRequirement().require_capabilities,
+            fallback=getattr(pending, "fallback", None) or ConfirmationRequirement().fallback,
+        )
+
     @staticmethod
     def _pending_approval_event_fields(
         pending: Any,
@@ -225,6 +248,15 @@ class ConfirmationImplMixin(HandlerMixinBase):
         )
         self._credential_store.register_approval_factor(factor)
         self._pending_two_factor_enrollments.pop(enrollment_id, None)
+        await self._event_bus.publish(
+            TwoFactorEnrolled(
+                actor="control_plane",
+                user_id=enrollment.user_id,
+                method=enrollment.method,
+                credential_id=enrollment.credential_id,
+                principal_id=enrollment.principal_id,
+            )
+        )
         return {
             "registered": True,
             "user_id": enrollment.user_id,
@@ -269,11 +301,30 @@ class ConfirmationImplMixin(HandlerMixinBase):
             raise ValueError("user_id is required")
         method = str(params.get("method") or "totp").strip().lower() or "totp"
         credential_id = str(params.get("credential_id") or "").strip() or None
+        matched = [
+            factor
+            for factor in self._credential_store.list_approval_factors(
+                user_id=user_id,
+                method=method,
+            )
+            if credential_id is None or factor.credential_id == credential_id
+        ]
         removed = self._credential_store.revoke_approval_factor(
             user_id=user_id,
             method=method,
             credential_id=credential_id,
         )
+        if removed > 0:
+            for factor in matched:
+                await self._event_bus.publish(
+                    TwoFactorRevoked(
+                        actor="control_plane",
+                        user_id=factor.user_id,
+                        method=factor.method,
+                        credential_id=factor.credential_id,
+                        principal_id=factor.principal_id,
+                    )
+                )
         return {
             "revoked": removed > 0,
             "removed": removed,
@@ -374,7 +425,7 @@ class ConfirmationImplMixin(HandlerMixinBase):
                 "confirmation_id": confirmation_id,
                 "reason": "missing_decision_nonce",
             }
-        if provided_nonce != pending.decision_nonce:
+        if not hmac.compare_digest(provided_nonce, pending.decision_nonce):
             self._confirmation_failure_tracker.record_failure(
                 user_id=str(pending.user_id),
                 method=confirmation_method,
@@ -483,6 +534,19 @@ class ConfirmationImplMixin(HandlerMixinBase):
                 "status_reason": pending.status_reason,
             }
 
+        requirement = self._pending_confirmation_requirement(pending)
+        requested_method = self._requested_confirmation_method(params=params, pending=pending)
+        if requirement.methods and requested_method not in requirement.methods:
+            self._confirmation_failure_tracker.record_failure(
+                user_id=str(pending.user_id),
+                method=confirmation_method,
+            )
+            return {
+                "confirmed": False,
+                "confirmation_id": confirmation_id,
+                "reason": "confirmation_method_not_allowed",
+            }
+
         try:
             evidence = backend.verify(
                 pending_action=pending,
@@ -505,11 +569,27 @@ class ConfirmationImplMixin(HandlerMixinBase):
             if retry_after is not None:
                 response["retry_after_seconds"] = round(retry_after, 3)
             return response
-        pending.confirmation_evidence = ConfirmationEvidence.model_validate(
+        validated_evidence = ConfirmationEvidence.model_validate(
             evidence.model_dump(mode="json")
             if isinstance(evidence, ConfirmationEvidence)
             else evidence
         )
+        if not confirmation_evidence_satisfies_requirement(
+            requirement=requirement,
+            evidence=validated_evidence,
+            backend=backend,
+        ):
+            pending.confirmation_evidence = None
+            self._confirmation_failure_tracker.record_failure(
+                user_id=str(pending.user_id),
+                method=confirmation_method,
+            )
+            return {
+                "confirmed": False,
+                "confirmation_id": confirmation_id,
+                "reason": "confirmation_requirement_unsatisfied",
+            }
+        pending.confirmation_evidence = validated_evidence
         self._confirmation_failure_tracker.record_success(
             user_id=str(pending.user_id),
             method=confirmation_method,
@@ -928,7 +1008,7 @@ class ConfirmationImplMixin(HandlerMixinBase):
                 "confirmation_id": confirmation_id,
                 "reason": "missing_decision_nonce",
             }
-        if provided_nonce != pending.decision_nonce:
+        if not hmac.compare_digest(provided_nonce, pending.decision_nonce):
             return {
                 "rejected": False,
                 "confirmation_id": confirmation_id,

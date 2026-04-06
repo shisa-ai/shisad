@@ -25,7 +25,11 @@ from shisad.channels.telegram import TelegramChannel, TelegramConfig
 from shisad.coding.manager import CodingAgentManager
 from shisad.core.api.transport import ControlServer
 from shisad.core.audit import AuditLog
-from shisad.core.config import DaemonConfig, ModelConfig, effective_credential_store_path
+from shisad.core.config import (
+    DaemonConfig,
+    ModelConfig,
+    effective_approval_factor_store_path,
+)
 from shisad.core.events import EventBus
 from shisad.core.evidence import ArtifactLedger
 from shisad.core.planner import Planner
@@ -365,7 +369,7 @@ class DaemonServices:
             )
             credential_store = InMemoryCredentialStore()
             credential_store.set_approval_store_path(
-                effective_credential_store_path(data_dir=config.data_dir)
+                effective_approval_factor_store_path(data_dir=config.data_dir)
             )
             _register_route_credentials(credential_store=credential_store, router=router)
             egress_proxy = EgressProxy(credential_store=credential_store)

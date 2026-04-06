@@ -81,6 +81,15 @@ async def test_two_factor_register_list_revoke_persists_across_restart(
         assert listed["count"] == 1
         assert listed["entries"][0]["principal_id"] == "ops-laptop"
         assert listed["entries"][0]["credential_id"] == confirm["credential_id"]
+        enrolled_events = await client.call(
+            "audit.query",
+            {"event_type": "TwoFactorEnrolled", "limit": 10},
+        )
+        assert any(
+            str(event.get("data", {}).get("credential_id", "")) == confirm["credential_id"]
+            and str(event.get("data", {}).get("principal_id", "")) == "ops-laptop"
+            for event in enrolled_events.get("events", [])
+        )
     finally:
         await _shutdown_daemon(daemon_task, client)
 
@@ -100,5 +109,38 @@ async def test_two_factor_register_list_revoke_persists_across_restart(
         assert revoke["removed"] == 1
         listed_after = await client.call("2fa.list", {"user_id": "alice"})
         assert listed_after["count"] == 0
+        revoked_events = await client.call(
+            "audit.query",
+            {"event_type": "TwoFactorRevoked", "limit": 10},
+        )
+        assert any(
+            str(event.get("data", {}).get("credential_id", ""))
+            == listed["entries"][0]["credential_id"]
+            and str(event.get("data", {}).get("principal_id", "")) == "ops-laptop"
+            for event in revoked_events.get("events", [])
+        )
     finally:
         await _shutdown_daemon(daemon_task, client)
+
+
+@pytest.mark.asyncio
+async def test_two_factor_daemon_starts_with_malformed_persisted_state(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    data_dir = tmp_path / "data"
+    data_dir.mkdir(parents=True, exist_ok=True)
+    (data_dir / "approval-factors.json").write_text("{not-json", encoding="utf-8")
+    (data_dir / "confirmation_lockouts.json").write_text("{not-json", encoding="utf-8")
+
+    daemon_task, client = await _start_daemon(tmp_path, monkeypatch)
+    try:
+        listed = await client.call("2fa.list", {"user_id": "alice"})
+        assert listed["count"] == 0
+    finally:
+        await _shutdown_daemon(daemon_task, client)
+
+    assert not (data_dir / "approval-factors.json").exists()
+    assert not (data_dir / "confirmation_lockouts.json").exists()
+    assert list(data_dir.glob("approval-factors.json.corrupt.*"))
+    assert list(data_dir.glob("confirmation_lockouts.json.corrupt.*"))

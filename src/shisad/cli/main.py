@@ -1345,10 +1345,14 @@ def action_confirm(
     if credential_value:
         payload["credential_id"] = credential_value
     if totp_code.strip():
-        payload["approval_method"] = method_value or "totp"
+        if method_value and method_value != "totp":
+            raise click.ClickException("--approval-method conflicts with --totp-code.")
+        payload["approval_method"] = "totp"
         payload["proof"] = {"totp_code": totp_code.strip()}
     elif recovery_code.strip():
-        payload["approval_method"] = method_value or "recovery_code"
+        if method_value and method_value != "recovery_code":
+            raise click.ClickException("--approval-method conflicts with --recovery-code.")
+        payload["approval_method"] = "recovery_code"
         payload["proof"] = {"recovery_code": recovery_code.strip()}
     elif method_value:
         payload["approval_method"] = method_value

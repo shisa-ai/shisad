@@ -15,6 +15,7 @@ from shisad.core.approval import (
     ConfirmationEvidence,
     ConfirmationFallbackPolicy,
     ConfirmationLevel,
+    ConfirmationMethodLockoutTracker,
     ConfirmationRequirement,
     ConfirmationVerificationError,
     SoftwareConfirmationBackend,
@@ -501,3 +502,15 @@ def test_totp_backend_consumes_recovery_codes_once(tmp_path) -> None:
 def test_canonical_json_rejects_naive_datetime() -> None:
     with pytest.raises(ValueError, match="naive datetimes"):
         canonical_json_dumps({"created_at": datetime(2026, 4, 6, 12, 0, 0)})
+
+
+def test_lockout_tracker_quarantines_malformed_state_file(tmp_path) -> None:
+    state_path = tmp_path / "confirmation_lockouts.json"
+    state_path.write_text("{not-json", encoding="utf-8")
+
+    tracker = ConfirmationMethodLockoutTracker(state_path=state_path)
+
+    assert tracker.status(user_id="alice", method="totp") is None
+    assert not state_path.exists()
+    quarantined = list(tmp_path.glob("confirmation_lockouts.json.corrupt.*"))
+    assert len(quarantined) == 1

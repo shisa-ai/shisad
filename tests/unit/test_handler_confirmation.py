@@ -16,11 +16,18 @@ from shisad.core.api.schema import (
 from shisad.core.approval import (
     ApprovalEnvelope,
     ConfirmationBackendRegistry,
+    ConfirmationCapabilities,
+    ConfirmationEvidence,
+    ConfirmationFallbackPolicy,
     ConfirmationLevel,
     ConfirmationMethodLockoutTracker,
     SoftwareConfirmationBackend,
+    TOTPBackend,
     approval_envelope_hash,
+    generate_totp_code,
+    hash_recovery_code,
 )
+from shisad.core.events import TwoFactorEnrolled, TwoFactorRevoked
 from shisad.core.evidence import ArtifactEndorsementState, EvidenceStore
 from shisad.core.tools.registry import ToolRegistry
 from shisad.core.tools.schema import ToolDefinition, ToolParameter
@@ -44,6 +51,11 @@ from shisad.daemon.handlers._pending_approval import (
 from shisad.daemon.handlers.confirmation import ConfirmationHandlers
 from shisad.security.control_plane.schema import Origin, RiskTier
 from shisad.security.control_plane.sidecar import ControlPlaneRpcError
+from shisad.security.credentials import (
+    ApprovalFactorRecord,
+    InMemoryCredentialStore,
+    RecoveryCodeRecord,
+)
 from shisad.security.pep import PEP, PolicyContext
 from shisad.security.policy import PolicyBundle
 
@@ -187,7 +199,13 @@ class _ConfirmationImplHarness(ConfirmationImplMixin):
         self._control_plane = _ControlPlaneRecorder()
         self._confirmation_analytics = SimpleNamespace(record=lambda **_kwargs: None)
         self._confirmation_backend_registry = ConfirmationBackendRegistry()
+        self._credential_store = InMemoryCredentialStore()
+        self._credential_store.set_approval_store_path(tmp_path / "approval-factors.json")
+        self._pending_two_factor_enrollments: dict[str, object] = {}
         self._confirmation_backend_registry.register(SoftwareConfirmationBackend())
+        self._confirmation_backend_registry.register(
+            TOTPBackend(credential_store=self._credential_store)
+        )
         self._confirmation_failure_tracker = ConfirmationMethodLockoutTracker()
         self.execution_merged_policies: list[object | None] = []
         self.execution_kwargs: list[dict[str, object]] = []
@@ -320,6 +338,54 @@ def _pending_action(*, nonce: str, execute_after: datetime | None = None) -> Pen
     )
 
 
+def _register_totp_factor(
+    harness: _ConfirmationImplHarness,
+    *,
+    recovery_code_hashes: list[str] | None = None,
+) -> ApprovalFactorRecord:
+    factor = ApprovalFactorRecord(
+        credential_id="totp-1",
+        user_id="alice",
+        method="totp",
+        principal_id="ops-laptop",
+        secret_b32="GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ",
+        recovery_codes=[
+            RecoveryCodeRecord(code_hash=value) for value in (recovery_code_hashes or [])
+        ],
+    )
+    harness._credential_store.register_approval_factor(factor)
+    return factor
+
+
+def _totp_pending_action(
+    *,
+    nonce: str,
+    required_methods: list[str] | None = None,
+) -> PendingAction:
+    envelope = _software_approval_envelope(tool_name=ToolName("web.search")).model_copy(
+        update={"required_level": ConfirmationLevel.REAUTHENTICATED}
+    )
+    return PendingAction(
+        confirmation_id="c-1",
+        decision_nonce=nonce,
+        session_id=SessionId("s-1"),
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("w-1"),
+        tool_name=ToolName("web.search"),
+        arguments={"query": "hello"},
+        reason="manual",
+        capabilities={Capability.HTTP_REQUEST},
+        created_at=datetime.now(UTC),
+        required_level=ConfirmationLevel.REAUTHENTICATED,
+        required_methods=list(required_methods or []),
+        required_capabilities=ConfirmationCapabilities(),
+        approval_envelope=envelope,
+        approval_envelope_hash=approval_envelope_hash(envelope),
+        selected_backend_id="totp.default",
+        selected_backend_method="totp",
+    )
+
+
 def _software_approval_envelope(*, tool_name: ToolName) -> ApprovalEnvelope:
     return ApprovalEnvelope(
         approval_id="c-1",
@@ -419,6 +485,84 @@ async def test_a0_confirmation_success_records_software_level_evidence(tmp_path)
 
 
 @pytest.mark.asyncio
+async def test_a1_confirmation_rejects_recovery_code_when_pending_methods_require_totp(
+    tmp_path,
+) -> None:
+    harness = _ConfirmationImplHarness(tmp_path)
+    recovery_code = "ABCD-EFGH"
+    _register_totp_factor(
+        harness,
+        recovery_code_hashes=[hash_recovery_code(recovery_code)],
+    )
+    harness._pending_actions["c-1"] = _totp_pending_action(
+        nonce="expected",
+        required_methods=["totp"],
+    )
+
+    result = await harness.do_action_confirm(
+        {
+            "confirmation_id": "c-1",
+            "decision_nonce": "expected",
+            "approval_method": "recovery_code",
+            "proof": {"recovery_code": recovery_code},
+        }
+    )
+
+    assert result["confirmed"] is False
+    assert result["reason"] == "confirmation_method_not_allowed"
+    factor = harness._credential_store.get_approval_factor("totp-1")
+    assert factor is not None
+    assert factor.recovery_codes[0].consumed_at is None
+    assert harness.execution_kwargs == []
+
+
+@pytest.mark.asyncio
+async def test_a1_confirmation_rejects_backend_evidence_that_does_not_satisfy_pending_requirement(
+    tmp_path,
+) -> None:
+    harness = _ConfirmationImplHarness(tmp_path)
+
+    class _BrokenBackend(SoftwareConfirmationBackend):
+        def __init__(self) -> None:
+            super().__init__()
+            self.backend_id = "broken.default"
+            self.method = "software"
+
+        def verify(
+            self,
+            *,
+            pending_action: object,
+            params: dict[str, object],
+        ) -> ConfirmationEvidence:
+            _ = (pending_action, params)
+            return ConfirmationEvidence(
+                level=ConfirmationLevel.SOFTWARE,
+                method="software",
+                backend_id=self.backend_id,
+                approval_envelope_hash="sha256:test-envelope",
+                action_digest="sha256:test-action",
+                decision_nonce="expected",
+                fallback_used=False,
+            )
+
+    harness._confirmation_backend_registry.register(_BrokenBackend())
+    pending = _pending_action(nonce="expected")
+    pending.required_level = ConfirmationLevel.REAUTHENTICATED
+    pending.selected_backend_id = "broken.default"
+    pending.selected_backend_method = "software"
+    harness._pending_actions["c-1"] = pending
+
+    result = await harness.do_action_confirm(
+        {"confirmation_id": "c-1", "decision_nonce": "expected"}
+    )
+
+    assert result["confirmed"] is False
+    assert result["reason"] == "confirmation_requirement_unsatisfied"
+    assert pending.confirmation_evidence is None
+    assert harness.execution_kwargs == []
+
+
+@pytest.mark.asyncio
 async def test_a0_confirmation_lockout_triggers_after_repeated_invalid_nonce(tmp_path) -> None:
     harness = _ConfirmationImplHarness(tmp_path)
     harness._pending_actions["c-1"] = _pending_action(nonce="expected")
@@ -457,6 +601,49 @@ async def test_a0_closed_confirmation_invalid_nonce_does_not_increment_lockout(t
         harness._confirmation_failure_tracker.status(user_id="alice", method="software")
         is None
     )
+
+
+@pytest.mark.asyncio
+async def test_a1_two_factor_register_confirm_emits_audit_event(tmp_path) -> None:
+    harness = _ConfirmationImplHarness(tmp_path)
+
+    started = await harness.do_two_factor_register_begin(
+        {"method": "totp", "user_id": "alice", "name": "ops-laptop"}
+    )
+    assert started["started"] is True
+
+    confirmed = await harness.do_two_factor_register_confirm(
+        {
+            "enrollment_id": started["enrollment_id"],
+            "verify_code": generate_totp_code(str(started["secret"])),
+        }
+    )
+
+    assert confirmed["registered"] is True
+    event = next(
+        item for item in harness.published_events if isinstance(item, TwoFactorEnrolled)
+    )
+    assert event.user_id == "alice"
+    assert event.method == "totp"
+    assert event.credential_id == confirmed["credential_id"]
+    assert event.principal_id == "ops-laptop"
+
+
+@pytest.mark.asyncio
+async def test_a1_two_factor_revoke_emits_audit_event(tmp_path) -> None:
+    harness = _ConfirmationImplHarness(tmp_path)
+    factor = _register_totp_factor(harness)
+
+    result = await harness.do_two_factor_revoke(
+        {"method": "totp", "user_id": "alice", "credential_id": factor.credential_id}
+    )
+
+    assert result["revoked"] is True
+    event = next(item for item in harness.published_events if isinstance(item, TwoFactorRevoked))
+    assert event.user_id == "alice"
+    assert event.method == "totp"
+    assert event.credential_id == factor.credential_id
+    assert event.principal_id == "ops-laptop"
 
 
 @pytest.mark.asyncio
@@ -662,6 +849,10 @@ async def test_trace_only_capability_elevation_accepts_explicit_fallback_confirm
     pending.reason = "trace:stage2_upgrade_required"
     pending.capabilities = set()
     pending.required_level = ConfirmationLevel.BOUND_APPROVAL
+    pending.fallback = ConfirmationFallbackPolicy(
+        mode="allow_levels",
+        allow_levels=[ConfirmationLevel.SOFTWARE],
+    )
     pending.fallback_used = True
     pending.approval_envelope = _software_approval_envelope(
         tool_name=ToolName("web.fetch")

@@ -1658,6 +1658,110 @@ def test_action_confirm_includes_totp_proof_payload(
     )
 
 
+def test_action_confirm_rejects_conflicting_totp_method_override(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _config(tmp_path)
+    monkeypatch.setattr(cli_main, "_get_config", lambda: config)
+
+    def _fake_rpc_call(
+        effective_config: DaemonConfig,
+        method: str,
+        params: dict[str, object] | None = None,
+        *,
+        response_model: type[object] | None = None,
+    ) -> object:
+        assert effective_config is config
+        assert method == "action.pending"
+        payload = {
+            "actions": [
+                {
+                    "confirmation_id": "c-1",
+                    "decision_nonce": "n-1",
+                    "status": "pending",
+                    "tool_name": "shell.exec",
+                    "reason": "manual",
+                }
+            ],
+            "count": 1,
+        }
+        if response_model is None:
+            return payload
+        return response_model.model_validate(payload)  # type: ignore[attr-defined]
+
+    monkeypatch.setattr(cli_main, "rpc_call", _fake_rpc_call)
+    runner = CliRunner()
+
+    result = runner.invoke(
+        cli_main.cli,
+        [
+            "action",
+            "confirm",
+            "c-1",
+            "--approval-method",
+            "software",
+            "--totp-code",
+            "123456",
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "--approval-method conflicts with --totp-code" in result.output
+
+
+def test_action_confirm_rejects_conflicting_recovery_method_override(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _config(tmp_path)
+    monkeypatch.setattr(cli_main, "_get_config", lambda: config)
+
+    def _fake_rpc_call(
+        effective_config: DaemonConfig,
+        method: str,
+        params: dict[str, object] | None = None,
+        *,
+        response_model: type[object] | None = None,
+    ) -> object:
+        assert effective_config is config
+        assert method == "action.pending"
+        payload = {
+            "actions": [
+                {
+                    "confirmation_id": "c-1",
+                    "decision_nonce": "n-1",
+                    "status": "pending",
+                    "tool_name": "shell.exec",
+                    "reason": "manual",
+                }
+            ],
+            "count": 1,
+        }
+        if response_model is None:
+            return payload
+        return response_model.model_validate(payload)  # type: ignore[attr-defined]
+
+    monkeypatch.setattr(cli_main, "rpc_call", _fake_rpc_call)
+    runner = CliRunner()
+
+    result = runner.invoke(
+        cli_main.cli,
+        [
+            "action",
+            "confirm",
+            "c-1",
+            "--approval-method",
+            "totp",
+            "--recovery-code",
+            "ABCD-EFGH",
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "--approval-method conflicts with --recovery-code" in result.output
+
+
 def test_two_factor_register_prompts_for_verification_and_confirms(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

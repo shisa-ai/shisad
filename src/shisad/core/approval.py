@@ -6,6 +6,7 @@ import base64
 import hashlib
 import hmac
 import json
+import logging
 import math
 import os
 import secrets
@@ -18,10 +19,12 @@ from pathlib import Path
 from typing import Any, Literal, Protocol
 from urllib.parse import quote, urlparse
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, ValidationError, model_validator
 
 from shisad.core.tools.schema import ToolDefinition
 from shisad.security.credentials import ApprovalFactorRecord, ApprovalFactorStore
+
+logger = logging.getLogger(__name__)
 
 
 class ConfirmationLevel(StrEnum):
@@ -303,6 +306,23 @@ def canonical_json_dumps(value: Any) -> str:
 
 def canonical_sha256(value: Any) -> str:
     return f"sha256:{hashlib.sha256(canonical_json_dumps(value).encode('utf-8')).hexdigest()}"
+
+
+def _quarantine_state_file(path: Path, *, label: str) -> None:
+    if not path.exists():
+        return
+    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    target = path.with_name(f"{path.name}.corrupt.{stamp}")
+    counter = 1
+    while target.exists():
+        target = path.with_name(f"{path.name}.corrupt.{stamp}.{counter}")
+        counter += 1
+    try:
+        os.replace(path, target)
+        with suppress(OSError):
+            os.chmod(target, 0o600)
+    except OSError:
+        logger.warning("Failed to quarantine corrupt %s state file %s", label, path, exc_info=True)
 
 
 def new_approval_nonce() -> str:
@@ -852,7 +872,7 @@ class TOTPBackend:
         consumed_match = False
         for factor in factors:
             for record in factor.recovery_codes:
-                if record.code_hash != hashed:
+                if not hmac.compare_digest(record.code_hash, hashed):
                     continue
                 if (
                     record.consumed_at is not None
@@ -862,7 +882,7 @@ class TOTPBackend:
                     continue
                 updated = factor.model_copy(deep=True)
                 for entry in updated.recovery_codes:
-                    if entry.code_hash == hashed:
+                    if hmac.compare_digest(entry.code_hash, hashed):
                         entry.consumed_at = now
                         entry.consumed_confirmation_id = confirmation_id
                         break
@@ -1093,24 +1113,47 @@ class ConfirmationMethodLockoutTracker:
         path = self._state_path
         if path is None or not path.exists():
             return
-        payload = json.loads(path.read_text(encoding="utf-8"))
-        for item in payload.get("entries", []):
-            if not isinstance(item, dict):
-                continue
-            user_id = str(item.get("user_id", "")).strip()
-            method = str(item.get("method", "")).strip()
-            if not user_id or not method:
-                continue
-            locked_until_raw = item.get("locked_until")
-            locked_until: datetime | None = None
-            if isinstance(locked_until_raw, str) and locked_until_raw.strip():
-                locked_until = datetime.fromisoformat(
-                    locked_until_raw.replace("Z", "+00:00")
-                ).astimezone(UTC)
-            self._state[(user_id, method)] = _FailureState(
-                failures=max(0, int(item.get("failures", 0) or 0)),
-                locked_until=locked_until,
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(payload, dict):
+                raise ValueError("lockout payload must be an object")
+            schema_version = str(payload.get("schema_version", "")).strip()
+            if schema_version != "shisad.confirmation_lockout.v1":
+                raise ValueError(
+                    "unsupported confirmation lockout schema_version: "
+                    f"{schema_version}"
+                )
+            entries = payload.get("entries", [])
+            if not isinstance(entries, list):
+                raise ValueError("confirmation lockout entries must be a list")
+            loaded: defaultdict[tuple[str, str], _FailureState] = defaultdict(_FailureState)
+            for item in entries:
+                if not isinstance(item, dict):
+                    raise ValueError("confirmation lockout entries must be objects")
+                user_id = str(item.get("user_id", "")).strip()
+                method = str(item.get("method", "")).strip()
+                if not user_id or not method:
+                    continue
+                locked_until_raw = item.get("locked_until")
+                locked_until: datetime | None = None
+                if isinstance(locked_until_raw, str) and locked_until_raw.strip():
+                    locked_until = datetime.fromisoformat(
+                        locked_until_raw.replace("Z", "+00:00")
+                    ).astimezone(UTC)
+                loaded[(user_id, method)] = _FailureState(
+                    failures=max(0, int(item.get("failures", 0) or 0)),
+                    locked_until=locked_until,
+                )
+            self._state = loaded
+        except (OSError, ValidationError, ValueError, json.JSONDecodeError):
+            logger.warning(
+                "Failed to load confirmation lockout state %s; quarantining corrupt state and "
+                "starting empty",
+                path,
+                exc_info=True,
             )
+            _quarantine_state_file(path, label="confirmation_lockout")
+            self._state = defaultdict(_FailureState)
 
     def _persist(self) -> None:
         path = self._state_path

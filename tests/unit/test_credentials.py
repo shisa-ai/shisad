@@ -280,3 +280,15 @@ class TestApprovalFactorStore:
 
         assert removed == 1
         assert [item.credential_id for item in store.list_approval_factors()] == ["totp-b"]
+
+    def test_approval_factor_store_quarantines_malformed_json(self, tmp_path) -> None:
+        store_path = tmp_path / "approval-factors.json"
+        store_path.write_text("{not-json", encoding="utf-8")
+
+        store = InMemoryCredentialStore()
+        store.set_approval_store_path(store_path)
+
+        assert store.list_approval_factors() == []
+        assert not store_path.exists()
+        quarantined = list(tmp_path.glob("approval-factors.json.corrupt.*"))
+        assert len(quarantined) == 1

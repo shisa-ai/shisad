@@ -19,7 +19,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Protocol
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 from shisad.core.host_matching import host_matches
 from shisad.core.types import CredentialRef
@@ -67,7 +67,7 @@ class RecoveryCodeRecord(BaseModel):
 
 
 class ApprovalFactorRecord(BaseModel):
-    """Durable approval-factor state stored alongside broker secrets."""
+    """Durable approval-factor state stored in the control-plane factor store."""
 
     credential_id: str
     user_id: str
@@ -303,16 +303,35 @@ class InMemoryCredentialStore:
         if path is None or not path.exists():
             self._approval_factors = {}
             return
-        payload = json.loads(path.read_text(encoding="utf-8"))
-        factors = payload.get("approval_factors", [])
-        self._approval_factors = {
-            factor.credential_id: factor
-            for factor in (
-                ApprovalFactorRecord.model_validate(item)
-                for item in factors
-                if isinstance(item, dict)
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(payload, dict):
+                raise ValueError("approval-factor store payload must be an object")
+            schema_version = str(payload.get("schema_version", "")).strip()
+            if schema_version != "shisad.approval_factor_store.v1":
+                raise ValueError(
+                    "unsupported approval-factor store schema_version: "
+                    f"{schema_version}"
+                )
+            factors = payload.get("approval_factors", [])
+            if not isinstance(factors, list):
+                raise ValueError("approval_factors must be a list")
+            loaded: dict[str, ApprovalFactorRecord] = {}
+            for item in factors:
+                if not isinstance(item, dict):
+                    raise ValueError("approval_factors entries must be objects")
+                factor = ApprovalFactorRecord.model_validate(item)
+                loaded[factor.credential_id] = factor
+            self._approval_factors = loaded
+        except (OSError, ValidationError, ValueError, json.JSONDecodeError):
+            logger.warning(
+                "Failed to load approval-factor store %s; quarantining corrupt state and "
+                "starting with an empty factor set",
+                path,
+                exc_info=True,
             )
-        }
+            self._quarantine_approval_store(path)
+            self._approval_factors = {}
 
     def _persist_approval_factors(self) -> None:
         path = self._approval_store_path
@@ -338,3 +357,23 @@ class InMemoryCredentialStore:
             os.chmod(path, 0o600)
         except OSError:
             logger.debug("Unable to chmod approval-factor store file: %s", path)
+
+    @staticmethod
+    def _quarantine_approval_store(path: Path) -> None:
+        if not path.exists():
+            return
+        stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+        target = path.with_name(f"{path.name}.corrupt.{stamp}")
+        counter = 1
+        while target.exists():
+            target = path.with_name(f"{path.name}.corrupt.{stamp}.{counter}")
+            counter += 1
+        try:
+            os.replace(path, target)
+            os.chmod(target, 0o600)
+        except OSError:
+            logger.warning(
+                "Failed to quarantine corrupt approval-factor store %s",
+                path,
+                exc_info=True,
+            )

@@ -240,6 +240,24 @@ class ToolExecuted(BaseEvent):
     approval_signer_key_id: str = ""
 
 
+class TwoFactorEnrolled(BaseEvent):
+    """A durable operator approval factor was enrolled."""
+
+    user_id: str = ""
+    method: str = ""
+    credential_id: str = ""
+    principal_id: str = ""
+
+
+class TwoFactorRevoked(BaseEvent):
+    """A durable operator approval factor was revoked."""
+
+    user_id: str = ""
+    method: str = ""
+    credential_id: str = ""
+    principal_id: str = ""
+
+
 class AnomalyReported(BaseEvent):
     """An anomaly was detected and reported (alarm bell)."""
 

@@ -160,7 +160,8 @@ Coding-agent:
 | `SHISAD_SECURITY_DEFAULT_DENY` | Legacy compatibility knob; runtime default comes from policy |
 | `SHISAD_SECURITY_REQUIRE_CONFIRMATION_FOR_WRITES` | Write/send confirmation default |
 | `SHISAD_SECURITY_EGRESS_DEFAULT_DENY` | Global egress default |
-| `SHISAD_SECURITY_CREDENTIAL_STORE_PATH` | Encrypted credential store path |
+| `SHISAD_SECURITY_CREDENTIAL_STORE_PATH` | Encrypted egress credential store path |
+| `SHISAD_SECURITY_APPROVAL_FACTOR_STORE_PATH` | Approval-factor state path (daemon-owned JSON until at-rest encryption lands) |
 | `SHISAD_SECURITY_AUDIT_LOG_PATH` | Audit log override |
 
 ## `SHISAD_MODEL_*`

@@ -560,7 +560,11 @@ class SecurityConfig(BaseSettings):
     # Credential broker
     credential_store_path: Path = Field(
         default=Path.home() / ".local" / "share" / "shisad" / "credentials.enc",
-        description="Path to the encrypted credential store",
+        description="Path to the encrypted egress credential store",
+    )
+    approval_factor_store_path: Path = Field(
+        default=Path.home() / ".local" / "share" / "shisad" / "approval-factors.json",
+        description="Path to the approval-factor state store",
     )
 
     # Audit
@@ -584,6 +588,22 @@ def effective_credential_store_path(*, data_dir: Path) -> Path:
     default_path = SecurityConfig.model_fields["credential_store_path"].default
     if configured == default_path:
         return data_dir / "credentials.enc"
+    return configured
+
+
+def effective_approval_factor_store_path(*, data_dir: Path) -> Path:
+    """Resolve the approval-factor store path for a daemon instance.
+
+    Approval factors are currently persisted as daemon-owned JSON state rather
+    than the encrypted egress credential store. Keep the default under the
+    active daemon data dir unless the operator explicitly overrides it.
+    """
+
+    security = SecurityConfig()
+    configured = security.approval_factor_store_path
+    default_path = SecurityConfig.model_fields["approval_factor_store_path"].default
+    if configured == default_path:
+        return data_dir / "approval-factors.json"
     return configured
 
 
