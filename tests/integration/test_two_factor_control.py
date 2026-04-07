@@ -171,6 +171,82 @@ async def test_two_factor_register_list_revoke_persists_across_restart(
 
 
 @pytest.mark.asyncio
+async def test_local_fido2_register_list_revoke_persists_across_restart(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    daemon_task, client = await _start_daemon(tmp_path, monkeypatch)
+    try:
+        started = await client.call(
+            "2fa.register_begin",
+            {"method": "local_fido2", "user_id": "alice", "name": "ops-key"},
+        )
+        assert started["started"] is True
+        _credential, registration_payload = make_registration_payload(
+            public_key_options=started["helper_public_key"],
+            origin=started["helper_origin"],
+            rp_id=started["helper_rp_id"],
+        )
+        confirm = await client.call(
+            "2fa.register_confirm",
+            {
+                "enrollment_id": started["enrollment_id"],
+                "proof": registration_payload,
+            },
+        )
+        assert confirm["registered"] is True
+        listed = await client.call("2fa.list", {"user_id": "alice", "method": "local_fido2"})
+        assert listed["count"] == 1
+        assert listed["entries"][0]["principal_id"] == "ops-key"
+        assert listed["entries"][0]["credential_id"] == confirm["credential_id"]
+        enrolled_events = await client.call(
+            "audit.query",
+            {"event_type": "TwoFactorEnrolled", "limit": 10},
+        )
+        assert any(
+            str(event.get("data", {}).get("credential_id", "")) == confirm["credential_id"]
+            and str(event.get("data", {}).get("method", "")) == "local_fido2"
+            and str(event.get("data", {}).get("principal_id", "")) == "ops-key"
+            for event in enrolled_events.get("events", [])
+        )
+    finally:
+        await _shutdown_daemon(daemon_task, client)
+
+    daemon_task, client = await _start_daemon(tmp_path, monkeypatch)
+    try:
+        listed = await client.call("2fa.list", {"user_id": "alice", "method": "local_fido2"})
+        assert listed["count"] == 1
+        revoke = await client.call(
+            "2fa.revoke",
+            {
+                "method": "local_fido2",
+                "user_id": "alice",
+                "credential_id": listed["entries"][0]["credential_id"],
+            },
+        )
+        assert revoke["revoked"] is True
+        assert revoke["removed"] == 1
+        listed_after = await client.call(
+            "2fa.list",
+            {"user_id": "alice", "method": "local_fido2"},
+        )
+        assert listed_after["count"] == 0
+        revoked_events = await client.call(
+            "audit.query",
+            {"event_type": "TwoFactorRevoked", "limit": 10},
+        )
+        assert any(
+            str(event.get("data", {}).get("credential_id", ""))
+            == listed["entries"][0]["credential_id"]
+            and str(event.get("data", {}).get("method", "")) == "local_fido2"
+            and str(event.get("data", {}).get("principal_id", "")) == "ops-key"
+            for event in revoked_events.get("events", [])
+        )
+    finally:
+        await _shutdown_daemon(daemon_task, client)
+
+
+@pytest.mark.asyncio
 async def test_two_factor_daemon_starts_with_malformed_persisted_state(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

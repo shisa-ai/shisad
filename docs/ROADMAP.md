@@ -74,8 +74,10 @@ events, a mandatory TASK summary-firewall checkpoint before delegated output
 crosses back into COMMAND context, a browser tool surface with
 confirmation-gated browser writes plus local skill tool-surface integrity
 checks, and a hardened public release path using OIDC trusted publishing,
-SBOMs, and provenance attestations. The next planning lane is `v0.6.1`, while
-the deferred M7 connector/skill expansion lane lives in `v0.6.4`.
+SBOMs, and provenance attestations. The active follow-on lanes are `v0.6.2`
+(approval + key boundary), `v0.6.3` (critical UX fixes), and `v0.6.4`
+(MCP/A2A interop), while the deferred M7 connector/skill expansion lane lives
+in `v0.6.5`.
 
 #### v0.6.1 — Security hardening
 
@@ -97,31 +99,44 @@ reviewed-skill schema-drift observability. The next planned lane is `v0.6.2`.
 
 Current execution note (2026-04-07): the `A0` approval-protocol foundation,
 the `A1` TOTP / re-auth backend, and the `A2` WebAuthn / passkey
-`bound_approval` backend are all review-closed on the active branch. The
-current v0.6.2 tree adds canonical `ApprovalEnvelope` / `action_digest`
-hashing, approval levels (`L0`-`L4`), policy-driven escalation,
-selected-backend metadata on pending approvals, richer approval audit fields,
-the preserved `L0/software` backend, durable TOTP enrollment in the
-credential broker, and the WebAuthn/passkey lane: approval-origin / rpId
+`bound_approval` backend are all review-closed on the active branch, and the
+`A3` local-helper slice is now landed on the active branch for reviewer
+handoff. The current v0.6.2 tree adds canonical `ApprovalEnvelope` /
+`action_digest` hashing, approval levels (`L0`-`L4`), policy-driven
+escalation, selected-backend metadata on pending approvals, richer approval
+audit fields, the preserved `L0/software` backend, durable TOTP enrollment in
+the credential broker, and the WebAuthn/passkey lane: approval-origin / rpId
 config, a daemon-owned browser ceremony endpoint, durable WebAuthn credential
 registration, chat/QR approval links, browser-bounce CLI flows for
 `2fa register --method webauthn` and `action confirm`, plus behavioral and
 adversarial coverage for the WebAuthn path. The post-close compatibility
 follow-up keeps the strict non-origin rejection from review remediation while
 accepting only root-equivalent signed-origin forms (explicit default ports and
-an optional trailing `/`). The remaining v0.6.2 work is backend-specific:
+an optional trailing `/`). The new `A3` slice adds `shisad-approver`: an
+SSH/local-socket-backed `local_fido2` helper path for private / SSH-only
+deployments, helper-specific origin / rpId context on registration and
+pending approvals, and targeted behavioral / adversarial coverage for
+helper-mediated L2 approvals. The standalone no-SSH paired-helper transport
+is explicitly deferred. The remaining v0.6.2 work is signer/key-boundary
+specific:
 
-- Local helper bridge for SSH-only / private deployments
 - Ledger / signer integration for high-value operations
 - Hardware token signing and artifact signing flows
+- Evidence encryption at rest behind the signer / key-boundary path
 
-#### v0.6.3 — MCP/A2A interop
+#### v0.6.3 — Critical UX fixes
+
+- Confirmation gate pending-status plumbing
+- Chat rendering and response formatting fixes
+- No-model / missing-config diagnostics and operator usability fixes
+
+#### v0.6.4 — MCP/A2A interop
 
 - MCP/A2A compatibility
 - Remote tool/server trust policy
 - Interop layer for consuming or exposing remote tools without weakening local enforcement
 
-#### v0.6.4 — Connector + skill expansions
+#### v0.6.5 — Connector + skill expansions
 
 - Email and calendar connectors
 - Attachment pipeline (voice + image)
@@ -179,9 +194,10 @@ an optional trailing `/`). The remaining v0.6.2 work is backend-specific:
 | Web tools + browser automation | v0.6.0 |
 | Control-plane isolation | v0.6.1 |
 | Hardware-backed approvals | v0.6.2 |
-| MCP/A2A interop | v0.6.3 |
-| Email / calendar connectors | v0.6.4 |
-| Attachment pipeline | v0.6.4 |
+| Critical UX stabilization | v0.6.3 |
+| MCP/A2A interop | v0.6.4 |
+| Email / calendar connectors | v0.6.5 |
+| Attachment pipeline | v0.6.5 |
 | Long-term memory | v0.7 |
 | UX overhaul + operator web UI | v0.8 |
 | Security infrastructure consolidation | v0.9 |
@@ -193,12 +209,13 @@ an optional trailing `/`). The remaining v0.6.2 work is backend-specific:
 2. Orchestration boundary + tool-surface expansion (`v0.6.0`)
 3. Security hardening + control-plane isolation (`v0.6.1`)
 4. Hardware-backed high-risk approvals (`v0.6.2`)
-5. Remote-tool trust and interop (`v0.6.3`)
-6. High-value connectors on top of stable orchestration + interop (`v0.6.4`)
-7. Durable memory with gated writes (`v0.7`)
-8. UX overhaul and operator web UI (`v0.8`)
-9. Security infrastructure consolidation (`v0.9`)
-10. Multi-tenant support (`v0.10`)
+5. Critical UX stabilization from first-user testing (`v0.6.3`)
+6. Remote-tool trust and interop (`v0.6.4`)
+7. High-value connectors on top of stable orchestration + interop (`v0.6.5`)
+8. Durable memory with gated writes (`v0.7`)
+9. UX overhaul and operator web UI (`v0.8`)
+10. Security infrastructure consolidation (`v0.9`)
+11. Multi-tenant support (`v0.10`)
 
 ## Public Announcement Criteria
 

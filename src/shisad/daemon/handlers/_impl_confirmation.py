@@ -18,6 +18,7 @@ from shisad.core.approval import (
     ConfirmationLevel,
     ConfirmationRequirement,
     ConfirmationVerificationError,
+    LocalFido2Backend,
     TOTPBackend,
     WebAuthnBackend,
     approval_audit_fields,
@@ -170,6 +171,12 @@ class ConfirmationImplMixin(HandlerMixinBase):
             raise RuntimeError("webauthn backend is unavailable")
         return backend
 
+    def _local_fido2_backend(self) -> LocalFido2Backend:
+        backend = self._confirmation_backend_registry.get_backend("approver.local_fido2")
+        if not isinstance(backend, LocalFido2Backend):
+            raise RuntimeError("local_fido2 backend is unavailable")
+        return backend
+
     def _prune_two_factor_enrollments(self, *, now: datetime | None = None) -> None:
         current = now or datetime.now(UTC)
         pending = getattr(self, "_pending_two_factor_enrollments", {})
@@ -271,6 +278,22 @@ class ConfirmationImplMixin(HandlerMixinBase):
             "method": factor.method,
             "principal_id": factor.principal_id,
             "credential_id": factor.credential_id,
+        }
+
+    def _local_fido2_approval_context(self, pending: Any) -> dict[str, Any]:
+        if str(getattr(pending, "selected_backend_method", "")).strip() != "local_fido2":
+            return {"ok": False, "reason": "unsupported_confirmation_method"}
+        try:
+            backend = self._local_fido2_backend()
+            public_key = backend.approval_request_options(pending_action=pending)
+        except (ConfirmationVerificationError, RuntimeError) as exc:
+            reason = exc.reason if isinstance(exc, ConfirmationVerificationError) else str(exc)
+            return {"ok": False, "reason": reason}
+        return {
+            "ok": True,
+            "public_key": public_key,
+            "origin": backend.approval_origin,
+            "rp_id": backend.rp_id,
         }
 
     async def _webauthn_approval_ceremony_context(
@@ -386,7 +409,7 @@ class ConfirmationImplMixin(HandlerMixinBase):
     async def do_two_factor_register_begin(self, params: Mapping[str, Any]) -> dict[str, Any]:
         self._prune_two_factor_enrollments()
         method = str(params.get("method") or "totp").strip().lower()
-        if method not in {"totp", "webauthn"}:
+        if method not in {"totp", "webauthn", "local_fido2"}:
             return {"started": False, "reason": "unsupported_2fa_method"}
         user_id = str(params.get("user_id") or "").strip()
         if not user_id:
@@ -428,14 +451,20 @@ class ConfirmationImplMixin(HandlerMixinBase):
                 "expires_at": expires_at.isoformat().replace("+00:00", "Z"),
             }
 
-        if not getattr(self, "_approval_web", None) or not self._approval_web.enabled:
-            return {"started": False, "reason": "approval_origin_not_configured"}
-        try:
-            webauthn_backend = self._webauthn_backend()
-        except RuntimeError:
-            return {"started": False, "reason": "approval_origin_not_configured"}
+        if method == "webauthn":
+            if not getattr(self, "_approval_web", None) or not self._approval_web.enabled:
+                return {"started": False, "reason": "approval_origin_not_configured"}
+            try:
+                backend: WebAuthnBackend | LocalFido2Backend = self._webauthn_backend()
+            except RuntimeError:
+                return {"started": False, "reason": "approval_origin_not_configured"}
+        else:
+            try:
+                backend = self._local_fido2_backend()
+            except RuntimeError:
+                return {"started": False, "reason": "local_helper_unavailable"}
 
-        creation_options, registration_state = webauthn_backend.registration_begin(
+        creation_options, registration_state = backend.registration_begin(
             user_id=user_id,
             principal_id=principal_id,
             credential_id=credential_id,
@@ -450,22 +479,28 @@ class ConfirmationImplMixin(HandlerMixinBase):
             expires_at=expires_at,
             webauthn_creation_options=creation_options,
             webauthn_registration_state=registration_state,
-            webauthn_rp_id=webauthn_backend.rp_id,
-            webauthn_origin=webauthn_backend.approval_origin,
+            webauthn_rp_id=backend.rp_id,
+            webauthn_origin=backend.approval_origin,
         )
         self._pending_two_factor_enrollments[enrollment_id] = enrollment
-        return {
+        payload = {
             "started": True,
             "enrollment_id": enrollment_id,
             "user_id": user_id,
             "method": method,
             "principal_id": principal_id,
             "credential_id": credential_id,
-            "registration_url": self._approval_web.issue_registration_link(enrollment_id),
-            "approval_origin": webauthn_backend.approval_origin,
-            "rp_id": webauthn_backend.rp_id,
             "expires_at": expires_at.isoformat().replace("+00:00", "Z"),
         }
+        if method == "webauthn":
+            payload["registration_url"] = self._approval_web.issue_registration_link(enrollment_id)
+            payload["approval_origin"] = backend.approval_origin
+            payload["rp_id"] = backend.rp_id
+        else:
+            payload["helper_origin"] = backend.approval_origin
+            payload["helper_rp_id"] = backend.rp_id
+            payload["helper_public_key"] = creation_options
+        return payload
 
     async def do_two_factor_register_confirm(self, params: Mapping[str, Any]) -> dict[str, Any]:
         now = datetime.now(UTC)
@@ -476,32 +511,51 @@ class ConfirmationImplMixin(HandlerMixinBase):
         enrollment = self._pending_two_factor_enrollments.get(enrollment_id)
         if not isinstance(enrollment, PendingTwoFactorEnrollment):
             return {"registered": False, "reason": "enrollment_not_found"}
-        if enrollment.method != "totp":
-            return {"registered": False, "reason": "unsupported_2fa_method"}
-        verify_code = str(params.get("verify_code") or "").strip()
-        if not verify_code:
-            raise ValueError("verify_code is required")
-        matched = match_totp_window(
-            secret_b32=enrollment.secret_b32,
-            code=verify_code,
-            now=now,
-        )
-        if matched is None:
-            return {"registered": False, "reason": "invalid_totp_code"}
+        recovery_codes: list[str] = []
+        if enrollment.method == "totp":
+            verify_code = str(params.get("verify_code") or "").strip()
+            if not verify_code:
+                raise ValueError("verify_code is required")
+            matched = match_totp_window(
+                secret_b32=enrollment.secret_b32,
+                code=verify_code,
+                now=now,
+            )
+            if matched is None:
+                return {"registered": False, "reason": "invalid_totp_code"}
 
-        recovery_codes = generate_recovery_codes()
-        factor = ApprovalFactorRecord(
-            credential_id=enrollment.credential_id,
-            user_id=enrollment.user_id,
-            method=enrollment.method,
-            principal_id=enrollment.principal_id,
-            secret_b32=enrollment.secret_b32,
-            created_at=enrollment.created_at,
-            recovery_codes=[
-                RecoveryCodeRecord(code_hash=hash_recovery_code(code))
-                for code in recovery_codes
-            ],
-        )
+            recovery_codes = generate_recovery_codes()
+            factor = ApprovalFactorRecord(
+                credential_id=enrollment.credential_id,
+                user_id=enrollment.user_id,
+                method=enrollment.method,
+                principal_id=enrollment.principal_id,
+                secret_b32=enrollment.secret_b32,
+                created_at=enrollment.created_at,
+                recovery_codes=[
+                    RecoveryCodeRecord(code_hash=hash_recovery_code(code))
+                    for code in recovery_codes
+                ],
+            )
+        elif enrollment.method == "local_fido2":
+            proof = params.get("proof")
+            proof_payload = proof if isinstance(proof, dict) else None
+            if not proof_payload:
+                raise ValueError("proof is required")
+            try:
+                factor = self._local_fido2_backend().registration_complete(
+                    credential_id=enrollment.credential_id,
+                    user_id=enrollment.user_id,
+                    principal_id=enrollment.principal_id,
+                    created_at=enrollment.created_at,
+                    state=dict(enrollment.webauthn_registration_state),
+                    response_payload=proof_payload,
+                )
+            except (ConfirmationVerificationError, RuntimeError) as exc:
+                reason = exc.reason if isinstance(exc, ConfirmationVerificationError) else str(exc)
+                return {"registered": False, "reason": reason}
+        else:
+            return {"registered": False, "reason": "unsupported_2fa_method"}
         self._credential_store.register_approval_factor(factor)
         self._pending_two_factor_enrollments.pop(enrollment_id, None)
         await self._event_bus.publish(
@@ -621,6 +675,15 @@ class ConfirmationImplMixin(HandlerMixinBase):
                 if approval_url:
                     payload["approval_url"] = approval_url
                     payload["approval_qr_ascii"] = self._approval_web.qr_ascii(approval_url)
+            elif (
+                str(getattr(item, "selected_backend_method", "")).strip() == "local_fido2"
+                and str(getattr(item, "status", "")).strip() == "pending"
+            ):
+                helper_context = self._local_fido2_approval_context(item)
+                if helper_context.get("ok") is True:
+                    payload["helper_origin"] = helper_context.get("origin")
+                    payload["helper_rp_id"] = helper_context.get("rp_id")
+                    payload["helper_public_key"] = helper_context.get("public_key")
             payload.pop("pep_context", None)
             if not include_ui:
                 payload.pop("safe_preview", None)

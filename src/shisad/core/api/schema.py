@@ -870,6 +870,9 @@ class ActionPendingEntry(BaseModel):
     merged_policy: dict[str, Any] | None = None
     approval_url: str | None = None
     approval_qr_ascii: str | None = None
+    helper_origin: str | None = None
+    helper_rp_id: str | None = None
+    helper_public_key: dict[str, Any] | None = None
 
 
 class ActionPendingResult(BaseModel):
@@ -916,13 +919,17 @@ class TwoFactorRegisterBeginResult(BaseModel):
     registration_url: str = ""
     approval_origin: str = ""
     rp_id: str = ""
+    helper_origin: str = ""
+    helper_rp_id: str = ""
+    helper_public_key: dict[str, Any] = Field(default_factory=dict)
     expires_at: str | None = None
     reason: str = ""
 
 
 class TwoFactorRegisterConfirmParams(_StrictParams):
     enrollment_id: str
-    verify_code: str
+    verify_code: str = ""
+    proof: dict[str, Any] | None = None
 
 
 class TwoFactorRegisterConfirmResult(BaseModel):

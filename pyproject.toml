@@ -26,6 +26,7 @@ Changelog = "https://github.com/shisa-ai/shisad/blob/main/CHANGELOG.md"
 [project.scripts]
 shisad = "shisad.cli.main:cli"
 shisactl = "shisad.cli.main:cli"
+shisad-approver = "shisad.approver.main:cli"
 
 [build-system]
 requires = ["hatchling==1.29.0"]

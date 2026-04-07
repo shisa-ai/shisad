@@ -147,7 +147,7 @@ Approval notes:
 - `SHISAD_APPROVAL_BIND_HOST` and `SHISAD_APPROVAL_BIND_PORT` control the local listener that serves the ceremony pages. They can differ from the public approval origin when a reverse proxy or tailnet HTTPS endpoint fronts the daemon.
 - `SHISAD_APPROVAL_LINK_TTL_SECONDS` sets the expiry for registration and approval links. POST attempts against those links are rate-limited by `SHISAD_APPROVAL_RATE_LIMIT_WINDOW_SECONDS` and `SHISAD_APPROVAL_RATE_LIMIT_MAX_ATTEMPTS`.
 - WebAuthn `bound_approval` requires user-verifying authenticators (PIN/biometric/passkey UX). Sign-count rollback detection is best-effort only; authenticators that always report `counter=0` do not provide clone-detection signal.
-- If `SHISAD_APPROVAL_ORIGIN` is unset, WebAuthn/browser approval stays unavailable and the existing `software` / `totp` confirmation flows remain the available approval surfaces.
+- If `SHISAD_APPROVAL_ORIGIN` is unset, the browser/WebAuthn ceremony surface stays unavailable, but SSH/private deployments can still use `shisad-approver` with the daemon's `local_fido2` helper path for L2 `bound_approval`. The baseline `software` / `totp` confirmation flows remain available regardless.
 
 Filesystem/git:
 

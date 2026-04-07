@@ -18,6 +18,7 @@ from typing import Any
 import pytest
 import yaml
 
+from shisad.approver.main import ApproverService
 from shisad.channels.base import DeliveryTarget
 from shisad.channels.delivery import ChannelDeliveryService, DeliveryResult
 from shisad.core.api.transport import ControlClient
@@ -807,6 +808,129 @@ async def test_behavioral_webauthn_confirmation_executes_and_records_l2_audit(
                 and str(event.get("data", {}).get("approval_method", "")) == "webauthn"
                 and str(event.get("data", {}).get("approval_credential_id", ""))
                 == registered["credential_id"]
+            ),
+        )
+        assert approved_event["event_type"] == "ToolApproved"
+        assert executed_event["event_type"] == "ToolExecuted"
+    finally:
+        await _shutdown_daemon(daemon_task, client)
+
+
+@pytest.mark.asyncio
+async def test_behavioral_local_fido2_helper_executes_and_records_l2_audit(
+    tmp_path: Path,
+) -> None:
+    class _FakeDevice:
+        def __init__(self) -> None:
+            self._credential = None
+
+        def register_credential(
+            self,
+            *,
+            public_key_options: dict[str, Any],
+            origin: str,
+        ) -> dict[str, Any]:
+            credential, payload = make_registration_payload(
+                public_key_options=public_key_options,
+                origin=origin,
+            )
+            self._credential = credential
+            return payload
+
+        def get_assertion(
+            self,
+            *,
+            public_key_options: dict[str, Any],
+            origin: str,
+        ) -> dict[str, Any]:
+            assert self._credential is not None
+            assert origin == self._credential.origin
+            return make_authentication_payload(
+                public_key_options=public_key_options,
+                credential=self._credential,
+            )
+
+    policy_text = "\n".join(
+        [
+            'version: "1"',
+            "default_require_confirmation: false",
+            "default_capabilities:",
+            "  - shell.exec",
+            "tools:",
+            "  shell.exec:",
+            "    capabilities_required:",
+            "      - shell.exec",
+            "    confirmation:",
+            "      level: bound_approval",
+            "      methods:",
+            "        - local_fido2",
+        ]
+    )
+    daemon_task, client, config = await _start_daemon(tmp_path, policy_text=policy_text + "\n")
+    try:
+        helper = ApproverService(socket_path=config.socket_path, device=_FakeDevice())
+        enrolled = await helper.enroll(user_id="alice", name="ops-key")
+        assert enrolled["registered"] is True
+        assert enrolled["method"] == "local_fido2"
+
+        created = await client.call(
+            "session.create",
+            {"channel": "cli", "user_id": "alice", "workspace_id": "ws1"},
+        )
+        sid = str(created["session_id"])
+
+        proposed = await client.call(
+            "tool.execute",
+            {
+                "session_id": sid,
+                "tool_name": "shell.exec",
+                "command": [sys.executable, "-c", "print('behavioral-a3')"],
+                "limits": {"timeout_seconds": 5, "output_bytes": 2048},
+                "degraded_mode": "fail_open",
+                "security_critical": False,
+            },
+        )
+        assert proposed["allowed"] is False
+        assert proposed["confirmation_required"] is True
+        confirmation_id = str(proposed["confirmation_id"])
+
+        pending = await client.call("action.pending", {"confirmation_id": confirmation_id})
+        action = pending["actions"][0]
+        assert action["required_level"] == "bound_approval"
+        assert action["selected_backend_id"] == "approver.local_fido2"
+        assert action["selected_backend_method"] == "local_fido2"
+        assert action.get("approval_url") is None
+        assert action["helper_origin"]
+        assert action["helper_public_key"]
+
+        processed = await helper.process_pending_once(prompt=lambda _row: True)
+        assert processed == {"processed": 1, "approved": 1, "rejected": 0}
+
+        approved_event = await _wait_for_audit_event(
+            client,
+            event_type="ToolApproved",
+            session_id=sid,
+            predicate=lambda event: (
+                str(event.get("data", {}).get("tool_name", "")) == "shell.exec"
+                and str(event.get("data", {}).get("approval_level", "")) == "bound_approval"
+                and str(event.get("data", {}).get("approval_method", "")) == "local_fido2"
+                and str(event.get("data", {}).get("approval_credential_id", ""))
+                == enrolled["credential_id"]
+                and str(event.get("data", {}).get("approval_review_surface", ""))
+                == "host_rendered"
+            ),
+        )
+        executed_event = await _wait_for_audit_event(
+            client,
+            event_type="ToolExecuted",
+            session_id=sid,
+            predicate=lambda event: (
+                str(event.get("data", {}).get("tool_name", "")) == "shell.exec"
+                and bool(event.get("data", {}).get("success")) is True
+                and str(event.get("data", {}).get("approval_level", "")) == "bound_approval"
+                and str(event.get("data", {}).get("approval_method", "")) == "local_fido2"
+                and str(event.get("data", {}).get("approval_credential_id", ""))
+                == enrolled["credential_id"]
             ),
         )
         assert approved_event["event_type"] == "ToolApproved"

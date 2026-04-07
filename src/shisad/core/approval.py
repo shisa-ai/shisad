@@ -117,6 +117,17 @@ def _origin_matches(candidate: str, expected: str) -> bool:
     return candidate_origin is not None and candidate_origin == expected_origin
 
 
+def local_fido2_rp_id(daemon_id: str) -> str:
+    normalized = "".join(ch for ch in daemon_id.strip().lower() if ch.isalnum())
+    if not normalized:
+        raise ValueError("daemon_id is required for local_fido2 rp_id derivation")
+    return f"{normalized}.approver.shisad.invalid"
+
+
+def local_fido2_origin(daemon_id: str) -> str:
+    return f"https://{local_fido2_rp_id(daemon_id)}"
+
+
 class ConfirmationLevel(StrEnum):
     SOFTWARE = "software"
     REAUTHENTICATED = "reauthenticated"
@@ -1345,6 +1356,24 @@ class WebAuthnBackend:
             if factor.webauthn_attested_credential_data_b64.strip() == encoded:
                 return factor
         return None
+
+
+class LocalFido2Backend(WebAuthnBackend):
+    def __init__(
+        self,
+        *,
+        credential_store: ApprovalFactorStore,
+        daemon_id: str,
+    ) -> None:
+        super().__init__(
+            credential_store=credential_store,
+            approval_origin=local_fido2_origin(daemon_id),
+            rp_id=local_fido2_rp_id(daemon_id),
+            rp_name="shisad approver",
+        )
+        self.backend_id = "approver.local_fido2"
+        self.method = "local_fido2"
+        self.review_surface = ReviewSurface.HOST_RENDERED
 
 
 @dataclass(slots=True)

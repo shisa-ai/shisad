@@ -18,6 +18,7 @@ from shisad.core.approval import (
     ConfirmationMethodLockoutTracker,
     ConfirmationRequirement,
     ConfirmationVerificationError,
+    LocalFido2Backend,
     SoftwareConfirmationBackend,
     TOTPBackend,
     WebAuthnBackend,
@@ -555,6 +556,66 @@ def test_webauthn_backend_registers_and_verifies_bound_approval(tmp_path) -> Non
     assert evidence.approval_envelope_hash == pending.approval_envelope_hash
     stored = store.list_approval_factors(user_id="alice", method="webauthn")
     assert len(stored) == 1
+    assert stored[0].webauthn_sign_count == credential.sign_count
+
+
+def test_local_fido2_backend_registers_and_verifies_bound_approval(tmp_path) -> None:
+    store = InMemoryCredentialStore()
+    store.set_approval_store_path(tmp_path / "credentials.json")
+    backend = LocalFido2Backend(
+        credential_store=store,
+        daemon_id="deadbeefcafebabe",
+    )
+
+    public_key_options, state = backend.registration_begin(
+        user_id="alice",
+        principal_id="ops-key",
+        credential_id="local_fido2-1",
+    )
+    credential, registration_payload = make_registration_payload(
+        public_key_options=public_key_options,
+        origin=backend.approval_origin,
+        rp_id=backend.rp_id,
+    )
+    factor = backend.registration_complete(
+        credential_id="local_fido2-1",
+        user_id="alice",
+        principal_id="ops-key",
+        created_at=datetime(2026, 4, 7, 9, 0, tzinfo=UTC),
+        state=state,
+        response_payload=registration_payload,
+    )
+    store.register_approval_factor(factor)
+
+    pending = _pending_action(
+        confirmation_id="c-local",
+        credential_ids=[factor.credential_id],
+        principal_ids=[factor.principal_id],
+    )
+    request_options = backend.approval_request_options(pending_action=pending)
+    assertion = make_authentication_payload(
+        public_key_options=request_options,
+        credential=credential,
+    )
+
+    evidence = backend.verify(
+        pending_action=pending,
+        params={
+            "decision_nonce": "nonce-local",
+            "approval_method": "local_fido2",
+            "proof": assertion,
+        },
+        now=datetime(2026, 4, 7, 9, 1, tzinfo=UTC),
+    )
+
+    assert evidence.level == ConfirmationLevel.BOUND_APPROVAL
+    assert evidence.method == "local_fido2"
+    assert evidence.credential_id == factor.credential_id
+    assert evidence.approver_principal_id == factor.principal_id
+    assert evidence.review_surface.value == "host_rendered"
+    stored = store.list_approval_factors(user_id="alice", method="local_fido2")
+    assert len(stored) == 1
+    assert stored[0].method == "local_fido2"
     assert stored[0].webauthn_sign_count == credential.sign_count
 
 

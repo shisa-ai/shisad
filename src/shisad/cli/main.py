@@ -1689,7 +1689,7 @@ def two_factor_list(user_id: str, method: str) -> None:
 @click.option(
     "--method",
     default="totp",
-    type=click.Choice(["totp", "webauthn"]),
+    type=click.Choice(["totp", "webauthn", "local_fido2"]),
     show_default=True,
     help="Approval method to revoke.",
 )

@@ -35,6 +35,7 @@ from shisad.core.approval import (
     ConfirmationLevel,
     ConfirmationMethodLockoutTracker,
     ConfirmationRequirement,
+    LocalFido2Backend,
     SoftwareConfirmationBackend,
     TOTPBackend,
     WebAuthnBackend,
@@ -872,6 +873,9 @@ class HandlerImplementation(
         self._confirmation_analytics = ConfirmationAnalytics()
         self._confirmation_alerted_at: dict[str, datetime] = {}
         self._pending_two_factor_enrollments: dict[str, object] = {}
+        self._daemon_id = hashlib.sha256(
+            str(self._config.data_dir.resolve()).encode("utf-8", errors="ignore")
+        ).hexdigest()[:32]
         self._confirmation_backend_registry = ConfirmationBackendRegistry()
         self._confirmation_backend_registry.register(SoftwareConfirmationBackend())
         self._confirmation_backend_registry.register(
@@ -885,12 +889,16 @@ class HandlerImplementation(
                     rp_id=self._config.approval_rp_id,
                 )
             )
+        else:
+            self._confirmation_backend_registry.register(
+                LocalFido2Backend(
+                    credential_store=services.credential_store,
+                    daemon_id=self._daemon_id,
+                )
+            )
         self._confirmation_failure_tracker = ConfirmationMethodLockoutTracker(
             state_path=self._config.data_dir / "confirmation_lockouts.json"
         )
-        self._daemon_id = hashlib.sha256(
-            str(self._config.data_dir.resolve()).encode("utf-8", errors="ignore")
-        ).hexdigest()[:32]
         self._leak_detector = CrossThreadLeakDetector()
         self._reputation_scorer = ReputationScorer(submission_limit=20)
         self._dashboard = SecurityDashboard(
