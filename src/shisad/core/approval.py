@@ -1288,7 +1288,15 @@ class WebAuthnBackend:
         )
 
     def _candidate_factors(self, *, user_id: str) -> list[ApprovalFactorRecord]:
-        return self._credential_store.list_approval_factors(user_id=user_id, method=self.method)
+        factors = self._credential_store.list_approval_factors(user_id=user_id, method=self.method)
+        expected_rp_id = self._rp_id.strip()
+        if not expected_rp_id:
+            return factors
+        return [
+            factor
+            for factor in factors
+            if not factor.webauthn_rp_id.strip() or factor.webauthn_rp_id == expected_rp_id
+        ]
 
     def _registered_attested_credentials(self, *, user_id: str) -> list[AttestedCredentialData]:
         credentials: list[AttestedCredentialData] = []
@@ -1365,10 +1373,11 @@ class LocalFido2Backend(WebAuthnBackend):
         credential_store: ApprovalFactorStore,
         daemon_id: str,
     ) -> None:
+        realm_id = credential_store.get_or_create_local_fido2_realm_id(seed=daemon_id)
         super().__init__(
             credential_store=credential_store,
-            approval_origin=local_fido2_origin(daemon_id),
-            rp_id=local_fido2_rp_id(daemon_id),
+            approval_origin=local_fido2_origin(realm_id),
+            rp_id=local_fido2_rp_id(realm_id),
             rp_name="shisad approver",
         )
         self.backend_id = "approver.local_fido2"

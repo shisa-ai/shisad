@@ -130,3 +130,26 @@ def test_local_fido2_assertion_from_unregistered_credential_is_rejected(tmp_path
                 "proof": assertion,
             },
         )
+
+
+def test_browser_webauthn_assertion_cannot_satisfy_local_fido2_backend(tmp_path) -> None:
+    backend, _factor, _credential, pending = _registered_backend(tmp_path)
+    request_options = backend.approval_request_options(pending_action=pending)
+    browser_credential = WebAuthnTestCredential(
+        rp_id="approve.example.com",
+        origin="https://approve.example.com",
+    )
+    assertion = make_authentication_payload(
+        public_key_options=request_options,
+        credential=browser_credential,
+    )
+
+    with pytest.raises(ConfirmationVerificationError, match="invalid_webauthn_assertion"):
+        backend.verify(
+            pending_action=pending,
+            params={
+                "decision_nonce": "nonce-1",
+                "approval_method": "local_fido2",
+                "proof": assertion,
+            },
+        )

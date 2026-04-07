@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import getpass
 import os
 import subprocess
 import tempfile
 import time
-import uuid
 from collections.abc import Callable, Mapping
 from contextlib import suppress
 from dataclasses import dataclass
@@ -19,6 +19,7 @@ import click
 from fido2.client import UserInteraction
 
 from shisad.core.api.transport import ControlClient
+from shisad.ui.evidence import sanitize_terminal_field, sanitize_terminal_text
 
 
 def _b64url_encode(raw: bytes) -> str:
@@ -150,7 +151,7 @@ class HardwareLocalFido2Device:
 class _SocketEndpoint:
     socket_path: Path
     process: subprocess.Popen[bytes] | None = None
-    cleanup_path: bool = False
+    cleanup_dir: Path | None = None
 
     def close(self) -> None:
         if self.process is not None:
@@ -163,9 +164,12 @@ class _SocketEndpoint:
                     self.process.kill()
                 with suppress(subprocess.TimeoutExpired):
                     self.process.wait(timeout=1)
-        if self.cleanup_path and self.socket_path.exists():
+        if self.socket_path.exists():
             with suppress(OSError):
                 self.socket_path.unlink()
+        if self.cleanup_dir is not None and self.cleanup_dir.exists():
+            with suppress(OSError):
+                self.cleanup_dir.rmdir()
 
 
 class ApproverService:
@@ -193,12 +197,13 @@ class ApproverService:
         return payload
 
     async def enroll(self, *, user_id: str, name: str = "") -> dict[str, Any]:
+        principal_name = name.strip() or _default_helper_principal_label(fallback_user_id=user_id)
         started = await self._call(
             "2fa.register_begin",
             {
                 "method": "local_fido2",
                 "user_id": user_id,
-                "name": name or None,
+                "name": principal_name or None,
             },
         )
         if not bool(started.get("started")):
@@ -339,11 +344,13 @@ def _build_socket_endpoint(
         raise click.ClickException("--remote-socket is required with --ssh-target.")
 
     if socket_path is None:
-        local_socket = Path(tempfile.gettempdir()) / f"shisad-approver-{uuid.uuid4().hex}.sock"
-        cleanup_path = True
+        socket_dir = Path(tempfile.mkdtemp(prefix="shisad-approver-"))
+        with suppress(OSError):
+            socket_dir.chmod(0o700)
+        local_socket = socket_dir / "control.sock"
     else:
         local_socket = Path(socket_path)
-        cleanup_path = False
+        socket_dir = None
 
     with suppress(OSError):
         local_socket.unlink()
@@ -351,6 +358,10 @@ def _build_socket_endpoint(
     command = [
         ssh_command,
         "-NT",
+        "-o",
+        "ExitOnForwardFailure=yes",
+        "-o",
+        "StreamLocalBindMask=0177",
         "-L",
         f"{os.fspath(local_socket)}:{os.fspath(remote_socket)}",
         ssh_target,
@@ -381,15 +392,23 @@ def _build_socket_endpoint(
     return _SocketEndpoint(
         socket_path=local_socket,
         process=process,
-        cleanup_path=cleanup_path,
+        cleanup_dir=socket_dir,
     )
 
 
+def _default_helper_principal_label(*, fallback_user_id: str = "") -> str:
+    with suppress(Exception):
+        label = getpass.getuser().strip()
+        if label:
+            return label
+    return fallback_user_id.strip()
+
+
 def _render_prompt(row: dict[str, Any]) -> bool:
-    confirmation_id = str(row.get("confirmation_id", "")).strip()
-    preview = str(row.get("safe_preview", "")).strip()
-    tool_name = str(row.get("tool_name", "")).strip()
-    required_level = str(row.get("required_level", "")).strip()
+    confirmation_id = sanitize_terminal_field(str(row.get("confirmation_id", "")))
+    preview = sanitize_terminal_text(str(row.get("safe_preview", ""))).strip()
+    tool_name = sanitize_terminal_field(str(row.get("tool_name", "")))
+    required_level = sanitize_terminal_field(str(row.get("required_level", "")))
     click.echo(f"[{confirmation_id}] {tool_name or 'pending_action'}")
     if required_level:
         click.echo(f"required_level={required_level}")
@@ -398,7 +417,7 @@ def _render_prompt(row: dict[str, Any]) -> bool:
     warnings = row.get("warnings")
     if isinstance(warnings, list):
         for warning in warnings:
-            value = str(warning).strip()
+            value = sanitize_terminal_field(str(warning))
             if value:
                 click.echo(f"warning: {value}")
     return click.confirm("Approve this action?", default=False)

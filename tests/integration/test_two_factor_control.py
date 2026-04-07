@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import socket
+import sys
 import urllib.error
 import urllib.request
 from contextlib import suppress
@@ -17,7 +18,7 @@ from shisad.core.api.transport import ControlClient
 from shisad.core.approval import generate_totp_code
 from shisad.core.config import DaemonConfig
 from shisad.daemon.runner import run_daemon
-from tests.helpers.webauthn import make_registration_payload
+from tests.helpers.webauthn import make_authentication_payload, make_registration_payload
 
 
 async def _wait_for_socket(path: Path, timeout: float = 5.0) -> None:
@@ -34,6 +35,7 @@ def _configure_model_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("SHISAD_MODEL_PLANNER_BASE_URL", "https://planner.example.com/v1")
     monkeypatch.setenv("SHISAD_MODEL_EMBEDDINGS_BASE_URL", "https://embed.example.com/v1")
     monkeypatch.setenv("SHISAD_MODEL_MONITOR_BASE_URL", "https://monitor.example.com/v1")
+    monkeypatch.setenv("SHISAD_MEMORY_MASTER_KEY", "integration-test-master-key")
 
 
 async def _start_daemon(
@@ -41,10 +43,14 @@ async def _start_daemon(
     monkeypatch: pytest.MonkeyPatch,
     *,
     config_overrides: dict[str, Any] | None = None,
+    policy_text: str | None = None,
 ) -> tuple[asyncio.Task[None], ControlClient]:
     _configure_model_env(monkeypatch)
     policy_path = tmp_path / "policy.yaml"
-    policy_path.write_text('version: "1"\ndefault_require_confirmation: false\n', encoding="utf-8")
+    policy_path.write_text(
+        policy_text or 'version: "1"\ndefault_require_confirmation: false\n',
+        encoding="utf-8",
+    )
     config_kwargs: dict[str, Any] = {
         "data_dir": tmp_path / "data",
         "socket_path": tmp_path / "control.sock",
@@ -212,7 +218,128 @@ async def test_local_fido2_register_list_revoke_persists_across_restart(
     finally:
         await _shutdown_daemon(daemon_task, client)
 
-    daemon_task, client = await _start_daemon(tmp_path, monkeypatch)
+
+@pytest.mark.asyncio
+async def test_local_fido2_enrollment_survives_data_dir_move(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    policy_text = "\n".join(
+        [
+            'version: "1"',
+            "default_require_confirmation: false",
+            "default_capabilities:",
+            "  - shell.exec",
+            "tools:",
+            "  shell.exec:",
+            "    capabilities_required:",
+            "      - shell.exec",
+            "    confirmation:",
+            "      level: bound_approval",
+            "      methods:",
+            "        - local_fido2",
+            "",
+        ]
+    )
+    original_data_dir = tmp_path / "data"
+    daemon_task, client = await _start_daemon(
+        tmp_path,
+        monkeypatch,
+        config_overrides={
+            "data_dir": original_data_dir,
+            "socket_path": tmp_path / "control-a.sock",
+        },
+        policy_text=policy_text,
+    )
+    try:
+        started = await client.call(
+            "2fa.register_begin",
+            {"method": "local_fido2", "user_id": "alice", "name": "ops-key"},
+        )
+        credential, registration_payload = make_registration_payload(
+            public_key_options=started["helper_public_key"],
+            origin=started["helper_origin"],
+            rp_id=started["helper_rp_id"],
+        )
+        confirm = await client.call(
+            "2fa.register_confirm",
+            {
+                "enrollment_id": started["enrollment_id"],
+                "proof": registration_payload,
+            },
+        )
+        assert confirm["registered"] is True
+    finally:
+        await _shutdown_daemon(daemon_task, client)
+
+    migrated_data_dir = tmp_path / "data-migrated"
+    original_data_dir.rename(migrated_data_dir)
+
+    daemon_task, client = await _start_daemon(
+        tmp_path,
+        monkeypatch,
+        config_overrides={
+            "data_dir": migrated_data_dir,
+            "socket_path": tmp_path / "control-b.sock",
+        },
+        policy_text=policy_text,
+    )
+    try:
+        listed = await client.call("2fa.list", {"user_id": "alice", "method": "local_fido2"})
+        assert listed["count"] == 1
+
+        created = await client.call(
+            "session.create",
+            {"channel": "cli", "user_id": "alice", "workspace_id": "ws1"},
+        )
+        proposed = await client.call(
+            "tool.execute",
+            {
+                "session_id": str(created["session_id"]),
+                "tool_name": "shell.exec",
+                "command": [sys.executable, "-c", "print('migrated-a3')"],
+                "limits": {"timeout_seconds": 5, "output_bytes": 2048},
+                "degraded_mode": "fail_open",
+                "security_critical": False,
+            },
+        )
+        assert proposed["confirmation_required"] is True
+
+        pending = await client.call(
+            "action.pending",
+            {"confirmation_id": proposed["confirmation_id"]},
+        )
+        action = pending["actions"][0]
+        assert action["helper_origin"] == started["helper_origin"]
+        assert action["helper_rp_id"] == started["helper_rp_id"]
+
+        assertion = make_authentication_payload(
+            public_key_options=action["helper_public_key"],
+            credential=credential,
+        )
+        confirmed = await client.call(
+            "action.confirm",
+            {
+                "confirmation_id": action["confirmation_id"],
+                "decision_nonce": action["decision_nonce"],
+                "approval_method": "local_fido2",
+                "proof": assertion,
+            },
+        )
+        assert confirmed["confirmed"] is True
+        assert confirmed["approval_method"] == "local_fido2"
+    finally:
+        await _shutdown_daemon(daemon_task, client)
+
+    daemon_task, client = await _start_daemon(
+        tmp_path,
+        monkeypatch,
+        config_overrides={
+            "data_dir": migrated_data_dir,
+            "socket_path": tmp_path / "control-c.sock",
+        },
+        policy_text=policy_text,
+    )
     try:
         listed = await client.call("2fa.list", {"user_id": "alice", "method": "local_fido2"})
         assert listed["count"] == 1

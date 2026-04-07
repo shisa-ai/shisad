@@ -15,6 +15,8 @@ import hashlib
 import json
 import logging
 import os
+import secrets
+from collections.abc import Iterable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Protocol
@@ -28,6 +30,24 @@ logger = logging.getLogger(__name__)
 
 # Placeholder prefix — these strings are inert and useless if exfiltrated
 _PLACEHOLDER_PREFIX = "SHISAD_SECRET_PLACEHOLDER_"
+_LOCAL_FIDO2_RP_SUFFIX = ".approver.shisad.invalid"
+
+
+def _normalize_local_fido2_realm_id(value: str) -> str:
+    normalized = "".join(ch for ch in value.strip().lower() if ch.isalnum())
+    if not normalized:
+        raise ValueError("local_fido2 realm id must contain at least one alphanumeric character")
+    return normalized
+
+
+def _local_fido2_realm_id_from_rp_id(rp_id: str) -> str | None:
+    candidate = rp_id.strip().lower()
+    if not candidate.endswith(_LOCAL_FIDO2_RP_SUFFIX):
+        return None
+    prefix = candidate[: -len(_LOCAL_FIDO2_RP_SUFFIX)]
+    if not prefix or any(not char.isalnum() for char in prefix):
+        return None
+    return prefix
 
 
 class CredentialConfig(BaseModel):
@@ -116,6 +136,10 @@ class ApprovalFactorStore(Protocol):
         """Bind the store to a durable approval-factor path and load state."""
         ...
 
+    def get_or_create_local_fido2_realm_id(self, *, seed: str = "") -> str:
+        """Resolve the durable local-helper realm id for local_fido2 credentials."""
+        ...
+
     def register_approval_factor(self, factor: ApprovalFactorRecord) -> None:
         """Persist a newly enrolled approval factor."""
         ...
@@ -176,6 +200,7 @@ class InMemoryCredentialStore:
         self._placeholders: dict[str, CredentialRef] = {}  # placeholder → ref
         self._approval_store_path: Path | None = None
         self._approval_factors: dict[str, ApprovalFactorRecord] = {}
+        self._local_fido2_realm_id: str | None = None
 
     def register(self, ref: CredentialRef, value: str, config: CredentialConfig) -> None:
         """Register a credential with its configuration."""
@@ -238,6 +263,22 @@ class InMemoryCredentialStore:
         """Bind durable approval-factor storage to a JSON file."""
         self._approval_store_path = Path(path)
         self._load_approval_factors()
+
+    def get_or_create_local_fido2_realm_id(self, *, seed: str = "") -> str:
+        """Return the durable local-helper realm id used for local_fido2 rpIds."""
+        existing = (self._local_fido2_realm_id or "").strip()
+        if existing:
+            return existing
+        derived = self._derive_local_fido2_realm_id_from_records(self._approval_factors.values())
+        if derived is not None:
+            self._local_fido2_realm_id = derived
+            return derived
+        try:
+            realm_id = _normalize_local_fido2_realm_id(seed)
+        except ValueError:
+            realm_id = secrets.token_hex(16)
+        self._local_fido2_realm_id = realm_id
+        return realm_id
 
     def register_approval_factor(self, factor: ApprovalFactorRecord) -> None:
         """Persist a newly enrolled approval factor."""
@@ -306,6 +347,7 @@ class InMemoryCredentialStore:
         path = self._approval_store_path
         if path is None or not path.exists():
             self._approval_factors = {}
+            self._local_fido2_realm_id = None
             return
         try:
             payload = json.loads(path.read_text(encoding="utf-8"))
@@ -327,6 +369,15 @@ class InMemoryCredentialStore:
                 factor = ApprovalFactorRecord.model_validate(item)
                 loaded[factor.credential_id] = factor
             self._approval_factors = loaded
+            local_fido2_realm_id_raw = str(payload.get("local_fido2_realm_id", "")).strip()
+            if local_fido2_realm_id_raw:
+                self._local_fido2_realm_id = _normalize_local_fido2_realm_id(
+                    local_fido2_realm_id_raw
+                )
+            else:
+                self._local_fido2_realm_id = self._derive_local_fido2_realm_id_from_records(
+                    loaded.values()
+                )
         except (OSError, ValidationError, ValueError, json.JSONDecodeError):
             logger.warning(
                 "Failed to load approval-factor store %s; quarantining corrupt state and "
@@ -336,6 +387,7 @@ class InMemoryCredentialStore:
             )
             self._quarantine_approval_store(path)
             self._approval_factors = {}
+            self._local_fido2_realm_id = None
 
     def _persist_approval_factors(self) -> None:
         path = self._approval_store_path
@@ -353,6 +405,8 @@ class InMemoryCredentialStore:
                 for factor in self.list_approval_factors()
             ],
         }
+        if self._local_fido2_realm_id:
+            payload["local_fido2_realm_id"] = self._local_fido2_realm_id
         tmp_path = path.with_suffix(f"{path.suffix}.tmp")
         tmp_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
         os.chmod(tmp_path, 0o600)
@@ -361,6 +415,26 @@ class InMemoryCredentialStore:
             os.chmod(path, 0o600)
         except OSError:
             logger.debug("Unable to chmod approval-factor store file: %s", path)
+
+    @staticmethod
+    def _derive_local_fido2_realm_id_from_records(
+        records: Iterable[ApprovalFactorRecord],
+    ) -> str | None:
+        derived_ids: set[str] = set()
+        saw_local_fido2 = False
+        for factor in records:
+            if factor.method != "local_fido2":
+                continue
+            saw_local_fido2 = True
+            derived = _local_fido2_realm_id_from_rp_id(factor.webauthn_rp_id)
+            if derived is None:
+                raise ValueError("local_fido2 factor is missing a parseable webauthn_rp_id")
+            derived_ids.add(derived)
+        if not saw_local_fido2:
+            return None
+        if len(derived_ids) != 1:
+            raise ValueError("local_fido2 factors use inconsistent webauthn_rp_id values")
+        return next(iter(derived_ids))
 
     @staticmethod
     def _quarantine_approval_store(path: Path) -> None:

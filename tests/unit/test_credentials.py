@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 
 import pytest
@@ -292,3 +293,54 @@ class TestApprovalFactorStore:
         assert not store_path.exists()
         quarantined = list(tmp_path.glob("approval-factors.json.corrupt.*"))
         assert len(quarantined) == 1
+
+    def test_local_fido2_realm_id_persists_with_factor_store(self, tmp_path) -> None:
+        store_path = tmp_path / "approval-factors.json"
+        store = InMemoryCredentialStore()
+        store.set_approval_store_path(store_path)
+        realm_id = store.get_or_create_local_fido2_realm_id(seed="deadbeefcafebabe")
+
+        store.register_approval_factor(
+            ApprovalFactorRecord(
+                credential_id="local_fido2-1",
+                user_id="alice",
+                method="local_fido2",
+                principal_id="ops-key",
+                webauthn_rp_id=f"{realm_id}.approver.shisad.invalid",
+            )
+        )
+
+        payload = json.loads(store_path.read_text(encoding="utf-8"))
+        assert payload["local_fido2_realm_id"] == realm_id
+
+        reloaded = InMemoryCredentialStore()
+        reloaded.set_approval_store_path(store_path)
+        assert reloaded.get_or_create_local_fido2_realm_id() == realm_id
+
+    def test_local_fido2_realm_id_derives_from_legacy_store_without_metadata(
+        self,
+        tmp_path,
+    ) -> None:
+        store_path = tmp_path / "approval-factors.json"
+        store_path.write_text(
+            json.dumps(
+                {
+                    "schema_version": "shisad.approval_factor_store.v1",
+                    "approval_factors": [
+                        {
+                            "credential_id": "local_fido2-1",
+                            "user_id": "alice",
+                            "method": "local_fido2",
+                            "principal_id": "ops-key",
+                            "webauthn_rp_id": "deadbeefcafebabe.approver.shisad.invalid",
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        store = InMemoryCredentialStore()
+        store.set_approval_store_path(store_path)
+
+        assert store.get_or_create_local_fido2_realm_id() == "deadbeefcafebabe"

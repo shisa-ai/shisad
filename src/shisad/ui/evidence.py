@@ -83,6 +83,18 @@ def _sanitize_terminal_text(value: str) -> str:
     return cleaned
 
 
+def sanitize_terminal_field(value: str) -> str:
+    """Strip terminal control sequences from a one-line operator-facing field."""
+
+    return _sanitize_terminal_field(value)
+
+
+def sanitize_terminal_text(value: str) -> str:
+    """Strip terminal control sequences from multi-line operator-facing text."""
+
+    return _sanitize_terminal_text(value)
+
+
 def _parsed_stub_from_match(
     match: re.Match[str],
     *,
@@ -139,4 +151,4 @@ def render_evidence_refs_for_terminal(text: str) -> str:
         lambda match: _render_stub(_parsed_stub_from_match(match, available=False)),
         rendered,
     )
-    return _sanitize_terminal_text(rendered)
+    return sanitize_terminal_text(rendered)

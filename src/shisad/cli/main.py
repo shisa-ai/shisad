@@ -89,7 +89,11 @@ from shisad.core.api.schema import (
     WebSearchResult,
 )
 from shisad.core.config import DaemonConfig
-from shisad.ui.evidence import render_evidence_refs_for_terminal
+from shisad.ui.evidence import (
+    render_evidence_refs_for_terminal,
+    sanitize_terminal_field,
+    sanitize_terminal_text,
+)
 
 
 def _get_config() -> DaemonConfig:
@@ -1267,15 +1271,19 @@ def action_pending(session_id: str, status: str, limit: int, raw: bool) -> None:
         _echo("No pending confirmations", fg="yellow")
         return
     for row in rows:
-        nonce_value = (row.decision_nonce or "").strip()
+        confirmation_id = sanitize_terminal_field(row.confirmation_id)
+        nonce_value = sanitize_terminal_field(row.decision_nonce or "")
+        status_value = sanitize_terminal_field(row.status)
+        tool_name = sanitize_terminal_field(row.tool_name)
+        reason_value = sanitize_terminal_field(row.reason)
         click.echo(
-            f"{row.confirmation_id} nonce={nonce_value} status={row.status} "
-            f"tool={row.tool_name} reason={row.reason}"
+            f"{confirmation_id} nonce={nonce_value} status={status_value} "
+            f"tool={tool_name} reason={reason_value}"
         )
-        preview = (row.safe_preview or "").strip()
+        preview = sanitize_terminal_text(row.safe_preview or "").strip()
         if preview:
             click.echo(preview)
-        approval_url = (row.approval_url or "").strip()
+        approval_url = sanitize_terminal_field(row.approval_url or "")
         if approval_url:
             click.echo(f"approval_url={approval_url}")
         approval_qr_ascii = (row.approval_qr_ascii or "").rstrip()
