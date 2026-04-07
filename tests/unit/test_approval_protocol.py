@@ -21,6 +21,7 @@ from shisad.core.approval import (
     SoftwareConfirmationBackend,
     TOTPBackend,
     WebAuthnBackend,
+    _origin_matches,
     approval_envelope_hash,
     canonical_json_dumps,
     compute_action_digest,
@@ -655,6 +656,143 @@ def test_webauthn_backend_accepts_default_port_origin_without_explicit_port_in_b
     assert backend.approval_origin == "https://approve.example.com"
     assert request_options["userVerification"] == "required"
     assert evidence.method == "webauthn"
+
+
+@pytest.mark.parametrize(
+    ("candidate_origin", "expected_origin"),
+    [
+        ("https://approve.example.com:443", "https://approve.example.com"),
+        ("https://approve.example.com/", "https://approve.example.com"),
+        ("http://127.0.0.1:80", "http://127.0.0.1"),
+        ("http://127.0.0.1/", "http://127.0.0.1"),
+    ],
+)
+def test_webauthn_origin_matcher_accepts_equivalent_root_origin_forms(
+    candidate_origin: str,
+    expected_origin: str,
+) -> None:
+    assert _origin_matches(candidate_origin, expected_origin) is True
+
+
+@pytest.mark.parametrize(
+    "invalid_origin",
+    [
+        "https://approve.example.com/evil-path",
+        "https://approve.example.com?evil=1",
+        "https://approve.example.com#evil",
+        "https://user@approve.example.com",
+    ],
+)
+def test_webauthn_origin_matcher_rejects_non_origin_forms(invalid_origin: str) -> None:
+    assert _origin_matches(invalid_origin, "https://approve.example.com") is False
+
+
+@pytest.mark.parametrize(
+    "browser_origin",
+    [
+        "https://approve.example.com:443",
+        "https://approve.example.com/",
+    ],
+)
+def test_webauthn_backend_accepts_equivalent_client_origins_during_registration(
+    tmp_path,
+    browser_origin: str,
+) -> None:
+    store = InMemoryCredentialStore()
+    store.set_approval_store_path(tmp_path / "credentials.json")
+    backend = WebAuthnBackend(
+        credential_store=store,
+        approval_origin="https://approve.example.com",
+        rp_id="approve.example.com",
+    )
+
+    public_key_options, state = backend.registration_begin(
+        user_id="alice",
+        principal_id="ops-phone",
+        credential_id="webauthn-1",
+    )
+    _credential, registration_payload = make_registration_payload(
+        public_key_options=public_key_options,
+        origin=browser_origin,
+        rp_id="approve.example.com",
+    )
+
+    factor = backend.registration_complete(
+        credential_id="webauthn-1",
+        user_id="alice",
+        principal_id="ops-phone",
+        created_at=datetime(2026, 4, 6, 12, 0, tzinfo=UTC),
+        state=state,
+        response_payload=registration_payload,
+    )
+
+    assert factor.method == "webauthn"
+    assert factor.principal_id == "ops-phone"
+
+
+@pytest.mark.parametrize(
+    "browser_origin",
+    [
+        "https://approve.example.com:443",
+        "https://approve.example.com/",
+    ],
+)
+def test_webauthn_backend_accepts_equivalent_client_origins_during_assertion(
+    tmp_path,
+    browser_origin: str,
+) -> None:
+    store = InMemoryCredentialStore()
+    store.set_approval_store_path(tmp_path / "credentials.json")
+    backend = WebAuthnBackend(
+        credential_store=store,
+        approval_origin="https://approve.example.com",
+        rp_id="approve.example.com",
+    )
+
+    public_key_options, state = backend.registration_begin(
+        user_id="alice",
+        principal_id="ops-phone",
+        credential_id="webauthn-1",
+    )
+    credential, registration_payload = make_registration_payload(
+        public_key_options=public_key_options,
+        origin="https://approve.example.com",
+        rp_id="approve.example.com",
+    )
+    factor = backend.registration_complete(
+        credential_id="webauthn-1",
+        user_id="alice",
+        principal_id="ops-phone",
+        created_at=datetime(2026, 4, 6, 12, 0, tzinfo=UTC),
+        state=state,
+        response_payload=registration_payload,
+    )
+    store.register_approval_factor(factor)
+
+    pending = _pending_action(
+        confirmation_id="c-1",
+        credential_ids=[factor.credential_id],
+        principal_ids=[factor.principal_id],
+    )
+    request_options = backend.approval_request_options(pending_action=pending)
+    credential.origin = browser_origin
+    assertion = make_authentication_payload(
+        public_key_options=request_options,
+        credential=credential,
+    )
+
+    evidence = backend.verify(
+        pending_action=pending,
+        params={
+            "decision_nonce": "nonce-1",
+            "approval_method": "webauthn",
+            "proof": assertion,
+        },
+        now=datetime(2026, 4, 6, 12, 1, tzinfo=UTC),
+    )
+
+    assert evidence.method == "webauthn"
+    assert evidence.approval_envelope_hash == pending.approval_envelope_hash
 
 
 @pytest.mark.parametrize(

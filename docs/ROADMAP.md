@@ -1,7 +1,7 @@
 # shisad Roadmap
 
 *Created: 2026-02-26*
-*Updated: 2026-04-06*
+*Updated: 2026-04-07*
 *Status: Active*
 
 ## Goal
@@ -95,21 +95,22 @@ reviewed-skill schema-drift observability. The next planned lane is `v0.6.2`.
 
 #### v0.6.2 — Hardware-backed approval and signing
 
-Current execution note (2026-04-06): the `A0` approval-protocol foundation and
-the `A1` TOTP / re-auth backend are both review-closed on the active branch,
-and `A2` is now implemented there and queued for review. The current v0.6.2
-tree adds canonical `ApprovalEnvelope` / `action_digest` hashing, approval
-levels (`L0`-`L4`), policy-driven escalation, selected-backend metadata on
-pending approvals, richer approval audit fields, the preserved
-`L0/software` backend, durable TOTP enrollment in the credential broker, and
-now the WebAuthn / passkey `bound_approval` lane: approval-origin / rpId
+Current execution note (2026-04-07): the `A0` approval-protocol foundation,
+the `A1` TOTP / re-auth backend, and the `A2` WebAuthn / passkey
+`bound_approval` backend are all review-closed on the active branch. The
+current v0.6.2 tree adds canonical `ApprovalEnvelope` / `action_digest`
+hashing, approval levels (`L0`-`L4`), policy-driven escalation,
+selected-backend metadata on pending approvals, richer approval audit fields,
+the preserved `L0/software` backend, durable TOTP enrollment in the
+credential broker, and the WebAuthn/passkey lane: approval-origin / rpId
 config, a daemon-owned browser ceremony endpoint, durable WebAuthn credential
 registration, chat/QR approval links, browser-bounce CLI flows for
 `2fa register --method webauthn` and `action confirm`, plus behavioral and
-adversarial coverage for the WebAuthn path. The remaining v0.6.2 work after
-`A2` review is backend-specific:
+adversarial coverage for the WebAuthn path. The post-close compatibility
+follow-up keeps the strict non-origin rejection from review remediation while
+accepting only root-equivalent signed-origin forms (explicit default ports and
+an optional trailing `/`). The remaining v0.6.2 work is backend-specific:
 
-- WebAuthn / passkey bound-approval backend
 - Local helper bridge for SSH-only / private deployments
 - Ledger / signer integration for high-value operations
 - Hardware token signing and artifact signing flows

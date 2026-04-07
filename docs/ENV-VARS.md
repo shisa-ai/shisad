@@ -142,6 +142,7 @@ Approval notes:
 - `SHISAD_APPROVAL_ORIGIN` enables the daemon-owned browser ceremony surface used for passkey registration and `bound_approval` action confirmation.
 - `SHISAD_APPROVAL_ORIGIN` must be a full origin only (`scheme://host[:port]` with no path/query/fragment). Non-loopback origins must use `https`; loopback `http` is allowed only for local development and tests.
 - `SHISAD_APPROVAL_ORIGIN` is canonicalized to the browser/WebAuthn effective origin: explicit default ports (`:80` on `http`, `:443` on `https`) are normalized away, and IPv6 loopback origins keep bracketed host formatting.
+- During WebAuthn verification, the signed browser origin must still resolve to that same effective origin. The runtime accepts the exact canonical origin plus root-equivalent forms with an explicit default port and/or a lone trailing `/`, but rejects userinfo, non-root paths, query strings, and fragments fail-closed.
 - `SHISAD_APPROVAL_RP_ID` defaults to the approval-origin hostname when unset.
 - `SHISAD_APPROVAL_BIND_HOST` and `SHISAD_APPROVAL_BIND_PORT` control the local listener that serves the ceremony pages. They can differ from the public approval origin when a reverse proxy or tailnet HTTPS endpoint fronts the daemon.
 - `SHISAD_APPROVAL_LINK_TTL_SECONDS` sets the expiry for registration and approval links. POST attempts against those links are rate-limited by `SHISAD_APPROVAL_RATE_LIMIT_WINDOW_SECONDS` and `SHISAD_APPROVAL_RATE_LIMIT_MAX_ATTEMPTS`.

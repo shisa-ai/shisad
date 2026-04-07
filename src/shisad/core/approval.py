@@ -54,8 +54,6 @@ def _format_origin_host(host: str) -> str:
 
 def _canonicalize_webauthn_origin(
     origin: str,
-    *,
-    require_canonical_input: bool = False,
 ) -> str | None:
     parsed = urlparse(origin.strip())
     scheme = (parsed.scheme or "").lower()
@@ -77,25 +75,44 @@ def _canonicalize_webauthn_origin(
         or parsed.fragment
     ):
         return None
-    if require_canonical_input:
-        if parsed.path:
-            return None
-    elif parsed.path not in {"", "/"}:
+    if parsed.path not in {"", "/"}:
         return None
     if port is None or port == default_port:
         canonical = f"{scheme}://{_format_origin_host(host)}"
     else:
         canonical = f"{scheme}://{_format_origin_host(host)}:{port}"
-    if require_canonical_input and origin.strip() != canonical:
+    return canonical
+
+
+def _normalize_signed_webauthn_origin(origin: str) -> str | None:
+    raw = origin.strip()
+    canonical = _canonicalize_webauthn_origin(raw)
+    if canonical is None:
+        return None
+    parsed = urlparse(raw)
+    scheme = (parsed.scheme or "").lower()
+    host = (parsed.hostname or "").strip().lower()
+    if not scheme or not host:
+        return None
+    default_port = _default_origin_port(scheme)
+    if default_port is None:
+        return None
+    allowed_inputs = {canonical, f"{canonical}/"}
+    try:
+        port = parsed.port
+    except ValueError:
+        return None
+    if port == default_port:
+        explicit_default = f"{scheme}://{_format_origin_host(host)}:{default_port}"
+        allowed_inputs.add(explicit_default)
+        allowed_inputs.add(f"{explicit_default}/")
+    if raw not in allowed_inputs:
         return None
     return canonical
 
 
 def _origin_matches(candidate: str, expected: str) -> bool:
-    candidate_origin = _canonicalize_webauthn_origin(
-        candidate,
-        require_canonical_input=True,
-    )
+    candidate_origin = _normalize_signed_webauthn_origin(candidate)
     expected_origin = _canonicalize_webauthn_origin(expected)
     return candidate_origin is not None and candidate_origin == expected_origin
 
