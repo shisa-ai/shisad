@@ -116,11 +116,11 @@ def test_action_digest_matches_reference_vector() -> None:
     )
     canonical = (
         "{"
-        "\"arguments\":{\"branch\":\"release/2026-04-05\",\"environment\":\"prod\"},"
-        "\"destinations\":[\"prod-deploy.example.com\"],"
-        "\"schema_version\":\"shisad.action_digest.v1\","
-        "\"tool_name\":\"deploy.production\","
-        f"\"tool_schema_hash\":\"sha256:{tool.schema_hash()}\""
+        '"arguments":{"branch":"release/2026-04-05","environment":"prod"},'
+        '"destinations":["prod-deploy.example.com"],'
+        '"schema_version":"shisad.action_digest.v1",'
+        '"tool_name":"deploy.production",'
+        f'"tool_schema_hash":"sha256:{tool.schema_hash()}"'
         "}"
     )
     expected = f"sha256:{hashlib.sha256(canonical.encode('utf-8')).hexdigest()}"
@@ -148,20 +148,20 @@ def test_approval_envelope_hash_ignores_action_summary() -> None:
 
     canonical = (
         "{"
-        "\"action_digest\":\"sha256:abc123\","
-        "\"allowed_credentials\":[],"
-        "\"allowed_principals\":[\"workspace_owner\"],"
-        "\"approval_id\":\"approval-1\","
-        "\"daemon_id\":\"daemon-1\","
-        "\"expires_at\":\"2026-04-05T18:40:00Z\","
-        "\"intent_envelope_hash\":null,"
-        "\"nonce\":\"b64:nonce\","
-        "\"pending_action_id\":\"pending-1\","
-        "\"policy_reason\":\"deploy.production requires explicit approval\","
-        "\"required_level\":\"software\","
-        "\"schema_version\":\"shisad.approval.v1\","
-        "\"session_id\":\"session-1\","
-        "\"workspace_id\":\"workspace-1\""
+        '"action_digest":"sha256:abc123",'
+        '"allowed_credentials":[],'
+        '"allowed_principals":["workspace_owner"],'
+        '"approval_id":"approval-1",'
+        '"daemon_id":"daemon-1",'
+        '"expires_at":"2026-04-05T18:40:00Z",'
+        '"intent_envelope_hash":null,'
+        '"nonce":"b64:nonce",'
+        '"pending_action_id":"pending-1",'
+        '"policy_reason":"deploy.production requires explicit approval",'
+        '"required_level":"software",'
+        '"schema_version":"shisad.approval.v1",'
+        '"session_id":"session-1",'
+        '"workspace_id":"workspace-1"'
         "}"
     )
     expected = f"sha256:{hashlib.sha256(canonical.encode('utf-8')).hexdigest()}"
@@ -174,9 +174,7 @@ def test_registry_requires_explicit_fallback_for_lower_level_resolution() -> Non
     registry = ConfirmationBackendRegistry()
     registry.register(SoftwareConfirmationBackend())
 
-    strict = registry.resolve(
-        ConfirmationRequirement(level=ConfirmationLevel.BOUND_APPROVAL)
-    )
+    strict = registry.resolve(ConfirmationRequirement(level=ConfirmationLevel.BOUND_APPROVAL))
     assert strict is None
 
     fallback = registry.resolve(
@@ -468,9 +466,7 @@ def test_totp_backend_consumes_recovery_codes_once(tmp_path) -> None:
     store = InMemoryCredentialStore()
     store.set_approval_store_path(tmp_path / "credentials.json")
     recovery_code = "ABCD-EFGH"
-    factor = _approval_factor(
-        recovery_code_hashes=[hash_recovery_code(recovery_code)]
-    )
+    factor = _approval_factor(recovery_code_hashes=[hash_recovery_code(recovery_code)])
     store.register_approval_factor(factor)
     backend = TOTPBackend(credential_store=store)
     now = datetime(2026, 4, 6, 12, 0, 0, tzinfo=UTC)
@@ -602,6 +598,63 @@ def test_webauthn_backend_rejects_duplicate_credential_registration(tmp_path) ->
             state=state,
             response_payload=registration_payload,
         )
+
+
+def test_webauthn_backend_accepts_default_port_origin_without_explicit_port_in_browser(
+    tmp_path,
+) -> None:
+    store = InMemoryCredentialStore()
+    store.set_approval_store_path(tmp_path / "credentials.json")
+    backend = WebAuthnBackend(
+        credential_store=store,
+        approval_origin="https://approve.example.com:443",
+        rp_id="approve.example.com",
+    )
+
+    public_key_options, state = backend.registration_begin(
+        user_id="alice",
+        principal_id="ops-phone",
+        credential_id="webauthn-1",
+    )
+    credential, registration_payload = make_registration_payload(
+        public_key_options=public_key_options,
+        origin="https://approve.example.com",
+        rp_id="approve.example.com",
+    )
+    factor = backend.registration_complete(
+        credential_id="webauthn-1",
+        user_id="alice",
+        principal_id="ops-phone",
+        created_at=datetime(2026, 4, 6, 12, 0, tzinfo=UTC),
+        state=state,
+        response_payload=registration_payload,
+    )
+    store.register_approval_factor(factor)
+
+    pending = _pending_action(
+        confirmation_id="c-1",
+        credential_ids=[factor.credential_id],
+        principal_ids=[factor.principal_id],
+    )
+    request_options = backend.approval_request_options(pending_action=pending)
+    assertion = make_authentication_payload(
+        public_key_options=request_options,
+        credential=credential,
+    )
+
+    evidence = backend.verify(
+        pending_action=pending,
+        params={
+            "decision_nonce": "nonce-1",
+            "approval_method": "webauthn",
+            "proof": assertion,
+        },
+        now=datetime(2026, 4, 6, 12, 1, tzinfo=UTC),
+    )
+
+    assert backend.approval_origin == "https://approve.example.com"
+    assert request_options["userVerification"] == "required"
+    assert evidence.method == "webauthn"
 
 
 def test_canonical_json_rejects_naive_datetime() -> None:

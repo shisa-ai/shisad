@@ -622,6 +622,33 @@ def test_m6_daemon_config_rejects_wildcard_browser_scope_under_hardened_isolatio
         )
 
 
+def test_daemon_config_canonicalizes_default_port_approval_origin(tmp_path) -> None:
+    config = DaemonConfig(
+        data_dir=tmp_path / "data",
+        socket_path=tmp_path / "control.sock",
+        policy_path=tmp_path / "policy.yaml",
+        approval_origin="https://approve.example.com:443",
+    )
+
+    assert config.approval_origin == "https://approve.example.com"
+    assert config.approval_rp_id == "approve.example.com"
+    assert config.approval_bind_host == "127.0.0.1"
+
+
+def test_daemon_config_preserves_ipv6_loopback_approval_origin(tmp_path) -> None:
+    config = DaemonConfig(
+        data_dir=tmp_path / "data",
+        socket_path=tmp_path / "control.sock",
+        policy_path=tmp_path / "policy.yaml",
+        approval_origin="http://[::1]:8787",
+    )
+
+    assert config.approval_origin == "http://[::1]:8787"
+    assert config.approval_rp_id == "::1"
+    assert config.approval_bind_host == "::1"
+    assert config.approval_bind_port == 8787
+
+
 @pytest.mark.asyncio
 async def test_m6_daemon_services_browser_registry_falls_back_to_web_allowlist(
     tmp_path,

@@ -55,7 +55,7 @@ class WebAuthnTestCredential:
         )
         auth_data = AuthenticatorData.create(
             hashlib.sha256(self.rp_id.encode("utf-8")).digest(),
-            AuthenticatorData.FLAG.UP | AuthenticatorData.FLAG.AT,
+            AuthenticatorData.FLAG.UP | AuthenticatorData.FLAG.UV | AuthenticatorData.FLAG.AT,
             self.sign_count,
             credential_data=bytes(attested),
         )
@@ -82,7 +82,7 @@ class WebAuthnTestCredential:
         public_key_options: Mapping[str, Any],
         challenge_b64url: str | None = None,
         sign_count: int | None = None,
-        user_verified: bool = False,
+        user_verified: bool = True,
     ) -> dict[str, Any]:
         challenge = _b64url_decode(
             challenge_b64url
@@ -143,7 +143,7 @@ def make_authentication_payload(
     credential: WebAuthnTestCredential,
     challenge_b64url: str | None = None,
     sign_count: int | None = None,
-    user_verified: bool = False,
+    user_verified: bool = True,
 ) -> dict[str, Any]:
     return credential.authentication_payload(
         public_key_options=public_key_options,

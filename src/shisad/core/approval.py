@@ -36,6 +36,58 @@ from shisad.security.credentials import ApprovalFactorRecord, ApprovalFactorStor
 logger = logging.getLogger(__name__)
 
 
+def _default_origin_port(scheme: str) -> int | None:
+    normalized = scheme.strip().lower()
+    if normalized == "http":
+        return 80
+    if normalized == "https":
+        return 443
+    return None
+
+
+def _format_origin_host(host: str) -> str:
+    normalized = host.strip().lower()
+    if ":" in normalized:
+        return f"[{normalized}]"
+    return normalized
+
+
+def _canonicalize_webauthn_origin(origin: str) -> str:
+    parsed = urlparse(origin.strip())
+    scheme = (parsed.scheme or "").lower()
+    host = (parsed.hostname or "").strip().lower()
+    if not scheme or not host:
+        return origin.strip()
+    try:
+        port = parsed.port
+    except ValueError:
+        return origin.strip()
+    default_port = _default_origin_port(scheme)
+    if port is None or port == default_port:
+        return f"{scheme}://{_format_origin_host(host)}"
+    return f"{scheme}://{_format_origin_host(host)}:{port}"
+
+
+def _origin_identity(origin: str) -> tuple[str, str, int] | None:
+    parsed = urlparse(origin.strip())
+    scheme = (parsed.scheme or "").lower()
+    host = (parsed.hostname or "").strip().lower()
+    if not scheme or not host:
+        return None
+    try:
+        port = parsed.port
+    except ValueError:
+        return None
+    effective_port = port or _default_origin_port(scheme)
+    if effective_port is None:
+        return None
+    return (scheme, host, effective_port)
+
+
+def _origin_matches(candidate: str, expected: str) -> bool:
+    return _origin_identity(candidate) == _origin_identity(expected)
+
+
 class ConfirmationLevel(StrEnum):
     SOFTWARE = "software"
     REAUTHENTICATED = "reauthenticated"
@@ -960,11 +1012,11 @@ class WebAuthnBackend:
         )
         self.third_party_verifiable = False
         self._credential_store = credential_store
-        self._approval_origin = approval_origin.strip()
+        self._approval_origin = _canonicalize_webauthn_origin(approval_origin)
         self._rp_id = rp_id.strip()
         self._server = Fido2Server(
             PublicKeyCredentialRpEntity(id=self._rp_id, name=rp_name),
-            verify_origin=lambda origin: origin == self._approval_origin,
+            verify_origin=lambda origin: _origin_matches(origin, self._approval_origin),
         )
 
     @property
@@ -1000,7 +1052,7 @@ class WebAuthnBackend:
         options, state = self._server.register_begin(
             user,
             credentials=existing_credentials or None,
-            user_verification=UserVerificationRequirement.PREFERRED,
+            user_verification=UserVerificationRequirement.REQUIRED,
         )
         public_key = dict(options).get("publicKey", {})
         return (
@@ -1074,7 +1126,7 @@ class WebAuthnBackend:
         options, _state = self._server.authenticate_begin(
             credentials=credentials,
             challenge=challenge,
-            user_verification=UserVerificationRequirement.PREFERRED,
+            user_verification=UserVerificationRequirement.REQUIRED,
         )
         public_key = dict(options).get("publicKey", {})
         return webauthn_jsonify(public_key) if isinstance(public_key, dict) else {}
@@ -1129,7 +1181,7 @@ class WebAuthnBackend:
             _options, state = self._server.authenticate_begin(
                 credentials=credentials,
                 challenge=challenge,
-                user_verification=UserVerificationRequirement.PREFERRED,
+                user_verification=UserVerificationRequirement.REQUIRED,
             )
             response = AuthenticationResponse.from_dict(assertion_payload)
             matched = self._server.authenticate_complete(state, credentials, response)

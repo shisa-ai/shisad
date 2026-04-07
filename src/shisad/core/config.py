@@ -55,6 +55,36 @@ def _is_loopback_host(host: str) -> bool:
         return False
 
 
+def _default_origin_port(scheme: str) -> int | None:
+    normalized = scheme.strip().lower()
+    if normalized == "http":
+        return 80
+    if normalized == "https":
+        return 443
+    return None
+
+
+def _format_origin_host(host: str) -> str:
+    normalized = host.strip().lower()
+    try:
+        address = ipaddress.ip_address(normalized)
+    except ValueError:
+        return normalized
+    if address.version == 6:
+        return f"[{normalized}]"
+    return normalized
+
+
+def _canonical_origin(scheme: str, host: str, port: int | None) -> str:
+    normalized_scheme = scheme.strip().lower()
+    normalized_host = host.strip().lower()
+    default_port = _default_origin_port(normalized_scheme)
+    host_component = _format_origin_host(normalized_host)
+    if port is None or port == default_port:
+        return f"{normalized_scheme}://{host_component}"
+    return f"{normalized_scheme}://{host_component}:{port}"
+
+
 class DaemonConfig(BaseSettings):
     """Daemon process configuration."""
 
@@ -594,6 +624,10 @@ class DaemonConfig(BaseSettings):
         parsed = urlparse(origin)
         scheme = (parsed.scheme or "").lower()
         host = (parsed.hostname or "").strip().lower()
+        try:
+            parsed_port = parsed.port
+        except ValueError as exc:
+            raise ValueError("approval_origin has an invalid port") from exc
         if scheme not in {"http", "https"} or not host:
             raise ValueError(
                 "approval_origin must be a full http(s) URL with a hostname "
@@ -609,20 +643,16 @@ class DaemonConfig(BaseSettings):
                 "development or tests"
             )
 
-        self.approval_origin = (
-            f"{scheme}://{host}"
-            if parsed.port is None
-            else f"{scheme}://{host}:{parsed.port}"
-        )
+        self.approval_origin = _canonical_origin(scheme, host, parsed_port)
         self.approval_rp_id = self.approval_rp_id.strip() or host
 
         if not self.approval_bind_host.strip():
             self.approval_bind_host = host if loopback else "127.0.0.1"
         if self.approval_bind_port <= 0:
-            if loopback and parsed.port is not None:
-                self.approval_bind_port = parsed.port
+            if loopback and parsed_port is not None:
+                self.approval_bind_port = parsed_port
             elif loopback:
-                self.approval_bind_port = 80 if scheme == "http" else 443
+                self.approval_bind_port = int(_default_origin_port(scheme) or 8787)
             else:
                 self.approval_bind_port = 8787
         return self
