@@ -657,6 +657,112 @@ def test_webauthn_backend_accepts_default_port_origin_without_explicit_port_in_b
     assert evidence.method == "webauthn"
 
 
+@pytest.mark.parametrize(
+    "invalid_origin",
+    [
+        "https://approve.example.com/evil-path",
+        "https://approve.example.com?evil=1",
+        "https://approve.example.com#evil",
+    ],
+)
+def test_webauthn_backend_rejects_non_origin_client_data_during_registration(
+    tmp_path,
+    invalid_origin: str,
+) -> None:
+    store = InMemoryCredentialStore()
+    store.set_approval_store_path(tmp_path / "credentials.json")
+    backend = WebAuthnBackend(
+        credential_store=store,
+        approval_origin="https://approve.example.com",
+        rp_id="approve.example.com",
+    )
+
+    public_key_options, state = backend.registration_begin(
+        user_id="alice",
+        principal_id="ops-phone",
+        credential_id="webauthn-1",
+    )
+    _credential, registration_payload = make_registration_payload(
+        public_key_options=public_key_options,
+        origin=invalid_origin,
+        rp_id="approve.example.com",
+    )
+
+    with pytest.raises(ConfirmationVerificationError, match="invalid_webauthn_registration"):
+        backend.registration_complete(
+            credential_id="webauthn-1",
+            user_id="alice",
+            principal_id="ops-phone",
+            created_at=datetime(2026, 4, 6, 12, 0, tzinfo=UTC),
+            state=state,
+            response_payload=registration_payload,
+        )
+
+
+@pytest.mark.parametrize(
+    "invalid_origin",
+    [
+        "https://approve.example.com/evil-path",
+        "https://approve.example.com?evil=1",
+        "https://approve.example.com#evil",
+    ],
+)
+def test_webauthn_backend_rejects_non_origin_client_data_during_assertion(
+    tmp_path,
+    invalid_origin: str,
+) -> None:
+    store = InMemoryCredentialStore()
+    store.set_approval_store_path(tmp_path / "credentials.json")
+    backend = WebAuthnBackend(
+        credential_store=store,
+        approval_origin="https://approve.example.com",
+        rp_id="approve.example.com",
+    )
+
+    public_key_options, state = backend.registration_begin(
+        user_id="alice",
+        principal_id="ops-phone",
+        credential_id="webauthn-1",
+    )
+    credential, registration_payload = make_registration_payload(
+        public_key_options=public_key_options,
+        origin="https://approve.example.com",
+        rp_id="approve.example.com",
+    )
+    factor = backend.registration_complete(
+        credential_id="webauthn-1",
+        user_id="alice",
+        principal_id="ops-phone",
+        created_at=datetime(2026, 4, 6, 12, 0, tzinfo=UTC),
+        state=state,
+        response_payload=registration_payload,
+    )
+    store.register_approval_factor(factor)
+
+    pending = _pending_action(
+        confirmation_id="c-1",
+        credential_ids=[factor.credential_id],
+        principal_ids=[factor.principal_id],
+    )
+    request_options = backend.approval_request_options(pending_action=pending)
+    credential.origin = invalid_origin
+    assertion = make_authentication_payload(
+        public_key_options=request_options,
+        credential=credential,
+    )
+
+    with pytest.raises(ConfirmationVerificationError, match="invalid_webauthn_assertion"):
+        backend.verify(
+            pending_action=pending,
+            params={
+                "decision_nonce": "nonce-1",
+                "approval_method": "webauthn",
+                "proof": assertion,
+            },
+            now=datetime(2026, 4, 6, 12, 1, tzinfo=UTC),
+        )
+
+
 def test_canonical_json_rejects_naive_datetime() -> None:
     with pytest.raises(ValueError, match="naive datetimes"):
         canonical_json_dumps({"created_at": datetime(2026, 4, 6, 12, 0, 0)})

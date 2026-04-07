@@ -36,7 +36,7 @@ _CEREMONY_CSP = (
     "default-src 'none'; script-src 'unsafe-inline'; connect-src 'self'; "
     "style-src 'unsafe-inline'; frame-ancestors 'none'"
 )
-_TOKEN_LOG_RE = re.compile(r"([?&]token=)[^&\\s\"']+")
+_TOKEN_LOG_RE = re.compile(r"([?&]token=)[^&\s\"']+")
 
 
 @dataclass(slots=True)

@@ -5,13 +5,13 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import socket
 import urllib.error
 import urllib.request
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any
-from urllib.parse import parse_qs, urlparse
 
 import pytest
 
@@ -469,8 +469,26 @@ async def test_approval_callback_timeout_returns_503_and_keeps_token(
         await service.stop()
 
 
+@pytest.mark.parametrize(
+    "request_line",
+    [
+        "GET /approve/c-1?token=sabcdef HTTP/1.1",
+        "GET /approve/c-1?token=abcsdef&format=json HTTP/1.1",
+    ],
+)
+def test_approval_web_redact_log_text_redacts_entire_token(request_line: str) -> None:
+    redacted = ApprovalWebService._redact_log_text(request_line)
+
+    assert "sabcdef" not in redacted
+    assert "abcsdef" not in redacted
+    assert re.search(r"token=redacted(?:[&\s\"']|$)", redacted)
+
+
 @pytest.mark.asyncio
-async def test_approval_web_access_logs_redact_tokens(caplog: pytest.LogCaptureFixture) -> None:
+async def test_approval_web_access_logs_redact_tokens(
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     port = _reserve_local_port()
     service = ApprovalWebService(
         origin=f"http://127.0.0.1:{port}",
@@ -498,11 +516,12 @@ async def test_approval_web_access_logs_redact_tokens(caplog: pytest.LogCaptureF
     await service.start()
     try:
         caplog.set_level(logging.INFO, logger="shisad.daemon.approval_web")
+        caplog.clear()
+        monkeypatch.setattr(approval_web_module.secrets, "token_urlsafe", lambda *_args: "abcsdef")
         approval_url = service.issue_approval_link("c-1")
-        token = parse_qs(urlparse(approval_url).query)["token"][0]
         await asyncio.to_thread(_http_get, approval_url)
-        assert token not in caplog.text
-        assert "token=redacted" in caplog.text
+        assert "abcsdef" not in caplog.text
+        assert re.search(r"token=redacted(?:[&\s\"']|$)", caplog.text)
     finally:
         await service.stop()
 

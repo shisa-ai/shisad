@@ -52,40 +52,52 @@ def _format_origin_host(host: str) -> str:
     return normalized
 
 
-def _canonicalize_webauthn_origin(origin: str) -> str:
+def _canonicalize_webauthn_origin(
+    origin: str,
+    *,
+    require_canonical_input: bool = False,
+) -> str | None:
     parsed = urlparse(origin.strip())
     scheme = (parsed.scheme or "").lower()
     host = (parsed.hostname or "").strip().lower()
     if not scheme or not host:
-        return origin.strip()
+        return None
     try:
         port = parsed.port
     except ValueError:
-        return origin.strip()
+        return None
     default_port = _default_origin_port(scheme)
+    if default_port is None:
+        return None
+    if (
+        parsed.username is not None
+        or parsed.password is not None
+        or parsed.params
+        or parsed.query
+        or parsed.fragment
+    ):
+        return None
+    if require_canonical_input:
+        if parsed.path:
+            return None
+    elif parsed.path not in {"", "/"}:
+        return None
     if port is None or port == default_port:
-        return f"{scheme}://{_format_origin_host(host)}"
-    return f"{scheme}://{_format_origin_host(host)}:{port}"
-
-
-def _origin_identity(origin: str) -> tuple[str, str, int] | None:
-    parsed = urlparse(origin.strip())
-    scheme = (parsed.scheme or "").lower()
-    host = (parsed.hostname or "").strip().lower()
-    if not scheme or not host:
+        canonical = f"{scheme}://{_format_origin_host(host)}"
+    else:
+        canonical = f"{scheme}://{_format_origin_host(host)}:{port}"
+    if require_canonical_input and origin.strip() != canonical:
         return None
-    try:
-        port = parsed.port
-    except ValueError:
-        return None
-    effective_port = port or _default_origin_port(scheme)
-    if effective_port is None:
-        return None
-    return (scheme, host, effective_port)
+    return canonical
 
 
 def _origin_matches(candidate: str, expected: str) -> bool:
-    return _origin_identity(candidate) == _origin_identity(expected)
+    candidate_origin = _canonicalize_webauthn_origin(
+        candidate,
+        require_canonical_input=True,
+    )
+    expected_origin = _canonicalize_webauthn_origin(expected)
+    return candidate_origin is not None and candidate_origin == expected_origin
 
 
 class ConfirmationLevel(StrEnum):
@@ -1012,7 +1024,9 @@ class WebAuthnBackend:
         )
         self.third_party_verifiable = False
         self._credential_store = credential_store
-        self._approval_origin = _canonicalize_webauthn_origin(approval_origin)
+        self._approval_origin = (
+            _canonicalize_webauthn_origin(approval_origin) or approval_origin.strip()
+        )
         self._rp_id = rp_id.strip()
         self._server = Fido2Server(
             PublicKeyCredentialRpEntity(id=self._rp_id, name=rp_name),
