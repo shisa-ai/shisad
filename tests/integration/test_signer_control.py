@@ -116,6 +116,58 @@ async def test_signer_register_list_revoke_persists_across_restart(
 
 
 @pytest.mark.asyncio
+async def test_signer_revoke_blocks_reuse_of_same_key_id(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first_key = generate_ed25519_private_key()
+    second_key = generate_ed25519_private_key()
+    daemon_task, client = await _start_daemon(tmp_path, monkeypatch)
+    try:
+        registered = await client.call(
+            "signer.register",
+            {
+                "backend": "kms",
+                "user_id": "alice",
+                "key_id": "kms:finance-primary",
+                "name": "finance-owner",
+                "algorithm": "ed25519",
+                "device_type": "ledger-enterprise",
+                "public_key_pem": public_key_pem(first_key),
+            },
+        )
+        assert registered["registered"] is True
+
+        revoked = await client.call("signer.revoke", {"key_id": "kms:finance-primary"})
+        assert revoked["revoked"] is True
+
+        reused = await client.call(
+            "signer.register",
+            {
+                "backend": "kms",
+                "user_id": "alice",
+                "key_id": "kms:finance-primary",
+                "name": "finance-owner",
+                "algorithm": "ed25519",
+                "device_type": "ledger-enterprise",
+                "public_key_pem": public_key_pem(second_key),
+            },
+        )
+        assert reused["registered"] is False
+        assert reused["reason"] == "signer_key_id_reused"
+
+        listed = await client.call(
+            "signer.list",
+            {"user_id": "alice", "include_revoked": True},
+        )
+        assert listed["count"] == 1
+        assert listed["entries"][0]["credential_id"] == "kms:finance-primary"
+        assert listed["entries"][0]["revoked"] is True
+    finally:
+        await _shutdown_daemon(daemon_task, client)
+
+
+@pytest.mark.asyncio
 async def test_signer_confirmation_executes_and_records_l3_audit(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

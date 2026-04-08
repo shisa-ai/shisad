@@ -116,6 +116,39 @@ v0.6.2 work is:
 
 - Evidence encryption at rest behind the signer / key-boundary path
 
+Approval-level mapping for v0.6.2:
+
+| Shorthand | Semantic name |
+|---|---|
+| `L0` | `software` / `SOFTWARE` |
+| `L1` | `reauthenticated` / `REAUTHENTICATED` |
+| `L2` | `bound_approval` / `BOUND_APPROVAL` |
+| `L3` | `signed_authorization` / `SIGNED_AUTHORIZATION` |
+| `L4` | `trusted_display_authorization` / `TRUSTED_DISPLAY_AUTHORIZATION` |
+
+Minimal signer-backed policy example:
+
+```yaml
+tools:
+  shell.exec:
+    capabilities_required:
+      - shell.exec
+    confirmation:
+      level: signed_authorization
+      methods:
+        - kms
+      allowed_principals:
+        - finance-owner
+      allowed_credentials:
+        - kms:finance-primary
+      require_capabilities:
+        principal_binding: true
+        full_intent_signature: true
+        third_party_verifiable: true
+      fallback:
+        mode: deny
+```
+
 #### v0.6.3 — Critical UX fixes
 
 - Confirmation gate pending-status plumbing

@@ -152,6 +152,33 @@ Approval notes:
 - If `SHISAD_APPROVAL_ORIGIN` is unset, the browser/WebAuthn ceremony surface stays unavailable, but SSH/private deployments can still use `shisad-approver` with the daemon's `local_fido2` helper path for L2 `bound_approval`. The baseline `software` / `totp` confirmation flows remain available regardless.
 - `SHISAD_SIGNER_KMS_URL` enables the enterprise-style HTTPS signer backend used for `signed_authorization` approvals. When unset, the `kms` signer method stays unavailable and signer-backed policies fail closed with actionable errors.
 - `SHISAD_SIGNER_KMS_BEARER_TOKEN`, when set, is sent as an `Authorization: Bearer ...` header to that signer endpoint.
+- The `kms` endpoint contract is:
+  Request body:
+  ```json
+  {
+    "schema_version": "shisad.sign_request.v1",
+    "backend": "kms",
+    "signer_key_id": "kms:finance-primary",
+    "intent_envelope_hash": "sha256:...",
+    "intent_envelope": { "...": "shisad.intent.v1 payload" },
+    "timeout_seconds": 300
+  }
+  ```
+  Response body:
+  ```json
+  {
+    "status": "approved|rejected|expired|error",
+    "signer_key_id": "kms:finance-primary",
+    "signature": "base64:...",
+    "signed_at": "2026-04-08T12:00:00Z",
+    "review_surface": "provider_ui|opaque_device|trusted_device_display",
+    "blind_sign_detected": false,
+    "reason": ""
+  }
+  ```
+- `status`, `signed_at`, and `blind_sign_detected` are validated fail-closed; malformed values return `signer_backend_invalid_response`.
+- The daemon verifies the returned signature against the locally registered public key for `signer_key_id`; the KMS response can deny service or downgrade review quality, but it cannot mint approvals without a valid local signature check.
+- For the current `kms` backend, backend-reported review surfaces are clamped to the daemon's configured trust ceiling. In practice this means `opaque_device` can downgrade the approval, but `trusted_device_display` does not upgrade the enterprise HTTPS backend beyond `signed_authorization`.
 - Registered signer public keys currently live in the same daemon-owned approval store as TOTP/WebAuthn/helper factors until `L1` evidence-encryption-at-rest lands.
 
 Filesystem/git:

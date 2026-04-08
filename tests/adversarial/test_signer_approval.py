@@ -164,6 +164,53 @@ def test_blind_sign_evidence_cannot_satisfy_signed_authorization(tmp_path) -> No
         )
 
 
+def test_provider_ui_signer_cannot_claim_trusted_display(tmp_path) -> None:
+    private_key = generate_ed25519_private_key()
+    store = InMemoryCredentialStore()
+    store.set_approval_store_path(tmp_path / "approval-factors.json")
+    store.register_signer_key(
+        SignerKeyRecord(
+            credential_id="kms:finance-primary",
+            user_id="alice",
+            backend="kms",
+            principal_id="finance-owner",
+            algorithm="ed25519",
+            device_type="ledger-enterprise",
+            public_key_pem=public_key_pem(private_key),
+        )
+    )
+    pending, params = _pending_action(key_id="kms:finance-primary")
+    with StubSignerService(
+        private_key=private_key,
+        review_surface="trusted_device_display",
+    ).run() as signer_url:
+        backend = SignerConfirmationAdapter(
+            EnterpriseKmsSignerBackend(
+                credential_store=store,
+                endpoint_url=signer_url,
+            )
+        )
+        evidence = backend.verify(pending_action=pending, params=params)
+        assert evidence.review_surface == backend.review_surface
+        assert evidence.level == ConfirmationLevel.SIGNED_AUTHORIZATION
+        assert not confirmation_evidence_satisfies_requirement(
+            requirement=ConfirmationRequirement(
+                level=ConfirmationLevel.TRUSTED_DISPLAY_AUTHORIZATION,
+                methods=["kms"],
+                allowed_principals=["finance-owner"],
+                allowed_credentials=["kms:finance-primary"],
+                require_capabilities=ConfirmationCapabilities(
+                    principal_binding=True,
+                    full_intent_signature=True,
+                    third_party_verifiable=True,
+                    trusted_display=True,
+                ),
+            ),
+            evidence=evidence,
+            backend=backend,
+        )
+
+
 def test_revoked_signer_key_is_rejected(tmp_path) -> None:
     store = InMemoryCredentialStore()
     store.set_approval_store_path(tmp_path / "approval-factors.json")
@@ -180,3 +227,78 @@ def test_revoked_signer_key_is_rejected(tmp_path) -> None:
     )
     with pytest.raises(ConfirmationVerificationError, match="signer_key_revoked"):
         backend.verify(pending_action=pending, params=params)
+
+
+def test_allowed_signer_set_prefers_active_key_over_revoked_peer(tmp_path) -> None:
+    active_private_key = generate_ed25519_private_key()
+    revoked_private_key = generate_ed25519_private_key()
+    store = InMemoryCredentialStore()
+    store.set_approval_store_path(tmp_path / "approval-factors.json")
+    store.register_signer_key(
+        SignerKeyRecord(
+            credential_id="kms:finance-primary",
+            user_id="alice",
+            backend="kms",
+            principal_id="finance-owner",
+            algorithm="ed25519",
+            device_type="ledger-enterprise",
+            public_key_pem=public_key_pem(active_private_key),
+        )
+    )
+    store.register_signer_key(
+        SignerKeyRecord(
+            credential_id="kms:finance-backup",
+            user_id="alice",
+            backend="kms",
+            principal_id="finance-owner",
+            algorithm="ed25519",
+            device_type="ledger-enterprise",
+            public_key_pem=public_key_pem(revoked_private_key),
+        )
+    )
+    assert store.revoke_signer_key(credential_id="kms:finance-backup") == 1
+    pending, params = _pending_action(key_id="kms:finance-primary")
+    allowed_credentials = ["kms:finance-primary", "kms:finance-backup"]
+    pending.allowed_credentials = allowed_credentials
+    pending.approval_envelope = pending.approval_envelope.model_copy(
+        update={"allowed_credentials": allowed_credentials}
+    )
+    with StubSignerService(private_key=active_private_key).run() as signer_url:
+        backend = SignerConfirmationAdapter(
+            EnterpriseKmsSignerBackend(
+                credential_store=store,
+                endpoint_url=signer_url,
+            )
+        )
+        evidence = backend.verify(pending_action=pending, params=params)
+        assert evidence.credential_id == "kms:finance-primary"
+
+
+def test_malformed_signer_timestamp_fails_closed(tmp_path) -> None:
+    private_key = generate_ed25519_private_key()
+    store = InMemoryCredentialStore()
+    store.set_approval_store_path(tmp_path / "approval-factors.json")
+    store.register_signer_key(
+        SignerKeyRecord(
+            credential_id="kms:finance-primary",
+            user_id="alice",
+            backend="kms",
+            principal_id="finance-owner",
+            algorithm="ed25519",
+            device_type="ledger-enterprise",
+            public_key_pem=public_key_pem(private_key),
+        )
+    )
+    pending, params = _pending_action(key_id="kms:finance-primary")
+    with StubSignerService(
+        private_key=private_key,
+        signed_at_override="not-a-timestamp",
+    ).run() as signer_url:
+        backend = SignerConfirmationAdapter(
+            EnterpriseKmsSignerBackend(
+                credential_store=store,
+                endpoint_url=signer_url,
+            )
+        )
+        with pytest.raises(ConfirmationVerificationError, match="signer_backend_invalid_response"):
+            backend.verify(pending_action=pending, params=params)

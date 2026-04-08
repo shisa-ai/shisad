@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import getpass
 import hmac
 import json
@@ -19,6 +20,7 @@ from shisad.core.approval import (
     ConfirmationRequirement,
     ConfirmationVerificationError,
     LocalFido2Backend,
+    SignerConfirmationAdapter,
     TOTPBackend,
     WebAuthnBackend,
     approval_audit_fields,
@@ -669,6 +671,16 @@ class ConfirmationImplMixin(HandlerMixinBase):
             str(params.get("device_type") or "ledger-enterprise").strip()
             or "ledger-enterprise"
         )
+        existing = self._credential_store.get_signer_key(key_id)
+        if existing is not None:
+            return {
+                "registered": False,
+                "reason": (
+                    "signer_key_id_reused"
+                    if existing.revoked_at is not None
+                    else "signer_key_id_exists"
+                ),
+            }
         record = SignerKeyRecord(
             credential_id=key_id,
             user_id=user_id,
@@ -997,10 +1009,17 @@ class ConfirmationImplMixin(HandlerMixinBase):
             }
 
         try:
-            evidence = backend.verify(
-                pending_action=pending,
-                params=dict(params),
-            )
+            if isinstance(backend, SignerConfirmationAdapter):
+                evidence = await asyncio.to_thread(
+                    backend.verify,
+                    pending_action=pending,
+                    params=dict(params),
+                )
+            else:
+                evidence = backend.verify(
+                    pending_action=pending,
+                    params=dict(params),
+                )
         except ConfirmationVerificationError as exc:
             self._confirmation_failure_tracker.record_failure(
                 user_id=str(pending.user_id),

@@ -383,6 +383,8 @@ class InMemoryCredentialStore:
 
     def register_signer_key(self, record: SignerKeyRecord) -> None:
         """Persist a newly registered signer key."""
+        if record.credential_id in self._signer_keys:
+            raise KeyError(f"Signer key already exists: {record.credential_id}")
         self._signer_keys[record.credential_id] = record.model_copy(deep=True)
         self._persist_approval_factors()
 

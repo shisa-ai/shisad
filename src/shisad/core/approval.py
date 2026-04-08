@@ -860,9 +860,36 @@ def _signer_level_for_result(
 ) -> ConfirmationLevel:
     if blind_sign_detected or review_surface == ReviewSurface.OPAQUE_DEVICE:
         return ConfirmationLevel.BOUND_APPROVAL
-    if review_surface == ReviewSurface.TRUSTED_DEVICE_DISPLAY:
+    if (
+        review_surface == ReviewSurface.TRUSTED_DEVICE_DISPLAY
+        and default_level.priority >= ConfirmationLevel.TRUSTED_DISPLAY_AUTHORIZATION.priority
+    ):
         return ConfirmationLevel.TRUSTED_DISPLAY_AUTHORIZATION
+    if default_level.priority >= ConfirmationLevel.SIGNED_AUTHORIZATION.priority:
+        return ConfirmationLevel.SIGNED_AUTHORIZATION
     return default_level
+
+
+def _clamp_signer_review_surface(
+    *,
+    default: ReviewSurface,
+    reported: ReviewSurface | None,
+) -> ReviewSurface:
+    """Clamp backend-reported review surfaces to the daemon's proven ceiling."""
+
+    if reported is None:
+        return default
+    if reported == ReviewSurface.OPAQUE_DEVICE:
+        return ReviewSurface.OPAQUE_DEVICE
+    if reported == ReviewSurface.TRUSTED_DEVICE_DISPLAY:
+        return (
+            ReviewSurface.TRUSTED_DEVICE_DISPLAY
+            if default == ReviewSurface.TRUSTED_DEVICE_DISPLAY
+            else default
+        )
+    if default == ReviewSurface.TRUSTED_DEVICE_DISPLAY:
+        return reported
+    return default
 
 
 def _signer_key_info_from_record(record: SignerKeyRecord) -> SignerKeyInfo:
@@ -975,24 +1002,43 @@ class EnterpriseKmsSignerBackend:
         status = str(body.get("status", "")).strip()
         if status not in {"approved", "rejected", "expired", "error"}:
             return SignatureResult(status="error", reason="signer_backend_invalid_status")
-        review_surface_raw = str(body.get("review_surface", "")).strip()
-        with suppress(ValueError):
-            review_surface = ReviewSurface(review_surface_raw)
-        if "review_surface" not in locals():
-            review_surface = self.review_surface
-        signed_at_raw = str(body.get("signed_at", "")).strip()
-        signed_at = (
-            datetime.fromisoformat(signed_at_raw.replace("Z", "+00:00")).astimezone(UTC)
-            if signed_at_raw
-            else None
+        reported_review_surface: ReviewSurface | None = None
+        if "review_surface" in body:
+            review_surface_raw = str(body.get("review_surface", "")).strip()
+            if review_surface_raw:
+                try:
+                    reported_review_surface = ReviewSurface(review_surface_raw)
+                except ValueError:
+                    return SignatureResult(
+                        status="error",
+                        reason="signer_backend_invalid_response",
+                    )
+        review_surface = _clamp_signer_review_surface(
+            default=self.review_surface,
+            reported=reported_review_surface,
         )
+        signed_at: datetime | None = None
+        signed_at_raw = str(body.get("signed_at", "")).strip()
+        if signed_at_raw:
+            try:
+                signed_at = datetime.fromisoformat(
+                    signed_at_raw.replace("Z", "+00:00")
+                ).astimezone(UTC)
+            except ValueError:
+                return SignatureResult(
+                    status="error",
+                    reason="signer_backend_invalid_response",
+                )
+        blind_sign_raw = body.get("blind_sign_detected", False)
+        if not isinstance(blind_sign_raw, bool):
+            return SignatureResult(status="error", reason="signer_backend_invalid_response")
         return SignatureResult(
             status=status,
             signature=_normalize_signature_value(str(body.get("signature", ""))),
             signer_key_id=str(body.get("signer_key_id", "")).strip(),
             signed_at=signed_at,
             review_surface=review_surface,
-            blind_sign_detected=bool(body.get("blind_sign_detected", False)),
+            blind_sign_detected=blind_sign_raw,
             reason=str(body.get("reason", "")).strip(),
         )
 
@@ -1190,24 +1236,16 @@ class SignerConfirmationAdapter:
     ) -> SignerKeyInfo:
         active = self._signer_backend.list_registered_keys(user_id=user_id)
         revoked = self._signer_backend.list_registered_keys(user_id=user_id, include_revoked=True)
+        revoked_ids = {item.key_id for item in revoked if item.revoked}
         allowed_credentials = [
             item.strip()
             for item in getattr(pending_action, "allowed_credentials", ())
             if str(item).strip()
         ]
-        requested_ids = [
-            value for value in [requested_credential_id, *allowed_credentials] if value
-        ]
-        if requested_ids:
-            revoked_ids = {
-                item.key_id
-                for item in revoked
-                if item.revoked and item.key_id in set(requested_ids)
-            }
-            if revoked_ids and not any(item.key_id in revoked_ids for item in active):
-                raise ConfirmationVerificationError("signer_key_revoked")
         candidates = list(active)
         if requested_credential_id:
+            if requested_credential_id in revoked_ids:
+                raise ConfirmationVerificationError("signer_key_revoked")
             candidates = [item for item in candidates if item.key_id == requested_credential_id]
         if allowed_credentials:
             allowed = set(allowed_credentials)
@@ -1221,6 +1259,8 @@ class SignerConfirmationAdapter:
             allowed = set(allowed_principals)
             candidates = [item for item in candidates if item.principal_id in allowed]
         if not candidates:
+            if allowed_credentials and set(allowed_credentials) & revoked_ids:
+                raise ConfirmationVerificationError("signer_key_revoked")
             raise ConfirmationVerificationError("confirmation_credential_missing")
         if len(candidates) > 1:
             raise ConfirmationVerificationError("confirmation_credential_ambiguous")

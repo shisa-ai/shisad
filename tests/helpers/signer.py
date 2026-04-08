@@ -70,6 +70,7 @@ class StubSignerService:
         blind_sign_detected: bool = False,
         tamper_intent: bool = False,
         signer_key_id_override: str = "",
+        signed_at_override: str = "",
     ) -> None:
         self._private_key = private_key
         self._status = status
@@ -77,6 +78,7 @@ class StubSignerService:
         self._blind_sign_detected = blind_sign_detected
         self._tamper_intent = tamper_intent
         self._signer_key_id_override = signer_key_id_override
+        self._signed_at_override = signed_at_override
         self.requests: list[dict[str, Any]] = []
 
     @contextmanager
@@ -99,7 +101,8 @@ class StubSignerService:
                     or str(payload.get("signer_key_id", "")),
                     "review_surface": owner._review_surface,
                     "blind_sign_detected": owner._blind_sign_detected,
-                    "signed_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+                    "signed_at": owner._signed_at_override
+                    or datetime.now(UTC).isoformat().replace("+00:00", "Z"),
                 }
                 if owner._status == "approved":
                     response["signature"] = sign_intent_envelope(
