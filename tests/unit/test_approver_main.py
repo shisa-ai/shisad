@@ -276,6 +276,22 @@ def test_build_socket_endpoint_reports_ssh_forward_failures(
     assert fake_process.killed is False
 
 
+def test_build_socket_endpoint_local_mode_preserves_daemon_socket_path(tmp_path: Path) -> None:
+    socket_path = tmp_path / "daemon.sock"
+    socket_path.write_text("daemon-socket", encoding="utf-8")
+
+    endpoint = _build_socket_endpoint(
+        socket_path=socket_path,
+        ssh_target="",
+        remote_socket=None,
+        ssh_command="ssh",
+        ssh_timeout_seconds=1.0,
+    )
+    endpoint.close()
+
+    assert socket_path.exists()
+
+
 def test_build_socket_endpoint_uses_private_dir_and_ssh_hardening(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

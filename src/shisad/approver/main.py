@@ -164,7 +164,9 @@ class _SocketEndpoint:
                     self.process.kill()
                 with suppress(subprocess.TimeoutExpired):
                     self.process.wait(timeout=1)
-        if self.socket_path.exists():
+        # Only remove helper-owned forwarded sockets. In local mode the path is
+        # the daemon's real control socket and must survive helper exit.
+        if self.cleanup_dir is not None and self.socket_path.exists():
             with suppress(OSError):
                 self.socket_path.unlink()
         if self.cleanup_dir is not None and self.cleanup_dir.exists():
