@@ -11,14 +11,20 @@ import math
 import os
 import secrets
 from collections import defaultdict
+from collections.abc import Mapping
 from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from enum import Enum, StrEnum
 from pathlib import Path
 from typing import Any, Literal, Protocol
+from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlparse
+from urllib.request import Request, urlopen
 
+from cryptography.exceptions import InvalidSignature
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import ec, ed25519
 from fido2.server import Fido2Server
 from fido2.webauthn import (
     AttestedCredentialData,
@@ -31,7 +37,11 @@ from fido2.webauthn import (
 from pydantic import BaseModel, Field, ValidationError, model_validator
 
 from shisad.core.tools.schema import ToolDefinition
-from shisad.security.credentials import ApprovalFactorRecord, ApprovalFactorStore
+from shisad.security.credentials import (
+    ApprovalFactorRecord,
+    ApprovalFactorStore,
+    SignerKeyRecord,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -275,6 +285,45 @@ class ApprovalEnvelope(BaseModel):
         return self.model_dump(mode="json", exclude={"action_summary"})
 
 
+class IntentAction(BaseModel):
+    """Human-readable signable action payload."""
+
+    tool: str
+    display_summary: str
+    parameters: dict[str, Any] = Field(default_factory=dict)
+    destinations: list[str] = Field(default_factory=list)
+
+    model_config = {"frozen": True}
+
+
+class IntentPolicyContext(BaseModel):
+    """Policy metadata bound into authorization-grade signatures."""
+
+    required_level: ConfirmationLevel
+    confirmation_reason: str = ""
+    matched_rule: str = ""
+    action_digest: str = ""
+
+    model_config = {"frozen": True}
+
+
+class IntentEnvelope(BaseModel):
+    """Canonical full-intent payload for authorization-grade methods."""
+
+    schema_version: str = "shisad.intent.v1"
+    intent_id: str
+    agent_id: str
+    workspace_id: str
+    session_id: str
+    created_at: datetime
+    expires_at: datetime | None = None
+    action: IntentAction
+    policy_context: IntentPolicyContext
+    nonce: str
+
+    model_config = {"frozen": True}
+
+
 class ConfirmationEvidence(BaseModel):
     """Verified evidence returned by a confirmation backend."""
 
@@ -501,6 +550,13 @@ def approval_envelope_hash(envelope: ApprovalEnvelope | dict[str, Any]) -> str:
     return canonical_sha256(payload)
 
 
+def intent_envelope_hash(envelope: IntentEnvelope | dict[str, Any]) -> str:
+    payload = envelope.model_dump(mode="json") if isinstance(envelope, IntentEnvelope) else dict(
+        envelope
+    )
+    return canonical_sha256(payload)
+
+
 def _b64url_encode(raw: bytes) -> str:
     return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
 
@@ -710,6 +766,465 @@ class ConfirmationBackend(Protocol):
         now: datetime | None = None,
     ) -> ConfirmationEvidence:
         ...
+
+
+class SignerKeyInfo(BaseModel):
+    """Registered signer metadata exposed to signer backends."""
+
+    key_id: str
+    user_id: str
+    principal_id: str
+    algorithm: str
+    device_type: str
+    public_key_pem: str
+    created_at: datetime
+    last_verified_at: datetime | None = None
+    last_used_at: datetime | None = None
+    revoked: bool = False
+
+
+class SignatureResult(BaseModel):
+    """Signer-backend response for one intent-signing request."""
+
+    status: Literal["approved", "rejected", "expired", "error"]
+    signature: str = ""
+    signer_key_id: str = ""
+    signed_at: datetime | None = None
+    review_surface: ReviewSurface | None = None
+    blind_sign_detected: bool = False
+    reason: str = ""
+
+
+class SignerBackend(Protocol):
+    """Authorization-grade backend that returns signatures over an intent envelope."""
+
+    backend_id: str
+    method: str
+    level: ConfirmationLevel
+    review_surface: ReviewSurface
+    capabilities: ConfirmationCapabilities
+    third_party_verifiable: bool
+
+    def list_registered_keys(
+        self,
+        *,
+        user_id: str,
+        include_revoked: bool = False,
+    ) -> list[SignerKeyInfo]:
+        ...
+
+    def request_signature(
+        self,
+        *,
+        envelope: IntentEnvelope,
+        signer_key_id: str,
+        timeout: timedelta,
+    ) -> SignatureResult:
+        ...
+
+    def verify_signature(
+        self,
+        *,
+        envelope: IntentEnvelope,
+        signature: str,
+        signer_key: SignerKeyInfo,
+    ) -> bool:
+        ...
+
+    def record_key_use(self, *, signer_key_id: str, when: datetime) -> None:
+        ...
+
+
+def _normalize_signature_value(value: str) -> str:
+    text = value.strip()
+    if not text:
+        return ""
+    if text.startswith("base64:"):
+        return text
+    return "base64:" + text
+
+
+def _decode_signature_value(value: str) -> bytes:
+    normalized = _normalize_signature_value(value)
+    prefix = "base64:"
+    if not normalized.startswith(prefix):
+        raise ValueError("signature must use base64: prefix")
+    return base64.b64decode(normalized[len(prefix) :].encode("ascii"))
+
+
+def _signer_level_for_result(
+    *,
+    default_level: ConfirmationLevel,
+    review_surface: ReviewSurface,
+    blind_sign_detected: bool,
+) -> ConfirmationLevel:
+    if blind_sign_detected or review_surface == ReviewSurface.OPAQUE_DEVICE:
+        return ConfirmationLevel.BOUND_APPROVAL
+    if review_surface == ReviewSurface.TRUSTED_DEVICE_DISPLAY:
+        return ConfirmationLevel.TRUSTED_DISPLAY_AUTHORIZATION
+    return default_level
+
+
+def _signer_key_info_from_record(record: SignerKeyRecord) -> SignerKeyInfo:
+    return SignerKeyInfo(
+        key_id=record.credential_id,
+        user_id=record.user_id,
+        principal_id=record.principal_id,
+        algorithm=record.algorithm,
+        device_type=record.device_type,
+        public_key_pem=record.public_key_pem,
+        created_at=record.created_at,
+        last_verified_at=record.last_verified_at,
+        last_used_at=record.last_used_at,
+        revoked=record.revoked_at is not None,
+    )
+
+
+class EnterpriseKmsSignerBackend:
+    """Enterprise-style HTTPS signer backend for provider-UI approvals."""
+
+    def __init__(
+        self,
+        *,
+        credential_store: ApprovalFactorStore,
+        endpoint_url: str,
+        bearer_token: str = "",
+        request_timeout: timedelta | None = None,
+    ) -> None:
+        self.backend_id = "kms.default"
+        self.method = "kms"
+        self.level = ConfirmationLevel.SIGNED_AUTHORIZATION
+        self.review_surface = ReviewSurface.PROVIDER_UI
+        self.capabilities = ConfirmationCapabilities(
+            principal_binding=True,
+            full_intent_signature=True,
+            third_party_verifiable=True,
+        )
+        self.third_party_verifiable = True
+        self._credential_store = credential_store
+        self._endpoint_url = endpoint_url.strip()
+        self._bearer_token = bearer_token.strip()
+        self._request_timeout = request_timeout or timedelta(seconds=30)
+
+    def list_registered_keys(
+        self,
+        *,
+        user_id: str,
+        include_revoked: bool = False,
+    ) -> list[SignerKeyInfo]:
+        rows = self._credential_store.list_signer_keys(
+            user_id=user_id,
+            backend="kms",
+            include_revoked=include_revoked,
+        )
+        return [_signer_key_info_from_record(item) for item in rows]
+
+    def request_signature(
+        self,
+        *,
+        envelope: IntentEnvelope,
+        signer_key_id: str,
+        timeout: timedelta,
+    ) -> SignatureResult:
+        if not self._endpoint_url:
+            return SignatureResult(status="error", reason="signer_backend_unconfigured")
+        payload = {
+            "schema_version": "shisad.sign_request.v1",
+            "backend": self.method,
+            "signer_key_id": signer_key_id,
+            "intent_envelope_hash": intent_envelope_hash(envelope),
+            "intent_envelope": envelope.model_dump(mode="json"),
+            "timeout_seconds": max(1, int(timeout.total_seconds())),
+        }
+        headers = {
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        }
+        if self._bearer_token:
+            headers["Authorization"] = f"Bearer {self._bearer_token}"
+        request = Request(
+            self._endpoint_url,
+            data=json.dumps(payload).encode("utf-8"),
+            headers=headers,
+            method="POST",
+        )
+        timeout_seconds = max(
+            1.0,
+            min(timeout.total_seconds(), self._request_timeout.total_seconds()),
+        )
+        try:
+            with urlopen(request, timeout=timeout_seconds) as response:
+                body = json.loads(response.read().decode("utf-8"))
+        except HTTPError as exc:
+            reason = "signer_backend_http_error"
+            with suppress(Exception):
+                payload = json.loads(exc.read().decode("utf-8"))
+                reason = str(payload.get("reason") or payload.get("error") or reason)
+            return SignatureResult(status="error", reason=reason)
+        except URLError:
+            return SignatureResult(status="error", reason="signer_backend_unreachable")
+        except TimeoutError:
+            return SignatureResult(status="expired", reason="signer_backend_timeout")
+        except json.JSONDecodeError:
+            return SignatureResult(status="error", reason="signer_backend_invalid_response")
+        except OSError:
+            return SignatureResult(status="error", reason="signer_backend_io_error")
+
+        if not isinstance(body, dict):
+            return SignatureResult(status="error", reason="signer_backend_invalid_response")
+        status = str(body.get("status", "")).strip()
+        if status not in {"approved", "rejected", "expired", "error"}:
+            return SignatureResult(status="error", reason="signer_backend_invalid_status")
+        review_surface_raw = str(body.get("review_surface", "")).strip()
+        with suppress(ValueError):
+            review_surface = ReviewSurface(review_surface_raw)
+        if "review_surface" not in locals():
+            review_surface = self.review_surface
+        signed_at_raw = str(body.get("signed_at", "")).strip()
+        signed_at = (
+            datetime.fromisoformat(signed_at_raw.replace("Z", "+00:00")).astimezone(UTC)
+            if signed_at_raw
+            else None
+        )
+        return SignatureResult(
+            status=status,
+            signature=_normalize_signature_value(str(body.get("signature", ""))),
+            signer_key_id=str(body.get("signer_key_id", "")).strip(),
+            signed_at=signed_at,
+            review_surface=review_surface,
+            blind_sign_detected=bool(body.get("blind_sign_detected", False)),
+            reason=str(body.get("reason", "")).strip(),
+        )
+
+    def verify_signature(
+        self,
+        *,
+        envelope: IntentEnvelope,
+        signature: str,
+        signer_key: SignerKeyInfo,
+    ) -> bool:
+        try:
+            public_key = serialization.load_pem_public_key(
+                signer_key.public_key_pem.encode("utf-8")
+            )
+            signed_bytes = _decode_signature_value(signature)
+            message = canonical_json_dumps(envelope).encode("utf-8")
+            algorithm = signer_key.algorithm.strip().lower()
+            if algorithm == "ed25519":
+                if not isinstance(public_key, ed25519.Ed25519PublicKey):
+                    return False
+                public_key.verify(signed_bytes, message)
+                return True
+            if algorithm == "ecdsa-secp256k1":
+                if not isinstance(public_key, ec.EllipticCurvePublicKey):
+                    return False
+                if public_key.curve.name.lower() != "secp256k1":
+                    return False
+                public_key.verify(signed_bytes, message, ec.ECDSA(hashes.SHA256()))
+                return True
+        except (InvalidSignature, TypeError, ValueError):
+            return False
+        return False
+
+    def record_key_use(self, *, signer_key_id: str, when: datetime) -> None:
+        record = self._credential_store.get_signer_key(signer_key_id)
+        if record is None:
+            return
+        updated = record.model_copy(deep=True)
+        updated.last_verified_at = when
+        updated.last_used_at = when
+        self._credential_store.update_signer_key(updated)
+
+
+class SignerConfirmationAdapter:
+    """Expose a signer backend through the generic confirmation-backend interface."""
+
+    def __init__(self, signer_backend: SignerBackend) -> None:
+        self._signer_backend = signer_backend
+        self.backend_id = signer_backend.backend_id
+        self.method = signer_backend.method
+        self.level = signer_backend.level
+        self.binding_scope = BindingScope.FULL_INTENT
+        self.review_surface = signer_backend.review_surface
+        self.available_principals: set[str] = set()
+        self.available_credentials: set[str] = set()
+        self.capabilities = signer_backend.capabilities
+        self.third_party_verifiable = signer_backend.third_party_verifiable
+
+    def is_available_for(self, *, user_id: str) -> bool:
+        return bool(self._signer_backend.list_registered_keys(user_id=user_id))
+
+    def principals_for_user(self, *, user_id: str) -> set[str]:
+        return {
+            item.principal_id
+            for item in self._signer_backend.list_registered_keys(user_id=user_id)
+            if not item.revoked
+        }
+
+    def credentials_for_user(self, *, user_id: str) -> set[str]:
+        return {
+            item.key_id
+            for item in self._signer_backend.list_registered_keys(user_id=user_id)
+            if not item.revoked
+        }
+
+    def verify(
+        self,
+        *,
+        pending_action: Any,
+        params: dict[str, Any],
+        now: datetime | None = None,
+    ) -> ConfirmationEvidence:
+        current = now or datetime.now(UTC)
+        requested_method = str(
+            params.get("approval_method") or params.get("method") or self.method
+        ).strip() or self.method
+        if requested_method != self.method:
+            raise ConfirmationVerificationError("confirmation_method_mismatch")
+
+        decision_nonce = str(params.get("decision_nonce", "")).strip()
+        user_id = str(getattr(pending_action, "user_id", "")).strip()
+        if not user_id:
+            raise ConfirmationVerificationError("confirmation_user_missing")
+        intent_envelope = getattr(pending_action, "intent_envelope", None)
+        if isinstance(intent_envelope, Mapping):
+            intent = IntentEnvelope.model_validate(intent_envelope)
+        elif isinstance(intent_envelope, IntentEnvelope):
+            intent = intent_envelope
+        else:
+            raise ConfirmationVerificationError("intent_envelope_missing")
+        expected_intent_hash = str(
+            getattr(getattr(pending_action, "approval_envelope", None), "intent_envelope_hash", "")
+        ).strip()
+        actual_intent_hash = intent_envelope_hash(intent)
+        if expected_intent_hash and expected_intent_hash != actual_intent_hash:
+            raise ConfirmationVerificationError("intent_envelope_hash_mismatch")
+
+        signer_key = self._matching_signer_key(
+            user_id=user_id,
+            pending_action=pending_action,
+            requested_credential_id=str(params.get("credential_id", "")).strip(),
+        )
+        expires_at = getattr(pending_action, "expires_at", None)
+        timeout = (
+            max(timedelta(seconds=1), expires_at - current)
+            if isinstance(expires_at, datetime)
+            else timedelta(seconds=300)
+        )
+        result = self._signer_backend.request_signature(
+            envelope=intent,
+            signer_key_id=signer_key.key_id,
+            timeout=timeout,
+        )
+        if result.status != "approved":
+            reason = result.reason or {
+                "rejected": "signer_rejected",
+                "expired": "signer_backend_timeout",
+                "error": "signer_backend_error",
+            }[result.status]
+            raise ConfirmationVerificationError(reason)
+        if result.signer_key_id and result.signer_key_id != signer_key.key_id:
+            raise ConfirmationVerificationError("signer_key_mismatch")
+        if not result.signature:
+            raise ConfirmationVerificationError("missing_signer_signature")
+        if not self._signer_backend.verify_signature(
+            envelope=intent,
+            signature=result.signature,
+            signer_key=signer_key,
+        ):
+            raise ConfirmationVerificationError("invalid_signer_signature")
+        self._signer_backend.record_key_use(signer_key_id=signer_key.key_id, when=current)
+
+        envelope_hash, action_digest = _approval_binding_inputs(pending_action)
+        review_surface = result.review_surface or self.review_surface
+        level = _signer_level_for_result(
+            default_level=self.level,
+            review_surface=review_surface,
+            blind_sign_detected=bool(result.blind_sign_detected),
+        )
+        payload = {
+            "schema_version": "shisad.confirmation_evidence.v1",
+            "backend_id": self.backend_id,
+            "method": self.method,
+            "confirmation_id": str(getattr(pending_action, "confirmation_id", "")),
+            "decision_nonce": decision_nonce,
+            "approval_envelope_hash": envelope_hash,
+            "action_digest": action_digest,
+            "approver_principal_id": signer_key.principal_id,
+            "credential_id": signer_key.key_id,
+            "intent_envelope_hash": actual_intent_hash,
+            "signature": result.signature,
+            "signer_key_id": signer_key.key_id,
+            "review_surface": review_surface.value,
+            "blind_sign_detected": bool(result.blind_sign_detected),
+            "fallback_used": bool(getattr(pending_action, "fallback_used", False)),
+        }
+        return ConfirmationEvidence(
+            level=level,
+            method=self.method,
+            backend_id=self.backend_id,
+            approver_principal_id=signer_key.principal_id,
+            credential_id=signer_key.key_id,
+            binding_scope=self.binding_scope,
+            review_surface=review_surface,
+            third_party_verifiable=self.third_party_verifiable,
+            approval_envelope_hash=envelope_hash,
+            action_digest=action_digest,
+            decision_nonce=decision_nonce,
+            fallback_used=bool(payload["fallback_used"]),
+            evidence_payload=payload,
+            evidence_hash=canonical_sha256(payload),
+            intent_envelope_hash=actual_intent_hash,
+            signature=result.signature,
+            signer_key_id=signer_key.key_id,
+            blind_sign_detected=bool(result.blind_sign_detected),
+            verified_at=result.signed_at or current,
+        )
+
+    def _matching_signer_key(
+        self,
+        *,
+        user_id: str,
+        pending_action: Any,
+        requested_credential_id: str,
+    ) -> SignerKeyInfo:
+        active = self._signer_backend.list_registered_keys(user_id=user_id)
+        revoked = self._signer_backend.list_registered_keys(user_id=user_id, include_revoked=True)
+        allowed_credentials = [
+            item.strip()
+            for item in getattr(pending_action, "allowed_credentials", ())
+            if str(item).strip()
+        ]
+        requested_ids = [
+            value for value in [requested_credential_id, *allowed_credentials] if value
+        ]
+        if requested_ids:
+            revoked_ids = {
+                item.key_id
+                for item in revoked
+                if item.revoked and item.key_id in set(requested_ids)
+            }
+            if revoked_ids and not any(item.key_id in revoked_ids for item in active):
+                raise ConfirmationVerificationError("signer_key_revoked")
+        candidates = list(active)
+        if requested_credential_id:
+            candidates = [item for item in candidates if item.key_id == requested_credential_id]
+        if allowed_credentials:
+            allowed = set(allowed_credentials)
+            candidates = [item for item in candidates if item.key_id in allowed]
+        allowed_principals = [
+            item.strip()
+            for item in getattr(pending_action, "allowed_principals", ())
+            if str(item).strip()
+        ]
+        if allowed_principals:
+            allowed = set(allowed_principals)
+            candidates = [item for item in candidates if item.principal_id in allowed]
+        if not candidates:
+            raise ConfirmationVerificationError("confirmation_credential_missing")
+        if len(candidates) > 1:
+            raise ConfirmationVerificationError("confirmation_credential_ambiguous")
+        return candidates[0]
 
 
 class SoftwareConfirmationBackend:
@@ -1489,6 +2004,7 @@ def confirmation_evidence_satisfies_requirement(
     evidence: ConfirmationEvidence,
     backend: ConfirmationBackend,
 ) -> bool:
+    _ = backend
     if not requirement.routeable:
         return False
 
@@ -1513,7 +2029,33 @@ def confirmation_evidence_satisfies_requirement(
         and evidence.credential_id not in requirement.allowed_credentials
     ):
         return False
-    return backend.capabilities.covers(requirement.require_capabilities)
+    return confirmation_evidence_capabilities(evidence).covers(
+        requirement.require_capabilities
+    )
+
+
+def confirmation_evidence_capabilities(evidence: ConfirmationEvidence) -> ConfirmationCapabilities:
+    """Derive the effective runtime capabilities proven by one evidence record."""
+
+    return ConfirmationCapabilities(
+        principal_binding=bool(evidence.approver_principal_id),
+        approval_binding=evidence.binding_scope
+        in {BindingScope.APPROVAL_ENVELOPE, BindingScope.FULL_INTENT},
+        action_digest_binding=evidence.binding_scope
+        in {
+            BindingScope.ACTION_DIGEST,
+            BindingScope.APPROVAL_ENVELOPE,
+            BindingScope.FULL_INTENT,
+        }
+        and bool(evidence.action_digest),
+        full_intent_signature=evidence.binding_scope == BindingScope.FULL_INTENT
+        and bool(evidence.signature),
+        trusted_display=evidence.review_surface == ReviewSurface.TRUSTED_DEVICE_DISPLAY
+        and not evidence.blind_sign_detected,
+        third_party_verifiable=bool(evidence.third_party_verifiable),
+        blind_sign_detection=bool(evidence.blind_sign_detected)
+        or evidence.review_surface == ReviewSurface.OPAQUE_DEVICE,
+    )
 
 
 def approval_audit_fields(evidence: ConfirmationEvidence | None) -> dict[str, Any]:

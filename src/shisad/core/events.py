@@ -258,6 +258,28 @@ class TwoFactorRevoked(BaseEvent):
     principal_id: str = ""
 
 
+class SignerKeyRegistered(BaseEvent):
+    """A durable signer key was registered for authorization-grade approvals."""
+
+    user_id: str = ""
+    backend: str = ""
+    credential_id: str = ""
+    principal_id: str = ""
+    algorithm: str = ""
+    device_type: str = ""
+
+
+class SignerKeyRevoked(BaseEvent):
+    """A durable signer key was revoked."""
+
+    user_id: str = ""
+    backend: str = ""
+    credential_id: str = ""
+    principal_id: str = ""
+    algorithm: str = ""
+    device_type: str = ""
+
+
 class AnomalyReported(BaseEvent):
     """An anomaly was detected and reported (alarm bell)."""
 

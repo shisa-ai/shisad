@@ -321,6 +321,17 @@ class DaemonConfig(BaseSettings):
         ge=1,
         description="Maximum POST attempts per ceremony token inside one rate-limit window.",
     )
+    signer_kms_url: str = Field(
+        default="",
+        description=(
+            "Optional Enterprise-style HTTPS signer endpoint used for "
+            "authorization-grade approval requests."
+        ),
+    )
+    signer_kms_bearer_token: str = Field(
+        default="",
+        description="Optional bearer token sent to the signer KMS endpoint.",
+    )
     assistant_fs_roots: list[Path] = Field(
         default_factory=list,
         description="Allowlisted roots for fs/git assistant primitives.",

@@ -35,13 +35,19 @@ from shisad.core.approval import (
     ConfirmationLevel,
     ConfirmationMethodLockoutTracker,
     ConfirmationRequirement,
+    EnterpriseKmsSignerBackend,
+    IntentAction,
+    IntentEnvelope,
+    IntentPolicyContext,
     LocalFido2Backend,
+    SignerConfirmationAdapter,
     SoftwareConfirmationBackend,
     TOTPBackend,
     WebAuthnBackend,
     approval_audit_fields,
     approval_envelope_hash,
     compute_action_digest,
+    intent_envelope_hash,
     legacy_software_confirmation_requirement,
     new_approval_nonce,
     resolve_confirmation_destinations,
@@ -767,7 +773,7 @@ class PendingAction:
     )
     approval_envelope: ApprovalEnvelope | None = None
     approval_envelope_hash: str = ""
-    intent_envelope: dict[str, Any] | None = None
+    intent_envelope: IntentEnvelope | None = None
     confirmation_evidence: ConfirmationEvidence | None = None
     fallback: ConfirmationFallbackPolicy = field(default_factory=ConfirmationFallbackPolicy)
     expires_at: datetime | None = None
@@ -894,6 +900,16 @@ class HandlerImplementation(
                 LocalFido2Backend(
                     credential_store=services.credential_store,
                     daemon_id=self._daemon_id,
+                )
+            )
+        if self._config.signer_kms_url.strip():
+            self._confirmation_backend_registry.register(
+                SignerConfirmationAdapter(
+                    EnterpriseKmsSignerBackend(
+                        credential_store=services.credential_store,
+                        endpoint_url=self._config.signer_kms_url,
+                        bearer_token=self._config.signer_kms_bearer_token,
+                    )
                 )
             )
         self._confirmation_failure_tracker = ConfirmationMethodLockoutTracker(
@@ -1784,7 +1800,7 @@ class HandlerImplementation(
         if pending.approval_envelope is not None:
             payload["approval_envelope"] = pending.approval_envelope.model_dump(mode="json")
         if pending.intent_envelope is not None:
-            payload["intent_envelope"] = dict(pending.intent_envelope)
+            payload["intent_envelope"] = pending.intent_envelope.model_dump(mode="json")
         if pending.confirmation_evidence is not None:
             payload["confirmation_evidence"] = pending.confirmation_evidence.model_dump(
                 mode="json"
@@ -1925,6 +1941,16 @@ class HandlerImplementation(
         session = self._session_manager.get(session_id)
         normalized_arguments = pep_arguments_for_policy_evaluation(tool_name, arguments)
         tool_definition = self._registry.get_tool(tool_name)
+        resolved_destinations = resolve_confirmation_destinations(
+            tool_definition=tool_definition
+            or ToolDefinition(
+                name=tool_name,
+                description="",
+                parameters=[],
+                capabilities_required=[],
+            ),
+            arguments=normalized_arguments,
+        )
         action_digest = compute_action_digest(
             tool_definition=tool_definition
             or ToolDefinition(
@@ -1934,20 +1960,39 @@ class HandlerImplementation(
                 capabilities_required=[],
             ),
             arguments=normalized_arguments,
-            destinations=resolve_confirmation_destinations(
-                tool_definition=tool_definition
-                or ToolDefinition(
-                    name=tool_name,
-                    description="",
-                    parameters=[],
-                    capabilities_required=[],
-                ),
-                arguments=normalized_arguments,
-            ),
+            destinations=resolved_destinations,
         )
         action_summary = f"{summary.action}: " + ", ".join(
             f"{key}={value}" for key, value in summary.parameters[:6]
         )
+        intent_envelope: IntentEnvelope | None = None
+        intent_hash: str | None = None
+        if (
+            requirement.level.priority >= ConfirmationLevel.SIGNED_AUTHORIZATION.priority
+            or requirement.require_capabilities.full_intent_signature
+        ):
+            intent_envelope = IntentEnvelope(
+                intent_id=confirmation_id,
+                agent_id=self._daemon_id,
+                workspace_id=str(workspace_id),
+                session_id=str(session_id),
+                created_at=created_at,
+                expires_at=expires_at,
+                action=IntentAction(
+                    tool=str(tool_name),
+                    display_summary=action_summary.strip(),
+                    parameters=dict(normalized_arguments),
+                    destinations=list(resolved_destinations),
+                ),
+                policy_context=IntentPolicyContext(
+                    required_level=requirement.level,
+                    confirmation_reason=reason,
+                    matched_rule=str(tool_name),
+                    action_digest=action_digest,
+                ),
+                nonce=new_approval_nonce(),
+            )
+            intent_hash = intent_envelope_hash(intent_envelope)
         approval_envelope = ApprovalEnvelope(
             approval_id=confirmation_id,
             pending_action_id=confirmation_id,
@@ -1961,7 +2006,7 @@ class HandlerImplementation(
             allowed_credentials=list(requirement.allowed_credentials),
             expires_at=expires_at,
             nonce=new_approval_nonce(),
-            intent_envelope_hash=None,
+            intent_envelope_hash=intent_hash,
             action_summary=action_summary.strip(),
         )
         pending = PendingAction(
@@ -2023,6 +2068,7 @@ class HandlerImplementation(
             required_capabilities=requirement.require_capabilities.model_copy(deep=True),
             approval_envelope=approval_envelope,
             approval_envelope_hash=approval_envelope_hash(approval_envelope),
+            intent_envelope=intent_envelope,
             fallback=requirement.fallback.model_copy(deep=True),
             expires_at=expires_at,
             selected_backend_id=str(backend_resolution.backend.backend_id),
@@ -2097,6 +2143,12 @@ class HandlerImplementation(
                     if isinstance(approval_envelope_payload, Mapping)
                     else None
                 )
+                intent_envelope_payload = item.get("intent_envelope")
+                intent_envelope = (
+                    IntentEnvelope.model_validate(intent_envelope_payload)
+                    if isinstance(intent_envelope_payload, Mapping)
+                    else None
+                )
                 confirmation_evidence_payload = item.get("confirmation_evidence")
                 confirmation_evidence = (
                     ConfirmationEvidence.model_validate(confirmation_evidence_payload)
@@ -2151,9 +2203,7 @@ class HandlerImplementation(
                     ),
                     approval_envelope=approval_envelope,
                     approval_envelope_hash=str(item.get("approval_envelope_hash", "")).strip(),
-                    intent_envelope=dict(item.get("intent_envelope", {}))
-                    if isinstance(item.get("intent_envelope"), Mapping)
-                    else None,
+                    intent_envelope=intent_envelope,
                     confirmation_evidence=confirmation_evidence,
                     fallback=ConfirmationFallbackPolicy.model_validate(item.get("fallback", {})),
                     expires_at=expires_at,

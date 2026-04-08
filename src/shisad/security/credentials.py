@@ -105,6 +105,22 @@ class ApprovalFactorRecord(BaseModel):
     recovery_codes: list[RecoveryCodeRecord] = Field(default_factory=list)
 
 
+class SignerKeyRecord(BaseModel):
+    """Durable signer-key metadata stored alongside approval factors."""
+
+    credential_id: str
+    user_id: str
+    backend: str
+    principal_id: str
+    algorithm: str
+    device_type: str
+    public_key_pem: str
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    last_verified_at: datetime | None = None
+    last_used_at: datetime | None = None
+    revoked_at: datetime | None = None
+
+
 class CredentialStore(Protocol):
     """Protocol for credential storage backends."""
 
@@ -171,6 +187,32 @@ class ApprovalFactorStore(Protocol):
         """Delete matching approval factors and return the removed count."""
         ...
 
+    def register_signer_key(self, record: SignerKeyRecord) -> None:
+        """Persist a newly registered signer key."""
+        ...
+
+    def list_signer_keys(
+        self,
+        *,
+        user_id: str | None = None,
+        backend: str | None = None,
+        include_revoked: bool = False,
+    ) -> list[SignerKeyRecord]:
+        """List signer keys, optionally filtered by user/backend."""
+        ...
+
+    def get_signer_key(self, credential_id: str) -> SignerKeyRecord | None:
+        """Fetch one signer key by credential id."""
+        ...
+
+    def update_signer_key(self, record: SignerKeyRecord) -> None:
+        """Persist an updated signer-key record."""
+        ...
+
+    def revoke_signer_key(self, *, credential_id: str) -> int:
+        """Mark a signer key revoked and return the affected-row count."""
+        ...
+
 
 def generate_placeholder(ref: CredentialRef) -> str:
     """Generate a deterministic placeholder for a credential reference.
@@ -200,6 +242,7 @@ class InMemoryCredentialStore:
         self._placeholders: dict[str, CredentialRef] = {}  # placeholder → ref
         self._approval_store_path: Path | None = None
         self._approval_factors: dict[str, ApprovalFactorRecord] = {}
+        self._signer_keys: dict[str, SignerKeyRecord] = {}
         self._local_fido2_realm_id: str | None = None
 
     def register(self, ref: CredentialRef, value: str, config: CredentialConfig) -> None:
@@ -338,6 +381,56 @@ class InMemoryCredentialStore:
             self._persist_approval_factors()
         return removed
 
+    def register_signer_key(self, record: SignerKeyRecord) -> None:
+        """Persist a newly registered signer key."""
+        self._signer_keys[record.credential_id] = record.model_copy(deep=True)
+        self._persist_approval_factors()
+
+    def list_signer_keys(
+        self,
+        *,
+        user_id: str | None = None,
+        backend: str | None = None,
+        include_revoked: bool = False,
+    ) -> list[SignerKeyRecord]:
+        """List signer keys, optionally filtered by user/backend."""
+        rows = [
+            record.model_copy(deep=True)
+            for record in self._signer_keys.values()
+            if (user_id is None or record.user_id == user_id)
+            and (backend is None or record.backend == backend)
+            and (include_revoked or record.revoked_at is None)
+        ]
+        rows.sort(
+            key=lambda item: (item.created_at, item.user_id, item.backend, item.credential_id)
+        )
+        return rows
+
+    def get_signer_key(self, credential_id: str) -> SignerKeyRecord | None:
+        """Fetch one signer key by credential id."""
+        record = self._signer_keys.get(str(credential_id))
+        if record is None:
+            return None
+        return record.model_copy(deep=True)
+
+    def update_signer_key(self, record: SignerKeyRecord) -> None:
+        """Persist an updated signer-key record."""
+        if record.credential_id not in self._signer_keys:
+            raise KeyError(f"Unknown signer key: {record.credential_id}")
+        self._signer_keys[record.credential_id] = record.model_copy(deep=True)
+        self._persist_approval_factors()
+
+    def revoke_signer_key(self, *, credential_id: str) -> int:
+        """Mark a signer key revoked and return the affected-row count."""
+        record = self._signer_keys.get(str(credential_id))
+        if record is None or record.revoked_at is not None:
+            return 0
+        updated = record.model_copy(deep=True)
+        updated.revoked_at = datetime.now(UTC)
+        self._signer_keys[updated.credential_id] = updated
+        self._persist_approval_factors()
+        return 1
+
     @staticmethod
     def _host_allowed(host: str, allowed: list[str]) -> bool:
         """Check if a host matches any pattern in the allowlist."""
@@ -347,6 +440,7 @@ class InMemoryCredentialStore:
         path = self._approval_store_path
         if path is None or not path.exists():
             self._approval_factors = {}
+            self._signer_keys = {}
             self._local_fido2_realm_id = None
             return
         try:
@@ -354,7 +448,10 @@ class InMemoryCredentialStore:
             if not isinstance(payload, dict):
                 raise ValueError("approval-factor store payload must be an object")
             schema_version = str(payload.get("schema_version", "")).strip()
-            if schema_version != "shisad.approval_factor_store.v1":
+            if schema_version not in {
+                "shisad.approval_factor_store.v1",
+                "shisad.approval_factor_store.v2",
+            }:
                 raise ValueError(
                     "unsupported approval-factor store schema_version: "
                     f"{schema_version}"
@@ -369,6 +466,16 @@ class InMemoryCredentialStore:
                 factor = ApprovalFactorRecord.model_validate(item)
                 loaded[factor.credential_id] = factor
             self._approval_factors = loaded
+            signer_payload = payload.get("signer_keys", [])
+            if not isinstance(signer_payload, list):
+                raise ValueError("signer_keys must be a list")
+            signer_keys: dict[str, SignerKeyRecord] = {}
+            for item in signer_payload:
+                if not isinstance(item, dict):
+                    raise ValueError("signer_keys entries must be objects")
+                record = SignerKeyRecord.model_validate(item)
+                signer_keys[record.credential_id] = record
+            self._signer_keys = signer_keys
             local_fido2_realm_id_raw = str(payload.get("local_fido2_realm_id", "")).strip()
             if local_fido2_realm_id_raw:
                 self._local_fido2_realm_id = _normalize_local_fido2_realm_id(
@@ -387,6 +494,7 @@ class InMemoryCredentialStore:
             )
             self._quarantine_approval_store(path)
             self._approval_factors = {}
+            self._signer_keys = {}
             self._local_fido2_realm_id = None
 
     def _persist_approval_factors(self) -> None:
@@ -399,10 +507,14 @@ class InMemoryCredentialStore:
         except OSError:
             logger.debug("Unable to chmod approval-factor store directory: %s", path.parent)
         payload = {
-            "schema_version": "shisad.approval_factor_store.v1",
+            "schema_version": "shisad.approval_factor_store.v2",
             "approval_factors": [
                 factor.model_dump(mode="json")
                 for factor in self.list_approval_factors()
+            ],
+            "signer_keys": [
+                record.model_dump(mode="json")
+                for record in self.list_signer_keys(include_revoked=True)
             ],
         }
         if self._local_fido2_realm_id:

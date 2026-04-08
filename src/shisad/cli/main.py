@@ -70,6 +70,9 @@ from shisad.core.api.schema import (
     SessionRollbackResult,
     SessionSetModeResult,
     SessionTerminateResult,
+    SignerListResult,
+    SignerRegisterResult,
+    SignerRevokeResult,
     SkillInstallResult,
     SkillListResult,
     SkillReviewResult,
@@ -1719,6 +1722,124 @@ def two_factor_revoke(method: str, user_id: str, credential_id: str) -> None:
     if not result.revoked:
         raise click.ClickException(result.reason or "matching 2FA factor not found")
     click.echo(f"Revoked {result.removed} factor(s) for {user_id}")
+
+
+@cli.group("signer")
+def signer() -> None:
+    """Manage authorization-grade signer keys."""
+
+
+@signer.command("register")
+@click.option(
+    "--backend",
+    default="kms",
+    type=click.Choice(["kms"]),
+    show_default=True,
+    help="Signer backend type.",
+)
+@click.option("--user", "user_id", required=True, help="Target user ID.")
+@click.option("--key-id", required=True, help="Stable signer key identifier.")
+@click.option("--name", default="", help="Audit principal label (defaults to local username).")
+@click.option(
+    "--algorithm",
+    default="ed25519",
+    type=click.Choice(["ed25519", "ecdsa-secp256k1"]),
+    show_default=True,
+    help="Signature algorithm for the registered public key.",
+)
+@click.option(
+    "--device-type",
+    default="ledger-enterprise",
+    show_default=True,
+    help="Signer device or provider type label.",
+)
+@click.option(
+    "--public-key",
+    "public_key_path",
+    type=click.Path(path_type=Path, exists=True, dir_okay=False, readable=True),
+    required=True,
+    help="PEM-encoded public key for signature verification.",
+)
+def signer_register(
+    backend: str,
+    user_id: str,
+    key_id: str,
+    name: str,
+    algorithm: str,
+    device_type: str,
+    public_key_path: Path,
+) -> None:
+    """Register a signer key for approval policies."""
+    config = _get_config()
+    result = rpc_call(
+        config,
+        "signer.register",
+        {
+            "backend": backend,
+            "user_id": user_id,
+            "key_id": key_id,
+            "name": name.strip() or None,
+            "algorithm": algorithm,
+            "device_type": device_type.strip() or "ledger-enterprise",
+            "public_key_pem": public_key_path.read_text(encoding="utf-8"),
+        },
+        response_model=SignerRegisterResult,
+    )
+    if not result.registered:
+        raise click.ClickException(result.reason or "signer registration failed")
+    click.echo(
+        f"Registered signer key {result.credential_id} "
+        f"({result.algorithm}, {result.device_type}) for {result.user_id}"
+    )
+
+
+@signer.command("list")
+@click.option("--user", "user_id", default="", help="Filter by user ID.")
+@click.option(
+    "--backend",
+    default="",
+    type=click.Choice(["kms"], case_sensitive=False),
+    help="Optional backend filter.",
+)
+@click.option("--include-revoked", is_flag=True, help="Include revoked signer keys.")
+def signer_list(user_id: str, backend: str, include_revoked: bool) -> None:
+    """List registered signer keys."""
+    config = _get_config()
+    result = rpc_call(
+        config,
+        "signer.list",
+        {
+            "user_id": user_id or None,
+            "backend": backend or None,
+            "include_revoked": include_revoked,
+        },
+        response_model=SignerListResult,
+    )
+    if not result.entries:
+        click.echo("No registered signer keys")
+        return
+    for entry in result.entries:
+        click.echo(
+            f"{entry.user_id} backend={entry.backend} principal={entry.principal_id} "
+            f"credential={entry.credential_id} algorithm={entry.algorithm} "
+            f"device_type={entry.device_type} revoked={entry.revoked}"
+        )
+
+
+@signer.command("revoke")
+@click.option("--key-id", required=True, help="Signer key identifier to revoke.")
+def signer_revoke(key_id: str) -> None:
+    """Revoke a registered signer key."""
+    config = _get_config()
+    result = rpc_call(
+        config,
+        "signer.revoke",
+        {"key_id": key_id},
+        response_model=SignerRevokeResult,
+    )
+    if not result.revoked:
+        raise click.ClickException(result.reason or "signer key not found")
+    click.echo(f"Revoked signer key {key_id}")
 
 
 @cli.group()

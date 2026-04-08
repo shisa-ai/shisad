@@ -110,6 +110,12 @@ from shisad.core.api.schema import (
     SessionSetModeResult,
     SessionTerminateParams,
     SessionTerminateResult,
+    SignerListParams,
+    SignerListResult,
+    SignerRegisterParams,
+    SignerRegisterResult,
+    SignerRevokeParams,
+    SignerRevokeResult,
     SkillInstallParams,
     SkillInstallResult,
     SkillListResult,
@@ -379,6 +385,27 @@ class DaemonControlHandlers:
         ctx: RequestContext,
     ) -> TwoFactorRevokeResult:
         return await self._confirmation.handle_two_factor_revoke(params, ctx)
+
+    async def handle_signer_register(
+        self,
+        params: SignerRegisterParams,
+        ctx: RequestContext,
+    ) -> SignerRegisterResult:
+        return await self._confirmation.handle_signer_register(params, ctx)
+
+    async def handle_signer_list(
+        self,
+        params: SignerListParams,
+        ctx: RequestContext,
+    ) -> SignerListResult:
+        return await self._confirmation.handle_signer_list(params, ctx)
+
+    async def handle_signer_revoke(
+        self,
+        params: SignerRevokeParams,
+        ctx: RequestContext,
+    ) -> SignerRevokeResult:
+        return await self._confirmation.handle_signer_revoke(params, ctx)
 
     async def handle_memory_ingest(
         self, params: MemoryIngestParams, ctx: RequestContext

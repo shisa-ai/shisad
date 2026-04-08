@@ -28,7 +28,14 @@ from shisad.core.approval import (
     hash_recovery_code,
     match_totp_window,
 )
-from shisad.core.events import PlanAmended, ToolRejected, TwoFactorEnrolled, TwoFactorRevoked
+from shisad.core.events import (
+    PlanAmended,
+    SignerKeyRegistered,
+    SignerKeyRevoked,
+    ToolRejected,
+    TwoFactorEnrolled,
+    TwoFactorRevoked,
+)
 from shisad.core.evidence import ArtifactEndorsementState
 from shisad.core.types import TaintLabel
 from shisad.daemon.handlers._mixin_typing import (
@@ -43,7 +50,7 @@ from shisad.daemon.handlers._pending_approval import (
 )
 from shisad.security.control_plane.schema import RiskTier, build_action
 from shisad.security.control_plane.sidecar import ControlPlaneRpcError
-from shisad.security.credentials import ApprovalFactorRecord, RecoveryCodeRecord
+from shisad.security.credentials import ApprovalFactorRecord, RecoveryCodeRecord, SignerKeyRecord
 
 logger = logging.getLogger(__name__)
 
@@ -641,6 +648,117 @@ class ConfirmationImplMixin(HandlerMixinBase):
             "reason": "" if removed > 0 else "not_found",
         }
 
+    async def do_signer_register(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        backend = str(params.get("backend") or "kms").strip().lower()
+        if backend != "kms":
+            return {"registered": False, "reason": "unsupported_signer_backend"}
+        user_id = str(params.get("user_id") or "").strip()
+        if not user_id:
+            raise ValueError("user_id is required")
+        key_id = str(params.get("key_id") or "").strip()
+        if not key_id:
+            raise ValueError("key_id is required")
+        public_key_pem = str(params.get("public_key_pem") or "").strip()
+        if not public_key_pem:
+            raise ValueError("public_key_pem is required")
+        principal_id = str(params.get("name") or "").strip() or getpass.getuser().strip() or user_id
+        algorithm = str(params.get("algorithm") or "ed25519").strip().lower() or "ed25519"
+        if algorithm not in {"ed25519", "ecdsa-secp256k1"}:
+            return {"registered": False, "reason": "unsupported_signer_algorithm"}
+        device_type = (
+            str(params.get("device_type") or "ledger-enterprise").strip()
+            or "ledger-enterprise"
+        )
+        record = SignerKeyRecord(
+            credential_id=key_id,
+            user_id=user_id,
+            backend=backend,
+            principal_id=principal_id,
+            algorithm=algorithm,
+            device_type=device_type,
+            public_key_pem=public_key_pem,
+        )
+        self._credential_store.register_signer_key(record)
+        await self._event_bus.publish(
+            SignerKeyRegistered(
+                actor="control_plane",
+                user_id=user_id,
+                backend=backend,
+                credential_id=key_id,
+                principal_id=principal_id,
+                algorithm=algorithm,
+                device_type=device_type,
+            )
+        )
+        return {
+            "registered": True,
+            "backend": backend,
+            "user_id": user_id,
+            "principal_id": principal_id,
+            "credential_id": key_id,
+            "algorithm": algorithm,
+            "device_type": device_type,
+            "reason": "",
+        }
+
+    async def do_signer_list(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        user_id = str(params.get("user_id") or "").strip() or None
+        backend = str(params.get("backend") or "").strip().lower() or None
+        include_revoked = bool(params.get("include_revoked", False))
+        entries = self._credential_store.list_signer_keys(
+            user_id=user_id,
+            backend=backend,
+            include_revoked=include_revoked,
+        )
+        rows = [
+            {
+                "user_id": item.user_id,
+                "backend": item.backend,
+                "principal_id": item.principal_id,
+                "credential_id": item.credential_id,
+                "algorithm": item.algorithm,
+                "device_type": item.device_type,
+                "created_at": item.created_at.isoformat().replace("+00:00", "Z"),
+                "last_verified_at": (
+                    item.last_verified_at.isoformat().replace("+00:00", "Z")
+                    if item.last_verified_at is not None
+                    else None
+                ),
+                "last_used_at": (
+                    item.last_used_at.isoformat().replace("+00:00", "Z")
+                    if item.last_used_at is not None
+                    else None
+                ),
+                "revoked": item.revoked_at is not None,
+            }
+            for item in entries
+        ]
+        return {"entries": rows, "count": len(rows)}
+
+    async def do_signer_revoke(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        key_id = str(params.get("key_id") or "").strip()
+        if not key_id:
+            raise ValueError("key_id is required")
+        record = self._credential_store.get_signer_key(key_id)
+        removed = self._credential_store.revoke_signer_key(credential_id=key_id)
+        if removed > 0 and record is not None:
+            await self._event_bus.publish(
+                SignerKeyRevoked(
+                    actor="control_plane",
+                    user_id=record.user_id,
+                    backend=record.backend,
+                    credential_id=record.credential_id,
+                    principal_id=record.principal_id,
+                    algorithm=record.algorithm,
+                    device_type=record.device_type,
+                )
+            )
+        return {
+            "revoked": removed > 0,
+            "removed": removed,
+            "reason": "" if removed > 0 else "not_found",
+        }
+
     async def do_action_pending(self, params: Mapping[str, Any]) -> dict[str, Any]:
         confirmation_filter = str(params.get("confirmation_id") or "").strip()
         session_filter = str(params.get("session_id") or "").strip()
@@ -725,15 +843,6 @@ class ConfirmationImplMixin(HandlerMixinBase):
                     "status": pending.status,
                     "status_reason": pending.status_reason,
                 }
-        if pending.execute_after is not None:
-            remaining = (pending.execute_after - datetime.now(UTC)).total_seconds()
-            if remaining > 0:
-                return {
-                    "confirmed": False,
-                    "confirmation_id": confirmation_id,
-                    "reason": "cooldown_active",
-                    "retry_after_seconds": round(remaining, 3),
-                }
         confirmation_method = str(
             getattr(pending, "selected_backend_method", "") or "software"
         ).strip() or "software"
@@ -766,6 +875,15 @@ class ConfirmationImplMixin(HandlerMixinBase):
                 "confirmation_id": confirmation_id,
                 "reason": "invalid_decision_nonce",
             }
+        if pending.execute_after is not None:
+            remaining = (pending.execute_after - datetime.now(UTC)).total_seconds()
+            if remaining > 0:
+                return {
+                    "confirmed": False,
+                    "confirmation_id": confirmation_id,
+                    "reason": "cooldown_active",
+                    "retry_after_seconds": round(remaining, 3),
+                }
         if self._lockdown_manager.should_block_all_actions(pending.session_id):
             pending.status = "rejected"
             pending.status_reason = "session_in_lockdown"

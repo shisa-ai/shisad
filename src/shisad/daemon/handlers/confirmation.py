@@ -10,6 +10,12 @@ from shisad.core.api.schema import (
     ActionRejectResult,
     ConfirmationMetricsParams,
     ConfirmationMetricsResult,
+    SignerListParams,
+    SignerListResult,
+    SignerRegisterParams,
+    SignerRegisterResult,
+    SignerRevokeParams,
+    SignerRevokeResult,
     TwoFactorListParams,
     TwoFactorListResult,
     TwoFactorRegisterBeginParams,
@@ -132,3 +138,39 @@ class ConfirmationHandlers:
             internal_ingress_marker=self._internal_ingress_marker,
         )
         return TwoFactorRevokeResult.model_validate(await self._impl.do_two_factor_revoke(payload))
+
+    async def handle_signer_register(
+        self,
+        params: SignerRegisterParams,
+        ctx: RequestContext,
+    ) -> SignerRegisterResult:
+        payload = build_params_payload(
+            params,
+            ctx,
+            internal_ingress_marker=self._internal_ingress_marker,
+        )
+        return SignerRegisterResult.model_validate(await self._impl.do_signer_register(payload))
+
+    async def handle_signer_list(
+        self,
+        params: SignerListParams,
+        ctx: RequestContext,
+    ) -> SignerListResult:
+        payload = build_params_payload(
+            params,
+            ctx,
+            internal_ingress_marker=self._internal_ingress_marker,
+        )
+        return SignerListResult.model_validate(await self._impl.do_signer_list(payload))
+
+    async def handle_signer_revoke(
+        self,
+        params: SignerRevokeParams,
+        ctx: RequestContext,
+    ) -> SignerRevokeResult:
+        payload = build_params_payload(
+            params,
+            ctx,
+            internal_ingress_marker=self._internal_ingress_marker,
+        )
+        return SignerRevokeResult.model_validate(await self._impl.do_signer_revoke(payload))

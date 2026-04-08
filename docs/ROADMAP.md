@@ -1,7 +1,7 @@
 # shisad Roadmap
 
 *Created: 2026-02-26*
-*Updated: 2026-04-07*
+*Updated: 2026-04-08*
 *Status: Active*
 
 ## Goal
@@ -97,31 +97,23 @@ reviewed-skill schema-drift observability. The next planned lane is `v0.6.2`.
 
 #### v0.6.2 — Hardware-backed approval and signing
 
-Current execution note (2026-04-07): the `A0` approval-protocol foundation,
-the `A1` TOTP / re-auth backend, and the `A2` WebAuthn / passkey
-`bound_approval` backend are all review-closed on the active branch, and the
-`A3` local-helper slice is now landed on the active branch for reviewer
-handoff. The current v0.6.2 tree adds canonical `ApprovalEnvelope` /
+Current execution note (2026-04-08): the `A0` approval-protocol foundation,
+the `A1` TOTP / re-auth backend, the `A2` WebAuthn / passkey
+`bound_approval` backend, and the `A3` SSH/local-helper slice are all landed
+on the active branch, and the `L2` signer lane is now also landed for
+reviewer handoff. The current v0.6.2 tree adds canonical `ApprovalEnvelope` /
 `action_digest` hashing, approval levels (`L0`-`L4`), policy-driven
-escalation, selected-backend metadata on pending approvals, richer approval
-audit fields, the preserved `L0/software` backend, durable TOTP enrollment in
-the credential broker, and the WebAuthn/passkey lane: approval-origin / rpId
-config, a daemon-owned browser ceremony endpoint, durable WebAuthn credential
-registration, chat/QR approval links, browser-bounce CLI flows for
-`2fa register --method webauthn` and `action confirm`, plus behavioral and
-adversarial coverage for the WebAuthn path. The post-close compatibility
-follow-up keeps the strict non-origin rejection from review remediation while
-accepting only root-equivalent signed-origin forms (explicit default ports and
-an optional trailing `/`). The new `A3` slice adds `shisad-approver`: an
-SSH/local-socket-backed `local_fido2` helper path for private / SSH-only
-deployments, helper-specific origin / rpId context on registration and
-pending approvals, and targeted behavioral / adversarial coverage for
-helper-mediated L2 approvals. The standalone no-SSH paired-helper transport
-is explicitly deferred. The remaining v0.6.2 work is signer/key-boundary
-specific:
+escalation, richer approval audit fields, the preserved `L0/software`
+backend, durable TOTP enrollment, the approval-origin / passkey ceremony
+surface, `shisad-approver` for SSH/private deployments, and now the generic
+`IntentEnvelope` / signer-verification contract for `signed_authorization`:
+durable signer-key registration/revocation, `signer register|list|revoke`
+control surfaces, a concrete enterprise-style HTTPS signer backend, full
+signature verification against locally registered public keys, and targeted
+behavioral/adversarial coverage for signer-backed approvals. Consumer-Ledger
+clear-signing / trusted-display work remains follow-on. The remaining active
+v0.6.2 work is:
 
-- Ledger / signer integration for high-value operations
-- Hardware token signing and artifact signing flows
 - Evidence encryption at rest behind the signer / key-boundary path
 
 #### v0.6.3 — Critical UX fixes

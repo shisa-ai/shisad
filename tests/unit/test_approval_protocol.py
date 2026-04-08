@@ -10,6 +10,7 @@ import pytest
 
 from shisad.core.approval import (
     ApprovalEnvelope,
+    BindingScope,
     ConfirmationBackendRegistry,
     ConfirmationCapabilities,
     ConfirmationEvidence,
@@ -18,7 +19,11 @@ from shisad.core.approval import (
     ConfirmationMethodLockoutTracker,
     ConfirmationRequirement,
     ConfirmationVerificationError,
+    IntentAction,
+    IntentEnvelope,
+    IntentPolicyContext,
     LocalFido2Backend,
+    ReviewSurface,
     SoftwareConfirmationBackend,
     TOTPBackend,
     WebAuthnBackend,
@@ -30,6 +35,7 @@ from shisad.core.approval import (
     confirmation_requirement_payload,
     generate_totp_code,
     hash_recovery_code,
+    intent_envelope_hash,
     merge_confirmation_requirements,
 )
 from shisad.core.tools.schema import ToolDefinition, ToolParameter
@@ -170,6 +176,158 @@ def test_approval_envelope_hash_ignores_action_summary() -> None:
 
     assert approval_envelope_hash(envelope) == expected
     assert approval_envelope_hash(variant) == expected
+
+
+def test_intent_envelope_hash_matches_reference_vector() -> None:
+    envelope = IntentEnvelope(
+        intent_id="intent-1",
+        agent_id="daemon-1",
+        workspace_id="workspace-1",
+        session_id="session-1",
+        created_at=datetime(2026, 4, 8, 12, 0, tzinfo=UTC),
+        expires_at=datetime(2026, 4, 8, 12, 5, tzinfo=UTC),
+        action=IntentAction(
+            tool="deploy.production",
+            display_summary="Deploy release/2026-04-08 to prod",
+            parameters={
+                "branch": "release/2026-04-08",
+                "environment": "prod",
+            },
+            destinations=["prod-deploy.example.com"],
+        ),
+        policy_context=IntentPolicyContext(
+            required_level=ConfirmationLevel.SIGNED_AUTHORIZATION,
+            confirmation_reason="deploy.production requires signer approval",
+            matched_rule="deploy.production",
+            action_digest="sha256:abc123",
+        ),
+        nonce="b64:nonce",
+    )
+    canonical = (
+        "{"
+        '"action":{"destinations":["prod-deploy.example.com"],'
+        '"display_summary":"Deploy release/2026-04-08 to prod",'
+        '"parameters":{"branch":"release/2026-04-08","environment":"prod"},'
+        '"tool":"deploy.production"},'
+        '"agent_id":"daemon-1",'
+        '"created_at":"2026-04-08T12:00:00Z",'
+        '"expires_at":"2026-04-08T12:05:00Z",'
+        '"intent_id":"intent-1",'
+        '"nonce":"b64:nonce",'
+        '"policy_context":{"action_digest":"sha256:abc123",'
+        '"confirmation_reason":"deploy.production requires signer approval",'
+        '"matched_rule":"deploy.production",'
+        '"required_level":"signed_authorization"},'
+        '"schema_version":"shisad.intent.v1",'
+        '"session_id":"session-1",'
+        '"workspace_id":"workspace-1"'
+        "}"
+    )
+    expected = f"sha256:{hashlib.sha256(canonical.encode('utf-8')).hexdigest()}"
+
+    assert intent_envelope_hash(envelope) == expected
+
+
+def test_provider_ui_signature_satisfies_l3_but_not_l4() -> None:
+    backend = SimpleNamespace(
+        capabilities=ConfirmationCapabilities(
+            principal_binding=True,
+            full_intent_signature=True,
+            third_party_verifiable=True,
+            trusted_display=True,
+        )
+    )
+    evidence = ConfirmationEvidence(
+        level=ConfirmationLevel.SIGNED_AUTHORIZATION,
+        method="kms",
+        approver_principal_id="finance-owner",
+        credential_id="kms:finance-primary",
+        binding_scope=BindingScope.FULL_INTENT,
+        review_surface=ReviewSurface.PROVIDER_UI,
+        third_party_verifiable=True,
+        approval_envelope_hash="sha256:approval",
+        action_digest="sha256:action",
+        decision_nonce="nonce",
+        intent_envelope_hash="sha256:intent",
+        signature="base64:signature",
+        signer_key_id="kms:finance-primary",
+    )
+
+    assert confirmation_evidence_satisfies_requirement(
+        requirement=ConfirmationRequirement(
+            level=ConfirmationLevel.SIGNED_AUTHORIZATION,
+            methods=["kms"],
+            allowed_principals=["finance-owner"],
+            allowed_credentials=["kms:finance-primary"],
+            require_capabilities=ConfirmationCapabilities(
+                principal_binding=True,
+                full_intent_signature=True,
+                third_party_verifiable=True,
+            ),
+        ),
+        evidence=evidence,
+        backend=backend,
+    )
+    assert not confirmation_evidence_satisfies_requirement(
+        requirement=ConfirmationRequirement(
+            level=ConfirmationLevel.TRUSTED_DISPLAY_AUTHORIZATION,
+            methods=["kms"],
+            allowed_principals=["finance-owner"],
+            allowed_credentials=["kms:finance-primary"],
+            require_capabilities=ConfirmationCapabilities(
+                principal_binding=True,
+                full_intent_signature=True,
+                third_party_verifiable=True,
+                trusted_display=True,
+            ),
+        ),
+        evidence=evidence,
+        backend=backend,
+    )
+
+
+def test_blind_sign_evidence_cannot_satisfy_l3_policy() -> None:
+    backend = SimpleNamespace(
+        capabilities=ConfirmationCapabilities(
+            principal_binding=True,
+            full_intent_signature=True,
+            third_party_verifiable=True,
+            trusted_display=True,
+            blind_sign_detection=True,
+        )
+    )
+    evidence = ConfirmationEvidence(
+        level=ConfirmationLevel.BOUND_APPROVAL,
+        method="ledger_clear_sign",
+        approver_principal_id="finance-owner",
+        credential_id="ledger:alice-stax",
+        binding_scope=BindingScope.FULL_INTENT,
+        review_surface=ReviewSurface.OPAQUE_DEVICE,
+        third_party_verifiable=True,
+        approval_envelope_hash="sha256:approval",
+        action_digest="sha256:action",
+        decision_nonce="nonce",
+        intent_envelope_hash="sha256:intent",
+        signature="base64:signature",
+        signer_key_id="ledger:alice-stax",
+        blind_sign_detected=True,
+    )
+
+    assert not confirmation_evidence_satisfies_requirement(
+        requirement=ConfirmationRequirement(
+            level=ConfirmationLevel.SIGNED_AUTHORIZATION,
+            methods=["ledger_clear_sign"],
+            allowed_principals=["finance-owner"],
+            allowed_credentials=["ledger:alice-stax"],
+            require_capabilities=ConfirmationCapabilities(
+                principal_binding=True,
+                full_intent_signature=True,
+                third_party_verifiable=True,
+            ),
+        ),
+        evidence=evidence,
+        backend=backend,
+    )
 
 
 def test_registry_requires_explicit_fallback_for_lower_level_resolution() -> None:

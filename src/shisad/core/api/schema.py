@@ -860,6 +860,7 @@ class ActionPendingEntry(BaseModel):
     required_capabilities: dict[str, Any] = Field(default_factory=dict)
     approval_envelope: dict[str, Any] | None = None
     approval_envelope_hash: str = ""
+    intent_envelope: dict[str, Any] | None = None
     fallback: dict[str, Any] = Field(default_factory=dict)
     expires_at: str | None = None
     selected_backend_id: str = ""
@@ -970,6 +971,61 @@ class TwoFactorRevokeParams(_StrictParams):
 
 
 class TwoFactorRevokeResult(BaseModel):
+    revoked: bool
+    removed: int = 0
+    reason: str = ""
+
+
+class SignerRegisterParams(_StrictParams):
+    backend: str = "kms"
+    user_id: str
+    key_id: str
+    name: str | None = None
+    algorithm: str = "ed25519"
+    device_type: str = "ledger-enterprise"
+    public_key_pem: str
+
+
+class SignerRegisterResult(BaseModel):
+    registered: bool
+    backend: str = ""
+    user_id: str = ""
+    principal_id: str = ""
+    credential_id: str = ""
+    algorithm: str = ""
+    device_type: str = ""
+    reason: str = ""
+
+
+class SignerListParams(_StrictParams):
+    user_id: str | None = None
+    backend: str | None = None
+    include_revoked: bool = False
+
+
+class SignerEntry(BaseModel):
+    user_id: str = ""
+    backend: str = ""
+    principal_id: str = ""
+    credential_id: str = ""
+    algorithm: str = ""
+    device_type: str = ""
+    created_at: str = ""
+    last_verified_at: str | None = None
+    last_used_at: str | None = None
+    revoked: bool = False
+
+
+class SignerListResult(BaseModel):
+    entries: list[SignerEntry] = Field(default_factory=list)
+    count: int = 0
+
+
+class SignerRevokeParams(_StrictParams):
+    key_id: str
+
+
+class SignerRevokeResult(BaseModel):
     revoked: bool
     removed: int = 0
     reason: str = ""

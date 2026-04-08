@@ -27,6 +27,7 @@ from shisad.core.config import DaemonConfig
 from shisad.core.planner import Planner, PlannerOutput, PlannerResult
 from shisad.core.transcript import TranscriptStore
 from shisad.daemon.runner import run_daemon
+from tests.helpers.signer import StubSignerService, generate_ed25519_private_key, public_key_pem
 from tests.helpers.webauthn import make_authentication_payload, make_registration_payload
 
 
@@ -937,6 +938,143 @@ async def test_behavioral_local_fido2_helper_executes_and_records_l2_audit(
         assert executed_event["event_type"] == "ToolExecuted"
     finally:
         await _shutdown_daemon(daemon_task, client)
+
+
+@pytest.mark.asyncio
+async def test_behavioral_signed_authorization_executes_and_records_l3_audit(
+    tmp_path: Path,
+) -> None:
+    private_key = generate_ed25519_private_key()
+    with StubSignerService(private_key=private_key).run() as signer_url:
+        policy_text = "\n".join(
+            [
+                'version: "1"',
+                "default_require_confirmation: false",
+                "default_capabilities:",
+                "  - shell.exec",
+                "tools:",
+                "  shell.exec:",
+                "    capabilities_required:",
+                "      - shell.exec",
+                "    confirmation:",
+                "      level: signed_authorization",
+                "      methods:",
+                "        - kms",
+                "      allowed_principals:",
+                "        - finance-owner",
+                "      allowed_credentials:",
+                "        - kms:finance-primary",
+                "      require_capabilities:",
+                "        principal_binding: true",
+                "        full_intent_signature: true",
+                "        third_party_verifiable: true",
+                "      fallback:",
+                "        mode: deny",
+                "",
+            ]
+        )
+        daemon_task, client, _config = await _start_daemon(
+            tmp_path,
+            policy_text=policy_text,
+            config_overrides={"signer_kms_url": signer_url},
+        )
+        try:
+            registered = await client.call(
+                "signer.register",
+                {
+                    "backend": "kms",
+                    "user_id": "alice",
+                    "key_id": "kms:finance-primary",
+                    "name": "finance-owner",
+                    "algorithm": "ed25519",
+                    "device_type": "ledger-enterprise",
+                    "public_key_pem": public_key_pem(private_key),
+                },
+            )
+            assert registered["registered"] is True
+
+            created = await client.call(
+                "session.create",
+                {"channel": "cli", "user_id": "alice", "workspace_id": "ws1"},
+            )
+            sid = str(created["session_id"])
+
+            proposed = await client.call(
+                "tool.execute",
+                {
+                    "session_id": sid,
+                    "tool_name": "shell.exec",
+                    "command": [sys.executable, "-c", "print('behavioral-l2')"],
+                    "limits": {"timeout_seconds": 5, "output_bytes": 2048},
+                    "degraded_mode": "fail_open",
+                    "security_critical": False,
+                },
+            )
+            assert proposed["allowed"] is False
+            assert proposed["confirmation_required"] is True
+            confirmation_id = str(proposed["confirmation_id"])
+
+            pending = await client.call("action.pending", {"confirmation_id": confirmation_id})
+            actions = list(pending.get("actions", []))
+            assert len(actions) == 1
+            action = actions[0]
+            assert action["required_level"] == "signed_authorization"
+            assert action["selected_backend_method"] == "kms"
+            assert action["intent_envelope"]["schema_version"] == "shisad.intent.v1"
+            assert str(action["approval_envelope"]["intent_envelope_hash"]).startswith("sha256:")
+
+            confirmed = await client.call(
+                "action.confirm",
+                {
+                    "confirmation_id": confirmation_id,
+                    "decision_nonce": str(action["decision_nonce"]),
+                    "reason": "behavioral_l2",
+                },
+            )
+            assert confirmed["confirmed"] is True
+            assert confirmed["status"] == "approved"
+            assert confirmed["approval_level"] == "signed_authorization"
+            assert confirmed["approval_method"] == "kms"
+
+            approved = await _wait_for_audit_event(
+                client,
+                event_type="ToolApproved",
+                session_id=sid,
+                predicate=lambda event: (
+                    str(event.get("data", {}).get("tool_name", "")) == "shell.exec"
+                    and str(event.get("data", {}).get("approval_level", ""))
+                    == "signed_authorization"
+                    and str(event.get("data", {}).get("approval_method", "")) == "kms"
+                    and str(event.get("data", {}).get("approval_signer_key_id", ""))
+                    == "kms:finance-primary"
+                    and str(
+                        event.get("data", {}).get("approval_intent_envelope_hash", "")
+                    ).startswith("sha256:")
+                    and str(event.get("data", {}).get("approval_signature", "")).startswith(
+                        "base64:"
+                    )
+                ),
+            )
+            executed = await _wait_for_audit_event(
+                client,
+                event_type="ToolExecuted",
+                session_id=sid,
+                predicate=lambda event: (
+                    str(event.get("data", {}).get("tool_name", "")) == "shell.exec"
+                    and bool(event.get("data", {}).get("success")) is True
+                    and str(event.get("data", {}).get("approval_level", ""))
+                    == "signed_authorization"
+                    and str(event.get("data", {}).get("approval_method", "")) == "kms"
+                    and str(event.get("data", {}).get("approval_signer_key_id", ""))
+                    == "kms:finance-primary"
+                ),
+            )
+            assert approved["data"]["approval_review_surface"] == "provider_ui"
+            assert approved["data"]["approval_binding_scope"] == "full_intent"
+            assert approved["data"]["approval_third_party_verifiable"] is True
+            assert executed["event_type"] == "ToolExecuted"
+        finally:
+            await _shutdown_daemon(daemon_task, client)
 
 
 @pytest.mark.asyncio

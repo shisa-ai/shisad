@@ -127,7 +127,7 @@ Browser notes:
 - Loopback/private browser targets remain blocked by the sandbox unless the target host is explicitly allowlisted for the browser surface in the current configuration.
 - `SHISAD_BROWSER_REQUIRE_HARDENED_ISOLATION` defaults to `1`. Keep it enabled unless you are deliberately running a non-production browser integration and understand that disabling it weakens the browser isolation boundary.
 
-Approval / WebAuthn:
+Approval / WebAuthn / signer:
 
 - `SHISAD_APPROVAL_ORIGIN`
 - `SHISAD_APPROVAL_RP_ID`
@@ -136,6 +136,8 @@ Approval / WebAuthn:
 - `SHISAD_APPROVAL_LINK_TTL_SECONDS`
 - `SHISAD_APPROVAL_RATE_LIMIT_WINDOW_SECONDS`
 - `SHISAD_APPROVAL_RATE_LIMIT_MAX_ATTEMPTS`
+- `SHISAD_SIGNER_KMS_URL`
+- `SHISAD_SIGNER_KMS_BEARER_TOKEN`
 
 Approval notes:
 
@@ -148,6 +150,9 @@ Approval notes:
 - `SHISAD_APPROVAL_LINK_TTL_SECONDS` sets the expiry for registration and approval links. POST attempts against those links are rate-limited by `SHISAD_APPROVAL_RATE_LIMIT_WINDOW_SECONDS` and `SHISAD_APPROVAL_RATE_LIMIT_MAX_ATTEMPTS`.
 - WebAuthn `bound_approval` requires user-verifying authenticators (PIN/biometric/passkey UX). Sign-count rollback detection is best-effort only; authenticators that always report `counter=0` do not provide clone-detection signal.
 - If `SHISAD_APPROVAL_ORIGIN` is unset, the browser/WebAuthn ceremony surface stays unavailable, but SSH/private deployments can still use `shisad-approver` with the daemon's `local_fido2` helper path for L2 `bound_approval`. The baseline `software` / `totp` confirmation flows remain available regardless.
+- `SHISAD_SIGNER_KMS_URL` enables the enterprise-style HTTPS signer backend used for `signed_authorization` approvals. When unset, the `kms` signer method stays unavailable and signer-backed policies fail closed with actionable errors.
+- `SHISAD_SIGNER_KMS_BEARER_TOKEN`, when set, is sent as an `Authorization: Bearer ...` header to that signer endpoint.
+- Registered signer public keys currently live in the same daemon-owned approval store as TOTP/WebAuthn/helper factors until `L1` evidence-encryption-at-rest lands.
 
 Filesystem/git:
 
@@ -183,7 +188,7 @@ Coding-agent:
 | `SHISAD_SECURITY_REQUIRE_CONFIRMATION_FOR_WRITES` | Write/send confirmation default |
 | `SHISAD_SECURITY_EGRESS_DEFAULT_DENY` | Global egress default |
 | `SHISAD_SECURITY_CREDENTIAL_STORE_PATH` | Encrypted egress credential store path |
-| `SHISAD_SECURITY_APPROVAL_FACTOR_STORE_PATH` | Approval-factor state path (daemon-owned JSON until at-rest encryption lands) |
+| `SHISAD_SECURITY_APPROVAL_FACTOR_STORE_PATH` | Approval-factor and signer-key state path (daemon-owned JSON until at-rest encryption lands) |
 | `SHISAD_SECURITY_AUDIT_LOG_PATH` | Audit log override |
 
 ## `SHISAD_MODEL_*`

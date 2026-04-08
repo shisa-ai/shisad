@@ -442,6 +442,22 @@ async def test_m1_pf11_confirmation_rejects_invalid_nonce(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_m1_pf11_confirmation_rejects_invalid_nonce_before_cooldown(tmp_path) -> None:
+    harness = _ConfirmationImplHarness(tmp_path)
+    harness._pending_actions["c-1"] = _pending_action(
+        nonce="expected",
+        execute_after=datetime.now(UTC) + timedelta(seconds=30),
+    )
+
+    result = await harness.do_action_confirm(
+        {"confirmation_id": "c-1", "decision_nonce": "invalid"}
+    )
+
+    assert result["confirmed"] is False
+    assert result["reason"] == "invalid_decision_nonce"
+
+
+@pytest.mark.asyncio
 async def test_m1_pf11_confirmation_accepts_valid_nonce_and_rejects_missing_nonce(
     tmp_path,
 ) -> None:
