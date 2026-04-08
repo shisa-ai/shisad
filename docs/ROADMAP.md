@@ -100,15 +100,16 @@ reviewed-skill schema-drift observability. The next planned lane is `v0.6.2`.
 Current execution note (2026-04-08): the `A0` approval-protocol foundation,
 the `A1` TOTP / re-auth backend, the `A2` WebAuthn / passkey
 `bound_approval` backend, and the `A3` SSH/local-helper slice are all landed
-on the active branch, and the `L2` signer lane is now also landed for
-reviewer handoff. The current v0.6.2 tree adds canonical `ApprovalEnvelope` /
-`action_digest` hashing, approval levels (`L0`-`L4`), policy-driven
-escalation, richer approval audit fields, the preserved `L0/software`
-backend, durable TOTP enrollment, the approval-origin / passkey ceremony
-surface, `shisad-approver` for SSH/private deployments, and now the generic
+on the active branch, and the `L2` signer lane is now review-closed as well.
+The current v0.6.2 tree adds canonical `ApprovalEnvelope` / `action_digest`
+hashing, approval levels (`L0`-`L4`), policy-driven escalation, richer
+approval audit fields, the preserved `L0/software` backend, durable TOTP
+enrollment, the approval-origin / passkey ceremony surface,
+`shisad-approver` for SSH/private deployments, and now the generic
 `IntentEnvelope` / signer-verification contract for `signed_authorization`:
 durable signer-key registration/revocation, `signer register|list|revoke`
-control surfaces, a concrete enterprise-style HTTPS signer backend, full
+control surfaces, a concrete enterprise-style HTTPS signer backend, truthful
+review-surface clamping, fail-closed malformed-response handling, full
 signature verification against locally registered public keys, and targeted
 behavioral/adversarial coverage for signer-backed approvals. Consumer-Ledger
 clear-signing / trusted-display work remains follow-on. The remaining active
