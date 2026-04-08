@@ -123,7 +123,9 @@ We use separate lanes for development work:
 Rules:
 - Reviewers provide findings + rationale + suggested fixes, but do not change the repo.
 - Coders translate reviewer findings into tracked punchlist/checklist entries before implementing fixes.
+- Coders must triage all reviewer feedback, including notes labeled non-blocking or informational. If the feedback is valid, fix it in the active remediation loop or record an explicit no-change/defer rationale approved by the human lead; severity affects priority, not whether valid feedback can be ignored.
 - Reviewer follow-up is confirmation-only (resolved / unresolved with rationale), not code changes.
+- For closure purposes, reviewer "green" means no remaining valid open findings for the reviewed scope. "Not a blocker" by itself is not enough if the reviewer also raised a valid issue that remains unfixed and undeferred.
 
 ## Workflow Expectations
 
@@ -266,6 +268,7 @@ When asked to close a milestone, review remediation, or release-readiness pass:
    If any live lane cannot run, record the exact reason before calling the release closeable.
 0b. **Tool status check**: review `docs/TOOL-STATUS.md` — if a tool that was WORKS is now BROKEN, the milestone is not closeable. Regenerate with a live daemon if available: `uv run python scripts/live_tool_matrix.py --tool-status`
 0c. **Live runner evidence recorded for runtime-facing scope**: if the milestone changed planner/provider behavior, tool wiring, scheduler delivery, channel behavior, or user-visible authorization/runtime behavior, run an isolated `runner/harness.sh` verification pass and record the exact commands + outcomes in the active implementation/worklog doc. If this cannot be run, do not call the milestone closeable without an explicit deferral approved by the human lead.
+0d. **Valid review feedback closed**: every valid reviewer issue, including non-blocking notes, is either fixed and re-reviewed or explicitly rejected/deferred with rationale approved by the human lead before marking the milestone closeable.
 1. Stage only explicit task files: `git add <file> ...`
 2. Verify staged file set: `git diff --staged --name-only`
 3. Review staged patch: `git diff --staged`
@@ -394,6 +397,7 @@ Truth-in-claims:
 ### Review Trace (Findings → IDs → Commits)
 
 - Convert reviewer findings into tracked IDs before remediation (examples: `M#.R-open.#`, `M#.RR#.#`).
+- Convert every valid finding into either a remediation ID or an explicit accepted-no-change/deferral note with rationale before closure, including findings a reviewer described as non-blocking.
 - Commit messages for remediation should include milestone + finding IDs and whether it is initial remediation or re-review closure.
   - Example: `fix: close M3.R-open.2 (remediation)`
   - Example: `security: close M5.RR2.4 (re-review closure)`
