@@ -66,9 +66,15 @@ Goals:
     lint job blocking on actual findings while avoiding the broken upstream
     container-action build path.
 
-### 2026-04-01 — `cryptography` 46.0.6 upgrade lane
+### 2026-04-01 / 2026-04-09 — `cryptography` + `transformers` release-audit lane
 
-- Scope: review and apply a focused bump of direct runtime dependency `cryptography` from locked `45.0.7` to `46.0.6`; defer `Pygments`.
+- Scope:
+  - 2026-04-01: review and apply a focused bump of direct runtime dependency
+    `cryptography` from locked `45.0.7` to `46.0.6`; defer `Pygments`.
+  - 2026-04-09: release-close remediation after the `v0.6.2` trusted-publish
+    workflow audit failed on `cryptography 46.0.6` (`CVE-2026-39892`, fixed in
+    `46.0.7`) and optional PromptGuard dependency `transformers 4.57.6`
+    (`CVE-2026-1839`, fixed in `5.0.0rc3`).
 - Behavioral contract impact: expected none; the repo uses `AESGCM`, `PBKDF2HMAC`, `hashes`, `InvalidTag`, `InvalidSignature`, and Ed25519 APIs only.
 - Threat/risk read before implementation:
   - staying on `45.0.7` misses `CVE-2026-34073` fixed in `46.0.6`,
@@ -84,6 +90,13 @@ Goals:
   - `uv run --group dev python -m ruff check src/ tests/ scripts/` → `All checks passed!`.
   - `uv run --group dev python -m mypy src/shisad/` → `Success: no issues found in 171 source files`.
   - `uv run --group dev python -m pytest tests/behavioral/ -q` → `41 passed, 6 skipped`.
+  - 2026-04-09 remediation:
+    - `uv lock --upgrade-package cryptography==46.0.7 --upgrade-package transformers==5.0.0rc3`
+      refreshes the release lock with the first fixed versions seen by the
+      publish workflow.
+    - Validation scope: `tests/unit/test_promptguard_classifier.py`, focused
+      cryptography/signer/evidence tests, static checks, then rerun the trusted
+      publish workflow so the release gate itself re-executes the full bundle.
 
 ## 2026-04-01 Review Summary — `cryptography`
 
@@ -98,7 +111,7 @@ Goals:
 
 ### Upstream release review
 
-- Current target: `46.0.6`
+- Current target: `46.0.7`
 - Target release date: `2026-03-25`
 - Current locked release date: `2025-09-01`
 - Provenance signal reviewed: PyPI shows verified project details and consistent upstream project ownership; useful but not sufficient alone for supply-chain trust.
@@ -112,10 +125,16 @@ Goals:
 
 ### Decision
 
-- Proceed with the `cryptography` bump to `46.0.6`.
-- Applied lock update: `pyproject.toml` now declares `cryptography>=46.0.6,<47` and `uv.lock` resolves `46.0.6`.
+- Proceed with the `cryptography` bump to `46.0.7`.
+- Applied lock update: `pyproject.toml` now declares `cryptography>=46.0.7,<47` and `uv.lock` resolves `46.0.7`.
 - `Pygments` was deferred at the time and later upgraded to `2.20.0` in the
   2026-04-03 release-close remediation lane after the first release audit pass.
+- Proceed with the PromptGuard dependency bump to `transformers 5.0.0rc3`.
+  The local PromptGuard loader uses `AutoTokenizer` / `AutoConfig` with local
+  ONNX inference only, so the expected compatibility surface is narrow and
+  covered by the PromptGuard classifier contract tests.
+- Widen the build-only `huggingface-hub` constraint to `>=1.3,<2` so the
+  fixed `transformers` line resolves cleanly in `security-build`.
 
 ## Dependency Change-Control Plan
 
@@ -212,9 +231,9 @@ sed -n '1,140p' docs/DEPLOY.md
 
 ### A. Python dependency chain summary
 
-- `uv.lock` entries: `76` packages total.
-- Third-party packages from registry: `75` (plus editable root package `shisad`).
-- Registry source in lockfile: `75` entries from `https://pypi.org/simple`.
+- `uv.lock` entries: `129` packages total.
+- Third-party packages from registry: `128` (plus editable root package `shisad`).
+- Registry source in lockfile: `128` entries from `https://pypi.org/simple`.
 - Non-registry sources in lockfile: none (except local editable `shisad` root).
 
 ### B. Direct dependency declarations vs lock resolution
@@ -225,7 +244,7 @@ sed -n '1,140p' docs/DEPLOY.md
 | --- | --- | --- | --- |
 | `agent-client-protocol` | `==0.8.1` | `0.8.1` | Exact |
 | `click` | `>=8.1,<9` | `8.3.1` | Range in spec, exact in lock |
-| `cryptography` | `>=46.0.6,<47` | `46.0.6` | Range in spec, exact in lock |
+| `cryptography` | `>=46.0.7,<47` | `46.0.7` | Range in spec, exact in lock |
 | `loguru` | `>=0.7,<1` | `0.7.3` | Range in spec, exact in lock |
 | `pydantic` | `>=2.10,<3` | `2.12.5` | Range in spec, exact in lock |
 | `pydantic-settings` | `>=2.7,<3` | `2.12.0` | Range in spec, exact in lock |
@@ -269,7 +288,7 @@ charset-normalizer==3.4.7
 click==8.3.1
 colorama==0.4.6 ; sys_platform == 'win32'
 coverage==7.13.4
-cryptography==46.0.6
+cryptography==46.0.7
 cuda-bindings==13.2.0 ; sys_platform == 'linux'
 cuda-pathfinder==1.5.1 ; sys_platform == 'linux'
 cuda-toolkit==13.0.2 ; sys_platform == 'linux'
@@ -284,7 +303,7 @@ hf-xet==1.4.3 ; platform_machine == 'aarch64' or platform_machine == 'amd64' or 
 hpack==4.1.0
 httpcore==1.0.9
 httpx==0.28.1
-huggingface-hub==0.36.2
+huggingface-hub==1.3.0
 hyperframe==6.1.0
 idna==3.11
 iniconfig==2.3.0
@@ -362,7 +381,7 @@ textual==0.89.1
 tokenizers==0.22.2
 torch==2.11.0
 tqdm==4.67.3
-transformers==4.57.6
+transformers==5.0.0rc3
 triton==3.6.0 ; sys_platform == 'linux'
 types-pyyaml==6.0.12.20250915
 typing-extensions==4.15.0
@@ -427,7 +446,7 @@ colorama==0.4.6 ; sys_platform == 'win32'
     #   pytest
 coverage==7.13.4
     # via pytest-cov
-cryptography==46.0.6
+cryptography==46.0.7
     # via shisad
 frozenlist==1.8.0
     # via
