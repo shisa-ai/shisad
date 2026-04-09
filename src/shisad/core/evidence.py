@@ -122,10 +122,12 @@ class KmsArtifactBlobCodec:
                 headers=headers,
                 method="POST",
             )
-            with urlopen(request, timeout=max(0.1, float(self.timeout_seconds))) as response:
-                response_body = json.loads(response.read().decode("utf-8"))
         except (InvalidURL, ValueError) as exc:
             raise ArtifactBlobCodecError("artifact_kms_invalid_url") from exc
+
+        try:
+            with urlopen(request, timeout=max(0.1, float(self.timeout_seconds))) as response:
+                response_bytes = response.read()
         except HTTPError as exc:
             reason = "artifact_kms_http_error"
             with contextlib.suppress(Exception):
@@ -139,7 +141,14 @@ class KmsArtifactBlobCodec:
             raise ArtifactBlobCodecError("artifact_kms_unreachable") from exc
         except TimeoutError as exc:
             raise ArtifactBlobCodecError("artifact_kms_timeout") from exc
-        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        except ValueError as exc:
+            raise ArtifactBlobCodecError("artifact_kms_invalid_url") from exc
+        except OSError as exc:
+            raise ArtifactBlobCodecError("artifact_kms_invalid_response") from exc
+
+        try:
+            response_body = json.loads(response_bytes.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
             raise ArtifactBlobCodecError("artifact_kms_invalid_response") from exc
 
         if not isinstance(response_body, dict):
@@ -440,6 +449,11 @@ class ArtifactLedger:
         ref, _ = self.resolve_ref_content(session_id, ref_id)
         return ref
 
+    def get_ref_metadata(self, session_id: SessionId, ref_id: str) -> EvidenceRef | None:
+        self._evict_for_session(session_id)
+        session_key = self._session_key(session_id)
+        return self._refs.get(session_key, {}).get(ref_id)
+
     def resolve_ref_content(
         self,
         session_id: SessionId,
@@ -479,6 +493,15 @@ class ArtifactLedger:
 
     def validate_ref_id(self, session_id: SessionId, ref_id: str) -> bool:
         ref = self.get_ref(session_id, ref_id)
+        if ref is None:
+            return False
+        return hmac.compare_digest(
+            ref.ref_id,
+            self._make_ref_id(session_id=session_id, content_hash=ref.content_hash),
+        )
+
+    def validate_ref_metadata(self, session_id: SessionId, ref_id: str) -> bool:
+        ref = self.get_ref_metadata(session_id, ref_id)
         if ref is None:
             return False
         return hmac.compare_digest(

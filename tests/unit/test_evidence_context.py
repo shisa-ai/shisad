@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -423,6 +424,45 @@ def test_pep_requires_confirmation_for_valid_evidence_promote(tmp_path) -> None:
     )
 
     assert decision.kind.value == "require_confirmation"
+
+
+def test_pep_checks_encrypted_evidence_promote_without_artifact_kms_round_trip(tmp_path) -> None:
+    sid = SessionId("sess-a")
+    service = StubArtifactKmsService(
+        key_material=b"a" * 32,
+        request_delay_seconds=0.25,
+    )
+    with service.run() as endpoint_url:
+        store = EvidenceStore(
+            tmp_path / "evidence",
+            salt=b"a" * 32,
+            blob_codec=KmsArtifactBlobCodec(endpoint_url=endpoint_url),
+        )
+        ref = store.store(
+            sid,
+            "hello",
+            taint_labels={TaintLabel.UNTRUSTED},
+            source="web.fetch:example.com",
+            summary="hello",
+        )
+        request_count = len(service.requests)
+        pep = PEP(
+            PolicyBundle(default_require_confirmation=False),
+            _registry_for_evidence(),
+            evidence_store=store,
+        )
+
+        started = time.monotonic()
+        decision = pep.evaluate(
+            ToolName("evidence.promote"),
+            {"ref_id": ref.ref_id},
+            PolicyContext(capabilities={Capability.MEMORY_READ}, session_id=sid),
+        )
+        elapsed = time.monotonic() - started
+
+    assert decision.kind.value == "require_confirmation"
+    assert len(service.requests) == request_count
+    assert elapsed < 0.1
 
 
 def test_pep_requires_confirmation_for_promote_even_when_risk_policy_would_block(tmp_path) -> None:

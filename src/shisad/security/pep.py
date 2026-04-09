@@ -545,7 +545,12 @@ class PEP:
                 "invalid or unknown evidence reference",
                 reason_code="pep:invalid_evidence_ref",
             )
-        if not self._evidence_store.validate_ref_id(context.session_id, ref_id):
+        validate_ref = getattr(self._evidence_store, "validate_ref_metadata", None)
+        if callable(validate_ref):
+            valid_ref = bool(validate_ref(context.session_id, ref_id))
+        else:
+            valid_ref = bool(self._evidence_store.validate_ref_id(context.session_id, ref_id))
+        if not valid_ref:
             return self._reject(
                 tool_name,
                 "invalid or unknown evidence reference",
@@ -574,7 +579,11 @@ class PEP:
                 "invalid or unknown evidence reference",
                 reason_code="pep:invalid_evidence_ref",
             )
-        ref = self._evidence_store.get_ref(context.session_id, ref_id)
+        get_ref = getattr(self._evidence_store, "get_ref_metadata", None)
+        if callable(get_ref):
+            ref = get_ref(context.session_id, ref_id)
+        else:
+            ref = self._evidence_store.get_ref(context.session_id, ref_id)
         if ref is None:
             return self._reject(
                 tool_name,

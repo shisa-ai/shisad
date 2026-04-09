@@ -10,6 +10,7 @@ from stat import S_IMODE
 import pytest
 
 from shisad.core.evidence import (
+    ArtifactBlobCodecError,
     ArtifactEndorsementState,
     ArtifactLedger,
     EvidenceRef,
@@ -681,6 +682,48 @@ def test_kms_artifact_blob_codec_allows_subsecond_timeout(monkeypatch) -> None:
     )
     assert codec.encode("payload") == b"ok"
     assert captured["timeout"] == pytest.approx(0.5)
+
+
+def test_kms_artifact_blob_codec_malformed_json_response_reports_invalid_response(
+    monkeypatch,
+) -> None:
+    class _FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb) -> None:
+            _ = (exc_type, exc, tb)
+            return None
+
+        def read(self) -> bytes:
+            return b"{not-json"
+
+    monkeypatch.setattr("shisad.core.evidence.urlopen", lambda request, timeout: _FakeResponse())
+
+    codec = KmsArtifactBlobCodec(endpoint_url="http://127.0.0.1:9999/artifacts")
+    with pytest.raises(ArtifactBlobCodecError, match="artifact_kms_invalid_response"):
+        codec.encode("payload")
+
+
+def test_kms_artifact_blob_codec_invalid_utf8_response_reports_invalid_response(
+    monkeypatch,
+) -> None:
+    class _FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb) -> None:
+            _ = (exc_type, exc, tb)
+            return None
+
+        def read(self) -> bytes:
+            return b"\xff\xfe\xfd"
+
+    monkeypatch.setattr("shisad.core.evidence.urlopen", lambda request, timeout: _FakeResponse())
+
+    codec = KmsArtifactBlobCodec(endpoint_url="http://127.0.0.1:9999/artifacts")
+    with pytest.raises(ArtifactBlobCodecError, match="artifact_kms_invalid_response"):
+        codec.encode("payload")
 
 
 def test_artifact_ledger_kms_blob_codec_still_verifies_metadata_mac_when_key_is_unavailable(

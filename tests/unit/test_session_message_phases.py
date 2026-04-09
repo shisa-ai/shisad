@@ -11,6 +11,7 @@ from typing import Any
 
 import pytest
 
+from shisad.core.evidence import EvidenceStore, KmsArtifactBlobCodec
 from shisad.core.planner import (
     ActionProposal,
     EvaluatedProposal,
@@ -18,7 +19,8 @@ from shisad.core.planner import (
     PlannerResult,
 )
 from shisad.core.session import Session
-from shisad.core.tools.schema import ToolDefinition
+from shisad.core.tools.registry import ToolRegistry
+from shisad.core.tools.schema import ToolDefinition, ToolParameter
 from shisad.core.types import (
     Capability,
     PEPDecision,
@@ -42,7 +44,9 @@ from shisad.daemon.handlers._impl_session import (
 from shisad.security.control_plane.schema import ActionKind, ControlDecision, RiskTier
 from shisad.security.firewall import FirewallResult
 from shisad.security.monitor import MonitorDecisionType
-from shisad.security.pep import PolicyContext
+from shisad.security.pep import PEP, PolicyContext
+from shisad.security.policy import PolicyBundle
+from tests.helpers.artifact_kms import StubArtifactKmsService
 
 
 def _validation_result(
@@ -618,3 +622,143 @@ async def test_finalize_response_offloads_evidence_wrapping_from_event_loop(
 
     response = await finalize_task
     assert response["session_id"] == "sess-g1"
+
+
+@pytest.mark.asyncio
+async def test_evaluate_and_execute_actions_does_not_block_event_loop_during_evidence_pep_check(
+    tmp_path,
+) -> None:
+    sid = SessionId("sess-g1")
+    service = StubArtifactKmsService(
+        key_material=b"a" * 32,
+        request_delay_seconds=0.25,
+    )
+    with service.run() as endpoint_url:
+        store = EvidenceStore(
+            tmp_path / "evidence",
+            salt=b"a" * 32,
+            blob_codec=KmsArtifactBlobCodec(endpoint_url=endpoint_url),
+        )
+        ref = store.store(
+            sid,
+            "hello",
+            taint_labels={TaintLabel.UNTRUSTED},
+            source="web.fetch:example.com",
+            summary="hello",
+        )
+        request_count = len(service.requests)
+        registry = ToolRegistry()
+        registry.register(
+            ToolDefinition(
+                name=ToolName("evidence.promote"),
+                description="promote evidence",
+                parameters=[ToolParameter(name="ref_id", type="string", required=True)],
+                capabilities_required=[Capability.MEMORY_READ],
+            )
+        )
+        pep = PEP(
+            PolicyBundle(default_require_confirmation=False),
+            registry,
+            evidence_store=store,
+        )
+        harness = _PendingPolicySnapshotHarness()
+        harness._registry = registry
+        harness._pep = pep
+
+        async def _slow_evaluate_action(**_kwargs: object) -> object:
+            await asyncio.sleep(0.25)
+            return SimpleNamespace(
+                decision=ControlDecision.ALLOW,
+                reason_codes=[],
+                trace_result=SimpleNamespace(
+                    allowed=True,
+                    reason_code="",
+                    risk_tier=RiskTier.MEDIUM,
+                ),
+                consensus=SimpleNamespace(votes=[]),
+                action=SimpleNamespace(
+                    action_kind=ActionKind.MEMORY_WRITE,
+                    resource_id="evidence.promote",
+                    resource_ids=[],
+                    origin=SimpleNamespace(model_dump=lambda mode="json": {}),
+                ),
+            )
+
+        harness._control_plane = SimpleNamespace(evaluate_action=_slow_evaluate_action)
+
+        planner_context = SessionMessagePlannerContextResult(
+            validated=_validation_result(params={"session_id": str(sid), "content": "promote"}),
+            conversation_context="",
+            transcript_context_taints=set(),
+            effective_caps={Capability.MEMORY_READ},
+            memory_query="",
+            memory_context="",
+            memory_context_taints=set(),
+            memory_context_tainted_for_amv=False,
+            user_goal_host_patterns=set(),
+            untrusted_current_turn="",
+            untrusted_host_patterns=set(),
+            policy_egress_host_patterns=set(),
+            context=PolicyContext(capabilities={Capability.MEMORY_READ}, session_id=sid),
+            planner_origin="planner-origin",
+            committed_plan_hash="plan-g1",
+            active_plan_hash="plan-g1",
+            planner_tools_payload=[],
+            planner_input="planner input",
+            assistant_tone_override=None,
+        )
+        proposal = ActionProposal(
+            action_id="a-1",
+            tool_name=ToolName("evidence.promote"),
+            arguments={"ref_id": ref.ref_id},
+            reasoning="Promote evidence.",
+            data_sources=[],
+        )
+        planner_dispatch = SessionMessagePlannerDispatchResult(
+            planner_context=planner_context,
+            planner_result=PlannerResult(
+                output=PlannerOutput(assistant_response="Need confirmation.", actions=[proposal]),
+                evaluated=[
+                    EvaluatedProposal(
+                        proposal=proposal,
+                        decision=PEPDecision(
+                            kind=PEPDecisionKind.REQUIRE_CONFIRMATION,
+                            reason="needs confirmation",
+                            tool_name=proposal.tool_name,
+                            risk_score=0.5,
+                        ),
+                    )
+                ],
+                attempts=1,
+                provider_response=None,
+                messages_sent=(),
+            ),
+            planner_failure_code="",
+            trace_t0=0.0,
+            delegation_advisory=TaskDelegationRecommendation(
+                delegate=False,
+                action_count=0,
+                reason_codes=(),
+                tools=(),
+            ),
+            trace_tool_calls=[],
+        )
+
+        sleep_task = asyncio.create_task(asyncio.sleep(0.05))
+        execute_task = asyncio.create_task(
+            SessionImplMixin._evaluate_and_execute_actions(harness, planner_dispatch)
+        )
+
+        done, pending = await asyncio.wait(
+            {sleep_task, execute_task},
+            timeout=0.15,
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+
+        assert sleep_task in done
+        assert execute_task in pending
+
+        result = await execute_task
+
+    assert result.pending_confirmation == 1
+    assert len(service.requests) == request_count
