@@ -11,7 +11,7 @@ import json
 import logging
 import os
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
 from html.parser import HTMLParser
@@ -37,6 +37,7 @@ _SEMANTIC_TAGS = {"article", "main", "p"}
 _DEFAULT_EVIDENCE_MAX_AGE_SECONDS = 3600
 _DEFAULT_ORPHAN_RETENTION_SECONDS = 7 * 24 * 3600
 _EVIDENCE_METADATA_FILENAME = "refs_index.json"
+_TEMPORARILY_UNREADABLE_CACHE_SECONDS = 5.0
 
 logger = logging.getLogger(__name__)
 
@@ -195,6 +196,7 @@ class _MetadataLoadResult:
     refs: dict[str, dict[str, EvidenceRef]]
     loaded_ok: bool
     dirty: bool = False
+    temporarily_unreadable: dict[str, dict[str, _UnreadableRefState]] | None = None
 
 
 @dataclass(frozen=True)
@@ -202,6 +204,12 @@ class _BlobLoadResult:
     content: str | None
     failure_reason: str = ""
     drop_ref: bool = False
+
+
+@dataclass(frozen=True)
+class _UnreadableRefState:
+    reason: str
+    observed_at: datetime = field(default_factory=lambda: datetime.now(UTC))
 
 
 class _HTMLSummaryParser(HTMLParser):
@@ -364,6 +372,7 @@ class ArtifactLedger:
         self._default_max_age_seconds = max(1, int(default_max_age_seconds))
         self._orphan_retention_seconds = max(1, int(orphan_retention_seconds))
         self._blob_codec = blob_codec or PlaintextArtifactBlobCodec()
+        self._temporarily_unreadable_refs: dict[str, dict[str, _UnreadableRefState]] = {}
         self._root_dir.mkdir(parents=True, exist_ok=True)
         self._blob_dir.mkdir(parents=True, exist_ok=True)
         self._quarantine_dir.mkdir(parents=True, exist_ok=True)
@@ -373,6 +382,7 @@ class ArtifactLedger:
         self._salt = self._load_or_create_salt(salt)
         metadata_load = self._load_metadata_index()
         self._refs = metadata_load.refs
+        self._temporarily_unreadable_refs = metadata_load.temporarily_unreadable or {}
         metadata_ready_for_cleanup = metadata_load.loaded_ok
         if metadata_load.dirty:
             metadata_ready_for_cleanup = metadata_ready_for_cleanup and (
@@ -470,6 +480,7 @@ class ArtifactLedger:
         session_key = self._session_key(session_id)
         ref = self._refs.get(session_key, {}).get(ref_id)
         if ref is None:
+            self._clear_temporarily_unreadable(session_key, ref_id)
             return None, None
         blob_load = self._load_validated_blob_content(ref)
         if blob_load.content is None:
@@ -480,6 +491,7 @@ class ArtifactLedger:
                     session_key,
                     blob_load.failure_reason,
                 )
+                self._clear_temporarily_unreadable(session_key, ref_id)
                 self._drop_ref(session_key, ref_id)
             else:
                 logger.warning(
@@ -488,7 +500,13 @@ class ArtifactLedger:
                     session_key,
                     blob_load.failure_reason,
                 )
+                self._mark_temporarily_unreadable(
+                    session_key,
+                    ref_id,
+                    blob_load.failure_reason,
+                )
             return None, None
+        self._clear_temporarily_unreadable(session_key, ref_id)
         return ref, blob_load.content
 
     def validate_ref_id(self, session_id: SessionId, ref_id: str) -> bool:
@@ -503,6 +521,8 @@ class ArtifactLedger:
     def validate_ref_metadata(self, session_id: SessionId, ref_id: str) -> bool:
         ref = self.get_ref_metadata(session_id, ref_id)
         if ref is None:
+            return False
+        if self._is_temporarily_unreadable(self._session_key(session_id), ref_id):
             return False
         return hmac.compare_digest(
             ref.ref_id,
@@ -532,6 +552,7 @@ class ArtifactLedger:
             if age_seconds <= float(effective_max_age):
                 continue
             refs.pop(ref_id, None)
+            self._clear_temporarily_unreadable(session_key, ref_id)
             evicted.append(ref_id)
             self._delete_blob_if_unreferenced(ref.content_hash)
         if not refs:
@@ -705,14 +726,14 @@ class ArtifactLedger:
         *,
         session_key: str,
         ref: EvidenceRef,
-    ) -> tuple[EvidenceRef | None, bool]:
+    ) -> tuple[EvidenceRef | None, bool, str | None]:
         if not ref.metadata_mac:
             logger.warning(
                 "Dropping persisted evidence ref %s for session %s because metadata MAC is missing",
                 ref.ref_id,
                 session_key,
             )
-            return None, True
+            return None, True, None
 
         expected_mac = self._make_metadata_mac(session_key, ref)
         if not hmac.compare_digest(ref.metadata_mac, expected_mac):
@@ -724,20 +745,20 @@ class ArtifactLedger:
                 ref.ref_id,
                 session_key,
             )
-            return None, True
+            return None, True, None
 
         blob_load = self._load_validated_blob_content(ref)
         if blob_load.content is None:
             if not blob_load.drop_ref:
-                return ref, False
+                return ref, False, blob_load.failure_reason
             logger.warning(
                 "Dropping persisted evidence ref %s for session %s because %s",
                 ref.ref_id,
                 session_key,
                 blob_load.failure_reason,
             )
-            return None, True
-        return ref, False
+            return None, True, None
+        return ref, False, None
 
     def _write_blob(self, path: Path, content: str) -> None:
         path.write_bytes(self._blob_codec.encode(content))
@@ -760,6 +781,7 @@ class ArtifactLedger:
         loaded_ok = True
         dirty = False
         loaded: dict[str, dict[str, EvidenceRef]] = {}
+        temporarily_unreadable: dict[str, dict[str, _UnreadableRefState]] = {}
         for session_key, session_refs_raw in raw.items():
             if not isinstance(session_key, str) or not isinstance(session_refs_raw, dict):
                 dirty = True
@@ -788,7 +810,7 @@ class ArtifactLedger:
                         session_key,
                     )
                     continue
-                normalized_ref, normalized_dirty = self._normalize_loaded_ref(
+                normalized_ref, normalized_dirty, unreadable_reason = self._normalize_loaded_ref(
                     session_key=session_key,
                     ref=ref,
                 )
@@ -796,9 +818,17 @@ class ArtifactLedger:
                 if normalized_ref is None:
                     continue
                 session_refs[ref_id] = normalized_ref
+                if unreadable_reason:
+                    session_unreadable = temporarily_unreadable.setdefault(session_key, {})
+                    session_unreadable[ref_id] = _UnreadableRefState(reason=unreadable_reason)
             if session_refs:
                 loaded[session_key] = session_refs
-        return _MetadataLoadResult(refs=loaded, loaded_ok=loaded_ok, dirty=dirty)
+        return _MetadataLoadResult(
+            refs=loaded,
+            loaded_ok=loaded_ok,
+            dirty=dirty,
+            temporarily_unreadable=temporarily_unreadable,
+        )
 
     def _persist_metadata_index(self) -> None:
         serialized = {
@@ -868,11 +898,36 @@ class ArtifactLedger:
     def _drop_ref(self, session_key: str, ref_id: str) -> None:
         refs = self._refs.get(session_key)
         if not refs or ref_id not in refs:
+            self._clear_temporarily_unreadable(session_key, ref_id)
             return
         refs.pop(ref_id, None)
+        self._clear_temporarily_unreadable(session_key, ref_id)
         if not refs:
             self._refs.pop(session_key, None)
         self._try_persist_metadata_index("dropping missing-blob evidence ref")
+
+    def _mark_temporarily_unreadable(self, session_key: str, ref_id: str, reason: str) -> None:
+        self._temporarily_unreadable_refs.setdefault(session_key, {})[ref_id] = _UnreadableRefState(
+            reason=reason.strip() or "temporarily_unreadable"
+        )
+
+    def _clear_temporarily_unreadable(self, session_key: str, ref_id: str) -> None:
+        session_refs = self._temporarily_unreadable_refs.get(session_key)
+        if not session_refs:
+            return
+        session_refs.pop(ref_id, None)
+        if not session_refs:
+            self._temporarily_unreadable_refs.pop(session_key, None)
+
+    def _is_temporarily_unreadable(self, session_key: str, ref_id: str) -> bool:
+        state = self._temporarily_unreadable_refs.get(session_key, {}).get(ref_id)
+        if state is None:
+            return False
+        age_seconds = max(0.0, (datetime.now(UTC) - state.observed_at).total_seconds())
+        if age_seconds > _TEMPORARILY_UNREADABLE_CACHE_SECONDS:
+            self._clear_temporarily_unreadable(session_key, ref_id)
+            return False
+        return True
 
     def _evict_for_session(self, session_id: SessionId) -> None:
         self.evict_expired(

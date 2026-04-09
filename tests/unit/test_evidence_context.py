@@ -465,6 +465,58 @@ def test_pep_checks_encrypted_evidence_promote_without_artifact_kms_round_trip(t
     assert elapsed < 0.1
 
 
+def test_pep_rejects_temporarily_unreadable_encrypted_refs_without_new_kms_round_trip(
+    tmp_path,
+) -> None:
+    evidence_root = tmp_path / "evidence"
+    sid = SessionId("sess-a")
+    with StubArtifactKmsService(key_material=b"a" * 32).run() as endpoint_url:
+        store = EvidenceStore(
+            evidence_root,
+            salt=b"b" * 32,
+            blob_codec=KmsArtifactBlobCodec(endpoint_url=endpoint_url),
+        )
+        ref = store.store(
+            sid,
+            "hello",
+            taint_labels={TaintLabel.UNTRUSTED},
+            source="web.fetch:example.com",
+            summary="hello",
+        )
+
+    service = StubArtifactKmsService(key_material=b"c" * 32)
+    with service.run() as endpoint_url:
+        restarted = EvidenceStore(
+            evidence_root,
+            salt=b"b" * 32,
+            blob_codec=KmsArtifactBlobCodec(endpoint_url=endpoint_url),
+        )
+        request_count = len(service.requests)
+        pep = PEP(
+            PolicyBundle(default_require_confirmation=False),
+            _registry_for_evidence(),
+            evidence_store=restarted,
+        )
+
+        read_decision = pep.evaluate(
+            ToolName("evidence.read"),
+            {"ref_id": ref.ref_id},
+            PolicyContext(capabilities={Capability.MEMORY_READ}, session_id=sid),
+        )
+        promote_decision = pep.evaluate(
+            ToolName("evidence.promote"),
+            {"ref_id": ref.ref_id},
+            PolicyContext(capabilities={Capability.MEMORY_READ}, session_id=sid),
+        )
+
+    assert read_decision.kind.value == "reject"
+    assert read_decision.reason == "invalid or unknown evidence reference"
+    assert promote_decision.kind.value == "reject"
+    assert promote_decision.reason == "invalid or unknown evidence reference"
+    assert len(service.requests) == request_count
+    assert ref.ref_id in restarted._refs[str(sid)]
+
+
 def test_pep_requires_confirmation_for_promote_even_when_risk_policy_would_block(tmp_path) -> None:
     store = EvidenceStore(tmp_path / "evidence", salt=b"a" * 32)
     sid = SessionId("sess-a")

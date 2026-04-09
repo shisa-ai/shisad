@@ -545,6 +545,7 @@ def test_artifact_ledger_kms_blob_codec_wrong_key_keeps_ref_for_later_recovery(t
         )
         assert wrong.read(sid, ref.ref_id) is None
         assert wrong.validate_ref_id(sid, ref.ref_id) is False
+        assert wrong.validate_ref_metadata(sid, ref.ref_id) is False
         assert ref.ref_id in wrong._refs[str(sid)]
 
     with StubArtifactKmsService(key_material=b"a" * 32).run() as endpoint_url:
