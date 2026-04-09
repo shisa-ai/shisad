@@ -67,12 +67,9 @@ store these securely offline.
 
 **Confirming an action:**
 
-When an action requires L1 confirmation, the daemon prompts you through your
-active channel (chat or web). Reply with your 6-digit TOTP code directly in
-chat, or enter it on the approval web page if you have an approval origin
-configured.
-
-You can also confirm via the CLI if you prefer:
+In the current release, TOTP confirmations are submitted via the control CLI
+(or an RPC client), usually by running the command on the daemon host (or over
+SSH):
 
 ```bash
 shisad action confirm <ID> --nonce <NONCE> --totp-code 123456
@@ -83,6 +80,10 @@ Recovery codes work the same way:
 ```bash
 shisad action confirm <ID> --nonce <NONCE> --recovery-code XXXX-XXXX
 ```
+
+**Security note:** TOTP and recovery codes are secrets. Avoid pasting them into
+an LLM or chat transcript. Prefer the CLI (or a dedicated approval surface when
+available) so codes do not end up in conversation logs.
 
 **Limitations:** TOTP codes are time-windowed (30 seconds, with a +/-1 window
 for clock drift). Each code can only be used once within its window. TOTP
@@ -158,17 +159,26 @@ but without needing a public HTTPS endpoint.
 
 **Setup:**
 
-The local helper connects to the daemon over SSH (default) or via a paired
-shared-secret channel:
+The helper talks to the daemon control API over a Unix socket. For remote
+deployments, it forwards that socket over SSH:
 
 ```bash
-# SSH tunnel mode (default — uses your existing SSH access)
-shisad-approver connect --daemon ssh://user@host
+# Enroll a local-helper (local_fido2) credential using your local FIDO2 key
+shisad-approver register \
+  --ssh-target user@host \
+  --remote-socket /run/shisad/control.sock \
+  --user alice \
+  --name "laptop-yubikey"
 
-# Standalone mode (no SSH)
-shisactl approver pair   # one-time pairing on the daemon
-shisad-approver connect --daemon wss://host:port --token <pairing-token>
+# Keep the helper running to satisfy pending local_fido2 approvals
+shisad-approver run \
+  --ssh-target user@host \
+  --remote-socket /run/shisad/control.sock
 ```
+
+If you run the helper on the same host as the daemon, you can omit SSH and pass
+`--socket-path /run/shisad/control.sock` instead. The remote socket path must
+match the daemon's configured `SHISAD_SOCKET_PATH`.
 
 **Note:** Credentials registered via the local helper use a different
 credential pool than browser-registered passkeys. They are scoped to the
@@ -221,11 +231,11 @@ tools:
   "shell.exec":
     require_confirmation: true
 
-  # Require TOTP or passkey re-authentication
+  # Require L1 reauthentication (TOTP/recovery-code) before allowing the tool.
+  # Note: leaving "methods" empty allows recovery codes too.
   "git.push":
     confirmation:
       level: reauthenticated
-      methods: [totp, webauthn]
       timeout_seconds: 300
 
   # Require challenge-bound passkey approval
@@ -234,10 +244,10 @@ tools:
       level: bound_approval
       methods: [webauthn]
       allowed_credentials:
-        - webauthn:yubikey-5-nfc
+        - webauthn.<credential-id>
       require_capabilities:
-        binding_scope: approval_envelope
         principal_binding: true
+        approval_binding: true
       fallback:
         mode: deny
       timeout_seconds: 300
@@ -248,7 +258,8 @@ tools:
       level: signed_authorization
       methods: [kms]
       require_capabilities:
-        binding_scope: full_intent
+        principal_binding: true
+        full_intent_signature: true
         third_party_verifiable: true
       fallback:
         mode: deny
@@ -272,13 +283,13 @@ approval levels based on action risk scores:
 ```yaml
 risk_policy:
   confirmation_levels:
-    - score_gte: 0.45
+    - threshold: 0.45
       level: software
-    - score_gte: 0.60
+    - threshold: 0.60
       level: reauthenticated
-    - score_gte: 0.70
+    - threshold: 0.70
       level: bound_approval
-    - score_gte: 0.80
+    - threshold: 0.80
       level: signed_authorization
 ```
 
@@ -297,6 +308,7 @@ shisactl 2fa list --user alice
 # Revoke a credential
 shisactl 2fa revoke --method totp --user alice
 shisactl 2fa revoke --method webauthn --user alice --credential-id <ID>
+shisactl 2fa revoke --method local_fido2 --user alice --credential-id <ID>
 
 # List/revoke signer keys (L3+)
 shisactl signer list
@@ -343,6 +355,7 @@ different class of problem — restore from backups or re-provision.
 | `SHISAD_APPROVAL_LINK_TTL_SECONDS` | Expiry for registration and approval links |
 | `SHISAD_APPROVAL_RATE_LIMIT_WINDOW_SECONDS` | Rate-limit window for approval attempts |
 | `SHISAD_APPROVAL_RATE_LIMIT_MAX_ATTEMPTS` | Max attempts per rate-limit window |
+| `SHISAD_SOCKET_PATH` | Daemon control-socket path (used by `shisad-approver` via SSH socket forwarding) |
 | `SHISAD_SIGNER_KMS_URL` | Enterprise KMS signing endpoint URL |
 | `SHISAD_SIGNER_KMS_BEARER_TOKEN` | Bearer token for KMS endpoint authentication |
 | `SHISAD_SECURITY_APPROVAL_FACTOR_STORE_PATH` | Path to the durable credential store |
@@ -372,6 +385,10 @@ hash, signature, and signer key ID.
 - **Trusted-display authorization (L4):** Consumer Ledger clear-signing and
   other trusted-display hardware flows are designed but not yet shipped. The
   protocol and policy language are ready; the device integration is follow-on.
+- **TOTP confirmation via chat/web surfaces:** TOTP confirmation currently
+  requires submitting the code via the control API (for example `shisad action
+  confirm ... --totp-code`). A non-SSH submission surface is planned; if you
+  submit codes via a chat channel, treat the transcript as sensitive.
 - **Push notification approvals:** Planned as a future L1 method.
 - **Multi-approver / quorum:** The schema supports multiple principals and
   credentials, but M-of-N approval is not yet enforced. Environments that need
