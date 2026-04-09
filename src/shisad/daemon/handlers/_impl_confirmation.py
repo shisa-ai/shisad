@@ -120,9 +120,7 @@ class ConfirmationImplMixin(HandlerMixinBase):
             "approval_decision_nonce": str(getattr(pending, "decision_nonce", "")),
             "approval_timestamp": decision_timestamp,
         }
-        fields.update(
-            approval_audit_fields(getattr(pending, "confirmation_evidence", None))
-        )
+        fields.update(approval_audit_fields(getattr(pending, "confirmation_evidence", None)))
         return fields
 
     def _sync_task_confirmation_status(self, pending: Any) -> None:
@@ -668,8 +666,7 @@ class ConfirmationImplMixin(HandlerMixinBase):
         if algorithm not in {"ed25519", "ecdsa-secp256k1"}:
             return {"registered": False, "reason": "unsupported_signer_algorithm"}
         device_type = (
-            str(params.get("device_type") or "ledger-enterprise").strip()
-            or "ledger-enterprise"
+            str(params.get("device_type") or "ledger-enterprise").strip() or "ledger-enterprise"
         )
         existing = self._credential_store.get_signer_key(key_id)
         if existing is not None:
@@ -855,9 +852,9 @@ class ConfirmationImplMixin(HandlerMixinBase):
                     "status": pending.status,
                     "status_reason": pending.status_reason,
                 }
-        confirmation_method = str(
-            getattr(pending, "selected_backend_method", "") or "software"
-        ).strip() or "software"
+        confirmation_method = (
+            str(getattr(pending, "selected_backend_method", "") or "software").strip() or "software"
+        )
         retry_after = self._confirmation_failure_tracker.status(
             user_id=str(pending.user_id),
             method=confirmation_method,

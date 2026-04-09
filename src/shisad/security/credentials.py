@@ -455,8 +455,7 @@ class InMemoryCredentialStore:
                 "shisad.approval_factor_store.v2",
             }:
                 raise ValueError(
-                    "unsupported approval-factor store schema_version: "
-                    f"{schema_version}"
+                    f"unsupported approval-factor store schema_version: {schema_version}"
                 )
             factors = payload.get("approval_factors", [])
             if not isinstance(factors, list):
@@ -511,8 +510,7 @@ class InMemoryCredentialStore:
         payload = {
             "schema_version": "shisad.approval_factor_store.v2",
             "approval_factors": [
-                factor.model_dump(mode="json")
-                for factor in self.list_approval_factors()
+                factor.model_dump(mode="json") for factor in self.list_approval_factors()
             ],
             "signer_keys": [
                 record.model_dump(mode="json")

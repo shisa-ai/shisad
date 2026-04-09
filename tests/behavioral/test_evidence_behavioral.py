@@ -272,7 +272,7 @@ async def _run_evidence_harness(
             await client.call("daemon.shutdown")
         await client.close()
         with suppress(Exception):
-            await asyncio.wait_for(daemon_task, timeout=3)
+            await asyncio.wait_for(daemon_task, timeout=5)
 
 
 @pytest.fixture

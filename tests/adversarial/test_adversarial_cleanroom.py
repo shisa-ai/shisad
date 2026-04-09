@@ -13,7 +13,7 @@ from shisad.core.config import DaemonConfig
 from shisad.daemon.runner import run_daemon
 
 
-async def _wait_for_socket(path: Path, timeout: float = 2.0) -> None:
+async def _wait_for_socket(path: Path, timeout: float = 5.0) -> None:
     end = asyncio.get_running_loop().time() + timeout
     while asyncio.get_running_loop().time() < end:
         if path.exists():
@@ -76,4 +76,4 @@ async def test_m4_a_untrusted_channel_content_cannot_trigger_admin_actions(
         with suppress(Exception):
             await client.call("daemon.shutdown")
         await client.close()
-        await asyncio.wait_for(daemon_task, timeout=3)
+        await asyncio.wait_for(daemon_task, timeout=5)

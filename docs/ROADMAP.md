@@ -1,7 +1,7 @@
 # shisad Roadmap
 
 *Created: 2026-02-26*
-*Updated: 2026-04-08*
+*Updated: 2026-04-09*
 *Status: Active*
 
 ## Goal
@@ -27,6 +27,9 @@ Reach a genuinely useful personal-assistant baseline while preserving the projec
   control-plane isolation, PromptGuard 2 integration, shipped YARA parity for
   the unicode-steganography rule, warning-only phantom-action detection, Tool
   Dependency Graph verification, and reviewed skill-tool drift observability.
+- `v0.6.2` is release-closed: multi-factor approvals, signer-backed
+  authorization, local-helper approvals, and optional evidence encryption at
+  rest are now on the shipped line.
 
 ## Milestones
 
@@ -74,10 +77,9 @@ events, a mandatory TASK summary-firewall checkpoint before delegated output
 crosses back into COMMAND context, a browser tool surface with
 confirmation-gated browser writes plus local skill tool-surface integrity
 checks, and a hardened public release path using OIDC trusted publishing,
-SBOMs, and provenance attestations. The active follow-on lanes are `v0.6.2`
-(approval + key boundary), `v0.6.3` (critical UX fixes), and `v0.6.4`
-(MCP/A2A interop), while the deferred M7 connector/skill expansion lane lives
-in `v0.6.5`.
+SBOMs, and provenance attestations. The active follow-on lanes are `v0.6.3`
+(critical UX fixes) and `v0.6.4` (MCP/A2A interop), while the deferred M7
+connector/skill expansion lane lives in `v0.6.5`.
 
 #### v0.6.1 — Security hardening
 
@@ -97,7 +99,7 @@ reviewed-skill schema-drift observability. The next planned lane is `v0.6.2`.
 
 #### v0.6.2 — Hardware-backed approval and signing
 
-Current execution note (2026-04-08): the `A0` approval-protocol foundation,
+Current execution note (2026-04-09): `v0.6.2` is release-closed. The `A0` approval-protocol foundation,
 the `A1` TOTP / re-auth backend, the `A2` WebAuthn / passkey
 `bound_approval` backend, and the `A3` SSH/local-helper slice are all landed
 on the active branch, and the `L2` signer lane is now review-closed as well.
@@ -118,8 +120,8 @@ metadata stays plaintext, the shipped default remains plaintext blobs when no
 remote key boundary is configured, and approval-factor / recovery-code
 at-rest hardening remains follow-on. Consumer-Ledger clear-signing /
 trusted-display work also remains follow-on. With `A0`-`A3`, `L2`, and `L1`
-now review-closed, the remaining v0.6.2 work is the explicit carry-forward
-backlog rather than another active in-line milestone.
+now review-closed and the release-close bundle complete, the next planned lane
+is `v0.6.3` rather than another in-line `v0.6.2` milestone.
 
 Approval-level mapping for v0.6.2:
 

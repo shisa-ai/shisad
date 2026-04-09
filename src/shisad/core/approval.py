@@ -225,9 +225,7 @@ class ConfirmationRequirement(BaseModel):
     methods: list[str] = Field(default_factory=list)
     allowed_principals: list[str] = Field(default_factory=list)
     allowed_credentials: list[str] = Field(default_factory=list)
-    require_capabilities: ConfirmationCapabilities = Field(
-        default_factory=ConfirmationCapabilities
-    )
+    require_capabilities: ConfirmationCapabilities = Field(default_factory=ConfirmationCapabilities)
     fallback: ConfirmationFallbackPolicy = Field(default_factory=ConfirmationFallbackPolicy)
     timeout_seconds: int | None = None
     routeable: bool = Field(default=True, exclude=True)
@@ -365,9 +363,7 @@ def merge_confirmation_requirements(
 
     def _merge_list(field_name: str) -> list[str]:
         non_empty = [
-            list(getattr(item, field_name))
-            for item in requirements
-            if getattr(item, field_name)
+            list(getattr(item, field_name)) for item in requirements if getattr(item, field_name)
         ]
         if not non_empty:
             return []
@@ -384,9 +380,7 @@ def merge_confirmation_requirements(
 
     fallback_mode = "deny"
     fallback_levels: list[ConfirmationLevel] = []
-    allow_fallbacks = [
-        item.fallback for item in selected if item.fallback.mode == "allow_levels"
-    ]
+    allow_fallbacks = [item.fallback for item in selected if item.fallback.mode == "allow_levels"]
     if allow_fallbacks and len(allow_fallbacks) == len(selected):
         fallback_levels = list(allow_fallbacks[0].allow_levels)
         for fallback in allow_fallbacks[1:]:
@@ -398,9 +392,7 @@ def merge_confirmation_requirements(
     allowed_principals = _merge_list("allowed_principals")
     allowed_credentials = _merge_list("allowed_credentials")
     timeouts = [item.timeout_seconds for item in requirements if item.timeout_seconds is not None]
-    route_reason = (
-        "confirmation_requirement_conflict:" + ",".join(conflicts) if conflicts else ""
-    )
+    route_reason = "confirmation_requirement_conflict:" + ",".join(conflicts) if conflicts else ""
     return ConfirmationRequirement(
         level=max_level,
         methods=methods,
@@ -551,8 +543,8 @@ def approval_envelope_hash(envelope: ApprovalEnvelope | dict[str, Any]) -> str:
 
 
 def intent_envelope_hash(envelope: IntentEnvelope | dict[str, Any]) -> str:
-    payload = envelope.model_dump(mode="json") if isinstance(envelope, IntentEnvelope) else dict(
-        envelope
+    payload = (
+        envelope.model_dump(mode="json") if isinstance(envelope, IntentEnvelope) else dict(envelope)
     )
     return canonical_sha256(payload)
 
@@ -749,14 +741,11 @@ class ConfirmationBackend(Protocol):
     capabilities: ConfirmationCapabilities
     third_party_verifiable: bool
 
-    def is_available_for(self, *, user_id: str) -> bool:
-        ...
+    def is_available_for(self, *, user_id: str) -> bool: ...
 
-    def principals_for_user(self, *, user_id: str) -> set[str]:
-        ...
+    def principals_for_user(self, *, user_id: str) -> set[str]: ...
 
-    def credentials_for_user(self, *, user_id: str) -> set[str]:
-        ...
+    def credentials_for_user(self, *, user_id: str) -> set[str]: ...
 
     def verify(
         self,
@@ -764,8 +753,7 @@ class ConfirmationBackend(Protocol):
         pending_action: Any,
         params: dict[str, Any],
         now: datetime | None = None,
-    ) -> ConfirmationEvidence:
-        ...
+    ) -> ConfirmationEvidence: ...
 
 
 class SignerKeyInfo(BaseModel):
@@ -810,8 +798,7 @@ class SignerBackend(Protocol):
         *,
         user_id: str,
         include_revoked: bool = False,
-    ) -> list[SignerKeyInfo]:
-        ...
+    ) -> list[SignerKeyInfo]: ...
 
     def request_signature(
         self,
@@ -819,8 +806,7 @@ class SignerBackend(Protocol):
         envelope: IntentEnvelope,
         signer_key_id: str,
         timeout: timedelta,
-    ) -> SignatureResult:
-        ...
+    ) -> SignatureResult: ...
 
     def verify_signature(
         self,
@@ -828,11 +814,9 @@ class SignerBackend(Protocol):
         envelope: IntentEnvelope,
         signature: str,
         signer_key: SignerKeyInfo,
-    ) -> bool:
-        ...
+    ) -> bool: ...
 
-    def record_key_use(self, *, signer_key_id: str, when: datetime) -> None:
-        ...
+    def record_key_use(self, *, signer_key_id: str, when: datetime) -> None: ...
 
 
 def _normalize_signature_value(value: str) -> str:
@@ -1021,9 +1005,9 @@ class EnterpriseKmsSignerBackend:
         signed_at_raw = str(body.get("signed_at", "")).strip()
         if signed_at_raw:
             try:
-                signed_at = datetime.fromisoformat(
-                    signed_at_raw.replace("Z", "+00:00")
-                ).astimezone(UTC)
+                signed_at = datetime.fromisoformat(signed_at_raw.replace("Z", "+00:00")).astimezone(
+                    UTC
+                )
             except ValueError:
                 return SignatureResult(
                     status="error",
@@ -1122,9 +1106,10 @@ class SignerConfirmationAdapter:
         now: datetime | None = None,
     ) -> ConfirmationEvidence:
         current = now or datetime.now(UTC)
-        requested_method = str(
-            params.get("approval_method") or params.get("method") or self.method
-        ).strip() or self.method
+        requested_method = (
+            str(params.get("approval_method") or params.get("method") or self.method).strip()
+            or self.method
+        )
         if requested_method != self.method:
             raise ConfirmationVerificationError("confirmation_method_mismatch")
 
@@ -1163,11 +1148,14 @@ class SignerConfirmationAdapter:
             timeout=timeout,
         )
         if result.status != "approved":
-            reason = result.reason or {
-                "rejected": "signer_rejected",
-                "expired": "signer_backend_timeout",
-                "error": "signer_backend_error",
-            }[result.status]
+            reason = (
+                result.reason
+                or {
+                    "rejected": "signer_rejected",
+                    "expired": "signer_backend_timeout",
+                    "error": "signer_backend_error",
+                }[result.status]
+            )
             raise ConfirmationVerificationError(reason)
         if result.signer_key_id and result.signer_key_id != signer_key.key_id:
             raise ConfirmationVerificationError("signer_key_mismatch")
@@ -1300,9 +1288,7 @@ class SoftwareConfirmationBackend:
     ) -> ConfirmationEvidence:
         _ = now
         requested_method = str(
-            params.get("approval_method")
-            or params.get("method")
-            or self.method
+            params.get("approval_method") or params.get("method") or self.method
         ).strip()
         if requested_method and requested_method != self.method:
             raise ConfirmationVerificationError("confirmation_method_mismatch")
@@ -1393,11 +1379,10 @@ class TOTPBackend:
         now: datetime | None = None,
     ) -> ConfirmationEvidence:
         current = now or datetime.now(UTC)
-        requested_method = str(
-            params.get("approval_method")
-            or params.get("method")
+        requested_method = (
+            str(params.get("approval_method") or params.get("method") or self.method).strip()
             or self.method
-        ).strip() or self.method
+        )
         if requested_method not in {self.method, "recovery_code"}:
             raise ConfirmationVerificationError("confirmation_method_mismatch")
 
@@ -1430,9 +1415,7 @@ class TOTPBackend:
             )
         else:
             totp_code = str(
-                proof_payload.get("totp_code")
-                or proof_payload.get("code")
-                or ""
+                proof_payload.get("totp_code") or proof_payload.get("code") or ""
             ).strip()
             if not totp_code:
                 raise ConfirmationVerificationError("missing_totp_code")
@@ -1443,15 +1426,13 @@ class TOTPBackend:
                 now=current,
             )
 
-        if (
-            getattr(pending_action, "allowed_principals", ())
-            and factor.principal_id not in getattr(pending_action, "allowed_principals", ())
+        if getattr(pending_action, "allowed_principals", ()) and factor.principal_id not in getattr(
+            pending_action, "allowed_principals", ()
         ):
             raise ConfirmationVerificationError("confirmation_principal_not_allowed")
-        if (
-            getattr(pending_action, "allowed_credentials", ())
-            and factor.credential_id not in getattr(pending_action, "allowed_credentials", ())
-        ):
+        if getattr(
+            pending_action, "allowed_credentials", ()
+        ) and factor.credential_id not in getattr(pending_action, "allowed_credentials", ()):
             raise ConfirmationVerificationError("confirmation_credential_not_allowed")
 
         payload = {
@@ -1736,11 +1717,10 @@ class WebAuthnBackend:
         now: datetime | None = None,
     ) -> ConfirmationEvidence:
         current = now or datetime.now(UTC)
-        requested_method = str(
-            params.get("approval_method")
-            or params.get("method")
+        requested_method = (
+            str(params.get("approval_method") or params.get("method") or self.method).strip()
             or self.method
-        ).strip() or self.method
+        )
         if requested_method != self.method:
             raise ConfirmationVerificationError("confirmation_method_mismatch")
 
@@ -1788,15 +1768,13 @@ class WebAuthnBackend:
         factor = self._factor_for_attested_data(bytes(matched), factors=factors)
         if factor is None:
             raise ConfirmationVerificationError("confirmation_credential_missing")
-        if (
-            getattr(pending_action, "allowed_principals", ())
-            and factor.principal_id not in getattr(pending_action, "allowed_principals", ())
+        if getattr(pending_action, "allowed_principals", ()) and factor.principal_id not in getattr(
+            pending_action, "allowed_principals", ()
         ):
             raise ConfirmationVerificationError("confirmation_principal_not_allowed")
-        if (
-            getattr(pending_action, "allowed_credentials", ())
-            and factor.credential_id not in getattr(pending_action, "allowed_credentials", ())
-        ):
+        if getattr(
+            pending_action, "allowed_credentials", ()
+        ) and factor.credential_id not in getattr(pending_action, "allowed_credentials", ()):
             raise ConfirmationVerificationError("confirmation_credential_not_allowed")
 
         counter = int(getattr(response.response.authenticator_data, "counter", 0) or 0)
@@ -2048,13 +2026,10 @@ def confirmation_evidence_satisfies_requirement(
     if not requirement.routeable:
         return False
 
-    if (
-        evidence.level.priority < requirement.level.priority
-        and (
-            requirement.fallback.mode != "allow_levels"
-            or not evidence.fallback_used
-            or evidence.level not in requirement.fallback.allow_levels
-        )
+    if evidence.level.priority < requirement.level.priority and (
+        requirement.fallback.mode != "allow_levels"
+        or not evidence.fallback_used
+        or evidence.level not in requirement.fallback.allow_levels
     ):
         return False
     if requirement.methods and evidence.method not in requirement.methods:
@@ -2069,9 +2044,7 @@ def confirmation_evidence_satisfies_requirement(
         and evidence.credential_id not in requirement.allowed_credentials
     ):
         return False
-    return confirmation_evidence_capabilities(evidence).covers(
-        requirement.require_capabilities
-    )
+    return confirmation_evidence_capabilities(evidence).covers(requirement.require_capabilities)
 
 
 def confirmation_evidence_capabilities(evidence: ConfirmationEvidence) -> ConfirmationCapabilities:
@@ -2192,8 +2165,7 @@ class ConfirmationMethodLockoutTracker:
             schema_version = str(payload.get("schema_version", "")).strip()
             if schema_version != "shisad.confirmation_lockout.v1":
                 raise ValueError(
-                    "unsupported confirmation lockout schema_version: "
-                    f"{schema_version}"
+                    f"unsupported confirmation lockout schema_version: {schema_version}"
                 )
             entries = payload.get("entries", [])
             if not isinstance(entries, list):

@@ -1800,9 +1800,7 @@ class HandlerImplementation(
         if pending.intent_envelope is not None:
             payload["intent_envelope"] = pending.intent_envelope.model_dump(mode="json")
         if pending.confirmation_evidence is not None:
-            payload["confirmation_evidence"] = pending.confirmation_evidence.model_dump(
-                mode="json"
-            )
+            payload["confirmation_evidence"] = pending.confirmation_evidence.model_dump(mode="json")
         return payload
 
     @staticmethod

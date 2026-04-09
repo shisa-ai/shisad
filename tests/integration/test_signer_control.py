@@ -269,8 +269,7 @@ async def test_signer_confirmation_executes_and_records_l3_audit(
                 {"event_type": "ToolApproved", "session_id": sid, "limit": 20},
             )
             assert any(
-                str(event.get("data", {}).get("approval_level", ""))
-                == "signed_authorization"
+                str(event.get("data", {}).get("approval_level", "")) == "signed_authorization"
                 and str(event.get("data", {}).get("approval_method", "")) == "kms"
                 and str(event.get("data", {}).get("approval_signer_key_id", ""))
                 == "kms:finance-primary"

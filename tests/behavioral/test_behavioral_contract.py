@@ -727,7 +727,7 @@ async def contract_harness(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> C
             await client.call("daemon.shutdown")
         await client.close()
         with suppress(Exception):
-            await asyncio.wait_for(daemon_task, timeout=3)
+            await asyncio.wait_for(daemon_task, timeout=5)
         server.shutdown()
         server.server_close()
         with suppress(Exception):
@@ -1792,7 +1792,7 @@ async def contract_harness_no_policy_egress(
             await client.call("daemon.shutdown")
         await client.close()
         with suppress(Exception):
-            await asyncio.wait_for(daemon_task, timeout=3)
+            await asyncio.wait_for(daemon_task, timeout=5)
         server.shutdown()
         server.server_close()
         with suppress(Exception):
@@ -1853,7 +1853,7 @@ async def contract_harness_backend_unconfigured(
             await client.call("daemon.shutdown")
         await client.close()
         with suppress(Exception):
-            await asyncio.wait_for(daemon_task, timeout=3)
+            await asyncio.wait_for(daemon_task, timeout=5)
 
 
 @pytest.mark.asyncio

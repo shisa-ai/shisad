@@ -437,14 +437,12 @@ class PEP:
                 reason_code="pep:risk_policy_block",
             )
 
-        needs_confirmation = (
-            self._confirmation_requirement(
-                tool=tool,
-                tool_policy=tool_policy,
-                risk_score=risk_score,
-                egress_requires_confirmation=egress_requires_confirmation,
-                taint_requires_confirmation=taint_decision.require_confirmation,
-            )
+        needs_confirmation = self._confirmation_requirement(
+            tool=tool,
+            tool_policy=tool_policy,
+            risk_score=risk_score,
+            egress_requires_confirmation=egress_requires_confirmation,
+            taint_requires_confirmation=taint_decision.require_confirmation,
         )
 
         if needs_confirmation is not None:

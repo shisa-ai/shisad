@@ -49,13 +49,13 @@ Rather than ignoring the elephant in the room, our design targets the [lethal tr
 
 ## Status
 
-This repo is public and still pre-alpha. `v0.6.1` is the current release line.
+This repo is public and still pre-alpha. `v0.6.2` is the current release line.
 
-`v0.6.1` is the security-hardening follow-up to `v0.6.0`: isolated
-control-plane analysis, PromptGuard 2 runtime screening, shipped YARA parity
-for unicode-steganography detection, warning-only phantom-action detection,
-runtime Tool Dependency Graph verification, and explicit reviewed-skill drift
-observability.
+`v0.6.2` is the approval and key-boundary follow-up to `v0.6.1`: stronger
+confirmation options for sensitive actions (TOTP, passkeys, local helper, and
+signer-backed approvals), richer approval audit/provenance, and optional
+evidence encryption at rest when a real external artifact-KMS boundary is
+configured. The next planned lane is `v0.6.3` for critical UX fixes.
 
 | Version | Focus |
 |---------|-------|

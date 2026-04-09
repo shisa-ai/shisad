@@ -8,6 +8,39 @@ release tag. There is no standing "Unreleased" section.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Versioning follows semver (see `docs/PUBLISH.md` for policy and style guide).
 
+## [0.6.2] - 2026-04-09
+
+### Added
+
+- **Sensitive actions can require stronger approvals.** Operators can now step
+  up from the original software confirmation prompt to TOTP re-auth,
+  WebAuthn/passkeys, local-helper approvals, or signer-backed authorization
+  depending on policy and risk.
+- **Private and SSH-only deployments can approve actions without bouncing to a
+  browser.** `shisad-approver` adds a local helper path for stronger approval
+  flows on locked-down hosts.
+- **There is now a dedicated end-user 2FA guide.** `docs/2FA.md` explains the
+  shipped TOTP setup and confirmation experience in plain user-facing terms.
+
+### Security
+
+- **Approval decisions are bound to the exact action the user reviewed.** The
+  daemon now records stronger approval metadata, explicit fallback rules, and
+  replay-resistant approval/signer evidence in the audit trail.
+- **Evidence blobs can be encrypted at rest when an external artifact-KMS is
+  configured.** Stored blob bytes stop being plaintext on disk, recoverable
+  refs stay available for later recovery, and `evidence.read` /
+  `evidence.promote` still work through the live runtime.
+- **Signer-backed approvals are verified locally against registered public
+  keys.** The daemon no longer has to trust a remote signer service's summary
+  of what was approved.
+
+### Changed
+
+- **Public docs now match the shipped v0.6.2 trust model.** The roadmap,
+  operator docs, and user docs now reflect what is actually shipped in the
+  approval/key-boundary lane and what remains follow-on work.
+
 ## [0.6.1] - 2026-04-05
 
 ### Security
@@ -137,6 +170,7 @@ Initial public release.
   recording.
 - **End-to-end demo** script and runner harness for live verification.
 
+[0.6.2]: https://github.com/shisa-ai/shisad/compare/v0.6.1...v0.6.2
 [0.6.1]: https://github.com/shisa-ai/shisad/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/shisa-ai/shisad/compare/v0.5.2...v0.6.0
 [0.5.2]: https://github.com/shisa-ai/shisad/compare/v0.5.1...v0.5.2

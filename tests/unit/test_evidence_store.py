@@ -666,9 +666,7 @@ def test_kms_artifact_blob_codec_allows_subsecond_timeout(monkeypatch) -> None:
             return None
 
         def read(self) -> bytes:
-            return json.dumps(
-                {"status": "ok", "payload_b64": "b2s="}
-            ).encode("utf-8")
+            return json.dumps({"status": "ok", "payload_b64": "b2s="}).encode("utf-8")
 
     def _fake_urlopen(request, timeout):  # type: ignore[no-untyped-def]
         _ = request

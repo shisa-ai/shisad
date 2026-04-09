@@ -3925,7 +3925,9 @@ class SessionImplMixin(HandlerMixinBase):
                         ),
                         pep_elevation=pep_elevation,
                         confirmation_requirement=(
-                            ConfirmationRequirement.model_validate(pep_decision.confirmation_requirement)
+                            ConfirmationRequirement.model_validate(
+                                pep_decision.confirmation_requirement
+                            )
                             if pep_decision.confirmation_requirement is not None
                             else None
                         ),

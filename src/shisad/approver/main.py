@@ -32,16 +32,14 @@ class ApproverDevice(Protocol):
         *,
         public_key_options: Mapping[str, Any],
         origin: str,
-    ) -> dict[str, Any]:
-        ...
+    ) -> dict[str, Any]: ...
 
     def get_assertion(
         self,
         *,
         public_key_options: Mapping[str, Any],
         origin: str,
-    ) -> dict[str, Any]:
-        ...
+    ) -> dict[str, Any]: ...
 
 
 class _ConsoleUserInteraction(UserInteraction):

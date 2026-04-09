@@ -613,10 +613,7 @@ async def test_a0_closed_confirmation_invalid_nonce_does_not_increment_lockout(t
         assert result["confirmed"] is False
         assert result["reason"] == "already_approved"
 
-    assert (
-        harness._confirmation_failure_tracker.status(user_id="alice", method="software")
-        is None
-    )
+    assert harness._confirmation_failure_tracker.status(user_id="alice", method="software") is None
 
 
 @pytest.mark.asyncio
@@ -636,9 +633,7 @@ async def test_a1_two_factor_register_confirm_emits_audit_event(tmp_path) -> Non
     )
 
     assert confirmed["registered"] is True
-    event = next(
-        item for item in harness.published_events if isinstance(item, TwoFactorEnrolled)
-    )
+    event = next(item for item in harness.published_events if isinstance(item, TwoFactorEnrolled))
     assert event.user_id == "alice"
     assert event.method == "totp"
     assert event.credential_id == confirmed["credential_id"]

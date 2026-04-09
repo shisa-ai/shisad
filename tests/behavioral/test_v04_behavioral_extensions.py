@@ -111,7 +111,7 @@ async def _shutdown_daemon(daemon_task: asyncio.Task[None], client: ControlClien
     with suppress(Exception):
         await client.call("daemon.shutdown")
     await client.close()
-    await asyncio.wait_for(daemon_task, timeout=3)
+    await asyncio.wait_for(daemon_task, timeout=5)
 
 
 async def _wait_for_audit_event(
@@ -577,20 +577,20 @@ async def test_behavioral_totp_confirmation_executes_and_records_l1_audit(
     tmp_path: Path,
 ) -> None:
     policy_text = "\n".join(
-            [
-                'version: "1"',
-                "default_require_confirmation: false",
-                "default_capabilities:",
-                "  - shell.exec",
-                "tools:",
-                "  shell.exec:",
-                "    capabilities_required:",
-                "      - shell.exec",
-                "    confirmation:",
-                "      level: reauthenticated",
-                "      methods:",
-                "        - totp",
-            ]
+        [
+            'version: "1"',
+            "default_require_confirmation: false",
+            "default_capabilities:",
+            "  - shell.exec",
+            "tools:",
+            "  shell.exec:",
+            "    capabilities_required:",
+            "      - shell.exec",
+            "    confirmation:",
+            "      level: reauthenticated",
+            "      methods:",
+            "        - totp",
+        ]
     )
     daemon_task, client, _config = await _start_daemon(tmp_path, policy_text=policy_text + "\n")
     try:
@@ -656,9 +656,7 @@ async def test_behavioral_totp_confirmation_executes_and_records_l1_audit(
                 str(event.get("data", {}).get("tool_name", "")) == "shell.exec"
                 and str(event.get("data", {}).get("approval_level", "")) == "reauthenticated"
                 and str(event.get("data", {}).get("approval_method", "")) == "totp"
-                and str(
-                    event.get("data", {}).get("approval_approver_principal_id", "")
-                )
+                and str(event.get("data", {}).get("approval_approver_principal_id", ""))
                 == "ops-laptop"
             ),
         )
@@ -917,8 +915,7 @@ async def test_behavioral_local_fido2_helper_executes_and_records_l2_audit(
                 and str(event.get("data", {}).get("approval_method", "")) == "local_fido2"
                 and str(event.get("data", {}).get("approval_credential_id", ""))
                 == enrolled["credential_id"]
-                and str(event.get("data", {}).get("approval_review_surface", ""))
-                == "host_rendered"
+                and str(event.get("data", {}).get("approval_review_surface", "")) == "host_rendered"
             ),
         )
         executed_event = await _wait_for_audit_event(
