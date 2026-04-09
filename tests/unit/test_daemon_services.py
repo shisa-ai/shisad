@@ -20,6 +20,7 @@ from shisad.daemon.services import (
     _normalize_tool_destination,
     _register_route_credentials,
     _validate_security_route_pins,
+    _warn_on_evidence_kms_endpoint_config,
 )
 from shisad.security.control_plane.sidecar import ControlPlaneUnavailableError
 from shisad.security.credentials import InMemoryCredentialStore
@@ -542,6 +543,41 @@ def test_m3_normalize_tool_destination_preserves_scheme_and_port() -> None:
 
 def test_m6_normalize_tool_destination_rejects_invalid_port() -> None:
     assert _normalize_tool_destination("https://search.example:99999") == ""
+
+
+def test_evidence_kms_bearer_over_non_loopback_http_logs_warning(
+    tmp_path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    config = DaemonConfig(
+        data_dir=tmp_path / "data",
+        socket_path=tmp_path / "control.sock",
+        policy_path=tmp_path / "policy.yaml",
+        evidence_kms_url="http://10.0.0.5:8080/artifacts",
+        evidence_kms_bearer_token="secret",
+    )
+
+    with caplog.at_level("WARNING"):
+        _warn_on_evidence_kms_endpoint_config(config)
+
+    assert "without TLS protection" in caplog.text
+
+
+def test_evidence_kms_invalid_url_logs_warning(
+    tmp_path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    config = DaemonConfig(
+        data_dir=tmp_path / "data",
+        socket_path=tmp_path / "control.sock",
+        policy_path=tmp_path / "policy.yaml",
+        evidence_kms_url="not-a-url",
+    )
+
+    with caplog.at_level("WARNING"):
+        _warn_on_evidence_kms_endpoint_config(config)
+
+    assert "may be misconfigured" in caplog.text
 
 
 def test_m3_tool_registry_omits_realitycheck_tools_when_surface_disabled() -> None:

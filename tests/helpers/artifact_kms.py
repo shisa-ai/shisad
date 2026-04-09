@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import time
 from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from threading import Thread
@@ -22,9 +23,11 @@ class StubArtifactKmsService:
         *,
         key_material: bytes | None = None,
         bearer_token: str = "",
+        request_delay_seconds: float = 0.0,
     ) -> None:
         self._key_material = key_material or os.urandom(32)
         self._bearer_token = bearer_token.strip()
+        self._request_delay_seconds = max(0.0, float(request_delay_seconds))
         self.requests: list[dict[str, Any]] = []
 
     @contextmanager
@@ -44,6 +47,8 @@ class StubArtifactKmsService:
                 length = int(self.headers.get("Content-Length", "0") or 0)
                 payload = json.loads(self.rfile.read(length).decode("utf-8"))
                 owner.requests.append(payload)
+                if owner._request_delay_seconds > 0.0:
+                    time.sleep(owner._request_delay_seconds)
                 if payload.get("schema_version") != "shisad.artifact_crypt.v1":
                     self._write_json(
                         400,

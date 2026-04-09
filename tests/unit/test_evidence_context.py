@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from types import SimpleNamespace
 
 import pytest
 
-from shisad.core.evidence import ArtifactEndorsementState, EvidenceStore
+from shisad.core.evidence import ArtifactEndorsementState, EvidenceStore, KmsArtifactBlobCodec
 from shisad.core.tools.registry import ToolRegistry
 from shisad.core.tools.schema import ToolDefinition, ToolParameter
 from shisad.core.transcript import TranscriptStore
@@ -25,6 +26,7 @@ from shisad.daemon.handlers._impl_session import (
 from shisad.security.firewall import ContentFirewall
 from shisad.security.pep import PEP, PolicyContext
 from shisad.security.policy import PolicyBundle, RiskPolicy
+from tests.helpers.artifact_kms import StubArtifactKmsService
 
 
 def _registry_for_evidence() -> ToolRegistry:
@@ -604,3 +606,44 @@ async def test_structured_evidence_handlers_return_expected_content_and_taints(t
     assert promote_payload["ok"] is True
     assert promote_payload["content"] == "full body"
     assert promote_payload["taint_labels"] == [TaintLabel.USER_REVIEWED.value]
+
+
+@pytest.mark.asyncio
+async def test_structured_evidence_read_offloads_kms_decode_from_event_loop(tmp_path) -> None:
+    sid = SessionId("sess-a")
+    with StubArtifactKmsService(
+        key_material=b"a" * 32,
+        request_delay_seconds=0.25,
+    ).run() as endpoint_url:
+        store = EvidenceStore(
+            tmp_path / "evidence",
+            salt=b"a" * 32,
+            blob_codec=KmsArtifactBlobCodec(endpoint_url=endpoint_url),
+        )
+        ref = store.store(
+            sid,
+            "full body",
+            taint_labels={TaintLabel.UNTRUSTED},
+            source="web.fetch:example.com",
+            summary="full body",
+        )
+        handler = SimpleNamespace(_evidence_store=store)
+        context = SimpleNamespace(session_id=sid)
+
+        sleep_task = asyncio.create_task(asyncio.sleep(0.05))
+        read_task = asyncio.create_task(
+            _structured_evidence_read(handler, {"ref_id": ref.ref_id}, context)
+        )
+
+        done, pending = await asyncio.wait(
+            {sleep_task, read_task},
+            timeout=0.15,
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+
+        assert sleep_task in done
+        assert read_task in pending
+
+        payload = await read_task
+        assert payload["ok"] is True
+        assert payload["content"] == "full body"

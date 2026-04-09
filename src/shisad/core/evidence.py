@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
 from html.parser import HTMLParser
+from http.client import InvalidURL
 from pathlib import Path
 from typing import Protocol
 from urllib.error import HTTPError, URLError
@@ -114,15 +115,17 @@ class KmsArtifactBlobCodec:
         token = self.bearer_token.strip()
         if token:
             headers["Authorization"] = f"Bearer {token}"
-        request = Request(
-            endpoint_url,
-            data=json.dumps(request_payload).encode("utf-8"),
-            headers=headers,
-            method="POST",
-        )
         try:
-            with urlopen(request, timeout=max(1.0, float(self.timeout_seconds))) as response:
+            request = Request(
+                endpoint_url,
+                data=json.dumps(request_payload).encode("utf-8"),
+                headers=headers,
+                method="POST",
+            )
+            with urlopen(request, timeout=max(0.1, float(self.timeout_seconds))) as response:
                 response_body = json.loads(response.read().decode("utf-8"))
+        except (InvalidURL, ValueError) as exc:
+            raise ArtifactBlobCodecError("artifact_kms_invalid_url") from exc
         except HTTPError as exc:
             reason = "artifact_kms_http_error"
             with contextlib.suppress(Exception):
@@ -428,14 +431,21 @@ class ArtifactLedger:
         return ref
 
     def read(self, session_id: SessionId, ref_id: str) -> str | None:
-        ref, content = self._resolve_valid_ref(session_id, ref_id)
+        ref, content = self.resolve_ref_content(session_id, ref_id)
         if ref is None or content is None:
             return None
         return content
 
     def get_ref(self, session_id: SessionId, ref_id: str) -> EvidenceRef | None:
-        ref, _ = self._resolve_valid_ref(session_id, ref_id)
+        ref, _ = self.resolve_ref_content(session_id, ref_id)
         return ref
+
+    def resolve_ref_content(
+        self,
+        session_id: SessionId,
+        ref_id: str,
+    ) -> tuple[EvidenceRef | None, str | None]:
+        return self._resolve_valid_ref(session_id, ref_id)
 
     def _resolve_valid_ref(
         self,
@@ -635,7 +645,7 @@ class ArtifactLedger:
                     "blob storage codec mismatch "
                     f"(ref={ref.storage_codec} active={self._blob_codec.name})"
                 ),
-                drop_ref=True,
+                drop_ref=False,
             )
         path = self._blob_path(ref.content_hash)
         if not path.exists():

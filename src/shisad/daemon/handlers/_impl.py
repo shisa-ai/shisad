@@ -697,8 +697,7 @@ async def _structured_evidence_read(
     store = getattr(handler, "_evidence_store", None)
     if store is None:
         return {"ok": False, "error": "invalid or unknown evidence reference"}
-    ref = store.get_ref(context.session_id, ref_id)
-    content = store.read(context.session_id, ref_id)
+    ref, content = await asyncio.to_thread(store.resolve_ref_content, context.session_id, ref_id)
     if ref is None or content is None:
         return {"ok": False, "error": "invalid or unknown evidence reference", "ref_id": ref_id}
     return {
@@ -722,8 +721,7 @@ async def _structured_evidence_promote(
     store = getattr(handler, "_evidence_store", None)
     if store is None:
         return {"ok": False, "error": "invalid or unknown evidence reference"}
-    ref = store.get_ref(context.session_id, ref_id)
-    content = store.read(context.session_id, ref_id)
+    ref, content = await asyncio.to_thread(store.resolve_ref_content, context.session_id, ref_id)
     if ref is None or content is None:
         return {"ok": False, "error": "invalid or unknown evidence reference", "ref_id": ref_id}
     taint_labels = sorted(

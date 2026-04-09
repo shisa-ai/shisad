@@ -9,7 +9,7 @@ import logging
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from urllib.parse import urlparse
 
 from shisad.assistant.realitycheck import RealityCheckToolkit
@@ -115,6 +115,40 @@ def _normalize_tool_destination(destination: str) -> str:
     return host
 
 
+def _warn_on_evidence_kms_endpoint_config(config: DaemonConfig) -> None:
+    endpoint = config.evidence_kms_url.strip()
+    if not endpoint:
+        return
+    errors = validate_endpoint(
+        endpoint,
+        allow_http_localhost=True,
+        block_private_ranges=False,
+    )
+    if errors:
+        logger.warning(
+            "Evidence artifact-KMS endpoint '%s' may be misconfigured: %s",
+            endpoint,
+            "; ".join(errors),
+        )
+
+    parsed = urlparse(endpoint)
+    hostname = (parsed.hostname or "").strip().lower()
+    if (
+        parsed.scheme == "http"
+        and hostname
+        and hostname not in {"localhost", "127.0.0.1", "::1"}
+        and config.evidence_kms_bearer_token.strip()
+    ):
+        logger.warning(
+            (
+                "Evidence artifact-KMS bearer token is configured for non-loopback "
+                "HTTP endpoint '%s'; use HTTPS to avoid sending the token without "
+                "TLS protection."
+            ),
+            endpoint,
+        )
+
+
 @dataclass(slots=True)
 class DaemonServices:
     """Container for initialized daemon subsystems."""
@@ -195,11 +229,15 @@ class DaemonServices:
 
         transcript_root = config.data_dir / "sessions"
         transcript_store = TranscriptStore(transcript_root)
+        _warn_on_evidence_kms_endpoint_config(config)
         evidence_blob_codec: ArtifactBlobCodec | None = (
-            KmsArtifactBlobCodec(
-                endpoint_url=config.evidence_kms_url,
-                bearer_token=config.evidence_kms_bearer_token,
-                timeout_seconds=config.evidence_kms_timeout_seconds,
+            cast(
+                ArtifactBlobCodec,
+                KmsArtifactBlobCodec(
+                    endpoint_url=config.evidence_kms_url,
+                    bearer_token=config.evidence_kms_bearer_token,
+                    timeout_seconds=config.evidence_kms_timeout_seconds,
+                ),
             )
             if config.evidence_kms_url.strip()
             else None

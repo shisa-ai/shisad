@@ -4043,7 +4043,8 @@ class SessionImplMixin(HandlerMixinBase):
         evidence_ref_ids: list[str] = []
         evidence_store = getattr(self, "_evidence_store", None)
         if chat_serialized_tool_outputs and evidence_store is not None:
-            evidence_ref_ids = _wrap_serialized_tool_outputs_with_evidence(
+            evidence_ref_ids = await asyncio.to_thread(
+                _wrap_serialized_tool_outputs_with_evidence,
                 session_id=sid,
                 records=chat_serialized_tool_outputs,
                 evidence_store=evidence_store,

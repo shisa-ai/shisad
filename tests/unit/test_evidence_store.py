@@ -7,6 +7,8 @@ import os
 from datetime import UTC, datetime, timedelta
 from stat import S_IMODE
 
+import pytest
+
 from shisad.core.evidence import (
     ArtifactEndorsementState,
     ArtifactLedger,
@@ -130,7 +132,7 @@ def test_evidence_store_drops_refs_with_tampered_blob_content(tmp_path) -> None:
     assert store.validate_ref_id(sid, created.ref_id) is False
 
 
-def test_evidence_store_drops_refs_with_codec_mismatch_on_restart(tmp_path) -> None:
+def test_evidence_store_preserves_refs_with_codec_mismatch_on_restart(tmp_path) -> None:
     evidence_root = tmp_path / "evidence"
     sid = SessionId("sess-a")
 
@@ -153,9 +155,13 @@ def test_evidence_store_drops_refs_with_codec_mismatch_on_restart(tmp_path) -> N
     index_path.write_text(json.dumps(raw_index), encoding="utf-8")
 
     restarted = EvidenceStore(evidence_root, salt=b"a" * 32)
+    blob_path = evidence_root / "blobs" / f"{created.content_hash}.txt"
 
-    assert restarted.get_ref(sid, created.ref_id) is None
     assert restarted.read(sid, created.ref_id) is None
+    assert created.ref_id in restarted._refs[str(sid)]
+    assert blob_path.exists() is True
+    reloaded_index = json.loads(index_path.read_text(encoding="utf-8"))
+    assert created.ref_id in reloaded_index[str(sid)]
 
 
 def test_evidence_store_ignores_malformed_index_without_quarantining_blobs(tmp_path) -> None:
@@ -547,6 +553,134 @@ def test_artifact_ledger_kms_blob_codec_wrong_key_keeps_ref_for_later_recovery(t
             blob_codec=KmsArtifactBlobCodec(endpoint_url=endpoint_url),
         )
         assert restored.read(sid, ref.ref_id) == "encrypted evidence body"
+
+
+def test_artifact_ledger_kms_blob_codec_plaintext_restart_preserves_ref_for_recovery(
+    tmp_path,
+) -> None:
+    evidence_root = tmp_path / "evidence"
+    sid = SessionId("sess-a")
+    with StubArtifactKmsService(key_material=b"a" * 32).run() as endpoint_url:
+        encrypted = ArtifactLedger(
+            evidence_root,
+            salt=b"b" * 32,
+            blob_codec=KmsArtifactBlobCodec(endpoint_url=endpoint_url),
+        )
+        ref = encrypted.store(
+            sid,
+            "encrypted evidence body",
+            taint_labels={TaintLabel.UNTRUSTED},
+            source="web.fetch:example.com",
+            summary="encrypted evidence body",
+        )
+
+    restarted_plaintext = ArtifactLedger(evidence_root, salt=b"b" * 32)
+
+    assert restarted_plaintext.read(sid, ref.ref_id) is None
+    assert ref.ref_id in restarted_plaintext._refs[str(sid)]
+    assert (evidence_root / "blobs" / f"{ref.content_hash}.txt").exists() is True
+    assert (evidence_root / "quarantine" / f"{ref.content_hash}.txt").exists() is False
+
+    with StubArtifactKmsService(key_material=b"a" * 32).run() as endpoint_url:
+        restored = ArtifactLedger(
+            evidence_root,
+            salt=b"b" * 32,
+            blob_codec=KmsArtifactBlobCodec(endpoint_url=endpoint_url),
+        )
+        assert restored.read(sid, ref.ref_id) == "encrypted evidence body"
+
+
+def test_artifact_ledger_plaintext_blob_kms_restart_preserves_ref_for_recovery(tmp_path) -> None:
+    evidence_root = tmp_path / "evidence"
+    sid = SessionId("sess-a")
+    plaintext = ArtifactLedger(evidence_root, salt=b"b" * 32)
+    ref = plaintext.store(
+        sid,
+        "plaintext evidence body",
+        taint_labels={TaintLabel.UNTRUSTED},
+        source="web.fetch:example.com",
+        summary="plaintext evidence body",
+    )
+
+    with StubArtifactKmsService(key_material=b"a" * 32).run() as endpoint_url:
+        restarted_encrypted = ArtifactLedger(
+            evidence_root,
+            salt=b"b" * 32,
+            blob_codec=KmsArtifactBlobCodec(endpoint_url=endpoint_url),
+        )
+        assert restarted_encrypted.read(sid, ref.ref_id) is None
+        assert ref.ref_id in restarted_encrypted._refs[str(sid)]
+        assert (evidence_root / "blobs" / f"{ref.content_hash}.txt").exists() is True
+        assert (evidence_root / "quarantine" / f"{ref.content_hash}.txt").exists() is False
+
+    restored = ArtifactLedger(evidence_root, salt=b"b" * 32)
+    assert restored.read(sid, ref.ref_id) == "plaintext evidence body"
+
+
+def test_artifact_ledger_kms_blob_codec_invalid_url_keeps_ref_for_later_recovery(tmp_path) -> None:
+    evidence_root = tmp_path / "evidence"
+    sid = SessionId("sess-a")
+    with StubArtifactKmsService(key_material=b"a" * 32).run() as endpoint_url:
+        ledger = ArtifactLedger(
+            evidence_root,
+            salt=b"b" * 32,
+            blob_codec=KmsArtifactBlobCodec(endpoint_url=endpoint_url),
+        )
+        ref = ledger.store(
+            sid,
+            "encrypted evidence body",
+            taint_labels={TaintLabel.UNTRUSTED},
+            source="web.fetch:example.com",
+            summary="encrypted evidence body",
+        )
+
+    broken = ArtifactLedger(
+        evidence_root,
+        salt=b"b" * 32,
+        blob_codec=KmsArtifactBlobCodec(endpoint_url="not-a-url"),
+    )
+    assert broken.read(sid, ref.ref_id) is None
+    assert ref.ref_id in broken._refs[str(sid)]
+    assert (evidence_root / "blobs" / f"{ref.content_hash}.txt").exists() is True
+
+    with StubArtifactKmsService(key_material=b"a" * 32).run() as endpoint_url:
+        restored = ArtifactLedger(
+            evidence_root,
+            salt=b"b" * 32,
+            blob_codec=KmsArtifactBlobCodec(endpoint_url=endpoint_url),
+        )
+        assert restored.read(sid, ref.ref_id) == "encrypted evidence body"
+
+
+def test_kms_artifact_blob_codec_allows_subsecond_timeout(monkeypatch) -> None:
+    captured: dict[str, float] = {}
+
+    class _FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb) -> None:
+            _ = (exc_type, exc, tb)
+            return None
+
+        def read(self) -> bytes:
+            return json.dumps(
+                {"status": "ok", "payload_b64": "b2s="}
+            ).encode("utf-8")
+
+    def _fake_urlopen(request, timeout):  # type: ignore[no-untyped-def]
+        _ = request
+        captured["timeout"] = timeout
+        return _FakeResponse()
+
+    monkeypatch.setattr("shisad.core.evidence.urlopen", _fake_urlopen)
+
+    codec = KmsArtifactBlobCodec(
+        endpoint_url="http://127.0.0.1:9999/artifacts",
+        timeout_seconds=0.5,
+    )
+    assert codec.encode("payload") == b"ok"
+    assert captured["timeout"] == pytest.approx(0.5)
 
 
 def test_artifact_ledger_kms_blob_codec_still_verifies_metadata_mac_when_key_is_unavailable(

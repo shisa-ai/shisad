@@ -187,9 +187,10 @@ Approval notes:
 Evidence-at-rest notes:
 
 - `SHISAD_EVIDENCE_KMS_URL` enables the remote artifact-crypt boundary used for ArtifactLedger blob payloads. When unset, the shipped default remains plaintext ArtifactLedger blob storage on the daemon filesystem.
-- `SHISAD_EVIDENCE_KMS_BEARER_TOKEN`, when set, is sent as an `Authorization: Bearer ...` header to that artifact-crypt endpoint.
-- `SHISAD_EVIDENCE_KMS_TIMEOUT_SECONDS` sets the per-request timeout for ArtifactLedger encrypt/decrypt RPCs.
+- `SHISAD_EVIDENCE_KMS_BEARER_TOKEN`, when set, is sent as an `Authorization: Bearer ...` header to that artifact-crypt endpoint. The daemon emits a startup warning if a bearer token is configured for non-loopback `http://...`; use `https://...` for non-local endpoints so the token is not sent without TLS protection.
+- `SHISAD_EVIDENCE_KMS_TIMEOUT_SECONDS` sets the per-request timeout for ArtifactLedger encrypt/decrypt RPCs. Sub-second values are supported down to `0.1` seconds.
 - Scope is intentionally narrow and truth-scoped: only blob payload bytes are encrypted. Artifact metadata remains plaintext in `refs_index.json` so ref lifecycle, deduplication, and GC still work. That plaintext metadata includes `ref_id`, `content_hash`, `summary`, `source`, timestamps, taint labels, endorsement state, and storage codec.
+- Codec/config drift is non-destructive: if the daemon restarts with a different blob codec than the persisted ref expects (for example encrypted blobs but no `SHISAD_EVIDENCE_KMS_URL`, or plaintext blobs after enabling the evidence KMS path), the ref stays preserved in metadata and remains unreadable until the matching codec boundary is restored.
 - The artifact-crypt endpoint contract is:
   Request body:
   ```json
@@ -207,8 +208,8 @@ Evidence-at-rest notes:
     "payload_b64": "<base64-encoded bytes>"
   }
   ```
-- Non-`ok` responses, malformed JSON, invalid base64, or invalid UTF-8 plaintext fail closed. New writes degrade to an `[EVIDENCE unavailable ...]` stub for that turn instead of silently downgrading the storage claim.
-- Decrypt failures from the remote artifact-crypt boundary do not delete the ref automatically; the daemon preserves the metadata row so the evidence can recover later if the correct key boundary comes back. Proven local corruption cases such as missing blobs, codec mismatch, or content-hash mismatch still invalidate and drop the ref.
+- Non-`ok` responses, malformed JSON, invalid base64, invalid URLs, or invalid UTF-8 plaintext fail closed. New writes degrade to an `[EVIDENCE unavailable ...]` stub for that turn instead of silently downgrading the storage claim.
+- Decrypt failures from the remote artifact-crypt boundary do not delete the ref automatically; the daemon preserves the metadata row so the evidence can recover later if the correct key boundary comes back. Proven local corruption cases such as missing blobs or content-hash mismatch still invalidate and drop the ref.
 
 Filesystem/git:
 

@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
+import json
+import time
 from collections.abc import Mapping
 from types import SimpleNamespace
 from typing import Any
@@ -23,6 +26,7 @@ from shisad.core.types import (
     SessionId,
     SessionMode,
     SessionState,
+    TaintLabel,
     ToolName,
     UserId,
     WorkspaceId,
@@ -474,3 +478,143 @@ async def test_m1_dispatch_to_planner_uses_sanitized_text_for_intent_rewrite() -
     proposal = dispatch.planner_result.evaluated[0].proposal
     assert proposal.tool_name == ToolName("todo.create")
     assert proposal.arguments == {"title": "safe-title"}
+
+
+def _finalize_execution_result(*, tool_outputs: list[Any]) -> SessionMessageExecutionResult:
+    validated = _validation_result(params={"session_id": "sess-g1", "content": "hello"})
+    planner_context = SessionMessagePlannerContextResult(
+        validated=validated,
+        conversation_context="",
+        transcript_context_taints=set(),
+        effective_caps=set(),
+        memory_query="",
+        memory_context="",
+        memory_context_taints=set(),
+        memory_context_tainted_for_amv=False,
+        user_goal_host_patterns=set(),
+        untrusted_current_turn="",
+        untrusted_host_patterns=set(),
+        policy_egress_host_patterns=set(),
+        context=PolicyContext(),
+        planner_origin="planner-origin",
+        committed_plan_hash="plan-g1",
+        active_plan_hash="plan-g1",
+        planner_tools_payload=[],
+        planner_input="planner input",
+        assistant_tone_override=None,
+    )
+    planner_dispatch = SessionMessagePlannerDispatchResult(
+        planner_context=planner_context,
+        planner_result=PlannerResult(
+            output=PlannerOutput(actions=[], assistant_response="planner response"),
+            evaluated=[],
+            attempts=1,
+            provider_response=None,
+            messages_sent=(),
+        ),
+        planner_failure_code="",
+        trace_t0=0.0,
+        delegation_advisory=TaskDelegationRecommendation(
+            delegate=False,
+            action_count=0,
+            reason_codes=(),
+            tools=(),
+        ),
+        trace_tool_calls=[],
+    )
+    return SessionMessageExecutionResult(
+        planner_dispatch=planner_dispatch,
+        rejected=0,
+        pending_confirmation=0,
+        executed=len(tool_outputs),
+        rejection_reasons_for_user=[],
+        checkpoint_ids=[],
+        pending_confirmation_ids=[],
+        executed_tool_outputs=tool_outputs,
+        cleanroom_proposals=[],
+        cleanroom_block_reasons=[],
+        trace_tool_calls=[],
+    )
+
+
+class _FinalizeEvidenceHarness(SessionImplMixin):
+    def __init__(self) -> None:
+        self._evidence_store = object()
+        self._firewall = object()
+        self._event_bus = SimpleNamespace(publish=self._noop_publish)
+        self._output_firewall = SimpleNamespace(
+            inspect=lambda text, context: SimpleNamespace(
+                blocked=False,
+                sanitized_text=text,
+                require_confirmation=False,
+                model_dump=lambda mode="json": {
+                    "blocked": False,
+                    "require_confirmation": False,
+                    "sanitized_text": text,
+                },
+            )
+        )
+        self._lockdown_manager = SimpleNamespace(
+            user_notification=lambda _sid: "",
+            state_for=lambda _sid: SimpleNamespace(level=SimpleNamespace(value="none")),
+        )
+        self._transcript_store = SimpleNamespace(append=lambda *args, **kwargs: None)
+        self._transcript_root = "/tmp/shisad-test"
+        self._trace_recorder = None
+        self._planner_model_id = "planner"
+
+    async def _noop_publish(self, _event: object) -> None:
+        return None
+
+    async def _send_chat_approval_link_notifications(self, **kwargs) -> None:
+        _ = kwargs
+
+    async def _maybe_run_conversation_summarizer(self, **kwargs) -> None:
+        _ = kwargs
+
+
+@pytest.mark.asyncio
+async def test_finalize_response_offloads_evidence_wrapping_from_event_loop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def _slow_wrap(*, session_id, records, evidence_store, firewall):  # type: ignore[no-untyped-def]
+        _ = (session_id, records, evidence_store, firewall)
+        time.sleep(0.25)
+        return ["ev-slow"]
+
+    monkeypatch.setattr(
+        "shisad.daemon.handlers._impl_session._wrap_serialized_tool_outputs_with_evidence",
+        _slow_wrap,
+    )
+    harness = _FinalizeEvidenceHarness()
+    execution = _finalize_execution_result(
+        tool_outputs=[
+            SimpleNamespace(
+                tool_name="web.fetch",
+                success=True,
+                content=json.dumps(
+                    {
+                        "ok": True,
+                        "url": "https://example.com/article",
+                        "content": "A" * 400,
+                    }
+                ),
+                taint_labels={TaintLabel.UNTRUSTED},
+            )
+        ]
+    )
+
+    sleep_task = asyncio.create_task(asyncio.sleep(0.05))
+    finalize_task = asyncio.create_task(SessionImplMixin._finalize_response(harness, execution))
+
+    done, pending = await asyncio.wait(
+        {sleep_task, finalize_task},
+        timeout=0.15,
+        return_when=asyncio.FIRST_COMPLETED,
+    )
+
+    assert sleep_task in done
+    assert finalize_task in pending
+
+    response = await finalize_task
+    assert response["session_id"] == "sess-g1"
