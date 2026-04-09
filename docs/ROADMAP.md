@@ -105,17 +105,17 @@ The current v0.6.2 tree adds canonical `ApprovalEnvelope` / `action_digest`
 hashing, approval levels (`L0`-`L4`), policy-driven escalation, richer
 approval audit fields, the preserved `L0/software` backend, durable TOTP
 enrollment, the approval-origin / passkey ceremony surface,
-`shisad-approver` for SSH/private deployments, and now the generic
-`IntentEnvelope` / signer-verification contract for `signed_authorization`:
-durable signer-key registration/revocation, `signer register|list|revoke`
-control surfaces, a concrete enterprise-style HTTPS signer backend, truthful
-review-surface clamping, fail-closed malformed-response handling, full
-signature verification against locally registered public keys, and targeted
-behavioral/adversarial coverage for signer-backed approvals. Consumer-Ledger
-clear-signing / trusted-display work remains follow-on. The remaining active
-v0.6.2 work is:
-
-- Evidence encryption at rest behind the signer / key-boundary path
+`shisad-approver` for SSH/private deployments, the generic `IntentEnvelope` /
+signer-verification contract for `signed_authorization`, and now the
+review-pending `L1` evidence-encryption slice as well: when
+`SHISAD_EVIDENCE_KMS_URL` is configured, ArtifactLedger blob payloads route
+through an explicit remote artifact-crypt boundary, on-disk blob bytes stop
+being plaintext, and `evidence.read` / `evidence.promote` remain behaviorally
+covered. Scope is intentionally narrow and truthful: lifecycle metadata stays
+plaintext, the shipped default remains plaintext blobs when no remote key
+boundary is configured, and approval-factor / recovery-code at-rest hardening
+remains follow-on. Consumer-Ledger clear-signing / trusted-display work also
+remains follow-on.
 
 Approval-level mapping for v0.6.2:
 

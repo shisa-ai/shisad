@@ -138,6 +138,9 @@ Approval / WebAuthn / signer:
 - `SHISAD_APPROVAL_RATE_LIMIT_MAX_ATTEMPTS`
 - `SHISAD_SIGNER_KMS_URL`
 - `SHISAD_SIGNER_KMS_BEARER_TOKEN`
+- `SHISAD_EVIDENCE_KMS_URL`
+- `SHISAD_EVIDENCE_KMS_BEARER_TOKEN`
+- `SHISAD_EVIDENCE_KMS_TIMEOUT_SECONDS`
 
 Approval notes:
 
@@ -179,7 +182,33 @@ Approval notes:
 - `status`, `signed_at`, and `blind_sign_detected` are validated fail-closed; malformed values return `signer_backend_invalid_response`.
 - The daemon verifies the returned signature against the locally registered public key for `signer_key_id`; the KMS response can deny service or downgrade review quality, but it cannot mint approvals without a valid local signature check.
 - For the current `kms` backend, backend-reported review surfaces are clamped to the daemon's configured trust ceiling. In practice this means `opaque_device` can downgrade the approval, but `trusted_device_display` does not upgrade the enterprise HTTPS backend beyond `signed_authorization`.
-- Registered signer public keys currently live in the same daemon-owned approval store as TOTP/WebAuthn/helper factors until `L1` evidence-encryption-at-rest lands.
+- Registered signer public keys still live in the same daemon-owned approval-factor store as TOTP/WebAuthn/helper factors. `L1` encrypts ArtifactLedger blob payloads only; approval-factor and recovery-code at-rest hardening remains follow-on.
+
+Evidence-at-rest notes:
+
+- `SHISAD_EVIDENCE_KMS_URL` enables the remote artifact-crypt boundary used for ArtifactLedger blob payloads. When unset, the shipped default remains plaintext ArtifactLedger blob storage on the daemon filesystem.
+- `SHISAD_EVIDENCE_KMS_BEARER_TOKEN`, when set, is sent as an `Authorization: Bearer ...` header to that artifact-crypt endpoint.
+- `SHISAD_EVIDENCE_KMS_TIMEOUT_SECONDS` sets the per-request timeout for ArtifactLedger encrypt/decrypt RPCs.
+- Scope is intentionally narrow and truth-scoped: only blob payload bytes are encrypted. Artifact metadata remains plaintext in `refs_index.json` so ref lifecycle, deduplication, and GC still work. That plaintext metadata includes `ref_id`, `content_hash`, `summary`, `source`, timestamps, taint labels, endorsement state, and storage codec.
+- The artifact-crypt endpoint contract is:
+  Request body:
+  ```json
+  {
+    "schema_version": "shisad.artifact_crypt.v1",
+    "operation": "encrypt|decrypt",
+    "artifact_kind": "evidence",
+    "payload_b64": "<base64-encoded bytes>"
+  }
+  ```
+  Response body:
+  ```json
+  {
+    "status": "ok",
+    "payload_b64": "<base64-encoded bytes>"
+  }
+  ```
+- Non-`ok` responses, malformed JSON, invalid base64, or invalid UTF-8 plaintext fail closed. New writes degrade to an `[EVIDENCE unavailable ...]` stub for that turn instead of silently downgrading the storage claim.
+- Decrypt failures from the remote artifact-crypt boundary do not delete the ref automatically; the daemon preserves the metadata row so the evidence can recover later if the correct key boundary comes back. Proven local corruption cases such as missing blobs, codec mismatch, or content-hash mismatch still invalidate and drop the ref.
 
 Filesystem/git:
 

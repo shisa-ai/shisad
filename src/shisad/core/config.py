@@ -332,6 +332,22 @@ class DaemonConfig(BaseSettings):
         default="",
         description="Optional bearer token sent to the signer KMS endpoint.",
     )
+    evidence_kms_url: str = Field(
+        default="",
+        description=(
+            "Optional remote key-boundary endpoint used to encrypt/decrypt "
+            "ArtifactLedger blob payloads."
+        ),
+    )
+    evidence_kms_bearer_token: str = Field(
+        default="",
+        description="Optional bearer token sent to the evidence KMS endpoint.",
+    )
+    evidence_kms_timeout_seconds: float = Field(
+        default=10.0,
+        ge=0.1,
+        description="Timeout in seconds for evidence KMS encrypt/decrypt requests.",
+    )
     assistant_fs_roots: list[Path] = Field(
         default_factory=list,
         description="Allowlisted roots for fs/git assistant primitives.",

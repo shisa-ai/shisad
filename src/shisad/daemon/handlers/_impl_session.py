@@ -53,7 +53,12 @@ from shisad.core.events import (
     ToolProposed,
     ToolRejected,
 )
-from shisad.core.evidence import ArtifactLedger, _generate_safe_summary, format_evidence_stub
+from shisad.core.evidence import (
+    ArtifactBlobCodecError,
+    ArtifactLedger,
+    _generate_safe_summary,
+    format_evidence_stub,
+)
 from shisad.core.planner import (
     ActionProposal,
     EvaluatedProposal,
@@ -2235,7 +2240,7 @@ def _wrap_serialized_tool_outputs_with_evidence(
                 source=source,
                 summary=summary,
             )
-        except OSError:
+        except (ArtifactBlobCodecError, OSError, ValueError):
             logger.warning(
                 (
                     "Evidence store write failed for tool=%s source=%s; "

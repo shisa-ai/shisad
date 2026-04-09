@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import base64
+import binascii
 import contextlib
 import hashlib
 import hmac
@@ -15,6 +17,8 @@ from enum import StrEnum
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Protocol
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
 
 from pydantic import BaseModel, Field, ValidationError
 
@@ -48,7 +52,7 @@ class ArtifactEndorsementState(StrEnum):
 
 
 class ArtifactBlobCodec(Protocol):
-    """Hook point for future non-plaintext artifact storage backends."""
+    """Artifact blob encoding/decoding boundary."""
 
     name: str
 
@@ -68,6 +72,90 @@ class PlaintextArtifactBlobCodec:
 
     def decode(self, payload: bytes) -> str:
         return payload.decode("utf-8")
+
+
+class ArtifactBlobCodecError(Exception):
+    """Artifact blob codec failed without proving local blob corruption."""
+
+
+@dataclass(frozen=True)
+class KmsArtifactBlobCodec:
+    """Remote key-boundary codec for ArtifactLedger blob payloads."""
+
+    endpoint_url: str
+    bearer_token: str = ""
+    timeout_seconds: float = 10.0
+    name: str = "kms_encrypted_v1"
+
+    def encode(self, content: str) -> bytes:
+        return self._request("encrypt", content.encode("utf-8"))
+
+    def decode(self, payload: bytes) -> str:
+        try:
+            plaintext = self._request("decrypt", payload)
+            return plaintext.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise ArtifactBlobCodecError("artifact_kms_invalid_plaintext") from exc
+
+    def _request(self, operation: str, payload: bytes) -> bytes:
+        endpoint_url = self.endpoint_url.strip()
+        if not endpoint_url:
+            raise ArtifactBlobCodecError("artifact_kms_unconfigured")
+        request_payload = {
+            "schema_version": "shisad.artifact_crypt.v1",
+            "operation": operation,
+            "artifact_kind": "evidence",
+            "payload_b64": base64.b64encode(payload).decode("ascii"),
+        }
+        headers = {
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        }
+        token = self.bearer_token.strip()
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+        request = Request(
+            endpoint_url,
+            data=json.dumps(request_payload).encode("utf-8"),
+            headers=headers,
+            method="POST",
+        )
+        try:
+            with urlopen(request, timeout=max(1.0, float(self.timeout_seconds))) as response:
+                response_body = json.loads(response.read().decode("utf-8"))
+        except HTTPError as exc:
+            reason = "artifact_kms_http_error"
+            with contextlib.suppress(Exception):
+                response_body = json.loads(exc.read().decode("utf-8"))
+                if isinstance(response_body, dict):
+                    reason = str(
+                        response_body.get("reason") or response_body.get("error") or reason
+                    )
+            raise ArtifactBlobCodecError(reason) from exc
+        except URLError as exc:
+            raise ArtifactBlobCodecError("artifact_kms_unreachable") from exc
+        except TimeoutError as exc:
+            raise ArtifactBlobCodecError("artifact_kms_timeout") from exc
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ArtifactBlobCodecError("artifact_kms_invalid_response") from exc
+
+        if not isinstance(response_body, dict):
+            raise ArtifactBlobCodecError("artifact_kms_invalid_response")
+        status = str(response_body.get("status", "")).strip().lower()
+        if status != "ok":
+            reason = str(response_body.get("reason", "")).strip() or "artifact_kms_error"
+            raise ArtifactBlobCodecError(reason)
+        payload_b64 = str(response_body.get("payload_b64", "")).strip()
+        if not payload_b64:
+            raise ArtifactBlobCodecError("artifact_kms_invalid_response")
+        try:
+            return base64.b64decode(payload_b64.encode("ascii"), validate=True)
+        except (ValueError, binascii.Error) as exc:
+            raise ArtifactBlobCodecError("artifact_kms_invalid_response") from exc
+
+    @staticmethod
+    def request_schema_version() -> str:
+        return "shisad.artifact_crypt.v1"
 
 
 class EvidenceRef(BaseModel):
@@ -95,6 +183,13 @@ class _MetadataLoadResult:
     refs: dict[str, dict[str, EvidenceRef]]
     loaded_ok: bool
     dirty: bool = False
+
+
+@dataclass(frozen=True)
+class _BlobLoadResult:
+    content: str | None
+    failure_reason: str = ""
+    drop_ref: bool = False
 
 
 class _HTMLSummaryParser(HTMLParser):
@@ -293,8 +388,9 @@ class ArtifactLedger:
         blob_path = self._blob_path(content_hash)
         existing = self._refs.setdefault(session_key, {}).get(ref_id)
         if existing is not None:
-            blob_valid, _ = self._validate_blob_integrity(existing)
-            if not blob_valid:
+            blob_load = self._load_validated_blob_content(existing)
+            rewrote_blob = blob_load.content is None and blob_load.drop_ref
+            if rewrote_blob:
                 self._write_blob(blob_path, content)
                 self._ensure_file_permissions(blob_path)
             merged = self._merge_existing_ref(
@@ -305,6 +401,7 @@ class ArtifactLedger:
                 source=source,
                 summary=summary,
                 ttl_seconds=ttl_seconds,
+                storage_codec=self._blob_codec.name if rewrote_blob else None,
             )
             self._persist_metadata_index()
             return merged
@@ -350,17 +447,25 @@ class ArtifactLedger:
         ref = self._refs.get(session_key, {}).get(ref_id)
         if ref is None:
             return None, None
-        content, failure_reason = self._load_validated_blob_content(ref)
-        if content is None:
-            logger.warning(
-                "Dropping evidence ref %s for session %s because %s",
-                ref_id,
-                session_key,
-                failure_reason,
-            )
-            self._drop_ref(session_key, ref_id)
+        blob_load = self._load_validated_blob_content(ref)
+        if blob_load.content is None:
+            if blob_load.drop_ref:
+                logger.warning(
+                    "Dropping evidence ref %s for session %s because %s",
+                    ref_id,
+                    session_key,
+                    blob_load.failure_reason,
+                )
+                self._drop_ref(session_key, ref_id)
+            else:
+                logger.warning(
+                    "Evidence ref %s for session %s is temporarily unreadable because %s",
+                    ref_id,
+                    session_key,
+                    blob_load.failure_reason,
+                )
             return None, None
-        return ref, content
+        return ref, blob_load.content
 
     def validate_ref_id(self, session_id: SessionId, ref_id: str) -> bool:
         ref = self.get_ref(session_id, ref_id)
@@ -522,30 +627,45 @@ class ArtifactLedger:
             hashlib.sha256,
         ).hexdigest()
 
-    def _load_validated_blob_content(self, ref: EvidenceRef) -> tuple[str | None, str]:
+    def _load_validated_blob_content(self, ref: EvidenceRef) -> _BlobLoadResult:
         if ref.storage_codec != self._blob_codec.name:
-            return (
+            return _BlobLoadResult(
                 None,
                 (
                     "blob storage codec mismatch "
                     f"(ref={ref.storage_codec} active={self._blob_codec.name})"
                 ),
+                drop_ref=True,
             )
         path = self._blob_path(ref.content_hash)
         if not path.exists():
-            return None, f"blob {ref.content_hash} is missing"
+            return _BlobLoadResult(
+                None,
+                f"blob {ref.content_hash} is missing",
+                drop_ref=True,
+            )
         try:
             content = self._read_blob(path)
+        except ArtifactBlobCodecError as exc:
+            return _BlobLoadResult(
+                None,
+                str(exc) or "blob codec unavailable",
+                drop_ref=False,
+            )
         except (OSError, UnicodeDecodeError, ValueError):
-            return None, f"blob {ref.content_hash} is unreadable"
+            return _BlobLoadResult(
+                None,
+                f"blob {ref.content_hash} is unreadable",
+                drop_ref=True,
+            )
         actual_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
         if not hmac.compare_digest(actual_hash, ref.content_hash):
-            return None, f"blob {ref.content_hash} failed content hash verification"
-        return content, ""
-
-    def _validate_blob_integrity(self, ref: EvidenceRef) -> tuple[bool, str]:
-        content, failure_reason = self._load_validated_blob_content(ref)
-        return content is not None, failure_reason
+            return _BlobLoadResult(
+                None,
+                f"blob {ref.content_hash} failed content hash verification",
+                drop_ref=True,
+            )
+        return _BlobLoadResult(content)
 
     def _normalize_loaded_ref(
         self,
@@ -553,16 +673,6 @@ class ArtifactLedger:
         session_key: str,
         ref: EvidenceRef,
     ) -> tuple[EvidenceRef | None, bool]:
-        blob_valid, failure_reason = self._validate_blob_integrity(ref)
-        if not blob_valid:
-            logger.warning(
-                "Dropping persisted evidence ref %s for session %s because %s",
-                ref.ref_id,
-                session_key,
-                failure_reason,
-            )
-            return None, True
-
         if not ref.metadata_mac:
             logger.warning(
                 "Dropping persisted evidence ref %s for session %s because metadata MAC is missing",
@@ -572,17 +682,29 @@ class ArtifactLedger:
             return None, True
 
         expected_mac = self._make_metadata_mac(session_key, ref)
-        if hmac.compare_digest(ref.metadata_mac, expected_mac):
-            return ref, False
-        logger.warning(
-            (
-                "Dropping persisted evidence ref %s for session %s because "
-                "metadata MAC verification failed"
-            ),
-            ref.ref_id,
-            session_key,
-        )
-        return None, True
+        if not hmac.compare_digest(ref.metadata_mac, expected_mac):
+            logger.warning(
+                (
+                    "Dropping persisted evidence ref %s for session %s because "
+                    "metadata MAC verification failed"
+                ),
+                ref.ref_id,
+                session_key,
+            )
+            return None, True
+
+        blob_load = self._load_validated_blob_content(ref)
+        if blob_load.content is None:
+            if not blob_load.drop_ref:
+                return ref, False
+            logger.warning(
+                "Dropping persisted evidence ref %s for session %s because %s",
+                ref.ref_id,
+                session_key,
+                blob_load.failure_reason,
+            )
+            return None, True
+        return ref, False
 
     def _write_blob(self, path: Path, content: str) -> None:
         path.write_bytes(self._blob_codec.encode(content))
@@ -736,6 +858,7 @@ class ArtifactLedger:
         source: str,
         summary: str,
         ttl_seconds: int | None,
+        storage_codec: str | None = None,
     ) -> EvidenceRef:
         merged = existing.model_copy(
             update={
@@ -743,7 +866,7 @@ class ArtifactLedger:
                 "source": source or existing.source,
                 "summary": summary or existing.summary,
                 "ttl_seconds": self._merge_ttl_seconds(existing.ttl_seconds, ttl_seconds),
-                "storage_codec": existing.storage_codec or self._blob_codec.name,
+                "storage_codec": storage_codec or existing.storage_codec or self._blob_codec.name,
             }
         )
         merged = self._stamp_metadata_mac(session_key, merged)

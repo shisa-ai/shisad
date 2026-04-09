@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import re
 from collections.abc import Mapping
-from contextlib import suppress
+from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 from typing import Any
 
@@ -19,6 +20,7 @@ from shisad.core.providers.local_planner import LocalPlannerProvider
 from shisad.core.transcript import TranscriptStore
 from shisad.core.types import SessionId
 from shisad.daemon.runner import run_daemon
+from tests.helpers.artifact_kms import StubArtifactKmsService
 
 _USER_GOAL_RE = re.compile(
     (
@@ -216,8 +218,14 @@ def _tool_outputs(payload: Mapping[str, Any]) -> dict[str, list[dict[str, Any]]]
     return outputs
 
 
-@pytest.fixture
-async def evidence_harness(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+@asynccontextmanager
+async def _run_evidence_harness(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    evidence_kms_url: str = "",
+    evidence_kms_bearer_token: str = "",
+):
     monkeypatch.setattr(LocalPlannerProvider, "complete", _evidence_stub_complete, raising=True)
     monkeypatch.setattr(WebToolkit, "fetch", _stub_fetch, raising=True)
     for var in (
@@ -250,6 +258,8 @@ async def evidence_harness(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         context_window=6,
         web_fetch_enabled=True,
         web_allowed_domains=["example.com"],
+        evidence_kms_url=evidence_kms_url,
+        evidence_kms_bearer_token=evidence_kms_bearer_token,
     )
     daemon_task = asyncio.create_task(run_daemon(config))
     client = ControlClient(config.socket_path)
@@ -263,6 +273,12 @@ async def evidence_harness(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         await client.close()
         with suppress(Exception):
             await asyncio.wait_for(daemon_task, timeout=3)
+
+
+@pytest.fixture
+async def evidence_harness(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    async with _run_evidence_harness(tmp_path, monkeypatch) as harness:
+        yield harness
 
 
 @pytest.mark.asyncio
@@ -340,3 +356,76 @@ async def test_behavioral_fetch_stub_read_strip_promote_flow(evidence_harness) -
         {"session_id": sid, "content": "what was in that evidence again?"},
     )
     assert promoted["response"] == "promoted-context-visible"
+
+
+@pytest.mark.asyncio
+async def test_behavioral_fetch_stub_read_strip_promote_flow_with_encrypted_artifacts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with StubArtifactKmsService(key_material=b"a" * 32).run() as evidence_kms_url:
+        async with _run_evidence_harness(
+            tmp_path,
+            monkeypatch,
+            evidence_kms_url=evidence_kms_url,
+        ) as harness:
+            client: ControlClient = harness["client"]
+            config: DaemonConfig = harness["config"]
+            sid = await _create_session(client)
+
+            fetched = await client.call(
+                "session.message",
+                {"session_id": sid, "content": "fetch https://example.com/evidence"},
+            )
+            assert int(fetched.get("executed_actions", 0)) == 1
+            ref_id = _extract_ref_id(str(fetched.get("response", "")))
+            assert ref_id
+
+            index_path = config.data_dir / "sessions" / "evidence" / "refs_index.json"
+            index = json.loads(index_path.read_text(encoding="utf-8"))
+            content_hash = str(index[sid][ref_id]["content_hash"])
+            blob_path = config.data_dir / "sessions" / "evidence" / "blobs" / f"{content_hash}.txt"
+            assert _UNIQUE_MARKER.encode("utf-8") not in blob_path.read_bytes()
+
+            reread = await client.call(
+                "session.message",
+                {"session_id": sid, "content": f"read evidence {ref_id}"},
+            )
+            assert int(reread.get("executed_actions", 0)) == 1
+            reread_outputs = _tool_outputs(reread)
+            assert _UNIQUE_MARKER in reread_outputs["evidence.read"][0]["content"]
+
+            stripped = await client.call(
+                "session.message",
+                {"session_id": sid, "content": "what was in that evidence again?"},
+            )
+            assert stripped["response"] == "stub-only"
+
+            promote = await client.call(
+                "session.message",
+                {"session_id": sid, "content": f"promote evidence {ref_id}"},
+            )
+            assert int(promote.get("confirmation_required_actions", 0)) == 1
+            pending = await client.call(
+                "action.pending",
+                {"session_id": sid, "status": "pending", "limit": 10},
+            )
+            promote_pending = next(
+                item
+                for item in pending["actions"]
+                if str(item.get("tool_name", "")) == "evidence.promote"
+            )
+            confirmed = await client.call(
+                "action.confirm",
+                {
+                    "confirmation_id": promote_pending["confirmation_id"],
+                    "decision_nonce": promote_pending["decision_nonce"],
+                },
+            )
+            assert confirmed["confirmed"] is True
+
+            promoted = await client.call(
+                "session.message",
+                {"session_id": sid, "content": "what was in that evidence again?"},
+            )
+            assert promoted["response"] == "promoted-context-visible"

@@ -12,11 +12,13 @@ from shisad.core.evidence import (
     ArtifactLedger,
     EvidenceRef,
     EvidenceStore,
+    KmsArtifactBlobCodec,
     _generate_safe_summary,
     format_evidence_stub,
 )
 from shisad.core.types import SessionId, TaintLabel
 from shisad.security.firewall import ContentFirewall
+from tests.helpers.artifact_kms import StubArtifactKmsService
 
 
 def test_evidence_store_round_trips_content_and_metadata(tmp_path) -> None:
@@ -418,6 +420,42 @@ def test_artifact_ledger_collect_garbage_evicts_expired_refs_and_quarantines_orp
     assert (evidence_root / "quarantine" / f"{orphan_hash}.txt").exists() is True
 
 
+def test_artifact_ledger_collect_garbage_with_kms_blob_codec_preserves_encrypted_orphans(
+    tmp_path,
+) -> None:
+    evidence_root = tmp_path / "evidence"
+    sid = SessionId("sess-a")
+    with StubArtifactKmsService(key_material=b"a" * 32).run() as endpoint_url:
+        store = ArtifactLedger(
+            evidence_root,
+            salt=b"b" * 32,
+            orphan_retention_seconds=3600,
+            blob_codec=KmsArtifactBlobCodec(endpoint_url=endpoint_url),
+        )
+        ref = store.store(
+            sid,
+            "old encrypted evidence",
+            taint_labels={TaintLabel.UNTRUSTED},
+            source="web.fetch:example.com",
+            summary="old encrypted evidence",
+        )
+        store._refs[str(sid)][ref.ref_id] = ref.model_copy(
+            update={"created_at": datetime.now(UTC) - timedelta(hours=2)}
+        )
+        orphan_hash = "deadbeef" * 8
+        orphan_blob = evidence_root / "blobs" / f"{orphan_hash}.txt"
+        orphan_blob.write_bytes(b"\x01\x02encrypted-orphan")
+
+        evicted = store.collect_garbage(max_age_seconds=60)
+
+    assert evicted == [ref.ref_id]
+    assert store.get_ref(sid, ref.ref_id) is None
+    assert orphan_blob.exists() is False
+    quarantined = evidence_root / "quarantine" / f"{orphan_hash}.txt"
+    assert quarantined.exists() is True
+    assert quarantined.read_bytes() == b"\x01\x02encrypted-orphan"
+
+
 def test_artifact_ledger_uses_configured_blob_codec(tmp_path) -> None:
     class _ReverseCodec:
         name = "reverse"
@@ -444,6 +482,130 @@ def test_artifact_ledger_uses_configured_blob_codec(tmp_path) -> None:
     loaded = ledger.get_ref(sid, ref.ref_id)
     assert loaded is not None
     assert loaded.storage_codec == "reverse"
+
+
+def test_artifact_ledger_kms_blob_codec_round_trips_and_restarts(tmp_path) -> None:
+    evidence_root = tmp_path / "evidence"
+    sid = SessionId("sess-a")
+    with StubArtifactKmsService(key_material=b"a" * 32).run() as endpoint_url:
+        ledger = ArtifactLedger(
+            evidence_root,
+            salt=b"b" * 32,
+            blob_codec=KmsArtifactBlobCodec(endpoint_url=endpoint_url),
+        )
+        ref = ledger.store(
+            sid,
+            "encrypted evidence body",
+            taint_labels={TaintLabel.UNTRUSTED},
+            source="web.fetch:example.com",
+            summary="encrypted evidence body",
+        )
+        blob_path = evidence_root / "blobs" / f"{ref.content_hash}.txt"
+        assert b"encrypted evidence body" not in blob_path.read_bytes()
+        assert ledger.read(sid, ref.ref_id) == "encrypted evidence body"
+
+    with StubArtifactKmsService(key_material=b"a" * 32).run() as endpoint_url:
+        restarted = ArtifactLedger(
+            evidence_root,
+            salt=b"b" * 32,
+            blob_codec=KmsArtifactBlobCodec(endpoint_url=endpoint_url),
+        )
+        assert restarted.read(sid, ref.ref_id) == "encrypted evidence body"
+
+
+def test_artifact_ledger_kms_blob_codec_wrong_key_keeps_ref_for_later_recovery(tmp_path) -> None:
+    evidence_root = tmp_path / "evidence"
+    sid = SessionId("sess-a")
+    with StubArtifactKmsService(key_material=b"a" * 32).run() as endpoint_url:
+        ledger = ArtifactLedger(
+            evidence_root,
+            salt=b"b" * 32,
+            blob_codec=KmsArtifactBlobCodec(endpoint_url=endpoint_url),
+        )
+        ref = ledger.store(
+            sid,
+            "encrypted evidence body",
+            taint_labels={TaintLabel.UNTRUSTED},
+            source="web.fetch:example.com",
+            summary="encrypted evidence body",
+        )
+
+    with StubArtifactKmsService(key_material=b"c" * 32).run() as endpoint_url:
+        wrong = ArtifactLedger(
+            evidence_root,
+            salt=b"b" * 32,
+            blob_codec=KmsArtifactBlobCodec(endpoint_url=endpoint_url),
+        )
+        assert wrong.read(sid, ref.ref_id) is None
+        assert wrong.validate_ref_id(sid, ref.ref_id) is False
+        assert ref.ref_id in wrong._refs[str(sid)]
+
+    with StubArtifactKmsService(key_material=b"a" * 32).run() as endpoint_url:
+        restored = ArtifactLedger(
+            evidence_root,
+            salt=b"b" * 32,
+            blob_codec=KmsArtifactBlobCodec(endpoint_url=endpoint_url),
+        )
+        assert restored.read(sid, ref.ref_id) == "encrypted evidence body"
+
+
+def test_artifact_ledger_kms_blob_codec_still_verifies_metadata_mac_when_key_is_unavailable(
+    tmp_path,
+) -> None:
+    evidence_root = tmp_path / "evidence"
+    sid = SessionId("sess-a")
+    with StubArtifactKmsService(key_material=b"a" * 32).run() as endpoint_url:
+        ledger = ArtifactLedger(
+            evidence_root,
+            salt=b"b" * 32,
+            blob_codec=KmsArtifactBlobCodec(endpoint_url=endpoint_url),
+        )
+        ref = ledger.store(
+            sid,
+            "encrypted evidence body",
+            taint_labels={TaintLabel.UNTRUSTED},
+            source="web.fetch:example.com",
+            summary="encrypted evidence body",
+        )
+
+    index_path = evidence_root / "refs_index.json"
+    raw_index = json.loads(index_path.read_text(encoding="utf-8"))
+    raw_index[str(sid)][ref.ref_id]["summary"] = "forged offline summary"
+    index_path.write_text(json.dumps(raw_index), encoding="utf-8")
+
+    with StubArtifactKmsService(key_material=b"c" * 32).run() as endpoint_url:
+        restarted = ArtifactLedger(
+            evidence_root,
+            salt=b"b" * 32,
+            blob_codec=KmsArtifactBlobCodec(endpoint_url=endpoint_url),
+        )
+        assert restarted._refs == {}
+
+
+def test_artifact_ledger_kms_blob_codec_detects_tamper_without_dropping_ref(tmp_path) -> None:
+    evidence_root = tmp_path / "evidence"
+    sid = SessionId("sess-a")
+    with StubArtifactKmsService(key_material=b"a" * 32).run() as endpoint_url:
+        ledger = ArtifactLedger(
+            evidence_root,
+            salt=b"b" * 32,
+            blob_codec=KmsArtifactBlobCodec(endpoint_url=endpoint_url),
+        )
+        ref = ledger.store(
+            sid,
+            "encrypted evidence body",
+            taint_labels={TaintLabel.UNTRUSTED},
+            source="web.fetch:example.com",
+            summary="encrypted evidence body",
+        )
+        blob_path = evidence_root / "blobs" / f"{ref.content_hash}.txt"
+        tampered = bytearray(blob_path.read_bytes())
+        tampered[-1] ^= 0xFF
+        blob_path.write_bytes(bytes(tampered))
+
+        assert ledger.read(sid, ref.ref_id) is None
+        assert ledger.validate_ref_id(sid, ref.ref_id) is False
+        assert ref.ref_id in ledger._refs[str(sid)]
 
 
 def test_artifact_ledger_read_uses_single_decode_for_valid_blob(tmp_path) -> None:

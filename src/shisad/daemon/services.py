@@ -31,7 +31,7 @@ from shisad.core.config import (
     effective_approval_factor_store_path,
 )
 from shisad.core.events import EventBus
-from shisad.core.evidence import ArtifactLedger
+from shisad.core.evidence import ArtifactBlobCodec, ArtifactLedger, KmsArtifactBlobCodec
 from shisad.core.planner import Planner
 from shisad.core.providers.base import validate_endpoint
 from shisad.core.providers.capabilities import AuthMode
@@ -195,7 +195,19 @@ class DaemonServices:
 
         transcript_root = config.data_dir / "sessions"
         transcript_store = TranscriptStore(transcript_root)
-        evidence_store = ArtifactLedger(transcript_root / "evidence")
+        evidence_blob_codec: ArtifactBlobCodec | None = (
+            KmsArtifactBlobCodec(
+                endpoint_url=config.evidence_kms_url,
+                bearer_token=config.evidence_kms_bearer_token,
+                timeout_seconds=config.evidence_kms_timeout_seconds,
+            )
+            if config.evidence_kms_url.strip()
+            else None
+        )
+        evidence_store = ArtifactLedger(
+            transcript_root / "evidence",
+            blob_codec=evidence_blob_codec,
+        )
         trace_recorder: TraceRecorder | None = None
         if config.trace_enabled:
             trace_recorder = TraceRecorder(config.data_dir / "traces")
