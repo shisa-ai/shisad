@@ -4,6 +4,11 @@ shisad supports multi-factor confirmation for actions that policy marks as
 requiring more than a simple click. This guide covers what is available today,
 how to set it up, and what the approval levels mean.
 
+**2FA is opt-in.** No multi-factor confirmation is required until you enroll
+a credential. The standard L0 software confirmation flow (click-to-approve)
+remains the default. Once you register a TOTP secret, passkey, or signer key,
+the enrolled methods become available for policy rules that require them.
+
 ---
 
 ## How It Works
@@ -62,12 +67,18 @@ store these securely offline.
 
 **Confirming an action:**
 
+When an action requires L1 confirmation, the daemon prompts you through your
+active channel (chat or web). Reply with your 6-digit TOTP code directly in
+chat, or enter it on the approval web page if you have an approval origin
+configured.
+
+You can also confirm via the CLI if you prefer:
+
 ```bash
-# When an action requires L1 confirmation
 shisad action confirm <ID> --nonce <NONCE> --totp-code 123456
 ```
 
-Or use a recovery code if you've lost your TOTP device:
+Recovery codes work the same way:
 
 ```bash
 shisad action confirm <ID> --nonce <NONCE> --recovery-code XXXX-XXXX
