@@ -17,6 +17,7 @@ from enum import StrEnum
 from html.parser import HTMLParser
 from http.client import InvalidURL
 from pathlib import Path
+from threading import Thread
 from typing import Protocol
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -370,6 +371,7 @@ class ArtifactLedger:
         self._orphan_retention_seconds = max(1, int(orphan_retention_seconds))
         self._blob_codec = blob_codec or PlaintextArtifactBlobCodec()
         self._temporarily_unreadable_refs: dict[str, dict[str, _UnreadableRefState]] = {}
+        self._unreadable_probe_in_flight: set[tuple[str, str]] = set()
         self._root_dir.mkdir(parents=True, exist_ok=True)
         self._blob_dir.mkdir(parents=True, exist_ok=True)
         self._quarantine_dir.mkdir(parents=True, exist_ok=True)
@@ -519,7 +521,9 @@ class ArtifactLedger:
         ref = self.get_ref_metadata(session_id, ref_id)
         if ref is None:
             return False
-        if self._is_temporarily_unreadable(self._session_key(session_id), ref_id):
+        session_key = self._session_key(session_id)
+        if self._is_temporarily_unreadable(session_key, ref_id):
+            self._maybe_probe_temporarily_unreadable(session_id, ref_id)
             return False
         return hmac.compare_digest(
             ref.ref_id,
@@ -918,6 +922,27 @@ class ArtifactLedger:
 
     def _is_temporarily_unreadable(self, session_key: str, ref_id: str) -> bool:
         return ref_id in self._temporarily_unreadable_refs.get(session_key, {})
+
+    def _maybe_probe_temporarily_unreadable(self, session_id: SessionId, ref_id: str) -> None:
+        session_key = self._session_key(session_id)
+        if not self._is_temporarily_unreadable(session_key, ref_id):
+            return
+        probe_key = (session_key, ref_id)
+        if probe_key in self._unreadable_probe_in_flight:
+            return
+        self._unreadable_probe_in_flight.add(probe_key)
+
+        def _probe() -> None:
+            try:
+                self.resolve_ref_content(session_id, ref_id)
+            finally:
+                self._unreadable_probe_in_flight.discard(probe_key)
+
+        Thread(
+            target=_probe,
+            name=f"evidence-unreadable-probe-{session_key}-{ref_id}",
+            daemon=True,
+        ).start()
 
     def _evict_for_session(self, session_id: SessionId) -> None:
         self.evict_expired(

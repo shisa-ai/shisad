@@ -465,7 +465,7 @@ def test_pep_checks_encrypted_evidence_promote_without_artifact_kms_round_trip(t
     assert elapsed < 0.1
 
 
-def test_pep_rejects_temporarily_unreadable_encrypted_refs_without_new_kms_round_trip(
+def test_pep_rejects_temporarily_unreadable_encrypted_refs_until_recovered_kms_clears_state(
     tmp_path,
 ) -> None:
     evidence_root = tmp_path / "evidence"
@@ -508,7 +508,13 @@ def test_pep_rejects_temporarily_unreadable_encrypted_refs_without_new_kms_round
             {"ref_id": ref.ref_id},
             PolicyContext(capabilities={Capability.MEMORY_READ}, session_id=sid),
         )
+        deadline = time.monotonic() + 1.0
+        while len(service.requests) == request_count and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert len(service.requests) > request_count
+
         time.sleep(5.2)
+        wrong_key_requests = len(service.requests)
         read_after_delay = pep.evaluate(
             ToolName("evidence.read"),
             {"ref_id": ref.ref_id},
@@ -519,6 +525,42 @@ def test_pep_rejects_temporarily_unreadable_encrypted_refs_without_new_kms_round
             {"ref_id": ref.ref_id},
             PolicyContext(capabilities={Capability.MEMORY_READ}, session_id=sid),
         )
+        deadline = time.monotonic() + 1.0
+        while len(service.requests) == wrong_key_requests and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert len(service.requests) > wrong_key_requests
+
+        service._key_material = b"a" * 32
+        recovery_requests = len(service.requests)
+        recovery_trigger = pep.evaluate(
+            ToolName("evidence.read"),
+            {"ref_id": ref.ref_id},
+            PolicyContext(capabilities={Capability.MEMORY_READ}, session_id=sid),
+        )
+        assert recovery_trigger.kind.value == "reject"
+
+        deadline = time.monotonic() + 1.0
+        while len(service.requests) == recovery_requests and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert len(service.requests) > recovery_requests
+
+        recovered_read = None
+        recovered_promote = None
+        deadline = time.monotonic() + 1.0
+        while time.monotonic() < deadline:
+            recovered_read = pep.evaluate(
+                ToolName("evidence.read"),
+                {"ref_id": ref.ref_id},
+                PolicyContext(capabilities={Capability.MEMORY_READ}, session_id=sid),
+            )
+            if recovered_read.kind.value == "allow":
+                recovered_promote = pep.evaluate(
+                    ToolName("evidence.promote"),
+                    {"ref_id": ref.ref_id},
+                    PolicyContext(capabilities={Capability.MEMORY_READ}, session_id=sid),
+                )
+                break
+            time.sleep(0.01)
 
     assert read_decision.kind.value == "reject"
     assert read_decision.reason == "invalid or unknown evidence reference"
@@ -528,7 +570,10 @@ def test_pep_rejects_temporarily_unreadable_encrypted_refs_without_new_kms_round
     assert read_after_delay.reason == "invalid or unknown evidence reference"
     assert promote_after_delay.kind.value == "reject"
     assert promote_after_delay.reason == "invalid or unknown evidence reference"
-    assert len(service.requests) == request_count
+    assert recovered_read is not None
+    assert recovered_read.kind.value == "allow"
+    assert recovered_promote is not None
+    assert recovered_promote.kind.value == "require_confirmation"
     assert ref.ref_id in restarted._refs[str(sid)]
 
 
