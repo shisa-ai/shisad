@@ -1,245 +1,236 @@
 # Multi-Factor Approval (2FA)
 
-shisad supports multi-factor confirmation for actions that policy marks as
-requiring more than a simple click. This guide covers what is available today,
-how to set it up, and what the approval levels mean.
+This page explains how approval factors work in `shisad` as shipped in v0.6.2:
+what is available now, how to set it up, and which settings matter.
 
-**2FA is opt-in.** No multi-factor confirmation is required until you enroll
-a credential. The standard L0 software confirmation flow (click-to-approve)
-remains the default. Once you register a TOTP secret, passkey, or signer key,
-the enrolled methods become available for policy rules that require them.
+`shisad` and `shisactl` are the same CLI entrypoint. This doc uses `shisad`
+for consistency.
+
+## What Is Included in v0.6.2
+
+2FA is **opt-in**. If you do not enroll any factor, approvals use the standard
+L0 software confirmation flow.
+
+| Level | Policy value | What it means | Available now |
+|---|---|---|---|
+| L0 | `software` | Basic click/confirm approval | Yes |
+| L1 | `reauthenticated` | Operator proves presence (TOTP or recovery code) | Yes |
+| L2 | `bound_approval` | Approval is cryptographically bound to a specific pending action | Yes |
+| L3 | `signed_authorization` | Registered signer key signs canonical intent | Yes |
+| L4 | `trusted_display_authorization` | L3 + independent trusted-device display review | Not shipped yet |
+
+## Before You Start
+
+- Ensure the daemon is running and your CLI can reach the control socket.
+- Pending approvals are visible with:
+
+```bash
+shisad action pending
+```
+
+- Confirmations are submitted with:
+
+```bash
+shisad action confirm <CONFIRMATION_ID>
+```
+
+`action confirm` tries to auto-resolve the decision nonce from pending state.
+If it cannot, pass `--nonce` from `action pending` output.
 
 ---
 
-## How It Works
+## L1: TOTP (Authenticator Apps)
 
-When the agent proposes an action that requires confirmation, the daemon creates
-an **approval request** with a required strength level. The operator satisfies
-the request using a registered confirmation method (TOTP code, passkey tap,
-hardware signer, etc.). Only after verification does the action execute.
+TOTP works with apps like Google Authenticator, Authy, 1Password, or similar.
 
-Every approval is bound to a specific pending action, recorded in the audit
-trail with the method used, the credential that satisfied it, and the strength
-of the proof.
+### Enroll
+
+```bash
+shisad 2fa register --method totp --user alice --name "phone-authenticator"
+```
+
+The CLI prints:
+
+- a TOTP secret,
+- an `otpauth://...` URI,
+- and then prompts for a verification code.
+
+If verification succeeds, it also prints **8 single-use recovery codes**.
+Store those recovery codes offline. They are shown at enrollment time.
+
+### Use for an approval
+
+```bash
+shisad action confirm <CONFIRMATION_ID> --totp-code 123456
+```
+
+or with a recovery code:
+
+```bash
+shisad action confirm <CONFIRMATION_ID> --recovery-code XXXX-XXXX
+```
+
+### Important behavior
+
+- TOTP is L1 (`reauthenticated`), not L2/L3.
+- TOTP codes are 30-second codes with ±1 step tolerance.
+- A TOTP code cannot be reused within its valid window.
+- Recovery codes are one-time use.
+
+Do not paste TOTP/recovery codes into chat transcripts.
 
 ---
 
-## Approval Levels
+## L2: Passkey in Browser (WebAuthn)
 
-Policy rules reference five approval levels. Higher levels provide stronger
-proof that a specific operator authorized a specific action.
+Use this when operators can open an approval URL in a browser.
 
-| Level | Name | What it proves |
-|---|---|---|
-| L0 | `software` | Session holder clicked approve (current default) |
-| L1 | `reauthenticated` | Operator presented a registered factor (e.g. TOTP code) |
-| L2 | `bound_approval` | Operator approved *this specific request* via a challenge-bound method (e.g. passkey) |
-| L3 | `signed_authorization` | A registered credential cryptographically signed the canonical action intent |
-| L4 | `trusted_display_authorization` | Same as L3, plus the operator reviewed the action on an independent trusted display (e.g. Ledger Stax) |
+### Required settings
 
-Most operators will use L1 (TOTP) as a baseline and L2 (passkey) for
-higher-risk actions. L3 and L4 are available for environments that need
-independently verifiable authorization or hardware-trusted review.
+Set `SHISAD_APPROVAL_ORIGIN` to the origin operators will use.
 
----
+- Non-loopback origins must be `https://...`.
+- Loopback `http://127.0.0.1...` / `http://localhost...` is allowed for local dev/tests.
+- Use origin form only: `scheme://host[:port]` (no path/query/fragment).
 
-## Available Methods
-
-### TOTP (L1 — reauthenticated)
-
-Standard time-based one-time passwords (RFC 6238). Works with any authenticator
-app (Google Authenticator, Authy, 1Password, etc.).
-
-**What it gives you:** proof that the operator is present now. TOTP codes are
-not bound to a specific action — they prove identity, not authorization of a
-particular request.
-
-**Setup:**
+Example:
 
 ```bash
-# Register a TOTP credential
-shisactl 2fa register --method totp --user alice --name "phone-authenticator"
-```
-
-This prints an `otpauth://` URI. Add it to your authenticator app (paste or
-scan as QR). The registration also generates 8 single-use recovery codes —
-store these securely offline.
-
-**Confirming an action:**
-
-In the current release, TOTP confirmations are submitted via the control CLI
-(or an RPC client), usually by running the command on the daemon host (or over
-SSH):
-
-```bash
-shisad action confirm <ID> --nonce <NONCE> --totp-code 123456
-```
-
-Recovery codes work the same way:
-
-```bash
-shisad action confirm <ID> --nonce <NONCE> --recovery-code XXXX-XXXX
-```
-
-**Security note:** TOTP and recovery codes are secrets. Avoid pasting them into
-an LLM or chat transcript. Prefer the CLI (or a dedicated approval surface when
-available) so codes do not end up in conversation logs.
-
-**Limitations:** TOTP codes are time-windowed (30 seconds, with a +/-1 window
-for clock drift). Each code can only be used once within its window. TOTP
-cannot satisfy `bound_approval` or higher policies because the code is not
-tied to a specific action.
-
-### WebAuthn / Passkeys (L2 — bound approval)
-
-FIDO2/WebAuthn passkeys provide challenge-bound confirmation. The cryptographic
-challenge is derived from the approval request itself, so the proof is tied to
-the exact action being approved.
-
-**What it gives you:** proof that the operator approved *this specific pending
-request*, not just that they are present.
-
-**Prerequisites:**
-
-- A stable HTTPS approval origin (set `SHISAD_APPROVAL_ORIGIN`)
-- A WebAuthn-capable authenticator (platform passkey, YubiKey, etc.)
-
-**Setup:**
-
-```bash
-# Configure the approval origin (the hostname operators will open in a browser)
 export SHISAD_APPROVAL_ORIGIN="https://approve.example.com"
-
-# Optional: run the setup helper for cert provisioning
-shisad approval setup --provider caddy  # or --provider tailscale
-
-# Register a passkey
-shisactl 2fa register --method webauthn --user alice --name "yubikey-5-nfc"
 ```
 
-Registration opens a browser ceremony page where you complete the WebAuthn
-enrollment with your authenticator.
-
-**Confirming an action:**
-
-When an action requires L2, the daemon provides an approval link:
+Optional helper to print env + reverse proxy guidance:
 
 ```bash
-$ shisad action confirm <ID>
-Approval required: deploy.production (level: bound_approval)
-Open this URL to approve:
-  https://approve.example.com/approve/<ID>?token=...
-
-Waiting for approval... (Ctrl-C to cancel)
+shisad approval setup --provider caddy
+# or
+shisad approval setup --provider tailscale
 ```
 
-Open the link in your browser, review the action summary, and tap your
-authenticator. The browser POSTs the WebAuthn assertion back to the daemon.
+`approval setup` expects an `https` origin.
 
-**Approval origin options:**
-
-| Deployment | How to set up |
-|---|---|
-| Public hostname | Point DNS at your host, use Let's Encrypt or Caddy for TLS |
-| Tailscale | Use your Tailscale HTTPS hostname (automatic TLS) |
-| VPN / private mesh | Same as public, within the mesh |
-| SSH-only (no public URL) | Use the local helper instead (see below) |
-
-If `SHISAD_APPROVAL_ORIGIN` is not configured, the browser ceremony surface is
-unavailable. Use the local helper or TOTP instead.
-
-### Local Helper — `shisad-approver` (L2 — bound approval)
-
-For SSH-only or air-gapped deployments where a browser ceremony is not
-practical, the `shisad-approver` helper runs on the operator's local machine
-and bridges FIDO2 interactions over an authenticated channel.
-
-**What it gives you:** the same L2 bound-approval strength as browser WebAuthn,
-but without needing a public HTTPS endpoint.
-
-**Setup:**
-
-The helper talks to the daemon control API over a Unix socket. For remote
-deployments, it forwards that socket over SSH:
+### Enroll a passkey
 
 ```bash
-# Enroll a local-helper (local_fido2) credential using your local FIDO2 key
+shisad 2fa register --method webauthn --user alice --name "yubikey-5-nfc"
+```
+
+This opens (or prints) a registration URL and waits for registration completion.
+
+### Approve a pending L2 action
+
+```bash
+shisad action confirm <CONFIRMATION_ID>
+```
+
+For WebAuthn-pending actions, the CLI prints an approval URL, optionally opens
+the browser, and waits for completion.
+
+If `SHISAD_APPROVAL_ORIGIN` is unset, browser WebAuthn is unavailable.
+
+---
+
+## L2: SSH/Private-Only Passkey (`shisad-approver`)
+
+Use the local helper when browser WebAuthn is not practical (for example,
+SSH-only/private deployment).
+
+### Important current behavior
+
+In v0.6.2, browser WebAuthn and local-helper (`local_fido2`) are alternate L2
+backends. Practically:
+
+- with `SHISAD_APPROVAL_ORIGIN` configured, browser WebAuthn is used;
+- without it, local-helper L2 is available.
+
+### Enroll helper credential
+
+```bash
 shisad-approver register \
   --ssh-target user@host \
   --remote-socket /run/shisad/control.sock \
   --user alice \
   --name "laptop-yubikey"
+```
 
-# Keep the helper running to satisfy pending local_fido2 approvals
+### Run helper to process pending local-helper approvals
+
+```bash
 shisad-approver run \
   --ssh-target user@host \
   --remote-socket /run/shisad/control.sock
 ```
 
-If you run the helper on the same host as the daemon, you can omit SSH and pass
-`--socket-path /run/shisad/control.sock` instead. The remote socket path must
-match the daemon's configured `SHISAD_SOCKET_PATH`.
+If helper runs on the daemon host, use `--socket-path` instead of SSH flags.
+When using SSH forwarding, `--remote-socket` should match the daemon's
+`SHISAD_SOCKET_PATH`.
 
-**Note:** Credentials registered via the local helper use a different
-credential pool than browser-registered passkeys. They are scoped to the
-local helper's rpId and are not interchangeable.
+### Credential compatibility note
 
-### Enterprise / Cloud KMS (L3 — signed authorization)
-
-For environments that need independently verifiable authorization, shisad can
-delegate signing to an external KMS endpoint. The daemon sends an
-`IntentEnvelope` (a canonical, signable description of the action) to the KMS,
-which returns a cryptographic signature after its own approval workflow.
-
-**What it gives you:** third-party-verifiable proof that a registered key signed
-the exact action intent. The signature can be independently verified outside
-shisad.
-
-**Setup:**
-
-```bash
-# Point the daemon at your KMS endpoint
-export SHISAD_SIGNER_KMS_URL="https://kms.example.com/sign"
-export SHISAD_SIGNER_KMS_BEARER_TOKEN="..."   # if your KMS requires auth
-
-# Register the signing key's public key
-shisactl signer register --user alice --key-id kms:finance-primary \
-    --public-key /path/to/public-key.pem
-
-# List registered signer keys
-shisactl signer list
-
-# Revoke a key
-shisactl signer revoke --key-id kms:finance-primary
-```
-
-The daemon verifies the returned signature locally against the registered
-public key. The KMS can deny service but cannot forge approvals without a
-matching private key.
+Browser WebAuthn credentials and local-helper credentials are separate pools
+with different rpIds. They are not interchangeable.
 
 ---
 
-## Policy Configuration
+## L3: Signer/KMS Authorization
 
-Approval levels are configured per-tool in your policy file.
+Use this when approvals must be signed and externally verifiable.
 
-**Basic examples:**
+### Required settings
+
+```bash
+export SHISAD_SIGNER_KMS_URL="https://kms.example.com/sign"
+export SHISAD_SIGNER_KMS_BEARER_TOKEN="..."   # optional
+```
+
+### Register signer public key
+
+```bash
+shisad signer register \
+  --user alice \
+  --key-id kms:finance-primary \
+  --public-key /path/to/public-key.pem
+```
+
+List or revoke keys:
+
+```bash
+shisad signer list
+shisad signer revoke --key-id kms:finance-primary
+```
+
+If `SHISAD_SIGNER_KMS_URL` is unset, `kms` approvals are unavailable and
+policies requiring them fail closed.
+
+---
+
+## Policy Examples (with Plain Explanations)
+
+Approval policy is per tool under `tools.<tool_name>.confirmation`.
+
+### L0 software approval
 
 ```yaml
 tools:
-  # Simple confirmation (L0 software click, the default)
-  "shell.exec":
+  shell.exec:
     require_confirmation: true
+```
 
-  # Require L1 reauthentication (TOTP/recovery-code) before allowing the tool.
-  # Note: leaving "methods" empty allows recovery codes too.
-  "git.push":
+### L1 TOTP/recovery-code approval
+
+```yaml
+tools:
+  git.status:
     confirmation:
       level: reauthenticated
       timeout_seconds: 300
+```
 
-  # Require challenge-bound passkey approval
-  "deploy.production":
+### L2 passkey-only approval
+
+```yaml
+tools:
+  shell.exec:
     confirmation:
       level: bound_approval
       methods: [webauthn]
@@ -251,12 +242,34 @@ tools:
       fallback:
         mode: deny
       timeout_seconds: 300
+```
 
-  # Require KMS-signed authorization
-  "admin.key_unwrap":
+### L2 with explicit L1 fallback
+
+```yaml
+tools:
+  shell.exec:
+    confirmation:
+      level: bound_approval
+      fallback:
+        mode: allow_levels
+        allow_levels: [reauthenticated]
+```
+
+`allow_levels` is level-based fallback. If you restrict `methods`, include a
+method that exists at the fallback level (or leave `methods` empty), otherwise
+fallback may not route.
+
+### L3 signer/KMS approval
+
+```yaml
+tools:
+  shell.exec:
     confirmation:
       level: signed_authorization
       methods: [kms]
+      allowed_credentials:
+        - kms:finance-primary
       require_capabilities:
         principal_binding: true
         full_intent_signature: true
@@ -266,19 +279,7 @@ tools:
       timeout_seconds: 600
 ```
 
-**Fallback behavior:** By default, if the required method is unavailable, the
-action is denied. You can configure explicit fallback levels:
-
-```yaml
-fallback:
-  mode: allow_levels
-  allow_levels: [reauthenticated]  # allow TOTP as fallback
-```
-
-No implicit downgrades occur. All fallback use is recorded in the audit trail.
-
-**Risk-based escalation:** The global risk scoring system can also drive
-approval levels based on action risk scores:
+### Risk-based escalation
 
 ```yaml
 risk_policy:
@@ -293,113 +294,93 @@ risk_policy:
       level: signed_authorization
 ```
 
-The highest required level wins (tool policy or risk score).
+If both tool policy and risk policy apply, the higher required level wins.
 
 ---
 
-## Managing Credentials
+## Credential Management and Recovery
+
+List enrolled factors:
 
 ```bash
-# List all registered 2FA credentials
-shisactl 2fa list
-shisactl 2fa list --method totp
-shisactl 2fa list --user alice
-
-# Revoke a credential
-shisactl 2fa revoke --method totp --user alice
-shisactl 2fa revoke --method webauthn --user alice --credential-id <ID>
-shisactl 2fa revoke --method local_fido2 --user alice --credential-id <ID>
-
-# List/revoke signer keys (L3+)
-shisactl signer list
-shisactl signer revoke --key-id <KEY_ID>
+shisad 2fa list
+shisad 2fa list --method totp
+shisad 2fa list --user alice
 ```
 
-**Credential storage:** Approval factors are stored in a daemon-owned JSON file
-(default path controlled by `SHISAD_SECURITY_APPROVAL_FACTOR_STORE_PATH`).
-This file is not encrypted at rest in the current release — protect it with
-filesystem permissions.
-
----
-
-## Recovery
-
-**Lost TOTP device:** Use one of the 8 single-use recovery codes generated at
-enrollment. Each code works once and provides L1-equivalent confirmation. After
-regaining access, revoke the lost credential and re-enroll a replacement.
-
-**Lost passkey or hardware key:** SSH into the host and revoke the lost
-credential:
+Revoke:
 
 ```bash
-shisactl 2fa revoke --method webauthn --user alice --credential-id <ID>
+shisad 2fa revoke --method totp --user alice
+shisad 2fa revoke --method webauthn --user alice --credential-id <ID>
+shisad 2fa revoke --method local_fido2 --user alice --credential-id <ID>
 ```
 
-Then register a replacement, or lower the tool's policy requirement until you
-have a new key.
+Recovery guidance:
 
-There is no special in-band recovery ceremony for high-tier credentials. If
-you have lost both your hardware key and system-level access, that is a
-different class of problem — restore from backups or re-provision.
+- Lost TOTP device: use a recovery code, then revoke and re-enroll.
+- Lost passkey/helper key: revoke credential from host access, then re-enroll.
+- Lost high-tier signer credentials: recover via your normal host/KMS break-glass
+  process (no separate in-band recovery flow in v0.6.2).
 
 ---
 
-## Environment Variables
+## Environment Variables You Actually Need
 
-| Variable | Purpose |
+| Variable | What it controls |
 |---|---|
-| `SHISAD_APPROVAL_ORIGIN` | HTTPS origin for the WebAuthn browser ceremony (e.g. `https://approve.example.com`) |
-| `SHISAD_APPROVAL_RP_ID` | WebAuthn relying-party ID (defaults to approval-origin hostname) |
-| `SHISAD_APPROVAL_BIND_HOST` | Local listener bind address for ceremony pages |
-| `SHISAD_APPROVAL_BIND_PORT` | Local listener bind port for ceremony pages |
-| `SHISAD_APPROVAL_LINK_TTL_SECONDS` | Expiry for registration and approval links |
-| `SHISAD_APPROVAL_RATE_LIMIT_WINDOW_SECONDS` | Rate-limit window for approval attempts |
-| `SHISAD_APPROVAL_RATE_LIMIT_MAX_ATTEMPTS` | Max attempts per rate-limit window |
-| `SHISAD_SOCKET_PATH` | Daemon control-socket path (used by `shisad-approver` via SSH socket forwarding) |
-| `SHISAD_SIGNER_KMS_URL` | Enterprise KMS signing endpoint URL |
-| `SHISAD_SIGNER_KMS_BEARER_TOKEN` | Bearer token for KMS endpoint authentication |
-| `SHISAD_SECURITY_APPROVAL_FACTOR_STORE_PATH` | Path to the durable credential store |
-
-See [ENV-VARS.md](ENV-VARS.md) for the complete environment variable reference.
-
----
-
-## Audit Trail
-
-Every confirmation records:
-
-- Approval level and method used
-- Approver identity and credential ID
-- Binding scope (none, action digest, approval envelope, or full intent)
-- Review surface (host-rendered, browser, provider UI, trusted device)
-- Whether a fallback was used
-- Evidence hash for tamper detection
-
-For L3+ signed approvals, the audit trail also includes the intent envelope
-hash, signature, and signer key ID.
+| `SHISAD_APPROVAL_ORIGIN` | Enables browser WebAuthn ceremony surface (registration + approval links). |
+| `SHISAD_APPROVAL_RP_ID` | Optional WebAuthn rpId override (defaults to origin hostname). |
+| `SHISAD_APPROVAL_BIND_HOST` | Daemon listener host for ceremony pages. |
+| `SHISAD_APPROVAL_BIND_PORT` | Daemon listener port for ceremony pages. |
+| `SHISAD_APPROVAL_LINK_TTL_SECONDS` | Registration/approval link expiry. |
+| `SHISAD_APPROVAL_RATE_LIMIT_WINDOW_SECONDS` | POST rate-limit window for ceremony tokens. |
+| `SHISAD_APPROVAL_RATE_LIMIT_MAX_ATTEMPTS` | Max POST attempts per rate-limit window. |
+| `SHISAD_SIGNER_KMS_URL` | L3 signer backend endpoint (`kms` method). |
+| `SHISAD_SIGNER_KMS_BEARER_TOKEN` | Optional bearer token for signer endpoint. |
+| `SHISAD_SOCKET_PATH` | Daemon control socket path (used by CLI and helper forwarding). |
+| `SHISAD_SECURITY_APPROVAL_FACTOR_STORE_PATH` | Optional override for factor/signer state file location. |
+| `SHISAD_DATA_DIR` | Base data dir; default factor store lives under this dir when no explicit store override is set. |
 
 ---
 
-## What's Not Yet Available
+## Storage and Audit Reality (Current Release)
 
-- **Trusted-display authorization (L4):** Consumer Ledger clear-signing and
-  other trusted-display hardware flows are designed but not yet shipped. The
-  protocol and policy language are ready; the device integration is follow-on.
-- **TOTP confirmation via chat/web surfaces:** TOTP confirmation currently
-  requires submitting the code via the control API (for example `shisad action
-  confirm ... --totp-code`). A non-SSH submission surface is planned; if you
-  submit codes via a chat channel, treat the transcript as sensitive.
-- **Push notification approvals:** Planned as a future L1 method.
-- **Multi-approver / quorum:** The schema supports multiple principals and
-  credentials, but M-of-N approval is not yet enforced. Environments that need
-  quorum today should use an Enterprise KMS that enforces it on their side.
-- **At-rest encryption for credential store:** The approval-factor store is
-  currently plaintext JSON. At-rest encryption is follow-on.
+- Approval factors and signer keys are stored in daemon-owned JSON state.
+- Default location is `SHISAD_DATA_DIR/approval-factors.json` unless
+  `SHISAD_SECURITY_APPROVAL_FACTOR_STORE_PATH` is explicitly set.
+- This store is **not encrypted at rest** in v0.6.2.
+
+Approval audit includes:
+
+- level + method,
+- approver principal + credential id,
+- binding scope + review surface,
+- fallback usage,
+- evidence hash,
+- and for signed approvals, intent hash/signature/signer key id.
 
 ---
+
+## Troubleshooting
+
+- `approval_origin_not_configured`: browser WebAuthn requested, but no approval origin is configured.
+- `local_helper_unavailable`: local-helper backend not active in current daemon mode.
+- `missing_decision_nonce`: run `shisad action pending` and pass `--nonce`, or ensure CLI can read pending state.
+- `confirmation_method_mismatch`: provided proof type does not match pending backend.
+- `confirmation_method_locked_out`: too many failed attempts; wait for `retry_after_seconds`.
+
+---
+
+## Not Yet Shipped
+
+- L4 trusted-display authorization device integrations.
+- Push-notification approval methods.
+- M-of-N multi-approver/quorum enforcement in-core.
+- At-rest encryption for approval-factor/recovery-code store.
 
 ## Further Reading
 
-- [SECURITY.md](SECURITY.md) — overall security architecture
-- [ENV-VARS.md](ENV-VARS.md) — full environment variable reference
-- [DESIGN-PHILOSOPHY.md](DESIGN-PHILOSOPHY.md) — governing design principles
+- [ENV-VARS.md](ENV-VARS.md)
+- [SECURITY.md](SECURITY.md)
+- [ROADMAP.md](ROADMAP.md)
