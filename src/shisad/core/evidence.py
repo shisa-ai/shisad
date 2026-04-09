@@ -11,7 +11,7 @@ import json
 import logging
 import os
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
 from html.parser import HTMLParser
@@ -37,8 +37,6 @@ _SEMANTIC_TAGS = {"article", "main", "p"}
 _DEFAULT_EVIDENCE_MAX_AGE_SECONDS = 3600
 _DEFAULT_ORPHAN_RETENTION_SECONDS = 7 * 24 * 3600
 _EVIDENCE_METADATA_FILENAME = "refs_index.json"
-_TEMPORARILY_UNREADABLE_CACHE_SECONDS = 5.0
-
 logger = logging.getLogger(__name__)
 
 
@@ -209,7 +207,6 @@ class _BlobLoadResult:
 @dataclass(frozen=True)
 class _UnreadableRefState:
     reason: str
-    observed_at: datetime = field(default_factory=lambda: datetime.now(UTC))
 
 
 class _HTMLSummaryParser(HTMLParser):
@@ -920,14 +917,7 @@ class ArtifactLedger:
             self._temporarily_unreadable_refs.pop(session_key, None)
 
     def _is_temporarily_unreadable(self, session_key: str, ref_id: str) -> bool:
-        state = self._temporarily_unreadable_refs.get(session_key, {}).get(ref_id)
-        if state is None:
-            return False
-        age_seconds = max(0.0, (datetime.now(UTC) - state.observed_at).total_seconds())
-        if age_seconds > _TEMPORARILY_UNREADABLE_CACHE_SECONDS:
-            self._clear_temporarily_unreadable(session_key, ref_id)
-            return False
-        return True
+        return ref_id in self._temporarily_unreadable_refs.get(session_key, {})
 
     def _evict_for_session(self, session_id: SessionId) -> None:
         self.evict_expired(

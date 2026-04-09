@@ -508,11 +508,26 @@ def test_pep_rejects_temporarily_unreadable_encrypted_refs_without_new_kms_round
             {"ref_id": ref.ref_id},
             PolicyContext(capabilities={Capability.MEMORY_READ}, session_id=sid),
         )
+        time.sleep(5.2)
+        read_after_delay = pep.evaluate(
+            ToolName("evidence.read"),
+            {"ref_id": ref.ref_id},
+            PolicyContext(capabilities={Capability.MEMORY_READ}, session_id=sid),
+        )
+        promote_after_delay = pep.evaluate(
+            ToolName("evidence.promote"),
+            {"ref_id": ref.ref_id},
+            PolicyContext(capabilities={Capability.MEMORY_READ}, session_id=sid),
+        )
 
     assert read_decision.kind.value == "reject"
     assert read_decision.reason == "invalid or unknown evidence reference"
     assert promote_decision.kind.value == "reject"
     assert promote_decision.reason == "invalid or unknown evidence reference"
+    assert read_after_delay.kind.value == "reject"
+    assert read_after_delay.reason == "invalid or unknown evidence reference"
+    assert promote_after_delay.kind.value == "reject"
+    assert promote_after_delay.reason == "invalid or unknown evidence reference"
     assert len(service.requests) == request_count
     assert ref.ref_id in restarted._refs[str(sid)]
 
