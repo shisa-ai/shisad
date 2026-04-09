@@ -107,7 +107,7 @@ approval audit fields, the preserved `L0/software` backend, durable TOTP
 enrollment, the approval-origin / passkey ceremony surface,
 `shisad-approver` for SSH/private deployments, the generic `IntentEnvelope` /
 signer-verification contract for `signed_authorization`, and now the
-review-pending `L1` evidence-encryption slice as well: when
+review-closed `L1` evidence-encryption slice as well: when
 `SHISAD_EVIDENCE_KMS_URL` is configured, ArtifactLedger blob payloads route
 through an explicit remote artifact-crypt boundary, on-disk blob bytes stop
 being plaintext, recoverable codec/config drift keeps refs available for later
@@ -117,7 +117,9 @@ artifact-KMS I/O. Scope is intentionally narrow and truthful: lifecycle
 metadata stays plaintext, the shipped default remains plaintext blobs when no
 remote key boundary is configured, and approval-factor / recovery-code
 at-rest hardening remains follow-on. Consumer-Ledger clear-signing /
-trusted-display work also remains follow-on.
+trusted-display work also remains follow-on. With `A0`-`A3`, `L2`, and `L1`
+now review-closed, the remaining v0.6.2 work is the explicit carry-forward
+backlog rather than another active in-line milestone.
 
 Approval-level mapping for v0.6.2:
 
