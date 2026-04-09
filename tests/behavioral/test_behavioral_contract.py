@@ -1660,6 +1660,15 @@ async def test_contract_fs_write_routes_to_confirmation_not_lockdown(
     assert int(reply.get("blocked_actions", 0)) == 0
     # fs.write is confirmation-gated (side_effect_action), not blocked
     assert int(reply.get("confirmation_required_actions", 0)) >= 1
+    pending_ids = reply.get("pending_confirmation_ids")
+    assert isinstance(pending_ids, list)
+    assert pending_ids
+    response = str(reply.get("response", ""))
+    assert "[PENDING CONFIRMATIONS]" in response
+    assert f"shisad action confirm {pending_ids[0]}" in response
+    assert "shisad action pending" in response
+    assert "ACTION CONFIRMATION" in response
+    assert "I can proceed after confirmation" not in response
 
 
 @pytest.mark.asyncio
@@ -1678,6 +1687,10 @@ async def test_contract_web_fetch_confirmation_approve_executes_after_confirmati
     pending_ids = proposed.get("pending_confirmation_ids")
     assert isinstance(pending_ids, list)
     assert pending_ids
+    response = str(proposed.get("response", ""))
+    assert "[PENDING CONFIRMATIONS]" in response
+    assert f"shisad action confirm {pending_ids[0]}" in response
+    assert "shisad action pending" in response
 
     confirmed = await _confirm_pending_action(contract_harness.client, str(pending_ids[0]))
     assert confirmed.get("confirmed") is True

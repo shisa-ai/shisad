@@ -170,3 +170,42 @@ async def test_h1_chat_confirmation_response_degrades_when_plan_hash_lookup_fail
     assert result is not None
     assert result["response"].startswith("confirmed 1")
     assert result["plan_hash"] == ""
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("content", ["shisad action confirm c-1", "c-1"])
+async def test_h1_chat_confirmation_does_not_treat_cli_command_or_id_as_approval(
+    tmp_path,
+    content: str,
+) -> None:
+    harness = _ChatConfirmationHarness(tmp_path)
+    pending = PendingAction(
+        confirmation_id="c-1",
+        decision_nonce="nonce-1",
+        session_id=SessionId("sess-chat"),
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws-1"),
+        tool_name=ToolName("web.search"),
+        arguments={"query": "hello"},
+        reason="manual",
+        capabilities={Capability.HTTP_REQUEST},
+        created_at=datetime.now(UTC),
+    )
+    harness._pending_actions[pending.confirmation_id] = pending
+
+    result = await SessionImplMixin._maybe_handle_chat_confirmation(
+        harness,
+        sid=SessionId("sess-chat"),
+        channel="cli",
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws-1"),
+        session_mode=SessionMode.DEFAULT,
+        trust_level="trusted",
+        trusted_input=True,
+        is_internal_ingress=False,
+        content=content,
+        firewall_result=FirewallResult(sanitized_text=content, original_hash="0" * 64),
+    )
+
+    assert result is None
+    assert harness._pending_actions["c-1"].status == "pending"

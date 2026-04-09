@@ -484,7 +484,13 @@ async def test_m1_dispatch_to_planner_uses_sanitized_text_for_intent_rewrite() -
     assert proposal.arguments == {"title": "safe-title"}
 
 
-def _finalize_execution_result(*, tool_outputs: list[Any]) -> SessionMessageExecutionResult:
+def _finalize_execution_result(
+    *,
+    tool_outputs: list[Any],
+    assistant_response: str = "planner response",
+    pending_confirmation: int = 0,
+    pending_confirmation_ids: list[str] | None = None,
+) -> SessionMessageExecutionResult:
     validated = _validation_result(params={"session_id": "sess-g1", "content": "hello"})
     planner_context = SessionMessagePlannerContextResult(
         validated=validated,
@@ -510,7 +516,7 @@ def _finalize_execution_result(*, tool_outputs: list[Any]) -> SessionMessageExec
     planner_dispatch = SessionMessagePlannerDispatchResult(
         planner_context=planner_context,
         planner_result=PlannerResult(
-            output=PlannerOutput(actions=[], assistant_response="planner response"),
+            output=PlannerOutput(actions=[], assistant_response=assistant_response),
             evaluated=[],
             attempts=1,
             provider_response=None,
@@ -529,11 +535,11 @@ def _finalize_execution_result(*, tool_outputs: list[Any]) -> SessionMessageExec
     return SessionMessageExecutionResult(
         planner_dispatch=planner_dispatch,
         rejected=0,
-        pending_confirmation=0,
+        pending_confirmation=pending_confirmation,
         executed=len(tool_outputs),
         rejection_reasons_for_user=[],
         checkpoint_ids=[],
-        pending_confirmation_ids=[],
+        pending_confirmation_ids=list(pending_confirmation_ids or []),
         executed_tool_outputs=tool_outputs,
         cleanroom_proposals=[],
         cleanroom_block_reasons=[],
@@ -545,6 +551,7 @@ class _FinalizeEvidenceHarness(SessionImplMixin):
     def __init__(self) -> None:
         self._evidence_store = object()
         self._firewall = object()
+        self._pending_actions: dict[str, Any] = {}
         self._event_bus = SimpleNamespace(publish=self._noop_publish)
         self._output_firewall = SimpleNamespace(
             inspect=lambda text, context: SimpleNamespace(
@@ -622,6 +629,60 @@ async def test_finalize_response_offloads_evidence_wrapping_from_event_loop(
 
     response = await finalize_task
     assert response["session_id"] == "sess-g1"
+
+
+@pytest.mark.asyncio
+async def test_finalize_response_replaces_planner_text_with_daemon_pending_summary() -> None:
+    harness = _FinalizeEvidenceHarness()
+    harness._pending_actions = {
+        "c-1": SimpleNamespace(
+            confirmation_id="c-1",
+            safe_preview=(
+                "ACTION CONFIRMATION\n"
+                "Action: fs.write\n"
+                "Risk Level: MEDIUM\n"
+                "PARAMETERS:\n"
+                "  path: test-output.txt"
+            ),
+            reason="requires_confirmation",
+            decision_nonce="nonce-1",
+            status="pending",
+        ),
+        "c-2": SimpleNamespace(
+            confirmation_id="c-2",
+            safe_preview=(
+                "ACTION CONFIRMATION\n"
+                "Action: web.fetch\n"
+                "Risk Level: MEDIUM\n"
+                "PARAMETERS:\n"
+                "  url: https://example.com\n"
+                "  token: [REDACTED]"
+            ),
+            reason="requires_confirmation",
+            decision_nonce="nonce-2",
+            status="pending",
+        ),
+    }
+    execution = _finalize_execution_result(
+        tool_outputs=[],
+        assistant_response="I'll do it now.",
+        pending_confirmation=2,
+        pending_confirmation_ids=["c-1", "c-2"],
+    )
+
+    response = await SessionImplMixin._finalize_response(harness, execution)
+
+    text = str(response["response"])
+    assert "[PENDING CONFIRMATIONS]" in text
+    assert "I'll do it now." not in text
+    assert "I can proceed after confirmation" not in text
+    assert "Review pending confirmations via the control API." not in text
+    assert "shisad action confirm c-1" in text
+    assert "shisad action confirm c-2" in text
+    assert "ACTION CONFIRMATION" in text
+    assert "shisad action pending" in text
+    assert "nonce-1" not in text
+    assert "nonce-2" not in text
 
 
 @pytest.mark.asyncio

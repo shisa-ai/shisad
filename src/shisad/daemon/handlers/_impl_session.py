@@ -1534,6 +1534,36 @@ def _coerce_blocked_action_response_text(
     return _blocked_action_feedback(rejection_reasons)
 
 
+def _daemon_pending_confirmation_response_text(
+    *,
+    pending_confirmation_ids: Sequence[str],
+    pending_actions: Mapping[str, Any] | None,
+) -> str:
+    lines = [
+        "[PENDING CONFIRMATIONS]",
+        "Queued for your approval:",
+    ]
+    indexed_confirmation_ids = [
+        str(confirmation_id).strip()
+        for confirmation_id in pending_confirmation_ids
+        if str(confirmation_id).strip()
+    ]
+    for index, confirmation_id in enumerate(indexed_confirmation_ids, start=1):
+        pending = pending_actions.get(confirmation_id) if pending_actions is not None else None
+        lines.append(f"{index}. {confirmation_id}")
+        lines.append(f"   Confirm: shisad action confirm {confirmation_id}")
+        preview = ""
+        if pending is not None:
+            preview = str(getattr(pending, "safe_preview", "") or "").strip()
+            if not preview:
+                preview = str(getattr(pending, "reason", "") or "").strip()
+        if preview:
+            lines.append("   Preview:")
+            lines.extend(f"     {line}" for line in preview.splitlines())
+    lines.extend(["", "Review all pending: shisad action pending"])
+    return "\n".join(lines).strip()
+
+
 def _transcript_metadata_for_channel(*, channel: str, session_mode: SessionMode) -> dict[str, Any]:
     return {
         "channel": channel,
@@ -4058,13 +4088,30 @@ class SessionImplMixin(HandlerMixinBase):
             session_mode=validated.session_mode,
         )
         response_text = planner_dispatch.planner_result.output.assistant_response
+        tool_output_summary = ""
         if chat_serialized_tool_outputs:
-            summary = _summarize_tool_outputs_for_chat(chat_serialized_tool_outputs)
-            if summary:
+            tool_output_summary = (
+                _summarize_tool_outputs_for_chat(chat_serialized_tool_outputs) or ""
+            )
+        if execution.pending_confirmation_ids:
+            response_text = _daemon_pending_confirmation_response_text(
+                pending_confirmation_ids=execution.pending_confirmation_ids,
+                pending_actions=getattr(self, "_pending_actions", {}),
+            )
+            if tool_output_summary:
+                response_text = f"{response_text}\n\nCompleted actions:\n{tool_output_summary}"
+        else:
+            if tool_output_summary:
                 response_text = (
-                    f"{response_text}\n\n{summary}" if response_text.strip() else summary
+                    f"{response_text}\n\n{tool_output_summary}"
+                    if response_text.strip()
+                    else tool_output_summary
                 )
-        if validated.session_mode == SessionMode.ADMIN_CLEANROOM and execution.cleanroom_proposals:
+        if (
+            validated.session_mode == SessionMode.ADMIN_CLEANROOM
+            and execution.cleanroom_proposals
+            and not execution.pending_confirmation_ids
+        ):
             proposal_payload = json.dumps(
                 execution.cleanroom_proposals,
                 ensure_ascii=True,
