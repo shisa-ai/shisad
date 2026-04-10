@@ -78,7 +78,7 @@ async def test_m6_crc_chat_yes_resolves_pending_confirmation(
         assert first["pending_confirmation_ids"]
         response_text = str(first.get("response", "")).lower()
         assert "confirm 1" in response_text
-        assert "yes to all" in response_text
+        assert "yes to all" not in response_text
         assert "shisad action confirm" in response_text
 
         second = await client.call(

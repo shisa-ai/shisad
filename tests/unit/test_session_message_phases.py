@@ -689,7 +689,7 @@ async def test_finalize_response_replaces_planner_text_with_daemon_pending_summa
     assert "shisad action confirm c-2" in text
     assert "confirm 1" in text
     assert "confirm 2" in text
-    assert "yes to all" in text
+    assert "yes to all" not in text
     assert "ACTION CONFIRMATION" in text
     assert "shisad action pending" in text
     assert "nonce-1" not in text
@@ -737,6 +737,7 @@ async def test_finalize_response_uses_global_pending_indexes_for_new_actions() -
     assert "2. c-new" in text
     assert "confirm 2" in text
     assert "reject 2" in text
+    assert "yes to all" not in text
 
 
 @pytest.mark.asyncio

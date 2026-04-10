@@ -1567,13 +1567,7 @@ def _daemon_pending_confirmation_response_text(
         if preview:
             lines.append("   Preview:")
             lines.extend(f"     {line}" for line in preview.splitlines())
-    lines.extend(
-        [
-            "",
-            "In chat, you can also reply with 'yes to all' or 'no to all'.",
-            "Review all pending: shisad action pending",
-        ]
-    )
+    lines.extend(["", "Review all pending: shisad action pending"])
     return "\n".join(lines).strip()
 
 
