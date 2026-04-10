@@ -129,8 +129,9 @@ shisad 2fa register --method totp --user alice --name "phone-authenticator"
 The CLI prints:
 
 - The raw TOTP secret (base32-encoded)
-- An `otpauth://...` URI (paste this into your authenticator app, or scan as
-  QR once terminal QR rendering ships in v0.6.3)
+- An `otpauth://...` URI plus a terminal QR code when the terminal supports
+  Unicode block rendering. If it does not, the URI still prints so enrollment
+  can continue manually.
 - A prompt for a verification code — enter a code from your app to confirm
   enrollment
 

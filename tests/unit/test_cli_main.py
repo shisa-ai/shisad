@@ -1829,6 +1829,122 @@ def test_two_factor_register_prompts_for_verification_and_confirms(
     assert "RCODE-1" in result.output
 
 
+def test_two_factor_register_renders_totp_qr_when_terminal_supports_it(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _config(tmp_path)
+    monkeypatch.setattr(cli_main, "_get_config", lambda: config)
+
+    def _fake_rpc_call(
+        effective_config: DaemonConfig,
+        method: str,
+        params: dict[str, object] | None = None,
+        *,
+        response_model: type[object] | None = None,
+    ) -> object:
+        assert effective_config is config
+        if method == "2fa.register_begin":
+            payload = {
+                "started": True,
+                "enrollment_id": "enroll-1",
+                "user_id": "alice",
+                "method": "totp",
+                "principal_id": "ops-laptop",
+                "credential_id": "totp-1",
+                "secret": "SECRETBASE32",
+                "otpauth_uri": "otpauth://totp/shisad:alice?secret=SECRETBASE32",
+                "expires_at": "2026-04-06T12:10:00Z",
+            }
+        else:
+            payload = {
+                "registered": True,
+                "user_id": "alice",
+                "method": "totp",
+                "principal_id": "ops-laptop",
+                "credential_id": "totp-1",
+                "recovery_codes": [],
+            }
+        if response_model is None:
+            return payload
+        return response_model.model_validate(payload)  # type: ignore[attr-defined]
+
+    monkeypatch.setattr(cli_main, "rpc_call", _fake_rpc_call)
+    monkeypatch.setattr(
+        cli_main,
+        "_render_terminal_qr",
+        lambda url: "██\n██" if "otpauth://" in url else "",
+    )
+    runner = CliRunner()
+
+    result = runner.invoke(
+        cli_main.cli,
+        ["2fa", "register", "--method", "totp", "--user", "alice", "--name", "ops-laptop"],
+        input="123456\n",
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "otpauth URI: otpauth://totp/shisad:alice?secret=SECRETBASE32" in result.output
+    assert "Scan this QR in your authenticator app:" in result.output
+    assert "██" in result.output
+
+
+def test_two_factor_register_skips_qr_on_non_unicode_terminal(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _config(tmp_path)
+    monkeypatch.setattr(cli_main, "_get_config", lambda: config)
+
+    def _fake_rpc_call(
+        effective_config: DaemonConfig,
+        method: str,
+        params: dict[str, object] | None = None,
+        *,
+        response_model: type[object] | None = None,
+    ) -> object:
+        assert effective_config is config
+        if method == "2fa.register_begin":
+            payload = {
+                "started": True,
+                "enrollment_id": "enroll-1",
+                "user_id": "alice",
+                "method": "totp",
+                "principal_id": "ops-laptop",
+                "credential_id": "totp-1",
+                "secret": "SECRETBASE32",
+                "otpauth_uri": "otpauth://totp/shisad:alice?secret=SECRETBASE32",
+                "expires_at": "2026-04-06T12:10:00Z",
+            }
+        else:
+            payload = {
+                "registered": True,
+                "user_id": "alice",
+                "method": "totp",
+                "principal_id": "ops-laptop",
+                "credential_id": "totp-1",
+                "recovery_codes": [],
+            }
+        if response_model is None:
+            return payload
+        return response_model.model_validate(payload)  # type: ignore[attr-defined]
+
+    monkeypatch.setattr(cli_main, "rpc_call", _fake_rpc_call)
+    monkeypatch.setattr(cli_main, "_terminal_supports_unicode_output", lambda: False)
+    runner = CliRunner()
+
+    result = runner.invoke(
+        cli_main.cli,
+        ["2fa", "register", "--method", "totp", "--user", "alice", "--name", "ops-laptop"],
+        input="123456\n",
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "otpauth URI: otpauth://totp/shisad:alice?secret=SECRETBASE32" in result.output
+    assert "Scan this QR in your authenticator app:" not in result.output
+    assert "██" not in result.output
+
+
 def test_action_pending_renders_webauthn_link_and_qr(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

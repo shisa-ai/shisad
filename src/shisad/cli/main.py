@@ -18,6 +18,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 import click
+import qrcode  # type: ignore[import-untyped]
 import yaml
 from click.shell_completion import get_completion_class
 from pydantic import BaseModel
@@ -115,6 +116,24 @@ def _echo(message: str, *, fg: str | None = None, bold: bool = False, err: bool 
         click.secho(message, fg=fg, bold=bold, err=err)
         return
     click.echo(message, err=err)
+
+
+def _terminal_supports_unicode_output() -> bool:
+    if os.environ.get("TERM", "").strip().lower() == "dumb":
+        return False
+    stream = click.get_text_stream("stdout")
+    encoding = str(getattr(stream, "encoding", "") or sys.stdout.encoding or "").lower()
+    return "utf" in encoding
+
+
+def _render_terminal_qr(url: str) -> str:
+    if not url or not _terminal_supports_unicode_output():
+        return ""
+    qr = qrcode.QRCode(border=1)
+    qr.add_data(url)
+    qr.make(fit=True)
+    matrix = qr.get_matrix()
+    return "\n".join("".join("██" if cell else "  " for cell in row) for row in matrix)
 
 
 def _dump_model(model: BaseModel) -> str:
@@ -1652,6 +1671,10 @@ def two_factor_register(
         return
     click.echo(f"Secret: {begin.secret}")
     click.echo(f"otpauth URI: {begin.otpauth_uri}")
+    qr_ascii = _render_terminal_qr(begin.otpauth_uri)
+    if qr_ascii:
+        click.echo("Scan this QR in your authenticator app:")
+        click.echo(qr_ascii)
     verify_code = click.prompt("Verification code").strip()
     confirm = rpc_call(
         config,
