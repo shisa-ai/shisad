@@ -41,6 +41,13 @@ def test_format_assistant_message_handles_empty() -> None:
     assert isinstance(result, str)
 
 
+def test_format_assistant_message_renders_literal_newline_escapes() -> None:
+    result = format_assistant_message("1. first\\n2. second")
+
+    assert result == "shisad: 1. first\n2. second"
+    assert "\\n" not in result
+
+
 def test_format_assistant_message_renders_evidence_ref_block() -> None:
     result = format_assistant_message(
         "[EVIDENCE ref=ev-61f3d4c48f54ff92 source=web.fetch:example.com "

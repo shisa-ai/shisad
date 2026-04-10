@@ -99,6 +99,17 @@ def test_render_evidence_refs_for_terminal_strips_terminal_control_sequences() -
     assert "summary: click link RED next done" in rendered
 
 
+def test_render_evidence_refs_for_terminal_normalizes_literal_linebreaks_before_stripping_escapes(
+) -> None:
+    raw = "First line\\n\x1b[31mSecond line\x1b[0m"
+
+    rendered = render_evidence_refs_for_terminal(raw)
+
+    assert rendered == "First line\nSecond line"
+    assert "\\n" not in rendered
+    assert "\x1b" not in rendered
+
+
 def test_render_evidence_refs_for_terminal_round_trips_escaped_summary_from_stub_formatter() -> (
     None
 ):

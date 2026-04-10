@@ -73,7 +73,8 @@ def _sanitize_terminal_field(value: str) -> str:
 
 
 def _sanitize_terminal_text(value: str) -> str:
-    cleaned = _strip_terminal_sequences(value)
+    cleaned = value.replace("\\r\\n", "\n").replace("\\n", "\n").replace("\\r", "\n")
+    cleaned = _strip_terminal_sequences(cleaned)
     cleaned = cleaned.replace("\r", "\n")
     cleaned = cleaned.replace("\t", " ")
     cleaned = _TEXT_CONTROL_CHARS_RE.sub(" ", cleaned)
