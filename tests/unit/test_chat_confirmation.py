@@ -424,7 +424,11 @@ async def test_u9_chat_totp_internal_ingress_rejects_mismatched_stored_delivery_
     response = str(result["response"]).lower()
     assert "different chat target" in response
     assert "original approval thread/channel" in response
-    assert "confirmation id: c-1" in response
+    assert "shisad action pending" in response
+    assert "shisad action confirm confirmation_id --totp-code 123456" in response
+    assert "confirmation id: c-1" not in response
+    assert "pending confirmations." not in response
+    assert "web.search" not in response
     assert result["blocked_actions"] == 1
     assert result["executed_actions"] == 0
     assert result["pending_confirmation_ids"] == ["c-1"]

@@ -701,7 +701,10 @@ async def test_u9_channel_ingest_totp_code_mismatched_reply_target_does_not_rebi
         response = str(mismatched.response).lower()
         assert "different chat target" in response
         assert "original approval thread/channel" in response
-        assert "confirmation id:" in response
+        assert "shisad action pending" in response
+        assert "shisad action confirm confirmation_id --totp-code 123456" in response
+        assert "confirmation id:" not in response
+        assert "pending confirmations." not in response
         mismatched_target = services.session_manager.get(first.session_id).metadata.get(
             "delivery_target"
         )

@@ -503,6 +503,20 @@ def _chat_totp_disambiguation_text(*, heading: str, pending_rows: Sequence[Any])
     return "\n".join(lines)
 
 
+def _wrong_target_totp_confirmation_text() -> str:
+    return "\n".join(
+        [
+            "This confirmation reply came from a different chat target than the pending approval.",
+            "Reply from the original approval thread/channel.",
+            "CLI fallback: run 'shisad action pending' to inspect pending approvals.",
+            (
+                "Then run "
+                f"'{_totp_cli_confirm_command('CONFIRMATION_ID')}'."
+            ),
+        ]
+    )
+
+
 def _resolve_chat_confirmation_indexes(
     *,
     intent: ChatConfirmationIntent,
@@ -2977,15 +2991,7 @@ class SessionImplMixin(HandlerMixinBase):
                 intent is not None and intent.action != "none"
             )
             if attempted_confirmation_reply:
-                response_text = (
-                    "This confirmation reply came from a different chat target than the "
-                    "pending approval. Reply from the original approval thread/channel "
-                    "or use the CLI fallback.\n\n"
-                    + self._chat_pending_confirmation_summary(
-                        pending_rows=pending_rows,
-                        tainted_session=tainted_session,
-                    )
-                )
+                response_text = _wrong_target_totp_confirmation_text()
                 return await _finalize_chat_confirmation_response(
                     response_text=response_text,
                     blocked_actions=1,
