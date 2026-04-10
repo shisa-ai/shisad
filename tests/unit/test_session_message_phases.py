@@ -637,6 +637,10 @@ async def test_finalize_response_replaces_planner_text_with_daemon_pending_summa
     harness._pending_actions = {
         "c-1": SimpleNamespace(
             confirmation_id="c-1",
+            session_id=SessionId("sess-g1"),
+            user_id=UserId("user-g1"),
+            workspace_id=WorkspaceId("workspace-g1"),
+            created_at=1,
             safe_preview=(
                 "ACTION CONFIRMATION\n"
                 "Action: fs.write\n"
@@ -650,6 +654,10 @@ async def test_finalize_response_replaces_planner_text_with_daemon_pending_summa
         ),
         "c-2": SimpleNamespace(
             confirmation_id="c-2",
+            session_id=SessionId("sess-g1"),
+            user_id=UserId("user-g1"),
+            workspace_id=WorkspaceId("workspace-g1"),
+            created_at=2,
             safe_preview=(
                 "ACTION CONFIRMATION\n"
                 "Action: web.fetch\n"
@@ -679,10 +687,56 @@ async def test_finalize_response_replaces_planner_text_with_daemon_pending_summa
     assert "Review pending confirmations via the control API." not in text
     assert "shisad action confirm c-1" in text
     assert "shisad action confirm c-2" in text
+    assert "confirm 1" in text
+    assert "confirm 2" in text
+    assert "yes to all" in text
     assert "ACTION CONFIRMATION" in text
     assert "shisad action pending" in text
     assert "nonce-1" not in text
     assert "nonce-2" not in text
+
+
+@pytest.mark.asyncio
+async def test_finalize_response_uses_global_pending_indexes_for_new_actions() -> None:
+    harness = _FinalizeEvidenceHarness()
+    harness._pending_actions = {
+        "c-old": SimpleNamespace(
+            confirmation_id="c-old",
+            session_id=SessionId("sess-g1"),
+            user_id=UserId("user-g1"),
+            workspace_id=WorkspaceId("workspace-g1"),
+            created_at=1,
+            safe_preview="ACTION CONFIRMATION\nAction: fs.write",
+            reason="requires_confirmation",
+            decision_nonce="nonce-old",
+            status="pending",
+        ),
+        "c-new": SimpleNamespace(
+            confirmation_id="c-new",
+            session_id=SessionId("sess-g1"),
+            user_id=UserId("user-g1"),
+            workspace_id=WorkspaceId("workspace-g1"),
+            created_at=2,
+            safe_preview="ACTION CONFIRMATION\nAction: web.fetch",
+            reason="requires_confirmation",
+            decision_nonce="nonce-new",
+            status="pending",
+        ),
+    }
+    execution = _finalize_execution_result(
+        tool_outputs=[],
+        assistant_response="Queued it.",
+        pending_confirmation=1,
+        pending_confirmation_ids=["c-new"],
+    )
+
+    response = await SessionImplMixin._finalize_response(harness, execution)
+
+    text = str(response["response"])
+    assert "1. c-new" not in text
+    assert "2. c-new" in text
+    assert "confirm 2" in text
+    assert "reject 2" in text
 
 
 @pytest.mark.asyncio

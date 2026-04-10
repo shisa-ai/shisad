@@ -1538,6 +1538,7 @@ def _daemon_pending_confirmation_response_text(
     *,
     pending_confirmation_ids: Sequence[str],
     pending_actions: Mapping[str, Any] | None,
+    pending_index_by_id: Mapping[str, int] | None = None,
 ) -> str:
     lines = [
         "[PENDING CONFIRMATIONS]",
@@ -1549,8 +1550,14 @@ def _daemon_pending_confirmation_response_text(
         if str(confirmation_id).strip()
     ]
     for index, confirmation_id in enumerate(indexed_confirmation_ids, start=1):
+        pending_number = index
+        if pending_index_by_id is not None:
+            pending_number = pending_index_by_id.get(confirmation_id, pending_number)
         pending = pending_actions.get(confirmation_id) if pending_actions is not None else None
-        lines.append(f"{index}. {confirmation_id}")
+        lines.append(f"{pending_number}. {confirmation_id}")
+        lines.append(
+            f"   In chat: reply with 'confirm {pending_number}' or 'reject {pending_number}'"
+        )
         lines.append(f"   Confirm: shisad action confirm {confirmation_id}")
         preview = ""
         if pending is not None:
@@ -1560,7 +1567,13 @@ def _daemon_pending_confirmation_response_text(
         if preview:
             lines.append("   Preview:")
             lines.extend(f"     {line}" for line in preview.splitlines())
-    lines.extend(["", "Review all pending: shisad action pending"])
+    lines.extend(
+        [
+            "",
+            "In chat, you can also reply with 'yes to all' or 'no to all'.",
+            "Review all pending: shisad action pending",
+        ]
+    )
     return "\n".join(lines).strip()
 
 
@@ -4094,9 +4107,20 @@ class SessionImplMixin(HandlerMixinBase):
                 _summarize_tool_outputs_for_chat(chat_serialized_tool_outputs) or ""
             )
         if execution.pending_confirmation_ids:
+            pending_rows = self._pending_confirmations_for_binding(
+                session_id=sid,
+                user_id=validated.user_id,
+                workspace_id=validated.workspace_id,
+            )
+            pending_index_by_id = {
+                str(getattr(pending, "confirmation_id", "")).strip(): index
+                for index, pending in enumerate(pending_rows, start=1)
+                if str(getattr(pending, "confirmation_id", "")).strip()
+            }
             response_text = _daemon_pending_confirmation_response_text(
                 pending_confirmation_ids=execution.pending_confirmation_ids,
                 pending_actions=getattr(self, "_pending_actions", {}),
+                pending_index_by_id=pending_index_by_id,
             )
             if tool_output_summary:
                 response_text = f"{response_text}\n\nCompleted actions:\n{tool_output_summary}"
