@@ -225,7 +225,8 @@ async def _create_session(client: ControlClient) -> str:
 
 
 def _assert_not_local_fallback(text: str) -> None:
-    if text.strip().startswith("Safe summary:"):
+    normalized = text.strip()
+    if normalized.startswith("Safe summary:") or normalized.startswith("[PLANNER FALLBACK:"):
         raise AssertionError(
             "Planner appears to be using LocalPlannerProvider (fallback). "
             "Configure a live planner route and re-run."

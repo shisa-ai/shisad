@@ -280,7 +280,7 @@ async def _run_prompt_checks(
         if "Response blocked by output policy." in text:
             rows.append(MatrixRow(name, "fail", "output_policy_block"))
             continue
-        if text.startswith("Safe summary:"):
+        if text.startswith("Safe summary:") or text.startswith("[PLANNER FALLBACK:"):
             rows.append(MatrixRow(name, "fail", "local_fallback_response"))
             continue
         lockdown = str(response.get("lockdown_level", "")).strip().lower()
