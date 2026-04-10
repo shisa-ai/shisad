@@ -18,6 +18,7 @@ def _clean_api_key_env(monkeypatch: pytest.MonkeyPatch) -> None:
         "GEMINI_API_KEY",
         "OPENROUTER_API_KEY",
         "SHISA_API_KEY",
+        "ANTHROPIC_API_KEY",
     ):
         monkeypatch.delenv(var, raising=False)
     for var in list(os.environ):
@@ -328,3 +329,20 @@ def test_s0_gemini_key_auto_detects_google_preset(
     assert route.base_url == "https://generativelanguage.googleapis.com/v1beta/openai"
     assert route.model_id == "gemini-3.1-pro-preview"
     assert route.remote_enabled is True
+
+
+def test_u5_anthropic_key_auto_detects_anthropic_preset(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clean_api_key_env(monkeypatch)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "anthropic-key")
+
+    route = ModelRouter(ModelConfig()).route_for(ModelComponent.PLANNER)
+
+    assert route.provider_preset == "anthropic_default"
+    assert route.provider_preset_source == "auto_detected"
+    assert route.base_url == "https://api.anthropic.com/v1"
+    assert route.model_id == "claude-sonnet-4-6"
+    assert route.remote_enabled is True
+    assert route.api_key == "anthropic-key"
+    assert route.api_key_source == "preset_provider:ANTHROPIC_API_KEY"

@@ -2429,6 +2429,11 @@ dependencies = [
     { name = "qrcode" },
 ]
 
+[package.optional-dependencies]
+chat = [
+    { name = "textual" },
+]
+
 [package.dev-dependencies]
 channels-runtime = [
     { name = "discord-py" },
@@ -2478,7 +2483,9 @@ requires-dist = [
     { name = "pydantic-settings", specifier = ">=2.7,<3" },
     { name = "pyyaml", specifier = ">=6.0,<7" },
     { name = "qrcode", specifier = ">=8.2,<9" },
+    { name = "textual", marker = "extra == 'chat'", specifier = ">=0.89,<1" },
 ]
+provides-extras = ["chat"]
 
 [package.metadata.requires-dev]
 channels-runtime = [

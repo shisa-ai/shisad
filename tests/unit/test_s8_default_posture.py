@@ -12,8 +12,15 @@ from shisad.core.config import DaemonConfig, SecurityConfig
 from shisad.core.session import SessionManager
 from shisad.core.tools.registry import ToolRegistry
 from shisad.core.tools.schema import ToolDefinition, ToolParameter
-from shisad.core.types import Capability, PEPDecisionKind, SessionId, TaintLabel, ToolName
-from shisad.daemon.handlers._impl_session import SessionImplMixin
+from shisad.core.types import (
+    Capability,
+    PEPDecisionKind,
+    SessionId,
+    SessionMode,
+    TaintLabel,
+    ToolName,
+)
+from shisad.daemon.handlers._impl_session import SessionImplMixin, _is_trusted_level
 from shisad.security.pep import PEP, PolicyContext
 from shisad.security.policy import EgressRule, PolicyBundle, ToolPolicy
 
@@ -126,6 +133,77 @@ def test_s8_pep_still_requires_confirmation_for_confirmed_tools() -> None:
     assert decision.kind == PEPDecisionKind.REQUIRE_CONFIRMATION
 
 
+def test_u5_trusted_cli_auto_approves_clean_confirmation_tool() -> None:
+    registry = ToolRegistry()
+    _register_tool(
+        registry,
+        name="local_write",
+        capabilities=[Capability.FILE_WRITE],
+        require_confirmation=True,
+    )
+    pep = PEP(PolicyBundle(), registry)
+    decision = pep.evaluate(
+        ToolName("local_write"),
+        {},
+        PolicyContext(capabilities={Capability.FILE_WRITE}, trust_level="trusted_cli"),
+    )
+    assert decision.kind == PEPDecisionKind.ALLOW
+
+
+def test_u5_non_cli_trust_still_confirms_declared_confirmation_tool() -> None:
+    registry = ToolRegistry()
+    _register_tool(
+        registry,
+        name="local_write",
+        capabilities=[Capability.FILE_WRITE],
+        require_confirmation=True,
+    )
+    pep = PEP(PolicyBundle(), registry)
+    decision = pep.evaluate(
+        ToolName("local_write"),
+        {},
+        PolicyContext(capabilities={Capability.FILE_WRITE}, trust_level="trusted"),
+    )
+    assert decision.kind == PEPDecisionKind.REQUIRE_CONFIRMATION
+
+
+def test_u5_trusted_cli_still_confirms_tainted_write_sink() -> None:
+    registry = ToolRegistry()
+    _register_tool(registry, name="file.write", capabilities=[Capability.FILE_WRITE])
+    pep = PEP(PolicyBundle(), registry)
+    decision = pep.evaluate(
+        ToolName("file.write"),
+        {},
+        PolicyContext(
+            capabilities={Capability.FILE_WRITE},
+            taint_labels={TaintLabel.UNTRUSTED},
+            trust_level="trusted_cli",
+        ),
+    )
+    assert decision.kind == PEPDecisionKind.REQUIRE_CONFIRMATION
+
+
+def test_u5_trusted_cli_still_confirms_untrusted_suggested_egress() -> None:
+    registry = ToolRegistry()
+    _register_tool(
+        registry,
+        name="http.request",
+        capabilities=[Capability.HTTP_REQUEST],
+        parameters=[ToolParameter(name="url", type="string", required=True)],
+    )
+    pep = PEP(PolicyBundle(), registry)
+    decision = pep.evaluate(
+        ToolName("http.request"),
+        {"url": "https://suggested.example/path"},
+        PolicyContext(
+            capabilities={Capability.HTTP_REQUEST},
+            trust_level="trusted_cli",
+            untrusted_host_patterns={"suggested.example"},
+        ),
+    )
+    assert decision.kind == PEPDecisionKind.REQUIRE_CONFIRMATION
+
+
 def test_s8_pep_still_requires_confirmation_for_taint_write_sink() -> None:
     registry = ToolRegistry()
     _register_tool(registry, name="file.write", capabilities=[Capability.FILE_WRITE])
@@ -216,6 +294,37 @@ async def test_s8_session_create_default_policy_does_not_seed_tool_allowlist() -
     assert session is not None
     assert "tool_allowlist" not in session.metadata
     assert session.capabilities == set(Capability)
+
+
+@pytest.mark.asyncio
+async def test_u5_session_create_marks_only_cli_default_sessions_as_trusted_cli() -> None:
+    harness = _SessionCreateHarness(PolicyBundle())
+    harness._identity_map.configure_channel_trust(channel="cli", trust_level="trusted")
+
+    default_result = await SessionImplMixin.do_session_create(
+        harness,
+        {"channel": "cli"},
+    )  # type: ignore[arg-type]
+    default_session = harness._session_manager.get(SessionId(str(default_result["session_id"])))
+    assert default_session is not None
+    assert default_session.metadata["trust_level"] == "trusted_cli"
+    assert _is_trusted_level("trusted_cli") is False
+
+    task_result = await SessionImplMixin.do_session_create(
+        harness,
+        {"channel": "cli", "mode": SessionMode.TASK.value},
+    )  # type: ignore[arg-type]
+    task_session = harness._session_manager.get(SessionId(str(task_result["session_id"])))
+    assert task_session is not None
+    assert task_session.metadata["trust_level"] == "trusted"
+
+    external_result = await SessionImplMixin.do_session_create(
+        harness,
+        {"channel": "matrix"},
+    )  # type: ignore[arg-type]
+    external_session = harness._session_manager.get(SessionId(str(external_result["session_id"])))
+    assert external_session is not None
+    assert external_session.metadata["trust_level"] == "untrusted"
 
 
 def test_s8_explicit_restrictive_policy_blocks_unlisted_tools() -> None:

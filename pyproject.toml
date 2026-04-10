@@ -28,6 +28,11 @@ shisad = "shisad.cli.main:cli"
 shisactl = "shisad.cli.main:cli"
 shisad-approver = "shisad.approver.main:cli"
 
+[project.optional-dependencies]
+chat = [
+    "textual>=0.89,<1",
+]
+
 [build-system]
 requires = ["hatchling==1.29.0"]
 build-backend = "hatchling.build"

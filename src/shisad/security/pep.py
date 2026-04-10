@@ -441,6 +441,7 @@ class PEP:
             tool=tool,
             tool_policy=tool_policy,
             risk_score=risk_score,
+            trust_level=context.trust_level,
             egress_requires_confirmation=egress_requires_confirmation,
             taint_requires_confirmation=taint_decision.require_confirmation,
         )
@@ -490,9 +491,17 @@ class PEP:
         tool: Any,
         tool_policy: Any | None,
         risk_score: float,
+        trust_level: str,
         egress_requires_confirmation: bool,
         taint_requires_confirmation: bool,
     ) -> ConfirmationRequirement | None:
+        if (
+            trust_level.strip().lower() == "trusted_cli"
+            and not egress_requires_confirmation
+            and not taint_requires_confirmation
+        ):
+            return None
+
         requirements: list[ConfirmationRequirement] = []
 
         if egress_requires_confirmation or taint_requires_confirmation:

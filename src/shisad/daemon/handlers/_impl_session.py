@@ -717,6 +717,10 @@ def _is_trusted_level(trust_level: str) -> bool:
     return trust_level.strip().lower() in {"trusted", "verified", "internal"}
 
 
+def _is_trusted_cli_confirmation_level(trust_level: str) -> bool:
+    return trust_level.strip().lower() == "trusted_cli"
+
+
 def _looks_like_admin_cleanroom_request(text: str) -> bool:
     normalized = " ".join(text.strip().split())
     if not normalized:
@@ -3351,6 +3355,12 @@ class SessionImplMixin(HandlerMixinBase):
                 raise ValueError("admin_cleanroom mode requires trusted admin ingress")
             if channel not in _CLEANROOM_CHANNELS:
                 raise ValueError("admin_cleanroom mode is supported only for cli channel")
+        if (
+            not is_internal_ingress
+            and channel == "cli"
+            and session_mode == SessionMode.DEFAULT
+        ):
+            trust_level = "trusted_cli"
         metadata["trust_level"] = trust_level
         metadata["session_mode"] = session_mode.value
         metadata.setdefault(_COMMAND_CONTEXT_STATUS_KEY, "clean")
@@ -3409,13 +3419,20 @@ class SessionImplMixin(HandlerMixinBase):
                 trust_level = override
         trust_level = trust_level.strip().lower() or "untrusted"
         trusted_input = _is_trusted_level(trust_level)
+        operator_owned_cli_input = (
+            not is_internal_ingress
+            and channel == "cli"
+            and session_mode == SessionMode.DEFAULT
+            and _is_trusted_cli_confirmation_level(trust_level)
+        )
+        firewall_trusted_input = trusted_input or operator_owned_cli_input
 
         if is_internal_ingress and isinstance(firewall_result_payload, dict):
             firewall_result = FirewallResult.model_validate(firewall_result_payload)
         else:
             firewall_result = self._firewall.inspect(
                 content,
-                trusted_input=False if is_internal_ingress else trusted_input,
+                trusted_input=False if is_internal_ingress else firewall_trusted_input,
             )
         incoming_taint_labels = set(firewall_result.taint_labels)
         if is_internal_ingress:
@@ -4100,7 +4117,16 @@ class SessionImplMixin(HandlerMixinBase):
                 risk_tier=_risk_tier_from_score(risk_score),
                 declared_domains=sorted(declared_domains),
                 session_tainted=session_tainted,
-                trusted_input=validated.trusted_input,
+                trusted_input=(
+                    validated.trusted_input
+                    or (
+                        _is_trusted_cli_confirmation_level(validated.trust_level)
+                        and validated.channel == "cli"
+                        and validated.session_mode == SessionMode.DEFAULT
+                        and not validated.is_internal_ingress
+                        and not planner_context.context.taint_labels
+                    )
+                ),
                 raw_user_text=validated.content,
             )
             trace_only_confirmation_block = trace_reason_requires_confirmation(

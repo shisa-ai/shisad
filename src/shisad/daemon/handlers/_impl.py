@@ -373,13 +373,21 @@ def _structured_fs_read(
 def _structured_fs_write(
     handler: Any,
     arguments: Mapping[str, Any],
-    _context: StructuredToolContext | None = None,
+    context: StructuredToolContext | None = None,
 ) -> Mapping[str, Any]:
+    trusted_cli_policy_approved = (
+        context is not None
+        and context.session.channel == "cli"
+        and context.session.mode == SessionMode.DEFAULT
+        and str(context.session.metadata.get("trust_level", "")).strip().lower() == "trusted_cli"
+    )
     return dict(
         handler._fs_git_toolkit.write_file(
             path=_argument_string(arguments, "path"),
             content=_argument_string(arguments, "content"),
-            confirm=bool(arguments.get("confirm", False)),
+            confirm=bool(arguments.get("confirm", False))
+            or bool(context and context.user_confirmed)
+            or trusted_cli_policy_approved,
         )
     )
 

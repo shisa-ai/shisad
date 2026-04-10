@@ -290,7 +290,8 @@ def chat(session_id: str, user: str, workspace: str, new_session: bool) -> None:
         missing = (exc.name or "").split(".", maxsplit=1)[0]
         if missing == "textual":
             raise click.ClickException(
-                "textual is required for chat TUI. Install with: uv sync --dev"
+                "textual is required for chat TUI. Install with: "
+                "pip install 'shisad[chat]' or uv pip install 'shisad[chat]'"
             ) from exc
         raise click.ClickException(f"chat TUI import failed: missing module '{exc.name}'") from exc
     except ImportError as exc:
@@ -561,9 +562,12 @@ def status() -> None:
     click.echo(_dump_model(result))
 
 
-@cli.group()
-def doctor() -> None:
+@cli.group(invoke_without_command=True)
+@click.pass_context
+def doctor(ctx: click.Context) -> None:
     """Runtime diagnostic checks."""
+    if ctx.invoked_subcommand is None:
+        ctx.invoke(doctor_check, component="all")
 
 
 @doctor.command("check")

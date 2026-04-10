@@ -67,6 +67,7 @@ _PRESET_BASE_URLS: dict[ProviderPreset, str] = {
     ProviderPreset.OPENAI_DEFAULT: "https://api.openai.com/v1",
     ProviderPreset.OPENROUTER_DEFAULT: "https://openrouter.ai/api/v1",
     ProviderPreset.GOOGLE_OPENAI_DEFAULT: "https://generativelanguage.googleapis.com/v1beta/openai",
+    ProviderPreset.ANTHROPIC_DEFAULT: "https://api.anthropic.com/v1",
     ProviderPreset.VLLM_LOCAL_DEFAULT: "http://127.0.0.1:8000/v1",
 }
 
@@ -75,6 +76,7 @@ _PRESET_AUTH_MODES: dict[ProviderPreset, AuthMode] = {
     ProviderPreset.OPENAI_DEFAULT: AuthMode.BEARER,
     ProviderPreset.OPENROUTER_DEFAULT: AuthMode.BEARER,
     ProviderPreset.GOOGLE_OPENAI_DEFAULT: AuthMode.BEARER,
+    ProviderPreset.ANTHROPIC_DEFAULT: AuthMode.BEARER,
     ProviderPreset.VLLM_LOCAL_DEFAULT: AuthMode.NONE,
 }
 
@@ -83,6 +85,7 @@ _PRESET_DEFAULT_PROFILES: dict[ProviderPreset, str] = {
     ProviderPreset.OPENAI_DEFAULT: PROFILE_OPENAI_CHAT_GENERAL,
     ProviderPreset.OPENROUTER_DEFAULT: PROFILE_OPENROUTER_CHAT,
     ProviderPreset.GOOGLE_OPENAI_DEFAULT: PROFILE_GOOGLE_OPENAI_CHAT,
+    ProviderPreset.ANTHROPIC_DEFAULT: PROFILE_OPENAI_CHAT_GENERAL,
     ProviderPreset.VLLM_LOCAL_DEFAULT: PROFILE_VLLM_CHAT,
 }
 
@@ -102,12 +105,17 @@ _PRESET_DEFAULT_MODEL_IDS: dict[ProviderPreset, dict[ModelComponent, str]] = {
         ModelComponent.EMBEDDINGS: "text-embedding-004",
         ModelComponent.MONITOR: "gemini-3.1-pro-preview",
     },
+    ProviderPreset.ANTHROPIC_DEFAULT: {
+        ModelComponent.PLANNER: "claude-sonnet-4-6",
+        ModelComponent.MONITOR: "claude-sonnet-4-6",
+    },
 }
 
 _API_KEY_ENV_TO_PRESET: list[tuple[str, ProviderPreset]] = [
     ("OPENAI_API_KEY", ProviderPreset.OPENAI_DEFAULT),
     ("GEMINI_API_KEY", ProviderPreset.GOOGLE_OPENAI_DEFAULT),
     ("OPENROUTER_API_KEY", ProviderPreset.OPENROUTER_DEFAULT),
+    ("ANTHROPIC_API_KEY", ProviderPreset.ANTHROPIC_DEFAULT),
 ]
 
 _PRESET_PROVIDER_KEY_ENV: dict[ProviderPreset, str | None] = {
@@ -115,6 +123,7 @@ _PRESET_PROVIDER_KEY_ENV: dict[ProviderPreset, str | None] = {
     ProviderPreset.OPENAI_DEFAULT: "OPENAI_API_KEY",
     ProviderPreset.OPENROUTER_DEFAULT: "OPENROUTER_API_KEY",
     ProviderPreset.GOOGLE_OPENAI_DEFAULT: "GEMINI_API_KEY",
+    ProviderPreset.ANTHROPIC_DEFAULT: "ANTHROPIC_API_KEY",
     ProviderPreset.VLLM_LOCAL_DEFAULT: None,
 }
 

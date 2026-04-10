@@ -734,10 +734,10 @@ async def contract_harness(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> C
             thread.join(timeout=1.0)
 
 
-async def _create_session(client: ControlClient) -> str:
+async def _create_session(client: ControlClient, *, channel: str = "cli") -> str:
     created = await client.call(
         "session.create",
-        {"channel": "cli", "user_id": "alice", "workspace_id": "ws1"},
+        {"channel": channel, "user_id": "alice", "workspace_id": "ws1"},
     )
     return str(created["session_id"])
 
@@ -1647,10 +1647,10 @@ async def test_contract_bare_git_commands_execute_without_confirmation(
 
 
 @pytest.mark.asyncio
-async def test_contract_fs_write_routes_to_confirmation_not_lockdown(
+async def test_contract_cli_fs_write_executes_without_confirmation_or_lockdown(
     contract_harness: ContractHarness,
 ) -> None:
-    """fs.write is a side-effect action that requires confirmation, not lockdown."""
+    """Trusted CLI keeps clean local writes frictionless."""
     sid = await _create_session(contract_harness.client)
     reply = await contract_harness.client.call(
         "session.message",
@@ -1658,7 +1658,35 @@ async def test_contract_fs_write_routes_to_confirmation_not_lockdown(
     )
     assert reply.get("lockdown_level") == "normal"
     assert int(reply.get("blocked_actions", 0)) == 0
-    # fs.write is confirmation-gated (side_effect_action), not blocked
+    assert int(reply.get("confirmation_required_actions", 0)) == 0
+    assert int(reply.get("executed_actions", 0)) == 1
+    outputs = _extract_tool_outputs(reply)
+    assert "fs.write" in outputs
+    payload = outputs["fs.write"][0]
+    assert payload.get("ok") is True
+    target = contract_harness.workspace_root / "test-output.txt"
+    assert target.read_text(encoding="utf-8") == "hello from behavioral test"
+
+
+@pytest.mark.asyncio
+async def test_contract_non_cli_fs_write_routes_to_confirmation_not_lockdown(
+    contract_harness: ContractHarness,
+) -> None:
+    """Non-CLI writes still route to confirmation instead of lockdown."""
+    sid = await _create_session(contract_harness.client, channel="matrix")
+    reply = await contract_harness.client.call(
+        "session.message",
+        {
+            "session_id": sid,
+            "channel": "matrix",
+            "user_id": "alice",
+            "workspace_id": "ws1",
+            "content": "write a file called test-output.txt",
+        },
+    )
+    assert reply.get("lockdown_level") == "normal"
+    assert int(reply.get("blocked_actions", 0)) == 0
+    assert int(reply.get("executed_actions", 0)) == 0
     assert int(reply.get("confirmation_required_actions", 0)) >= 1
     pending_ids = reply.get("pending_confirmation_ids")
     assert isinstance(pending_ids, list)
@@ -1709,10 +1737,16 @@ async def test_contract_web_fetch_confirmation_approve_executes_after_confirmati
 async def test_contract_fs_write_confirmation_reject_does_not_write_file(
     contract_harness: ContractHarness,
 ) -> None:
-    sid = await _create_session(contract_harness.client)
+    sid = await _create_session(contract_harness.client, channel="matrix")
     proposed = await contract_harness.client.call(
         "session.message",
-        {"session_id": sid, "content": "write a file called test-output.txt"},
+        {
+            "session_id": sid,
+            "channel": "matrix",
+            "user_id": "alice",
+            "workspace_id": "ws1",
+            "content": "write a file called test-output.txt",
+        },
     )
     assert proposed.get("lockdown_level") == "normal"
     assert int(proposed.get("blocked_actions", 0)) == 0

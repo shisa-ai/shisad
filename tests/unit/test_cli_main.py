@@ -683,6 +683,7 @@ def test_cli_commands_route_through_rpc_wrapper(
     ) in calls
     assert ("memory.rotate_key", {"reencrypt_existing": True}) in calls
     assert ("doctor.check", {"component": "realitycheck"}) in calls
+
     assert ("realitycheck.read", {"path": "sources/a.md", "max_bytes": 64}) in calls
     assert ("dashboard.alerts", {"limit": 1}) in calls
     assert ("admin.selfmod.propose", {"artifact_path": str(skill_path)}) in calls
@@ -735,6 +736,37 @@ def test_cli_commands_route_through_rpc_wrapper(
         "session.import",
         {"archive_path": "/tmp/s-1.shisad-session.zip"},
     ) in calls
+
+
+def test_doctor_bare_invocation_defaults_to_all(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _config(tmp_path)
+    monkeypatch.setattr(cli_main, "_get_config", lambda: config)
+    calls: list[tuple[str, dict[str, object] | None]] = []
+
+    def _fake_rpc_call(
+        _config: DaemonConfig,
+        method: str,
+        params: dict[str, object] | None = None,
+        *,
+        response_model: type[object] | None = None,
+    ) -> object:
+        calls.append((method, params))
+        payload = {"status": "ok", "component": "all", "checks": {}, "error": ""}
+        if response_model is None:
+            return payload
+        return response_model.model_validate(payload)  # type: ignore[attr-defined]
+
+    monkeypatch.setattr(cli_main, "rpc_call", _fake_rpc_call)
+    runner = CliRunner()
+
+    result = runner.invoke(cli_main.cli, ["doctor"])
+
+    assert result.exit_code == 0, result.output
+    assert calls == [("doctor.check", {"component": "all"})]
+    assert '"component": "all"' in result.output
 
 
 def test_session_message_command_renders_evidence_stub_block(
@@ -1600,6 +1632,8 @@ def test_chat_command_reports_missing_textual_dependency(
     result = runner.invoke(cli_main.cli, ["chat"])
     assert result.exit_code == 1
     assert "textual is required for chat TUI" in result.output
+    assert "shisad[chat]" in result.output
+    assert "uv sync --dev" not in result.output
 
 
 def test_chat_command_surfaces_non_textual_import_failures(
