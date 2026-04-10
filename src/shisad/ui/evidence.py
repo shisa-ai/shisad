@@ -179,25 +179,23 @@ def _render_stub(parsed: _ParsedEvidenceStub) -> str:
     return "\n".join(lines)
 
 
-def _sanitize_terminal_assistant_segment(value: str) -> str:
+def _sanitize_terminal_assistant_segment(
+    value: str,
+    *,
+    preserve_pending_preview_escapes: bool = False,
+) -> str:
     trailing_newline = value.endswith("\n")
     normalized_lines: list[str] = []
-    in_pending_confirmations_block = False
     in_pending_preview = False
     for line in value.splitlines():
         if in_pending_preview and not line.startswith("     "):
             in_pending_preview = False
-        if line == "[PENDING CONFIRMATIONS]":
-            in_pending_confirmations_block = True
         if in_pending_preview:
             normalized_lines.append(line)
         else:
             normalized_lines.append(_normalize_literal_linebreak_escapes(line))
-        if in_pending_confirmations_block and line == "   Preview:":
+        if preserve_pending_preview_escapes and line == "   Preview:":
             in_pending_preview = True
-        if in_pending_confirmations_block and line == "Review all pending: shisad action pending":
-            in_pending_confirmations_block = False
-            in_pending_preview = False
     normalized = "\n".join(normalized_lines)
     if trailing_newline:
         normalized += "\n"
@@ -216,7 +214,11 @@ def _next_stub_match(text: str, start: int) -> tuple[re.Match[str], bool] | None
     return unavailable, False
 
 
-def render_evidence_refs_for_terminal(text: str) -> str:
+def render_evidence_refs_for_terminal(
+    text: str,
+    *,
+    preserve_pending_preview_escapes: bool = False,
+) -> str:
     """Replace raw evidence stubs with terminal-friendly multi-line blocks."""
 
     if not text.strip():
@@ -227,9 +229,19 @@ def render_evidence_refs_for_terminal(text: str) -> str:
     while match_info := _next_stub_match(text, cursor):
         match, available = match_info
         if match.start() > cursor:
-            chunks.append(_sanitize_terminal_assistant_segment(text[cursor : match.start()]))
+            chunks.append(
+                _sanitize_terminal_assistant_segment(
+                    text[cursor : match.start()],
+                    preserve_pending_preview_escapes=preserve_pending_preview_escapes,
+                )
+            )
         chunks.append(_render_stub(_parsed_stub_from_match(match, available=available)))
         cursor = match.end()
     if cursor < len(text):
-        chunks.append(_sanitize_terminal_assistant_segment(text[cursor:]))
+        chunks.append(
+            _sanitize_terminal_assistant_segment(
+                text[cursor:],
+                preserve_pending_preview_escapes=preserve_pending_preview_escapes,
+            )
+        )
     return "".join(chunks)

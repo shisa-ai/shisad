@@ -772,6 +772,39 @@ def test_session_message_command_renders_evidence_stub_block(
     assert 'inspect: evidence.read("ev-61f3d4c48f54ff92")' in result.output
 
 
+def test_session_message_command_preserves_pending_preview_linebreak_markers(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _config(tmp_path)
+    monkeypatch.setattr(cli_main, "_get_config", lambda: config)
+    monkeypatch.setattr(
+        cli_main,
+        "rpc_call",
+        lambda *_args, **_kwargs: cli_main.SessionMessageResult.model_validate(
+            {
+                "session_id": "s-1",
+                "response": (
+                    "[PENDING CONFIRMATIONS]\n"
+                    "Queued for your approval:\n"
+                    "1. c-1\n"
+                    "   Preview:\n"
+                    "     body: line1\\nline2\n\n"
+                    "Review all pending: shisad action pending"
+                ),
+                "pending_confirmation_ids": ["c-1"],
+            }
+        ),
+    )
+    runner = CliRunner()
+
+    result = runner.invoke(cli_main.cli, ["session", "message", "s-1", "show pending"])
+
+    assert result.exit_code == 0, result.output
+    assert "body: line1\\nline2" in result.output
+    assert "body: line1\nline2" not in result.output
+
+
 def test_events_subscribe_uses_rpc_run_wrapper(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

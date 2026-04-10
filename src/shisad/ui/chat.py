@@ -27,12 +27,20 @@ def format_user_message(content: str) -> str:
     return f"you: {text}"
 
 
-def format_assistant_message(content: str) -> str:
+def format_assistant_message(
+    content: str,
+    *,
+    preserve_pending_preview_escapes: bool = False,
+) -> str:
     """Format an assistant message for display in the chat log."""
     text = content.strip()
     if not text:
         return "(no response)"
-    return f"shisad: {render_evidence_refs_for_terminal(text)}"
+    rendered = render_evidence_refs_for_terminal(
+        text,
+        preserve_pending_preview_escapes=preserve_pending_preview_escapes,
+    )
+    return f"shisad: {rendered}"
 
 
 def _format_error(content: str) -> str:
@@ -176,14 +184,21 @@ class ChatApp(App[None]):
             client = await self._connect()
             try:
                 prev_reconnected = self._reconnected
-                response = await self._send_message(client, content)
+                result = await self._send_message(client, content)
                 if self._reconnected and not prev_reconnected:
                     self._append_history(
                         _format_error("Daemon restarted - started a new conversation.")
                     )
             finally:
                 await client.close()
-            self._append_history(format_assistant_message(response))
+            self._append_history(
+                format_assistant_message(
+                    self._extract_response(result),
+                    preserve_pending_preview_escapes=self._preserve_pending_preview_escapes(
+                        result
+                    ),
+                )
+            )
         except (OSError, RuntimeError, TypeError, ValueError) as exc:
             self._append_history(_format_error(str(exc)))
         self._append_history("")
@@ -255,8 +270,8 @@ class ChatApp(App[None]):
                 return sid, lockdown_level
         return "", ""
 
-    async def _send_message(self, client: Any, content: str) -> str:
-        """Send a message and return the assistant response.
+    async def _send_message(self, client: Any, content: str) -> dict[str, Any]:
+        """Send a message and return the raw session.message result.
 
         If the session is unknown (daemon restarted), automatically creates
         a new session and retries once.
@@ -278,7 +293,8 @@ class ChatApp(App[None]):
             except Exception as retry_exc:
                 raise RuntimeError(str(retry_exc)) from retry_exc
 
-        return self._extract_response(result)
+        self._extract_response(result)
+        return result
 
     async def _do_session_message(self, client: Any, content: str) -> dict[str, Any]:
         """Call session.message RPC and return the raw result dict."""
@@ -297,6 +313,13 @@ class ChatApp(App[None]):
         if isinstance(response, str) and response.strip():
             return response.strip()
         raise RuntimeError("session.message returned no response text")
+
+    @staticmethod
+    def _preserve_pending_preview_escapes(result: dict[str, Any]) -> bool:
+        pending_ids = result.get("pending_confirmation_ids")
+        return isinstance(pending_ids, list) and any(
+            isinstance(item, str) and item.strip() for item in pending_ids
+        )
 
     def _append_history(self, line: str) -> None:
         """Append a single line to the history pane."""

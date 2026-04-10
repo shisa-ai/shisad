@@ -882,7 +882,12 @@ def session_message(session_id: str, content: str) -> None:
         {"session_id": session_id, "content": content},
         response_model=SessionMessageResult,
     )
-    click.echo(render_evidence_refs_for_terminal(result.response))
+    click.echo(
+        render_evidence_refs_for_terminal(
+            result.response,
+            preserve_pending_preview_escapes=bool(result.pending_confirmation_ids),
+        )
+    )
 
 
 @session.command("list")

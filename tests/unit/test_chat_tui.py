@@ -48,6 +48,21 @@ def test_format_assistant_message_renders_literal_newline_escapes() -> None:
     assert "\\n" not in result
 
 
+def test_format_assistant_message_preserves_pending_preview_linebreak_markers() -> None:
+    result = format_assistant_message(
+        "[PENDING CONFIRMATIONS]\n"
+        "Queued for your approval:\n"
+        "1. c-1\n"
+        "   Preview:\n"
+        "     body: line1\\nline2\n\n"
+        "Review all pending: shisad action pending",
+        preserve_pending_preview_escapes=True,
+    )
+
+    assert "body: line1\\nline2" in result
+    assert "body: line1\nline2" not in result
+
+
 def test_format_assistant_message_renders_evidence_ref_block() -> None:
     result = format_assistant_message(
         "[EVIDENCE ref=ev-61f3d4c48f54ff92 source=web.fetch:example.com "
@@ -267,7 +282,7 @@ async def test_chat_app_force_new_session_skips_binding_lookup() -> None:
 
 @pytest.mark.asyncio
 async def test_chat_app_send_message_returns_response() -> None:
-    """_send_message should call session.message and return the response."""
+    """_send_message should call session.message and return the raw response payload."""
     app = ChatApp(
         socket_path=Path("/tmp/test.sock"),
         user_id="ops",
@@ -284,7 +299,12 @@ async def test_chat_app_send_message_returns_response() -> None:
         "session.message",
         params={"session_id": "sess-1", "content": "hello"},
     )
-    assert result == "Hello from shisad!"
+    assert result == {"response": "Hello from shisad!"}
+
+
+def test_chat_app_detects_pending_preview_preservation_from_raw_result() -> None:
+    assert ChatApp._preserve_pending_preview_escapes({"pending_confirmation_ids": ["c-1"]}) is True
+    assert ChatApp._preserve_pending_preview_escapes({"pending_confirmation_ids": []}) is False
 
 
 @pytest.mark.asyncio
@@ -404,7 +424,7 @@ async def test_chat_app_recovers_from_unknown_session() -> None:
 
     result = await app._send_message(mock_client, "hello")
 
-    assert result == "Hello!"
+    assert result == {"response": "Hello!"}
     assert app._session_id == "new-session-id"
     assert mock_client.call.call_count == 4
 
@@ -479,7 +499,7 @@ async def test_chat_app_recovers_from_session_expired_variant() -> None:
     )
 
     result = await app._send_message(mock_client, "hello")
-    assert result == "Recovered"
+    assert result == {"response": "Recovered"}
     assert app._session_id == "new-id"
     assert app._reconnected is True
 
