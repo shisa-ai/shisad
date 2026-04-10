@@ -1,11 +1,12 @@
 # Multi-Factor Approval (2FA)
 
-> **v0.6.2 status:** The approval protocol, credential store, and all backends
-> described here are implemented and tested. However, TOTP confirmation
-> currently requires CLI access to the daemon host (SSH or local socket).
-> Chat-channel and web-page TOTP delivery are shipping in v0.6.3. Passkey
+> **v0.6.3 status:** The approval protocol, credential store, and shipped
+> backends described here are implemented and tested. TOTP confirmation now
+> works through trusted chat / command replies and through the CLI. Passkey
 > (WebAuthn) and signer approvals already work via browser and remote KMS
-> respectively. QR code rendering for TOTP enrollment is also coming in v0.6.3.
+> respectively. QR code rendering for TOTP enrollment is also in v0.6.3.
+> Entering a TOTP code on the approval web page is not shipped yet; browser
+> approval today is WebAuthn only.
 
 ---
 
@@ -139,16 +140,30 @@ cannot be retrieved later.
 
 ### Confirm an action
 
-> **v0.6.2 limitation:** TOTP confirmation currently requires CLI access to the
-> daemon (SSH or local socket forwarding). In practice, this means SSHing to
-> the daemon host or forwarding the control socket. Chat-channel and web-page
-> TOTP delivery are shipping in v0.6.3.
+Preferred path: when the daemon posts a TOTP approval prompt to a trusted
+chat / command channel, reply with your current 6-digit code.
+
+If exactly one TOTP action is pending in that session, a bare code is enough:
+
+```text
+123456
+```
+
+If multiple TOTP actions are pending, target the specific confirmation ID:
+
+```text
+confirm <CONFIRMATION_ID> 123456
+```
+
+The pending-confirmation summary lists the active TOTP confirmation IDs.
+
+CLI remains available as a secondary path:
 
 ```bash
 shisad action confirm <CONFIRMATION_ID> --totp-code 123456
 ```
 
-Or with a recovery code (if you have lost your TOTP device):
+Recovery-code approval is still a CLI flow:
 
 ```bash
 shisad action confirm <CONFIRMATION_ID> --recovery-code XXXX-XXXX
@@ -597,7 +612,8 @@ For L3+ signed approvals, the audit trail also includes:
   side — shisad sees one L3 signature.
 - **At-rest encryption for credential store:** The approval-factor store is
   currently plaintext JSON. At-rest encryption is follow-on.
-- **TOTP via chat / web page:** v0.6.3 (see note at top).
+- **TOTP via chat reply:** v0.6.3.
+- **TOTP via approval web page:** planned follow-on.
 - **QR code for TOTP enrollment:** v0.6.3.
 
 ---

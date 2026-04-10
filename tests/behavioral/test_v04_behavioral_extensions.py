@@ -24,11 +24,21 @@ from shisad.channels.delivery import ChannelDeliveryService, DeliveryResult
 from shisad.core.api.transport import ControlClient
 from shisad.core.approval import generate_totp_code
 from shisad.core.config import DaemonConfig
-from shisad.core.planner import Planner, PlannerOutput, PlannerResult
+from shisad.core.planner import (
+    ActionProposal,
+    EvaluatedProposal,
+    Planner,
+    PlannerOutput,
+    PlannerResult,
+)
 from shisad.core.transcript import TranscriptStore
+from shisad.core.types import ToolName
 from shisad.daemon.runner import run_daemon
 from tests.helpers.signer import StubSignerService, generate_ed25519_private_key, public_key_pem
 from tests.helpers.webauthn import make_authentication_payload, make_registration_payload
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+README_PATH = REPO_ROOT / "README.md"
 
 
 def _base_policy() -> str:
@@ -493,7 +503,11 @@ async def test_behavioral_tool_execute_confirmation_surfaces_approval_protocol_m
             "      - shell.exec",
         ]
     )
-    daemon_task, client, _config = await _start_daemon(tmp_path, policy_text=policy_text + "\n")
+    daemon_task, client, _config = await _start_daemon(
+        tmp_path,
+        policy_text=policy_text + "\n",
+        config_overrides={"assistant_fs_roots": [REPO_ROOT]},
+    )
     try:
         created = await client.call(
             "session.create",
@@ -592,7 +606,11 @@ async def test_behavioral_totp_confirmation_executes_and_records_l1_audit(
             "        - totp",
         ]
     )
-    daemon_task, client, _config = await _start_daemon(tmp_path, policy_text=policy_text + "\n")
+    daemon_task, client, _config = await _start_daemon(
+        tmp_path,
+        policy_text=policy_text + "\n",
+        config_overrides={"assistant_fs_roots": [REPO_ROOT]},
+    )
     try:
         started = await client.call(
             "2fa.register_begin",
@@ -669,6 +687,143 @@ async def test_behavioral_totp_confirmation_executes_and_records_l1_audit(
                 and bool(event.get("data", {}).get("success")) is True
                 and str(event.get("data", {}).get("approval_level", "")) == "reauthenticated"
                 and str(event.get("data", {}).get("approval_method", "")) == "totp"
+            ),
+        )
+        assert approved_event["event_type"] == "ToolApproved"
+        assert executed_event["event_type"] == "ToolExecuted"
+    finally:
+        await _shutdown_daemon(daemon_task, client)
+
+
+@pytest.mark.asyncio
+async def test_behavioral_totp_confirmation_accepts_chat_code_submission(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    policy_text = "\n".join(
+        [
+            'version: "1"',
+            "default_require_confirmation: false",
+            "default_capabilities:",
+            "  - file.read",
+            "tools:",
+            "  fs.read:",
+            "    capabilities_required:",
+            "      - file.read",
+            "    confirmation:",
+            "      level: reauthenticated",
+            "      methods:",
+            "        - totp",
+        ]
+    )
+    target = README_PATH
+
+    async def _planner_fs_read(
+        self: Planner,
+        user_content: str,
+        context: object,
+        *,
+        tools: list[dict[str, object]] | None = None,
+        persona_tone_override: str | None = None,
+    ) -> PlannerResult:
+        _ = (user_content, tools, persona_tone_override)
+        proposal = ActionProposal(
+            action_id="u9-behavioral-chat-totp",
+            tool_name=ToolName("fs.read"),
+            arguments={
+                "path": str(target),
+                "max_bytes": 4096,
+            },
+            reasoning="exercise chat TOTP confirmation",
+            data_sources=[],
+        )
+        decision = self._pep.evaluate(proposal.tool_name, proposal.arguments, context)
+        return PlannerResult(
+            output=PlannerOutput(
+                assistant_response="pending chat totp approval",
+                actions=[proposal],
+            ),
+            evaluated=[EvaluatedProposal(proposal=proposal, decision=decision)],
+            attempts=1,
+            provider_response=None,
+            messages_sent=(),
+        )
+
+    monkeypatch.setattr(Planner, "propose", _planner_fs_read)
+    daemon_task, client, _config = await _start_daemon(
+        tmp_path,
+        policy_text=policy_text + "\n",
+        config_overrides={"assistant_fs_roots": [REPO_ROOT]},
+    )
+    try:
+        started = await client.call(
+            "2fa.register_begin",
+            {"method": "totp", "user_id": "alice", "name": "ops-laptop"},
+        )
+        confirmed_factor = await client.call(
+            "2fa.register_confirm",
+            {
+                "enrollment_id": started["enrollment_id"],
+                "verify_code": generate_totp_code(str(started["secret"])),
+            },
+        )
+        assert confirmed_factor["registered"] is True
+
+        created = await client.call(
+            "session.create",
+            {"channel": "cli", "user_id": "alice", "workspace_id": "ops"},
+        )
+        sid = str(created["session_id"])
+
+        proposed = await client.call(
+            "session.message",
+            {
+                "session_id": sid,
+                "channel": "cli",
+                "user_id": "alice",
+                "workspace_id": "ops",
+                "content": "run the queued action",
+            },
+        )
+        assert proposed["confirmation_required_actions"] >= 1
+        first_response = str(proposed.get("response", "")).lower()
+        assert "6-digit code" in first_response
+        assert str(proposed["pending_confirmation_ids"][0]).lower() in first_response
+        assert "shisad action confirm" in first_response
+        assert "--totp-code 123456" in first_response
+
+        code = generate_totp_code(str(started["secret"]))
+        approved = await client.call(
+            "session.message",
+            {
+                "session_id": sid,
+                "channel": "cli",
+                "user_id": "alice",
+                "workspace_id": "ops",
+                "content": code,
+            },
+        )
+        assert approved["executed_actions"] == 1
+        assert approved["confirmation_required_actions"] == 0
+        assert code not in str(approved.get("response", ""))
+
+        approved_event = await _wait_for_audit_event(
+            client,
+            event_type="ToolApproved",
+            session_id=sid,
+            predicate=lambda event: (
+                str(event.get("data", {}).get("tool_name", "")) == "fs.read"
+                and str(event.get("data", {}).get("approval_method", "")) == "totp"
+                and str(event.get("data", {}).get("approval_level", "")) == "reauthenticated"
+            ),
+        )
+        executed_event = await _wait_for_audit_event(
+            client,
+            event_type="ToolExecuted",
+            session_id=sid,
+            predicate=lambda event: (
+                str(event.get("data", {}).get("tool_name", "")) == "fs.read"
+                and bool(event.get("data", {}).get("success")) is True
             ),
         )
         assert approved_event["event_type"] == "ToolApproved"

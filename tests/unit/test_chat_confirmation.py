@@ -7,13 +7,16 @@ from types import SimpleNamespace
 
 import pytest
 
+from shisad.channels.base import DeliveryTarget
 from shisad.core.transcript import TranscriptStore
 from shisad.core.types import Capability, SessionId, SessionMode, ToolName, UserId, WorkspaceId
 from shisad.daemon.handlers._impl import PendingAction
 from shisad.daemon.handlers._impl_session import (
     ChatConfirmationIntent,
+    ChatTotpSubmission,
     SessionImplMixin,
     _classify_chat_confirmation_intent,
+    _parse_chat_totp_submission,
     _resolve_chat_confirmation_indexes,
 )
 from shisad.security.control_plane.sidecar import ControlPlaneUnavailableError
@@ -57,6 +60,23 @@ def test_m6_crc_classifier_handles_affirmative_negative_reference_and_passthroug
         target="none",
         index=None,
     )
+
+
+def test_u9_chat_totp_parser_handles_bare_code_targeted_code_and_passthrough() -> None:
+    assert _parse_chat_totp_submission("123456") == ChatTotpSubmission(
+        confirmation_id=None,
+        code="123456",
+    )
+    assert _parse_chat_totp_submission("confirm c-1 123456") == ChatTotpSubmission(
+        confirmation_id="c-1",
+        code="123456",
+    )
+    assert _parse_chat_totp_submission("approve abc123 654321") == ChatTotpSubmission(
+        confirmation_id="abc123",
+        code="654321",
+    )
+    assert _parse_chat_totp_submission("confirm 1") is None
+    assert _parse_chat_totp_submission("there are 123456 reasons") is None
 
 
 def test_m6_crc_routing_clean_session_auto_confirms_single_pending() -> None:
@@ -118,9 +138,39 @@ def test_chat_pending_confirmation_summary_retains_bulk_guidance() -> None:
     assert "no to all" in summary.lower()
 
 
+def test_chat_pending_confirmation_summary_adds_totp_guidance_when_totp_is_pending() -> None:
+    pending = PendingAction(
+        confirmation_id="c-1",
+        decision_nonce="nonce-1",
+        session_id=SessionId("sess-chat"),
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws-1"),
+        tool_name=ToolName("web.search"),
+        arguments={"query": "hello"},
+        reason="manual",
+        capabilities={Capability.HTTP_REQUEST},
+        created_at=datetime.now(UTC),
+        selected_backend_id="totp.default",
+        selected_backend_method="totp",
+    )
+
+    summary = SessionImplMixin._chat_pending_confirmation_summary(
+        pending_rows=[pending],
+        tainted_session=False,
+    )
+
+    assert "6-digit code" in summary
+    assert "confirm confirmation_id 123456" in summary.lower()
+    assert "shisad action confirm confirmation_id --totp-code 123456" in summary.lower()
+    assert "confirmation id: c-1" in summary.lower()
+    assert "reply with 'confirm n'" not in summary.lower()
+    assert "yes to all" not in summary.lower()
+
+
 class _ChatConfirmationHarness(SessionImplMixin):
     def __init__(self, tmp_path) -> None:
         self._pending_actions: dict[str, PendingAction] = {}
+        self.confirm_calls: list[dict[str, object]] = []
         self._output_firewall = SimpleNamespace(inspect=self._inspect_output)
         self._lockdown_manager = SimpleNamespace(
             user_notification=lambda _sid: "",
@@ -147,6 +197,7 @@ class _ChatConfirmationHarness(SessionImplMixin):
         return False
 
     async def do_action_confirm(self, params: dict[str, object]) -> dict[str, object]:
+        self.confirm_calls.append(dict(params))
         pending = self._pending_actions[str(params["confirmation_id"])]
         pending.status = "approved"
         pending.status_reason = "chat_confirmation"
@@ -193,6 +244,8 @@ async def test_h1_chat_confirmation_response_degrades_when_plan_hash_lookup_fail
     assert result is not None
     assert result["response"].startswith("confirmed 1")
     assert result["plan_hash"] == ""
+    assert result["checkpoint_ids"] == []
+    assert result["checkpoints_created"] == 0
 
 
 @pytest.mark.asyncio
@@ -232,3 +285,598 @@ async def test_h1_chat_confirmation_does_not_treat_cli_command_or_id_as_approval
 
     assert result is None
     assert harness._pending_actions["c-1"].status == "pending"
+
+
+@pytest.mark.asyncio
+async def test_u9_chat_totp_bare_code_confirms_single_pending_totp_action(tmp_path) -> None:
+    harness = _ChatConfirmationHarness(tmp_path)
+    pending = PendingAction(
+        confirmation_id="c-1",
+        decision_nonce="nonce-1",
+        session_id=SessionId("sess-chat"),
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws-1"),
+        tool_name=ToolName("web.search"),
+        arguments={"query": "hello"},
+        reason="manual",
+        capabilities={Capability.HTTP_REQUEST},
+        created_at=datetime.now(UTC),
+        selected_backend_id="totp.default",
+        selected_backend_method="totp",
+    )
+    harness._pending_actions[pending.confirmation_id] = pending
+
+    result = await SessionImplMixin._maybe_handle_chat_confirmation(
+        harness,
+        sid=SessionId("sess-chat"),
+        channel="cli",
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws-1"),
+        session_mode=SessionMode.DEFAULT,
+        trust_level="trusted",
+        trusted_input=True,
+        is_internal_ingress=False,
+        content="123456",
+        firewall_result=FirewallResult(sanitized_text="123456", original_hash="0" * 64),
+    )
+
+    assert result is not None
+    assert "confirmed c-1" in str(result["response"]).lower()
+    assert "123456" not in str(result["response"])
+    assert result["pending_confirmation_ids"] == []
+    assert harness.confirm_calls == [
+        {
+            "confirmation_id": "c-1",
+            "decision_nonce": "nonce-1",
+            "approval_method": "totp",
+            "proof": {"totp_code": "123456"},
+            "reason": "chat_totp_confirmation",
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_u9_chat_totp_bare_code_confirms_trusted_internal_channel_ingress(tmp_path) -> None:
+    harness = _ChatConfirmationHarness(tmp_path)
+    pending = PendingAction(
+        confirmation_id="c-1",
+        decision_nonce="nonce-1",
+        session_id=SessionId("sess-chat"),
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws-1"),
+        tool_name=ToolName("web.search"),
+        arguments={"query": "hello"},
+        reason="manual",
+        capabilities={Capability.HTTP_REQUEST},
+        created_at=datetime.now(UTC),
+        selected_backend_id="totp.default",
+        selected_backend_method="totp",
+    )
+    harness._pending_actions[pending.confirmation_id] = pending
+
+    result = await SessionImplMixin._maybe_handle_chat_confirmation(
+        harness,
+        sid=SessionId("sess-chat"),
+        channel="discord",
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws-1"),
+        session_mode=SessionMode.DEFAULT,
+        trust_level="trusted",
+        trusted_input=True,
+        is_internal_ingress=True,
+        delivery_target=DeliveryTarget(channel="discord", recipient="chan-1"),
+        stored_delivery_target=DeliveryTarget(channel="discord", recipient="chan-1"),
+        content="123456",
+        firewall_result=FirewallResult(sanitized_text="123456", original_hash="0" * 64),
+    )
+
+    assert result is not None
+    assert "confirmed c-1" in str(result["response"]).lower()
+    assert harness.confirm_calls == [
+        {
+            "confirmation_id": "c-1",
+            "decision_nonce": "nonce-1",
+            "approval_method": "totp",
+            "proof": {"totp_code": "123456"},
+            "reason": "chat_totp_confirmation",
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_u9_chat_totp_internal_ingress_ignores_mismatched_stored_delivery_target(
+    tmp_path,
+) -> None:
+    harness = _ChatConfirmationHarness(tmp_path)
+    pending = PendingAction(
+        confirmation_id="c-1",
+        decision_nonce="nonce-1",
+        session_id=SessionId("sess-chat"),
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws-1"),
+        tool_name=ToolName("web.search"),
+        arguments={"query": "hello"},
+        reason="manual",
+        capabilities={Capability.HTTP_REQUEST},
+        created_at=datetime.now(UTC),
+        selected_backend_id="totp.default",
+        selected_backend_method="totp",
+    )
+    harness._pending_actions[pending.confirmation_id] = pending
+
+    result = await SessionImplMixin._maybe_handle_chat_confirmation(
+        harness,
+        sid=SessionId("sess-chat"),
+        channel="discord",
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws-1"),
+        session_mode=SessionMode.DEFAULT,
+        trust_level="trusted",
+        trusted_input=True,
+        is_internal_ingress=True,
+        delivery_target=DeliveryTarget(channel="discord", recipient="chan-2"),
+        stored_delivery_target=DeliveryTarget(channel="discord", recipient="chan-1"),
+        content="123456",
+        firewall_result=FirewallResult(sanitized_text="123456", original_hash="0" * 64),
+    )
+
+    assert result is None
+    assert harness.confirm_calls == []
+    assert harness._pending_actions["c-1"].status == "pending"
+
+
+@pytest.mark.asyncio
+async def test_u9_chat_totp_internal_ingress_without_target_is_ignored(tmp_path) -> None:
+    harness = _ChatConfirmationHarness(tmp_path)
+    pending = PendingAction(
+        confirmation_id="c-1",
+        decision_nonce="nonce-1",
+        session_id=SessionId("sess-chat"),
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws-1"),
+        tool_name=ToolName("web.search"),
+        arguments={"query": "hello"},
+        reason="manual",
+        capabilities={Capability.HTTP_REQUEST},
+        created_at=datetime.now(UTC),
+        selected_backend_id="totp.default",
+        selected_backend_method="totp",
+    )
+    harness._pending_actions[pending.confirmation_id] = pending
+
+    result = await SessionImplMixin._maybe_handle_chat_confirmation(
+        harness,
+        sid=SessionId("sess-chat"),
+        channel="cli",
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws-1"),
+        session_mode=SessionMode.DEFAULT,
+        trust_level="trusted",
+        trusted_input=True,
+        is_internal_ingress=True,
+        content="123456",
+        firewall_result=FirewallResult(sanitized_text="123456", original_hash="0" * 64),
+    )
+
+    assert result is None
+    assert harness.confirm_calls == []
+    assert harness._pending_actions["c-1"].status == "pending"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("content", ["yes", "confirm 1", "yes to all"])
+async def test_u9_chat_internal_channel_ingress_does_not_reopen_non_totp_proofless_approval(
+    tmp_path,
+    content: str,
+) -> None:
+    harness = _ChatConfirmationHarness(tmp_path)
+    pending = PendingAction(
+        confirmation_id="c-1",
+        decision_nonce="nonce-1",
+        session_id=SessionId("sess-chat"),
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws-1"),
+        tool_name=ToolName("web.search"),
+        arguments={"query": "hello"},
+        reason="manual",
+        capabilities={Capability.HTTP_REQUEST},
+        created_at=datetime.now(UTC),
+        selected_backend_id="software.default",
+        selected_backend_method="software",
+    )
+    harness._pending_actions[pending.confirmation_id] = pending
+
+    result = await SessionImplMixin._maybe_handle_chat_confirmation(
+        harness,
+        sid=SessionId("sess-chat"),
+        channel="discord",
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws-1"),
+        session_mode=SessionMode.DEFAULT,
+        trust_level="trusted",
+        trusted_input=True,
+        is_internal_ingress=True,
+        delivery_target=DeliveryTarget(channel="discord", recipient="chan-1"),
+        content=content,
+        firewall_result=FirewallResult(sanitized_text=content, original_hash="0" * 64),
+    )
+
+    assert result is None
+    assert harness.confirm_calls == []
+    assert harness._pending_actions["c-1"].status == "pending"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("content", ["reject 1", "no to all"])
+async def test_u9_chat_internal_channel_ingress_allows_rejecting_totp_pending_actions(
+    tmp_path,
+    content: str,
+) -> None:
+    harness = _ChatConfirmationHarness(tmp_path)
+    pending = PendingAction(
+        confirmation_id="c-1",
+        decision_nonce="nonce-1",
+        session_id=SessionId("sess-chat"),
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws-1"),
+        tool_name=ToolName("web.search"),
+        arguments={"query": "hello"},
+        reason="manual",
+        capabilities={Capability.HTTP_REQUEST},
+        created_at=datetime.now(UTC),
+        selected_backend_id="totp.default",
+        selected_backend_method="totp",
+    )
+    harness._pending_actions[pending.confirmation_id] = pending
+
+    result = await SessionImplMixin._maybe_handle_chat_confirmation(
+        harness,
+        sid=SessionId("sess-chat"),
+        channel="discord",
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws-1"),
+        session_mode=SessionMode.DEFAULT,
+        trust_level="trusted",
+        trusted_input=True,
+        is_internal_ingress=True,
+        delivery_target=DeliveryTarget(channel="discord", recipient="chan-1"),
+        content=content,
+        firewall_result=FirewallResult(sanitized_text=content, original_hash="0" * 64),
+    )
+
+    assert result is not None
+    assert "rejected 1" in str(result["response"]).lower()
+    assert result["pending_confirmation_ids"] == []
+    assert harness.confirm_calls == []
+    assert harness._pending_actions["c-1"].status == "rejected"
+
+
+@pytest.mark.asyncio
+async def test_u9_chat_totp_bare_code_is_ignored_without_active_totp_prompt(tmp_path) -> None:
+    harness = _ChatConfirmationHarness(tmp_path)
+    pending = PendingAction(
+        confirmation_id="c-1",
+        decision_nonce="nonce-1",
+        session_id=SessionId("sess-chat"),
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws-1"),
+        tool_name=ToolName("web.search"),
+        arguments={"query": "hello"},
+        reason="manual",
+        capabilities={Capability.HTTP_REQUEST},
+        created_at=datetime.now(UTC),
+        selected_backend_id="software.default",
+        selected_backend_method="software",
+    )
+    harness._pending_actions[pending.confirmation_id] = pending
+
+    result = await SessionImplMixin._maybe_handle_chat_confirmation(
+        harness,
+        sid=SessionId("sess-chat"),
+        channel="cli",
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws-1"),
+        session_mode=SessionMode.DEFAULT,
+        trust_level="trusted",
+        trusted_input=True,
+        is_internal_ingress=False,
+        content="123456",
+        firewall_result=FirewallResult(sanitized_text="123456", original_hash="0" * 64),
+    )
+
+    assert result is None
+    assert harness.confirm_calls == []
+    assert harness._pending_actions["c-1"].status == "pending"
+
+
+@pytest.mark.asyncio
+async def test_u9_chat_totp_bare_code_requires_confirmation_id_when_multiple_totp_actions_exist(
+    tmp_path,
+) -> None:
+    harness = _ChatConfirmationHarness(tmp_path)
+    first = PendingAction(
+        confirmation_id="c-1",
+        decision_nonce="nonce-1",
+        session_id=SessionId("sess-chat"),
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws-1"),
+        tool_name=ToolName("web.search"),
+        arguments={"query": "hello"},
+        reason="manual",
+        capabilities={Capability.HTTP_REQUEST},
+        created_at=datetime.now(UTC),
+        selected_backend_id="totp.default",
+        selected_backend_method="totp",
+    )
+    second = PendingAction(
+        confirmation_id="c-2",
+        decision_nonce="nonce-2",
+        session_id=SessionId("sess-chat"),
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws-1"),
+        tool_name=ToolName("web.search"),
+        arguments={"query": "world"},
+        reason="manual",
+        capabilities={Capability.HTTP_REQUEST},
+        created_at=datetime.now(UTC),
+        selected_backend_id="totp.default",
+        selected_backend_method="totp",
+    )
+    harness._pending_actions[first.confirmation_id] = first
+    harness._pending_actions[second.confirmation_id] = second
+
+    result = await SessionImplMixin._maybe_handle_chat_confirmation(
+        harness,
+        sid=SessionId("sess-chat"),
+        channel="cli",
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws-1"),
+        session_mode=SessionMode.DEFAULT,
+        trust_level="trusted",
+        trusted_input=True,
+        is_internal_ingress=False,
+        content="123456",
+        firewall_result=FirewallResult(sanitized_text="123456", original_hash="0" * 64),
+    )
+
+    assert result is not None
+    response = str(result["response"]).lower()
+    assert "multiple totp confirmations are pending" in response
+    assert "confirm confirmation_id 123456" in response
+    assert "c-1" in response
+    assert "c-2" in response
+    assert harness.confirm_calls == []
+    assert result["pending_confirmation_ids"] == ["c-1", "c-2"]
+
+
+@pytest.mark.asyncio
+async def test_u9_chat_totp_confirm_id_code_targets_specific_pending_action(tmp_path) -> None:
+    harness = _ChatConfirmationHarness(tmp_path)
+    first = PendingAction(
+        confirmation_id="c-1",
+        decision_nonce="nonce-1",
+        session_id=SessionId("sess-chat"),
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws-1"),
+        tool_name=ToolName("web.search"),
+        arguments={"query": "hello"},
+        reason="manual",
+        capabilities={Capability.HTTP_REQUEST},
+        created_at=datetime.now(UTC),
+        selected_backend_id="totp.default",
+        selected_backend_method="totp",
+    )
+    second = PendingAction(
+        confirmation_id="c-2",
+        decision_nonce="nonce-2",
+        session_id=SessionId("sess-chat"),
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws-1"),
+        tool_name=ToolName("web.search"),
+        arguments={"query": "world"},
+        reason="manual",
+        capabilities={Capability.HTTP_REQUEST},
+        created_at=datetime.now(UTC),
+        selected_backend_id="totp.default",
+        selected_backend_method="totp",
+    )
+    harness._pending_actions[first.confirmation_id] = first
+    harness._pending_actions[second.confirmation_id] = second
+
+    result = await SessionImplMixin._maybe_handle_chat_confirmation(
+        harness,
+        sid=SessionId("sess-chat"),
+        channel="cli",
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws-1"),
+        session_mode=SessionMode.DEFAULT,
+        trust_level="trusted",
+        trusted_input=True,
+        is_internal_ingress=False,
+        content="confirm c-2 123456",
+        firewall_result=FirewallResult(
+            sanitized_text="confirm c-2 123456",
+            original_hash="0" * 64,
+        ),
+    )
+
+    assert result is not None
+    response = str(result["response"]).lower()
+    assert "confirmed c-2" in response
+    assert "6-digit code" in response
+    assert result["pending_confirmation_ids"] == ["c-1"]
+    assert harness.confirm_calls == [
+        {
+            "confirmation_id": "c-2",
+            "decision_nonce": "nonce-2",
+            "approval_method": "totp",
+            "proof": {"totp_code": "123456"},
+            "reason": "chat_totp_confirmation",
+        }
+    ]
+    assert result["checkpoint_ids"] == []
+    assert result["checkpoints_created"] == 0
+
+
+@pytest.mark.asyncio
+async def test_u9_chat_totp_confirm_n_does_not_attempt_proofless_approval(tmp_path) -> None:
+    harness = _ChatConfirmationHarness(tmp_path)
+    pending = PendingAction(
+        confirmation_id="c-1",
+        decision_nonce="nonce-1",
+        session_id=SessionId("sess-chat"),
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws-1"),
+        tool_name=ToolName("web.search"),
+        arguments={"query": "hello"},
+        reason="manual",
+        capabilities={Capability.HTTP_REQUEST},
+        created_at=datetime.now(UTC),
+        selected_backend_id="totp.default",
+        selected_backend_method="totp",
+    )
+    harness._pending_actions[pending.confirmation_id] = pending
+
+    result = await SessionImplMixin._maybe_handle_chat_confirmation(
+        harness,
+        sid=SessionId("sess-chat"),
+        channel="cli",
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws-1"),
+        session_mode=SessionMode.DEFAULT,
+        trust_level="trusted",
+        trusted_input=True,
+        is_internal_ingress=False,
+        content="confirm 1",
+        firewall_result=FirewallResult(sanitized_text="confirm 1", original_hash="0" * 64),
+    )
+
+    assert result is not None
+    response = str(result["response"]).lower()
+    assert "6-digit code flow" in response
+    assert "missing_totp_code" not in response
+    assert harness.confirm_calls == []
+    assert result["pending_confirmation_ids"] == ["c-1"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("content", ["confirm 1", "yes to all"])
+async def test_u9_chat_totp_proofless_recovery_lists_confirmation_ids_for_multi_totp_sessions(
+    tmp_path,
+    content: str,
+) -> None:
+    harness = _ChatConfirmationHarness(tmp_path)
+    first = PendingAction(
+        confirmation_id="c-1",
+        decision_nonce="nonce-1",
+        session_id=SessionId("sess-chat"),
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws-1"),
+        tool_name=ToolName("web.search"),
+        arguments={"query": "hello"},
+        reason="manual",
+        capabilities={Capability.HTTP_REQUEST},
+        created_at=datetime.now(UTC),
+        selected_backend_id="totp.default",
+        selected_backend_method="totp",
+    )
+    second = PendingAction(
+        confirmation_id="c-2",
+        decision_nonce="nonce-2",
+        session_id=SessionId("sess-chat"),
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws-1"),
+        tool_name=ToolName("web.search"),
+        arguments={"query": "world"},
+        reason="manual",
+        capabilities={Capability.HTTP_REQUEST},
+        created_at=datetime.now(UTC),
+        selected_backend_id="totp.default",
+        selected_backend_method="totp",
+    )
+    harness._pending_actions[first.confirmation_id] = first
+    harness._pending_actions[second.confirmation_id] = second
+
+    result = await SessionImplMixin._maybe_handle_chat_confirmation(
+        harness,
+        sid=SessionId("sess-chat"),
+        channel="cli",
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws-1"),
+        session_mode=SessionMode.DEFAULT,
+        trust_level="trusted",
+        trusted_input=True,
+        is_internal_ingress=False,
+        content=content,
+        firewall_result=FirewallResult(sanitized_text=content, original_hash="0" * 64),
+    )
+
+    assert result is not None
+    response = str(result["response"]).lower()
+    assert "6-digit code flow" in response
+    assert "confirm confirmation_id 123456" in response
+    assert "confirmation id: c-1" in response
+    assert "confirmation id: c-2" in response
+    assert harness.confirm_calls == []
+    assert result["pending_confirmation_ids"] == ["c-1", "c-2"]
+
+
+@pytest.mark.asyncio
+async def test_u9_chat_totp_confirm_id_code_rejects_unknown_confirmation_id(tmp_path) -> None:
+    harness = _ChatConfirmationHarness(tmp_path)
+    first = PendingAction(
+        confirmation_id="c-1",
+        decision_nonce="nonce-1",
+        session_id=SessionId("sess-chat"),
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws-1"),
+        tool_name=ToolName("web.search"),
+        arguments={"query": "hello"},
+        reason="manual",
+        capabilities={Capability.HTTP_REQUEST},
+        created_at=datetime.now(UTC),
+        selected_backend_id="totp.default",
+        selected_backend_method="totp",
+    )
+    second = PendingAction(
+        confirmation_id="c-2",
+        decision_nonce="nonce-2",
+        session_id=SessionId("sess-chat"),
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws-1"),
+        tool_name=ToolName("web.search"),
+        arguments={"query": "world"},
+        reason="manual",
+        capabilities={Capability.HTTP_REQUEST},
+        created_at=datetime.now(UTC),
+        selected_backend_id="totp.default",
+        selected_backend_method="totp",
+    )
+    harness._pending_actions[first.confirmation_id] = first
+    harness._pending_actions[second.confirmation_id] = second
+
+    result = await SessionImplMixin._maybe_handle_chat_confirmation(
+        harness,
+        sid=SessionId("sess-chat"),
+        channel="cli",
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws-1"),
+        session_mode=SessionMode.DEFAULT,
+        trust_level="trusted",
+        trusted_input=True,
+        is_internal_ingress=False,
+        content="confirm c-9 123456",
+        firewall_result=FirewallResult(
+            sanitized_text="confirm c-9 123456",
+            original_hash="0" * 64,
+        ),
+    )
+
+    assert result is not None
+    response = str(result["response"]).lower()
+    assert "totp confirmation id not found for this session" in response
+    assert "confirm confirmation_id 123456" in response
+    assert "c-1" in response
+    assert "c-2" in response
+    assert harness.confirm_calls == []
+    assert result["pending_confirmation_ids"] == ["c-1", "c-2"]

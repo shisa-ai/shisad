@@ -224,6 +224,12 @@ class ChatConfirmationIntent:
     index: int | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class ChatTotpSubmission:
+    confirmation_id: str | None
+    code: str
+
+
 @dataclass(slots=True)
 class SessionMessageValidationResult:
     sid: SessionId
@@ -379,6 +385,8 @@ _CRC_CONFIRM_ALL_PATTERNS = {"yes to all", "confirm all", "approve all"}
 _CRC_REJECT_ALL_PATTERNS = {"no to all", "reject all", "deny all", "cancel all"}
 _CRC_CONFIRM_INDEX_RE = re.compile(r"^(?:confirm|approve|yes)\s+(\d+)$")
 _CRC_REJECT_INDEX_RE = re.compile(r"^(?:reject|deny|no)\s+(\d+)$")
+_CHAT_TOTP_BARE_CODE_RE = re.compile(r"^(\d{6})$")
+_CHAT_TOTP_TARGETED_CODE_RE = re.compile(r"^(?:confirm|approve)\s+(\S+)\s+(\d{6})$")
 _AUTO_CLEANROOM_ADMIN_ACTION_RE = re.compile(
     r"(?i)\b("
     r"install|apply|rollback|roll\s+back|update|enable|disable|activate|deactivate|"
@@ -421,6 +429,66 @@ def _classify_chat_confirmation_intent(text: str) -> ChatConfirmationIntent:
     if normalized in _CRC_NEGATIVE_PATTERNS:
         return ChatConfirmationIntent(action="reject", target="single")
     return ChatConfirmationIntent(action="none", target="none")
+
+
+def _parse_chat_totp_submission(text: str) -> ChatTotpSubmission | None:
+    normalized = " ".join(text.strip().split())
+    if not normalized:
+        return None
+    targeted_match = _CHAT_TOTP_TARGETED_CODE_RE.fullmatch(normalized.lower())
+    if targeted_match is not None:
+        return ChatTotpSubmission(
+            confirmation_id=targeted_match.group(1).strip(),
+            code=targeted_match.group(2),
+        )
+    bare_match = _CHAT_TOTP_BARE_CODE_RE.fullmatch(normalized)
+    if bare_match is not None:
+        return ChatTotpSubmission(confirmation_id=None, code=bare_match.group(1))
+    return None
+
+
+def _pending_uses_totp(pending: Any) -> bool:
+    return str(getattr(pending, "selected_backend_method", "")).strip() == "totp"
+
+
+def _totp_pending_rows(pending_rows: Sequence[Any]) -> list[Any]:
+    return [pending for pending in pending_rows if _pending_uses_totp(pending)]
+
+
+def _non_totp_pending_rows(pending_rows: Sequence[Any]) -> list[Any]:
+    return [pending for pending in pending_rows if not _pending_uses_totp(pending)]
+
+
+def _totp_cli_confirm_command(confirmation_id: str) -> str:
+    return f"shisad action confirm {confirmation_id} --totp-code 123456"
+
+
+def _checkpoint_id_from_action_result(result: Mapping[str, Any]) -> str:
+    checkpoint_id = result.get("checkpoint_id")
+    if checkpoint_id is None:
+        return ""
+    return str(checkpoint_id).strip()
+
+
+def _chat_totp_guidance_lines(*, pending_rows: Sequence[Any]) -> list[str]:
+    if not _totp_pending_rows(pending_rows):
+        return []
+    return [
+        "TOTP in chat: if exactly one TOTP action is pending, reply with the 6-digit code.",
+        "If multiple TOTP actions are pending, reply with 'confirm CONFIRMATION_ID 123456'.",
+        f"CLI fallback: run '{_totp_cli_confirm_command('CONFIRMATION_ID')}'.",
+    ]
+
+
+def _chat_totp_disambiguation_text(*, heading: str, pending_rows: Sequence[Any]) -> str:
+    lines = [heading, "Pending TOTP confirmation IDs:"]
+    for pending in pending_rows:
+        confirmation_id = str(getattr(pending, "confirmation_id", "")).strip()
+        if confirmation_id:
+            lines.append(f"- {confirmation_id}")
+    lines.append("Reply with 'confirm CONFIRMATION_ID 123456'.")
+    lines.append(f"CLI fallback: run '{_totp_cli_confirm_command('CONFIRMATION_ID')}'.")
+    return "\n".join(lines)
 
 
 def _resolve_chat_confirmation_indexes(
@@ -1539,7 +1607,15 @@ def _daemon_pending_confirmation_response_text(
     pending_confirmation_ids: Sequence[str],
     pending_actions: Mapping[str, Any] | None,
     pending_index_by_id: Mapping[str, int] | None = None,
+    binding_pending_rows: Sequence[Any] | None = None,
 ) -> str:
+    binding_rows = list(binding_pending_rows or ())
+    binding_totp_rows = _totp_pending_rows(binding_rows)
+    single_totp_confirmation_id = (
+        str(getattr(binding_totp_rows[0], "confirmation_id", "")).strip()
+        if len(binding_totp_rows) == 1
+        else ""
+    )
     lines = [
         "[PENDING CONFIRMATIONS]",
         "Queued for your approval:",
@@ -1555,10 +1631,18 @@ def _daemon_pending_confirmation_response_text(
             pending_number = pending_index_by_id.get(confirmation_id, pending_number)
         pending = pending_actions.get(confirmation_id) if pending_actions is not None else None
         lines.append(f"{pending_number}. {confirmation_id}")
-        lines.append(
-            f"   In chat: reply with 'confirm {pending_number}' or 'reject {pending_number}'"
-        )
-        lines.append(f"   Confirm: shisad action confirm {confirmation_id}")
+        if pending is not None and _pending_uses_totp(pending):
+            if single_totp_confirmation_id == confirmation_id:
+                lines.append("   TOTP in chat: reply with the 6-digit code")
+            else:
+                lines.append(f"   TOTP in chat: reply with 'confirm {confirmation_id} 123456'")
+            lines.append(f"   To reject in chat: reply with 'reject {pending_number}'")
+            lines.append(f"   CLI fallback: {_totp_cli_confirm_command(confirmation_id)}")
+        else:
+            lines.append(
+                f"   In chat: reply with 'confirm {pending_number}' or 'reject {pending_number}'"
+            )
+            lines.append(f"   Confirm: shisad action confirm {confirmation_id}")
         preview = ""
         if pending is not None:
             preview = str(getattr(pending, "safe_preview", "") or "").strip()
@@ -2716,21 +2800,32 @@ class SessionImplMixin(HandlerMixinBase):
         pending_rows: Sequence[Any],
         tainted_session: bool,
     ) -> str:
+        totp_rows = _totp_pending_rows(pending_rows)
+        non_totp_rows = _non_totp_pending_rows(pending_rows)
         if tainted_session:
-            lines = [
-                "Pending confirmations (tainted session).",
-                "Reply with 'confirm N', 'reject N', 'yes to all', or 'no to all'.",
-            ]
+            lines = ["Pending confirmations (tainted session)."]
         else:
-            lines = [
-                "Pending confirmations.",
-                "Reply with 'confirm N', 'reject N', 'yes to all', or 'no to all'.",
-            ]
+            lines = ["Pending confirmations."]
+        if totp_rows:
+            if non_totp_rows:
+                lines.append(
+                    "For non-TOTP items, reply with 'confirm N' or 'reject N'. "
+                    "Reply with 'no to all' to reject all pending items."
+                )
+            else:
+                lines.append("Reply with 'reject N' or 'no to all' to deny pending items.")
+            lines.extend(_chat_totp_guidance_lines(pending_rows=pending_rows))
+        else:
+            lines.append("Reply with 'confirm N', 'reject N', 'yes to all', or 'no to all'.")
         for idx, pending in enumerate(pending_rows, start=1):
             reason = str(pending.reason or "").strip()
             if not reason:
                 reason = "requires_confirmation"
             lines.append(f"{idx}. {pending.tool_name}: {reason}")
+            if _pending_uses_totp(pending):
+                confirmation_id = str(getattr(pending, "confirmation_id", "")).strip()
+                if confirmation_id:
+                    lines.append(f"   confirmation ID: {confirmation_id}")
             for warning in list(getattr(pending, "warnings", []) or []):
                 warning_text = str(warning).strip()
                 if warning_text.startswith("This action was flagged because:"):
@@ -2749,10 +2844,23 @@ class SessionImplMixin(HandlerMixinBase):
         trust_level: str,
         trusted_input: bool,
         is_internal_ingress: bool,
+        delivery_target: DeliveryTarget | None = None,
+        stored_delivery_target: DeliveryTarget | None = None,
         content: str,
         firewall_result: FirewallResult,
     ) -> dict[str, Any] | None:
-        if is_internal_ingress or not trusted_input:
+        allow_channel_ingress_confirmation = is_internal_ingress and delivery_target is not None
+        if not trusted_input:
+            return None
+        if (
+            is_internal_ingress
+            and delivery_target is not None
+            and stored_delivery_target is not None
+            and delivery_target.model_dump(mode="json")
+            != stored_delivery_target.model_dump(mode="json")
+        ):
+            return None
+        if is_internal_ingress and not allow_channel_ingress_confirmation:
             return None
         pending_rows = self._pending_confirmations_for_binding(
             session_id=sid,
@@ -2762,67 +2870,170 @@ class SessionImplMixin(HandlerMixinBase):
         if not pending_rows:
             return None
 
-        intent = _classify_chat_confirmation_intent(content)
-        if intent.action == "none":
-            return None
         tainted_session = (
             self._session_has_tainted_history(sid) or firewall_result.risk_score >= 0.7
         )
-        indexes = _resolve_chat_confirmation_indexes(
-            intent=intent,
-            pending_count=len(pending_rows),
-            tainted_session=tainted_session,
-        )
-        if not indexes:
-            response_text = self._chat_pending_confirmation_summary(
-                pending_rows=pending_rows,
-                tainted_session=tainted_session,
-            )
+        totp_rows = _totp_pending_rows(pending_rows)
+        totp_submission = _parse_chat_totp_submission(content) if totp_rows else None
+        intent: ChatConfirmationIntent | None = None
+        if is_internal_ingress and totp_submission is None:
+            intent = _classify_chat_confirmation_intent(content)
+            if intent.action != "reject":
+                return None
+        if totp_submission is not None:
             executed_actions = 0
             blocked_actions = 0
             checkpoint_ids: list[str] = []
-        else:
-            executed_actions = 0
-            blocked_actions = 0
-            checkpoint_ids = []
-            outcome_lines: list[str] = []
-            for index in indexes:
-                pending = pending_rows[index]
-                payload = {
-                    "confirmation_id": pending.confirmation_id,
-                    "decision_nonce": pending.decision_nonce,
-                    "reason": "chat_confirmation",
-                }
-                if intent.action == "confirm":
-                    result = await self.do_action_confirm(payload)
-                    confirmed = bool(result.get("confirmed", False))
-                    if confirmed:
-                        executed_actions += 1
-                    else:
-                        blocked_actions += 1
-                    checkpoint_id = str(result.get("checkpoint_id", "")).strip()
-                    if checkpoint_id:
-                        checkpoint_ids.append(checkpoint_id)
-                    status = str(result.get("status") or result.get("reason") or "failed").strip()
-                    outcome_lines.append(f"confirmed {index + 1} ({pending.tool_name}): {status}")
+            target_pending = None
+            if totp_submission.confirmation_id is not None:
+                target_pending = next(
+                    (
+                        pending
+                        for pending in totp_rows
+                        if str(getattr(pending, "confirmation_id", "")).strip().lower()
+                        == str(totp_submission.confirmation_id).strip().lower()
+                    ),
+                    None,
+                )
+                if target_pending is None:
+                    response_text = _chat_totp_disambiguation_text(
+                        heading="TOTP confirmation ID not found for this session.",
+                        pending_rows=totp_rows,
+                    )
                 else:
-                    result = await self.do_action_reject(payload)
-                    rejected = bool(result.get("rejected", False))
-                    if rejected:
-                        blocked_actions += 1
-                    status = str(result.get("status") or result.get("reason") or "failed").strip()
-                    outcome_lines.append(f"rejected {index + 1} ({pending.tool_name}): {status}")
-            response_text = "\n".join(outcome_lines)
-            remaining = self._pending_confirmations_for_binding(
-                session_id=sid,
-                user_id=user_id,
-                workspace_id=workspace_id,
+                    response_text = ""
+            elif len(totp_rows) != 1:
+                response_text = _chat_totp_disambiguation_text(
+                    heading="Multiple TOTP confirmations are pending.",
+                    pending_rows=totp_rows,
+                )
+            else:
+                target_pending = totp_rows[0]
+                response_text = ""
+            if target_pending is not None:
+                payload = {
+                    "confirmation_id": target_pending.confirmation_id,
+                    "decision_nonce": target_pending.decision_nonce,
+                    "approval_method": "totp",
+                    "proof": {"totp_code": totp_submission.code},
+                    "reason": "chat_totp_confirmation",
+                }
+                result = await self.do_action_confirm(payload)
+                confirmed = bool(result.get("confirmed", False))
+                if confirmed:
+                    executed_actions += 1
+                else:
+                    blocked_actions += 1
+                checkpoint_id = _checkpoint_id_from_action_result(result)
+                if checkpoint_id:
+                    checkpoint_ids.append(checkpoint_id)
+                status = str(result.get("status") or result.get("reason") or "failed").strip()
+                confirmation_label = str(getattr(target_pending, "confirmation_id", "")).strip()
+                if confirmed:
+                    response_text = (
+                        f"confirmed {confirmation_label} ({target_pending.tool_name}): {status}"
+                    )
+                else:
+                    response_text = (
+                        f"confirmation failed for {confirmation_label} "
+                        f"({target_pending.tool_name}): {status}"
+                    )
+                remaining = self._pending_confirmations_for_binding(
+                    session_id=sid,
+                    user_id=user_id,
+                    workspace_id=workspace_id,
+                )
+                if remaining:
+                    response_text = (
+                        f"{response_text}\n\n"
+                        + self._chat_pending_confirmation_summary(
+                            pending_rows=remaining,
+                            tainted_session=tainted_session,
+                        )
+                    )
+        else:
+            if intent is None:
+                intent = _classify_chat_confirmation_intent(content)
+            if intent.action == "none":
+                return None
+            indexes = _resolve_chat_confirmation_indexes(
+                intent=intent,
+                pending_count=len(pending_rows),
+                tainted_session=tainted_session,
             )
-            if remaining:
-                response_text = f"{response_text}\n\n" + self._chat_pending_confirmation_summary(
-                    pending_rows=remaining,
+            if not indexes:
+                response_text = self._chat_pending_confirmation_summary(
+                    pending_rows=pending_rows,
                     tainted_session=tainted_session,
                 )
+                executed_actions = 0
+                blocked_actions = 0
+                checkpoint_ids = []
+            else:
+                executed_actions = 0
+                blocked_actions = 0
+                checkpoint_ids = []
+                outcome_lines: list[str] = []
+                skipped_totp_confirmation = False
+                for index in indexes:
+                    pending = pending_rows[index]
+                    if intent.action == "confirm" and _pending_uses_totp(pending):
+                        skipped_totp_confirmation = True
+                        continue
+                    payload = {
+                        "confirmation_id": pending.confirmation_id,
+                        "decision_nonce": pending.decision_nonce,
+                        "reason": "chat_confirmation",
+                    }
+                    if intent.action == "confirm":
+                        result = await self.do_action_confirm(payload)
+                        confirmed = bool(result.get("confirmed", False))
+                        if confirmed:
+                            executed_actions += 1
+                        else:
+                            blocked_actions += 1
+                        checkpoint_id = _checkpoint_id_from_action_result(result)
+                        if checkpoint_id:
+                            checkpoint_ids.append(checkpoint_id)
+                        status = str(
+                            result.get("status") or result.get("reason") or "failed"
+                        ).strip()
+                        outcome_lines.append(
+                            f"confirmed {index + 1} ({pending.tool_name}): {status}"
+                        )
+                    else:
+                        result = await self.do_action_reject(payload)
+                        rejected = bool(result.get("rejected", False))
+                        if rejected:
+                            blocked_actions += 1
+                        status = str(
+                            result.get("status") or result.get("reason") or "failed"
+                        ).strip()
+                        outcome_lines.append(
+                            f"rejected {index + 1} ({pending.tool_name}): {status}"
+                        )
+                remaining = self._pending_confirmations_for_binding(
+                    session_id=sid,
+                    user_id=user_id,
+                    workspace_id=workspace_id,
+                )
+                response_text = "\n".join(outcome_lines)
+                if skipped_totp_confirmation:
+                    guidance = (
+                        "TOTP-backed confirmations require the 6-digit code flow; "
+                        "'confirm N' and 'yes to all' do not approve them."
+                    )
+                    response_text = (
+                        f"{response_text}\n\n{guidance}" if response_text else guidance
+                    )
+                if remaining:
+                    response_text = (
+                        f"{response_text}\n\n"
+                        + self._chat_pending_confirmation_summary(
+                            pending_rows=remaining,
+                            tainted_session=tainted_session,
+                        )
+                    )
 
         output_result = self._output_firewall.inspect(
             response_text,
@@ -3075,6 +3286,7 @@ class SessionImplMixin(HandlerMixinBase):
                 }
 
         delivery_target: DeliveryTarget | None = None
+        stored_delivery_target: DeliveryTarget | None = None
         channel_message_id = ""
         if is_internal_ingress:
             raw_delivery_target = params.get("_delivery_target")
@@ -3084,6 +3296,31 @@ class SessionImplMixin(HandlerMixinBase):
                 except ValidationError:
                     delivery_target = None
             channel_message_id = str(params.get("_channel_message_id", "")).strip()
+        raw_stored_delivery_target = session.metadata.get("delivery_target")
+        if isinstance(raw_stored_delivery_target, dict):
+            try:
+                stored_delivery_target = DeliveryTarget.model_validate(raw_stored_delivery_target)
+            except ValidationError:
+                stored_delivery_target = None
+        suppress_delivery_target_persist = False
+        if (
+            is_internal_ingress
+            and delivery_target is not None
+            and stored_delivery_target is not None
+            and delivery_target.model_dump(mode="json")
+            != stored_delivery_target.model_dump(mode="json")
+        ):
+            # Do not let a rejected TOTP reply retarget the live session binding.
+            pending_rows = self._pending_confirmations_for_binding(
+                session_id=sid,
+                user_id=user_id,
+                workspace_id=workspace_id,
+            )
+            if (
+                _totp_pending_rows(pending_rows)
+                and _parse_chat_totp_submission(content) is not None
+            ):
+                suppress_delivery_target_persist = True
 
         if early_response is None and session_mode == SessionMode.ADMIN_CLEANROOM:
             incoming_taint_labels.discard(TaintLabel.UNTRUSTED)
@@ -3121,9 +3358,10 @@ class SessionImplMixin(HandlerMixinBase):
                 user_transcript_metadata["channel_message_id"] = channel_message_id
             if delivery_target is not None:
                 serialized_target = delivery_target.model_dump(mode="json")
-                session.metadata["delivery_target"] = serialized_target
-                self._session_manager.persist(sid)
                 user_transcript_metadata["delivery_target"] = serialized_target
+                if not suppress_delivery_target_persist:
+                    session.metadata["delivery_target"] = serialized_target
+                    self._session_manager.persist(sid)
             self._transcript_store.append(
                 sid,
                 role="user",
@@ -3140,6 +3378,8 @@ class SessionImplMixin(HandlerMixinBase):
                 trust_level=trust_level,
                 trusted_input=trusted_input,
                 is_internal_ingress=is_internal_ingress,
+                delivery_target=delivery_target,
+                stored_delivery_target=stored_delivery_target,
                 content=content,
                 firewall_result=firewall_result,
             )
@@ -4115,6 +4355,7 @@ class SessionImplMixin(HandlerMixinBase):
                 pending_confirmation_ids=execution.pending_confirmation_ids,
                 pending_actions=getattr(self, "_pending_actions", {}),
                 pending_index_by_id=pending_index_by_id,
+                binding_pending_rows=pending_rows,
             )
             if tool_output_summary:
                 response_text = f"{response_text}\n\nCompleted actions:\n{tool_output_summary}"

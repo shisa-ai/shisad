@@ -697,6 +697,38 @@ async def test_finalize_response_replaces_planner_text_with_daemon_pending_summa
 
 
 @pytest.mark.asyncio
+async def test_finalize_response_uses_totp_aware_cli_fallback_for_totp_pending_actions() -> None:
+    harness = _FinalizeEvidenceHarness()
+    harness._pending_actions = {
+        "c-1": SimpleNamespace(
+            confirmation_id="c-1",
+            session_id=SessionId("sess-g1"),
+            user_id=UserId("user-g1"),
+            workspace_id=WorkspaceId("workspace-g1"),
+            created_at=1,
+            safe_preview="ACTION CONFIRMATION\nAction: fs.read",
+            reason="requires_confirmation",
+            decision_nonce="nonce-1",
+            status="pending",
+            selected_backend_method="totp",
+        ),
+    }
+    execution = _finalize_execution_result(
+        tool_outputs=[],
+        assistant_response="I'll do it now.",
+        pending_confirmation=1,
+        pending_confirmation_ids=["c-1"],
+    )
+
+    response = await SessionImplMixin._finalize_response(harness, execution)
+
+    text = str(response["response"])
+    assert "reply with the 6-digit code" in text
+    assert "shisad action confirm c-1 --totp-code 123456" in text
+    assert "Confirm: shisad action confirm c-1\n" not in text
+
+
+@pytest.mark.asyncio
 async def test_finalize_response_uses_global_pending_indexes_for_new_actions() -> None:
     harness = _FinalizeEvidenceHarness()
     harness._pending_actions = {
@@ -736,6 +768,51 @@ async def test_finalize_response_uses_global_pending_indexes_for_new_actions() -
     assert "1. c-new" not in text
     assert "2. c-new" in text
     assert "confirm 2" in text
+
+
+@pytest.mark.asyncio
+async def test_finalize_response_hides_totp_code_path_for_new_non_totp_action() -> None:
+    harness = _FinalizeEvidenceHarness()
+    harness._pending_actions = {
+        "c-old": SimpleNamespace(
+            confirmation_id="c-old",
+            session_id=SessionId("sess-g1"),
+            user_id=UserId("user-g1"),
+            workspace_id=WorkspaceId("workspace-g1"),
+            created_at=1,
+            safe_preview="ACTION CONFIRMATION\nAction: fs.read",
+            reason="requires_confirmation",
+            decision_nonce="nonce-old",
+            status="pending",
+            selected_backend_method="totp",
+        ),
+        "c-new": SimpleNamespace(
+            confirmation_id="c-new",
+            session_id=SessionId("sess-g1"),
+            user_id=UserId("user-g1"),
+            workspace_id=WorkspaceId("workspace-g1"),
+            created_at=2,
+            safe_preview="ACTION CONFIRMATION\nAction: web.fetch",
+            reason="requires_confirmation",
+            decision_nonce="nonce-new",
+            status="pending",
+            selected_backend_method="software",
+        ),
+    }
+    execution = _finalize_execution_result(
+        tool_outputs=[],
+        assistant_response="Queued it.",
+        pending_confirmation=1,
+        pending_confirmation_ids=["c-new"],
+    )
+
+    response = await SessionImplMixin._finalize_response(harness, execution)
+
+    text = str(response["response"])
+    assert "2. c-new" in text
+    assert "confirm 2" in text
+    assert "6-digit code" not in text
+    assert "--totp-code" not in text
     assert "reject 2" in text
     assert "yes to all" not in text
 
