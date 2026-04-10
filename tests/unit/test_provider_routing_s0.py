@@ -25,6 +25,11 @@ def _clean_api_key_env(monkeypatch: pytest.MonkeyPatch) -> None:
             monkeypatch.delenv(var, raising=False)
 
 
+@pytest.fixture(autouse=True)
+def _isolate_model_route_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    _clean_api_key_env(monkeypatch)
+
+
 def test_s0_openai_preset_resolves_route_defaults_and_global_remote(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
