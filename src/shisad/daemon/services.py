@@ -39,7 +39,7 @@ from shisad.core.providers.embeddings_adapter import SyncEmbeddingsAdapter
 from shisad.core.providers.local_planner import LocalPlannerProvider
 from shisad.core.providers.monitor_adapter import MonitorProviderAdapter
 from shisad.core.providers.routed_openai import RoutedOpenAIProvider
-from shisad.core.providers.routing import ModelComponent, ModelRouter
+from shisad.core.providers.routing import ModelComponent, ModelRouter, provider_preset_label
 from shisad.core.session import CheckpointStore, Session, SessionManager
 from shisad.core.tools.builtin.alarm import AlarmTool
 from shisad.core.tools.builtin.shell_exec import ShellExecTool
@@ -146,6 +146,15 @@ def _warn_on_evidence_kms_endpoint_config(config: DaemonConfig) -> None:
                 "TLS protection."
             ),
             endpoint,
+        )
+
+
+def _warn_on_provider_route_gaps(router: ModelRouter) -> None:
+    embeddings_route = router.route_for(ModelComponent.EMBEDDINGS)
+    if not embeddings_route.remote_enabled:
+        logger.warning(
+            "Embeddings route not configured - memory search and semantic retrieval "
+            "will be unavailable."
         )
 
 
@@ -411,6 +420,7 @@ class DaemonServices:
             monitor_provider: MonitorProviderAdapter | None = None
             provider_diagnostics = _build_provider_diagnostics(router)
             _log_provider_route_summary(router)
+            _warn_on_provider_route_gaps(router)
             if any(route.remote_enabled for route in router.all_routes().values()):
                 provider = RoutedOpenAIProvider(
                     router=router,
@@ -1365,6 +1375,7 @@ def _build_provider_diagnostics(router: ModelRouter) -> dict[str, Any]:
             problems.append(f"{component.value}_missing_api_key")
         routes[component.value] = {
             "preset": route.provider_preset.value,
+            "preset_label": provider_preset_label(route),
             "preset_source": route.provider_preset_source,
             "base_url": route.base_url,
             "endpoint_family": route.endpoint_family.value,
@@ -1483,13 +1494,15 @@ def _register_route_credentials(
 def _log_provider_route_summary(router: ModelRouter) -> None:
     for component in ModelComponent:
         route = router.route_for(component)
+        preset_label = provider_preset_label(route)
         logger.info(
             (
-                "Model route resolved: component=%s preset=%s preset_source=%s "
+                "Model route resolved: component=%s preset=%s raw_preset=%s preset_source=%s "
                 "base_url=%s endpoint_family=%s remote_enabled=%s remote_source=%s "
                 "auth_mode=%s key_source=%s request_profile=%s profile_source=%s"
             ),
             component.value,
+            preset_label,
             route.provider_preset.value,
             route.provider_preset_source,
             route.base_url,

@@ -103,6 +103,15 @@ def _validate_model_endpoints(model_config: ModelConfig, router: ModelRouter) ->
     _validate(model_config, router)
 
 
+def _warn_on_startup_config_gaps(config: DaemonConfig) -> None:
+    if config.assistant_fs_roots:
+        return
+    logger.warning(
+        "No filesystem roots configured - fs.read, fs.list, fs.write, and git "
+        "tools will not work. Set SHISAD_ASSISTANT_FS_ROOTS to enable."
+    )
+
+
 def _method_specs(
     handlers: DaemonControlHandlers,
 ) -> list[tuple[str, Any, bool, type[BaseModel]]]:
@@ -328,6 +337,7 @@ async def run_daemon(config: DaemonConfig) -> None:
         _n_domains,
         config.assistant_fs_roots,
     )
+    _warn_on_startup_config_gaps(config)
     channel_pump_tasks: list[asyncio.Task[None]] = []
     reminder_pump_task = asyncio.create_task(
         _reminder_delivery_pump(services=services, handlers=handlers)

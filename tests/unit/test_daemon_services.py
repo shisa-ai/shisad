@@ -15,12 +15,15 @@ from shisad.core.providers.routing import ModelRouter
 from shisad.core.types import Capability, ToolName
 from shisad.daemon.services import (
     DaemonServices,
+    _build_provider_diagnostics,
     _build_tool_registry,
     _key_gated_acceptance_matrix,
+    _log_provider_route_summary,
     _normalize_tool_destination,
     _register_route_credentials,
     _validate_security_route_pins,
     _warn_on_evidence_kms_endpoint_config,
+    _warn_on_provider_route_gaps,
 )
 from shisad.security.control_plane.sidecar import ControlPlaneUnavailableError
 from shisad.security.credentials import InMemoryCredentialStore
@@ -814,3 +817,63 @@ def test_m1_pf11_model_route_pinning_default_allows_mismatch(
     model = ModelConfig()
     router = ModelRouter(model)
     _validate_security_route_pins(model, router)
+
+
+def test_u4_provider_diagnostics_marks_custom_preset_label_for_global_base_url_override(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clear_remote_provider_env(monkeypatch)
+    config = ModelConfig(base_url="https://proxy.example.com/v1")
+
+    diagnostics = _build_provider_diagnostics(ModelRouter(config))
+
+    planner_route = diagnostics["routes"]["planner"]
+    assert planner_route["preset"] == "shisa_default"
+    assert planner_route["preset_label"] == "custom"
+
+
+def test_u4_log_provider_route_summary_marks_route_override_as_overridden(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    _clear_remote_provider_env(monkeypatch)
+    config = ModelConfig(
+        planner_provider_preset="openai_default",
+        planner_base_url="https://proxy.example.com/v1",
+    )
+
+    with caplog.at_level("INFO"):
+        _log_provider_route_summary(ModelRouter(config))
+
+    assert "component=planner preset=openai_default (overridden)" in caplog.text
+
+
+def test_u4_warn_on_provider_route_gaps_flags_missing_embeddings_route(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    _clear_remote_provider_env(monkeypatch)
+
+    with caplog.at_level("WARNING"):
+        _warn_on_provider_route_gaps(ModelRouter(ModelConfig()))
+
+    assert (
+        "Embeddings route not configured - memory search and semantic retrieval "
+        "will be unavailable."
+    ) in caplog.text
+
+
+def test_u4_warn_on_provider_route_gaps_skips_warning_when_embeddings_route_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    _clear_remote_provider_env(monkeypatch)
+    monkeypatch.setenv("SHISAD_MODEL_EMBEDDINGS_PROVIDER_PRESET", "vllm_local_default")
+    monkeypatch.setenv("SHISAD_MODEL_EMBEDDINGS_BASE_URL", "http://127.0.0.1:8000/v1")
+    monkeypatch.setenv("SHISAD_MODEL_EMBEDDINGS_REMOTE_ENABLED", "true")
+    monkeypatch.setenv("SHISAD_MODEL_EMBEDDINGS_AUTH_MODE", "none")
+
+    with caplog.at_level("WARNING"):
+        _warn_on_provider_route_gaps(ModelRouter(ModelConfig()))
+
+    assert "Embeddings route not configured" not in caplog.text

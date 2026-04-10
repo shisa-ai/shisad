@@ -130,6 +130,16 @@ _DEFAULT_ENDPOINT_BY_COMPONENT: dict[ModelComponent, EndpointFamily] = {
 }
 
 
+def provider_preset_label(route: ModelRoute) -> str:
+    default_base_url = _PRESET_BASE_URLS.get(route.provider_preset, "").rstrip("/")
+    effective_base_url = route.base_url.rstrip("/")
+    if not default_base_url or effective_base_url == default_base_url:
+        return route.provider_preset.value
+    if route.provider_preset_source == "route_override":
+        return f"{route.provider_preset.value} (overridden)"
+    return "custom"
+
+
 class ModelRouter:
     """Resolves model routes per component."""
 
