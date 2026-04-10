@@ -838,6 +838,105 @@ async def test_u9_channel_ingest_rejects_totp_pending_action_via_trusted_chat_re
 
 
 @pytest.mark.asyncio
+async def test_u9_channel_ingest_wrong_target_reject_uses_reject_cli_recovery_guidance(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SHISAD_MODEL_BASE_URL", "https://api.example.com/v1")
+    monkeypatch.setenv("SHISAD_MODEL_PLANNER_BASE_URL", "https://planner.example.com/v1")
+    monkeypatch.setenv("SHISAD_MODEL_EMBEDDINGS_BASE_URL", "https://embed.example.com/v1")
+    monkeypatch.setenv("SHISAD_MODEL_MONITOR_BASE_URL", "https://monitor.example.com/v1")
+    target = README_PATH
+    _install_totp_fs_read_planner(
+        monkeypatch,
+        target_path=target,
+        marker="channel-wrong-target-reject",
+    )
+
+    policy_path = tmp_path / "policy.yaml"
+    policy_path.write_text(_totp_fs_read_policy(), encoding="utf-8")
+    config = DaemonConfig(
+        data_dir=tmp_path / "data",
+        socket_path=tmp_path / "control.sock",
+        policy_path=policy_path,
+        assistant_fs_roots=[REPO_ROOT],
+        log_level="INFO",
+    )
+    services = await DaemonServices.build(config)
+    try:
+        services.identity_map.configure_channel_trust(channel="discord", trust_level="trusted")
+        services.identity_map.allow_identity(channel="discord", external_user_id="alice")
+        handlers = DaemonControlHandlers(services=services)
+        ctx = RequestContext()
+
+        started = await handlers.handle_two_factor_register_begin(
+            TwoFactorRegisterBeginParams(method="totp", user_id="alice", name="ops-laptop"),
+            ctx,
+        )
+        enrolled = await handlers.handle_two_factor_register_confirm(
+            TwoFactorRegisterConfirmParams(
+                enrollment_id=started.enrollment_id,
+                verify_code=generate_totp_code(str(started.secret)),
+            ),
+            ctx,
+        )
+        assert enrolled.registered is True
+
+        first = await handlers.handle_channel_ingest(
+            ChannelIngestParams(
+                message={
+                    "channel": "discord",
+                    "external_user_id": "alice",
+                    "workspace_hint": "guild-1",
+                    "content": "run the queued action",
+                    "message_id": "m-1",
+                    "reply_target": "chan-1",
+                }
+            ),
+            ctx,
+        )
+        assert first.confirmation_required_actions >= 1
+
+        wrong_target_reject = await handlers.handle_channel_ingest(
+            ChannelIngestParams(
+                message={
+                    "channel": "discord",
+                    "external_user_id": "alice",
+                    "workspace_hint": "guild-1",
+                    "content": "reject 1",
+                    "message_id": "m-2",
+                    "reply_target": "chan-2",
+                }
+            ),
+            ctx,
+        )
+
+        assert wrong_target_reject.executed_actions == 0
+        assert wrong_target_reject.confirmation_required_actions == 1
+        response = str(wrong_target_reject.response).lower()
+        assert "different chat target" in response
+        assert "original approval thread/channel" in response
+        assert "shisad action pending" in response
+        assert "shisad action reject confirmation_id" in response
+        assert "shisad action confirm confirmation_id --totp-code 123456" not in response
+        assert "confirmation id:" not in response
+
+        pending = await handlers.handle_action_pending(
+            ActionPendingParams(session_id=first.session_id, status="pending", limit=10),
+            ctx,
+        )
+        assert pending.count == 1
+        stored_target = services.session_manager.get(first.session_id).metadata.get(
+            "delivery_target"
+        )
+        assert isinstance(stored_target, dict)
+        assert stored_target.get("channel") == "discord"
+        assert stored_target.get("recipient") == "chan-1"
+    finally:
+        await services.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_u9_chat_totp_expired_code_attempts_trigger_lockout(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

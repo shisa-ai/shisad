@@ -463,6 +463,10 @@ def _totp_cli_confirm_command(confirmation_id: str) -> str:
     return f"shisad action confirm {confirmation_id} --totp-code 123456"
 
 
+def _action_reject_command(confirmation_id: str) -> str:
+    return f"shisad action reject {confirmation_id}"
+
+
 def _delivery_targets_match(
     delivery_target: DeliveryTarget | None,
     stored_delivery_target: DeliveryTarget | None,
@@ -503,16 +507,16 @@ def _chat_totp_disambiguation_text(*, heading: str, pending_rows: Sequence[Any])
     return "\n".join(lines)
 
 
-def _wrong_target_totp_confirmation_text() -> str:
+def _wrong_target_totp_confirmation_text(*, action: str) -> str:
+    command = _totp_cli_confirm_command("CONFIRMATION_ID")
+    if action == "reject":
+        command = _action_reject_command("CONFIRMATION_ID")
     return "\n".join(
         [
             "This confirmation reply came from a different chat target than the pending approval.",
             "Reply from the original approval thread/channel.",
             "CLI fallback: run 'shisad action pending' to inspect pending approvals.",
-            (
-                "Then run "
-                f"'{_totp_cli_confirm_command('CONFIRMATION_ID')}'."
-            ),
+            f"Then run '{command}'.",
         ]
     )
 
@@ -2991,7 +2995,12 @@ class SessionImplMixin(HandlerMixinBase):
                 intent is not None and intent.action != "none"
             )
             if attempted_confirmation_reply:
-                response_text = _wrong_target_totp_confirmation_text()
+                recovery_action = "confirm"
+                if intent is not None and intent.action == "reject":
+                    recovery_action = "reject"
+                response_text = _wrong_target_totp_confirmation_text(
+                    action=recovery_action
+                )
                 return await _finalize_chat_confirmation_response(
                     response_text=response_text,
                     blocked_actions=1,
