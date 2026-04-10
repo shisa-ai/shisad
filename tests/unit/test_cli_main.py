@@ -1889,6 +1889,19 @@ def test_two_factor_register_renders_totp_qr_when_terminal_supports_it(
     assert "██" in result.output
 
 
+def test_render_terminal_qr_uses_real_qrcode_when_unicode_supported(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(cli_main, "_terminal_supports_unicode_output", lambda: True)
+
+    qr_ascii = cli_main._render_terminal_qr(
+        "otpauth://totp/shisad:alice?secret=SECRETBASE32"
+    )
+
+    assert "██" in qr_ascii
+    assert "\n" in qr_ascii
+
+
 def test_two_factor_register_falls_back_to_uri_when_qr_rendering_fails(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
