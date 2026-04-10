@@ -30,11 +30,29 @@ from shisad.security.credentials import InMemoryCredentialStore
 
 
 def _clear_remote_provider_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("SHISA_API_KEY", raising=False)
-    monkeypatch.delenv("SHISAD_MODEL_API_KEY", raising=False)
-    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
-    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    for env_var in (
+        "SHISA_API_KEY",
+        "SHISAD_MODEL_API_KEY",
+        "OPENAI_API_KEY",
+        "GEMINI_API_KEY",
+        "OPENROUTER_API_KEY",
+        "SHISAD_MODEL_PLANNER_PROVIDER_PRESET",
+        "SHISAD_MODEL_PLANNER_BASE_URL",
+        "SHISAD_MODEL_PLANNER_REMOTE_ENABLED",
+        "SHISAD_MODEL_PLANNER_API_KEY",
+        "SHISAD_MODEL_PLANNER_AUTH_MODE",
+        "SHISAD_MODEL_EMBEDDINGS_PROVIDER_PRESET",
+        "SHISAD_MODEL_EMBEDDINGS_BASE_URL",
+        "SHISAD_MODEL_EMBEDDINGS_REMOTE_ENABLED",
+        "SHISAD_MODEL_EMBEDDINGS_API_KEY",
+        "SHISAD_MODEL_EMBEDDINGS_AUTH_MODE",
+        "SHISAD_MODEL_MONITOR_PROVIDER_PRESET",
+        "SHISAD_MODEL_MONITOR_BASE_URL",
+        "SHISAD_MODEL_MONITOR_REMOTE_ENABLED",
+        "SHISAD_MODEL_MONITOR_API_KEY",
+        "SHISAD_MODEL_MONITOR_AUTH_MODE",
+    ):
+        monkeypatch.delenv(env_var, raising=False)
     monkeypatch.setenv("SHISAD_MODEL_REMOTE_ENABLED", "false")
     monkeypatch.setenv("SHISAD_MODEL_MONITOR_REMOTE_ENABLED", "false")
 
@@ -858,8 +876,8 @@ def test_u4_warn_on_provider_route_gaps_flags_missing_embeddings_route(
         _warn_on_provider_route_gaps(ModelRouter(ModelConfig()))
 
     assert (
-        "Embeddings route not configured - memory search and semantic retrieval "
-        "will be unavailable."
+        "Embeddings route not configured - semantic retrieval will degrade to "
+        "deterministic local fallback embeddings."
     ) in caplog.text
 
 

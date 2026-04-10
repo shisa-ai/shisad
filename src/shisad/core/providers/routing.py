@@ -37,6 +37,7 @@ class ModelRoute(BaseModel):
     component: ModelComponent
     model_id: str
     base_url: str
+    base_url_source: str = "global:SHISAD_MODEL_BASE_URL"
     capabilities: ProviderCapabilities = Field(default_factory=ProviderCapabilities)
     request_parameters: RequestParameters = Field(default_factory=RequestParameters)
 
@@ -135,7 +136,7 @@ def provider_preset_label(route: ModelRoute) -> str:
     effective_base_url = route.base_url.rstrip("/")
     if not default_base_url or effective_base_url == default_base_url:
         return route.provider_preset.value
-    if route.provider_preset_source == "route_override":
+    if route.base_url_source.startswith("route:"):
         return f"{route.provider_preset.value} (overridden)"
     return "custom"
 
@@ -172,7 +173,7 @@ class ModelRouter:
             preset_source = "route_override"
 
         route_base_url_override = getattr(self._config, f"{prefix}_base_url")
-        base_url = self._resolve_route_base_url(
+        base_url, base_url_source = self._resolve_route_base_url(
             component=component,
             preset=preset,
             preset_source=preset_source,
@@ -255,6 +256,7 @@ class ModelRouter:
             component=component,
             model_id=model_id,
             base_url=base_url,
+            base_url_source=base_url_source,
             capabilities=capabilities,
             request_parameters=request_parameters,
             provider_preset=preset,
@@ -281,16 +283,16 @@ class ModelRouter:
         component: ModelComponent,
         preset: ProviderPreset,
         preset_source: str,
-    ) -> str:
+    ) -> tuple[str, str]:
         prefix = component.value
         route_override: str | None = getattr(self._config, f"{prefix}_base_url")
         if route_override:
-            return str(route_override)
+            return str(route_override), f"route:{prefix}_base_url"
         if preset_source in {"route_override", "auto_detected"}:
             preset_url = _PRESET_BASE_URLS.get(preset, "")
             if preset_url:
-                return preset_url
-        return self._config.base_url
+                return preset_url, f"preset:{preset.value}"
+        return self._config.base_url, "global:SHISAD_MODEL_BASE_URL"
 
     def _resolve_route_api_key(
         self,

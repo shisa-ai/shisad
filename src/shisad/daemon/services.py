@@ -153,8 +153,8 @@ def _warn_on_provider_route_gaps(router: ModelRouter) -> None:
     embeddings_route = router.route_for(ModelComponent.EMBEDDINGS)
     if not embeddings_route.remote_enabled:
         logger.warning(
-            "Embeddings route not configured - memory search and semantic retrieval "
-            "will be unavailable."
+            "Embeddings route not configured - semantic retrieval will degrade to "
+            "deterministic local fallback embeddings."
         )
 
 

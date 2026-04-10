@@ -6,7 +6,7 @@ import pytest
 from pydantic import ValidationError
 
 from shisad.core.config import ModelConfig
-from shisad.core.providers.routing import ModelComponent, ModelRouter
+from shisad.core.providers.routing import ModelComponent, ModelRouter, provider_preset_label
 
 
 def _clean_api_key_env(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -190,6 +190,18 @@ def test_s0_implicit_shisa_remote_enable_only_applies_to_default_base_route(
 
     assert route.remote_enabled is False
     assert route.remote_enabled_source == "global"
+
+
+def test_s0_route_local_base_url_override_is_labeled_as_overridden(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clean_api_key_env(monkeypatch)
+    route = ModelRouter(ModelConfig(planner_base_url="https://planner.example.com/v1")).route_for(
+        ModelComponent.PLANNER
+    )
+
+    assert route.base_url_source == "route:planner_base_url"
+    assert provider_preset_label(route) == "shisa_default (overridden)"
 
 
 def test_s0_model_config_parses_reasoning_request_parameters_from_env(
