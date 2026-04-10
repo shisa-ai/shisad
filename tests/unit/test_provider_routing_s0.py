@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+
 import pytest
 from pydantic import ValidationError
 
@@ -10,17 +12,17 @@ from shisad.core.providers.routing import ModelComponent, ModelRouter, provider_
 
 
 def _clean_api_key_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Remove all API key env vars that could trigger auto-detection."""
+    """Remove env vars that could perturb isolated routing defaults."""
     for var in (
         "OPENAI_API_KEY",
         "GEMINI_API_KEY",
         "OPENROUTER_API_KEY",
         "SHISA_API_KEY",
-        "SHISAD_MODEL_API_KEY",
-        "SHISAD_MODEL_PLANNER_API_KEY",
-        "SHISAD_MODEL_REMOTE_ENABLED",
     ):
         monkeypatch.delenv(var, raising=False)
+    for var in list(os.environ):
+        if var.startswith("SHISAD_MODEL_"):
+            monkeypatch.delenv(var, raising=False)
 
 
 def test_s0_openai_preset_resolves_route_defaults_and_global_remote(
