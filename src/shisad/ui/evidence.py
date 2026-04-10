@@ -186,16 +186,26 @@ def _sanitize_terminal_assistant_segment(
 ) -> str:
     trailing_newline = value.endswith("\n")
     normalized_lines: list[str] = []
+    in_pending_block = False
     in_pending_preview = False
     for line in value.splitlines():
         if in_pending_preview and not line.startswith("     "):
             in_pending_preview = False
+        if preserve_pending_preview_escapes and line == "[PENDING CONFIRMATIONS]":
+            in_pending_block = True
         if in_pending_preview:
             normalized_lines.append(line)
         else:
             normalized_lines.append(_normalize_literal_linebreak_escapes(line))
-        if preserve_pending_preview_escapes and line == "   Preview:":
+        if preserve_pending_preview_escapes and in_pending_block and line == "   Preview:":
             in_pending_preview = True
+        if (
+            preserve_pending_preview_escapes
+            and in_pending_block
+            and line == "Review all pending: shisad action pending"
+        ):
+            in_pending_block = False
+            in_pending_preview = False
     normalized = "\n".join(normalized_lines)
     if trailing_newline:
         normalized += "\n"

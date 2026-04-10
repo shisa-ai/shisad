@@ -143,6 +143,27 @@ def test_render_evidence_refs_for_terminal_still_normalizes_non_pending_preview_
     assert rendered == "Assistant note:\nPreview:\nline1\nline2"
 
 
+def test_render_evidence_refs_for_terminal_limits_pending_preview_bypass_to_pending_block() -> None:
+    raw = (
+        "[PENDING CONFIRMATIONS]\n"
+        "Queued for your approval:\n"
+        "1. c-1\n"
+        "   Preview:\n"
+        "     body: line1\\nline2\n\n"
+        "Review all pending: shisad action pending\n\n"
+        "Completed actions:\n"
+        "tool.run: ok=True\n"
+        "   Preview:\n"
+        "     line3\\nline4"
+    )
+
+    rendered = render_evidence_refs_for_terminal(raw, preserve_pending_preview_escapes=True)
+
+    assert "body: line1\\nline2" in rendered
+    assert "line3\nline4" in rendered
+    assert "line3\\nline4" not in rendered
+
+
 def test_render_evidence_refs_for_terminal_round_trips_escaped_summary_from_stub_formatter() -> (
     None
 ):
