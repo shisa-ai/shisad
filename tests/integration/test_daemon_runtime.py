@@ -103,7 +103,7 @@ async def test_daemon_registers_alarm_tool_and_derives_capability_grant_actor(
         )
         assert "Safe summary:" not in str(reply["response"])
         assert "summarize this text" not in str(reply["response"]).lower()
-        assert "SHISAD_MODEL_REMOTE_ENABLED" in str(reply["response"])
+        assert "Configure a planner route or local planner preset" in str(reply["response"])
         assert "shisad doctor check --component provider" in str(reply["response"])
 
         grant = await client.call(

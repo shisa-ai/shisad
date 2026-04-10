@@ -158,8 +158,8 @@ async def test_u3_local_planner_provider_returns_explicit_no_model_error_for_pla
     assert response.message.content.startswith(
         "[PLANNER FALLBACK: CONFIGURATION] No language model configured."
     )
-    assert "Enable `SHISAD_MODEL_REMOTE_ENABLED`" in response.message.content
-    assert "SHISAD_MODEL_PLANNER_API_KEY" in response.message.content
+    assert "Configure a planner route or local planner preset" in response.message.content
+    assert "local vLLM" in response.message.content
     assert "shisad doctor check --component provider" in response.message.content
     assert "Safe summary:" not in response.message.content
     assert "hello there" not in response.message.content
@@ -178,7 +178,7 @@ async def test_u3_local_planner_provider_keeps_deterministic_tool_calls_but_flag
         "[PLANNER FALLBACK: CONFIGURATION] No language model configured."
     )
     assert "deterministic local fallback tools only" in response.message.content
-    assert "Enable `SHISAD_MODEL_REMOTE_ENABLED`" in response.message.content
+    assert "Configure a planner route or local planner preset" in response.message.content
     tool_names = [
         str(item.get("function", {}).get("name", ""))
         for item in response.message.tool_calls

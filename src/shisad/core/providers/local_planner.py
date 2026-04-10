@@ -234,8 +234,8 @@ def _planner_fallback_message(
         else " Conversational planning is unavailable."
     )
     guidance = (
-        " Enable `SHISAD_MODEL_REMOTE_ENABLED` and provide "
-        "`SHISAD_MODEL_PLANNER_API_KEY` or `SHISAD_MODEL_API_KEY`, then run "
+        " Configure a planner route or local planner preset (for example Shisa, "
+        "OpenAI, OpenRouter, Gemini, or local vLLM), then run "
         "`shisad doctor check --component provider`."
     )
     return f"{prefix} {intro}{detail}{guidance}"
