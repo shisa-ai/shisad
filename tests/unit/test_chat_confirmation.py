@@ -95,6 +95,29 @@ def test_m6_crc_routing_requires_reference_for_tainted_or_multi_pending() -> Non
     ) == [1]
 
 
+def test_chat_pending_confirmation_summary_retains_bulk_guidance() -> None:
+    pending = PendingAction(
+        confirmation_id="c-1",
+        decision_nonce="nonce-1",
+        session_id=SessionId("sess-chat"),
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws-1"),
+        tool_name=ToolName("web.search"),
+        arguments={"query": "hello"},
+        reason="manual",
+        capabilities={Capability.HTTP_REQUEST},
+        created_at=datetime.now(UTC),
+    )
+
+    summary = SessionImplMixin._chat_pending_confirmation_summary(
+        pending_rows=[pending],
+        tainted_session=False,
+    )
+
+    assert "yes to all" in summary.lower()
+    assert "no to all" in summary.lower()
+
+
 class _ChatConfirmationHarness(SessionImplMixin):
     def __init__(self, tmp_path) -> None:
         self._pending_actions: dict[str, PendingAction] = {}
