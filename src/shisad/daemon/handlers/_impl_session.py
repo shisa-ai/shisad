@@ -2913,6 +2913,7 @@ class SessionImplMixin(HandlerMixinBase):
             blocked_actions: int,
             executed_actions: int,
             checkpoint_ids: list[str],
+            response_pending_confirmation_ids: Sequence[str] | None = None,
         ) -> dict[str, Any]:
             output_result = self._output_firewall.inspect(
                 response_text,
@@ -2946,6 +2947,11 @@ class SessionImplMixin(HandlerMixinBase):
                     workspace_id=workspace_id,
                 )
             ]
+            returned_pending_confirmation_ids = (
+                list(response_pending_confirmation_ids)
+                if response_pending_confirmation_ids is not None
+                else pending_confirmation_ids
+            )
             await self._event_bus.publish(
                 SessionMessageResponded(
                     session_id=sid,
@@ -2984,7 +2990,7 @@ class SessionImplMixin(HandlerMixinBase):
                 "proposal_only": session_mode == SessionMode.ADMIN_CLEANROOM,
                 "proposals": [],
                 "cleanroom_block_reasons": [],
-                "pending_confirmation_ids": pending_confirmation_ids,
+                "pending_confirmation_ids": returned_pending_confirmation_ids,
                 "output_policy": output_result.model_dump(mode="json"),
                 "planner_error": "",
                 "tool_outputs": [],
@@ -3006,6 +3012,7 @@ class SessionImplMixin(HandlerMixinBase):
                     blocked_actions=1,
                     executed_actions=0,
                     checkpoint_ids=[],
+                    response_pending_confirmation_ids=[],
                 )
 
         if is_internal_ingress and totp_submission is None:

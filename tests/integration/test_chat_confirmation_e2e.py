@@ -698,6 +698,7 @@ async def test_u9_channel_ingest_totp_code_mismatched_reply_target_does_not_rebi
         )
         assert mismatched.executed_actions == 0
         assert mismatched.confirmation_required_actions == 1
+        assert mismatched.pending_confirmation_ids == []
         response = str(mismatched.response).lower()
         assert "different chat target" in response
         assert "original approval thread/channel" in response
@@ -913,6 +914,7 @@ async def test_u9_channel_ingest_wrong_target_reject_uses_reject_cli_recovery_gu
 
         assert wrong_target_reject.executed_actions == 0
         assert wrong_target_reject.confirmation_required_actions == 1
+        assert wrong_target_reject.pending_confirmation_ids == []
         response = str(wrong_target_reject.response).lower()
         assert "different chat target" in response
         assert "original approval thread/channel" in response

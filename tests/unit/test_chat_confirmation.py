@@ -431,7 +431,7 @@ async def test_u9_chat_totp_internal_ingress_rejects_mismatched_stored_delivery_
     assert "web.search" not in response
     assert result["blocked_actions"] == 1
     assert result["executed_actions"] == 0
-    assert result["pending_confirmation_ids"] == ["c-1"]
+    assert result["pending_confirmation_ids"] == []
     assert harness.confirm_calls == []
     assert harness._pending_actions["c-1"].status == "pending"
 
@@ -485,7 +485,7 @@ async def test_u9_chat_totp_internal_ingress_mismatched_reject_intent_uses_rejec
     assert "confirmation id: c-1" not in response
     assert result["blocked_actions"] == 1
     assert result["executed_actions"] == 0
-    assert result["pending_confirmation_ids"] == ["c-1"]
+    assert result["pending_confirmation_ids"] == []
     assert harness.confirm_calls == []
     assert harness._pending_actions["c-1"].status == "pending"
 
