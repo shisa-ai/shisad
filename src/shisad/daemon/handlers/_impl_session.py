@@ -2950,6 +2950,7 @@ class SessionImplMixin(HandlerMixinBase):
         )
         totp_rows = _totp_pending_rows(pending_rows)
         visible_pending_rows = _visible_pending_rows(pending_rows)
+        displayed_pending_rows = visible_pending_rows
         visible_totp_rows = _totp_pending_rows(visible_pending_rows)
         totp_submission = _parse_chat_totp_submission(content) if totp_rows else None
         intent: ChatConfirmationIntent | None = None
@@ -3034,7 +3035,7 @@ class SessionImplMixin(HandlerMixinBase):
                 "plan_hash": plan_hash,
                 "risk_score": firewall_result.risk_score,
                 "blocked_actions": blocked_actions,
-                "confirmation_required_actions": len(pending_confirmation_ids),
+                "confirmation_required_actions": len(visible_pending_confirmation_ids),
                 "executed_actions": executed_actions,
                 "checkpoint_ids": checkpoint_ids,
                 "checkpoints_created": len(checkpoint_ids),
@@ -3172,21 +3173,34 @@ class SessionImplMixin(HandlerMixinBase):
                 intent = _classify_chat_confirmation_intent(content)
             if intent.action == "none":
                 return None
+            if (
+                is_internal_ingress
+                and delivery_target is not None
+                and not displayed_pending_rows
+                and totp_rows
+            ):
+                return await _finalize_chat_confirmation_response(
+                    response_text=_wrong_target_totp_confirmation_text(action=intent.action),
+                    blocked_actions=1,
+                    executed_actions=0,
+                    checkpoint_ids=[],
+                    response_pending_confirmation_ids=[],
+                )
             indexes = _resolve_chat_confirmation_indexes(
                 intent=intent,
-                pending_count=len(pending_rows),
+                pending_count=len(displayed_pending_rows),
                 tainted_session=tainted_session,
             )
             if not indexes:
                 response_text = self._chat_pending_confirmation_summary(
-                    pending_rows=visible_pending_rows,
+                    pending_rows=displayed_pending_rows,
                     tainted_session=tainted_session,
                 )
                 executed_actions = 0
                 blocked_actions = 0
                 checkpoint_ids = []
             else:
-                selected_pending_rows = [pending_rows[index] for index in indexes]
+                selected_pending_rows = [displayed_pending_rows[index] for index in indexes]
                 if (
                     is_internal_ingress
                     and delivery_target is not None
@@ -3215,7 +3229,7 @@ class SessionImplMixin(HandlerMixinBase):
                 outcome_lines: list[str] = []
                 skipped_totp_confirmation = False
                 for index in indexes:
-                    pending = pending_rows[index]
+                    pending = displayed_pending_rows[index]
                     if intent.action == "confirm" and _pending_uses_totp(pending):
                         skipped_totp_confirmation = True
                         continue
@@ -4516,16 +4530,31 @@ class SessionImplMixin(HandlerMixinBase):
                 user_id=validated.user_id,
                 workspace_id=validated.workspace_id,
             )
+            stored_delivery_target = None
+            raw_stored_delivery_target = validated.session.metadata.get("delivery_target")
+            if isinstance(raw_stored_delivery_target, dict):
+                try:
+                    stored_delivery_target = DeliveryTarget.model_validate(
+                        raw_stored_delivery_target
+                    )
+                except ValidationError:
+                    stored_delivery_target = None
+            visible_pending_rows = _visible_pending_rows_for_delivery_target(
+                pending_rows=pending_rows,
+                is_internal_ingress=validated.is_internal_ingress,
+                delivery_target=validated.delivery_target,
+                fallback_target=stored_delivery_target,
+            )
             pending_index_by_id = {
                 str(getattr(pending, "confirmation_id", "")).strip(): index
-                for index, pending in enumerate(pending_rows, start=1)
+                for index, pending in enumerate(visible_pending_rows, start=1)
                 if str(getattr(pending, "confirmation_id", "")).strip()
             }
             response_text = _daemon_pending_confirmation_response_text(
                 pending_confirmation_ids=execution.pending_confirmation_ids,
                 pending_actions=getattr(self, "_pending_actions", {}),
                 pending_index_by_id=pending_index_by_id,
-                binding_pending_rows=pending_rows,
+                binding_pending_rows=visible_pending_rows,
             )
             if tool_output_summary:
                 response_text = f"{response_text}\n\nCompleted actions:\n{tool_output_summary}"
