@@ -384,7 +384,7 @@ async def test_u9_chat_totp_bare_code_confirms_trusted_internal_channel_ingress(
 
 
 @pytest.mark.asyncio
-async def test_u9_chat_totp_internal_ingress_ignores_mismatched_stored_delivery_target(
+async def test_u9_chat_totp_internal_ingress_rejects_mismatched_stored_delivery_target(
     tmp_path,
 ) -> None:
     harness = _ChatConfirmationHarness(tmp_path)
@@ -420,7 +420,14 @@ async def test_u9_chat_totp_internal_ingress_ignores_mismatched_stored_delivery_
         firewall_result=FirewallResult(sanitized_text="123456", original_hash="0" * 64),
     )
 
-    assert result is None
+    assert result is not None
+    response = str(result["response"]).lower()
+    assert "different chat target" in response
+    assert "original approval thread/channel" in response
+    assert "confirmation id: c-1" in response
+    assert result["blocked_actions"] == 1
+    assert result["executed_actions"] == 0
+    assert result["pending_confirmation_ids"] == ["c-1"]
     assert harness.confirm_calls == []
     assert harness._pending_actions["c-1"].status == "pending"
 
@@ -456,6 +463,51 @@ async def test_u9_chat_totp_internal_ingress_without_target_is_ignored(tmp_path)
         is_internal_ingress=True,
         content="123456",
         firewall_result=FirewallResult(sanitized_text="123456", original_hash="0" * 64),
+    )
+
+    assert result is None
+    assert harness.confirm_calls == []
+    assert harness._pending_actions["c-1"].status == "pending"
+
+
+@pytest.mark.asyncio
+async def test_u9_chat_totp_internal_ingress_mismatched_non_confirmation_message_is_ignored(
+    tmp_path,
+) -> None:
+    harness = _ChatConfirmationHarness(tmp_path)
+    pending = PendingAction(
+        confirmation_id="c-1",
+        decision_nonce="nonce-1",
+        session_id=SessionId("sess-chat"),
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws-1"),
+        tool_name=ToolName("web.search"),
+        arguments={"query": "hello"},
+        reason="manual",
+        capabilities={Capability.HTTP_REQUEST},
+        created_at=datetime.now(UTC),
+        selected_backend_id="totp.default",
+        selected_backend_method="totp",
+    )
+    harness._pending_actions[pending.confirmation_id] = pending
+
+    result = await SessionImplMixin._maybe_handle_chat_confirmation(
+        harness,
+        sid=SessionId("sess-chat"),
+        channel="discord",
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws-1"),
+        session_mode=SessionMode.DEFAULT,
+        trust_level="trusted",
+        trusted_input=True,
+        is_internal_ingress=True,
+        delivery_target=DeliveryTarget(channel="discord", recipient="chan-2"),
+        stored_delivery_target=DeliveryTarget(channel="discord", recipient="chan-1"),
+        content="still there?",
+        firewall_result=FirewallResult(
+            sanitized_text="still there?",
+            original_hash="0" * 64,
+        ),
     )
 
     assert result is None

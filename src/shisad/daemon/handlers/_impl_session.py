@@ -463,6 +463,18 @@ def _totp_cli_confirm_command(confirmation_id: str) -> str:
     return f"shisad action confirm {confirmation_id} --totp-code 123456"
 
 
+def _delivery_targets_match(
+    delivery_target: DeliveryTarget | None,
+    stored_delivery_target: DeliveryTarget | None,
+) -> bool:
+    if delivery_target is None or stored_delivery_target is None:
+        return True
+    return (
+        delivery_target.model_dump(mode="json")
+        == stored_delivery_target.model_dump(mode="json")
+    )
+
+
 def _checkpoint_id_from_action_result(result: Mapping[str, Any]) -> str:
     checkpoint_id = result.get("checkpoint_id")
     if checkpoint_id is None:
@@ -2852,14 +2864,12 @@ class SessionImplMixin(HandlerMixinBase):
         allow_channel_ingress_confirmation = is_internal_ingress and delivery_target is not None
         if not trusted_input:
             return None
-        if (
+        mismatched_stored_delivery_target = (
             is_internal_ingress
             and delivery_target is not None
             and stored_delivery_target is not None
-            and delivery_target.model_dump(mode="json")
-            != stored_delivery_target.model_dump(mode="json")
-        ):
-            return None
+            and not _delivery_targets_match(delivery_target, stored_delivery_target)
+        )
         if is_internal_ingress and not allow_channel_ingress_confirmation:
             return None
         pending_rows = self._pending_confirmations_for_binding(
@@ -2878,6 +2888,113 @@ class SessionImplMixin(HandlerMixinBase):
         intent: ChatConfirmationIntent | None = None
         if is_internal_ingress and totp_submission is None:
             intent = _classify_chat_confirmation_intent(content)
+
+        async def _finalize_chat_confirmation_response(
+            *,
+            response_text: str,
+            blocked_actions: int,
+            executed_actions: int,
+            checkpoint_ids: list[str],
+        ) -> dict[str, Any]:
+            output_result = self._output_firewall.inspect(
+                response_text,
+                context={"session_id": sid, "actor": "assistant"},
+            )
+            if output_result.blocked:
+                response_text = "Response blocked by output policy."
+            else:
+                response_text = output_result.sanitized_text
+                if output_result.require_confirmation:
+                    response_text = f"[CONFIRMATION REQUIRED] {response_text}"
+            lockdown_notice = self._lockdown_manager.user_notification(sid)
+            if lockdown_notice:
+                response_text = f"{response_text}\n\n[LOCKDOWN NOTICE] {lockdown_notice}"
+            assistant_transcript_metadata = _transcript_metadata_for_channel(
+                channel=channel,
+                session_mode=session_mode,
+            )
+            self._transcript_store.append(
+                sid,
+                role="assistant",
+                content=response_text,
+                taint_labels=set(),
+                metadata=assistant_transcript_metadata,
+            )
+            pending_confirmation_ids = [
+                pending.confirmation_id
+                for pending in self._pending_confirmations_for_binding(
+                    session_id=sid,
+                    user_id=user_id,
+                    workspace_id=workspace_id,
+                )
+            ]
+            await self._event_bus.publish(
+                SessionMessageResponded(
+                    session_id=sid,
+                    actor="assistant",
+                    response_hash=_short_hash(response_text),
+                    blocked_actions=blocked_actions + len(pending_confirmation_ids),
+                    executed_actions=executed_actions,
+                    trust_level=trust_level,
+                    taint_labels=[],
+                    risk_score=firewall_result.risk_score,
+                )
+            )
+            plan_hash = ""
+            try:
+                plan_hash = await _call_control_plane(self, "active_plan_hash", str(sid))
+            except ControlPlaneUnavailableError:
+                logger.warning(
+                    "Chat confirmation response could not fetch active plan hash; continuing empty",
+                    extra={"session_id": str(sid)},
+                    exc_info=True,
+                )
+            return {
+                "session_id": sid,
+                "response": response_text,
+                "plan_hash": plan_hash,
+                "risk_score": firewall_result.risk_score,
+                "blocked_actions": blocked_actions,
+                "confirmation_required_actions": len(pending_confirmation_ids),
+                "executed_actions": executed_actions,
+                "checkpoint_ids": checkpoint_ids,
+                "checkpoints_created": len(checkpoint_ids),
+                "transcript_root": str(self._transcript_root),
+                "lockdown_level": self._lockdown_manager.state_for(sid).level.value,
+                "trust_level": trust_level,
+                "session_mode": session_mode.value,
+                "proposal_only": session_mode == SessionMode.ADMIN_CLEANROOM,
+                "proposals": [],
+                "cleanroom_block_reasons": [],
+                "pending_confirmation_ids": pending_confirmation_ids,
+                "output_policy": output_result.model_dump(mode="json"),
+                "planner_error": "",
+                "tool_outputs": [],
+            }
+
+        if mismatched_stored_delivery_target and totp_rows:
+            attempted_confirmation_reply = totp_submission is not None or (
+                intent is not None and intent.action != "none"
+            )
+            if attempted_confirmation_reply:
+                response_text = (
+                    "This confirmation reply came from a different chat target than the "
+                    "pending approval. Reply from the original approval thread/channel "
+                    "or use the CLI fallback.\n\n"
+                    + self._chat_pending_confirmation_summary(
+                        pending_rows=pending_rows,
+                        tainted_session=tainted_session,
+                    )
+                )
+                return await _finalize_chat_confirmation_response(
+                    response_text=response_text,
+                    blocked_actions=1,
+                    executed_actions=0,
+                    checkpoint_ids=[],
+                )
+
+        if is_internal_ingress and totp_submission is None:
+            assert intent is not None
             if intent.action != "reject":
                 return None
         if totp_submission is not None:
@@ -3035,81 +3152,12 @@ class SessionImplMixin(HandlerMixinBase):
                         )
                     )
 
-        output_result = self._output_firewall.inspect(
-            response_text,
-            context={"session_id": sid, "actor": "assistant"},
+        return await _finalize_chat_confirmation_response(
+            response_text=response_text,
+            blocked_actions=blocked_actions,
+            executed_actions=executed_actions,
+            checkpoint_ids=checkpoint_ids,
         )
-        if output_result.blocked:
-            response_text = "Response blocked by output policy."
-        else:
-            response_text = output_result.sanitized_text
-            if output_result.require_confirmation:
-                response_text = f"[CONFIRMATION REQUIRED] {response_text}"
-        lockdown_notice = self._lockdown_manager.user_notification(sid)
-        if lockdown_notice:
-            response_text = f"{response_text}\n\n[LOCKDOWN NOTICE] {lockdown_notice}"
-        assistant_transcript_metadata = _transcript_metadata_for_channel(
-            channel=channel,
-            session_mode=session_mode,
-        )
-        self._transcript_store.append(
-            sid,
-            role="assistant",
-            content=response_text,
-            taint_labels=set(),
-            metadata=assistant_transcript_metadata,
-        )
-        pending_confirmation_ids = [
-            pending.confirmation_id
-            for pending in self._pending_confirmations_for_binding(
-                session_id=sid,
-                user_id=user_id,
-                workspace_id=workspace_id,
-            )
-        ]
-        await self._event_bus.publish(
-            SessionMessageResponded(
-                session_id=sid,
-                actor="assistant",
-                response_hash=_short_hash(response_text),
-                blocked_actions=blocked_actions + len(pending_confirmation_ids),
-                executed_actions=executed_actions,
-                trust_level=trust_level,
-                taint_labels=[],
-                risk_score=firewall_result.risk_score,
-            )
-        )
-        plan_hash = ""
-        try:
-            plan_hash = await _call_control_plane(self, "active_plan_hash", str(sid))
-        except ControlPlaneUnavailableError:
-            logger.warning(
-                "Chat confirmation response could not fetch active plan hash; continuing empty",
-                extra={"session_id": str(sid)},
-                exc_info=True,
-            )
-        return {
-            "session_id": sid,
-            "response": response_text,
-            "plan_hash": plan_hash,
-            "risk_score": firewall_result.risk_score,
-            "blocked_actions": blocked_actions,
-            "confirmation_required_actions": len(pending_confirmation_ids),
-            "executed_actions": executed_actions,
-            "checkpoint_ids": checkpoint_ids,
-            "checkpoints_created": len(checkpoint_ids),
-            "transcript_root": str(self._transcript_root),
-            "lockdown_level": self._lockdown_manager.state_for(sid).level.value,
-            "trust_level": trust_level,
-            "session_mode": session_mode.value,
-            "proposal_only": session_mode == SessionMode.ADMIN_CLEANROOM,
-            "proposals": [],
-            "cleanroom_block_reasons": [],
-            "pending_confirmation_ids": pending_confirmation_ids,
-            "output_policy": output_result.model_dump(mode="json"),
-            "planner_error": "",
-            "tool_outputs": [],
-        }
 
     async def do_session_create(self, params: Mapping[str, Any]) -> dict[str, Any]:
         channel = str(params.get("channel", "cli"))
@@ -3307,19 +3355,17 @@ class SessionImplMixin(HandlerMixinBase):
             is_internal_ingress
             and delivery_target is not None
             and stored_delivery_target is not None
-            and delivery_target.model_dump(mode="json")
-            != stored_delivery_target.model_dump(mode="json")
+            and not _delivery_targets_match(delivery_target, stored_delivery_target)
         ):
-            # Do not let a rejected TOTP reply retarget the live session binding.
+            # While TOTP-backed confirmations are pending, do not let a different
+            # reply target rebind the live session metadata before confirmation
+            # handling decides whether the reply is valid.
             pending_rows = self._pending_confirmations_for_binding(
                 session_id=sid,
                 user_id=user_id,
                 workspace_id=workspace_id,
             )
-            if (
-                _totp_pending_rows(pending_rows)
-                and _parse_chat_totp_submission(content) is not None
-            ):
+            if _totp_pending_rows(pending_rows):
                 suppress_delivery_target_persist = True
 
         if early_response is None and session_mode == SessionMode.ADMIN_CLEANROOM:

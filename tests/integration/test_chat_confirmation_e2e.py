@@ -661,27 +661,58 @@ async def test_u9_channel_ingest_totp_code_mismatched_reply_target_does_not_rebi
         )
         assert first.confirmation_required_actions >= 1
 
+        primed = await handlers.handle_channel_ingest(
+            ChannelIngestParams(
+                message={
+                    "channel": "discord",
+                    "external_user_id": "alice",
+                    "workspace_hint": "guild-1",
+                    "content": "still there?",
+                    "message_id": "m-2",
+                    "reply_target": "chan-2",
+                }
+            ),
+            ctx,
+        )
+        assert "no new action requested" in str(primed.response).lower()
+        primed_target = services.session_manager.get(first.session_id).metadata.get(
+            "delivery_target"
+        )
+        assert isinstance(primed_target, dict)
+        assert primed_target.get("channel") == "discord"
+        assert primed_target.get("recipient") == "chan-1"
+
         wrong_target_code = generate_totp_code(str(started.secret))
-        for message_id in ("m-2", "m-3"):
-            mismatched = await handlers.handle_channel_ingest(
-                ChannelIngestParams(
-                    message={
-                        "channel": "discord",
-                        "external_user_id": "alice",
-                        "workspace_hint": "guild-1",
-                        "content": wrong_target_code,
-                        "message_id": message_id,
-                        "reply_target": "chan-2",
-                    }
-                ),
-                ctx,
-            )
-            assert mismatched.executed_actions == 0
-            pending = await handlers.handle_action_pending(
-                ActionPendingParams(session_id=first.session_id, status="pending", limit=10),
-                ctx,
-            )
-            assert pending.count == 1
+        mismatched = await handlers.handle_channel_ingest(
+            ChannelIngestParams(
+                message={
+                    "channel": "discord",
+                    "external_user_id": "alice",
+                    "workspace_hint": "guild-1",
+                    "content": wrong_target_code,
+                    "message_id": "m-3",
+                    "reply_target": "chan-2",
+                }
+            ),
+            ctx,
+        )
+        assert mismatched.executed_actions == 0
+        assert mismatched.confirmation_required_actions == 1
+        response = str(mismatched.response).lower()
+        assert "different chat target" in response
+        assert "original approval thread/channel" in response
+        assert "confirmation id:" in response
+        mismatched_target = services.session_manager.get(first.session_id).metadata.get(
+            "delivery_target"
+        )
+        assert isinstance(mismatched_target, dict)
+        assert mismatched_target.get("channel") == "discord"
+        assert mismatched_target.get("recipient") == "chan-1"
+        pending = await handlers.handle_action_pending(
+            ActionPendingParams(session_id=first.session_id, status="pending", limit=10),
+            ctx,
+        )
+        assert pending.count == 1
 
         valid_target_code = generate_totp_code(str(started.secret))
         second = await handlers.handle_channel_ingest(
