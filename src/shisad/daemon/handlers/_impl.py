@@ -752,6 +752,7 @@ class PendingAction:
     reason: str
     capabilities: set[Capability]
     created_at: datetime
+    delivery_target: DeliveryTarget | None = None
     task_id: str = ""
     preflight_action: ControlPlaneAction | None = None
     execute_after: datetime | None = None
@@ -1768,6 +1769,11 @@ class HandlerImplementation(
             "reason": pending.reason,
             "capabilities": sorted(cap.value for cap in pending.capabilities),
             "created_at": pending.created_at.isoformat(),
+            "delivery_target": (
+                pending.delivery_target.model_dump(mode="json")
+                if pending.delivery_target is not None
+                else None
+            ),
             "execute_after": pending.execute_after.isoformat() if pending.execute_after else "",
             "safe_preview": pending.safe_preview,
             "warnings": list(pending.warnings),
@@ -1845,6 +1851,7 @@ class HandlerImplementation(
         arguments: dict[str, Any],
         reason: str,
         capabilities: set[Capability],
+        delivery_target: DeliveryTarget | None = None,
         task_id: str = "",
         preflight_action: ControlPlaneAction | None = None,
         merged_policy: ToolExecutionPolicy | None = None,
@@ -2017,6 +2024,9 @@ class HandlerImplementation(
             reason=reason,
             capabilities=set(capabilities),
             created_at=created_at,
+            delivery_target=delivery_target.model_copy(deep=True)
+            if delivery_target is not None
+            else None,
             preflight_action=preflight_action,
             execute_after=execute_after,
             safe_preview=render_structured_confirmation(summary, warnings=sorted(set(warnings))),
@@ -2103,6 +2113,12 @@ class HandlerImplementation(
                     continue
                 created_at = datetime.fromisoformat(str(item.get("created_at", "")).strip())
                 session_id = SessionId(str(item.get("session_id", "")))
+                delivery_target_payload = item.get("delivery_target")
+                delivery_target = (
+                    DeliveryTarget.model_validate(delivery_target_payload)
+                    if isinstance(delivery_target_payload, Mapping)
+                    else None
+                )
                 preflight_action_payload = item.get("preflight_action")
                 preflight_action = (
                     ControlPlaneAction.model_validate(preflight_action_payload)
@@ -2165,6 +2181,7 @@ class HandlerImplementation(
                         Capability(str(cap)) for cap in item.get("capabilities", []) if str(cap)
                     },
                     created_at=created_at,
+                    delivery_target=delivery_target,
                     preflight_action=preflight_action,
                     execute_after=execute_after,
                     safe_preview=str(item.get("safe_preview", "")),

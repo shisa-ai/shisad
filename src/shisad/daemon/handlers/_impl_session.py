@@ -479,6 +479,51 @@ def _delivery_targets_match(
     )
 
 
+def _pending_delivery_target(pending: Any) -> DeliveryTarget | None:
+    target = getattr(pending, "delivery_target", None)
+    if isinstance(target, DeliveryTarget):
+        return target
+    if isinstance(target, Mapping):
+        try:
+            return DeliveryTarget.model_validate(target)
+        except ValidationError:
+            return None
+    return None
+
+
+def _pending_matches_delivery_target(
+    pending: Any,
+    delivery_target: DeliveryTarget | None,
+    *,
+    fallback_target: DeliveryTarget | None = None,
+) -> bool:
+    pending_target = _pending_delivery_target(pending)
+    if pending_target is None:
+        pending_target = fallback_target
+    return _delivery_targets_match(delivery_target, pending_target)
+
+
+def _visible_pending_rows_for_delivery_target(
+    *,
+    pending_rows: Sequence[Any],
+    is_internal_ingress: bool,
+    delivery_target: DeliveryTarget | None,
+    fallback_target: DeliveryTarget | None = None,
+) -> list[Any]:
+    if not is_internal_ingress or delivery_target is None:
+        return list(pending_rows)
+    return [
+        pending
+        for pending in pending_rows
+        if not _pending_uses_totp(pending)
+        or _pending_matches_delivery_target(
+            pending,
+            delivery_target,
+            fallback_target=fallback_target,
+        )
+    ]
+
+
 def _checkpoint_id_from_action_result(result: Mapping[str, Any]) -> str:
     checkpoint_id = result.get("checkpoint_id")
     if checkpoint_id is None:
@@ -2882,12 +2927,6 @@ class SessionImplMixin(HandlerMixinBase):
         allow_channel_ingress_confirmation = is_internal_ingress and delivery_target is not None
         if not trusted_input:
             return None
-        mismatched_stored_delivery_target = (
-            is_internal_ingress
-            and delivery_target is not None
-            and stored_delivery_target is not None
-            and not _delivery_targets_match(delivery_target, stored_delivery_target)
-        )
         if is_internal_ingress and not allow_channel_ingress_confirmation:
             return None
         pending_rows = self._pending_confirmations_for_binding(
@@ -2898,10 +2937,20 @@ class SessionImplMixin(HandlerMixinBase):
         if not pending_rows:
             return None
 
+        def _visible_pending_rows(rows: Sequence[Any]) -> list[Any]:
+            return _visible_pending_rows_for_delivery_target(
+                pending_rows=rows,
+                is_internal_ingress=is_internal_ingress,
+                delivery_target=delivery_target,
+                fallback_target=stored_delivery_target,
+            )
+
         tainted_session = (
             self._session_has_tainted_history(sid) or firewall_result.risk_score >= 0.7
         )
         totp_rows = _totp_pending_rows(pending_rows)
+        visible_pending_rows = _visible_pending_rows(pending_rows)
+        visible_totp_rows = _totp_pending_rows(visible_pending_rows)
         totp_submission = _parse_chat_totp_submission(content) if totp_rows else None
         intent: ChatConfirmationIntent | None = None
         if is_internal_ingress and totp_submission is None:
@@ -2939,18 +2988,24 @@ class SessionImplMixin(HandlerMixinBase):
                 taint_labels=set(),
                 metadata=assistant_transcript_metadata,
             )
+            all_pending_rows = self._pending_confirmations_for_binding(
+                session_id=sid,
+                user_id=user_id,
+                workspace_id=workspace_id,
+            )
             pending_confirmation_ids = [
                 pending.confirmation_id
-                for pending in self._pending_confirmations_for_binding(
-                    session_id=sid,
-                    user_id=user_id,
-                    workspace_id=workspace_id,
-                )
+                for pending in all_pending_rows
+            ]
+            visible_pending_confirmation_ids = [
+                str(getattr(pending, "confirmation_id", "")).strip()
+                for pending in _visible_pending_rows(all_pending_rows)
+                if str(getattr(pending, "confirmation_id", "")).strip()
             ]
             returned_pending_confirmation_ids = (
                 list(response_pending_confirmation_ids)
                 if response_pending_confirmation_ids is not None
-                else pending_confirmation_ids
+                else visible_pending_confirmation_ids
             )
             await self._event_bus.publish(
                 SessionMessageResponded(
@@ -2996,25 +3051,6 @@ class SessionImplMixin(HandlerMixinBase):
                 "tool_outputs": [],
             }
 
-        if mismatched_stored_delivery_target and totp_rows:
-            attempted_confirmation_reply = totp_submission is not None or (
-                intent is not None and intent.action != "none"
-            )
-            if attempted_confirmation_reply:
-                recovery_action = "confirm"
-                if intent is not None and intent.action == "reject":
-                    recovery_action = "reject"
-                response_text = _wrong_target_totp_confirmation_text(
-                    action=recovery_action
-                )
-                return await _finalize_chat_confirmation_response(
-                    response_text=response_text,
-                    blocked_actions=1,
-                    executed_actions=0,
-                    checkpoint_ids=[],
-                    response_pending_confirmation_ids=[],
-                )
-
         if is_internal_ingress and totp_submission is None:
             assert intent is not None
             if intent.action != "reject":
@@ -3035,19 +3071,59 @@ class SessionImplMixin(HandlerMixinBase):
                     None,
                 )
                 if target_pending is None:
+                    if (
+                        is_internal_ingress
+                        and delivery_target is not None
+                        and not visible_totp_rows
+                    ):
+                        return await _finalize_chat_confirmation_response(
+                            response_text=_wrong_target_totp_confirmation_text(action="confirm"),
+                            blocked_actions=1,
+                            executed_actions=0,
+                            checkpoint_ids=[],
+                            response_pending_confirmation_ids=[],
+                        )
                     response_text = _chat_totp_disambiguation_text(
-                        heading="TOTP confirmation ID not found for this session.",
-                        pending_rows=totp_rows,
+                        heading=(
+                            "TOTP confirmation ID not found for this chat target."
+                            if is_internal_ingress and delivery_target is not None
+                            else "TOTP confirmation ID not found for this session."
+                        ),
+                        pending_rows=visible_totp_rows or totp_rows,
+                    )
+                elif (
+                    is_internal_ingress
+                    and delivery_target is not None
+                    and not _pending_matches_delivery_target(
+                        target_pending,
+                        delivery_target,
+                        fallback_target=stored_delivery_target,
+                    )
+                ):
+                    return await _finalize_chat_confirmation_response(
+                        response_text=_wrong_target_totp_confirmation_text(action="confirm"),
+                        blocked_actions=1,
+                        executed_actions=0,
+                        checkpoint_ids=[],
+                        response_pending_confirmation_ids=[],
                     )
                 else:
                     response_text = ""
-            elif len(totp_rows) != 1:
+            elif len(visible_totp_rows) != 1:
+                if is_internal_ingress and delivery_target is not None and not visible_totp_rows:
+                    return await _finalize_chat_confirmation_response(
+                        response_text=_wrong_target_totp_confirmation_text(action="confirm"),
+                        blocked_actions=1,
+                        executed_actions=0,
+                        checkpoint_ids=[],
+                        response_pending_confirmation_ids=[],
+                    )
                 response_text = _chat_totp_disambiguation_text(
                     heading="Multiple TOTP confirmations are pending.",
-                    pending_rows=totp_rows,
+                    pending_rows=visible_totp_rows,
                 )
             else:
-                target_pending = totp_rows[0]
+                target_pending = visible_totp_rows[0]
                 response_text = ""
             if target_pending is not None:
                 payload = {
@@ -3082,11 +3158,12 @@ class SessionImplMixin(HandlerMixinBase):
                     user_id=user_id,
                     workspace_id=workspace_id,
                 )
-                if remaining:
+                visible_remaining = _visible_pending_rows(remaining)
+                if visible_remaining:
                     response_text = (
                         f"{response_text}\n\n"
                         + self._chat_pending_confirmation_summary(
-                            pending_rows=remaining,
+                            pending_rows=visible_remaining,
                             tainted_session=tainted_session,
                         )
                     )
@@ -3102,13 +3179,36 @@ class SessionImplMixin(HandlerMixinBase):
             )
             if not indexes:
                 response_text = self._chat_pending_confirmation_summary(
-                    pending_rows=pending_rows,
+                    pending_rows=visible_pending_rows,
                     tainted_session=tainted_session,
                 )
                 executed_actions = 0
                 blocked_actions = 0
                 checkpoint_ids = []
             else:
+                selected_pending_rows = [pending_rows[index] for index in indexes]
+                if (
+                    is_internal_ingress
+                    and delivery_target is not None
+                    and any(
+                        _pending_uses_totp(pending)
+                        and not _pending_matches_delivery_target(
+                            pending,
+                            delivery_target,
+                            fallback_target=stored_delivery_target,
+                        )
+                        for pending in selected_pending_rows
+                    )
+                ):
+                    return await _finalize_chat_confirmation_response(
+                        response_text=_wrong_target_totp_confirmation_text(
+                            action=intent.action
+                        ),
+                        blocked_actions=1,
+                        executed_actions=0,
+                        checkpoint_ids=[],
+                        response_pending_confirmation_ids=[],
+                    )
                 executed_actions = 0
                 blocked_actions = 0
                 checkpoint_ids = []
@@ -3156,6 +3256,7 @@ class SessionImplMixin(HandlerMixinBase):
                     user_id=user_id,
                     workspace_id=workspace_id,
                 )
+                visible_remaining = _visible_pending_rows(remaining)
                 response_text = "\n".join(outcome_lines)
                 if skipped_totp_confirmation:
                     guidance = (
@@ -3165,11 +3266,11 @@ class SessionImplMixin(HandlerMixinBase):
                     response_text = (
                         f"{response_text}\n\n{guidance}" if response_text else guidance
                     )
-                if remaining:
+                if visible_remaining:
                     response_text = (
                         f"{response_text}\n\n"
                         + self._chat_pending_confirmation_summary(
-                            pending_rows=remaining,
+                            pending_rows=visible_remaining,
                             tainted_session=tainted_session,
                         )
                     )
@@ -4259,6 +4360,7 @@ class SessionImplMixin(HandlerMixinBase):
                         arguments=proposal_arguments,
                         reason=final_reason or "requires_confirmation",
                         capabilities=planner_context.effective_caps,
+                        delivery_target=validated.delivery_target,
                         preflight_action=cp_eval.action,
                         merged_policy=merged_policy,
                         taint_labels=list(planner_context.context.taint_labels),

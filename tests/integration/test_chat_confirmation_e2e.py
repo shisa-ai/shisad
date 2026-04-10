@@ -839,6 +839,147 @@ async def test_u9_channel_ingest_rejects_totp_pending_action_via_trusted_chat_re
 
 
 @pytest.mark.asyncio
+async def test_u9_channel_ingest_scopes_totp_confirmation_to_pending_delivery_target(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SHISAD_MODEL_BASE_URL", "https://api.example.com/v1")
+    monkeypatch.setenv("SHISAD_MODEL_PLANNER_BASE_URL", "https://planner.example.com/v1")
+    monkeypatch.setenv("SHISAD_MODEL_EMBEDDINGS_BASE_URL", "https://embed.example.com/v1")
+    monkeypatch.setenv("SHISAD_MODEL_MONITOR_BASE_URL", "https://monitor.example.com/v1")
+    target = README_PATH
+    _install_totp_fs_read_planner(
+        monkeypatch,
+        target_path=target,
+        marker="channel-thread-binding",
+    )
+
+    policy_path = tmp_path / "policy.yaml"
+    policy_path.write_text(_totp_fs_read_policy(), encoding="utf-8")
+    config = DaemonConfig(
+        data_dir=tmp_path / "data",
+        socket_path=tmp_path / "control.sock",
+        policy_path=policy_path,
+        assistant_fs_roots=[REPO_ROOT],
+        log_level="INFO",
+    )
+    services = await DaemonServices.build(config)
+    try:
+        services.identity_map.configure_channel_trust(channel="discord", trust_level="trusted")
+        services.identity_map.allow_identity(channel="discord", external_user_id="alice")
+        handlers = DaemonControlHandlers(services=services)
+        ctx = RequestContext()
+
+        started = await handlers.handle_two_factor_register_begin(
+            TwoFactorRegisterBeginParams(method="totp", user_id="alice", name="ops-laptop"),
+            ctx,
+        )
+        enrolled = await handlers.handle_two_factor_register_confirm(
+            TwoFactorRegisterConfirmParams(
+                enrollment_id=started.enrollment_id,
+                verify_code=generate_totp_code(str(started.secret)),
+            ),
+            ctx,
+        )
+        assert enrolled.registered is True
+
+        first = await handlers.handle_channel_ingest(
+            ChannelIngestParams(
+                message={
+                    "channel": "discord",
+                    "external_user_id": "alice",
+                    "workspace_hint": "guild-1",
+                    "content": "queue the first action",
+                    "message_id": "m-1",
+                    "reply_target": "chan-1",
+                }
+            ),
+            ctx,
+        )
+        assert first.confirmation_required_actions >= 1
+        first_id = str(first.pending_confirmation_ids[0])
+
+        second = await handlers.handle_channel_ingest(
+            ChannelIngestParams(
+                message={
+                    "channel": "discord",
+                    "external_user_id": "alice",
+                    "workspace_hint": "guild-1",
+                    "content": "queue the second action",
+                    "message_id": "m-2",
+                    "reply_target": "chan-2",
+                }
+            ),
+            ctx,
+        )
+        assert second.confirmation_required_actions >= 1
+        second_id = str(second.pending_confirmation_ids[0])
+        assert first.session_id == second.session_id
+        assert first_id != second_id
+
+        pending = await handlers.handle_action_pending(
+            ActionPendingParams(session_id=first.session_id, status="pending", limit=10),
+            ctx,
+        )
+        assert pending.count == 2
+
+        wrong_thread = await handlers.handle_channel_ingest(
+            ChannelIngestParams(
+                message={
+                    "channel": "discord",
+                    "external_user_id": "alice",
+                    "workspace_hint": "guild-1",
+                    "content": f"confirm {second_id} {generate_totp_code(str(started.secret))}",
+                    "message_id": "m-3",
+                    "reply_target": "chan-1",
+                }
+            ),
+            ctx,
+        )
+
+        assert wrong_thread.executed_actions == 0
+        assert wrong_thread.pending_confirmation_ids == []
+        wrong_response = str(wrong_thread.response).lower()
+        assert "different chat target" in wrong_response
+        assert second_id.lower() not in wrong_response
+
+        pending = await handlers.handle_action_pending(
+            ActionPendingParams(session_id=first.session_id, status="pending", limit=10),
+            ctx,
+        )
+        assert pending.count == 2
+
+        right_thread = await handlers.handle_channel_ingest(
+            ChannelIngestParams(
+                message={
+                    "channel": "discord",
+                    "external_user_id": "alice",
+                    "workspace_hint": "guild-1",
+                    "content": f"confirm {second_id} {generate_totp_code(str(started.secret))}",
+                    "message_id": "m-4",
+                    "reply_target": "chan-2",
+                }
+            ),
+            ctx,
+        )
+
+        assert right_thread.executed_actions == 1
+        assert right_thread.pending_confirmation_ids == []
+        right_response = str(right_thread.response).lower()
+        assert f"confirmed {second_id}".lower() in right_response
+        assert first_id.lower() not in right_response
+
+        pending = await handlers.handle_action_pending(
+            ActionPendingParams(session_id=first.session_id, status="pending", limit=10),
+            ctx,
+        )
+        assert pending.count == 1
+        assert pending.actions[0].confirmation_id == first_id
+    finally:
+        await services.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_u9_channel_ingest_wrong_target_reject_uses_reject_cli_recovery_guidance(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

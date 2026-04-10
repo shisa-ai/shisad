@@ -437,6 +437,107 @@ async def test_u9_chat_totp_internal_ingress_rejects_mismatched_stored_delivery_
 
 
 @pytest.mark.asyncio
+async def test_u9_chat_totp_internal_ingress_scopes_targeted_confirmation_to_pending_target(
+    tmp_path,
+) -> None:
+    harness = _ChatConfirmationHarness(tmp_path)
+    first = PendingAction(
+        confirmation_id="c-1",
+        decision_nonce="nonce-1",
+        session_id=SessionId("sess-chat"),
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws-1"),
+        tool_name=ToolName("web.search"),
+        arguments={"query": "hello"},
+        reason="manual",
+        capabilities={Capability.HTTP_REQUEST},
+        created_at=datetime.now(UTC),
+        delivery_target=DeliveryTarget(channel="discord", recipient="chan-1"),
+        selected_backend_id="totp.default",
+        selected_backend_method="totp",
+    )
+    second = PendingAction(
+        confirmation_id="c-2",
+        decision_nonce="nonce-2",
+        session_id=SessionId("sess-chat"),
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws-1"),
+        tool_name=ToolName("web.search"),
+        arguments={"query": "world"},
+        reason="manual",
+        capabilities={Capability.HTTP_REQUEST},
+        created_at=datetime.now(UTC),
+        delivery_target=DeliveryTarget(channel="discord", recipient="chan-2"),
+        selected_backend_id="totp.default",
+        selected_backend_method="totp",
+    )
+    harness._pending_actions[first.confirmation_id] = first
+    harness._pending_actions[second.confirmation_id] = second
+
+    wrong_thread = await SessionImplMixin._maybe_handle_chat_confirmation(
+        harness,
+        sid=SessionId("sess-chat"),
+        channel="discord",
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws-1"),
+        session_mode=SessionMode.DEFAULT,
+        trust_level="trusted",
+        trusted_input=True,
+        is_internal_ingress=True,
+        delivery_target=DeliveryTarget(channel="discord", recipient="chan-1"),
+        stored_delivery_target=DeliveryTarget(channel="discord", recipient="chan-1"),
+        content="confirm c-2 123456",
+        firewall_result=FirewallResult(
+            sanitized_text="confirm c-2 123456",
+            original_hash="0" * 64,
+        ),
+    )
+
+    assert wrong_thread is not None
+    assert "different chat target" in str(wrong_thread["response"]).lower()
+    assert wrong_thread["executed_actions"] == 0
+    assert wrong_thread["pending_confirmation_ids"] == []
+    assert harness.confirm_calls == []
+    assert harness._pending_actions["c-2"].status == "pending"
+
+    right_thread = await SessionImplMixin._maybe_handle_chat_confirmation(
+        harness,
+        sid=SessionId("sess-chat"),
+        channel="discord",
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws-1"),
+        session_mode=SessionMode.DEFAULT,
+        trust_level="trusted",
+        trusted_input=True,
+        is_internal_ingress=True,
+        delivery_target=DeliveryTarget(channel="discord", recipient="chan-2"),
+        stored_delivery_target=DeliveryTarget(channel="discord", recipient="chan-1"),
+        content="confirm c-2 123456",
+        firewall_result=FirewallResult(
+            sanitized_text="confirm c-2 123456",
+            original_hash="0" * 64,
+        ),
+    )
+
+    assert right_thread is not None
+    response = str(right_thread["response"]).lower()
+    assert "confirmed c-2" in response
+    assert "c-1" not in response
+    assert right_thread["pending_confirmation_ids"] == []
+    assert harness.confirm_calls == [
+        {
+            "confirmation_id": "c-2",
+            "decision_nonce": "nonce-2",
+            "approval_method": "totp",
+            "proof": {"totp_code": "123456"},
+            "reason": "chat_totp_confirmation",
+        }
+    ]
+    assert harness._pending_actions["c-1"].status == "pending"
+    assert harness._pending_actions["c-2"].status == "approved"
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("content", ["reject 1", "no to all"])
 async def test_u9_chat_totp_internal_ingress_mismatched_reject_intent_uses_reject_recovery_guidance(
     tmp_path,
