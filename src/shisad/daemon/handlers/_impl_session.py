@@ -4525,6 +4525,9 @@ class SessionImplMixin(HandlerMixinBase):
                 _summarize_tool_outputs_for_chat(chat_serialized_tool_outputs) or ""
             )
         if execution.pending_confirmation_ids:
+            fallback_notice = ""
+            if response_text.strip().startswith("[PLANNER FALLBACK:"):
+                fallback_notice = response_text.strip()
             pending_rows = self._pending_confirmations_for_binding(
                 session_id=sid,
                 user_id=validated.user_id,
@@ -4556,6 +4559,8 @@ class SessionImplMixin(HandlerMixinBase):
                 pending_index_by_id=pending_index_by_id,
                 binding_pending_rows=visible_pending_rows,
             )
+            if fallback_notice:
+                response_text = f"{fallback_notice}\n\n{response_text}"
             if tool_output_summary:
                 response_text = f"{response_text}\n\nCompleted actions:\n{tool_output_summary}"
         else:

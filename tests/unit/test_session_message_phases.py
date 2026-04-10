@@ -730,6 +730,50 @@ async def test_finalize_response_uses_totp_aware_cli_fallback_for_totp_pending_a
 
 
 @pytest.mark.asyncio
+async def test_u3_finalize_response_preserves_planner_fallback_notice_for_pending_actions() -> (
+    None
+):
+    harness = _FinalizeEvidenceHarness()
+    harness._pending_actions = {
+        "c-1": SimpleNamespace(
+            confirmation_id="c-1",
+            session_id=SessionId("sess-g1"),
+            user_id=UserId("user-g1"),
+            workspace_id=WorkspaceId("workspace-g1"),
+            created_at=1,
+            safe_preview=(
+                "ACTION CONFIRMATION\n"
+                "Action: shell.exec\n"
+                "Risk Level: HIGH\n"
+                "PARAMETERS:\n"
+                "  command: ['echo', 'hello']"
+            ),
+            reason="requires_confirmation",
+            decision_nonce="nonce-1",
+            status="pending",
+        ),
+    }
+    execution = _finalize_execution_result(
+        tool_outputs=[],
+        assistant_response=(
+            "[PLANNER FALLBACK: CONFIGURATION] No language model configured. "
+            "Configure a planner route or local planner preset, then run "
+            "`shisad doctor check --component provider`."
+        ),
+        pending_confirmation=1,
+        pending_confirmation_ids=["c-1"],
+    )
+
+    response = await SessionImplMixin._finalize_response(harness, execution)
+
+    text = str(response["response"])
+    assert text.startswith("[PLANNER FALLBACK: CONFIGURATION] No language model configured.")
+    assert "\n\n[PENDING CONFIRMATIONS]\n" in text
+    assert "Action: shell.exec" in text
+    assert "shisad action confirm c-1" in text
+
+
+@pytest.mark.asyncio
 async def test_finalize_response_keeps_safe_preview_linebreak_markers_literal_on_terminal_surfaces(
 ) -> None:
     harness = _FinalizeEvidenceHarness()
