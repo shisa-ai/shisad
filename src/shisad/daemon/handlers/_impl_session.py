@@ -4526,7 +4526,12 @@ class SessionImplMixin(HandlerMixinBase):
             )
         if execution.pending_confirmation_ids:
             fallback_notice = ""
-            if response_text.strip().startswith("[PLANNER FALLBACK:"):
+            provider_response = planner_dispatch.planner_result.provider_response
+            if (
+                provider_response is not None
+                and provider_response.model == "local-fallback"
+                and response_text.strip().startswith("[PLANNER FALLBACK:")
+            ):
                 fallback_notice = response_text.strip()
             pending_rows = self._pending_confirmations_for_binding(
                 session_id=sid,
