@@ -168,6 +168,7 @@ async def test_u3_local_planner_provider_returns_explicit_no_model_error_for_pla
     assert "hello there" not in response.message.content
     assert response.message.tool_calls == []
     assert response.finish_reason == "error"
+    assert response.trusted_origin == "local-fallback"
 
 
 @pytest.mark.asyncio
@@ -190,6 +191,7 @@ async def test_u3_local_planner_provider_keeps_deterministic_tool_calls_but_flag
     ]
     assert tool_names == ["shell.exec"]
     assert response.finish_reason == "tool_calls"
+    assert response.trusted_origin == "local-fallback"
 
 
 @pytest.mark.asyncio

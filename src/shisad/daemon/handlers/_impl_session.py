@@ -4529,7 +4529,7 @@ class SessionImplMixin(HandlerMixinBase):
             provider_response = planner_dispatch.planner_result.provider_response
             if (
                 provider_response is not None
-                and provider_response.model == "local-fallback"
+                and provider_response.trusted_origin == "local-fallback"
                 and response_text.strip().startswith("[PLANNER FALLBACK:")
             ):
                 fallback_notice = response_text.strip()

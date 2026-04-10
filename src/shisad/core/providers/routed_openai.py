@@ -252,4 +252,5 @@ class RoutedOpenAIProvider:
                 "completion_tokens": 0,
                 "total_tokens": 0,
             },
+            trusted_origin="local-fallback",
         )

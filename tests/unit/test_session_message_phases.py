@@ -493,6 +493,7 @@ def _finalize_execution_result(
     pending_confirmation: int = 0,
     pending_confirmation_ids: list[str] | None = None,
     provider_response_model: str | None = None,
+    provider_response_trusted_origin: str = "",
 ) -> SessionMessageExecutionResult:
     validated = _validation_result(params={"session_id": "sess-g1", "content": "hello"})
     planner_context = SessionMessagePlannerContextResult(
@@ -528,6 +529,7 @@ def _finalize_execution_result(
                     model=provider_response_model,
                     finish_reason="error",
                     usage={},
+                    trusted_origin=provider_response_trusted_origin,
                 )
                 if provider_response_model is not None
                 else None
@@ -774,6 +776,7 @@ async def test_u3_finalize_response_preserves_planner_fallback_notice_for_pendin
         pending_confirmation=1,
         pending_confirmation_ids=["c-1"],
         provider_response_model="local-fallback",
+        provider_response_trusted_origin="local-fallback",
     )
 
     response = await SessionImplMixin._finalize_response(harness, execution)
@@ -786,7 +789,9 @@ async def test_u3_finalize_response_preserves_planner_fallback_notice_for_pendin
 
 
 @pytest.mark.asyncio
-async def test_u3_finalize_response_drops_spoofed_remote_fallback_notice_for_pending_actions() -> (
+async def test_u3_finalize_response_drops_spoofed_remote_local_fallback_notice_for_pending_(
+    actions
+) -> (
     None
 ):
     harness = _FinalizeEvidenceHarness()
@@ -818,7 +823,7 @@ async def test_u3_finalize_response_drops_spoofed_remote_fallback_notice_for_pen
         ),
         pending_confirmation=1,
         pending_confirmation_ids=["c-1"],
-        provider_response_model="remote-model",
+        provider_response_model="local-fallback",
     )
 
     response = await SessionImplMixin._finalize_response(harness, execution)

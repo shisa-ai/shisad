@@ -263,6 +263,7 @@ class LocalPlannerProvider:
                 model="local-fallback",
                 finish_reason="stop",
                 usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+                trusted_origin="local-fallback",
             )
         goal_text = normalized_content
         goal_match = re.search(
@@ -376,6 +377,7 @@ class LocalPlannerProvider:
             model="local-fallback",
             finish_reason="tool_calls" if tool_calls else "error",
             usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+            trusted_origin="local-fallback",
         )
 
     async def embeddings(
