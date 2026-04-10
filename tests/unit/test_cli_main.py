@@ -2125,6 +2125,49 @@ def test_action_pending_sanitizes_terminal_preview_output(
     assert "preview line\nsecond line" in result.output
 
 
+def test_action_pending_keeps_escaped_preview_newlines_literal(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _config(tmp_path)
+    monkeypatch.setattr(cli_main, "_get_config", lambda: config)
+
+    def _fake_rpc_call(
+        effective_config: DaemonConfig,
+        method: str,
+        params: dict[str, object] | None = None,
+        *,
+        response_model: type[object] | None = None,
+    ) -> object:
+        assert effective_config is config
+        assert method == "action.pending"
+        payload = {
+            "actions": [
+                {
+                    "confirmation_id": "c-1",
+                    "decision_nonce": "n-1",
+                    "status": "pending",
+                    "tool_name": "shell.exec",
+                    "reason": "manual_review",
+                    "safe_preview": "ACTION CONFIRMATION\n  body: line1\\nline2",
+                }
+            ],
+            "count": 1,
+        }
+        if response_model is None:
+            return payload
+        return response_model.model_validate(payload)  # type: ignore[attr-defined]
+
+    monkeypatch.setattr(cli_main, "rpc_call", _fake_rpc_call)
+    runner = CliRunner()
+
+    result = runner.invoke(cli_main.cli, ["action", "pending"])
+
+    assert result.exit_code == 0, result.output
+    assert "ACTION CONFIRMATION\nbody: line1\\nline2" in result.output
+    assert "line1\nline2" not in result.output
+
+
 def test_action_confirm_webauthn_opens_browser_and_waits_for_resolution(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

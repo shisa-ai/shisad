@@ -110,6 +110,31 @@ def test_render_evidence_refs_for_terminal_normalizes_literal_linebreaks_before_
     assert "\x1b" not in rendered
 
 
+def test_render_evidence_refs_for_terminal_preserves_double_escaped_linebreak_text() -> None:
+    raw = r"Regex token \\n should stay literal"
+
+    rendered = render_evidence_refs_for_terminal(raw)
+
+    assert rendered == r"Regex token \n should stay literal"
+    assert "\n" not in rendered
+
+
+def test_render_evidence_refs_for_terminal_keeps_summary_single_line_after_normalization() -> None:
+    ref = EvidenceRef(
+        ref_id="ev-1234567890abcdef",
+        content_hash="hash",
+        taint_labels=[TaintLabel.UNTRUSTED],
+        source="web.fetch:example.com",
+        summary="line one\nsource: spoofed",
+        byte_size=42,
+    )
+
+    rendered = render_evidence_refs_for_terminal(format_evidence_stub(ref))
+
+    assert "summary: line one source: spoofed" in rendered
+    assert rendered.count("\nsource:") == 1
+
+
 def test_render_evidence_refs_for_terminal_round_trips_escaped_summary_from_stub_formatter() -> (
     None
 ):

@@ -72,9 +72,50 @@ def _sanitize_terminal_field(value: str) -> str:
     return cleaned.strip()
 
 
+def _normalize_literal_linebreak_escapes(value: str) -> str:
+    chars: list[str] = []
+    escaped = False
+    index = 0
+    while index < len(value):
+        char = value[index]
+        if not escaped:
+            if char == "\\":
+                escaped = True
+            else:
+                chars.append(char)
+            index += 1
+            continue
+        if char == "\\":
+            chars.append("\\")
+            escaped = False
+            index += 1
+            continue
+        if char == "r":
+            if index + 2 < len(value) and value[index + 1] == "\\" and value[index + 2] == "n":
+                chars.append("\n")
+                escaped = False
+                index += 3
+                continue
+            chars.append("\n")
+            escaped = False
+            index += 1
+            continue
+        if char == "n":
+            chars.append("\n")
+            escaped = False
+            index += 1
+            continue
+        chars.append("\\")
+        chars.append(char)
+        escaped = False
+        index += 1
+    if escaped:
+        chars.append("\\")
+    return "".join(chars)
+
+
 def _sanitize_terminal_text(value: str) -> str:
-    cleaned = value.replace("\\r\\n", "\n").replace("\\n", "\n").replace("\\r", "\n")
-    cleaned = _strip_terminal_sequences(cleaned)
+    cleaned = _strip_terminal_sequences(value)
     cleaned = cleaned.replace("\r", "\n")
     cleaned = cleaned.replace("\t", " ")
     cleaned = _TEXT_CONTROL_CHARS_RE.sub(" ", cleaned)
@@ -138,18 +179,36 @@ def _render_stub(parsed: _ParsedEvidenceStub) -> str:
     return "\n".join(lines)
 
 
+def _sanitize_terminal_assistant_segment(value: str) -> str:
+    return sanitize_terminal_text(_normalize_literal_linebreak_escapes(value))
+
+
+def _next_stub_match(text: str, start: int) -> tuple[re.Match[str], bool] | None:
+    available = _AVAILABLE_EVIDENCE_STUB_RE.search(text, start)
+    unavailable = _UNAVAILABLE_EVIDENCE_STUB_RE.search(text, start)
+    if available is None:
+        if unavailable is None:
+            return None
+        return unavailable, False
+    if unavailable is None or available.start() <= unavailable.start():
+        return available, True
+    return unavailable, False
+
+
 def render_evidence_refs_for_terminal(text: str) -> str:
     """Replace raw evidence stubs with terminal-friendly multi-line blocks."""
 
     if not text.strip():
         return text.strip()
 
-    rendered = _AVAILABLE_EVIDENCE_STUB_RE.sub(
-        lambda match: _render_stub(_parsed_stub_from_match(match, available=True)),
-        text,
-    )
-    rendered = _UNAVAILABLE_EVIDENCE_STUB_RE.sub(
-        lambda match: _render_stub(_parsed_stub_from_match(match, available=False)),
-        rendered,
-    )
-    return sanitize_terminal_text(rendered)
+    chunks: list[str] = []
+    cursor = 0
+    while match_info := _next_stub_match(text, cursor):
+        match, available = match_info
+        if match.start() > cursor:
+            chunks.append(_sanitize_terminal_assistant_segment(text[cursor : match.start()]))
+        chunks.append(_render_stub(_parsed_stub_from_match(match, available=available)))
+        cursor = match.end()
+    if cursor < len(text):
+        chunks.append(_sanitize_terminal_assistant_segment(text[cursor:]))
+    return "".join(chunks)
