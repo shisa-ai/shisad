@@ -129,10 +129,13 @@ def _terminal_supports_unicode_output() -> bool:
 def _render_terminal_qr(url: str) -> str:
     if not url or not _terminal_supports_unicode_output():
         return ""
-    qr = qrcode.QRCode(border=1)
-    qr.add_data(url)
-    qr.make(fit=True)
-    matrix = qr.get_matrix()
+    try:
+        qr = qrcode.QRCode(border=1)
+        qr.add_data(url)
+        qr.make(fit=True)
+        matrix = qr.get_matrix()
+    except Exception:
+        return ""
     return "\n".join("".join("██" if cell else "  " for cell in row) for row in matrix)
 
 

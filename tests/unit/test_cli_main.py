@@ -1889,6 +1889,78 @@ def test_two_factor_register_renders_totp_qr_when_terminal_supports_it(
     assert "██" in result.output
 
 
+def test_two_factor_register_falls_back_to_uri_when_qr_rendering_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _config(tmp_path)
+    monkeypatch.setattr(cli_main, "_get_config", lambda: config)
+    calls: list[tuple[str, dict[str, object] | None]] = []
+
+    def _fake_rpc_call(
+        effective_config: DaemonConfig,
+        method: str,
+        params: dict[str, object] | None = None,
+        *,
+        response_model: type[object] | None = None,
+    ) -> object:
+        assert effective_config is config
+        calls.append((method, params))
+        if method == "2fa.register_begin":
+            payload = {
+                "started": True,
+                "enrollment_id": "enroll-1",
+                "user_id": "alice",
+                "method": "totp",
+                "principal_id": "ops-laptop",
+                "credential_id": "totp-1",
+                "secret": "SECRETBASE32",
+                "otpauth_uri": "otpauth://totp/shisad:alice?secret=SECRETBASE32",
+                "expires_at": "2026-04-06T12:10:00Z",
+            }
+        else:
+            payload = {
+                "registered": True,
+                "user_id": "alice",
+                "method": "totp",
+                "principal_id": "ops-laptop",
+                "credential_id": "totp-1",
+                "recovery_codes": ["RCODE-1"],
+            }
+        if response_model is None:
+            return payload
+        return response_model.model_validate(payload)  # type: ignore[attr-defined]
+
+    def _raise_qr_overflow(self: object, *, fit: bool = True) -> None:
+        raise ValueError("Invalid version (was 41, expected 1 to 40)")
+
+    monkeypatch.setattr(cli_main, "rpc_call", _fake_rpc_call)
+    monkeypatch.setattr(cli_main, "_terminal_supports_unicode_output", lambda: True)
+    monkeypatch.setattr(cli_main.qrcode.QRCode, "make", _raise_qr_overflow)
+    runner = CliRunner()
+
+    result = runner.invoke(
+        cli_main.cli,
+        ["2fa", "register", "--method", "totp", "--user", "alice", "--name", "ops-laptop"],
+        input="123456\n",
+    )
+
+    assert result.exit_code == 0, result.output
+    assert calls == [
+        (
+            "2fa.register_begin",
+            {"method": "totp", "user_id": "alice", "name": "ops-laptop"},
+        ),
+        (
+            "2fa.register_confirm",
+            {"enrollment_id": "enroll-1", "verify_code": "123456"},
+        ),
+    ]
+    assert "otpauth URI: otpauth://totp/shisad:alice?secret=SECRETBASE32" in result.output
+    assert "Scan this QR in your authenticator app:" not in result.output
+    assert "RCODE-1" in result.output
+
+
 def test_two_factor_register_skips_qr_on_non_unicode_terminal(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
