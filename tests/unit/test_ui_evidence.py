@@ -135,6 +135,14 @@ def test_render_evidence_refs_for_terminal_keeps_summary_single_line_after_norma
     assert rendered.count("\nsource:") == 1
 
 
+def test_render_evidence_refs_for_terminal_still_normalizes_non_pending_preview_text() -> None:
+    raw = "Assistant note:\n   Preview:\n     line1\\nline2"
+
+    rendered = render_evidence_refs_for_terminal(raw)
+
+    assert rendered == "Assistant note:\nPreview:\nline1\nline2"
+
+
 def test_render_evidence_refs_for_terminal_round_trips_escaped_summary_from_stub_formatter() -> (
     None
 ):
