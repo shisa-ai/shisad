@@ -1684,6 +1684,25 @@ def _daemon_pending_confirmation_response_text(
     pending_index_by_id: Mapping[str, int] | None = None,
     binding_pending_rows: Sequence[Any] | None = None,
 ) -> str:
+    def _escape_preview_line_for_assistant_text(value: str) -> str:
+        chars: list[str] = []
+        escaped = False
+        for char in value:
+            if not escaped:
+                if char == "\\":
+                    escaped = True
+                    continue
+                chars.append(char)
+                continue
+            if char in {"n", "r"}:
+                chars.extend(("\\", "\\", char))
+            else:
+                chars.extend(("\\", char))
+            escaped = False
+        if escaped:
+            chars.append("\\")
+        return "".join(chars)
+
     binding_rows = list(binding_pending_rows or ())
     binding_totp_rows = _totp_pending_rows(binding_rows)
     single_totp_confirmation_id = (
@@ -1725,7 +1744,10 @@ def _daemon_pending_confirmation_response_text(
                 preview = str(getattr(pending, "reason", "") or "").strip()
         if preview:
             lines.append("   Preview:")
-            lines.extend(f"     {line}" for line in preview.splitlines())
+            lines.extend(
+                f"     {_escape_preview_line_for_assistant_text(line)}"
+                for line in preview.splitlines()
+            )
     lines.extend(["", "Review all pending: shisad action pending"])
     return "\n".join(lines).strip()
 

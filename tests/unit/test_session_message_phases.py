@@ -46,6 +46,7 @@ from shisad.security.firewall import FirewallResult
 from shisad.security.monitor import MonitorDecisionType
 from shisad.security.pep import PEP, PolicyContext
 from shisad.security.policy import PolicyBundle
+from shisad.ui.evidence import render_evidence_refs_for_terminal
 from tests.helpers.artifact_kms import StubArtifactKmsService
 
 
@@ -726,6 +727,43 @@ async def test_finalize_response_uses_totp_aware_cli_fallback_for_totp_pending_a
     assert "reply with the 6-digit code" in text
     assert "shisad action confirm c-1 --totp-code 123456" in text
     assert "Confirm: shisad action confirm c-1\n" not in text
+
+
+@pytest.mark.asyncio
+async def test_finalize_response_keeps_safe_preview_linebreak_markers_literal_on_terminal_surfaces(
+) -> None:
+    harness = _FinalizeEvidenceHarness()
+    harness._pending_actions = {
+        "c-1": SimpleNamespace(
+            confirmation_id="c-1",
+            session_id=SessionId("sess-g1"),
+            user_id=UserId("user-g1"),
+            workspace_id=WorkspaceId("workspace-g1"),
+            created_at=1,
+            safe_preview=(
+                "ACTION CONFIRMATION\n"
+                "Action: fs.write\n"
+                "Risk Level: MEDIUM\n"
+                "PARAMETERS:\n"
+                "  body: line1\\nline2"
+            ),
+            reason="requires_confirmation",
+            decision_nonce="nonce-1",
+            status="pending",
+        ),
+    }
+    execution = _finalize_execution_result(
+        tool_outputs=[],
+        assistant_response="Queued it.",
+        pending_confirmation=1,
+        pending_confirmation_ids=["c-1"],
+    )
+
+    response = await SessionImplMixin._finalize_response(harness, execution)
+    rendered = render_evidence_refs_for_terminal(str(response["response"]))
+
+    assert "body: line1\\nline2" in rendered
+    assert "body: line1\nline2" not in rendered
 
 
 @pytest.mark.asyncio
