@@ -54,6 +54,27 @@ async def test_m3_acp_adapter_collects_summary_mode_cost_and_raw_updates(
 
 
 @pytest.mark.asyncio
+async def test_m3_acp_adapter_emits_session_id_when_session_starts(
+    tmp_path: Path,
+) -> None:
+    adapter = AcpAdapter(spec=_fake_agent_spec("codex"))
+    seen_session_ids: list[str] = []
+
+    result = await adapter.run(
+        prompt_text="TASK KIND: review\nFILES:\n- README.md\n",
+        workdir=tmp_path,
+        config=CodingAgentConfig(
+            preferred_agent="codex",
+            read_only=True,
+        ),
+        on_session_started=seen_session_ids.append,
+    )
+
+    assert result.result.success is True
+    assert seen_session_ids == [result.session_id]
+
+
+@pytest.mark.asyncio
 async def test_m3_acp_adapter_review_mode_uses_read_only_session_mode(
     tmp_path: Path,
 ) -> None:

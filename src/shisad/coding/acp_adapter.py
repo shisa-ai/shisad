@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 import os
 import time
+from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from pathlib import Path
 from typing import Any
@@ -324,6 +326,7 @@ class AcpAdapter(CodingAgentAdapter):
         prompt_text: str,
         workdir: Path,
         config: CodingAgentConfig,
+        on_session_started: Callable[[str], Awaitable[None] | None] | None = None,
     ) -> CodingAgentRunOutput:
         start = time.monotonic()
         recorder = _AcpRecordingClient()
@@ -351,6 +354,18 @@ class AcpAdapter(CodingAgentAdapter):
                 )
                 new_session = await conn.new_session(cwd=str(workdir))
                 session_id = str(new_session.session_id)
+                if on_session_started is not None:
+                    try:
+                        callback_result = on_session_started(session_id)
+                        if inspect.isawaitable(callback_result):
+                            await callback_result
+                    except Exception:
+                        logger.warning(
+                            "ACP session-start callback failed for agent=%s session_id=%s",
+                            self._spec.name,
+                            session_id,
+                            exc_info=True,
+                        )
 
                 available_modes = _extract_mode_ids(getattr(new_session, "modes", None))
                 current_mode = (
