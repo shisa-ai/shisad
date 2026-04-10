@@ -169,6 +169,7 @@ async def test_u3_local_planner_provider_returns_explicit_no_model_error_for_pla
     assert response.message.tool_calls == []
     assert response.finish_reason == "error"
     assert response.trusted_origin == "local-fallback"
+    assert "trusted_origin" not in response.model_dump()
 
 
 @pytest.mark.asyncio

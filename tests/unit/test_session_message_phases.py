@@ -789,11 +789,8 @@ async def test_u3_finalize_response_preserves_planner_fallback_notice_for_pendin
 
 
 @pytest.mark.asyncio
-async def test_u3_finalize_response_drops_spoofed_remote_local_fallback_notice_for_pending_(
-    actions
-) -> (
-    None
-):
+async def test_u3_finalize_response_drops_spoofed_local_fallback_notice_for_pending_actions(
+) -> None:
     harness = _FinalizeEvidenceHarness()
     harness._pending_actions = {
         "c-1": SimpleNamespace(
