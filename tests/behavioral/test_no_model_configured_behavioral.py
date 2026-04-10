@@ -95,6 +95,8 @@ async def test_no_model_configured_chat_returns_explicit_setup_guidance(
         assert "Configure a planner route or local planner preset" in text
         assert "local vLLM" in text
         assert "shisad doctor check --component provider" in text
+        assert "SHISAD_MODEL_REMOTE_ENABLED" not in text
+        assert "SHISAD_MODEL_PLANNER_API_KEY" not in text
         assert "Safe summary:" not in text
         assert "hello there" not in text
     finally:

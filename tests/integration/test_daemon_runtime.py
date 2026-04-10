@@ -105,6 +105,7 @@ async def test_daemon_registers_alarm_tool_and_derives_capability_grant_actor(
         assert "summarize this text" not in str(reply["response"]).lower()
         assert "Configure a planner route or local planner preset" in str(reply["response"])
         assert "shisad doctor check --component provider" in str(reply["response"])
+        assert "SHISAD_MODEL_REMOTE_ENABLED" not in str(reply["response"])
 
         grant = await client.call(
             "session.grant_capabilities",
@@ -195,6 +196,7 @@ async def test_m3_session_persists_across_daemon_restart(
         assert str(response["response"]).startswith(
             "[PLANNER FALLBACK: CONFIGURATION] No language model configured."
         )
+        assert "SHISAD_MODEL_REMOTE_ENABLED" not in str(response["response"])
     finally:
         with suppress(Exception):
             await client_2.call("daemon.shutdown")
