@@ -180,7 +180,22 @@ def _render_stub(parsed: _ParsedEvidenceStub) -> str:
 
 
 def _sanitize_terminal_assistant_segment(value: str) -> str:
-    return sanitize_terminal_text(_normalize_literal_linebreak_escapes(value))
+    trailing_newline = value.endswith("\n")
+    normalized_lines: list[str] = []
+    in_pending_preview = False
+    for line in value.splitlines():
+        if in_pending_preview and not line.startswith("     "):
+            in_pending_preview = False
+        if in_pending_preview:
+            normalized_lines.append(line)
+        else:
+            normalized_lines.append(_normalize_literal_linebreak_escapes(line))
+        if line == "   Preview:":
+            in_pending_preview = True
+    normalized = "\n".join(normalized_lines)
+    if trailing_newline:
+        normalized += "\n"
+    return sanitize_terminal_text(normalized)
 
 
 def _next_stub_match(text: str, start: int) -> tuple[re.Match[str], bool] | None:

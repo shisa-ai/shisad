@@ -760,8 +760,11 @@ async def test_finalize_response_keeps_safe_preview_linebreak_markers_literal_on
     )
 
     response = await SessionImplMixin._finalize_response(harness, execution)
-    rendered = render_evidence_refs_for_terminal(str(response["response"]))
+    text = str(response["response"])
+    rendered = render_evidence_refs_for_terminal(text)
 
+    assert "body: line1\\nline2" in text
+    assert "body: line1\\\\nline2" not in text
     assert "body: line1\\nline2" in rendered
     assert "body: line1\nline2" not in rendered
 
