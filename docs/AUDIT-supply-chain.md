@@ -262,7 +262,7 @@ sed -n '1,140p' docs/DEPLOY.md
 
 | Group | Direct packages in group | Lock status |
 | --- | --- | --- |
-| `dev` | `pytest`, `pytest-asyncio`, `ruff`, `mypy`, `types-pyyaml`, `textual` | All exact in lock; all declared as ranges |
+| `dev` | `numpy`, `pytest`, `pytest-asyncio`, `ruff`, `mypy`, `types-pyyaml`, `textual` | All exact in lock; all declared as ranges |
 | `channels-runtime` | `matrix-nio[e2e]`, `discord.py`, `python-telegram-bot`, `slack-bolt`, `slack-sdk` | All exact in lock; all declared as ranges |
 | `coverage` | `pytest-cov` | Exact in lock; declared as range |
 | `security-runtime` | `yara-python`, `transformers`, `onnxruntime`, `safetensors`, `sentencepiece` | All exact in lock; all declared as ranges |
