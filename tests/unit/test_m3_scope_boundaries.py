@@ -775,6 +775,52 @@ def test_m3_pep_task_mixed_scope_dotted_thread_id_remains_semantic_only(
     assert filesystem_decision.reason_code == "pep:resource_authorization_failed"
 
 
+def test_m3_pep_task_mixed_scope_numeric_thread_id_remains_semantic_only(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    (tmp_path / "123456789").write_text("local file", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    authorizer = task_resource_authorizer(
+        TaskEnvelope(
+            capability_snapshot=frozenset({Capability.FILE_WRITE, Capability.MESSAGE_SEND}),
+            resource_scope_ids=["123456789"],
+            resource_scope_authority="command_clean",
+        )
+    )
+    assert authorizer is not None
+    pep = PEP(
+        PolicyBundle(default_require_confirmation=False),
+        _build_tool_registry(EventBus())[0],
+    )
+
+    semantic_decision = pep.evaluate(
+        ToolName("message.send"),
+        {
+            "channel": "telegram",
+            "recipient": "chat-123",
+            "message": "hello",
+            "thread_id": "123456789",
+        },
+        PolicyContext(
+            capabilities={Capability.MESSAGE_SEND},
+            resource_authorizer=authorizer,
+        ),
+    )
+    filesystem_decision = pep.evaluate(
+        ToolName("fs.write"),
+        {"path": "123456789", "content": "ok"},
+        PolicyContext(
+            capabilities={Capability.FILE_WRITE},
+            resource_authorizer=authorizer,
+        ),
+    )
+
+    assert semantic_decision.kind == PEPDecisionKind.ALLOW
+    assert filesystem_decision.kind == PEPDecisionKind.REJECT
+    assert filesystem_decision.reason_code == "pep:resource_authorization_failed"
+
+
 def test_m3_pep_task_mixed_scope_plain_thread_id_remains_semantic_when_file_exists(
     tmp_path: Path,
     monkeypatch: Any,

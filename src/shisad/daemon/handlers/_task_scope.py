@@ -10,6 +10,7 @@ from typing import Any
 from shisad.core.types import Capability, UserId, WorkspaceId
 
 _PATH_RESOURCE_ARG_NAMES = frozenset({"path", "repo_path"})
+_NUMERIC_EXACT_ID_PATTERN = re.compile(r"^\d+$")
 _SLACK_THREAD_TS_PATTERN = re.compile(r"^\d+(?:\.\d+)+$")
 _PLAIN_SEMANTIC_EXACT_ID_PREFIXES = (
     "calendar-",
@@ -53,6 +54,8 @@ def _has_semantic_resource_marker(value: str) -> bool:
 def _looks_like_semantic_exact_id(value: str) -> bool:
     normalized = value.strip()
     return _has_semantic_resource_marker(normalized) or bool(
+        _NUMERIC_EXACT_ID_PATTERN.fullmatch(normalized)
+    ) or bool(
         _SLACK_THREAD_TS_PATTERN.fullmatch(normalized)
     ) or normalized.lower().startswith(
         _PLAIN_SEMANTIC_EXACT_ID_PREFIXES,
