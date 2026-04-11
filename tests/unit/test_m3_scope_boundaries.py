@@ -448,7 +448,16 @@ def test_m3_task_resource_authorizer_does_not_promote_semantic_ids_to_paths(
     )
 
     assert authorizer is not None
-    assert authorizer("thread-forbidden", WorkspaceId("ws1"), UserId("alice")) is False
+    authorizer_with_argument_scope: Any = authorizer
+    assert (
+        authorizer_with_argument_scope.authorize_argument(
+            "thread_id",
+            "thread-forbidden",
+            WorkspaceId("ws1"),
+            UserId("alice"),
+        )
+        is False
+    )
 
 
 def test_m3_pep_task_path_scope_does_not_authorize_semantic_id_arguments(
@@ -476,6 +485,72 @@ def test_m3_pep_task_path_scope_does_not_authorize_semantic_id_arguments(
             "recipient": "ops-room",
             "message": "hello",
             "thread_id": "inside.txt",
+        },
+        PolicyContext(
+            capabilities={Capability.MESSAGE_SEND},
+            resource_authorizer=authorizer,
+        ),
+    )
+
+    assert decision.kind == PEPDecisionKind.REJECT
+    assert decision.reason_code == "pep:resource_authorization_failed"
+
+
+def test_m3_pep_task_filesystem_scope_allows_new_extensionless_path(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    authorizer = task_resource_authorizer(
+        TaskEnvelope(
+            resource_scope_prefixes=["."],
+            resource_scope_authority="command_clean",
+        )
+    )
+    assert authorizer is not None
+    pep = PEP(
+        PolicyBundle(default_require_confirmation=False),
+        _build_tool_registry(EventBus())[0],
+    )
+
+    decision = pep.evaluate(
+        ToolName("fs.write"),
+        {"path": "Makefile", "content": "ok"},
+        PolicyContext(
+            capabilities={Capability.FILE_WRITE},
+            resource_authorizer=authorizer,
+        ),
+    )
+
+    assert decision.kind == PEPDecisionKind.REQUIRE_CONFIRMATION
+    assert decision.reason_code != "pep:resource_authorization_failed"
+
+
+def test_m3_pep_task_filesystem_exact_id_does_not_authorize_semantic_id_argument(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    (tmp_path / "README.md").write_text("readme", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    authorizer = task_resource_authorizer(
+        TaskEnvelope(
+            resource_scope_ids=["README.md"],
+            resource_scope_authority="command_clean",
+        )
+    )
+    assert authorizer is not None
+    pep = PEP(
+        PolicyBundle(default_require_confirmation=False),
+        _build_tool_registry(EventBus())[0],
+    )
+
+    decision = pep.evaluate(
+        ToolName("message.send"),
+        {
+            "channel": "discord",
+            "recipient": "ops-room",
+            "message": "hello",
+            "thread_id": "README.md",
         },
         PolicyContext(
             capabilities={Capability.MESSAGE_SEND},

@@ -69,7 +69,11 @@ class _TaskResourceAuthorizer:
         allowed_prefixes: tuple[str, ...],
         filesystem_base: Path,
     ) -> None:
-        self._allowed_ids = frozenset(allowed_ids)
+        self._semantic_allowed_ids = frozenset(
+            item
+            for item in allowed_ids
+            if not _looks_like_filesystem_scope(item, base=filesystem_base)
+        )
         self._semantic_allowed_prefixes = tuple(
             item
             for item in allowed_prefixes
@@ -111,13 +115,16 @@ class _TaskResourceAuthorizer:
         normalized = str(resource_id).strip()
         if not normalized:
             return False
-        if normalized in self._allowed_ids:
+        if normalized in self._semantic_allowed_ids:
             return True
         if any(normalized.startswith(prefix) for prefix in self._semantic_allowed_prefixes):
             return True
         if not filesystem_scope:
             return False
-        if not _looks_like_filesystem_scope(normalized, base=self._filesystem_base):
+        if not (
+            _looks_like_filesystem_scope(normalized, base=self._filesystem_base)
+            or self._filesystem_allowed_prefixes
+        ):
             return False
         canonical = _canonical_filesystem_scope(normalized, base=self._filesystem_base)
         if canonical in self._filesystem_allowed_ids:
