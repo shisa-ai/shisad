@@ -1,12 +1,12 @@
 # Multi-Factor Approval (2FA)
 
-> **v0.6.3 status:** The approval protocol, credential store, and shipped
-> backends described here are implemented and tested. TOTP confirmation now
-> works through trusted chat / command replies and through the CLI. Passkey
-> (WebAuthn) and signer approvals already work via browser and remote KMS
-> respectively. QR code rendering for TOTP enrollment is also in v0.6.3.
-> Entering a TOTP code on the approval web page is not shipped yet; browser
-> approval today is WebAuthn only.
+> **v0.6.3 release-candidate status:** The approval protocol, credential store,
+> and approval backends described here are implemented and tested in the local
+> release-prepared tree. TOTP confirmation works through trusted chat / command
+> replies and through the CLI. Passkey (WebAuthn) and signer approvals work via
+> browser and remote KMS respectively. QR code rendering for TOTP enrollment is
+> also in the `v0.6.3` candidate. Entering a TOTP code on the approval web page
+> is not included yet; browser approval today is WebAuthn only.
 
 ---
 
@@ -616,10 +616,10 @@ For L3+ signed approvals, the audit trail also includes:
   currently plaintext JSON. At-rest encryption is follow-on.
 - **TOTP via approval web page:** planned follow-on.
 
-## Shipped in v0.6.3
+## Included in the v0.6.3 Release Candidate
 
-- **TOTP via chat reply:** shipped for trusted chat / command replies.
-- **QR code for TOTP enrollment:** shipped as a best-effort terminal rendering
+- **TOTP via chat reply:** included for trusted chat / command replies.
+- **QR code for TOTP enrollment:** included as a best-effort terminal rendering
   path with the raw `otpauth://` URI preserved as fallback.
 
 ---
@@ -753,7 +753,7 @@ A signer backend implements four methods:
 
 ### KMS HTTP signing contract
 
-The shipped `EnterpriseKmsSignerBackend` uses a simple HTTP POST contract. If
+The built-in `EnterpriseKmsSignerBackend` uses a simple HTTP POST contract. If
 you are building a KMS-compatible endpoint, implement this:
 
 **Request** (POST to your endpoint):
