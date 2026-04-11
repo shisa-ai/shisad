@@ -1,7 +1,7 @@
 # shisad Supply Chain Audit
 
 *Created: 2026-03-31*  
-*Updated: 2026-04-03 (v0.6.0 release-close remediation: dependency audit/export fixes, vulnerability bump refresh, and workflow-linting action repair)*
+*Updated: 2026-04-11 (v0.6.3 release-close docs parity: optional `chat` extra and `textual` exposure)*
 *Status: In Progress*  
 *Snapshot basis: repository state on `main` at audit time (clean tree)*
 
@@ -249,6 +249,12 @@ sed -n '1,140p' docs/DEPLOY.md
 | `pydantic` | `>=2.10,<3` | `2.12.5` | Range in spec, exact in lock |
 | `pydantic-settings` | `>=2.7,<3` | `2.12.0` | Range in spec, exact in lock |
 | `pyyaml` | `>=6.0,<7` | `6.0.3` | Range in spec, exact in lock |
+
+#### Optional extras (`[project.optional-dependencies]`)
+
+| Extra | Direct packages in extra | Lock status |
+| --- | --- | --- |
+| `chat` | `textual` | Exact in lock (`0.89.1`); declared as range |
 
 #### Dependency groups (`[dependency-groups]`)
 
