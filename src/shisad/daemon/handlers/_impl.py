@@ -109,7 +109,6 @@ from shisad.daemon.handlers._pending_approval import (
 from shisad.daemon.handlers._side_effects import is_side_effect_tool
 from shisad.daemon.handlers._string_utils import optional_string
 from shisad.daemon.handlers._tool_exec_helpers import execute_structured_tool
-from shisad.executors.browser import BrowserToolkit
 from shisad.executors.mounts import FilesystemPolicy
 from shisad.executors.proxy import NetworkPolicy
 from shisad.executors.sandbox import (
@@ -170,6 +169,40 @@ class _EventPublisher:
 
     async def publish(self, event: BaseEvent) -> None:
         await publish_event(self._event_bus, event)
+
+
+class _LazyBrowserToolkit:
+    def __init__(self, **kwargs: Any) -> None:
+        self._kwargs = dict(kwargs)
+        self._impl: Any | None = None
+
+    def _load(self) -> Any:
+        if self._impl is None:
+            from shisad.executors.browser import BrowserToolkit
+
+            self._impl = BrowserToolkit(**self._kwargs)
+        return self._impl
+
+    async def prepare_action_arguments(self, **kwargs: Any) -> dict[str, Any]:
+        return dict(await self._load().prepare_action_arguments(**kwargs))
+
+    async def navigate(self, **kwargs: Any) -> dict[str, Any]:
+        return dict(await self._load().navigate(**kwargs))
+
+    async def read_page(self, **kwargs: Any) -> dict[str, Any]:
+        return dict(await self._load().read_page(**kwargs))
+
+    async def screenshot(self, **kwargs: Any) -> dict[str, Any]:
+        return dict(await self._load().screenshot(**kwargs))
+
+    async def click(self, **kwargs: Any) -> dict[str, Any]:
+        return dict(await self._load().click(**kwargs))
+
+    async def type_text(self, **kwargs: Any) -> dict[str, Any]:
+        return dict(await self._load().type_text(**kwargs))
+
+    async def end_session(self, **kwargs: Any) -> dict[str, Any]:
+        return dict(await self._load().end_session(**kwargs))
 
 
 def _should_checkpoint(trigger: str, tool: ToolDefinition | None) -> bool:
@@ -947,17 +980,24 @@ class HandlerImplementation(
         ]
         if not browser_allowed_domains:
             browser_allowed_domains = list(web_allowed_domains)
-        self._browser_toolkit = BrowserToolkit(
-            enabled=bool(self._config.browser_enabled),
-            command=self._config.browser_command,
-            session_root=self._config.data_dir / "browser",
-            allowed_domains=browser_allowed_domains,
-            timeout_seconds=self._config.browser_timeout_seconds,
-            require_hardened_isolation=bool(self._config.browser_require_hardened_isolation),
-            max_read_bytes=self._config.browser_max_read_bytes,
-            sandbox_runner=self._sandbox,
-            browser_sandbox=self._browser_sandbox,
-        )
+        browser_toolkit_kwargs: dict[str, Any] = {
+            "enabled": bool(self._config.browser_enabled),
+            "command": self._config.browser_command,
+            "session_root": self._config.data_dir / "browser",
+            "allowed_domains": browser_allowed_domains,
+            "timeout_seconds": self._config.browser_timeout_seconds,
+            "require_hardened_isolation": bool(self._config.browser_require_hardened_isolation),
+            "max_read_bytes": self._config.browser_max_read_bytes,
+            "sandbox_runner": self._sandbox,
+            "browser_sandbox": self._browser_sandbox,
+        }
+        self._browser_toolkit: Any
+        if self._config.browser_enabled:
+            from shisad.executors.browser import BrowserToolkit
+
+            self._browser_toolkit = BrowserToolkit(**browser_toolkit_kwargs)
+        else:
+            self._browser_toolkit = _LazyBrowserToolkit(**browser_toolkit_kwargs)
         self._fs_git_toolkit = FsGitToolkit(
             roots=list(self._config.assistant_fs_roots),
             max_read_bytes=self._config.assistant_max_read_bytes,
@@ -982,10 +1022,12 @@ class HandlerImplementation(
         tool_name_value = str(tool_name)
         if tool_name_value not in {"browser.navigate", "browser.click", "browser.type_text"}:
             return dict(arguments)
-        return await self._browser_toolkit.prepare_action_arguments(
-            session=session,
-            tool_name=tool_name_value,
-            arguments=arguments,
+        return dict(
+            await self._browser_toolkit.prepare_action_arguments(
+                session=session,
+                tool_name=tool_name_value,
+                arguments=arguments,
+            )
         )
 
     @staticmethod

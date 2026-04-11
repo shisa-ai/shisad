@@ -173,10 +173,10 @@ from shisad.daemon.handlers import (
     ToolExecutionHandlers,
 )
 from shisad.daemon.handlers._impl import HandlerImplementation
-from shisad.executors.browser import BrowserPasteResult, BrowserScreenshotResult
 
 if TYPE_CHECKING:
     from shisad.daemon.services import DaemonServices
+    from shisad.executors.browser import BrowserPasteResult, BrowserScreenshotResult
 
 
 class DaemonControlHandlers:

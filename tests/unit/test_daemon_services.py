@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import subprocess
+import sys
+import textwrap
 from types import SimpleNamespace
 
 import pytest
@@ -29,6 +32,35 @@ from shisad.security.control_plane.sidecar import ControlPlaneUnavailableError
 from shisad.security.credentials import InMemoryCredentialStore
 
 
+def test_u8_daemon_runner_import_defers_disabled_backend_modules() -> None:
+    code = textwrap.dedent(
+        """
+        import sys
+
+        import shisad.daemon.runner
+
+        eager_modules = [
+            "shisad.assistant.realitycheck",
+            "shisad.channels.discord",
+            "shisad.channels.matrix",
+            "shisad.channels.slack",
+            "shisad.channels.telegram",
+            "shisad.executors.browser",
+        ]
+        for name in eager_modules:
+            if name in sys.modules:
+                print(name)
+        """
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+    assert result.stdout.strip() == ""
+
+
 def _clear_remote_provider_env(monkeypatch: pytest.MonkeyPatch) -> None:
     for env_var in (
         "SHISA_API_KEY",
@@ -36,6 +68,7 @@ def _clear_remote_provider_env(monkeypatch: pytest.MonkeyPatch) -> None:
         "OPENAI_API_KEY",
         "GEMINI_API_KEY",
         "OPENROUTER_API_KEY",
+        "ANTHROPIC_API_KEY",
         "SHISAD_MODEL_PLANNER_PROVIDER_PRESET",
         "SHISAD_MODEL_PLANNER_BASE_URL",
         "SHISAD_MODEL_PLANNER_REMOTE_ENABLED",

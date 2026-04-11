@@ -23,6 +23,7 @@ from shisad.core.planner import (
 )
 from shisad.core.providers.base import Message, ProviderResponse
 from shisad.core.providers.local_planner import LocalPlannerProvider
+from shisad.core.tools.names import canonical_tool_name
 from shisad.core.types import TaintLabel, ToolName
 from shisad.daemon.runner import run_daemon
 from shisad.security.firewall import ContentFirewall, FirewallResult
@@ -36,6 +37,24 @@ async def _wait_for_socket(path: Path, timeout: float = 5.0) -> None:
             return
         await asyncio.sleep(0.01)
     raise TimeoutError(f"Timed out waiting for socket {path}")
+
+
+def _captured_tool_names(tools_payload: object) -> set[str]:
+    assert isinstance(tools_payload, list)
+    names: set[str] = set()
+    for item in tools_payload:
+        if not isinstance(item, dict):
+            continue
+        function = item.get("function")
+        if not isinstance(function, dict):
+            continue
+        raw_name = function.get("name")
+        if not isinstance(raw_name, str):
+            continue
+        canonical = canonical_tool_name(raw_name)
+        if canonical:
+            names.add(canonical)
+    return names
 
 
 @pytest.mark.asyncio
@@ -544,6 +563,7 @@ async def test_v0_3_1_session_message_passes_tool_manifest_and_tools_payload(
         socket_path=tmp_path / "control.sock",
         policy_path=policy_path,
         log_level="INFO",
+        assistant_fs_roots=[tmp_path],
     )
 
     daemon_task = asyncio.create_task(run_daemon(config))
@@ -573,15 +593,104 @@ async def test_v0_3_1_session_message_passes_tool_manifest_and_tools_payload(
         assert "=== USER REQUEST ===" in planner_input
         assert "what can you do?" in planner_input
         assert "=== RUNTIME CONTEXT SNAPSHOT ===" in planner_input
-        tools_payload = captured.get("tools")
-        assert isinstance(tools_payload, list)
-        assert any(
-            isinstance(item, dict)
-            and str(item.get("type")) == "function"
-            and isinstance(item.get("function"), dict)
-            and str(item["function"].get("name")) == "fs_read"
-            for item in tools_payload
+        assert "fs.read" in _captured_tool_names(captured.get("tools"))
+    finally:
+        with suppress(Exception):
+            await client.call("daemon.shutdown")
+        await client.close()
+        await asyncio.wait_for(daemon_task, timeout=3)
+
+
+@pytest.mark.asyncio
+async def test_u8_session_message_omits_fs_git_tools_when_fs_roots_empty(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SHISAD_MODEL_BASE_URL", "https://api.example.com/v1")
+    monkeypatch.setenv("SHISAD_MODEL_PLANNER_BASE_URL", "https://planner.example.com/v1")
+    monkeypatch.setenv("SHISAD_MODEL_EMBEDDINGS_BASE_URL", "https://embed.example.com/v1")
+    monkeypatch.setenv("SHISAD_MODEL_MONITOR_BASE_URL", "https://monitor.example.com/v1")
+
+    captured: dict[str, object] = {}
+
+    async def _capture_propose(
+        self: Planner,
+        user_content: str,
+        context: object,
+        *,
+        tools: list[dict[str, object]] | None = None,
+    ) -> PlannerResult:
+        _ = (self, context)
+        captured["user_content"] = user_content
+        captured["tools"] = tools
+        return PlannerResult(
+            output=PlannerOutput(actions=[], assistant_response="ok"),
+            evaluated=[],
+            attempts=1,
+            provider_response=None,
+            messages_sent=(),
         )
+
+    monkeypatch.setattr(Planner, "propose", _capture_propose)
+
+    policy_path = tmp_path / "policy.yaml"
+    policy_path.write_text(
+        textwrap.dedent(
+            """
+            version: "1"
+            default_require_confirmation: false
+            default_capabilities:
+              - file.read
+              - file.write
+              - http.request
+            """
+        ).strip()
+        + "\n"
+    )
+
+    config = DaemonConfig(
+        data_dir=tmp_path / "data",
+        socket_path=tmp_path / "control.sock",
+        policy_path=policy_path,
+        log_level="INFO",
+        assistant_fs_roots=[],
+    )
+
+    daemon_task = asyncio.create_task(run_daemon(config))
+    client = ControlClient(config.socket_path)
+
+    try:
+        await _wait_for_socket(config.socket_path)
+        await client.connect()
+
+        created = await client.call(
+            "session.create",
+            {"channel": "cli", "user_id": "alice", "workspace_id": "ws1"},
+        )
+        sid = created["session_id"]
+        reply = await client.call(
+            "session.message",
+            {
+                "session_id": sid,
+                "channel": "cli",
+                "user_id": "alice",
+                "workspace_id": "ws1",
+                "content": "what can you do?",
+            },
+        )
+        assert str(reply["response"]).strip().lower() == "ok"
+        tool_names = _captured_tool_names(captured.get("tools"))
+        assert "http.request" in tool_names
+        assert "fs.list" not in tool_names
+        assert "fs.read" not in tool_names
+        assert "fs.write" not in tool_names
+        assert "git.status" not in tool_names
+        assert "git.diff" not in tool_names
+        assert "git.log" not in tool_names
+
+        planner_input = str(captured.get("user_content", ""))
+        assert "fs.read" not in planner_input
+        assert "git.status" not in planner_input
     finally:
         with suppress(Exception):
             await client.call("daemon.shutdown")

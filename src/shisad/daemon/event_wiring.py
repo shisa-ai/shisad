@@ -4,10 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
 from shisad.channels.base import Channel
-from shisad.channels.matrix import MatrixChannel
 from shisad.channels.state import ChannelStateStore
 from shisad.core.api.schema import ChannelIngestParams
 from shisad.core.api.transport import ControlServer
@@ -31,6 +30,9 @@ from shisad.daemon.context import RequestContext
 from shisad.security.lockdown import LockdownManager
 from shisad.security.pep import CredentialUseAttempt
 from shisad.security.ratelimit import RateLimitEvent
+
+if TYPE_CHECKING:
+    from shisad.channels.matrix import MatrixChannel
 
 logger = logging.getLogger(__name__)
 

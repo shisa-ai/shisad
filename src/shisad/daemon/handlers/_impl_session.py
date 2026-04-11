@@ -147,6 +147,17 @@ _CLEANROOM_UNTRUSTED_TOOL_NAMES: set[str] = {
     "realitycheck.search",
     "realitycheck.read",
 }
+_ASSISTANT_FS_ROOT_TOOL_NAMES: frozenset[ToolName] = frozenset(
+    ToolName(name)
+    for name in (
+        "fs.list",
+        "fs.read",
+        "fs.write",
+        "git.status",
+        "git.diff",
+        "git.log",
+    )
+)
 _CONTEXT_ENTRY_MAX_CHARS = 280
 _CONTEXT_SUMMARY_MAX_CHARS = 600
 _CONTEXT_SUMMARY_SAMPLE_SIZE = 6
@@ -1207,6 +1218,34 @@ def _planner_runtime_tool_allowlist(
         tool_name
         for tool_name in base_allowlist
         if canonical_tool_name_typed(str(tool_name)) != report_tool
+    }
+
+
+def _assistant_fs_roots_configured(config: Any) -> bool:
+    roots = getattr(config, "assistant_fs_roots", [])
+    if roots is None:
+        return False
+    return any(str(root).strip() for root in roots)
+
+
+def _planner_tool_allowlist_for_configured_resources(
+    *,
+    registry_tools: list[ToolDefinition],
+    base_allowlist: set[ToolName] | None,
+    config: Any,
+) -> set[ToolName] | None:
+    if _assistant_fs_roots_configured(config):
+        return base_allowlist
+    if base_allowlist is None:
+        return {
+            tool.name
+            for tool in registry_tools
+            if canonical_tool_name_typed(str(tool.name)) not in _ASSISTANT_FS_ROOT_TOOL_NAMES
+        }
+    return {
+        tool_name
+        for tool_name in base_allowlist
+        if canonical_tool_name_typed(str(tool_name)) not in _ASSISTANT_FS_ROOT_TOOL_NAMES
     }
 
 
@@ -3794,6 +3833,11 @@ class SessionImplMixin(HandlerMixinBase):
             session=session,
             trust_level=validated.trust_level,
             policy_taint_labels=policy_taint_labels,
+        )
+        planner_tool_allowlist = _planner_tool_allowlist_for_configured_resources(
+            registry_tools=registry_tools,
+            base_allowlist=planner_tool_allowlist,
+            config=self._config,
         )
         task_envelope = _task_envelope_for_session(session)
         context = PolicyContext(

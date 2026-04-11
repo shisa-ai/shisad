@@ -9,19 +9,14 @@ import logging
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 from urllib.parse import urlparse
 
-from shisad.assistant.realitycheck import RealityCheckToolkit
 from shisad.channels.base import Channel
 from shisad.channels.delivery import ChannelDeliveryService
-from shisad.channels.discord import DiscordChannel, DiscordConfig
 from shisad.channels.identity import ChannelIdentityMap
 from shisad.channels.ingress import ChannelIngressProcessor
-from shisad.channels.matrix import MatrixChannel, MatrixConfig
-from shisad.channels.slack import SlackChannel, SlackConfig
 from shisad.channels.state import ChannelStateStore
-from shisad.channels.telegram import TelegramChannel, TelegramConfig
 from shisad.coding.manager import CodingAgentManager
 from shisad.core.api.transport import ControlServer
 from shisad.core.audit import AuditLog
@@ -32,6 +27,7 @@ from shisad.core.config import (
 )
 from shisad.core.events import EventBus
 from shisad.core.evidence import ArtifactBlobCodec, ArtifactLedger, KmsArtifactBlobCodec
+from shisad.core.host_matching import host_matches
 from shisad.core.planner import Planner
 from shisad.core.providers.base import validate_endpoint
 from shisad.core.providers.capabilities import AuthMode
@@ -47,10 +43,9 @@ from shisad.core.tools.registry import ToolRegistry
 from shisad.core.tools.schema import ToolDefinition, ToolParameter
 from shisad.core.trace import TraceRecorder
 from shisad.core.transcript import TranscriptStore
-from shisad.core.types import Capability, CredentialRef, SessionId, ToolName
+from shisad.core.types import Capability, CredentialRef, SessionId, TaintLabel, ToolName
 from shisad.daemon.approval_web import ApprovalWebService
 from shisad.daemon.event_wiring import DaemonEventWiring
-from shisad.executors.browser import BrowserSandbox, BrowserSandboxPolicy
 from shisad.executors.connect_path import IptablesConnectPathProxy
 from shisad.executors.proxy import EgressProxy
 from shisad.executors.sandbox import SandboxOrchestrator
@@ -79,6 +74,14 @@ from shisad.security.ratelimit import RateLimitConfig, RateLimiter
 from shisad.security.risk import RiskCalibrator
 from shisad.selfmod import SelfModificationManager
 from shisad.skills.manager import SkillManager
+
+if TYPE_CHECKING:
+    from shisad.assistant.realitycheck import RealityCheckToolkit
+    from shisad.channels.discord import DiscordChannel
+    from shisad.channels.matrix import MatrixChannel
+    from shisad.channels.slack import SlackChannel
+    from shisad.channels.telegram import TelegramChannel
+    from shisad.executors.browser import BrowserSandbox
 
 logger = logging.getLogger(__name__)
 
@@ -156,6 +159,179 @@ def _warn_on_provider_route_gaps(router: ModelRouter) -> None:
             "Embeddings route not configured - semantic retrieval will degrade to "
             "deterministic local fallback embeddings."
         )
+
+
+class _LazyBrowserSandbox:
+    def __init__(
+        self,
+        *,
+        output_firewall: OutputFirewall,
+        screenshots_dir: Path,
+    ) -> None:
+        self._output_firewall = output_firewall
+        self._screenshots_dir = screenshots_dir
+        self._impl: Any | None = None
+
+    def _load(self) -> Any:
+        if self._impl is None:
+            from shisad.executors.browser import BrowserSandbox, BrowserSandboxPolicy
+
+            self._impl = BrowserSandbox(
+                output_firewall=self._output_firewall,
+                screenshots_dir=self._screenshots_dir,
+                policy=BrowserSandboxPolicy(clipboard="enabled"),
+            )
+        return self._impl
+
+    @property
+    def policy(self) -> Any:
+        return self._load().policy
+
+    def paste(self, text: str, *, taint_labels: set[TaintLabel] | None = None) -> Any:
+        return self._load().paste(text, taint_labels=taint_labels)
+
+    def store_screenshot(self, **kwargs: Any) -> Any:
+        return self._load().store_screenshot(**kwargs)
+
+
+def _build_browser_sandbox(
+    *,
+    config: DaemonConfig,
+    output_firewall: OutputFirewall,
+) -> Any:
+    screenshots_dir = config.data_dir / "screenshots"
+    if config.browser_enabled:
+        from shisad.executors.browser import BrowserSandbox, BrowserSandboxPolicy
+
+        return BrowserSandbox(
+            output_firewall=output_firewall,
+            screenshots_dir=screenshots_dir,
+            policy=BrowserSandboxPolicy(clipboard="enabled"),
+        )
+    return _LazyBrowserSandbox(
+        output_firewall=output_firewall,
+        screenshots_dir=screenshots_dir,
+    )
+
+
+def _realitycheck_disabled_status(
+    *,
+    config: DaemonConfig,
+    allowed_domains: list[str],
+) -> dict[str, Any]:
+    resolved_repo: Path | None = None
+    try:
+        resolved_repo = config.realitycheck_repo_root.expanduser().resolve(strict=False)
+    except (OSError, RuntimeError, ValueError):
+        resolved_repo = None
+
+    configured_roots: list[Path] = []
+    for item in config.realitycheck_data_roots:
+        if not str(item).strip():
+            continue
+        try:
+            configured_roots.append(item.expanduser().resolve(strict=False))
+        except (OSError, RuntimeError, ValueError):
+            continue
+
+    existing_roots: list[Path] = []
+    for item in configured_roots:
+        try:
+            if item.exists() and item.is_dir():
+                existing_roots.append(item)
+        except (OSError, ValueError):
+            continue
+
+    endpoint = config.realitycheck_endpoint_url.strip()
+    parsed_endpoint = urlparse(endpoint) if endpoint else None
+    endpoint_host = (parsed_endpoint.hostname or "").lower() if parsed_endpoint else ""
+    endpoint_allowlisted = (not config.realitycheck_endpoint_enabled) or (
+        bool(endpoint_host) and any(host_matches(endpoint_host, rule) for rule in allowed_domains)
+    )
+    return {
+        "status": "disabled",
+        "enabled": False,
+        "surface_enabled": False,
+        "repo_root": str(resolved_repo) if resolved_repo is not None else "",
+        "repo_exists": bool(
+            resolved_repo is not None and resolved_repo.exists() and resolved_repo.is_dir()
+        ),
+        "data_roots": [str(item) for item in configured_roots],
+        "data_roots_existing": [str(item) for item in existing_roots],
+        "endpoint_enabled": config.realitycheck_endpoint_enabled,
+        "endpoint_url": endpoint,
+        "endpoint_host": endpoint_host,
+        "endpoint_allowlisted": endpoint_allowlisted,
+        "problems": [],
+    }
+
+
+class _LazyRealityCheckToolkit:
+    def __init__(
+        self,
+        *,
+        config: DaemonConfig,
+        allowed_domains: list[str],
+    ) -> None:
+        self._config = config
+        self._allowed_domains = list(allowed_domains)
+        self._impl: Any | None = None
+        self._disabled_status: dict[str, Any] | None = None
+
+    def _load(self) -> Any:
+        if self._impl is None:
+            from shisad.assistant.realitycheck import RealityCheckToolkit
+
+            self._impl = RealityCheckToolkit(
+                enabled=self._config.realitycheck_enabled,
+                repo_root=self._config.realitycheck_repo_root,
+                data_roots=list(self._config.realitycheck_data_roots),
+                endpoint_enabled=self._config.realitycheck_endpoint_enabled,
+                endpoint_url=self._config.realitycheck_endpoint_url,
+                allowed_domains=self._allowed_domains,
+                timeout_seconds=self._config.realitycheck_timeout_seconds,
+                max_read_bytes=self._config.realitycheck_max_read_bytes,
+                max_search_files=self._config.realitycheck_search_max_files,
+            )
+        return self._impl
+
+    def doctor_status(self) -> dict[str, Any]:
+        if not self._config.realitycheck_enabled:
+            if self._disabled_status is None:
+                self._disabled_status = _realitycheck_disabled_status(
+                    config=self._config,
+                    allowed_domains=self._allowed_domains,
+                )
+            return dict(self._disabled_status)
+        return dict(self._load().doctor_status())
+
+    def search(self, **kwargs: Any) -> dict[str, Any]:
+        return dict(self._load().search(**kwargs))
+
+    def read_source(self, **kwargs: Any) -> dict[str, Any]:
+        return dict(self._load().read_source(**kwargs))
+
+
+def _build_realitycheck_toolkit(
+    *,
+    config: DaemonConfig,
+    allowed_domains: list[str],
+) -> Any:
+    if config.realitycheck_enabled:
+        from shisad.assistant.realitycheck import RealityCheckToolkit
+
+        return RealityCheckToolkit(
+            enabled=config.realitycheck_enabled,
+            repo_root=config.realitycheck_repo_root,
+            data_roots=list(config.realitycheck_data_roots),
+            endpoint_enabled=config.realitycheck_endpoint_enabled,
+            endpoint_url=config.realitycheck_endpoint_url,
+            allowed_domains=allowed_domains,
+            timeout_seconds=config.realitycheck_timeout_seconds,
+            max_read_bytes=config.realitycheck_max_read_bytes,
+            max_search_files=config.realitycheck_search_max_files,
+        )
+    return _LazyRealityCheckToolkit(config=config, allowed_domains=allowed_domains)
 
 
 @dataclass(slots=True)
@@ -359,10 +535,9 @@ class DaemonServices:
                 or ["api.example.com", "example.com"],
                 alert_hook=event_wiring.audit_output_event,
             )
-            browser_sandbox = BrowserSandbox(
+            browser_sandbox = _build_browser_sandbox(
+                config=config,
                 output_firewall=output_firewall,
-                screenshots_dir=config.data_dir / "screenshots",
-                policy=BrowserSandboxPolicy(clipboard="enabled"),
             )
             channel_ingress = ChannelIngressProcessor(firewall)
             identity_map = ChannelIdentityMap(default_trust=_CHANNEL_TRUST_DEFAULTS)
@@ -478,16 +653,9 @@ class DaemonServices:
                 realitycheck_domains = [
                     rule.host.strip() for rule in policy_loader.policy.egress if rule.host.strip()
                 ]
-            realitycheck_toolkit = RealityCheckToolkit(
-                enabled=config.realitycheck_enabled,
-                repo_root=config.realitycheck_repo_root,
-                data_roots=list(config.realitycheck_data_roots),
-                endpoint_enabled=config.realitycheck_endpoint_enabled,
-                endpoint_url=config.realitycheck_endpoint_url,
+            realitycheck_toolkit = _build_realitycheck_toolkit(
+                config=config,
                 allowed_domains=realitycheck_domains,
-                timeout_seconds=config.realitycheck_timeout_seconds,
-                max_read_bytes=config.realitycheck_max_read_bytes,
-                max_search_files=config.realitycheck_search_max_files,
             )
             realitycheck_status = realitycheck_toolkit.doctor_status()
             rate_limiter = RateLimiter(
@@ -718,6 +886,8 @@ class DaemonServices:
 async def _build_matrix_channel(config: DaemonConfig) -> MatrixChannel | None:
     if not config.matrix_enabled:
         return None
+    from shisad.channels.matrix import MatrixChannel, MatrixConfig
+
     required = {
         "matrix_homeserver": config.matrix_homeserver,
         "matrix_user_id": config.matrix_user_id,
@@ -747,6 +917,8 @@ async def _build_matrix_channel(config: DaemonConfig) -> MatrixChannel | None:
 async def _build_discord_channel(config: DaemonConfig) -> DiscordChannel | None:
     if not config.discord_enabled:
         return None
+    from shisad.channels.discord import DiscordChannel, DiscordConfig
+
     if not config.discord_bot_token:
         raise ValueError(
             "Discord channel is enabled but missing required config field: discord_bot_token"
@@ -766,6 +938,8 @@ async def _build_discord_channel(config: DaemonConfig) -> DiscordChannel | None:
 async def _build_telegram_channel(config: DaemonConfig) -> TelegramChannel | None:
     if not config.telegram_enabled:
         return None
+    from shisad.channels.telegram import TelegramChannel, TelegramConfig
+
     if not config.telegram_bot_token:
         raise ValueError(
             "Telegram channel is enabled but missing required config field: telegram_bot_token"
@@ -785,6 +959,8 @@ async def _build_telegram_channel(config: DaemonConfig) -> TelegramChannel | Non
 async def _build_slack_channel(config: DaemonConfig) -> SlackChannel | None:
     if not config.slack_enabled:
         return None
+    from shisad.channels.slack import SlackChannel, SlackConfig
+
     missing: list[str] = []
     if not config.slack_bot_token:
         missing.append("slack_bot_token")
