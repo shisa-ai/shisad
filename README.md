@@ -49,9 +49,9 @@ Rather than ignoring the elephant in the room, our design targets the [lethal tr
 
 ## Status
 
-This repo is public and still pre-alpha. The current tree is prepared for the
-`v0.6.3` release; until the `v0.6.3` tag/package are published, `v0.6.2`
-remains the latest published package.
+This repo is public and still pre-alpha. This tree contains the `v0.6.3`
+release content; published installability is determined by the GitHub release
+tag and PyPI package.
 
 `v0.6.3` is the critical UX stabilization follow-up to `v0.6.2`: pending
 confirmations now produce actionable daemon-owned replies, TOTP approvals can
