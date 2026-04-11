@@ -503,6 +503,7 @@ def test_m3_pep_task_filesystem_scope_allows_new_extensionless_path(
     monkeypatch.chdir(tmp_path)
     authorizer = task_resource_authorizer(
         TaskEnvelope(
+            capability_snapshot=frozenset({Capability.FILE_WRITE}),
             resource_scope_prefixes=["."],
             resource_scope_authority="command_clean",
         )
@@ -534,6 +535,7 @@ def test_m3_pep_task_filesystem_exact_id_does_not_authorize_semantic_id_argument
     monkeypatch.chdir(tmp_path)
     authorizer = task_resource_authorizer(
         TaskEnvelope(
+            capability_snapshot=frozenset({Capability.FILE_READ}),
             resource_scope_ids=["README.md"],
             resource_scope_authority="command_clean",
         )
@@ -560,6 +562,122 @@ def test_m3_pep_task_filesystem_exact_id_does_not_authorize_semantic_id_argument
 
     assert decision.kind == PEPDecisionKind.REJECT
     assert decision.reason_code == "pep:resource_authorization_failed"
+
+
+def test_m3_pep_task_semantic_prefix_does_not_authorize_filesystem_argument(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    authorizer = task_resource_authorizer(
+        TaskEnvelope(
+            capability_snapshot=frozenset({Capability.FILE_WRITE, Capability.MESSAGE_SEND}),
+            resource_scope_prefixes=["artifact:task:"],
+            resource_scope_authority="command_clean",
+        )
+    )
+    assert authorizer is not None
+    authorizer_with_argument_scope: Any = authorizer
+
+    assert (
+        authorizer_with_argument_scope.authorize_argument(
+            "path",
+            "artifact:task:/../outside.txt",
+            WorkspaceId("ws1"),
+            UserId("alice"),
+        )
+        is False
+    )
+    assert (
+        authorizer_with_argument_scope.authorize_argument(
+            "thread_id",
+            "artifact:task:123",
+            WorkspaceId("ws1"),
+            UserId("alice"),
+        )
+        is True
+    )
+
+
+def test_m3_pep_task_filesystem_exact_extensionless_id_does_not_authorize_semantic_id(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    authorizer = task_resource_authorizer(
+        TaskEnvelope(
+            capability_snapshot=frozenset({Capability.FILE_WRITE}),
+            resource_scope_ids=["Makefile"],
+            resource_scope_authority="command_clean",
+        )
+    )
+    assert authorizer is not None
+    pep = PEP(
+        PolicyBundle(default_require_confirmation=False),
+        _build_tool_registry(EventBus())[0],
+    )
+
+    filesystem_decision = pep.evaluate(
+        ToolName("fs.write"),
+        {"path": "Makefile", "content": "ok"},
+        PolicyContext(
+            capabilities={Capability.FILE_WRITE},
+            resource_authorizer=authorizer,
+        ),
+    )
+    semantic_decision = pep.evaluate(
+        ToolName("message.send"),
+        {
+            "channel": "discord",
+            "recipient": "ops-room",
+            "message": "hello",
+            "thread_id": "Makefile",
+        },
+        PolicyContext(
+            capabilities={Capability.MESSAGE_SEND},
+            resource_authorizer=authorizer,
+        ),
+    )
+
+    assert filesystem_decision.kind == PEPDecisionKind.REQUIRE_CONFIRMATION
+    assert filesystem_decision.reason_code != "pep:resource_authorization_failed"
+    assert semantic_decision.kind == PEPDecisionKind.REJECT
+    assert semantic_decision.reason_code == "pep:resource_authorization_failed"
+
+
+def test_m3_pep_task_dotted_semantic_thread_id_remains_exact_match(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    authorizer = task_resource_authorizer(
+        TaskEnvelope(
+            capability_snapshot=frozenset({Capability.MESSAGE_SEND}),
+            resource_scope_ids=["1712345678.1234"],
+            resource_scope_authority="command_clean",
+        )
+    )
+    assert authorizer is not None
+    pep = PEP(
+        PolicyBundle(default_require_confirmation=False),
+        _build_tool_registry(EventBus())[0],
+    )
+
+    decision = pep.evaluate(
+        ToolName("message.send"),
+        {
+            "channel": "slack",
+            "recipient": "C012345",
+            "message": "hello",
+            "thread_id": "1712345678.1234",
+        },
+        PolicyContext(
+            capabilities={Capability.MESSAGE_SEND},
+            resource_authorizer=authorizer,
+        ),
+    )
+
+    assert decision.kind == PEPDecisionKind.ALLOW
 
 
 def test_m3_task_resource_authorizer_uses_configured_filesystem_root_for_relative_prefixes(
