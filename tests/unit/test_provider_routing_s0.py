@@ -346,3 +346,18 @@ def test_u5_anthropic_key_auto_detects_anthropic_preset(
     assert route.remote_enabled is True
     assert route.api_key == "anthropic-key"
     assert route.api_key_source == "preset_provider:ANTHROPIC_API_KEY"
+
+
+def test_u5_anthropic_key_auto_detect_does_not_remote_enable_embeddings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clean_api_key_env(monkeypatch)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "anthropic-key")
+
+    route = ModelRouter(ModelConfig()).route_for(ModelComponent.EMBEDDINGS)
+
+    assert route.provider_preset == "shisa_default"
+    assert route.provider_preset_source == "default"
+    assert route.remote_enabled is False
+    assert route.remote_enabled_source == "global"
+    assert route.api_key is None

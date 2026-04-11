@@ -92,6 +92,7 @@ class ControlPlaneGateway(Protocol):
         declared_domains: list[str],
         session_tainted: bool,
         trusted_input: bool,
+        operator_owned_cli_input: bool = False,
         raw_user_text: str = "",
     ) -> ControlPlaneEvaluation: ...
 
@@ -169,6 +170,7 @@ class _EvaluateActionParams(BaseModel):
     declared_domains: list[str] = Field(default_factory=list)
     session_tainted: bool = False
     trusted_input: bool = False
+    operator_owned_cli_input: bool = False
     raw_user_text: str = ""
 
 
@@ -318,6 +320,7 @@ class _ControlPlaneSidecarHandlers:
             declared_domains=list(params.declared_domains),
             session_tainted=bool(params.session_tainted),
             trusted_input=bool(params.trusted_input),
+            operator_owned_cli_input=bool(params.operator_owned_cli_input),
             raw_user_text=params.raw_user_text,
         )
         # Return a raw dict so nested default-factory fields such as action.timestamp
@@ -457,6 +460,7 @@ class ControlPlaneSidecarClient(ControlPlaneGateway):
         declared_domains: list[str],
         session_tainted: bool,
         trusted_input: bool,
+        operator_owned_cli_input: bool = False,
         raw_user_text: str = "",
     ) -> ControlPlaneEvaluation:
         result = await self._call(
@@ -469,6 +473,7 @@ class ControlPlaneSidecarClient(ControlPlaneGateway):
                 declared_domains=list(declared_domains),
                 session_tainted=session_tainted,
                 trusted_input=trusted_input,
+                operator_owned_cli_input=operator_owned_cli_input,
                 raw_user_text=raw_user_text,
             ).model_dump(mode="json"),
             _EvaluateActionResult,

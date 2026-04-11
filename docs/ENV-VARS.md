@@ -327,6 +327,7 @@ These are still part of the live surface:
 | `SHISA_API_KEY` | SHISA preset credential discovery |
 | `OPENROUTER_API_KEY` | OpenRouter preset credential discovery |
 | `GEMINI_API_KEY` | Google OpenAI-compatible preset credential discovery |
+| `ANTHROPIC_API_KEY` | Anthropic preset credential discovery for planner/monitor routes |
 | `_SHISAD_COMPLETE` | shell-completion internal env, not operator config |
 
 ## Opt-In Test / Dev Knobs

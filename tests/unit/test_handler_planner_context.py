@@ -33,6 +33,25 @@ def test_m6_planner_tool_context_normalizes_trust_level_casing() -> None:
     assert "Unavailable tools in this session:" in context
 
 
+def test_u5_planner_tool_context_shows_full_details_for_trusted_cli() -> None:
+    tool = ToolDefinition(
+        name=ToolName("fs.write"),
+        description="Write files",
+        parameters=[],
+        capabilities_required=[Capability.FILE_WRITE],
+    )
+
+    context = _build_planner_tool_context(
+        registry_tools=[tool],
+        capabilities={Capability.FILE_WRITE},
+        tool_allowlist=None,
+        trust_level="trusted_cli",
+    )
+
+    assert "Enabled tools:" in context
+    assert "fs.write (native function: fs_write): Write files" in context
+
+
 def test_cc19_planner_tool_context_documents_native_tool_aliases() -> None:
     tool = ToolDefinition(
         name=ToolName("fs.list"),

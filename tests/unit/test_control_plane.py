@@ -1597,6 +1597,56 @@ async def test_m1_rlc7_action_monitor_voter_flags_untrusted_clean_side_effect() 
 
 
 @pytest.mark.asyncio
+async def test_u5_action_monitor_allows_clean_operator_cli_side_effect() -> None:
+    voter = ActionMonitorVoter()
+    action = build_action(
+        tool_name="fs.write",
+        arguments={"path": "test-output.txt", "content": "hello"},
+        origin=_origin("s-action-monitor-trusted-cli"),
+    )
+    decision = await voter.cast_vote(
+        ConsensusInput(
+            action=action,
+            trace_result=PlanVerificationResult(allowed=True, reason_code="trace:allowed"),
+            metadata_payload={
+                "session_tainted": False,
+                "trusted_input": False,
+                "operator_owned_cli_input": True,
+            },
+        )
+    )
+
+    assert decision.decision == VoteKind.ALLOW
+    assert decision.risk_tier == RiskTier.LOW
+    assert "action_monitor:clean_operator_cli_intent" in decision.reason_codes
+
+
+@pytest.mark.asyncio
+async def test_u5_action_monitor_still_flags_tainted_operator_cli_side_effect() -> None:
+    voter = ActionMonitorVoter()
+    action = build_action(
+        tool_name="fs.write",
+        arguments={"path": "test-output.txt", "content": "hello"},
+        origin=_origin("s-action-monitor-trusted-cli-tainted"),
+    )
+    decision = await voter.cast_vote(
+        ConsensusInput(
+            action=action,
+            trace_result=PlanVerificationResult(allowed=True, reason_code="trace:allowed"),
+            metadata_payload={
+                "session_tainted": True,
+                "trusted_input": False,
+                "operator_owned_cli_input": True,
+            },
+        )
+    )
+
+    assert decision.decision == VoteKind.FLAG
+    assert decision.risk_tier == RiskTier.HIGH
+    assert "action_monitor:side_effect_on_tainted_session" in decision.reason_codes
+
+
+@pytest.mark.asyncio
 async def test_m1_rlc7_action_monitor_voter_flags_tainted_untrusted_side_effect() -> None:
     voter = ActionMonitorVoter()
     action = build_action(

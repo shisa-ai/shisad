@@ -133,6 +133,10 @@ _DEFAULT_PRESET_BY_COMPONENT: dict[ModelComponent, ProviderPreset] = {
     ModelComponent.MONITOR: ProviderPreset.SHISA_DEFAULT,
 }
 
+_AUTO_DETECT_UNSUPPORTED_COMPONENTS: dict[ProviderPreset, set[ModelComponent]] = {
+    ProviderPreset.ANTHROPIC_DEFAULT: {ModelComponent.EMBEDDINGS},
+}
+
 _DEFAULT_ENDPOINT_BY_COMPONENT: dict[ModelComponent, EndpointFamily] = {
     ModelComponent.PLANNER: EndpointFamily.CHAT_COMPLETIONS,
     ModelComponent.EMBEDDINGS: EndpointFamily.EMBEDDINGS,
@@ -170,7 +174,7 @@ class ModelRouter:
 
         preset_override = getattr(self._config, f"{prefix}_provider_preset")
         if preset_override is None:
-            detected = self._auto_detect_preset_from_api_key()
+            detected = self._auto_detect_preset_from_api_key(component=component)
             if detected is not None:
                 preset = detected
                 preset_source = "auto_detected"
@@ -384,8 +388,13 @@ class ModelRouter:
         return False, "global"
 
     @staticmethod
-    def _auto_detect_preset_from_api_key() -> ProviderPreset | None:
+    def _auto_detect_preset_from_api_key(
+        *,
+        component: ModelComponent,
+    ) -> ProviderPreset | None:
         for env_var, preset in _API_KEY_ENV_TO_PRESET:
+            if component in _AUTO_DETECT_UNSUPPORTED_COMPONENTS.get(preset, set()):
+                continue
             if os.getenv(env_var, "").strip():
                 return preset
         return None
