@@ -2151,6 +2151,7 @@ class HandlerImplementation(
                     enforce_explicit_credential_refs=bool(
                         pep_context.enforce_explicit_credential_refs
                     ),
+                    filesystem_roots=tuple(str(root) for root in pep_context.filesystem_roots),
                 )
                 if pep_context is not None
                 else None

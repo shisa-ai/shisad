@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 from pydantic import ValidationError
@@ -35,6 +36,7 @@ class PendingPepContextSnapshot:
     trust_level: str = "untrusted"
     credential_refs: set[CredentialRef] = field(default_factory=set)
     enforce_explicit_credential_refs: bool = False
+    filesystem_roots: tuple[str, ...] = ()
 
 
 @dataclass(slots=True)
@@ -108,6 +110,7 @@ def pending_pep_context_to_payload(
         "trust_level": snapshot.trust_level,
         "credential_refs": sorted(str(ref_id) for ref_id in snapshot.credential_refs),
         "enforce_explicit_credential_refs": bool(snapshot.enforce_explicit_credential_refs),
+        "filesystem_roots": list(snapshot.filesystem_roots),
     }
 
 
@@ -147,6 +150,9 @@ def pending_pep_context_from_payload(raw: Mapping[str, Any]) -> PendingPepContex
             if str(ref_id).strip()
         },
         enforce_explicit_credential_refs=bool(raw.get("enforce_explicit_credential_refs", False)),
+        filesystem_roots=tuple(
+            str(root).strip() for root in raw.get("filesystem_roots", []) if str(root).strip()
+        ),
     )
 
 
@@ -203,6 +209,7 @@ def build_policy_context_for_pending_action(
     capabilities = set(snapshot.capabilities)
     if elevation is not None and elevation.kind == "capability_grant":
         capabilities.update(elevation.capability_grants)
+    filesystem_roots = tuple(Path(root) for root in snapshot.filesystem_roots)
     return PolicyContext(
         capabilities=capabilities,
         taint_labels=set(snapshot.taint_labels),
@@ -211,7 +218,11 @@ def build_policy_context_for_pending_action(
         session_id=pending_session_id,
         workspace_id=pending_workspace_id,
         user_id=pending_user_id,
-        resource_authorizer=task_resource_authorizer(task_envelope_for_session(session)),
+        resource_authorizer=task_resource_authorizer(
+            task_envelope_for_session(session),
+            filesystem_roots=filesystem_roots,
+        ),
+        filesystem_roots=filesystem_roots,
         tool_allowlist=(
             set(snapshot.tool_allowlist) if snapshot.tool_allowlist is not None else None
         ),

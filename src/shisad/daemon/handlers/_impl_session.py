@@ -1265,6 +1265,7 @@ def _pending_pep_context_snapshot(context: PolicyContext) -> PendingPepContextSn
         trust_level=context.trust_level,
         credential_refs=set(context.credential_refs),
         enforce_explicit_credential_refs=bool(context.enforce_explicit_credential_refs),
+        filesystem_roots=tuple(str(root) for root in context.filesystem_roots),
     )
 
 
@@ -3854,7 +3855,11 @@ class SessionImplMixin(HandlerMixinBase):
             session_id=sid,
             workspace_id=session.workspace_id,
             user_id=session.user_id,
-            resource_authorizer=task_resource_authorizer(task_envelope),
+            resource_authorizer=task_resource_authorizer(
+                task_envelope,
+                filesystem_roots=self._config.assistant_fs_roots,
+            ),
+            filesystem_roots=tuple(self._config.assistant_fs_roots),
             tool_allowlist=planner_tool_allowlist,
             trust_level=validated.trust_level,
             credential_refs={

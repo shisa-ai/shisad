@@ -10,6 +10,7 @@ import logging
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, ClassVar
 from urllib.parse import urlparse
 
@@ -93,6 +94,7 @@ class PolicyContext:
         trust_level: str = "untrusted",
         credential_refs: set[CredentialRef] | None = None,
         enforce_explicit_credential_refs: bool = False,
+        filesystem_roots: tuple[Path, ...] | None = None,
     ) -> None:
         self.capabilities: set[Capability] = capabilities or set()
         self.taint_labels: set[TaintLabel] = taint_labels or set()
@@ -107,6 +109,7 @@ class PolicyContext:
         self.trust_level = trust_level
         self.credential_refs: set[CredentialRef] = credential_refs or set()
         self.enforce_explicit_credential_refs = enforce_explicit_credential_refs
+        self.filesystem_roots: tuple[Path, ...] = filesystem_roots or ()
 
 
 class PEP:
@@ -734,7 +737,27 @@ class PEP:
                 continue
             if key in self._RESOURCE_ARG_ALLOWLIST:
                 continue
-            if not context.resource_authorizer(value, context.workspace_id, context.user_id):
+            authorize_argument = getattr(
+                context.resource_authorizer,
+                "authorize_argument",
+                None,
+            )
+            if callable(authorize_argument):
+                allowed = bool(
+                    authorize_argument(
+                        key,
+                        value,
+                        context.workspace_id,
+                        context.user_id,
+                    )
+                )
+            else:
+                allowed = context.resource_authorizer(
+                    value,
+                    context.workspace_id,
+                    context.user_id,
+                )
+            if not allowed:
                 failures.append(f"'{key}' not authorized in current workspace/user scope")
         return failures
 
