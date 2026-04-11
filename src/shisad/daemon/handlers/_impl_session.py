@@ -777,6 +777,20 @@ def _shows_trusted_tool_context(trust_level: str) -> bool:
     return _is_trusted_level(trust_level) or _is_trusted_cli_confirmation_level(trust_level)
 
 
+def _is_trusted_admin_cli_session(
+    *,
+    channel: str,
+    session_mode: SessionMode,
+    trust_level: str,
+) -> bool:
+    return _is_trusted_level(trust_level) or _is_direct_trusted_cli_default_ingress(
+        channel=channel,
+        session_mode=session_mode,
+        trust_level=trust_level,
+        is_internal_ingress=False,
+    )
+
+
 def _looks_like_admin_cleanroom_request(text: str) -> bool:
     normalized = " ".join(text.strip().split())
     if not normalized:
@@ -4112,10 +4126,7 @@ class SessionImplMixin(HandlerMixinBase):
             self._session_has_tainted_user_history(sid)
             or planner_context.memory_context_tainted_for_amv
         )
-        operator_owned_cli_input = (
-            _is_clean_direct_trusted_cli_turn(validated)
-            and not planner_context.context.taint_labels
-        )
+        operator_owned_cli_input = _is_clean_direct_trusted_cli_turn(validated)
 
         for evaluated in planner_result.evaluated:
             proposal = evaluated.proposal
@@ -6119,7 +6130,11 @@ class SessionImplMixin(HandlerMixinBase):
         if not self._is_admin_rpc_peer(params):
             return None
         trust_level = str(session.metadata.get("trust_level", "untrusted")).strip().lower()
-        if not _is_trusted_level(trust_level):
+        if not _is_trusted_admin_cli_session(
+            channel=session.channel,
+            session_mode=session.mode,
+            trust_level=trust_level,
+        ):
             return None
         content = str(params.get("content", ""))
         if not _looks_like_admin_cleanroom_request(content):
@@ -6589,7 +6604,11 @@ class SessionImplMixin(HandlerMixinBase):
                     "reason": "unsupported_channel",
                 }
             trust_level = str(session.metadata.get("trust_level", "")).strip().lower()
-            if trust_level not in {"trusted", "verified", "internal"}:
+            if not _is_trusted_admin_cli_session(
+                channel=session.channel,
+                session_mode=session.mode,
+                trust_level=trust_level,
+            ):
                 return {
                     "session_id": sid,
                     "mode": SessionMode.DEFAULT.value,

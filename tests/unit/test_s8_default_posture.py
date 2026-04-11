@@ -8,6 +8,7 @@ from typing import Any
 import pytest
 
 from shisad.channels.identity import ChannelIdentityMap
+from shisad.core.approval import ConfirmationLevel, ConfirmationRequirement
 from shisad.core.config import DaemonConfig, SecurityConfig
 from shisad.core.session import SessionManager
 from shisad.core.tools.registry import ToolRegistry
@@ -173,6 +174,33 @@ def test_u5_trusted_cli_auto_approves_clean_confirmation_tool() -> None:
         PolicyContext(capabilities={Capability.FILE_WRITE}, trust_level="trusted_cli"),
     )
     assert decision.kind == PEPDecisionKind.ALLOW
+
+
+def test_u5_trusted_cli_honors_explicit_reauthenticated_confirmation_policy() -> None:
+    registry = ToolRegistry()
+    _register_tool(registry, name="secure_read", capabilities=[Capability.FILE_READ])
+    pep = PEP(
+        PolicyBundle(
+            tools={
+                ToolName("secure_read"): ToolPolicy(
+                    confirmation=ConfirmationRequirement(
+                        level=ConfirmationLevel.REAUTHENTICATED,
+                        methods=["totp"],
+                    )
+                )
+            }
+        ),
+        registry,
+    )
+    decision = pep.evaluate(
+        ToolName("secure_read"),
+        {},
+        PolicyContext(capabilities={Capability.FILE_READ}, trust_level="trusted_cli"),
+    )
+    assert decision.kind == PEPDecisionKind.REQUIRE_CONFIRMATION
+    assert decision.confirmation_requirement is not None
+    assert decision.confirmation_requirement["level"] == "reauthenticated"
+    assert decision.confirmation_requirement["methods"] == ["totp"]
 
 
 def test_u5_non_cli_trust_still_confirms_declared_confirmation_tool() -> None:

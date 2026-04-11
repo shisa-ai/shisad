@@ -14,6 +14,7 @@ from typing import Any, ClassVar
 from urllib.parse import urlparse
 
 from shisad.core.approval import (
+    ConfirmationLevel,
     ConfirmationRequirement,
     confirmation_requirement_payload,
     legacy_software_confirmation_requirement,
@@ -495,28 +496,26 @@ class PEP:
         egress_requires_confirmation: bool,
         taint_requires_confirmation: bool,
     ) -> ConfirmationRequirement | None:
-        if (
+        trusted_cli_clean = (
             trust_level.strip().lower() == "trusted_cli"
             and not egress_requires_confirmation
             and not taint_requires_confirmation
-        ):
-            return None
-
-        requirements: list[ConfirmationRequirement] = []
+        )
+        requirements: list[tuple[str, ConfirmationRequirement]] = []
 
         if egress_requires_confirmation or taint_requires_confirmation:
-            requirements.append(legacy_software_confirmation_requirement())
+            requirements.append(("taint_or_egress", legacy_software_confirmation_requirement()))
 
         if (
             bool(getattr(tool, "require_confirmation", False))
             or bool(getattr(tool_policy, "require_confirmation", False))
             or bool(self._policy.default_require_confirmation)
         ):
-            requirements.append(legacy_software_confirmation_requirement())
+            requirements.append(("implicit_legacy", legacy_software_confirmation_requirement()))
 
         explicit_policy = getattr(tool_policy, "confirmation", None)
         if explicit_policy is not None:
-            requirements.append(explicit_policy)
+            requirements.append(("explicit_policy", explicit_policy))
 
         matched_levels = [
             item
@@ -525,11 +524,19 @@ class PEP:
         ]
         if matched_levels:
             highest = max(matched_levels, key=lambda item: item.level.priority)
-            requirements.append(ConfirmationRequirement(level=highest.level))
+            requirements.append(("risk_policy", ConfirmationRequirement(level=highest.level)))
         elif risk_score >= self._policy.risk_policy.auto_approve_threshold:
-            requirements.append(legacy_software_confirmation_requirement())
+            requirements.append(("risk_policy", legacy_software_confirmation_requirement()))
 
-        return merge_confirmation_requirements(requirements)
+        if trusted_cli_clean:
+            requirements = [
+                (source, requirement)
+                for source, requirement in requirements
+                if source == "explicit_policy"
+                or requirement.level.priority > ConfirmationLevel.SOFTWARE.priority
+            ]
+
+        return merge_confirmation_requirements([requirement for _, requirement in requirements])
 
     def _check_evidence_ref(
         self,
