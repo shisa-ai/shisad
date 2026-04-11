@@ -1185,7 +1185,7 @@ def _planner_manifest_includes_report_anomaly(
 ) -> bool:
     if session.role == SessionRole.SUBAGENT or session.mode == SessionMode.TASK:
         return True
-    if not _is_trusted_level(trust_level):
+    if not _shows_trusted_tool_context(trust_level):
         return True
     if TaintLabel.UNTRUSTED in policy_taint_labels:
         return True
@@ -1233,8 +1233,21 @@ def _planner_tool_allowlist_for_configured_resources(
     registry_tools: list[ToolDefinition],
     base_allowlist: set[ToolName] | None,
     config: Any,
+    session: Session,
+    task_envelope: TaskEnvelope | None,
 ) -> set[ToolName] | None:
     if _assistant_fs_roots_configured(config):
+        return base_allowlist
+    if session.mode == SessionMode.TASK and (
+        task_declared_tdg_roots(task_envelope)
+        or (
+            base_allowlist is not None
+            and any(
+                canonical_tool_name_typed(str(tool_name)) in _ASSISTANT_FS_ROOT_TOOL_NAMES
+                for tool_name in base_allowlist
+            )
+        )
+    ):
         return base_allowlist
     if base_allowlist is None:
         return {
@@ -3834,12 +3847,14 @@ class SessionImplMixin(HandlerMixinBase):
             trust_level=validated.trust_level,
             policy_taint_labels=policy_taint_labels,
         )
+        task_envelope = _task_envelope_for_session(session)
         planner_tool_allowlist = _planner_tool_allowlist_for_configured_resources(
             registry_tools=registry_tools,
             base_allowlist=planner_tool_allowlist,
             config=self._config,
+            session=session,
+            task_envelope=task_envelope,
         )
-        task_envelope = _task_envelope_for_session(session)
         context = PolicyContext(
             capabilities=effective_caps,
             taint_labels=policy_taint_labels,
@@ -5071,7 +5086,7 @@ class SessionImplMixin(HandlerMixinBase):
                     parent_session.role == SessionRole.ORCHESTRATOR
                     and parent_session.mode == SessionMode.DEFAULT
                     and _task_command_context_status(parent_session) == "clean"
-                    and validated.trusted_input
+                    and (validated.trusted_input or _is_clean_direct_trusted_cli_turn(validated))
                     and not validated.is_internal_ingress
                 )
                 else ""
