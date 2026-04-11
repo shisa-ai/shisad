@@ -44,6 +44,9 @@ _SEMANTIC_SCOPE_CAPABILITIES = frozenset(
         Capability.MESSAGE_SEND.value,
     }
 )
+_MESSAGE_SCOPE_CAPABILITIES = frozenset(
+    {Capability.MESSAGE_READ.value, Capability.MESSAGE_SEND.value}
+)
 
 
 def _has_semantic_resource_marker(value: str) -> bool:
@@ -54,8 +57,6 @@ def _has_semantic_resource_marker(value: str) -> bool:
 def _looks_like_semantic_exact_id(value: str) -> bool:
     normalized = value.strip()
     return _has_semantic_resource_marker(normalized) or bool(
-        _NUMERIC_EXACT_ID_PATTERN.fullmatch(normalized)
-    ) or bool(
         _SLACK_THREAD_TS_PATTERN.fullmatch(normalized)
     ) or normalized.lower().startswith(
         _PLAIN_SEMANTIC_EXACT_ID_PREFIXES,
@@ -65,6 +66,12 @@ def _looks_like_semantic_exact_id(value: str) -> bool:
 def _looks_like_mixed_filesystem_scope(value: str) -> bool:
     normalized = value.strip()
     return bool(normalized) and not _looks_like_semantic_exact_id(normalized)
+
+
+def _numeric_id_is_message_semantic(value: str, capabilities: frozenset[str]) -> bool:
+    return bool(capabilities & _MESSAGE_SCOPE_CAPABILITIES) and bool(
+        _NUMERIC_EXACT_ID_PATTERN.fullmatch(value.strip())
+    )
 
 
 def _filesystem_bases(filesystem_roots: Sequence[Path | str] | None) -> tuple[Path, ...]:
@@ -130,6 +137,8 @@ def _scope_id_is_filesystem(value: str, *, base: Path, capabilities: frozenset[s
     if semantic_only:
         return False
     if has_filesystem_caps and has_semantic_caps:
+        if _numeric_id_is_message_semantic(value, capabilities):
+            return False
         return _looks_like_mixed_filesystem_scope(value)
     return _looks_like_filesystem_scope(value, base=base)
 
@@ -144,6 +153,8 @@ def _scope_id_is_semantic(value: str, *, base: Path, capabilities: frozenset[str
     if filesystem_only:
         return _has_semantic_resource_marker(value)
     if has_filesystem_caps and has_semantic_caps:
+        if _numeric_id_is_message_semantic(value, capabilities):
+            return True
         return not _looks_like_mixed_filesystem_scope(value)
     return not _looks_like_filesystem_scope(value, base=base)
 
