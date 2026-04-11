@@ -30,8 +30,8 @@ Reach a genuinely useful personal-assistant baseline while preserving the projec
 - `v0.6.2` is release-closed: multi-factor approvals, signer-backed
   authorization, local-helper approvals, and optional evidence encryption at
   rest are now on the shipped line.
-- `v0.6.3` is release-closed locally: critical UX fixes from first-user
-  testing are now on the release branch, including actionable pending
+- `v0.6.3` is release-prepared locally: critical UX fixes from first-user
+  testing are in the release candidate tree, including actionable pending
   confirmations, chat TOTP approvals, terminal QR enrollment, chat newline
   rendering, no-model/startup diagnostics, trusted-CLI usability fixes, and
   more truthful planner tool advertising for unconfigured resources.
@@ -163,8 +163,10 @@ tools:
 
 #### v0.6.3 — Critical UX fixes
 
-Current execution note (2026-04-11): `v0.6.3` is release-closed locally. The
-release fixes first-user testing blockers and high-friction operator paths:
+Current execution note (2026-04-11): `v0.6.3` is release-prepared locally; tag,
+push, package publication, and post-publish verification remain pending
+explicit human release action. The release fixes first-user testing blockers
+and high-friction operator paths:
 confirmation-gated actions now surface actionable daemon-owned pending status,
 TOTP approvals can be completed from trusted chat / command replies, TOTP
 enrollment renders a terminal QR code when possible, chat output preserves
