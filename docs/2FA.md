@@ -1,12 +1,13 @@
 # Multi-Factor Approval (2FA)
 
-> **v0.6.3 release-candidate status:** The approval protocol, credential store,
-> and approval backends described here are implemented and tested in the local
-> release-prepared tree. TOTP confirmation works through trusted chat / command
+> **v0.6.3 release-content status:** The approval protocol, credential store,
+> and currently available approval backends documented here are implemented and
+> tested in this tree. TOTP confirmation works through trusted chat / command
 > replies and through the CLI. Passkey (WebAuthn) and signer approvals work via
 > browser and remote KMS respectively. QR code rendering for TOTP enrollment is
-> also in the `v0.6.3` candidate. Entering a TOTP code on the approval web page
-> is not included yet; browser approval today is WebAuthn only.
+> also part of the `v0.6.3` release content. Entering a TOTP code on the
+> approval web page is not included yet; browser approval today is WebAuthn
+> only.
 
 ---
 
@@ -616,7 +617,7 @@ For L3+ signed approvals, the audit trail also includes:
   currently plaintext JSON. At-rest encryption is follow-on.
 - **TOTP via approval web page:** planned follow-on.
 
-## Included in the v0.6.3 Release Candidate
+## Included in the v0.6.3 Release Content
 
 - **TOTP via chat reply:** included for trusted chat / command replies.
 - **QR code for TOTP enrollment:** included as a best-effort terminal rendering
