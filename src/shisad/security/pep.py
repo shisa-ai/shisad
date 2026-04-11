@@ -548,7 +548,7 @@ class PEP:
         requirement: ConfirmationRequirement,
     ) -> bool:
         return (
-            bool(getattr(tool_policy, "require_confirmation", False))
+            bool(getattr(tool_policy, "_confirmation_migrated_from_require_confirmation", False))
             and requirement.level == ConfirmationLevel.SOFTWARE
             and not requirement.methods
             and not requirement.allowed_principals

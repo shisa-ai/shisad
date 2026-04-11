@@ -222,6 +222,34 @@ def test_u5_trusted_cli_honors_explicit_reauthenticated_confirmation_policy() ->
     assert decision.confirmation_requirement["methods"] == ["totp"]
 
 
+def test_u5_trusted_cli_honors_explicit_software_confirmation_policy_details() -> None:
+    registry = ToolRegistry()
+    _register_tool(registry, name="local_write", capabilities=[Capability.FILE_WRITE])
+    pep = PEP(
+        PolicyBundle(
+            tools={
+                ToolName("local_write"): ToolPolicy(
+                    require_confirmation=True,
+                    confirmation=ConfirmationRequirement(
+                        level=ConfirmationLevel.SOFTWARE,
+                        timeout_seconds=30,
+                    ),
+                ),
+            }
+        ),
+        registry,
+    )
+    decision = pep.evaluate(
+        ToolName("local_write"),
+        {},
+        PolicyContext(capabilities={Capability.FILE_WRITE}, trust_level="trusted_cli"),
+    )
+    assert decision.kind == PEPDecisionKind.REQUIRE_CONFIRMATION
+    assert decision.confirmation_requirement is not None
+    assert decision.confirmation_requirement["level"] == "software"
+    assert decision.confirmation_requirement["timeout_seconds"] == 30
+
+
 def test_u5_non_cli_trust_still_confirms_declared_confirmation_tool() -> None:
     registry = ToolRegistry()
     _register_tool(

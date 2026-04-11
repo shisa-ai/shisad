@@ -15,7 +15,14 @@ from pathlib import Path
 from typing import Any, Literal
 
 import yaml
-from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    Field,
+    PrivateAttr,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 
 from shisad.core.approval import (
     ConfirmationRequirement,
@@ -34,6 +41,8 @@ logger = logging.getLogger(__name__)
 class ToolPolicy(BaseModel):
     """Per-tool policy entry."""
 
+    _confirmation_migrated_from_require_confirmation: bool = PrivateAttr(default=False)
+
     capabilities_required: list[Capability] = Field(default_factory=list)
     require_confirmation: bool = False
     confirmation: ConfirmationRequirement | None = None
@@ -44,6 +53,7 @@ class ToolPolicy(BaseModel):
     def _migrate_legacy_confirmation(self) -> ToolPolicy:
         if self.require_confirmation and self.confirmation is None:
             self.confirmation = legacy_software_confirmation_requirement()
+            self._confirmation_migrated_from_require_confirmation = True
         return self
 
 
