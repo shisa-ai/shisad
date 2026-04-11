@@ -514,7 +514,10 @@ class PEP:
             requirements.append(("implicit_legacy", legacy_software_confirmation_requirement()))
 
         explicit_policy = getattr(tool_policy, "confirmation", None)
-        if explicit_policy is not None:
+        if explicit_policy is not None and not self._is_migrated_legacy_policy_confirmation(
+            tool_policy=tool_policy,
+            requirement=explicit_policy,
+        ):
             requirements.append(("explicit_policy", explicit_policy))
 
         matched_levels = [
@@ -537,6 +540,20 @@ class PEP:
             ]
 
         return merge_confirmation_requirements([requirement for _, requirement in requirements])
+
+    @staticmethod
+    def _is_migrated_legacy_policy_confirmation(
+        *,
+        tool_policy: Any | None,
+        requirement: ConfirmationRequirement,
+    ) -> bool:
+        return (
+            bool(getattr(tool_policy, "require_confirmation", False))
+            and requirement.level == ConfirmationLevel.SOFTWARE
+            and not requirement.methods
+            and not requirement.allowed_principals
+            and not requirement.allowed_credentials
+        )
 
     def _check_evidence_ref(
         self,
