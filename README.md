@@ -49,13 +49,14 @@ Rather than ignoring the elephant in the room, our design targets the [lethal tr
 
 ## Status
 
-This repo is public and still pre-alpha. `v0.6.2` is the current release line.
+This repo is public and still pre-alpha. `v0.6.3` is the current release line.
 
-`v0.6.2` is the approval and key-boundary follow-up to `v0.6.1`: stronger
-confirmation options for sensitive actions (TOTP, passkeys, local helper, and
-signer-backed approvals), richer approval audit/provenance, and optional
-evidence encryption at rest when a real external artifact-KMS boundary is
-configured. The next planned lane is `v0.6.3` for critical UX fixes.
+`v0.6.3` is the critical UX stabilization follow-up to `v0.6.2`: pending
+confirmations now produce actionable daemon-owned replies, TOTP approvals can
+be completed from trusted chat / command replies, TOTP enrollment can render a
+terminal QR code, chat output preserves line breaks, no-model and startup
+diagnostics are clearer, and planner-visible tool surfaces better reflect what
+is actually configured. The next planned lane is `v0.6.4` for MCP/A2A interop.
 
 | Version | Focus |
 |---------|-------|

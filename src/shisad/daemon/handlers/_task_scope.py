@@ -56,10 +56,12 @@ def _has_semantic_resource_marker(value: str) -> bool:
 
 def _looks_like_semantic_exact_id(value: str) -> bool:
     normalized = value.strip()
-    return _has_semantic_resource_marker(normalized) or bool(
-        _SLACK_THREAD_TS_PATTERN.fullmatch(normalized)
-    ) or normalized.lower().startswith(
-        _PLAIN_SEMANTIC_EXACT_ID_PREFIXES,
+    return (
+        _has_semantic_resource_marker(normalized)
+        or bool(_SLACK_THREAD_TS_PATTERN.fullmatch(normalized))
+        or normalized.lower().startswith(
+            _PLAIN_SEMANTIC_EXACT_ID_PREFIXES,
+        )
     )
 
 

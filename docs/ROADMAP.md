@@ -1,7 +1,7 @@
 # shisad Roadmap
 
 *Created: 2026-02-26*
-*Updated: 2026-04-09*
+*Updated: 2026-04-11*
 *Status: Active*
 
 ## Goal
@@ -30,6 +30,11 @@ Reach a genuinely useful personal-assistant baseline while preserving the projec
 - `v0.6.2` is release-closed: multi-factor approvals, signer-backed
   authorization, local-helper approvals, and optional evidence encryption at
   rest are now on the shipped line.
+- `v0.6.3` is release-closed locally: critical UX fixes from first-user
+  testing are now on the release branch, including actionable pending
+  confirmations, chat TOTP approvals, terminal QR enrollment, chat newline
+  rendering, no-model/startup diagnostics, trusted-CLI usability fixes, and
+  more truthful planner tool advertising for unconfigured resources.
 
 ## Milestones
 
@@ -76,10 +81,10 @@ semantics, approval provenance attached to approval/reject/execute audit
 events, a mandatory TASK summary-firewall checkpoint before delegated output
 crosses back into COMMAND context, a browser tool surface with
 confirmation-gated browser writes plus local skill tool-surface integrity
-checks, and a hardened public release path using OIDC trusted publishing,
-SBOMs, and provenance attestations. The active follow-on lanes are `v0.6.3`
-(critical UX fixes) and `v0.6.4` (MCP/A2A interop), while the deferred M7
-connector/skill expansion lane lives in `v0.6.5`.
+checks, a hardened public release path using OIDC trusted publishing, SBOMs,
+and provenance attestations, and the `v0.6.3` critical UX stabilization lane.
+The active follow-on lanes are `v0.6.4` (MCP/A2A interop) and `v0.6.5`
+(connector/skill expansion).
 
 #### v0.6.1 — Security hardening
 
@@ -158,9 +163,18 @@ tools:
 
 #### v0.6.3 — Critical UX fixes
 
-- Confirmation gate pending-status plumbing
-- Chat rendering and response formatting fixes
-- No-model / missing-config diagnostics and operator usability fixes
+Current execution note (2026-04-11): `v0.6.3` is release-closed locally. The
+release fixes first-user testing blockers and high-friction operator paths:
+confirmation-gated actions now surface actionable daemon-owned pending status,
+TOTP approvals can be completed from trusted chat / command replies, TOTP
+enrollment renders a terminal QR code when possible, chat output preserves
+line breaks, no-model and startup diagnostics are actionable, `shisad doctor`
+works as a bare command, Anthropic default routing and chat optional install
+guidance are documented, clean trusted CLI writes avoid unnecessary
+confirmation friction without skipping taint / egress gates, and planner-visible
+tool manifests truthfully hide unconfigured filesystem/git surfaces while
+preserving delegated task scope enforcement. Web-page TOTP entry remains
+deferred to `v0.8.0`.
 
 #### v0.6.4 — MCP/A2A interop
 

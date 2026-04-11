@@ -743,9 +743,7 @@ async def test_finalize_response_uses_totp_aware_cli_fallback_for_totp_pending_a
 
 
 @pytest.mark.asyncio
-async def test_u3_finalize_response_preserves_planner_fallback_notice_for_pending_actions() -> (
-    None
-):
+async def test_u3_finalize_response_preserves_planner_fallback_notice_for_pending_actions() -> None:
     harness = _FinalizeEvidenceHarness()
     harness._pending_actions = {
         "c-1": SimpleNamespace(
@@ -789,8 +787,9 @@ async def test_u3_finalize_response_preserves_planner_fallback_notice_for_pendin
 
 
 @pytest.mark.asyncio
-async def test_u3_finalize_response_drops_spoofed_local_fallback_notice_for_pending_actions(
-) -> None:
+async def test_u3_finalize_response_drops_spoofed_local_fallback_notice_for_pending_actions() -> (
+    None
+):
     harness = _FinalizeEvidenceHarness()
     harness._pending_actions = {
         "c-1": SimpleNamespace(
@@ -833,8 +832,7 @@ async def test_u3_finalize_response_drops_spoofed_local_fallback_notice_for_pend
 
 
 @pytest.mark.asyncio
-async def test_finalize_response_keeps_safe_preview_linebreak_markers_literal_on_terminal_surfaces(
-) -> None:
+async def test_finalize_response_preserves_pending_preview_linebreak_markers() -> None:
     harness = _FinalizeEvidenceHarness()
     harness._pending_actions = {
         "c-1": SimpleNamespace(

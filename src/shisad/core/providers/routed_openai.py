@@ -79,9 +79,9 @@ class RoutedOpenAIProvider:
     ) -> ProviderResponse:
         if self._fallback is None:
             raise RuntimeError("planner fallback unavailable")
-        supports_fallback_mode = "fallback_mode" in inspect.signature(
-            self._fallback.complete
-        ).parameters
+        supports_fallback_mode = (
+            "fallback_mode" in inspect.signature(self._fallback.complete).parameters
+        )
         if supports_fallback_mode:
             return await self._fallback.complete(
                 messages,

@@ -378,10 +378,7 @@ async def test_u8_task_session_keeps_clean_scope_fs_tool_when_global_roots_empty
         assert observed_decision.reason_code != "pep:tool_not_permitted"
         assert observed_out_of_scope_decision is not None
         assert observed_out_of_scope_decision.kind == PEPDecisionKind.REJECT
-        assert (
-            observed_out_of_scope_decision.reason_code
-            == "pep:resource_authorization_failed"
-        )
+        assert observed_out_of_scope_decision.reason_code == "pep:resource_authorization_failed"
     finally:
         await _shutdown_daemon(daemon_task, client)
 

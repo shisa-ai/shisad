@@ -49,3 +49,22 @@ def test_message_send_template_uses_first_enabled_channel() -> None:
     assert template["arguments"]["channel"] == "discord"
     assert template["arguments"]["recipient"] == "live-matrix"
     assert template["arguments"]["message"] == "live tool matrix probe"
+
+
+def test_tool_payload_templates_cover_memory_and_reminder_tools() -> None:
+    module = _load_live_tool_matrix_module()
+
+    templates = module._tool_payload_templates(Path("/tmp/shisad-live-tool-matrix"))
+
+    for tool_name in (
+        "note.create",
+        "note.list",
+        "note.search",
+        "todo.create",
+        "todo.list",
+        "todo.complete",
+        "reminder.create",
+        "reminder.list",
+    ):
+        assert tool_name in templates
+        assert templates[tool_name]["arguments"]

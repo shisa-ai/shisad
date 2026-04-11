@@ -731,9 +731,7 @@ class PEP:
         for key, value in resource_arguments.items():
             if not isinstance(value, str):
                 continue
-            if not (
-                key.endswith(self._RESOURCE_ARG_SUFFIX) or key in self._RESOURCE_ARG_NAMES
-            ):
+            if not (key.endswith(self._RESOURCE_ARG_SUFFIX) or key in self._RESOURCE_ARG_NAMES):
                 continue
             if key in self._RESOURCE_ARG_ALLOWLIST:
                 continue

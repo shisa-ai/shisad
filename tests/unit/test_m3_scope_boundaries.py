@@ -399,13 +399,9 @@ def test_m3_task_resource_authorizer_canonicalizes_filesystem_prefixes(
             is False
         )
         assert (
-            authorizer("allowed-sibling/secret.txt", WorkspaceId("ws1"), UserId("alice"))
-            is False
+            authorizer("allowed-sibling/secret.txt", WorkspaceId("ws1"), UserId("alice")) is False
         )
-        assert (
-            authorizer("allowed/link-secret.txt", WorkspaceId("ws1"), UserId("alice"))
-            is False
-        )
+        assert authorizer("allowed/link-secret.txt", WorkspaceId("ws1"), UserId("alice")) is False
 
 
 def test_m3_task_resource_authorizer_treats_dot_prefix_as_filesystem_scope(
@@ -428,10 +424,7 @@ def test_m3_task_resource_authorizer_treats_dot_prefix_as_filesystem_scope(
     assert authorizer is not None
     assert authorizer(".", WorkspaceId("ws1"), UserId("alice")) is True
     assert authorizer("inside.txt", WorkspaceId("ws1"), UserId("alice")) is True
-    assert (
-        authorizer(f"../{sibling.name}/secret.txt", WorkspaceId("ws1"), UserId("alice"))
-        is False
-    )
+    assert authorizer(f"../{sibling.name}/secret.txt", WorkspaceId("ws1"), UserId("alice")) is False
 
 
 def test_m3_task_resource_authorizer_does_not_promote_semantic_ids_to_paths(
@@ -658,9 +651,7 @@ def test_m3_pep_task_mixed_scope_extensionless_id_remains_filesystem_only(
     for filesystem_id in ("Makefile", "Justfile", "Procfile", "makefile"):
         authorizer = task_resource_authorizer(
             TaskEnvelope(
-                capability_snapshot=frozenset(
-                    {Capability.FILE_WRITE, Capability.MESSAGE_SEND}
-                ),
+                capability_snapshot=frozenset({Capability.FILE_WRITE, Capability.MESSAGE_SEND}),
                 resource_scope_ids=[filesystem_id],
                 resource_scope_authority="command_clean",
             )
@@ -933,10 +924,7 @@ def test_m3_task_resource_authorizer_uses_configured_filesystem_root_for_relativ
 
     assert authorizer is not None
     assert authorizer("src/file.txt", WorkspaceId("ws1"), UserId("alice")) is True
-    assert (
-        authorizer("src/../outside/secret.txt", WorkspaceId("ws1"), UserId("alice"))
-        is False
-    )
+    assert authorizer("src/../outside/secret.txt", WorkspaceId("ws1"), UserId("alice")) is False
 
 
 def test_m3_pending_policy_context_rebuild_uses_snapshot_filesystem_roots(
@@ -979,10 +967,7 @@ def test_m3_pending_policy_context_rebuild_uses_snapshot_filesystem_roots(
 
     assert context.filesystem_roots == (root,)
     assert context.resource_authorizer is not None
-    assert (
-        context.resource_authorizer("src/file.txt", WorkspaceId("ws1"), UserId("alice"))
-        is True
-    )
+    assert context.resource_authorizer("src/file.txt", WorkspaceId("ws1"), UserId("alice")) is True
     assert (
         context.resource_authorizer(
             "src/../outside/secret.txt",

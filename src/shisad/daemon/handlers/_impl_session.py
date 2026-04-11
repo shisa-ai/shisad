@@ -484,10 +484,7 @@ def _delivery_targets_match(
 ) -> bool:
     if delivery_target is None or stored_delivery_target is None:
         return True
-    return (
-        delivery_target.model_dump(mode="json")
-        == stored_delivery_target.model_dump(mode="json")
-    )
+    return delivery_target.model_dump(mode="json") == stored_delivery_target.model_dump(mode="json")
 
 
 def _pending_delivery_target(pending: Any) -> DeliveryTarget | None:
@@ -3043,15 +3040,12 @@ class SessionImplMixin(HandlerMixinBase):
         firewall_result: FirewallResult,
     ) -> dict[str, Any] | None:
         allow_channel_ingress_confirmation = is_internal_ingress and delivery_target is not None
-        allow_direct_trusted_cli_confirmation = (
-            _is_direct_trusted_cli_default_ingress(
-                channel=channel,
-                session_mode=session_mode,
-                trust_level=trust_level,
-                is_internal_ingress=is_internal_ingress,
-            )
-            and _trusted_cli_firewall_result_is_clean(firewall_result)
-        )
+        allow_direct_trusted_cli_confirmation = _is_direct_trusted_cli_default_ingress(
+            channel=channel,
+            session_mode=session_mode,
+            trust_level=trust_level,
+            is_internal_ingress=is_internal_ingress,
+        ) and _trusted_cli_firewall_result_is_clean(firewall_result)
         if not (trusted_input or allow_direct_trusted_cli_confirmation):
             return None
         if is_internal_ingress and not allow_channel_ingress_confirmation:
@@ -3121,10 +3115,7 @@ class SessionImplMixin(HandlerMixinBase):
                 user_id=user_id,
                 workspace_id=workspace_id,
             )
-            pending_confirmation_ids = [
-                pending.confirmation_id
-                for pending in all_pending_rows
-            ]
+            pending_confirmation_ids = [pending.confirmation_id for pending in all_pending_rows]
             visible_pending_confirmation_ids = [
                 str(getattr(pending, "confirmation_id", "")).strip()
                 for pending in _visible_pending_rows(all_pending_rows)
@@ -3342,9 +3333,7 @@ class SessionImplMixin(HandlerMixinBase):
                     )
                 ):
                     return await _finalize_chat_confirmation_response(
-                        response_text=_wrong_target_totp_confirmation_text(
-                            action=intent.action
-                        ),
+                        response_text=_wrong_target_totp_confirmation_text(action=intent.action),
                         blocked_actions=1,
                         executed_actions=0,
                         checkpoint_ids=[],
@@ -3404,9 +3393,7 @@ class SessionImplMixin(HandlerMixinBase):
                         "TOTP-backed confirmations require the 6-digit code flow; "
                         "'confirm N' and 'yes to all' do not approve them."
                     )
-                    response_text = (
-                        f"{response_text}\n\n{guidance}" if response_text else guidance
-                    )
+                    response_text = f"{response_text}\n\n{guidance}" if response_text else guidance
                 if visible_remaining:
                     response_text = (
                         f"{response_text}\n\n"
@@ -3478,11 +3465,7 @@ class SessionImplMixin(HandlerMixinBase):
                 raise ValueError("admin_cleanroom mode requires trusted admin ingress")
             if channel not in _CLEANROOM_CHANNELS:
                 raise ValueError("admin_cleanroom mode is supported only for cli channel")
-        if (
-            not is_internal_ingress
-            and channel == "cli"
-            and session_mode == SessionMode.DEFAULT
-        ):
+        if not is_internal_ingress and channel == "cli" and session_mode == SessionMode.DEFAULT:
             trust_level = "trusted_cli"
         metadata["trust_level"] = trust_level
         metadata["session_mode"] = session_mode.value

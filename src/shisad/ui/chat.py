@@ -194,9 +194,7 @@ class ChatApp(App[None]):
             self._append_history(
                 format_assistant_message(
                     self._extract_response(result),
-                    preserve_pending_preview_escapes=self._preserve_pending_preview_escapes(
-                        result
-                    ),
+                    preserve_pending_preview_escapes=self._preserve_pending_preview_escapes(result),
                 )
             )
         except (OSError, RuntimeError, TypeError, ValueError) as exc:

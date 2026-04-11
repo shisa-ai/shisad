@@ -173,8 +173,7 @@ async def test_u3_local_planner_provider_returns_explicit_no_model_error_for_pla
 
 
 @pytest.mark.asyncio
-async def test_u3_local_planner_provider_keeps_deterministic_tool_calls_but_flags_missing_model(
-) -> None:
+async def test_u3_local_planner_tool_calls_report_missing_model() -> None:
     provider = LocalPlannerProvider()
 
     response = await provider.complete([Message(role="user", content="run: echo hello")])
@@ -281,6 +280,7 @@ async def test_s0_routed_provider_does_not_bypass_route_toggles_with_constructor
     monkeypatch.delenv("SHISAD_MODEL_REMOTE_ENABLED", raising=False)
     monkeypatch.delenv("SHISA_API_KEY", raising=False)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     monkeypatch.delenv("SHISAD_MODEL_API_KEY", raising=False)

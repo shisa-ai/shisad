@@ -21,6 +21,7 @@ from shisad.channels.telegram import TelegramChannel
 from shisad.cli.main import cli
 from shisad.core.api.transport import ControlClient
 from shisad.core.config import DaemonConfig
+from shisad.core.planner import Planner, PlannerOutput, PlannerResult
 from shisad.core.tools.registry import ToolRegistry
 from shisad.core.tools.schema import ToolDefinition, ToolParameter
 from shisad.core.types import Capability, PEPDecisionKind, TaintLabel, ToolName, UserId
@@ -386,6 +387,27 @@ async def test_m2_t18_output_firewall_alert_is_audited(
     monkeypatch.setenv("SHISAD_MODEL_PLANNER_BASE_URL", "https://planner.example.com/v1")
     monkeypatch.setenv("SHISAD_MODEL_EMBEDDINGS_BASE_URL", "https://embed.example.com/v1")
     monkeypatch.setenv("SHISAD_MODEL_MONITOR_BASE_URL", "https://monitor.example.com/v1")
+
+    async def _evil_output_propose(
+        self: Planner,
+        user_content: str,
+        context: object,
+        *,
+        tools: list[dict[str, object]] | None = None,
+    ) -> PlannerResult:
+        _ = (self, user_content, context, tools)
+        return PlannerResult(
+            output=PlannerOutput(
+                actions=[],
+                assistant_response="Here is the suspicious link: https://evil.com/exfil",
+            ),
+            evaluated=[],
+            attempts=1,
+            provider_response=None,
+            messages_sent=(),
+        )
+
+    monkeypatch.setattr(Planner, "propose", _evil_output_propose)
 
     config = DaemonConfig(
         data_dir=tmp_path / "data",
@@ -1048,6 +1070,12 @@ async def test_m2_confirmation_queue_and_action_confirm_flow(
             default_require_confirmation: true
             default_capabilities:
               - memory.read
+            tools:
+              retrieve_rag:
+                capabilities_required:
+                  - memory.read
+                confirmation:
+                  level: software
             """
         ).strip()
         + "\n"
@@ -1127,6 +1155,12 @@ async def test_m2_confirmation_queue_persists_pending_actions_after_restart(
             default_require_confirmation: true
             default_capabilities:
               - memory.read
+            tools:
+              retrieve_rag:
+                capabilities_required:
+                  - memory.read
+                confirmation:
+                  level: software
             """
         ).strip()
         + "\n"
@@ -1205,6 +1239,12 @@ async def test_m2_action_confirm_in_lockdown_emits_human_rejection_event(
             default_require_confirmation: true
             default_capabilities:
               - memory.read
+            tools:
+              retrieve_rag:
+                capabilities_required:
+                  - memory.read
+                confirmation:
+                  level: software
             """
         ).strip()
         + "\n"

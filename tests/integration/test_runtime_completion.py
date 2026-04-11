@@ -265,7 +265,7 @@ async def test_v0_3_1_trusted_cli_ingress_not_marked_untrusted_in_trace(
         lines = trace_path.read_text(encoding="utf-8").splitlines()
         assert lines
         turn = json.loads(lines[-1])
-        assert turn.get("trust_level") == "trusted"
+        assert turn.get("trust_level") == "trusted_cli"
         assert "untrusted" not in (turn.get("taint_labels") or [])
     finally:
         with suppress(Exception):
@@ -429,7 +429,7 @@ async def test_v0_3_1_session_message_returns_official_planner_error_in_trusted_
         response_text = str(reply["response"])
         assert "planner_output_invalid" in response_text
         assert "actions.0" not in response_text
-        assert reply.get("trust_level") == "trusted"
+        assert reply.get("trust_level") == "trusted_cli"
     finally:
         with suppress(Exception):
             await client.call("daemon.shutdown")
@@ -1156,7 +1156,13 @@ async def test_m4_rr4_transcript_taint_history_reaches_pep_decisions(
         else:
             result = original_inspect(self, text, mode=mode, trusted_input=trusted_input)
         if "seed-taint-history" in text:
-            return result.model_copy(update={"taint_labels": [TaintLabel.UNTRUSTED]})
+            return result.model_copy(
+                update={
+                    "taint_labels": [TaintLabel.UNTRUSTED],
+                    "risk_score": 0.5,
+                    "risk_factors": ["seed_taint_history"],
+                }
+            )
         return result
 
     monkeypatch.setattr(Planner, "propose", _forced_write_propose)

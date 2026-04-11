@@ -7,6 +7,7 @@ import argparse
 import asyncio
 import json
 import sys
+import uuid
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, cast
@@ -25,6 +26,7 @@ _DISABLED_REASONS: frozenset[str] = frozenset(
         "realitycheck_disabled",
         "realitycheck_misconfigured",
         "endpoint_mode_disabled",
+        "no_evidence_ref_available",
     }
 )
 
@@ -39,6 +41,10 @@ class MatrixRow:
 def _tool_payload_templates(repo_root: Path) -> dict[str, dict[str, Any]]:
     safe_command = [sys.executable, "-c", "print('live-tool-matrix-ok')"]
     write_target = repo_root / ".local" / "live-tool-matrix-tool-write.txt"
+    probe_suffix = uuid.uuid4().hex[:8]
+    note_content = f"live tool matrix note {probe_suffix}"
+    todo_title = f"live tool matrix todo {probe_suffix}"
+    reminder_message = f"live tool matrix reminder {probe_suffix}"
     return {
         "retrieve_rag": {
             "command": safe_command,
@@ -100,6 +106,48 @@ def _tool_payload_templates(repo_root: Path) -> dict[str, dict[str, Any]]:
         "git.log": {
             "command": safe_command,
             "arguments": {"repo_path": ".", "limit": 5},
+        },
+        "note.create": {
+            "command": safe_command,
+            "arguments": {
+                "content": note_content,
+                "key": f"live-tool-matrix-note-{probe_suffix}",
+            },
+        },
+        "note.list": {
+            "command": safe_command,
+            "arguments": {"limit": 5},
+        },
+        "note.search": {
+            "command": safe_command,
+            "arguments": {"query": note_content, "limit": 5},
+        },
+        "todo.create": {
+            "command": safe_command,
+            "arguments": {
+                "title": todo_title,
+                "details": "created by live tool matrix probe",
+            },
+        },
+        "todo.list": {
+            "command": safe_command,
+            "arguments": {"limit": 5},
+        },
+        "todo.complete": {
+            "command": safe_command,
+            "arguments": {"selector": todo_title},
+        },
+        "reminder.create": {
+            "command": safe_command,
+            "arguments": {
+                "message": reminder_message,
+                "when": "in 1 hour",
+                "name": f"live-tool-matrix-reminder-{probe_suffix}",
+            },
+        },
+        "reminder.list": {
+            "command": safe_command,
+            "arguments": {"limit": 5},
         },
         "report_anomaly": {
             "command": safe_command,
@@ -409,6 +457,8 @@ async def _run_matrix(*, strict_disabled: bool, tool_status: bool = False) -> in
             execute_templates["message.send"] = message_send_template
         elif message_send_disabled_reason:
             disabled_tools["message.send"] = message_send_disabled_reason
+        disabled_tools["evidence.read"] = "no_evidence_ref_available"
+        disabled_tools["evidence.promote"] = "no_evidence_ref_available"
         structured_templates = _structured_rpc_templates()
         prompt_rows = await _run_prompt_checks(client=client, session_id=session_id)
         tool_rows = await _run_tool_checks(

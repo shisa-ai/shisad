@@ -559,7 +559,7 @@ See [ENV-VARS.md](ENV-VARS.md) for the complete reference.
   signer public keys are stored in a daemon-owned JSON file.
 - Default location: `SHISAD_DATA_DIR/approval-factors.json`
 - Override with: `SHISAD_SECURITY_APPROVAL_FACTOR_STORE_PATH`
-- **Not encrypted at rest** in v0.6.2. Protect with filesystem permissions.
+- **Not encrypted at rest** in v0.6.3. Protect with filesystem permissions.
 
 ### What the audit trail records
 
@@ -614,9 +614,13 @@ For L3+ signed approvals, the audit trail also includes:
   side — shisad sees one L3 signature.
 - **At-rest encryption for credential store:** The approval-factor store is
   currently plaintext JSON. At-rest encryption is follow-on.
-- **TOTP via chat reply:** v0.6.3.
 - **TOTP via approval web page:** planned follow-on.
-- **QR code for TOTP enrollment:** v0.6.3.
+
+## Shipped in v0.6.3
+
+- **TOTP via chat reply:** shipped for trusted chat / command replies.
+- **QR code for TOTP enrollment:** shipped as a best-effort terminal rendering
+  path with the raw `otpauth://` URI preserved as fallback.
 
 ---
 

@@ -128,6 +128,12 @@ async def test_m6_crc_chat_yes_resolves_pending_confirmation(
             default_require_confirmation: true
             default_capabilities:
               - memory.read
+            tools:
+              retrieve_rag:
+                capabilities_required:
+                  - memory.read
+                confirmation:
+                  level: software
             """
         ).strip()
         + "\n",
@@ -209,6 +215,12 @@ async def test_m6_crc_chat_reject_resolves_pending_confirmation(
             default_require_confirmation: true
             default_capabilities:
               - memory.read
+            tools:
+              retrieve_rag:
+                capabilities_required:
+                  - memory.read
+                confirmation:
+                  level: software
             """
         ).strip()
         + "\n",
@@ -285,6 +297,12 @@ async def test_g1_chat_confirmation_early_return_persists_assistant_transcript_a
             default_require_confirmation: true
             default_capabilities:
               - memory.read
+            tools:
+              retrieve_rag:
+                capabilities_required:
+                  - memory.read
+                confirmation:
+                  level: software
             """
         ).strip()
         + "\n",

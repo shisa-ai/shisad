@@ -8,6 +8,53 @@ release tag. There is no standing "Unreleased" section.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Versioning follows semver (see `docs/PUBLISH.md` for policy and style guide).
 
+## [0.6.3] - 2026-04-11
+
+### Added
+
+- **Pending approvals now show actionable next steps.** When an action needs
+  confirmation, the daemon returns a clear pending-approval message with safe
+  preview text and the commands a user can run to approve or reject it.
+- **TOTP approvals work from trusted chat and command replies.** Operators can
+  enter a current TOTP code in the same trusted conversation instead of using
+  only the SSH CLI path.
+- **TOTP enrollment can show a terminal QR code.** The CLI now renders a
+  scannable QR code when possible and still prints the raw `otpauth://` URI as
+  a fallback.
+- **Anthropic has a first-class default provider preset.** `ANTHROPIC_API_KEY`
+  can now configure planner and monitor routes without accidentally enabling
+  an incompatible embeddings route.
+
+### Changed
+
+- **Chat output keeps readable line breaks.** Markdown-style responses no
+  longer collapse into hard-to-read single-line chat output.
+- **Missing model configuration now fails with useful guidance.** Local
+  no-model fallbacks now tell the operator what to configure instead of
+  echoing a fake response.
+- **Startup and doctor output are more operator-friendly.** `shisad doctor`
+  works without a subcommand, missing filesystem roots or embeddings routes
+  are easier to spot, overridden presets are labeled as custom, and missing
+  chat dependencies point to the `shisad[chat]` install extra.
+- **Clean CLI writes have less unnecessary approval friction.** Trusted local
+  CLI requests can proceed without a confirmation prompt when the current turn
+  is clean and no egress or stronger policy requirement applies.
+- **Planner-visible tools better match the configured runtime.** When
+  filesystem or git roots are not configured, the planner no longer advertises
+  those tools as generally usable while delegated task scopes remain available
+  when they are explicitly authorized.
+
+### Security
+
+- **Delegated task scopes are fenced more consistently.** File and git
+  defaults, extensionless filenames, semantic IDs, and numeric chat-thread IDs
+  now stay in the correct resource scope instead of accidentally authorizing a
+  different kind of resource.
+- **Trusted CLI convenience does not skip taint or egress checks.** Clean local
+  CLI input can reduce confirmation friction, but suspicious content,
+  untrusted history, external side effects, and stronger policy requirements
+  still take the normal confirmation path.
+
 ## [0.6.2] - 2026-04-09
 
 ### Added
@@ -117,7 +164,8 @@ Versioning follows semver (see `docs/PUBLISH.md` for policy and style guide).
 - **Evidence references persist across restarts and sessions**, keeping large
   untrusted content isolated from the main conversation by default.
 - **Skill authorization rejects modified or revoked artifacts** at runtime;
-  dynamic remote tool discovery is not yet supported (planned for v0.6.3).
+  dynamic remote tool discovery is not yet supported and remains planned for a
+  future remote-tool interop lane.
 
 ### Changed
 
@@ -170,6 +218,7 @@ Initial public release.
   recording.
 - **End-to-end demo** script and runner harness for live verification.
 
+[0.6.3]: https://github.com/shisa-ai/shisad/compare/v0.6.2...v0.6.3
 [0.6.2]: https://github.com/shisa-ai/shisad/compare/v0.6.1...v0.6.2
 [0.6.1]: https://github.com/shisa-ai/shisad/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/shisa-ai/shisad/compare/v0.5.2...v0.6.0

@@ -145,9 +145,7 @@ async def test_u5_control_plane_sidecar_round_trips_operator_owned_cli_metadata(
         assert evaluation.trace_result.allowed is True
         assert evaluation.decision == ControlDecision.ALLOW
         vote_reason_codes = [
-            reason_code
-            for vote in evaluation.consensus.votes
-            for reason_code in vote.reason_codes
+            reason_code for vote in evaluation.consensus.votes for reason_code in vote.reason_codes
         ]
         assert "action_monitor:clean_operator_cli_intent" in vote_reason_codes
         assert "action_monitor:untrusted_input_side_effect" not in vote_reason_codes

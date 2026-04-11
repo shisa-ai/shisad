@@ -1961,9 +1961,7 @@ def test_render_terminal_qr_uses_real_qrcode_when_unicode_supported(
 ) -> None:
     monkeypatch.setattr(cli_main, "_terminal_supports_unicode_output", lambda: True)
 
-    qr_ascii = cli_main._render_terminal_qr(
-        "otpauth://totp/shisad:alice?secret=SECRETBASE32"
-    )
+    qr_ascii = cli_main._render_terminal_qr("otpauth://totp/shisad:alice?secret=SECRETBASE32")
 
     assert "██" in qr_ascii
     assert "\n" in qr_ascii
