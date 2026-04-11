@@ -8,6 +8,11 @@ Scope:
 - `CHANGELOG.md` is release-oriented, not an in-progress ledger. Add a new
   topmost version section when cutting a release; do not keep an `Unreleased`
   section.
+- If a release-close review needs changelog content before the tag/publish
+  step is authorized, keep that temporary section unlinked as
+  `## X.Y.Z Release Content - YYYY-MM-DD`. During the explicit release action,
+  convert it to the standard linked release section in the commit that will be
+  tagged.
 
 ## Versioning
 
@@ -37,8 +42,12 @@ Version must be updated in both places:
 - [ ] Update version in `src/shisad/__init__.py`
 - [ ] Sync the lockfile: `uv lock`
 - [ ] Update `CHANGELOG.md`:
-      add a new topmost `## [X.Y.Z] - YYYY-MM-DD` section and update the
-      version comparison links at the bottom (see **CHANGELOG Style** below)
+      add a new topmost release section and update it for the current phase
+      (see **CHANGELOG Style** below). Pre-tag release-close candidates use
+      `## X.Y.Z Release Content - YYYY-MM-DD` without a compare link; the
+      explicit tag/publish action converts that heading to
+      `## [X.Y.Z] - YYYY-MM-DD` and adds the bottom `[X.Y.Z]` comparison link
+      in the commit that will be tagged.
 - [ ] Review `README.md` and top-level operator docs for release parity:
       `docs/ROADMAP.md`, `docs/ENV-VARS.md`, `docs/TOOL-STATUS.md`,
       `docs/USE-CASES.md`
@@ -122,6 +131,26 @@ Version must be updated in both places:
 
 The CHANGELOG is a user-facing document. Write it so someone who uses shisad
 (but doesn't develop it) can understand what changed and why they should care.
+
+### Pre-Tag Release Content
+
+When release-close review happens before the human lead has authorized tagging
+and publishing, use an unlinked topmost heading:
+
+```markdown
+## X.Y.Z Release Content - YYYY-MM-DD
+```
+
+Do not add a bottom `[X.Y.Z]` comparison link while the `vX.Y.Z` tag does not
+exist. When the explicit release action starts, convert that heading to the
+normal release form and add the compare link in the release commit that will
+be tagged:
+
+```markdown
+## [X.Y.Z] - YYYY-MM-DD
+
+[X.Y.Z]: https://github.com/shisa-ai/shisad/compare/vA.B.C...vX.Y.Z
+```
 
 ### Principles
 
