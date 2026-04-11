@@ -13,7 +13,12 @@ import pytest
 
 from shisad.core.api.transport import ControlClient, JsonRpcCallError
 from shisad.core.types import Capability
-from shisad.security.control_plane.schema import Origin, RiskTier, build_action
+from shisad.security.control_plane.schema import (
+    ControlDecision,
+    Origin,
+    RiskTier,
+    build_action,
+)
 from shisad.security.control_plane.sidecar import (
     ControlPlaneRpcError,
     ControlPlaneUnavailableError,
@@ -95,6 +100,59 @@ async def test_h1_control_plane_sidecar_round_trips_evaluation_and_audit_writes(
 
     assert handle.process.returncode is not None
     assert not handle.socket_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_u5_control_plane_sidecar_round_trips_operator_owned_cli_metadata(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clear_remote_provider_env(monkeypatch)
+    handle = await start_control_plane_sidecar(
+        data_dir=tmp_path / "data",
+        policy_path=tmp_path / "policy.yaml",
+    )
+    try:
+        output_path = tmp_path / "operator-output.txt"
+        origin = Origin(
+            session_id="sess-u5-operator-cli",
+            user_id="alice",
+            workspace_id="ws-u5",
+            actor="planner",
+        )
+        await handle.client.begin_precontent_plan(
+            session_id=origin.session_id,
+            goal=f"write hello to {output_path}",
+            origin=origin,
+            ttl_seconds=300,
+            max_actions=5,
+            capabilities={Capability.FILE_WRITE},
+            declared_resource_roots=[str(tmp_path)],
+        )
+
+        evaluation = await handle.client.evaluate_action(
+            tool_name="fs.write",
+            arguments={"path": str(output_path), "content": "hello"},
+            origin=origin,
+            risk_tier=RiskTier.LOW,
+            declared_domains=[],
+            session_tainted=False,
+            trusted_input=False,
+            operator_owned_cli_input=True,
+            raw_user_text=f"write hello to {output_path}",
+        )
+
+        assert evaluation.trace_result.allowed is True
+        assert evaluation.decision == ControlDecision.ALLOW
+        vote_reason_codes = [
+            reason_code
+            for vote in evaluation.consensus.votes
+            for reason_code in vote.reason_codes
+        ]
+        assert "action_monitor:clean_operator_cli_intent" in vote_reason_codes
+        assert "action_monitor:untrusted_input_side_effect" not in vote_reason_codes
+    finally:
+        await handle.close()
 
 
 @pytest.mark.asyncio
