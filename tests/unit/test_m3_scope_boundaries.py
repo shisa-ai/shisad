@@ -364,30 +364,64 @@ def test_m3_task_resource_authorizer_canonicalizes_filesystem_prefixes(
     monkeypatch: Any,
 ) -> None:
     allowed = tmp_path / "allowed"
+    allowed_sibling = tmp_path / "allowed-sibling"
     outside = tmp_path / "outside"
     allowed.mkdir()
+    allowed_sibling.mkdir()
     outside.mkdir()
     (allowed / "file.txt").write_text("allowed", encoding="utf-8")
+    (allowed_sibling / "secret.txt").write_text("sibling", encoding="utf-8")
     outside_secret = outside / "secret.txt"
     outside_secret.write_text("secret", encoding="utf-8")
     (allowed / "link-secret.txt").symlink_to(outside_secret)
     monkeypatch.chdir(tmp_path)
 
+    for prefix in ("allowed", "allowed/"):
+        authorizer = task_resource_authorizer(
+            TaskEnvelope(
+                resource_scope_prefixes=[prefix],
+                resource_scope_authority="command_clean",
+            )
+        )
+
+        assert authorizer is not None
+        assert authorizer("allowed/file.txt", WorkspaceId("ws1"), UserId("alice")) is True
+        assert (
+            authorizer("allowed/../outside/secret.txt", WorkspaceId("ws1"), UserId("alice"))
+            is False
+        )
+        assert (
+            authorizer("allowed-sibling/secret.txt", WorkspaceId("ws1"), UserId("alice"))
+            is False
+        )
+        assert (
+            authorizer("allowed/link-secret.txt", WorkspaceId("ws1"), UserId("alice"))
+            is False
+        )
+
+
+def test_m3_task_resource_authorizer_treats_dot_prefix_as_filesystem_scope(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    sibling = tmp_path.parent / f"{tmp_path.name}-outside"
+    sibling.mkdir()
+    (tmp_path / "inside.txt").write_text("inside", encoding="utf-8")
+    (sibling / "secret.txt").write_text("secret", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+
     authorizer = task_resource_authorizer(
         TaskEnvelope(
-            resource_scope_prefixes=["allowed/"],
+            resource_scope_prefixes=["."],
             resource_scope_authority="command_clean",
         )
     )
 
     assert authorizer is not None
-    assert authorizer("allowed/file.txt", WorkspaceId("ws1"), UserId("alice")) is True
+    assert authorizer(".", WorkspaceId("ws1"), UserId("alice")) is True
+    assert authorizer("inside.txt", WorkspaceId("ws1"), UserId("alice")) is True
     assert (
-        authorizer("allowed/../outside/secret.txt", WorkspaceId("ws1"), UserId("alice"))
-        is False
-    )
-    assert (
-        authorizer("allowed/link-secret.txt", WorkspaceId("ws1"), UserId("alice"))
+        authorizer(f"../{sibling.name}/secret.txt", WorkspaceId("ws1"), UserId("alice"))
         is False
     )
 

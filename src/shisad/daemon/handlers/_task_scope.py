@@ -9,18 +9,28 @@ from typing import Any
 from shisad.core.types import UserId, WorkspaceId
 
 
+def _has_semantic_resource_marker(value: str) -> bool:
+    normalized = value.strip()
+    return "://" in normalized or ":" in normalized.split("/", 1)[0].split("\\", 1)[0]
+
+
 def _looks_like_filesystem_scope(value: str) -> bool:
     normalized = value.strip()
     if not normalized:
         return False
-    if "://" in normalized:
+    if _has_semantic_resource_marker(normalized):
         return False
-    if ":" in normalized.split("/", 1)[0].split("\\", 1)[0]:
-        return False
+    if normalized in {".", ".."}:
+        return True
     if normalized.startswith(("/", "./", "../", "~")):
         return True
     if "/" in normalized or "\\" in normalized:
         return True
+    try:
+        if Path(normalized).expanduser().exists():
+            return True
+    except OSError:
+        return False
     return "." in Path(normalized).name
 
 
@@ -71,7 +81,11 @@ def task_resource_authorizer(
             return True
         if any(normalized.startswith(prefix) for prefix in semantic_allowed_prefixes):
             return True
-        if not _looks_like_filesystem_scope(normalized):
+        candidate_is_filesystem = _looks_like_filesystem_scope(normalized) or (
+            bool(filesystem_allowed_prefixes)
+            and not _has_semantic_resource_marker(normalized)
+        )
+        if not candidate_is_filesystem:
             return False
         canonical = _canonical_filesystem_scope(normalized)
         if canonical in filesystem_allowed_ids:

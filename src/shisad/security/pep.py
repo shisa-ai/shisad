@@ -721,7 +721,8 @@ class PEP:
 
         resource_arguments = dict(arguments)
         for key, value in self._RESOURCE_ARG_DEFAULTS.get(str(tool_name), {}).items():
-            resource_arguments.setdefault(key, value)
+            if key not in resource_arguments or resource_arguments[key] is None:
+                resource_arguments[key] = value
 
         failures: list[str] = []
         for key, value in resource_arguments.items():

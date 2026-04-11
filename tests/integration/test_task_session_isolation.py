@@ -387,11 +387,24 @@ async def test_u8_task_session_keeps_clean_scope_fs_tool_when_global_roots_empty
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("tool_name", ["fs.list", "git.status", "git.diff", "git.log"])
+@pytest.mark.parametrize(
+    ("tool_name", "arguments"),
+    [
+        ("fs.list", {}),
+        ("fs.list", {"path": None}),
+        ("git.status", {}),
+        ("git.status", {"repo_path": None}),
+        ("git.diff", {}),
+        ("git.diff", {"repo_path": None}),
+        ("git.log", {}),
+        ("git.log", {"repo_path": None}),
+    ],
+)
 async def test_u8_task_session_rejects_implicit_fs_git_defaults_outside_scope(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     tool_name: str,
+    arguments: dict[str, object],
 ) -> None:
     async def _planner(
         self: Planner,
@@ -405,9 +418,9 @@ async def test_u8_task_session_rejects_implicit_fs_git_defaults_outside_scope(
         if "TASK CLOSE-GATE SELF-CHECK" in user_content:
             return _complete_close_gate_result()
         proposal = ActionProposal(
-            action_id=f"u8-implicit-{tool_name.replace('.', '-')}",
+            action_id=f"u8-implicit-{tool_name.replace('.', '-')}-{len(arguments)}",
             tool_name=ToolName(tool_name),
-            arguments={},
+            arguments=arguments,
             reasoning="Attempt to inspect the implicit runtime working tree.",
         )
         return PlannerResult(
