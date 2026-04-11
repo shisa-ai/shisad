@@ -245,9 +245,11 @@ sed -n '1,140p' docs/DEPLOY.md
 | `agent-client-protocol` | `==0.8.1` | `0.8.1` | Exact |
 | `click` | `>=8.1,<9` | `8.3.1` | Range in spec, exact in lock |
 | `cryptography` | `>=46.0.7,<47` | `46.0.7` | Range in spec, exact in lock |
+| `fido2` | `>=2.1,<3` | `2.1.1` | Range in spec, exact in lock |
 | `loguru` | `>=0.7,<1` | `0.7.3` | Range in spec, exact in lock |
 | `pydantic` | `>=2.10,<3` | `2.12.5` | Range in spec, exact in lock |
 | `pydantic-settings` | `>=2.7,<3` | `2.12.0` | Range in spec, exact in lock |
+| `qrcode` | `>=8.2,<9` | `8.2` | Range in spec, exact in lock |
 | `pyyaml` | `>=6.0,<7` | `6.0.3` | Range in spec, exact in lock |
 
 #### Optional extras (`[project.optional-dependencies]`)
