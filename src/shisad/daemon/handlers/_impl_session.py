@@ -1238,16 +1238,7 @@ def _planner_tool_allowlist_for_configured_resources(
 ) -> set[ToolName] | None:
     if _assistant_fs_roots_configured(config):
         return base_allowlist
-    if session.mode == SessionMode.TASK and (
-        task_declared_tdg_roots(task_envelope)
-        or (
-            base_allowlist is not None
-            and any(
-                canonical_tool_name_typed(str(tool_name)) in _ASSISTANT_FS_ROOT_TOOL_NAMES
-                for tool_name in base_allowlist
-            )
-        )
-    ):
+    if session.mode == SessionMode.TASK and task_declared_tdg_roots(task_envelope):
         return base_allowlist
     if base_allowlist is None:
         return {

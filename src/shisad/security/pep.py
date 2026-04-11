@@ -123,6 +123,7 @@ class PEP:
     ]
     _CREDENTIAL_REF_KEYS: ClassVar[set[str]] = {"credential_ref"}
     _RESOURCE_ARG_SUFFIX: ClassVar[str] = "_id"
+    _RESOURCE_ARG_NAMES: ClassVar[set[str]] = {"path", "repo_path"}
     _RESOURCE_ARG_ALLOWLIST: ClassVar[set[str]] = {"session_id", "ref_id"}
 
     def __init__(
@@ -715,7 +716,9 @@ class PEP:
         for key, value in arguments.items():
             if not isinstance(value, str):
                 continue
-            if not key.endswith(self._RESOURCE_ARG_SUFFIX):
+            if not (
+                key.endswith(self._RESOURCE_ARG_SUFFIX) or key in self._RESOURCE_ARG_NAMES
+            ):
                 continue
             if key in self._RESOURCE_ARG_ALLOWLIST:
                 continue

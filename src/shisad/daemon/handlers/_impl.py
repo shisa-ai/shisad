@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from functools import lru_cache
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from pydantic import ValidationError
 
@@ -379,10 +379,11 @@ def _structured_realitycheck_read(
 def _structured_fs_list(
     handler: Any,
     arguments: Mapping[str, Any],
-    _context: StructuredToolContext | None = None,
+    context: StructuredToolContext | None = None,
 ) -> Mapping[str, Any]:
+    toolkit = _fs_git_toolkit_for_context(handler, context)
     return dict(
-        handler._fs_git_toolkit.list_dir(
+        toolkit.list_dir(
             path=_argument_string(arguments, "path", default=".") or ".",
             recursive=bool(arguments.get("recursive", False)),
             limit=_argument_int(arguments, "limit", default=200, minimum=1),
@@ -393,10 +394,11 @@ def _structured_fs_list(
 def _structured_fs_read(
     handler: Any,
     arguments: Mapping[str, Any],
-    _context: StructuredToolContext | None = None,
+    context: StructuredToolContext | None = None,
 ) -> Mapping[str, Any]:
+    toolkit = _fs_git_toolkit_for_context(handler, context)
     return dict(
-        handler._fs_git_toolkit.read_file(
+        toolkit.read_file(
             path=_argument_string(arguments, "path"),
             max_bytes=_optional_int(arguments.get("max_bytes")),
         )
@@ -415,7 +417,7 @@ def _structured_fs_write(
         and str(context.session.metadata.get("trust_level", "")).strip().lower() == "trusted_cli"
     )
     return dict(
-        handler._fs_git_toolkit.write_file(
+        _fs_git_toolkit_for_context(handler, context).write_file(
             path=_argument_string(arguments, "path"),
             content=_argument_string(arguments, "content"),
             confirm=bool(arguments.get("confirm", False))
@@ -428,10 +430,11 @@ def _structured_fs_write(
 def _structured_git_status(
     handler: Any,
     arguments: Mapping[str, Any],
-    _context: StructuredToolContext | None = None,
+    context: StructuredToolContext | None = None,
 ) -> Mapping[str, Any]:
+    toolkit = _fs_git_toolkit_for_context(handler, context)
     return dict(
-        handler._fs_git_toolkit.git_status(
+        toolkit.git_status(
             repo_path=_argument_string(arguments, "repo_path", default=".") or ".",
         )
     )
@@ -440,10 +443,11 @@ def _structured_git_status(
 def _structured_git_diff(
     handler: Any,
     arguments: Mapping[str, Any],
-    _context: StructuredToolContext | None = None,
+    context: StructuredToolContext | None = None,
 ) -> Mapping[str, Any]:
+    toolkit = _fs_git_toolkit_for_context(handler, context)
     return dict(
-        handler._fs_git_toolkit.git_diff(
+        toolkit.git_diff(
             repo_path=_argument_string(arguments, "repo_path", default=".") or ".",
             ref=_argument_string(arguments, "ref"),
             max_lines=_argument_int(arguments, "max_lines", default=400, minimum=1),
@@ -454,10 +458,11 @@ def _structured_git_diff(
 def _structured_git_log(
     handler: Any,
     arguments: Mapping[str, Any],
-    _context: StructuredToolContext | None = None,
+    context: StructuredToolContext | None = None,
 ) -> Mapping[str, Any]:
+    toolkit = _fs_git_toolkit_for_context(handler, context)
     return dict(
-        handler._fs_git_toolkit.git_log(
+        toolkit.git_log(
             repo_path=_argument_string(arguments, "repo_path", default=".") or ".",
             limit=_argument_int(arguments, "limit", default=20, minimum=1),
         )
@@ -481,6 +486,48 @@ class StructuredToolContext:
     workspace_id: WorkspaceId
     session: Session
     user_confirmed: bool = False
+
+
+def _task_declared_fs_runtime_roots(session: Session) -> list[Path]:
+    if session.mode != SessionMode.TASK:
+        return []
+    raw_envelope = session.metadata.get("task_envelope")
+    if not isinstance(raw_envelope, Mapping):
+        return []
+    authority = str(raw_envelope.get("resource_scope_authority", "")).strip().lower()
+    if authority != "command_clean":
+        return []
+    resource_scope_ids = raw_envelope.get("resource_scope_ids", [])
+    resource_scope_prefixes = raw_envelope.get("resource_scope_prefixes", [])
+    declared_scope = [
+        str(item).strip()
+        for items in (resource_scope_ids, resource_scope_prefixes)
+        if isinstance(items, list)
+        for item in items
+        if str(item).strip()
+    ]
+    if not declared_scope:
+        return []
+    return [Path.cwd().expanduser().resolve(strict=False)]
+
+
+def _fs_git_toolkit_for_context(
+    handler: Any,
+    context: StructuredToolContext | None,
+) -> FsGitToolkit:
+    toolkit = cast(FsGitToolkit, handler._fs_git_toolkit)
+    if getattr(toolkit, "roots", None):
+        return toolkit
+    if context is None:
+        return toolkit
+    scoped_roots = _task_declared_fs_runtime_roots(context.session)
+    if not scoped_roots:
+        return toolkit
+    return FsGitToolkit(
+        roots=scoped_roots,
+        max_read_bytes=handler._config.assistant_max_read_bytes,
+        git_timeout_seconds=handler._config.assistant_git_timeout_seconds,
+    )
 
 
 StructuredPayloadBuilder = Callable[

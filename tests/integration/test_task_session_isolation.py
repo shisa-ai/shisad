@@ -300,6 +300,7 @@ async def test_u8_task_session_keeps_clean_scope_fs_tool_when_global_roots_empty
 ) -> None:
     observed_tool_names: set[str] = set()
     observed_decision: PEPDecision | None = None
+    observed_out_of_scope_decision: PEPDecision | None = None
 
     async def _planner(
         self: Planner,
@@ -322,10 +323,19 @@ async def test_u8_task_session_keeps_clean_scope_fs_tool_when_global_roots_empty
             reasoning="Check that clean task scope still authorizes the planner context.",
         )
         nonlocal observed_decision
+        nonlocal observed_out_of_scope_decision
         observed_decision = self._pep.evaluate(proposal.tool_name, proposal.arguments, context)
+        observed_out_of_scope_decision = self._pep.evaluate(
+            proposal.tool_name,
+            {"path": "pyproject.toml"},
+            context,
+        )
         return PlannerResult(
-            output=PlannerOutput(assistant_response="Delegated read scope checked.", actions=[]),
-            evaluated=[],
+            output=PlannerOutput(
+                assistant_response="Delegated read scope checked.",
+                actions=[proposal],
+            ),
+            evaluated=[EvaluatedProposal(proposal=proposal, decision=observed_decision)],
             attempts=1,
             provider_response=None,
             messages_sent=(),
@@ -360,16 +370,23 @@ async def test_u8_task_session_keeps_clean_scope_fs_tool_when_global_roots_empty
 
         task_result = dict(result.get("task_result") or {})
         assert task_result["success"] is True
+        assert int(result.get("executed_actions", 0)) == 1
         assert "fs_read" in observed_tool_names
         assert observed_decision is not None
         assert observed_decision.kind == PEPDecisionKind.ALLOW
         assert observed_decision.reason_code != "pep:tool_not_permitted"
+        assert observed_out_of_scope_decision is not None
+        assert observed_out_of_scope_decision.kind == PEPDecisionKind.REJECT
+        assert (
+            observed_out_of_scope_decision.reason_code
+            == "pep:resource_authorization_failed"
+        )
     finally:
         await _shutdown_daemon(daemon_task, client)
 
 
 @pytest.mark.asyncio
-async def test_u8_task_session_keeps_inherited_fs_allowlist_when_global_roots_empty(
+async def test_u8_task_session_filters_inherited_fs_allowlist_when_global_roots_empty(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -430,7 +447,7 @@ async def test_u8_task_session_keeps_inherited_fs_allowlist_when_global_roots_em
 
         task_result = dict(result.get("task_result") or {})
         assert task_result["success"] is True
-        assert observed_tool_names == {"fs_read"}
+        assert observed_tool_names == set()
     finally:
         await _shutdown_daemon(daemon_task, client)
 
