@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
@@ -9,6 +10,24 @@ from typing import Any
 from shisad.core.types import Capability, UserId, WorkspaceId
 
 _PATH_RESOURCE_ARG_NAMES = frozenset({"path", "repo_path"})
+_SLACK_THREAD_TS_PATTERN = re.compile(r"^\d+(?:\.\d+)+$")
+_COMMON_EXTENSIONLESS_FILE_SCOPE_IDS = frozenset(
+    {
+        "AUTHORS",
+        "BSDmakefile",
+        "Containerfile",
+        "COPYING",
+        "Dockerfile",
+        "Gemfile",
+        "GNUmakefile",
+        "LICENSE",
+        "Makefile",
+        "NOTICE",
+        "README",
+        "Rakefile",
+        "Vagrantfile",
+    }
+)
 _FILESYSTEM_SCOPE_CAPABILITIES = frozenset(
     {Capability.FILE_READ.value, Capability.FILE_WRITE.value}
 )
@@ -30,6 +49,21 @@ _SEMANTIC_SCOPE_CAPABILITIES = frozenset(
 def _has_semantic_resource_marker(value: str) -> bool:
     normalized = value.strip()
     return "://" in normalized or ":" in normalized.split("/", 1)[0].split("\\", 1)[0]
+
+
+def _looks_like_semantic_exact_id(value: str) -> bool:
+    normalized = value.strip()
+    return _has_semantic_resource_marker(normalized) or bool(
+        _SLACK_THREAD_TS_PATTERN.fullmatch(normalized)
+    )
+
+
+def _looks_like_known_extensionless_file_scope(value: str) -> bool:
+    normalized = value.strip()
+    return (
+        Path(normalized).name == normalized
+        and normalized in _COMMON_EXTENSIONLESS_FILE_SCOPE_IDS
+    )
 
 
 def _filesystem_bases(filesystem_roots: Sequence[Path | str] | None) -> tuple[Path, ...]:
@@ -73,6 +107,14 @@ def _canonical_filesystem_scope(value: str, *, base: Path) -> Path:
     return _path_from_scope(value, base).resolve(strict=False)
 
 
+def _looks_like_mixed_filesystem_scope(value: str, *, base: Path) -> bool:
+    if _looks_like_semantic_exact_id(value):
+        return False
+    return _looks_like_filesystem_scope(value, base=base) or (
+        _looks_like_known_extensionless_file_scope(value)
+    )
+
+
 def _filesystem_scope_matches(candidate: Path, prefix: Path) -> bool:
     return candidate == prefix or prefix in candidate.parents
 
@@ -86,30 +128,30 @@ def _capability_values(task_envelope: Any) -> frozenset[str]:
 
 
 def _scope_id_is_filesystem(value: str, *, base: Path, capabilities: frozenset[str]) -> bool:
-    filesystem_only = bool(capabilities & _FILESYSTEM_SCOPE_CAPABILITIES) and not bool(
-        capabilities & _SEMANTIC_SCOPE_CAPABILITIES
-    )
-    semantic_only = bool(capabilities & _SEMANTIC_SCOPE_CAPABILITIES) and not bool(
-        capabilities & _FILESYSTEM_SCOPE_CAPABILITIES
-    )
+    has_filesystem_caps = bool(capabilities & _FILESYSTEM_SCOPE_CAPABILITIES)
+    has_semantic_caps = bool(capabilities & _SEMANTIC_SCOPE_CAPABILITIES)
+    filesystem_only = has_filesystem_caps and not has_semantic_caps
+    semantic_only = has_semantic_caps and not has_filesystem_caps
     if filesystem_only:
         return not _has_semantic_resource_marker(value)
     if semantic_only:
         return False
+    if has_filesystem_caps and has_semantic_caps:
+        return _looks_like_mixed_filesystem_scope(value, base=base)
     return _looks_like_filesystem_scope(value, base=base)
 
 
 def _scope_id_is_semantic(value: str, *, base: Path, capabilities: frozenset[str]) -> bool:
-    filesystem_only = bool(capabilities & _FILESYSTEM_SCOPE_CAPABILITIES) and not bool(
-        capabilities & _SEMANTIC_SCOPE_CAPABILITIES
-    )
-    semantic_only = bool(capabilities & _SEMANTIC_SCOPE_CAPABILITIES) and not bool(
-        capabilities & _FILESYSTEM_SCOPE_CAPABILITIES
-    )
+    has_filesystem_caps = bool(capabilities & _FILESYSTEM_SCOPE_CAPABILITIES)
+    has_semantic_caps = bool(capabilities & _SEMANTIC_SCOPE_CAPABILITIES)
+    filesystem_only = has_filesystem_caps and not has_semantic_caps
+    semantic_only = has_semantic_caps and not has_filesystem_caps
     if semantic_only:
         return True
     if filesystem_only:
         return _has_semantic_resource_marker(value)
+    if has_filesystem_caps and has_semantic_caps:
+        return not _looks_like_mixed_filesystem_scope(value, base=base)
     return not _looks_like_filesystem_scope(value, base=base)
 
 

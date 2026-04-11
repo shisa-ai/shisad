@@ -645,6 +645,52 @@ def test_m3_pep_task_filesystem_exact_extensionless_id_does_not_authorize_semant
     assert semantic_decision.reason_code == "pep:resource_authorization_failed"
 
 
+def test_m3_pep_task_mixed_scope_extensionless_id_remains_filesystem_only(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    authorizer = task_resource_authorizer(
+        TaskEnvelope(
+            capability_snapshot=frozenset({Capability.FILE_WRITE, Capability.MESSAGE_SEND}),
+            resource_scope_ids=["Makefile"],
+            resource_scope_authority="command_clean",
+        )
+    )
+    assert authorizer is not None
+    pep = PEP(
+        PolicyBundle(default_require_confirmation=False),
+        _build_tool_registry(EventBus())[0],
+    )
+
+    filesystem_decision = pep.evaluate(
+        ToolName("fs.write"),
+        {"path": "Makefile", "content": "ok"},
+        PolicyContext(
+            capabilities={Capability.FILE_WRITE},
+            resource_authorizer=authorizer,
+        ),
+    )
+    semantic_decision = pep.evaluate(
+        ToolName("message.send"),
+        {
+            "channel": "discord",
+            "recipient": "ops-room",
+            "message": "hello",
+            "thread_id": "Makefile",
+        },
+        PolicyContext(
+            capabilities={Capability.MESSAGE_SEND},
+            resource_authorizer=authorizer,
+        ),
+    )
+
+    assert filesystem_decision.kind == PEPDecisionKind.REQUIRE_CONFIRMATION
+    assert filesystem_decision.reason_code != "pep:resource_authorization_failed"
+    assert semantic_decision.kind == PEPDecisionKind.REJECT
+    assert semantic_decision.reason_code == "pep:resource_authorization_failed"
+
+
 def test_m3_pep_task_dotted_semantic_thread_id_remains_exact_match(
     tmp_path: Path,
     monkeypatch: Any,
@@ -678,6 +724,96 @@ def test_m3_pep_task_dotted_semantic_thread_id_remains_exact_match(
     )
 
     assert decision.kind == PEPDecisionKind.ALLOW
+
+
+def test_m3_pep_task_mixed_scope_dotted_thread_id_remains_semantic_only(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    authorizer = task_resource_authorizer(
+        TaskEnvelope(
+            capability_snapshot=frozenset({Capability.FILE_WRITE, Capability.MESSAGE_SEND}),
+            resource_scope_ids=["1712345678.1234"],
+            resource_scope_authority="command_clean",
+        )
+    )
+    assert authorizer is not None
+    pep = PEP(
+        PolicyBundle(default_require_confirmation=False),
+        _build_tool_registry(EventBus())[0],
+    )
+
+    semantic_decision = pep.evaluate(
+        ToolName("message.send"),
+        {
+            "channel": "slack",
+            "recipient": "C012345",
+            "message": "hello",
+            "thread_id": "1712345678.1234",
+        },
+        PolicyContext(
+            capabilities={Capability.MESSAGE_SEND},
+            resource_authorizer=authorizer,
+        ),
+    )
+    filesystem_decision = pep.evaluate(
+        ToolName("fs.write"),
+        {"path": "1712345678.1234", "content": "ok"},
+        PolicyContext(
+            capabilities={Capability.FILE_WRITE},
+            resource_authorizer=authorizer,
+        ),
+    )
+
+    assert semantic_decision.kind == PEPDecisionKind.ALLOW
+    assert filesystem_decision.kind == PEPDecisionKind.REJECT
+    assert filesystem_decision.reason_code == "pep:resource_authorization_failed"
+
+
+def test_m3_pep_task_mixed_scope_plain_thread_id_remains_semantic_only(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    authorizer = task_resource_authorizer(
+        TaskEnvelope(
+            capability_snapshot=frozenset({Capability.FILE_WRITE, Capability.MESSAGE_SEND}),
+            resource_scope_ids=["thread-allowed"],
+            resource_scope_authority="command_clean",
+        )
+    )
+    assert authorizer is not None
+    pep = PEP(
+        PolicyBundle(default_require_confirmation=False),
+        _build_tool_registry(EventBus())[0],
+    )
+
+    semantic_decision = pep.evaluate(
+        ToolName("message.send"),
+        {
+            "channel": "discord",
+            "recipient": "ops-room",
+            "message": "hello",
+            "thread_id": "thread-allowed",
+        },
+        PolicyContext(
+            capabilities={Capability.MESSAGE_SEND},
+            resource_authorizer=authorizer,
+        ),
+    )
+    filesystem_decision = pep.evaluate(
+        ToolName("fs.write"),
+        {"path": "thread-allowed", "content": "ok"},
+        PolicyContext(
+            capabilities={Capability.FILE_WRITE},
+            resource_authorizer=authorizer,
+        ),
+    )
+
+    assert semantic_decision.kind == PEPDecisionKind.ALLOW
+    assert filesystem_decision.kind == PEPDecisionKind.REJECT
+    assert filesystem_decision.reason_code == "pep:resource_authorization_failed"
 
 
 def test_m3_task_resource_authorizer_uses_configured_filesystem_root_for_relative_prefixes(
