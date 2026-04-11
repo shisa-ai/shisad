@@ -2,12 +2,21 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 from shisad.core.events import EventBus
 from shisad.core.tools.registry import ToolRegistry
 from shisad.core.tools.schema import ToolDefinition, ToolParameter
-from shisad.core.types import Capability, CredentialRef, PEPDecisionKind, ToolName, UserId
+from shisad.core.types import (
+    Capability,
+    CredentialRef,
+    PEPDecisionKind,
+    ToolName,
+    UserId,
+    WorkspaceId,
+)
+from shisad.daemon.handlers._task_scope import task_resource_authorizer
 from shisad.daemon.services import _build_tool_registry
 from shisad.scheduler.manager import SchedulerManager
 from shisad.scheduler.schema import Schedule, TaskEnvelope
@@ -348,6 +357,59 @@ def test_m3_task_envelope_tracks_scope_fields_and_normalizes_duplicates() -> Non
     assert envelope.resource_scope_prefixes == ("artifact:task:",)
     assert envelope.resource_scope_authority == "command_clean"
     assert envelope.untrusted_payload_action == "reject"
+
+
+def test_m3_task_resource_authorizer_canonicalizes_filesystem_prefixes(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    allowed = tmp_path / "allowed"
+    outside = tmp_path / "outside"
+    allowed.mkdir()
+    outside.mkdir()
+    (allowed / "file.txt").write_text("allowed", encoding="utf-8")
+    outside_secret = outside / "secret.txt"
+    outside_secret.write_text("secret", encoding="utf-8")
+    (allowed / "link-secret.txt").symlink_to(outside_secret)
+    monkeypatch.chdir(tmp_path)
+
+    authorizer = task_resource_authorizer(
+        TaskEnvelope(
+            resource_scope_prefixes=["allowed/"],
+            resource_scope_authority="command_clean",
+        )
+    )
+
+    assert authorizer is not None
+    assert authorizer("allowed/file.txt", WorkspaceId("ws1"), UserId("alice")) is True
+    assert (
+        authorizer("allowed/../outside/secret.txt", WorkspaceId("ws1"), UserId("alice"))
+        is False
+    )
+    assert (
+        authorizer("allowed/link-secret.txt", WorkspaceId("ws1"), UserId("alice"))
+        is False
+    )
+
+
+def test_m3_task_resource_authorizer_preserves_semantic_ids_and_exact_paths(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    (tmp_path / "README.md").write_text("readme", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+
+    authorizer = task_resource_authorizer(
+        TaskEnvelope(
+            resource_scope_ids=["README.md"],
+            resource_scope_prefixes=["artifact:task:"],
+            resource_scope_authority="command_clean",
+        )
+    )
+
+    assert authorizer is not None
+    assert authorizer("README.md", WorkspaceId("ws1"), UserId("alice")) is True
+    assert authorizer("artifact:task:123", WorkspaceId("ws1"), UserId("alice")) is True
 
 
 def test_m3_scheduler_commitment_hash_binds_scope_envelope_fields() -> None:

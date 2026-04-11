@@ -289,6 +289,7 @@ async def test_h4_task_session_uses_clean_command_declared_scope_as_tdg_root(
             ),
         )
         assert executed_event["data"]["tool_name"] == "fs.read"
+        assert executed_event["data"]["success"] is True
     finally:
         await _shutdown_daemon(daemon_task, client)
 
@@ -381,6 +382,98 @@ async def test_u8_task_session_keeps_clean_scope_fs_tool_when_global_roots_empty
             observed_out_of_scope_decision.reason_code
             == "pep:resource_authorization_failed"
         )
+    finally:
+        await _shutdown_daemon(daemon_task, client)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tool_name", ["fs.list", "git.status", "git.diff", "git.log"])
+async def test_u8_task_session_rejects_implicit_fs_git_defaults_outside_scope(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    tool_name: str,
+) -> None:
+    async def _planner(
+        self: Planner,
+        user_content: str,
+        context: object,
+        *,
+        tools: list[dict[str, object]] | None = None,
+        persona_tone_override: str | None = None,
+    ) -> PlannerResult:
+        _ = (tools, persona_tone_override)
+        if "TASK CLOSE-GATE SELF-CHECK" in user_content:
+            return _complete_close_gate_result()
+        proposal = ActionProposal(
+            action_id=f"u8-implicit-{tool_name.replace('.', '-')}",
+            tool_name=ToolName(tool_name),
+            arguments={},
+            reasoning="Attempt to inspect the implicit runtime working tree.",
+        )
+        return PlannerResult(
+            output=PlannerOutput(
+                assistant_response="Implicit default scope checks proposed.",
+                actions=[proposal],
+            ),
+            evaluated=[
+                EvaluatedProposal(
+                    proposal=proposal,
+                    decision=self._pep.evaluate(proposal.tool_name, proposal.arguments, context),
+                )
+            ],
+            attempts=1,
+            provider_response=None,
+            messages_sent=(),
+        )
+
+    monkeypatch.setattr(Planner, "propose", _planner)
+    daemon_task, client = await _start_daemon(
+        tmp_path,
+        policy_text=_policy_with_caps("file.read"),
+        assistant_fs_roots=[],
+    )
+    try:
+        created = await client.call(
+            "session.create",
+            {"channel": "cli", "user_id": "alice", "workspace_id": "ws1"},
+        )
+        sid = str(created["session_id"])
+
+        result = await client.call(
+            "session.message",
+            {
+                "session_id": sid,
+                "content": "run delegated review",
+                "task": {
+                    "enabled": True,
+                    "task_description": "Inspect README.md in isolation.",
+                    "capabilities": ["file.read"],
+                    "resource_scope_ids": ["README.md"],
+                },
+            },
+        )
+
+        task_result = dict(result.get("task_result") or {})
+        assert task_result["success"] is True
+        assert int(result.get("executed_actions", 0)) == 0
+        assert int(result.get("blocked_actions", 0)) == 1
+        assert int(result.get("confirmation_required_actions", 0)) == 0
+
+        rejected = await client.call(
+            "audit.query",
+            {
+                "event_type": "ToolRejected",
+                "session_id": task_result["task_session_id"],
+                "limit": 20,
+            },
+        )
+        reasons_by_tool = {
+            str(event.get("data", {}).get("tool_name", "")): str(
+                event.get("data", {}).get("reason", "")
+            )
+            for event in rejected.get("events", [])
+        }
+        assert "Resource authorization failed" in reasons_by_tool.get(tool_name, "")
     finally:
         await _shutdown_daemon(daemon_task, client)
 

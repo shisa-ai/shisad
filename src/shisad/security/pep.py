@@ -125,6 +125,12 @@ class PEP:
     _RESOURCE_ARG_SUFFIX: ClassVar[str] = "_id"
     _RESOURCE_ARG_NAMES: ClassVar[set[str]] = {"path", "repo_path"}
     _RESOURCE_ARG_ALLOWLIST: ClassVar[set[str]] = {"session_id", "ref_id"}
+    _RESOURCE_ARG_DEFAULTS: ClassVar[dict[str, dict[str, str]]] = {
+        "fs.list": {"path": "."},
+        "git.status": {"repo_path": "."},
+        "git.diff": {"repo_path": "."},
+        "git.log": {"repo_path": "."},
+    }
 
     def __init__(
         self,
@@ -213,7 +219,7 @@ class PEP:
             )
 
         # 5. Object-level resource authorization checks
-        auth_issues = self._check_resource_authorization(arguments, context)
+        auth_issues = self._check_resource_authorization(tool_name, arguments, context)
         if auth_issues:
             return self._reject(
                 tool_name,
@@ -706,14 +712,19 @@ class PEP:
 
     def _check_resource_authorization(
         self,
+        tool_name: ToolName,
         arguments: dict[str, Any],
         context: PolicyContext,
     ) -> list[str]:
         if context.resource_authorizer is None:
             return []
 
+        resource_arguments = dict(arguments)
+        for key, value in self._RESOURCE_ARG_DEFAULTS.get(str(tool_name), {}).items():
+            resource_arguments.setdefault(key, value)
+
         failures: list[str] = []
-        for key, value in arguments.items():
+        for key, value in resource_arguments.items():
             if not isinstance(value, str):
                 continue
             if not (
