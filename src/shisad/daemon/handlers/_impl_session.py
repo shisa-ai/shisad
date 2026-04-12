@@ -399,8 +399,7 @@ _CRC_CONFIRM_INDEX_RE = re.compile(r"^(?:confirm|approve|yes)\s+(\d+)$")
 _CRC_REJECT_INDEX_RE = re.compile(r"^(?:reject|deny|no)\s+(\d+)$")
 _CRC_BARE_INDEX_RE = re.compile(r"^(\d{1,3})$")
 _CRC_CLI_ACTION_COMMAND_RE = re.compile(
-    r"^shisad\s+action\s+"
-    r"(?:confirm\s+\S+(?:\s+--totp-code\s+\S+)?|reject\s+\S+|pending)$"
+    r"^shisad\s+action\s+(?:confirm|reject|pending)(?:\s+\S+)*$"
 )
 _CRC_CLI_ACTION_GUIDANCE_PREFIXES = (
     "cli fallback: run ",
