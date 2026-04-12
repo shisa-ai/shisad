@@ -13,63 +13,58 @@ Versioning follows semver (see `docs/PUBLISH.md` for policy and style guide).
 
 ### Added
 
-- **Pending approvals now show actionable next steps.** When an action needs
-  confirmation, the daemon returns a clear pending-approval message with safe
-  preview text and the commands a user can run to approve or reject it.
-- **TOTP approvals work from trusted chat and command replies.** Operators can
-  enter a current TOTP code in the same trusted conversation instead of using
-  only the SSH CLI path.
-- **TOTP enrollment can show a terminal QR code.** The CLI now renders a
-  scannable QR code when possible and still prints the raw `otpauth://` URI as
-  a fallback.
-- **Anthropic has a first-class default provider preset.** `ANTHROPIC_API_KEY`
-  can now configure planner and monitor routes without accidentally enabling
-  an incompatible embeddings route.
+- **Pending approvals now show what to do next.** When an action needs your
+  approval, you see a preview of what it wants to do and the exact commands to
+  approve or reject it.
+- **TOTP approvals work from chat.** You can enter a TOTP code in the same
+  conversation instead of switching to the SSH CLI.
+- **TOTP enrollment shows a scannable QR code.** The CLI renders a QR code
+  when possible and still prints the raw `otpauth://` URI as a fallback.
+- **Anthropic provider preset.** Setting `ANTHROPIC_API_KEY` now configures
+  planner and monitor routes without accidentally enabling an incompatible
+  embeddings route.
+
+### Fixed
+
+- **Creating todos, notes, and reminders from the CLI no longer asks for
+  unnecessary confirmation.** When PromptGuard content safety was enabled, its
+  injection-detection score (always slightly above zero for any input) caused
+  the system to treat even simple operator commands like "create a todo" as
+  needing approval. The content safety classifier now skips the neural-net
+  check on direct operator input — the operator is the trust root, not an
+  attack surface. Pattern-based detection still runs for telemetry.
+- **Confirmation replies no longer create new actions.** Typing `confirm 1`,
+  `y`, `yes`, a bare number, or `reject` is now recognized as a command
+  instead of being sent to the planner as a new request.
+- **Stale pending actions are cleaned up on restart.** Old pending rows that
+  lost their approval envelope or were locked out of their confirmation method
+  no longer keep appearing in the pending list.
+- **Terminal replies keep readable line breaks.** Markdown-style responses no
+  longer collapse into a single hard-to-read line.
+- **Missing model configuration gives useful guidance.** When no language
+  model is configured, the error message tells you what to set up instead of
+  echoing a fake response.
 
 ### Changed
 
-- **Terminal replies keep readable line breaks.** Markdown-style responses no
-  longer collapse into hard-to-read single-line output on command-line session
-  replies; interactive chat UI rendering remains deferred to the TUI overhaul.
-- **Missing model configuration now fails with useful guidance.** Local
-  no-model fallbacks now tell the operator what to configure instead of
-  echoing a fake response.
-- **Startup and doctor output are more operator-friendly.** `shisad doctor`
-  works without a subcommand, missing filesystem roots or embeddings routes
-  are easier to spot, overridden presets are labeled as custom, and missing
-  chat dependencies point to the `shisad[chat]` install extra.
-- **Clean direct CLI trust is covered by LT5 live evidence before publication.**
-  Local operator input stays trusted unless suspicious content or untrusted
-  history says otherwise; ReleaseClose reviewer sign-off remains pending before
-  treating this as releasable behavior.
-- **Confirmation replies are handled as commands before planner flow.** Reply
-  text such as confirm/reject, bare approval numbers, yes/no responses, and
-  daemon-owned CLI action guidance no longer create fresh planner actions.
-- **Stale pending-action cleanup has LT5 live-test disposition before
-  publication.** Legacy pending rows missing approval envelopes or locked out of
-  their confirmation method stop cycling through pending lists, and the
-  operator-visible cleanup behavior has recorded LT5 evidence.
-- **Low-risk internal bookkeeping from clean CLI sessions is covered by LT5 live
-  evidence before publication.** Notes, todos, reminders, and note search keep
-  normal safety gates for suspicious input or stronger policy requirements; the
-  release-close validation bundle is green, and ReleaseClose reviewer sign-off
-  remains pending before treating clean local no-prompt completion as releasable
-  behavior.
-- **Planner-visible tools better match the configured runtime.** When
-  filesystem or git roots are not configured, the planner no longer advertises
-  those tools as generally usable while delegated task scopes remain available
-  when they are explicitly authorized.
+- **Startup and doctor output are more helpful.** `shisad doctor` works
+  without a subcommand, missing filesystem roots or embeddings routes are
+  easier to spot, overridden presets are labeled as custom, and missing chat
+  dependencies point to the `shisad[chat]` install extra.
+- **Tools shown to the planner match what's actually available.** When
+  filesystem or git roots are not configured, those tools are no longer
+  advertised to the planner as usable.
 
 ### Security
 
-- **Delegated task scopes are fenced more consistently.** File and git
-  defaults, extensionless filenames, semantic IDs, and numeric chat-thread IDs
-  now stay in the correct resource scope instead of accidentally authorizing a
+- **Delegated task scopes are fenced more tightly.** File paths, git refs,
+  extensionless filenames, semantic IDs, and numeric chat-thread IDs now stay
+  in their correct resource scope instead of accidentally authorizing a
   different kind of resource.
-- **Trusted CLI convenience remains conditional.** The clean direct CLI path has
-  LT5 evidence; any convenience still keeps suspicious content, untrusted
-  history, external side effects, and stronger policy requirements on the normal
-  confirmation path.
+- **CLI convenience skips only low-risk internal bookkeeping.** Creating notes,
+  todos, and reminders from a clean CLI session skips the confirmation prompt,
+  but suspicious content, untrusted session history, external side effects, and
+  stronger policy requirements still go through normal approval.
 
 ## [0.6.2] - 2026-04-09
 
