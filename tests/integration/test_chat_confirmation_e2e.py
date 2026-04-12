@@ -298,8 +298,26 @@ async def test_lt2_session_message_confirmation_commands_do_not_reenter_planner(
             assert invalid["lockdown_level"] == "normal"
             assert await _pending_count(sid) == 1
 
+        question_before_calls = len(planner_calls)
+        command_question = await _send(
+            sid,
+            f'Should I run "shisad action reject {confirmation_id}" now?',
+        )
+        assert len(planner_calls) == question_before_calls + 1
+        assert command_question["lockdown_level"] == "normal"
+        assert int(command_question["confirmation_required_actions"]) >= 1
+        assert await _pending_count(sid) == 2
+
+        rejected_question_action = await _send(sid, "reject 2")
+        assert len(planner_calls) == question_before_calls + 1
+        rejected_question_response = str(rejected_question_action.get("response", "")).lower()
+        assert "rejected 2" in rejected_question_response
+        assert "[lockdown notice]" not in rejected_question_response
+        assert rejected_question_action["lockdown_level"] == "normal"
+        assert await _pending_count(sid) == 1
+
         bare_index = await _send(sid, "1")
-        assert len(planner_calls) == before_calls
+        assert len(planner_calls) == question_before_calls + 1
         bare_response = str(bare_index.get("response", "")).lower()
         assert "confirmed 1" in bare_response
         assert "[lockdown notice]" not in bare_response

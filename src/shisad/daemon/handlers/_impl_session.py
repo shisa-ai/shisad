@@ -398,7 +398,18 @@ _CRC_REJECT_ALL_PATTERNS = {"no to all", "reject all", "deny all", "cancel all"}
 _CRC_CONFIRM_INDEX_RE = re.compile(r"^(?:confirm|approve|yes)\s+(\d+)$")
 _CRC_REJECT_INDEX_RE = re.compile(r"^(?:reject|deny|no)\s+(\d+)$")
 _CRC_BARE_INDEX_RE = re.compile(r"^(\d{1,3})$")
-_CRC_CLI_ACTION_COMMAND_RE = re.compile(r"\bshisad\s+action\s+(?:confirm|reject|pending)\b")
+_CRC_CLI_ACTION_COMMAND_RE = re.compile(
+    r"^shisad\s+action\s+"
+    r"(?:confirm\s+\S+(?:\s+--totp-code\s+\S+)?|reject\s+\S+|pending)$"
+)
+_CRC_CLI_ACTION_GUIDANCE_PREFIXES = (
+    "cli fallback: run ",
+    "cli fallback: ",
+    "then run ",
+    "run ",
+    "confirm: ",
+    "review all pending: ",
+)
 _CRC_CONFIRMATION_VERB_ACTIONS = {
     "confirm": "confirm",
     "approve": "confirm",
@@ -512,6 +523,30 @@ def _confirmation_command_guidance() -> str:
     return "Use 'confirm N', 'reject N', 'yes to all', or 'no to all'."
 
 
+def _extract_cli_action_command_candidate(text: str) -> str:
+    candidate = text.strip().removesuffix(".").strip()
+    if not candidate:
+        return ""
+    if candidate[0] not in {"'", '"', "`"}:
+        return candidate
+    closing_index = candidate.find(candidate[0], 1)
+    if closing_index == -1:
+        return candidate[1:].strip()
+    return candidate[1:closing_index].strip()
+
+
+def _looks_like_cli_action_command_or_guidance(normalized: str) -> bool:
+    candidate = _extract_cli_action_command_candidate(normalized)
+    if _CRC_CLI_ACTION_COMMAND_RE.fullmatch(candidate) is not None:
+        return True
+    for prefix in _CRC_CLI_ACTION_GUIDANCE_PREFIXES:
+        if not normalized.startswith(prefix):
+            continue
+        candidate = _extract_cli_action_command_candidate(normalized.removeprefix(prefix))
+        return _CRC_CLI_ACTION_COMMAND_RE.fullmatch(candidate) is not None
+    return False
+
+
 def _unresolved_confirmation_index_text(index: int | None) -> str:
     label = str(index) if index is not None else "that"
     return (
@@ -531,7 +566,7 @@ def _chat_confirmation_command_error_text(
         return ""
     tokens = normalized.split()
     first = tokens[0]
-    if _CRC_CLI_ACTION_COMMAND_RE.search(normalized):
+    if _looks_like_cli_action_command_or_guidance(normalized):
         return (
             "CLI action commands must be run from a shell, not sent as chat. "
             f"No action was taken. {_confirmation_command_guidance()}"
