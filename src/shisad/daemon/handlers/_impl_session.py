@@ -3893,6 +3893,7 @@ class SessionImplMixin(HandlerMixinBase):
             filesystem_roots=tuple(self._config.assistant_fs_roots),
             tool_allowlist=planner_tool_allowlist,
             trust_level=validated.trust_level,
+            trusted_cli_confirmation_bypass=_is_clean_direct_trusted_cli_turn(validated),
             credential_refs={
                 CredentialRef(ref_id)
                 for ref_id in (task_envelope.credential_refs if task_envelope is not None else ())

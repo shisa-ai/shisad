@@ -410,11 +410,22 @@ def _structured_fs_write(
     arguments: Mapping[str, Any],
     context: StructuredToolContext | None = None,
 ) -> Mapping[str, Any]:
+    trust_level = (
+        str(context.session.metadata.get("trust_level", "")).strip().lower()
+        if context is not None
+        else ""
+    )
     trusted_cli_policy_approved = (
         context is not None
         and context.session.channel == "cli"
         and context.session.mode == SessionMode.DEFAULT
-        and str(context.session.metadata.get("trust_level", "")).strip().lower() == "trusted_cli"
+        and (
+            trust_level == "trusted_cli"
+            or (
+                trust_level == "trusted"
+                and bool(context.session.metadata.get("operator_owned_cli", False))
+            )
+        )
     )
     return dict(
         _fs_git_toolkit_for_context(handler, context).write_file(

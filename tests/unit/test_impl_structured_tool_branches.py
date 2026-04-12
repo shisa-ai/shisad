@@ -334,6 +334,34 @@ def test_u5_structured_fs_write_treats_trusted_cli_policy_approval_as_confirmed(
     assert toolkit.confirm_values == [True]
 
 
+def test_lt3_structured_fs_write_treats_operator_owned_cli_as_confirmed() -> None:
+    toolkit = _FsWriteToolkitStub()
+    handler = SimpleNamespace(_fs_git_toolkit=toolkit)
+    context = StructuredToolContext(
+        session_id=SessionId("s-fs-write"),
+        user_id=UserId("user-1"),
+        workspace_id=WorkspaceId("ws-1"),
+        session=Session(
+            id=SessionId("s-fs-write"),
+            channel="cli",
+            user_id=UserId("user-1"),
+            workspace_id=WorkspaceId("ws-1"),
+            mode=SessionMode.DEFAULT,
+            metadata={"trust_level": "trusted", "operator_owned_cli": True},
+        ),
+        user_confirmed=False,
+    )
+
+    payload = _structured_fs_write(
+        handler,
+        {"path": "test-output.txt", "content": "hello"},
+        context,
+    )
+
+    assert payload["ok"] is True
+    assert toolkit.confirm_values == [True]
+
+
 @pytest.mark.asyncio
 async def test_m1_structured_note_create_rejects_instruction_like_content_via_memory_manager(
     tmp_path: Path,

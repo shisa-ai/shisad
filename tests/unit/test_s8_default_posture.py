@@ -269,6 +269,27 @@ def test_u5_non_cli_trust_still_confirms_declared_confirmation_tool() -> None:
     assert decision.kind == PEPDecisionKind.REQUIRE_CONFIRMATION
 
 
+def test_lt3_clean_operator_cli_context_auto_approves_legacy_confirmation_tool() -> None:
+    registry = ToolRegistry()
+    _register_tool(
+        registry,
+        name="local_write",
+        capabilities=[Capability.FILE_WRITE],
+        require_confirmation=True,
+    )
+    pep = PEP(PolicyBundle(), registry)
+    decision = pep.evaluate(
+        ToolName("local_write"),
+        {},
+        PolicyContext(
+            capabilities={Capability.FILE_WRITE},
+            trust_level="trusted",
+            trusted_cli_confirmation_bypass=True,
+        ),
+    )
+    assert decision.kind == PEPDecisionKind.ALLOW
+
+
 def test_u5_trusted_cli_still_confirms_tainted_write_sink() -> None:
     registry = ToolRegistry()
     _register_tool(registry, name="file.write", capabilities=[Capability.FILE_WRITE])

@@ -92,6 +92,7 @@ class PolicyContext:
         resource_authorizer: Callable[[str, WorkspaceId, UserId], bool] | None = None,
         tool_allowlist: set[ToolName] | None = None,
         trust_level: str = "untrusted",
+        trusted_cli_confirmation_bypass: bool = False,
         credential_refs: set[CredentialRef] | None = None,
         enforce_explicit_credential_refs: bool = False,
         filesystem_roots: tuple[Path, ...] | None = None,
@@ -107,6 +108,7 @@ class PolicyContext:
         self.resource_authorizer = resource_authorizer
         self.tool_allowlist = tool_allowlist
         self.trust_level = trust_level
+        self.trusted_cli_confirmation_bypass = trusted_cli_confirmation_bypass
         self.credential_refs: set[CredentialRef] = credential_refs or set()
         self.enforce_explicit_credential_refs = enforce_explicit_credential_refs
         self.filesystem_roots: tuple[Path, ...] = filesystem_roots or ()
@@ -453,6 +455,7 @@ class PEP:
             tool_policy=tool_policy,
             risk_score=risk_score,
             trust_level=context.trust_level,
+            trusted_cli_confirmation_bypass=context.trusted_cli_confirmation_bypass,
             egress_requires_confirmation=egress_requires_confirmation,
             taint_requires_confirmation=taint_decision.require_confirmation,
         )
@@ -503,11 +506,15 @@ class PEP:
         tool_policy: Any | None,
         risk_score: float,
         trust_level: str,
+        trusted_cli_confirmation_bypass: bool,
         egress_requires_confirmation: bool,
         taint_requires_confirmation: bool,
     ) -> ConfirmationRequirement | None:
         trusted_cli_clean = (
-            trust_level.strip().lower() == "trusted_cli"
+            (
+                trust_level.strip().lower() == "trusted_cli"
+                or trusted_cli_confirmation_bypass
+            )
             and not egress_requires_confirmation
             and not taint_requires_confirmation
         )
