@@ -30,11 +30,14 @@ Reach a genuinely useful personal-assistant baseline while preserving the projec
 - `v0.6.2` is release-closed: multi-factor approvals, signer-backed
   authorization, local-helper approvals, and optional evidence encryption at
   rest are now on the shipped line.
-- This tree contains `v0.6.3` release content: critical UX fixes from first-user
-  testing, including actionable pending
-  confirmations, chat TOTP approvals, terminal QR enrollment, chat newline
-  rendering, no-model/startup diagnostics, trusted-CLI usability fixes, and
-  more truthful planner tool advertising for unconfigured resources.
+- This tree contains pre-publication `v0.6.3` candidate content: critical UX
+  fixes from first-user testing, including actionable pending confirmations,
+  chat TOTP approvals, terminal QR enrollment, session-message newline
+  rendering, no-model/startup diagnostics, and more truthful planner tool
+  advertising for unconfigured resources. Live testing has reopened the release
+  process for CLI trust and confirmation-flow fixes before tag/PyPI
+  publication; Textual chat TUI newline rendering remains deferred to the TUI
+  overhaul.
 
 ## Milestones
 
@@ -163,20 +166,20 @@ tools:
 
 #### v0.6.3 — Critical UX fixes
 
-Current execution note (2026-04-11): this tree contains `v0.6.3` release
-content; published installability is determined by the GitHub release tag and
-PyPI package. The release fixes first-user testing blockers and high-friction
-operator paths:
-confirmation-gated actions now surface actionable daemon-owned pending status,
-TOTP approvals can be completed from trusted chat / command replies, TOTP
-enrollment renders a terminal QR code when possible, chat output preserves
-line breaks, no-model and startup diagnostics are actionable, `shisad doctor`
-works as a bare command, Anthropic default routing and chat optional install
-guidance are documented, clean trusted CLI writes avoid unnecessary
-confirmation friction without skipping taint / egress gates, and planner-visible
+Current execution note (2026-04-12): this tree contains pre-publication
+`v0.6.3` candidate content; published installability is determined by the
+GitHub release tag and PyPI package. Live testing reopened the release for CLI
+trust and confirmation-flow fixes before publication. The candidate includes
+first-user UX stabilization work: confirmation-gated actions surface actionable
+daemon-owned pending status, TOTP approvals can be completed from trusted chat
+/ command replies, TOTP enrollment renders a terminal QR code when possible,
+session-message output preserves line breaks, no-model and startup diagnostics
+are actionable, `shisad doctor` works as a bare command, Anthropic default
+routing and chat optional install guidance are documented, and planner-visible
 tool manifests truthfully hide unconfigured filesystem/git surfaces while
-preserving delegated task scope enforcement. Web-page TOTP entry remains
-deferred to `v0.8.0`.
+preserving delegated task scope enforcement. Trusted-CLI write friction is
+being recut under the reopened `v0.6.3` LT work; Textual chat TUI newline
+rendering and web-page TOTP entry remain deferred to `v0.8.0`.
 
 #### v0.6.4 — MCP/A2A interop
 
