@@ -483,6 +483,7 @@ async def test_lt2_chat_confirmation_bad_index_returns_error_without_planner_pas
         "shisad action confirm c-1 --recovery-code abcd-1234",
         "shisad action reject c-1 --nonce nonce-1 --reason manual_reject",
         "shisad action pending --session sess-chat --status pending --limit 10 --raw",
+        "CLI fallback: run 'shisad action pending' to inspect pending approvals.",
         "shisad action --help",
         "shisad action confirm --help",
         "shisad action pending --help",
