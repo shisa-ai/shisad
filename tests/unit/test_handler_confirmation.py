@@ -187,6 +187,34 @@ class _ControlPlaneRecorder:
         return "plan-after"
 
 
+class _SchedulerRecorder:
+    def __init__(self) -> None:
+        self.resolved_confirmations: list[dict[str, object]] = []
+        self.run_outcomes: list[dict[str, object]] = []
+
+    def resolve_confirmation(
+        self,
+        task_id: str,
+        *,
+        confirmation_id: str,
+        status: str,
+        status_reason: str = "",
+    ) -> bool:
+        self.resolved_confirmations.append(
+            {
+                "task_id": task_id,
+                "confirmation_id": confirmation_id,
+                "status": status,
+                "status_reason": status_reason,
+            }
+        )
+        return True
+
+    def record_run_outcome(self, task_id: str, *, success: bool) -> bool:
+        self.run_outcomes.append({"task_id": task_id, "success": success})
+        return True
+
+
 class _ConfirmationImplHarness(ConfirmationImplMixin):
     def __init__(
         self,
@@ -196,6 +224,7 @@ class _ConfirmationImplHarness(ConfirmationImplMixin):
         execute_success: bool = True,
     ) -> None:
         self._pending_actions: dict[str, PendingAction] = {}
+        self._pending_by_session: dict[SessionId, list[str]] = {}
         self._lockdown_manager = SimpleNamespace(should_block_all_actions=lambda _sid: False)
         self.published_events: list[object] = []
         self._event_bus = SimpleNamespace(publish=self._noop_publish)
@@ -228,6 +257,7 @@ class _ConfirmationImplHarness(ConfirmationImplMixin):
         self._transcript_store = TranscriptStore(tmp_path / "sessions")
         self._evidence_store = EvidenceStore(tmp_path / "evidence", salt=b"a" * 32)
         self._execute_success = execute_success
+        self.persist_calls = 0
         self._pep = PEP(
             PolicyBundle(default_require_confirmation=False),
             _registry_for_confirmation(),
@@ -241,7 +271,7 @@ class _ConfirmationImplHarness(ConfirmationImplMixin):
         return None
 
     def _persist_pending_actions(self) -> None:
-        return None
+        self.persist_calls += 1
 
     @staticmethod
     def _origin_for(*, session: object, actor: str, skill_name: str = "") -> Origin:
@@ -532,22 +562,60 @@ async def test_lt5_action_purge_defaults_to_terminal_rows(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_lt5_action_purge_dry_run_leaves_rows_and_session_index(tmp_path) -> None:
+    harness = _ConfirmationImplHarness(tmp_path)
+    failed = _pending_action(nonce="failed")
+    failed.confirmation_id = "c-failed"
+    failed.status = "failed"
+    failed.status_reason = "approval_envelope_missing"
+    harness._pending_actions[failed.confirmation_id] = failed
+    harness._pending_by_session[failed.session_id] = [failed.confirmation_id]
+
+    result = await harness.do_action_purge({"status": "terminal", "limit": 10, "dry_run": True})
+
+    assert result == {
+        "purged": 1,
+        "confirmation_ids": ["c-failed"],
+        "remaining": 1,
+        "dry_run": True,
+    }
+    assert "c-failed" in harness._pending_actions
+    assert harness._pending_by_session[failed.session_id] == ["c-failed"]
+    assert harness.persist_calls == 0
+
+
+@pytest.mark.asyncio
 async def test_lt5_action_purge_can_clear_aged_pending_rows(tmp_path) -> None:
     harness = _ConfirmationImplHarness(tmp_path)
+    scheduler = _SchedulerRecorder()
+    harness._scheduler = scheduler
     recent = _pending_action(nonce="recent")
     old = _pending_action(nonce="old")
     old.confirmation_id = "c-old"
+    old.task_id = "task-old"
     old.created_at = datetime.now(UTC) - timedelta(days=10)
     harness._pending_actions[recent.confirmation_id] = recent
     harness._pending_actions[old.confirmation_id] = old
+    harness._pending_by_session[recent.session_id] = [
+        recent.confirmation_id,
+        old.confirmation_id,
+    ]
 
-    result = await harness.do_action_purge(
-        {"status": "pending", "older_than_days": 7, "limit": 10}
-    )
+    result = await harness.do_action_purge({"status": "pending", "older_than_days": 7, "limit": 10})
 
     assert result["confirmation_ids"] == ["c-old"]
     assert recent.confirmation_id in harness._pending_actions
     assert "c-old" not in harness._pending_actions
+    assert harness._pending_by_session[recent.session_id] == [recent.confirmation_id]
+    assert scheduler.resolved_confirmations == [
+        {
+            "task_id": "task-old",
+            "confirmation_id": "c-old",
+            "status": "failed",
+            "status_reason": "purged_stale_pending_action",
+        }
+    ]
+    assert scheduler.run_outcomes == [{"task_id": "task-old", "success": False}]
 
 
 @pytest.mark.asyncio
@@ -585,9 +653,7 @@ async def test_lt5_action_purge_rejects_nonpositive_age_for_pending_rows(
     harness = _ConfirmationImplHarness(tmp_path)
 
     with pytest.raises(ValueError, match="older_than_days must be positive"):
-        await harness.do_action_purge(
-            {"status": "pending", "older_than_days": 0, "limit": 10}
-        )
+        await harness.do_action_purge({"status": "pending", "older_than_days": 0, "limit": 10})
 
 
 @pytest.mark.asyncio
@@ -786,9 +852,7 @@ async def test_lt3_action_confirm_fails_missing_action_digest_terminally(tmp_pat
     harness = _ConfirmationImplHarness(tmp_path)
     pending = _pending_action(nonce="expected")
     assert pending.approval_envelope is not None
-    pending.approval_envelope = pending.approval_envelope.model_copy(
-        update={"action_digest": ""}
-    )
+    pending.approval_envelope = pending.approval_envelope.model_copy(update={"action_digest": ""})
     pending.approval_envelope_hash = approval_envelope_hash(pending.approval_envelope)
     harness._pending_actions["c-1"] = pending
 

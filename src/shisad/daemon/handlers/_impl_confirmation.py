@@ -62,6 +62,7 @@ _STALE_PENDING_APPROVAL_REASONS = frozenset(
     }
 )
 _TERMINAL_PENDING_ACTION_STATUSES = frozenset({"approved", "failed", "rejected"})
+_PURGED_STALE_PENDING_ACTION_REASON = "purged_stale_pending_action"
 
 
 def _confirmation_control_plane_reason(exc: ControlPlaneRpcError) -> str:
@@ -901,9 +902,7 @@ class ConfirmationImplMixin(HandlerMixinBase):
         if status_filter in {"pending", "all"} and (
             older_than_days is None or older_than_days <= 0
         ):
-            raise ValueError(
-                "older_than_days must be positive when purging pending or all actions"
-            )
+            raise ValueError("older_than_days must be positive when purging pending or all actions")
 
         cutoff = (
             datetime.now(UTC) - timedelta(days=older_than_days)
@@ -932,6 +931,21 @@ class ConfirmationImplMixin(HandlerMixinBase):
 
         if not dry_run and purge_ids:
             purge_id_set = set(purge_ids)
+            purge_items = [
+                self._pending_actions[confirmation_id]
+                for confirmation_id in purge_ids
+                if confirmation_id in self._pending_actions
+            ]
+            for item in purge_items:
+                item_status = str(getattr(item, "status", "")).strip().lower()
+                if item_status == "pending":
+                    self._mark_stale_pending_action(
+                        item,
+                        reason=_PURGED_STALE_PENDING_ACTION_REASON,
+                        persist=False,
+                    )
+                else:
+                    self._sync_task_confirmation_status(item)
             for confirmation_id in purge_ids:
                 self._pending_actions.pop(confirmation_id, None)
             pending_by_session = getattr(self, "_pending_by_session", {})
