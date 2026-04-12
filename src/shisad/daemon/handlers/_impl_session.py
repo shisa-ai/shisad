@@ -397,6 +397,21 @@ _CRC_CONFIRM_ALL_PATTERNS = {"yes to all", "confirm all", "approve all"}
 _CRC_REJECT_ALL_PATTERNS = {"no to all", "reject all", "deny all", "cancel all"}
 _CRC_CONFIRM_INDEX_RE = re.compile(r"^(?:confirm|approve|yes)\s+(\d+)$")
 _CRC_REJECT_INDEX_RE = re.compile(r"^(?:reject|deny|no)\s+(\d+)$")
+_CRC_BARE_INDEX_RE = re.compile(r"^(\d{1,3})$")
+_CRC_CONFIRMATION_VERB_ACTIONS = {
+    "confirm": "confirm",
+    "approve": "confirm",
+    "yes": "confirm",
+    "reject": "reject",
+    "deny": "reject",
+    "no": "reject",
+}
+_CRC_FUZZY_CONFIRMATION_VERBS = {
+    "confirm": "confirm",
+    "approve": "confirm",
+    "reject": "reject",
+    "deny": "reject",
+}
 _CHAT_TOTP_BARE_CODE_RE = re.compile(r"^(\d{6})$")
 _CHAT_TOTP_TARGETED_CODE_RE = re.compile(r"^(?:confirm|approve)\s+(\S+)\s+(\d{6})$")
 _AUTO_CLEANROOM_ADMIN_ACTION_RE = re.compile(
@@ -418,6 +433,13 @@ def _classify_chat_confirmation_intent(text: str) -> ChatConfirmationIntent:
     normalized = " ".join(text.strip().lower().split())
     if not normalized:
         return ChatConfirmationIntent(action="none", target="none")
+    bare_index_match = _CRC_BARE_INDEX_RE.fullmatch(normalized)
+    if bare_index_match is not None:
+        return ChatConfirmationIntent(
+            action="confirm",
+            target="index",
+            index=int(bare_index_match.group(1)),
+        )
     if normalized in _CRC_CONFIRM_ALL_PATTERNS:
         return ChatConfirmationIntent(action="confirm", target="all")
     if normalized in _CRC_REJECT_ALL_PATTERNS:
@@ -441,6 +463,85 @@ def _classify_chat_confirmation_intent(text: str) -> ChatConfirmationIntent:
     if normalized in _CRC_NEGATIVE_PATTERNS:
         return ChatConfirmationIntent(action="reject", target="single")
     return ChatConfirmationIntent(action="none", target="none")
+
+
+def _levenshtein_distance_at_most(left: str, right: str, *, limit: int) -> int | None:
+    if abs(len(left) - len(right)) > limit:
+        return None
+    previous = list(range(len(right) + 1))
+    for left_index, left_char in enumerate(left, start=1):
+        current = [left_index]
+        row_min = current[0]
+        for right_index, right_char in enumerate(right, start=1):
+            cost = 0 if left_char == right_char else 1
+            value = min(
+                previous[right_index] + 1,
+                current[right_index - 1] + 1,
+                previous[right_index - 1] + cost,
+            )
+            current.append(value)
+            row_min = min(row_min, value)
+        if row_min > limit:
+            return None
+        previous = current
+    distance = previous[-1]
+    return distance if distance <= limit else None
+
+
+def _nearest_confirmation_action(token: str) -> str | None:
+    best_action: str | None = None
+    best_distance: int | None = None
+    for verb, action in _CRC_FUZZY_CONFIRMATION_VERBS.items():
+        distance = _levenshtein_distance_at_most(token, verb, limit=2)
+        if distance is None:
+            continue
+        if best_distance is None or distance < best_distance:
+            best_distance = distance
+            best_action = action
+    return best_action
+
+
+def _confirmation_command_guidance() -> str:
+    return "Use 'confirm N', 'reject N', 'yes to all', or 'no to all'."
+
+
+def _unresolved_confirmation_index_text(index: int | None) -> str:
+    label = str(index) if index is not None else "that"
+    return (
+        f"Confirmation index {label} is not pending for this session. "
+        f"No action was taken. {_confirmation_command_guidance()}"
+    )
+
+
+def _chat_confirmation_command_error_text(text: str) -> str:
+    normalized = " ".join(text.strip().lower().split())
+    if not normalized:
+        return ""
+    tokens = normalized.split()
+    first = tokens[0]
+    if first == "shisad":
+        return ""
+    if first in _CRC_CONFIRMATION_VERB_ACTIONS:
+        if len(tokens) > 1:
+            return (
+                "Confirmation command not recognized. No action was taken. "
+                f"{_confirmation_command_guidance()}"
+            )
+        return ""
+    suggested_action = _nearest_confirmation_action(first)
+    if suggested_action is None or len(tokens) < 2:
+        return ""
+    target = tokens[1]
+    if target.isdigit():
+        suggestion = f"{suggested_action} {int(target)}"
+    elif target == "all":
+        suggestion = f"{suggested_action} all"
+    else:
+        suggestion = f"{suggested_action} N"
+    return (
+        f"Did you mean '{suggestion}'? No action was taken. "
+        f"{_confirmation_command_guidance()}"
+    )
 
 
 def _parse_chat_totp_submission(text: str) -> ChatTotpSubmission | None:
@@ -1597,6 +1698,13 @@ def _normalize_context_role(role: str) -> str:
     return "system"
 
 
+def _transcript_entry_context_role(entry: TranscriptEntry) -> str:
+    metadata = entry.metadata if isinstance(entry.metadata, dict) else {}
+    if bool(metadata.get("system_generated_pending_confirmations")):
+        return "system"
+    return _normalize_context_role(entry.role)
+
+
 def _compact_context_text(text: str, *, max_chars: int) -> str:
     compacted = " ".join(text.split())
     if len(compacted) <= max_chars:
@@ -1914,7 +2022,7 @@ def _summarize_context_entries(
         raw = _transcript_entry_content(entry=entry)
         if not raw.strip():
             continue
-        role = _normalize_context_role(entry.role)
+        role = _transcript_entry_context_role(entry)
         compact = _compact_context_text(raw, max_chars=96)
         snippets.append(f"{role}: {compact}")
         if len(snippets) >= _CONTEXT_SUMMARY_SAMPLE_SIZE:
@@ -1968,7 +2076,7 @@ def _build_planner_conversation_context(
             lines.append(f"Summary of earlier turns: {summary}")
 
     for entry in visible_entries:
-        role = _normalize_context_role(entry.role)
+        role = _transcript_entry_context_role(entry)
         raw_content = _transcript_entry_content(
             entry=entry,
             transcript_store=transcript_store,
@@ -3144,13 +3252,6 @@ class SessionImplMixin(HandlerMixinBase):
                 channel=channel,
                 session_mode=session_mode,
             )
-            self._transcript_store.append(
-                sid,
-                role="assistant",
-                content=response_text,
-                taint_labels=set(),
-                metadata=assistant_transcript_metadata,
-            )
             all_pending_rows = self._pending_confirmations_for_binding(
                 session_id=sid,
                 user_id=user_id,
@@ -3166,6 +3267,15 @@ class SessionImplMixin(HandlerMixinBase):
                 list(response_pending_confirmation_ids)
                 if response_pending_confirmation_ids is not None
                 else visible_pending_confirmation_ids
+            )
+            if returned_pending_confirmation_ids:
+                assistant_transcript_metadata["system_generated_pending_confirmations"] = True
+            self._transcript_store.append(
+                sid,
+                role="assistant",
+                content=response_text,
+                taint_labels=set(),
+                metadata=assistant_transcript_metadata,
             )
             await self._event_bus.publish(
                 SessionMessageResponded(
@@ -3331,6 +3441,14 @@ class SessionImplMixin(HandlerMixinBase):
             if intent is None:
                 intent = _classify_chat_confirmation_intent(content)
             if intent.action == "none":
+                error_text = _chat_confirmation_command_error_text(content)
+                if error_text:
+                    return await _finalize_chat_confirmation_response(
+                        response_text=error_text,
+                        blocked_actions=0,
+                        executed_actions=0,
+                        checkpoint_ids=[],
+                    )
                 return None
             if (
                 is_internal_ingress
@@ -3351,10 +3469,13 @@ class SessionImplMixin(HandlerMixinBase):
                 tainted_session=tainted_session,
             )
             if not indexes:
-                response_text = self._chat_pending_confirmation_summary(
-                    pending_rows=displayed_pending_rows,
-                    tainted_session=tainted_session,
-                )
+                if intent.target == "index":
+                    response_text = _unresolved_confirmation_index_text(intent.index)
+                else:
+                    response_text = self._chat_pending_confirmation_summary(
+                        pending_rows=displayed_pending_rows,
+                        tainted_session=tainted_session,
+                    )
                 executed_actions = 0
                 blocked_actions = 0
                 checkpoint_ids = []
@@ -4823,6 +4944,8 @@ class SessionImplMixin(HandlerMixinBase):
             channel=validated.channel,
             session_mode=validated.session_mode,
         )
+        if execution.pending_confirmation_ids:
+            assistant_transcript_metadata["system_generated_pending_confirmations"] = True
         if evidence_ref_ids:
             assistant_transcript_metadata["evidence_ref_ids"] = list(evidence_ref_ids)
         if validated.delivery_target is not None:

@@ -50,6 +50,11 @@ def test_m6_crc_classifier_handles_affirmative_negative_reference_and_passthroug
         target="index",
         index=1,
     )
+    assert _classify_chat_confirmation_intent("1") == ChatConfirmationIntent(
+        action="confirm",
+        target="index",
+        index=1,
+    )
     assert _classify_chat_confirmation_intent("no to all") == ChatConfirmationIntent(
         action="reject",
         target="all",
@@ -335,6 +340,125 @@ async def test_u5_chat_confirmation_accepts_clean_trusted_cli_default_session(tm
     assert result is not None
     assert result["response"].startswith("confirmed 1")
     assert harness.confirm_calls
+
+
+@pytest.mark.asyncio
+async def test_lt2_chat_confirmation_accepts_bare_pending_number(tmp_path) -> None:
+    harness = _ChatConfirmationHarness(tmp_path)
+    pending = PendingAction(
+        confirmation_id="c-1",
+        decision_nonce="nonce-1",
+        session_id=SessionId("sess-chat"),
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws-1"),
+        tool_name=ToolName("web.search"),
+        arguments={"query": "hello"},
+        reason="manual",
+        capabilities={Capability.HTTP_REQUEST},
+        created_at=datetime.now(UTC),
+    )
+    harness._pending_actions[pending.confirmation_id] = pending
+
+    result = await SessionImplMixin._maybe_handle_chat_confirmation(
+        harness,
+        sid=SessionId("sess-chat"),
+        channel="cli",
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws-1"),
+        session_mode=SessionMode.DEFAULT,
+        trust_level="trusted",
+        trusted_input=True,
+        is_internal_ingress=False,
+        content="1",
+        firewall_result=FirewallResult(sanitized_text="1", original_hash="0" * 64),
+    )
+
+    assert result is not None
+    assert result["response"].startswith("confirmed 1")
+    assert harness.confirm_calls
+
+
+@pytest.mark.asyncio
+async def test_lt2_chat_confirmation_typo_returns_suggestion_without_planner_pass_through(
+    tmp_path,
+) -> None:
+    harness = _ChatConfirmationHarness(tmp_path)
+    pending = PendingAction(
+        confirmation_id="c-1",
+        decision_nonce="nonce-1",
+        session_id=SessionId("sess-chat"),
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws-1"),
+        tool_name=ToolName("web.search"),
+        arguments={"query": "hello"},
+        reason="manual",
+        capabilities={Capability.HTTP_REQUEST},
+        created_at=datetime.now(UTC),
+    )
+    harness._pending_actions[pending.confirmation_id] = pending
+
+    result = await SessionImplMixin._maybe_handle_chat_confirmation(
+        harness,
+        sid=SessionId("sess-chat"),
+        channel="cli",
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws-1"),
+        session_mode=SessionMode.DEFAULT,
+        trust_level="trusted",
+        trusted_input=True,
+        is_internal_ingress=False,
+        content="comfirm 1",
+        firewall_result=FirewallResult(sanitized_text="comfirm 1", original_hash="0" * 64),
+    )
+
+    assert result is not None
+    response = str(result["response"]).lower()
+    assert "did you mean 'confirm 1'" in response
+    assert "no action was taken" in response
+    assert harness.confirm_calls == []
+    assert harness._pending_actions["c-1"].status == "pending"
+    assert result["pending_confirmation_ids"] == ["c-1"]
+
+
+@pytest.mark.asyncio
+async def test_lt2_chat_confirmation_bad_index_returns_error_without_planner_pass_through(
+    tmp_path,
+) -> None:
+    harness = _ChatConfirmationHarness(tmp_path)
+    pending = PendingAction(
+        confirmation_id="c-1",
+        decision_nonce="nonce-1",
+        session_id=SessionId("sess-chat"),
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws-1"),
+        tool_name=ToolName("web.search"),
+        arguments={"query": "hello"},
+        reason="manual",
+        capabilities={Capability.HTTP_REQUEST},
+        created_at=datetime.now(UTC),
+    )
+    harness._pending_actions[pending.confirmation_id] = pending
+
+    result = await SessionImplMixin._maybe_handle_chat_confirmation(
+        harness,
+        sid=SessionId("sess-chat"),
+        channel="cli",
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws-1"),
+        session_mode=SessionMode.DEFAULT,
+        trust_level="trusted",
+        trusted_input=True,
+        is_internal_ingress=False,
+        content="confirm 2",
+        firewall_result=FirewallResult(sanitized_text="confirm 2", original_hash="0" * 64),
+    )
+
+    assert result is not None
+    response = str(result["response"]).lower()
+    assert "confirmation index 2 is not pending" in response
+    assert "no action was taken" in response
+    assert harness.confirm_calls == []
+    assert harness._pending_actions["c-1"].status == "pending"
 
 
 @pytest.mark.asyncio

@@ -30,7 +30,7 @@ from shisad.core.planner import (
 )
 from shisad.core.request_context import RequestContext
 from shisad.core.transcript import TranscriptStore
-from shisad.core.types import ToolName
+from shisad.core.types import SessionId, ToolName
 from shisad.daemon.control_handlers import DaemonControlHandlers
 from shisad.daemon.runner import run_daemon
 from shisad.daemon.services import DaemonServices
@@ -108,6 +108,176 @@ def _totp_fs_read_policy() -> str:
         ).strip()
         + "\n"
     )
+
+
+def _software_retrieve_confirmation_policy() -> str:
+    return (
+        textwrap.dedent(
+            """
+            version: "1"
+            default_require_confirmation: true
+            default_capabilities:
+              - memory.read
+            tools:
+              retrieve_rag:
+                capabilities_required:
+                  - memory.read
+                confirmation:
+                  level: software
+            """
+        ).strip()
+        + "\n"
+    )
+
+
+def _install_lt2_retrieve_planner(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    planner_calls: list[str],
+) -> None:
+    async def _planner_retrieve(
+        self: Planner,
+        user_content: str,
+        context: object,
+        *,
+        tools: list[dict[str, object]] | None = None,
+        persona_tone_override: str | None = None,
+    ) -> PlannerResult:
+        _ = (tools, persona_tone_override)
+        planner_calls.append(user_content)
+        proposal = ActionProposal(
+            action_id=f"lt2-retrieve-{len(planner_calls)}",
+            tool_name=ToolName("retrieve_rag"),
+            arguments={
+                "query": user_content[:120],
+                "limit": 5,
+            },
+            reasoning="exercise LT2 confirmation command routing",
+            data_sources=["memory_index"],
+        )
+        decision = self._pep.evaluate(proposal.tool_name, proposal.arguments, context)
+        return PlannerResult(
+            output=PlannerOutput(
+                assistant_response="pending software approval",
+                actions=[proposal],
+            ),
+            evaluated=[EvaluatedProposal(proposal=proposal, decision=decision)],
+            attempts=1,
+            provider_response=None,
+            messages_sent=(),
+        )
+
+    monkeypatch.setattr(Planner, "propose", _planner_retrieve)
+
+
+@pytest.mark.asyncio
+async def test_lt2_session_message_confirmation_commands_do_not_reenter_planner(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SHISAD_MODEL_BASE_URL", "https://api.example.com/v1")
+    monkeypatch.setenv("SHISAD_MODEL_PLANNER_BASE_URL", "https://planner.example.com/v1")
+    monkeypatch.setenv("SHISAD_MODEL_EMBEDDINGS_BASE_URL", "https://embed.example.com/v1")
+    monkeypatch.setenv("SHISAD_MODEL_MONITOR_BASE_URL", "https://monitor.example.com/v1")
+    planner_calls: list[str] = []
+    _install_lt2_retrieve_planner(monkeypatch, planner_calls=planner_calls)
+
+    policy_path = tmp_path / "policy.yaml"
+    policy_path.write_text(_software_retrieve_confirmation_policy(), encoding="utf-8")
+    config = DaemonConfig(
+        data_dir=tmp_path / "data",
+        socket_path=tmp_path / "control.sock",
+        policy_path=policy_path,
+        assistant_fs_roots=[REPO_ROOT],
+        log_level="INFO",
+    )
+    daemon_task = asyncio.create_task(run_daemon(config))
+    client = ControlClient(config.socket_path)
+    transcript_store = TranscriptStore(config.data_dir / "sessions")
+
+    async def _send(session_id: str, content: str) -> dict[str, object]:
+        return await client.call(
+            "session.message",
+            {
+                "session_id": session_id,
+                "channel": "cli",
+                "user_id": "alice",
+                "workspace_id": "ws1",
+                "content": content,
+            },
+        )
+
+    async def _pending_count(session_id: str) -> int:
+        pending = await client.call(
+            "action.pending",
+            {"session_id": session_id, "status": "pending", "limit": 10},
+        )
+        return int(pending["count"])
+
+    async def _queue_pending(session_id: str, content: str) -> dict[str, object]:
+        before_calls = len(planner_calls)
+        reply = await _send(session_id, content)
+        assert len(planner_calls) == before_calls + 1
+        assert int(reply["confirmation_required_actions"]) >= 1
+        assert reply["lockdown_level"] == "normal"
+        response_text = str(reply.get("response", "")).lower()
+        assert "confirm 1" in response_text
+        assert "[lockdown notice]" not in response_text
+        entries = transcript_store.list_entries(SessionId(session_id))
+        assert entries[-1].metadata.get("system_generated_pending_confirmations") is True
+        return reply
+
+    try:
+        await _wait_for_socket(config.socket_path)
+        await client.connect()
+        created = await client.call(
+            "session.create",
+            {"channel": "cli", "user_id": "alice", "workspace_id": "ws1"},
+        )
+        sid = str(created["session_id"])
+        await _queue_pending(sid, "queue approval one")
+
+        before_calls = len(planner_calls)
+        typo = await _send(sid, "comfirm 1")
+        assert len(planner_calls) == before_calls
+        typo_response = str(typo.get("response", "")).lower()
+        assert "did you mean 'confirm 1'" in typo_response
+        assert "no action was taken" in typo_response
+        assert "[lockdown notice]" not in typo_response
+        assert typo["lockdown_level"] == "normal"
+        assert await _pending_count(sid) == 1
+
+        bad_index = await _send(sid, "confirm 2")
+        assert len(planner_calls) == before_calls
+        bad_index_response = str(bad_index.get("response", "")).lower()
+        assert "confirmation index 2 is not pending" in bad_index_response
+        assert "no action was taken" in bad_index_response
+        assert "[lockdown notice]" not in bad_index_response
+        assert bad_index["lockdown_level"] == "normal"
+        assert await _pending_count(sid) == 1
+
+        bare_index = await _send(sid, "1")
+        assert len(planner_calls) == before_calls
+        bare_response = str(bare_index.get("response", "")).lower()
+        assert "confirmed 1" in bare_response
+        assert "[lockdown notice]" not in bare_response
+        assert bare_index["lockdown_level"] == "normal"
+        assert await _pending_count(sid) == 0
+
+        await _queue_pending(sid, "queue approval two")
+        before_confirm_calls = len(planner_calls)
+        confirmed = await _send(sid, "confirm 1")
+        assert len(planner_calls) == before_confirm_calls
+        confirm_response = str(confirmed.get("response", "")).lower()
+        assert "confirmed 1" in confirm_response
+        assert "[lockdown notice]" not in confirm_response
+        assert confirmed["lockdown_level"] == "normal"
+        assert await _pending_count(sid) == 0
+    finally:
+        with suppress(Exception):
+            await client.call("daemon.shutdown")
+        await client.close()
+        await asyncio.wait_for(daemon_task, timeout=3)
 
 
 @pytest.mark.asyncio
