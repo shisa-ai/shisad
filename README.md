@@ -54,8 +54,9 @@ This repo is public and still pre-alpha. This tree contains the pre-publication
 GitHub release tag and PyPI package. Live testing reopened the `v0.6.3`
 release process for CLI trust and confirmation-flow fixes; this tree now
 contains the recut candidate. Post-LT validation evidence is recorded for the
-candidate line, and a follow-up LT5 live-retest reconciliation gate is active
-before ReleaseClose reviewer sign-off and explicit publication can resume.
+candidate line, and the follow-up LT5 live-retest reconciliation gate is green;
+the release-close validation bundle still needs a refresh before ReleaseClose
+reviewer sign-off and explicit publication can resume.
 
 `v0.6.3` is the critical UX stabilization follow-up to `v0.6.2`: pending
 confirmations now produce actionable daemon-owned replies, TOTP approvals can
@@ -63,11 +64,11 @@ be completed from trusted chat / command replies, TOTP enrollment can render a
 terminal QR code, session-message output preserves line breaks, no-model and
 startup diagnostics are clearer, and planner-visible tool surfaces better
 reflect what is actually configured. The LT recut routes confirmation replies
-as control commands before planner flow; LT5 is rechecking the CLI-trust,
-stale pending-action, and low-risk internal bookkeeping portions of that recut
-before they can be treated as release-close evidence. Textual chat TUI newline
-rendering remains deferred to the TUI overhaul. The next planned lane is
-`v0.6.4` for MCP/A2A interop after `v0.6.3` closes.
+as control commands before planner flow; LT5 live evidence is recorded for the
+CLI-trust, stale pending-action, and low-risk internal bookkeeping portions of
+that recut. Textual chat TUI newline rendering remains deferred to the TUI
+overhaul. The next planned lane is `v0.6.4` for MCP/A2A interop after `v0.6.3`
+closes.
 
 | Version | Focus |
 |---------|-------|

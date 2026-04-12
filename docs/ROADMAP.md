@@ -37,9 +37,10 @@ Reach a genuinely useful personal-assistant baseline while preserving the projec
   advertising for unconfigured resources. Live testing reopened the release
   process for CLI trust, confirmation-flow, stale pending-action, and internal
   bookkeeping confirmation fixes; this tree now contains that recut candidate.
-  Post-LT validation evidence is recorded for the candidate line, and a
-  follow-up LT5 live-retest reconciliation gate is active before ReleaseClose
-  reviewer sign-off and explicit tag/PyPI publication can resume. Textual chat
+  Post-LT validation evidence is recorded for the candidate line, and the
+  follow-up LT5 live-retest reconciliation gate is green. The release-close
+  validation bundle still needs a refresh before ReleaseClose reviewer sign-off
+  and explicit tag/PyPI publication can resume. Textual chat
   TUI newline rendering remains deferred to the TUI overhaul.
 
 ## Milestones
@@ -180,12 +181,12 @@ are actionable, `shisad doctor` works as a bare command, Anthropic default
 routing and chat optional install guidance are documented, and planner-visible
 tool manifests truthfully hide unconfigured filesystem/git surfaces while
 preserving delegated task scope enforcement. The reopened LT recut parses
-confirmation replies before planner flow; LT5 is rechecking the CLI-trust,
-stale pending-action, and low-risk internal bookkeeping portions of that recut
-before they can be treated as release-close evidence. Post-LT validation
-evidence is recorded for the candidate line, and a follow-up LT5 live-retest
-reconciliation gate is active before ReleaseClose reviewer sign-off and
-explicit tag/PyPI publication can resume; Textual chat TUI newline rendering
+confirmation replies before planner flow; LT5 live evidence is recorded for the
+CLI-trust, stale pending-action, and low-risk internal bookkeeping portions of
+that recut. Post-LT validation evidence is recorded for the candidate line, and
+the follow-up LT5 live-retest reconciliation gate is green. The release-close
+validation bundle still needs a refresh before ReleaseClose reviewer sign-off
+and explicit tag/PyPI publication can resume; Textual chat TUI newline rendering
 and web-page TOTP entry remain deferred to `v0.8.0`.
 
 #### v0.6.4 — MCP/A2A interop
