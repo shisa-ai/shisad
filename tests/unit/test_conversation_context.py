@@ -91,7 +91,7 @@ def test_lt2_mixed_pending_confirmation_context_stays_assistant(tmp_path: Path) 
             "Completed actions:\n"
             "- summarized current todo list"
         ),
-        metadata={"system_generated_pending_confirmations": True},
+        metadata={},
     )
 
     rendered, _taints = _build_planner_conversation_context(

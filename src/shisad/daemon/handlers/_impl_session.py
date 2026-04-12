@@ -488,10 +488,16 @@ def _levenshtein_distance_at_most(left: str, right: str, *, limit: int) -> int |
     return distance if distance <= limit else None
 
 
-def _nearest_confirmation_action(token: str) -> str | None:
+def _nearest_confirmation_action(
+    token: str,
+    *,
+    allowed_actions: set[str] | None = None,
+) -> str | None:
     best_action: str | None = None
     best_distance: int | None = None
     for verb, action in _CRC_FUZZY_CONFIRMATION_VERBS.items():
+        if allowed_actions is not None and action not in allowed_actions:
+            continue
         distance = _levenshtein_distance_at_most(token, verb, limit=2)
         if distance is None:
             continue
@@ -513,7 +519,11 @@ def _unresolved_confirmation_index_text(index: int | None) -> str:
     )
 
 
-def _chat_confirmation_command_error_text(text: str) -> str:
+def _chat_confirmation_command_error_text(
+    text: str,
+    *,
+    allowed_actions: set[str] | None = None,
+) -> str:
     normalized = " ".join(text.strip().lower().split())
     if not normalized:
         return ""
@@ -522,13 +532,18 @@ def _chat_confirmation_command_error_text(text: str) -> str:
     if first == "shisad":
         return ""
     if first in _CRC_CONFIRMATION_VERB_ACTIONS:
+        if (
+            allowed_actions is not None
+            and _CRC_CONFIRMATION_VERB_ACTIONS[first] not in allowed_actions
+        ):
+            return ""
         if len(tokens) > 1:
             return (
                 "Confirmation command not recognized. No action was taken. "
                 f"{_confirmation_command_guidance()}"
             )
         return ""
-    suggested_action = _nearest_confirmation_action(first)
+    suggested_action = _nearest_confirmation_action(first, allowed_actions=allowed_actions)
     if suggested_action is None:
         return ""
     if len(tokens) < 2:
@@ -1701,22 +1716,9 @@ def _normalize_context_role(role: str) -> str:
     return "system"
 
 
-def _is_system_generated_pending_confirmation_context(text: str) -> bool:
-    stripped = str(text or "").strip()
-    if not stripped:
-        return False
-    if "\n\nCompleted actions:" in stripped:
-        return False
-    return stripped.startswith("[PENDING CONFIRMATIONS]") or stripped.startswith(
-        "Pending confirmations"
-    )
-
-
 def _transcript_entry_context_role(entry: TranscriptEntry) -> str:
     metadata = entry.metadata if isinstance(entry.metadata, dict) else {}
-    if bool(metadata.get("system_generated_pending_confirmations")) and (
-        _is_system_generated_pending_confirmation_context(entry.content_preview)
-    ):
+    if bool(metadata.get("system_generated_pending_confirmations")):
         return "system"
     return _normalize_context_role(entry.role)
 
@@ -3250,6 +3252,7 @@ class SessionImplMixin(HandlerMixinBase):
             executed_actions: int,
             checkpoint_ids: list[str],
             response_pending_confirmation_ids: Sequence[str] | None = None,
+            system_generated_pending_confirmations: bool = False,
         ) -> dict[str, Any]:
             output_result = self._output_firewall.inspect(
                 response_text,
@@ -3284,9 +3287,7 @@ class SessionImplMixin(HandlerMixinBase):
                 if response_pending_confirmation_ids is not None
                 else visible_pending_confirmation_ids
             )
-            if returned_pending_confirmation_ids and (
-                _is_system_generated_pending_confirmation_context(response_text)
-            ):
+            if returned_pending_confirmation_ids and system_generated_pending_confirmations:
                 assistant_transcript_metadata["system_generated_pending_confirmations"] = True
             self._transcript_store.append(
                 sid,
@@ -3342,7 +3343,20 @@ class SessionImplMixin(HandlerMixinBase):
         if is_internal_ingress and totp_submission is None:
             assert intent is not None
             if intent.action != "reject":
+                if intent.action == "none":
+                    error_text = _chat_confirmation_command_error_text(
+                        content,
+                        allowed_actions={"reject"},
+                    )
+                    if error_text:
+                        return await _finalize_chat_confirmation_response(
+                            response_text=error_text,
+                            blocked_actions=0,
+                            executed_actions=0,
+                            checkpoint_ids=[],
+                        )
                 return None
+        system_generated_pending_confirmation_response = False
         if totp_submission is not None:
             executed_actions = 0
             blocked_actions = 0
@@ -3494,6 +3508,7 @@ class SessionImplMixin(HandlerMixinBase):
                         pending_rows=displayed_pending_rows,
                         tainted_session=tainted_session,
                     )
+                    system_generated_pending_confirmation_response = True
                 executed_actions = 0
                 blocked_actions = 0
                 checkpoint_ids = []
@@ -3592,6 +3607,7 @@ class SessionImplMixin(HandlerMixinBase):
             blocked_actions=blocked_actions,
             executed_actions=executed_actions,
             checkpoint_ids=checkpoint_ids,
+            system_generated_pending_confirmations=system_generated_pending_confirmation_response,
         )
 
     async def do_session_create(self, params: Mapping[str, Any]) -> dict[str, Any]:
@@ -4847,6 +4863,7 @@ class SessionImplMixin(HandlerMixinBase):
             tool_output_summary = (
                 _summarize_tool_outputs_for_chat(chat_serialized_tool_outputs) or ""
             )
+        system_generated_pending_confirmation_response = False
         if execution.pending_confirmation_ids:
             fallback_notice = ""
             provider_response = planner_dispatch.planner_result.provider_response
@@ -4887,10 +4904,13 @@ class SessionImplMixin(HandlerMixinBase):
                 pending_index_by_id=pending_index_by_id,
                 binding_pending_rows=visible_pending_rows,
             )
+            system_generated_pending_confirmation_response = True
             if fallback_notice:
                 response_text = f"{fallback_notice}\n\n{response_text}"
+                system_generated_pending_confirmation_response = False
             if tool_output_summary:
                 response_text = f"{response_text}\n\nCompleted actions:\n{tool_output_summary}"
+                system_generated_pending_confirmation_response = False
         else:
             if tool_output_summary:
                 response_text = (
@@ -4962,9 +4982,7 @@ class SessionImplMixin(HandlerMixinBase):
             channel=validated.channel,
             session_mode=validated.session_mode,
         )
-        if execution.pending_confirmation_ids and (
-            _is_system_generated_pending_confirmation_context(response_text)
-        ):
+        if execution.pending_confirmation_ids and system_generated_pending_confirmation_response:
             assistant_transcript_metadata["system_generated_pending_confirmations"] = True
         if evidence_ref_ids:
             assistant_transcript_metadata["evidence_ref_ids"] = list(evidence_ref_ids)

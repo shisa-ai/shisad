@@ -176,6 +176,7 @@ class _ChatConfirmationHarness(SessionImplMixin):
     def __init__(self, tmp_path) -> None:
         self._pending_actions: dict[str, PendingAction] = {}
         self.confirm_calls: list[dict[str, object]] = []
+        self.reject_calls: list[dict[str, object]] = []
         self._output_firewall = SimpleNamespace(inspect=self._inspect_output)
         self._lockdown_manager = SimpleNamespace(
             user_notification=lambda _sid: "",
@@ -209,6 +210,7 @@ class _ChatConfirmationHarness(SessionImplMixin):
         return {"confirmed": True, "status": "approved"}
 
     async def do_action_reject(self, params: dict[str, object]) -> dict[str, object]:
+        self.reject_calls.append(dict(params))
         pending = self._pending_actions[str(params["confirmation_id"])]
         pending.status = "rejected"
         pending.status_reason = "chat_confirmation"
@@ -879,6 +881,62 @@ async def test_u9_chat_totp_internal_ingress_mismatched_reject_intent_uses_rejec
     assert result["executed_actions"] == 0
     assert result["pending_confirmation_ids"] == []
     assert harness.confirm_calls == []
+    assert harness._pending_actions["c-1"].status == "pending"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("content", "suggestion"),
+    [
+        ("rejct 1", "reject 1"),
+        ("rejcet", "reject"),
+    ],
+)
+async def test_lt2_chat_totp_internal_ingress_reject_typo_returns_suggestion(
+    tmp_path,
+    content: str,
+    suggestion: str,
+) -> None:
+    harness = _ChatConfirmationHarness(tmp_path)
+    pending = PendingAction(
+        confirmation_id="c-1",
+        decision_nonce="nonce-1",
+        session_id=SessionId("sess-chat"),
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws-1"),
+        tool_name=ToolName("web.search"),
+        arguments={"query": "hello"},
+        reason="manual",
+        capabilities={Capability.HTTP_REQUEST},
+        created_at=datetime.now(UTC),
+        delivery_target=DeliveryTarget(channel="discord", recipient="chan-1"),
+        selected_backend_id="totp.default",
+        selected_backend_method="totp",
+    )
+    harness._pending_actions[pending.confirmation_id] = pending
+
+    result = await SessionImplMixin._maybe_handle_chat_confirmation(
+        harness,
+        sid=SessionId("sess-chat"),
+        channel="discord",
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws-1"),
+        session_mode=SessionMode.DEFAULT,
+        trust_level="trusted",
+        trusted_input=True,
+        is_internal_ingress=True,
+        delivery_target=DeliveryTarget(channel="discord", recipient="chan-1"),
+        stored_delivery_target=DeliveryTarget(channel="discord", recipient="chan-1"),
+        content=content,
+        firewall_result=FirewallResult(sanitized_text=content, original_hash="0" * 64),
+    )
+
+    assert result is not None
+    response = str(result["response"]).lower()
+    assert f"did you mean '{suggestion}'" in response
+    assert "no action was taken" in response
+    assert harness.confirm_calls == []
+    assert harness.reject_calls == []
     assert harness._pending_actions["c-1"].status == "pending"
 
 
