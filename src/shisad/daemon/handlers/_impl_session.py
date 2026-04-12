@@ -256,6 +256,7 @@ class SessionMessageValidationResult:
     firewall_result: FirewallResult
     incoming_taint_labels: set[TaintLabel]
     is_internal_ingress: bool
+    operator_owned_cli_input: bool = False
     delivery_target: DeliveryTarget | None = None
     channel_message_id: str = ""
     tool_allowlist: set[ToolName] | None = None
@@ -740,7 +741,10 @@ def _is_direct_trusted_cli_default_ingress(
         not is_internal_ingress
         and channel == "cli"
         and session_mode == SessionMode.DEFAULT
-        and _is_trusted_cli_confirmation_level(trust_level)
+        and (
+            _is_trusted_cli_confirmation_level(trust_level)
+            or _is_trusted_level(trust_level)
+        )
     )
 
 
@@ -755,12 +759,7 @@ def _trusted_cli_firewall_result_is_clean(firewall_result: FirewallResult) -> bo
 
 def _is_clean_direct_trusted_cli_turn(validated: SessionMessageValidationResult) -> bool:
     return (
-        _is_direct_trusted_cli_default_ingress(
-            channel=validated.channel,
-            session_mode=validated.session_mode,
-            trust_level=validated.trust_level,
-            is_internal_ingress=validated.is_internal_ingress,
-        )
+        validated.operator_owned_cli_input
         and not validated.incoming_taint_labels
         and _trusted_cli_firewall_result_is_clean(validated.firewall_result)
     )
@@ -774,9 +773,9 @@ def _user_goal_host_patterns_for_validated_input(
     return host_patterns(extract_hosts_from_text(validated.firewall_result.sanitized_text))
 
 
-def _child_task_trust_level(trust_level: str) -> str:
+def _child_task_trust_level(trust_level: str, *, operator_owned_cli: bool = False) -> str:
     normalized = trust_level.strip().lower() or "untrusted"
-    if _is_trusted_cli_confirmation_level(normalized):
+    if operator_owned_cli or _is_trusted_cli_confirmation_level(normalized):
         return "untrusted"
     return normalized
 
@@ -3466,7 +3465,8 @@ class SessionImplMixin(HandlerMixinBase):
             if channel not in _CLEANROOM_CHANNELS:
                 raise ValueError("admin_cleanroom mode is supported only for cli channel")
         if not is_internal_ingress and channel == "cli" and session_mode == SessionMode.DEFAULT:
-            trust_level = "trusted_cli"
+            trust_level = "trusted"
+            metadata["operator_owned_cli"] = True
         metadata["trust_level"] = trust_level
         metadata["session_mode"] = session_mode.value
         metadata.setdefault(_COMMAND_CONTEXT_STATUS_KEY, "clean")
@@ -3524,13 +3524,13 @@ class SessionImplMixin(HandlerMixinBase):
             if override:
                 trust_level = override
         trust_level = trust_level.strip().lower() or "untrusted"
-        trusted_input = _is_trusted_level(trust_level)
         operator_owned_cli_input = _is_direct_trusted_cli_default_ingress(
             channel=channel,
             session_mode=session_mode,
             trust_level=trust_level,
             is_internal_ingress=is_internal_ingress,
         )
+        trusted_input = _is_trusted_level(trust_level)
 
         if is_internal_ingress and isinstance(firewall_result_payload, dict):
             firewall_result = FirewallResult.model_validate(firewall_result_payload)
@@ -3716,6 +3716,7 @@ class SessionImplMixin(HandlerMixinBase):
             firewall_result=firewall_result,
             incoming_taint_labels=incoming_taint_labels,
             is_internal_ingress=is_internal_ingress,
+            operator_owned_cli_input=operator_owned_cli_input,
             delivery_target=delivery_target,
             channel_message_id=channel_message_id,
             tool_allowlist=tool_allowlist,
@@ -5198,7 +5199,10 @@ class SessionImplMixin(HandlerMixinBase):
             "channel": task_session.channel,
             "user_id": task_session.user_id,
             "workspace_id": task_session.workspace_id,
-            "trust_level": _child_task_trust_level(parent_validation.trust_level),
+            "trust_level": _child_task_trust_level(
+                parent_validation.trust_level,
+                operator_owned_cli=parent_validation.operator_owned_cli_input,
+            ),
             "_internal_ingress_marker": self._internal_ingress_marker,
             "_firewall_result": task_firewall_result.model_dump(mode="json"),
         }
@@ -5561,7 +5565,10 @@ class SessionImplMixin(HandlerMixinBase):
                 recovery_checkpoint_id = raw_checkpoint_claim.checkpoint_id
 
         task_metadata: dict[str, Any] = {
-            "trust_level": _child_task_trust_level(validated.trust_level),
+            "trust_level": _child_task_trust_level(
+                validated.trust_level,
+                operator_owned_cli=validated.operator_owned_cli_input,
+            ),
             "session_mode": SessionMode.TASK.value,
             _COMMAND_CONTEXT_STATUS_KEY: "clean",
             "task_file_refs": list(task_request.file_refs),

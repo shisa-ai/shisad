@@ -277,6 +277,70 @@ def test_m6_session_manager_preserves_legacy_nonempty_capabilities_as_manual_ove
     assert restored.metadata.get("capability_sync_mode") == "manual_override"
 
 
+def test_lt1_session_manager_migrates_legacy_default_cli_trust_level(tmp_path: Path) -> None:
+    state_dir = tmp_path / "sessions" / "state"
+    state_dir.mkdir(parents=True, exist_ok=True)
+    legacy = Session(
+        id=SessionId("legacy-cli-untrusted"),
+        channel="cli",
+        user_id=UserId("ops"),
+        workspace_id=WorkspaceId("local"),
+        mode=SessionMode.DEFAULT,
+        role=SessionRole.ORCHESTRATOR,
+        capabilities={Capability.FILE_READ},
+        metadata={"trust_level": "untrusted"},
+    )
+    _session_state_path(state_dir, str(legacy.id)).write_text(
+        legacy.model_dump_json(indent=2),
+        encoding="utf-8",
+    )
+
+    restored_manager = SessionManager(state_dir=state_dir)
+    restored = restored_manager.get(legacy.id)
+    assert restored is not None
+    assert restored.metadata["trust_level"] == "trusted"
+
+
+def test_lt1_session_manager_does_not_upgrade_mediated_or_task_sessions(
+    tmp_path: Path,
+) -> None:
+    state_dir = tmp_path / "sessions" / "state"
+    state_dir.mkdir(parents=True, exist_ok=True)
+    mediated = Session(
+        id=SessionId("legacy-matrix-untrusted"),
+        channel="matrix",
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("room"),
+        mode=SessionMode.DEFAULT,
+        role=SessionRole.ORCHESTRATOR,
+        capabilities={Capability.FILE_READ},
+        metadata={"trust_level": "untrusted"},
+    )
+    task = Session(
+        id=SessionId("legacy-cli-task"),
+        channel="cli",
+        user_id=UserId("ops"),
+        workspace_id=WorkspaceId("local"),
+        mode=SessionMode.TASK,
+        role=SessionRole.SUBAGENT,
+        capabilities={Capability.FILE_READ},
+        metadata={"trust_level": "untrusted"},
+    )
+    for session in (mediated, task):
+        _session_state_path(state_dir, str(session.id)).write_text(
+            session.model_dump_json(indent=2),
+            encoding="utf-8",
+        )
+
+    restored_manager = SessionManager(state_dir=state_dir)
+    restored_mediated = restored_manager.get(mediated.id)
+    restored_task = restored_manager.get(task.id)
+    assert restored_mediated is not None
+    assert restored_task is not None
+    assert restored_mediated.metadata["trust_level"] == "untrusted"
+    assert restored_task.metadata["trust_level"] == "untrusted"
+
+
 def test_m6_session_manager_syncs_policy_default_marked_sessions_to_current_defaults(
     tmp_path: Path,
 ) -> None:

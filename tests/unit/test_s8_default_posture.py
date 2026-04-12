@@ -397,7 +397,7 @@ async def test_s8_session_create_default_policy_does_not_seed_tool_allowlist() -
 
 
 @pytest.mark.asyncio
-async def test_u5_session_create_marks_only_cli_default_sessions_as_trusted_cli() -> None:
+async def test_lt1_session_create_marks_only_cli_default_sessions_as_trusted() -> None:
     harness = _SessionCreateHarness(PolicyBundle())
     harness._identity_map.configure_channel_trust(channel="cli", trust_level="trusted")
 
@@ -407,8 +407,8 @@ async def test_u5_session_create_marks_only_cli_default_sessions_as_trusted_cli(
     )  # type: ignore[arg-type]
     default_session = harness._session_manager.get(SessionId(str(default_result["session_id"])))
     assert default_session is not None
-    assert default_session.metadata["trust_level"] == "trusted_cli"
-    assert _is_trusted_level("trusted_cli") is False
+    assert default_session.metadata["trust_level"] == "trusted"
+    assert _is_trusted_level("trusted") is True
 
     task_result = await SessionImplMixin.do_session_create(
         harness,
@@ -428,7 +428,7 @@ async def test_u5_session_create_marks_only_cli_default_sessions_as_trusted_cli(
 
 
 @pytest.mark.asyncio
-async def test_u5_validate_trusted_cli_inspects_then_trims_clean_operator_taint(
+async def test_lt1_validate_default_cli_does_not_taint_clean_operator_input(
     tmp_path,
 ) -> None:
     harness = _SessionMessageHarness(PolicyBundle(), tmp_path)
@@ -448,13 +448,13 @@ async def test_u5_validate_trusted_cli_inspects_then_trims_clean_operator_taint(
         },
     )  # type: ignore[arg-type]
 
-    assert validated.trust_level == "trusted_cli"
-    assert validated.trusted_input is False
+    assert validated.trust_level == "trusted"
+    assert validated.trusted_input is True
     assert TaintLabel.UNTRUSTED not in validated.incoming_taint_labels
 
 
 @pytest.mark.asyncio
-async def test_u5_clean_trusted_cli_turn_restores_user_goal_egress_hosts(
+async def test_lt1_clean_default_cli_turn_restores_user_goal_egress_hosts(
     tmp_path,
 ) -> None:
     harness = _SessionMessageHarness(PolicyBundle(), tmp_path)
@@ -481,7 +481,7 @@ async def test_u5_clean_trusted_cli_turn_restores_user_goal_egress_hosts(
 
 
 @pytest.mark.asyncio
-async def test_u5_validate_trusted_cli_keeps_suspicious_operator_text_tainted(
+async def test_lt1_validate_default_cli_keeps_suspicious_operator_risk_signals(
     tmp_path,
 ) -> None:
     harness = _SessionMessageHarness(PolicyBundle(), tmp_path)
@@ -501,9 +501,9 @@ async def test_u5_validate_trusted_cli_keeps_suspicious_operator_text_tainted(
         },
     )  # type: ignore[arg-type]
 
-    assert validated.trust_level == "trusted_cli"
-    assert validated.trusted_input is False
-    assert TaintLabel.UNTRUSTED in validated.incoming_taint_labels
+    assert validated.trust_level == "trusted"
+    assert validated.trusted_input is True
+    assert TaintLabel.UNTRUSTED not in validated.incoming_taint_labels
     assert "instruction_override" in validated.firewall_result.risk_factors
     assert _user_goal_host_patterns_for_validated_input(validated) == set()
 

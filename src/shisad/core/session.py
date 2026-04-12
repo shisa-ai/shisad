@@ -527,6 +527,7 @@ class SessionManager:
     def _migrate_loaded_session(self, session: Session) -> _SessionMigrationOutcome:
         before_caps = set(session.capabilities)
         role_changed = False
+        trust_changed = False
         session_kind_is_subagent = session.role == SessionRole.ORCHESTRATOR and (
             session.mode == SessionMode.TASK
             or str(session.channel).strip().lower() in {"task", "scheduler"}
@@ -536,6 +537,22 @@ class SessionManager:
         )
         if session_kind_is_subagent:
             role_changed = session.migrate_role(SessionRole.SUBAGENT)
+        default_operator_cli_session = (
+            session.role == SessionRole.ORCHESTRATOR
+            and session.mode == SessionMode.DEFAULT
+            and str(session.channel).strip().lower() == "cli"
+            and not str(session.metadata.get("parent_session_id", "")).strip()
+            and not str(session.metadata.get("background_task_id", "")).strip()
+            and not bool(session.metadata.get("task_envelope"))
+        )
+        if default_operator_cli_session:
+            current_trust = str(session.metadata.get("trust_level", "")).strip().lower()
+            if current_trust in {"", "untrusted", "trusted_cli"}:
+                session.metadata["trust_level"] = "trusted"
+                trust_changed = True
+            if session.metadata.get("operator_owned_cli") is not True:
+                session.metadata["operator_owned_cli"] = True
+                trust_changed = True
         raw_mode = str(session.metadata.get("capability_sync_mode", "")).strip().lower()
         sync_mode_before = (
             raw_mode if raw_mode in {"policy_default", "manual_override"} else "legacy"
@@ -583,7 +600,18 @@ class SessionManager:
                         reason = "legacy_empty_mark_policy_default"
 
         after_caps = set(session.capabilities)
-        changed = before_caps != after_caps or sync_mode_before != sync_mode_after or role_changed
+        if trust_changed:
+            reason = (
+                "default_cli_trust_sync"
+                if reason == "no_op"
+                else f"{reason}+default_cli_trust_sync"
+            )
+        changed = (
+            before_caps != after_caps
+            or sync_mode_before != sync_mode_after
+            or role_changed
+            or trust_changed
+        )
         return _SessionMigrationOutcome(
             changed=changed,
             reason=reason,
