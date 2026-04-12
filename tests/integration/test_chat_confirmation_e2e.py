@@ -290,6 +290,7 @@ async def test_lt2_session_message_confirmation_commands_do_not_reenter_planner(
             f"Then run 'shisad action reject {confirmation_id}'",
             f"Then run 'shisad action reject {confirmation_id} --nonce nonce-1'",
             "shisad action pending --session sess-chat --status pending --limit 10 --raw",
+            f"```\nshisad action confirm {confirmation_id} --nonce nonce-1\n```",
             "Review all pending: shisad action pending",
             confirmation_id,
         ):

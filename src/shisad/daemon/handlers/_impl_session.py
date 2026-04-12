@@ -551,6 +551,20 @@ def _extract_cli_action_command_candidate(
     candidate = text.strip().removesuffix(".").strip()
     if not candidate:
         return ""
+    if candidate.startswith("```"):
+        body_and_tail = candidate[3:]
+        closing_index = body_and_tail.find("```")
+        if closing_index == -1:
+            return ""
+        body = body_and_tail[:closing_index].strip()
+        tail = body_and_tail[closing_index + 3 :].strip()
+        if tail:
+            return ""
+        if body and not body.startswith("shisad "):
+            _, _, possible_command = body.partition(" ")
+            if possible_command.startswith("shisad "):
+                body = possible_command
+        return body
     if candidate[0] not in {"'", '"', "`"}:
         return candidate
     closing_index = candidate.find(candidate[0], 1)
