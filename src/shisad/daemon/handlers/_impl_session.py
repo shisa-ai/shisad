@@ -1721,10 +1721,11 @@ _PENDING_CONFIRMATIONS_HEADER = "[PENDING CONFIRMATIONS]"
 _PENDING_CONFIRMATIONS_FOOTER = "Review all pending: shisad action pending"
 _COMPLETED_ACTIONS_HEADER = "Completed actions:"
 _TOOL_RESULTS_SUMMARY_HEADER = "Tool results summary:"
-_PENDING_COMPLETED_ACTIONS_SEQUENCE = (
-    f"{_PENDING_CONFIRMATIONS_FOOTER} "
-    f"{_COMPLETED_ACTIONS_HEADER} "
-    f"{_TOOL_RESULTS_SUMMARY_HEADER}"
+_PENDING_COMPLETED_ACTIONS_RE = re.compile(
+    rf"{re.escape(_PENDING_CONFIRMATIONS_FOOTER)}\s+"
+    rf"{re.escape(_COMPLETED_ACTIONS_HEADER)}\s+"
+    rf"{re.escape(_TOOL_RESULTS_SUMMARY_HEADER)}\s+"
+    r"-\s+[^:]{1,128}:\s+(?:success=(?:True|False)|completed\.)"
 )
 
 
@@ -1735,8 +1736,7 @@ def _is_mixed_pending_confirmation_context(text: str) -> bool:
     if not stripped.startswith(_PENDING_CONFIRMATIONS_HEADER):
         return False
 
-    compact = " ".join(stripped.split())
-    return _PENDING_COMPLETED_ACTIONS_SEQUENCE in compact
+    return _PENDING_COMPLETED_ACTIONS_RE.search(stripped) is not None
 
 
 def _transcript_entry_context_role(
