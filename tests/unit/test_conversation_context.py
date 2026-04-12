@@ -78,21 +78,25 @@ def test_lt2_pending_confirmation_context_uses_system_provenance(tmp_path: Path)
 
 
 def test_lt2_mixed_pending_confirmation_context_stays_assistant(tmp_path: Path) -> None:
-    store = TranscriptStore(tmp_path / "sessions")
+    store = TranscriptStore(tmp_path / "sessions", blob_threshold_bytes=80)
     sid = SessionId("sess-lt2-mixed-pending")
     store.append(sid, role="user", content="create a todo and summarize it")
-    store.append(
+    entry = store.append(
         sid,
         role="assistant",
         content=(
             "[PENDING CONFIRMATIONS]\n"
             "1. c-1\n"
             "   In chat: reply with 'confirm 1'\n\n"
+            + "pending detail " * 30
+            + "\n\n"
             "Completed actions:\n"
             "- summarized current todo list"
         ),
-        metadata={},
+        metadata={"system_generated_pending_confirmations": True},
     )
+    assert entry.blob_ref is not None
+    assert "Completed actions:" not in entry.content_preview
 
     rendered, _taints = _build_planner_conversation_context(
         transcript_store=store,
@@ -103,6 +107,18 @@ def test_lt2_mixed_pending_confirmation_context_stays_assistant(tmp_path: Path) 
 
     assert "assistant: [PENDING CONFIRMATIONS]" in rendered
     assert "system: [PENDING CONFIRMATIONS]" not in rendered
+
+    store.append(sid, role="user", content="next request")
+    rendered_summary, _taints = _build_planner_conversation_context(
+        transcript_store=store,
+        session_id=sid,
+        context_window=1,
+        exclude_latest_turn=False,
+    )
+
+    assert "Summary of earlier turns:" in rendered_summary
+    assert "assistant: [PENDING CONFIRMATIONS]" in rendered_summary
+    assert "system: [PENDING CONFIRMATIONS]" not in rendered_summary
 
 
 def test_m2_r_open_1_context_entries_are_not_double_excluded(tmp_path: Path) -> None:
