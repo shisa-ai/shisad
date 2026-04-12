@@ -765,10 +765,16 @@ def _is_clean_direct_trusted_cli_turn(validated: SessionMessageValidationResult)
     )
 
 
+def _has_clean_trusted_turn_privileges(validated: SessionMessageValidationResult) -> bool:
+    if validated.operator_owned_cli_input:
+        return _is_clean_direct_trusted_cli_turn(validated)
+    return validated.trusted_input
+
+
 def _user_goal_host_patterns_for_validated_input(
     validated: SessionMessageValidationResult,
 ) -> set[str]:
-    if not (validated.trusted_input or _is_clean_direct_trusted_cli_turn(validated)):
+    if not _has_clean_trusted_turn_privileges(validated):
         return set()
     return host_patterns(extract_hosts_from_text(validated.firewall_result.sanitized_text))
 
@@ -4165,6 +4171,7 @@ class SessionImplMixin(HandlerMixinBase):
             self._session_has_tainted_user_history(sid)
             or planner_context.memory_context_tainted_for_amv
         )
+        clean_trusted_input = _has_clean_trusted_turn_privileges(validated)
         operator_owned_cli_input = _is_clean_direct_trusted_cli_turn(validated)
 
         for evaluated in planner_result.evaluated:
@@ -4234,7 +4241,7 @@ class SessionImplMixin(HandlerMixinBase):
                 risk_tier=_risk_tier_from_score(risk_score),
                 declared_domains=sorted(declared_domains),
                 session_tainted=session_tainted,
-                trusted_input=validated.trusted_input,
+                trusted_input=clean_trusted_input,
                 operator_owned_cli_input=operator_owned_cli_input,
                 raw_user_text=validated.content,
             )
@@ -5066,7 +5073,7 @@ class SessionImplMixin(HandlerMixinBase):
                     parent_session.role == SessionRole.ORCHESTRATOR
                     and parent_session.mode == SessionMode.DEFAULT
                     and _task_command_context_status(parent_session) == "clean"
-                    and (validated.trusted_input or _is_clean_direct_trusted_cli_turn(validated))
+                    and _has_clean_trusted_turn_privileges(validated)
                     and not validated.is_internal_ingress
                 )
                 else ""

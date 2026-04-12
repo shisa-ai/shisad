@@ -277,18 +277,31 @@ def test_m6_session_manager_preserves_legacy_nonempty_capabilities_as_manual_ove
     assert restored.metadata.get("capability_sync_mode") == "manual_override"
 
 
-def test_lt1_session_manager_migrates_legacy_default_cli_trust_level(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("session_id", "metadata"),
+    [
+        ("legacy-cli-untrusted", {"trust_level": "untrusted"}),
+        ("legacy-cli-trusted-cli", {"trust_level": "trusted_cli"}),
+        ("legacy-cli-empty-trust", {"trust_level": ""}),
+        ("legacy-cli-missing-trust", {}),
+    ],
+)
+def test_lt1_session_manager_migrates_legacy_default_cli_trust_level(
+    tmp_path: Path,
+    session_id: str,
+    metadata: dict[str, object],
+) -> None:
     state_dir = tmp_path / "sessions" / "state"
     state_dir.mkdir(parents=True, exist_ok=True)
     legacy = Session(
-        id=SessionId("legacy-cli-untrusted"),
+        id=SessionId(session_id),
         channel="cli",
         user_id=UserId("ops"),
         workspace_id=WorkspaceId("local"),
         mode=SessionMode.DEFAULT,
         role=SessionRole.ORCHESTRATOR,
         capabilities={Capability.FILE_READ},
-        metadata={"trust_level": "untrusted"},
+        metadata=dict(metadata),
     )
     _session_state_path(state_dir, str(legacy.id)).write_text(
         legacy.model_dump_json(indent=2),
@@ -299,6 +312,7 @@ def test_lt1_session_manager_migrates_legacy_default_cli_trust_level(tmp_path: P
     restored = restored_manager.get(legacy.id)
     assert restored is not None
     assert restored.metadata["trust_level"] == "trusted"
+    assert restored.metadata["operator_owned_cli"] is True
 
 
 def test_lt1_session_manager_does_not_upgrade_mediated_or_task_sessions(
