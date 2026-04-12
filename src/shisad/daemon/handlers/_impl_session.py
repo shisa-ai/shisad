@@ -3406,9 +3406,15 @@ class SessionImplMixin(HandlerMixinBase):
                         if checkpoint_id:
                             checkpoint_ids.append(checkpoint_id)
                         status = _confirmation_result_status_text(result, confirmed=confirmed)
-                        outcome_lines.append(
-                            f"confirmed {index + 1} ({pending.tool_name}): {status}"
-                        )
+                        if confirmed:
+                            outcome_lines.append(
+                                f"confirmed {index + 1} ({pending.tool_name}): {status}"
+                            )
+                        else:
+                            outcome_lines.append(
+                                f"confirmation failed for {index + 1} "
+                                f"({pending.tool_name}): {status}"
+                            )
                     else:
                         result = await self.do_action_reject(payload)
                         rejected = bool(result.get("rejected", False))

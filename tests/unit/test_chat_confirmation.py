@@ -249,6 +249,59 @@ async def test_h1_chat_confirmation_response_degrades_when_plan_hash_lookup_fail
 
 
 @pytest.mark.asyncio
+async def test_lt3_chat_confirmation_reports_failed_batch_confirmation_reason(tmp_path) -> None:
+    harness = _ChatConfirmationHarness(tmp_path)
+    pending = PendingAction(
+        confirmation_id="c-1",
+        decision_nonce="nonce-1",
+        session_id=SessionId("sess-chat"),
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws-1"),
+        tool_name=ToolName("web.search"),
+        arguments={"query": "hello"},
+        reason="manual",
+        capabilities={Capability.HTTP_REQUEST},
+        created_at=datetime.now(UTC),
+    )
+    harness._pending_actions[pending.confirmation_id] = pending
+
+    async def fail_confirm(params: dict[str, object]) -> dict[str, object]:
+        failed = harness._pending_actions[str(params["confirmation_id"])]
+        failed.status = "failed"
+        failed.status_reason = "approval_envelope_missing"
+        return {
+            "confirmed": False,
+            "status": "failed",
+            "status_reason": "approval_envelope_missing",
+        }
+
+    harness.do_action_confirm = fail_confirm  # type: ignore[method-assign]
+
+    result = await SessionImplMixin._maybe_handle_chat_confirmation(
+        harness,
+        sid=SessionId("sess-chat"),
+        channel="cli",
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws-1"),
+        session_mode=SessionMode.DEFAULT,
+        trust_level="trusted",
+        trusted_input=True,
+        is_internal_ingress=False,
+        content="yes to all",
+        firewall_result=FirewallResult(sanitized_text="yes to all", original_hash="0" * 64),
+    )
+
+    assert result is not None
+    response = str(result["response"]).lower()
+    assert "confirmation failed for 1" in response
+    assert "approval_envelope_missing" in response
+    assert "confirmed 1" not in response
+    assert result["executed_actions"] == 0
+    assert result["blocked_actions"] == 1
+    assert result["pending_confirmation_ids"] == []
+
+
+@pytest.mark.asyncio
 async def test_u5_chat_confirmation_accepts_clean_trusted_cli_default_session(tmp_path) -> None:
     harness = _ChatConfirmationHarness(tmp_path)
     pending = PendingAction(

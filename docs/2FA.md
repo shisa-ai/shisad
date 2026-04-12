@@ -597,7 +597,7 @@ For L3+ signed approvals, the audit trail also includes:
 | `local_helper_unavailable` | Local-helper backend not active in current daemon mode | Check daemon config; the helper backend activates when no approval origin is set |
 | `missing_decision_nonce` | CLI could not auto-resolve the nonce from pending state | Run `shisad action pending` and pass `--nonce` explicitly |
 | `confirmation_method_mismatch` | The proof you submitted does not match the pending action's required backend | Check `shisad action pending` for the required method |
-| `confirmation_method_locked_out` | Too many failed attempts | Wait for the `retry_after_seconds` period to expire |
+| `confirmation_method_locked_out` | Too many failed attempts | Wait for the `retry_after_seconds` period to expire, then re-queue the action and approve the new pending confirmation |
 | `signer_backend_invalid_response` | The KMS endpoint returned a malformed or invalid response | Check KMS endpoint logs; the daemon fails closed on invalid responses |
 
 ---

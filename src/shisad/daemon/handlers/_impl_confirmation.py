@@ -106,6 +106,8 @@ class ConfirmationImplMixin(HandlerMixinBase):
         return ""
 
     def _stale_pending_action_reason(self, pending: Any) -> str:
+        if str(getattr(pending, "status", "")).strip().lower() != "pending":
+            return ""
         reason = self._pending_approval_stale_reason(pending)
         if reason:
             return reason

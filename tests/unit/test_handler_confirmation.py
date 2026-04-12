@@ -424,6 +424,44 @@ def test_lt3_load_pending_actions_fails_legacy_missing_approval_envelope(tmp_pat
     assert persisted[0]["status_reason"] == "approval_envelope_missing"
 
 
+def test_lt3_load_pending_actions_fails_pending_rows_during_lockout_only(tmp_path) -> None:
+    pending = _pending_action(nonce="expected")
+    pending_payload = HandlerImplementation._pending_to_dict(pending)
+    approved_payload = dict(pending_payload)
+    approved_payload["confirmation_id"] = "c-2"
+    approved_payload["decision_nonce"] = "nonce-2"
+    approved_payload["status"] = "approved"
+    approved_payload["status_reason"] = "approved"
+    pending_actions_file = tmp_path / "data" / "pending_actions.json"
+    pending_actions_file.parent.mkdir(parents=True)
+    pending_actions_file.write_text(
+        json.dumps([pending_payload, approved_payload]),
+        encoding="utf-8",
+    )
+    harness = object.__new__(HandlerImplementation)
+    harness._pending_actions_file = pending_actions_file
+    harness._pending_actions = {}
+    harness._pending_by_session = {}
+    harness._confirmation_failure_tracker = ConfirmationMethodLockoutTracker()
+    for _ in range(5):
+        harness._confirmation_failure_tracker.record_failure(user_id="alice", method="software")
+
+    HandlerImplementation._load_pending_actions(harness)
+
+    assert harness._pending_actions["c-1"].status == "failed"
+    assert harness._pending_actions["c-1"].status_reason == "confirmation_method_locked_out"
+    assert harness._pending_actions["c-2"].status == "approved"
+    assert harness._pending_actions["c-2"].status_reason == "approved"
+    persisted = {
+        item["confirmation_id"]: item
+        for item in json.loads(pending_actions_file.read_text(encoding="utf-8"))
+    }
+    assert persisted["c-1"]["status"] == "failed"
+    assert persisted["c-1"]["status_reason"] == "confirmation_method_locked_out"
+    assert persisted["c-2"]["status"] == "approved"
+    assert persisted["c-2"]["status_reason"] == "approved"
+
+
 def _pep_context_snapshot(
     *,
     capabilities: set[Capability],
@@ -642,6 +680,29 @@ async def test_lt3_action_confirm_fails_missing_approval_envelope_terminally(tmp
     assert result["status"] == "failed"
     assert pending.status == "failed"
     assert pending.status_reason == "approval_envelope_missing"
+    assert harness.execution_kwargs == []
+
+
+@pytest.mark.asyncio
+async def test_lt3_action_confirm_fails_missing_action_digest_terminally(tmp_path) -> None:
+    harness = _ConfirmationImplHarness(tmp_path)
+    pending = _pending_action(nonce="expected")
+    assert pending.approval_envelope is not None
+    pending.approval_envelope = pending.approval_envelope.model_copy(
+        update={"action_digest": ""}
+    )
+    pending.approval_envelope_hash = approval_envelope_hash(pending.approval_envelope)
+    harness._pending_actions["c-1"] = pending
+
+    result = await harness.do_action_confirm(
+        {"confirmation_id": "c-1", "decision_nonce": "expected"}
+    )
+
+    assert result["confirmed"] is False
+    assert result["reason"] == "action_digest_missing"
+    assert result["status"] == "failed"
+    assert pending.status == "failed"
+    assert pending.status_reason == "action_digest_missing"
     assert harness.execution_kwargs == []
 
 
