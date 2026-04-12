@@ -398,7 +398,7 @@ _CRC_REJECT_ALL_PATTERNS = {"no to all", "reject all", "deny all", "cancel all"}
 _CRC_CONFIRM_INDEX_RE = re.compile(r"^(?:confirm|approve|yes)\s+(\d+)$")
 _CRC_REJECT_INDEX_RE = re.compile(r"^(?:reject|deny|no)\s+(\d+)$")
 _CRC_BARE_INDEX_RE = re.compile(r"^(\d{1,3})$")
-_CRC_CLI_CONFIRM_COMMAND_RE = re.compile(r"^shisad\s+action\s+confirm(?:\s+\S.*)?$")
+_CRC_CLI_ACTION_COMMAND_RE = re.compile(r"\bshisad\s+action\s+(?:confirm|reject|pending)\b")
 _CRC_CONFIRMATION_VERB_ACTIONS = {
     "confirm": "confirm",
     "approve": "confirm",
@@ -531,9 +531,9 @@ def _chat_confirmation_command_error_text(
         return ""
     tokens = normalized.split()
     first = tokens[0]
-    if _CRC_CLI_CONFIRM_COMMAND_RE.fullmatch(normalized):
+    if _CRC_CLI_ACTION_COMMAND_RE.search(normalized):
         return (
-            "CLI confirmation commands must be run from a shell, not sent as chat. "
+            "CLI action commands must be run from a shell, not sent as chat. "
             f"No action was taken. {_confirmation_command_guidance()}"
         )
     if pending_confirmation_ids is not None and normalized in pending_confirmation_ids:

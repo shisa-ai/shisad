@@ -475,7 +475,16 @@ async def test_lt2_chat_confirmation_bad_index_returns_error_without_planner_pas
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("content", ["shisad action confirm c-1", "c-1"])
+@pytest.mark.parametrize(
+    "content",
+    [
+        "shisad action confirm c-1",
+        "run 'shisad action confirm c-1'",
+        "Then run 'shisad action reject c-1'",
+        "Review all pending: shisad action pending",
+        "c-1",
+    ],
+)
 async def test_h1_chat_confirmation_does_not_treat_cli_command_or_id_as_approval(
     tmp_path,
     content: str,

@@ -283,7 +283,13 @@ async def test_lt2_session_message_confirmation_commands_do_not_reenter_planner(
             {"session_id": sid, "status": "pending", "limit": 10},
         )
         confirmation_id = str(pending["actions"][0]["confirmation_id"])
-        for invalid_command in (f"shisad action confirm {confirmation_id}", confirmation_id):
+        for invalid_command in (
+            f"shisad action confirm {confirmation_id}",
+            f"run 'shisad action confirm {confirmation_id}'",
+            f"Then run 'shisad action reject {confirmation_id}'",
+            "Review all pending: shisad action pending",
+            confirmation_id,
+        ):
             invalid = await _send(sid, invalid_command)
             assert len(planner_calls) == before_calls
             invalid_response = str(invalid.get("response", "")).lower()
@@ -1026,7 +1032,15 @@ async def test_u9_channel_ingest_rejects_totp_pending_action_via_trusted_chat_re
         )
         assert first.confirmation_required_actions >= 1
 
-        for offset, invalid_content in enumerate(("confirm 1", "comfirm 1"), start=2):
+        for offset, invalid_content in enumerate(
+            (
+                "confirm 1",
+                "comfirm 1",
+                "Then run 'shisad action reject confirmation_id'",
+                "Review all pending: shisad action pending",
+            ),
+            start=2,
+        ):
             invalid = await handlers.handle_channel_ingest(
                 ChannelIngestParams(
                     message={
@@ -1043,7 +1057,10 @@ async def test_u9_channel_ingest_rejects_totp_pending_action_via_trusted_chat_re
             invalid_response = str(invalid.response).lower()
             assert invalid.executed_actions == 0
             assert invalid.confirmation_required_actions == 1
-            assert "not accepted without proof" in invalid_response
+            if "shisad action" in invalid_content:
+                assert "cli action commands must be run from a shell" in invalid_response
+            else:
+                assert "not accepted without proof" in invalid_response
             assert "no action was taken" in invalid_response
             pending = await handlers.handle_action_pending(
                 ActionPendingParams(session_id=first.session_id, status="pending", limit=10),
@@ -1058,7 +1075,7 @@ async def test_u9_channel_ingest_rejects_totp_pending_action_via_trusted_chat_re
                     "external_user_id": "alice",
                     "workspace_hint": "guild-1",
                     "content": "reject 1",
-                    "message_id": "m-4",
+                    "message_id": "m-6",
                     "reply_target": "chan-1",
                 }
             ),
