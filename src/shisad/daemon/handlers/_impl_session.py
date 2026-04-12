@@ -1716,12 +1716,22 @@ def _normalize_context_role(role: str) -> str:
     return "system"
 
 
+_CONFIRMATION_REQUIRED_PREFIX = "[CONFIRMATION REQUIRED]"
+_PENDING_CONFIRMATIONS_HEADER = "[PENDING CONFIRMATIONS]"
+_PENDING_CONFIRMATIONS_FOOTER = "Review all pending: shisad action pending"
+_COMPLETED_ACTIONS_HEADER = "Completed actions:"
+
+
 def _is_mixed_pending_confirmation_context(text: str) -> bool:
     stripped = str(text or "").strip()
-    return bool(
-        stripped.startswith("[PENDING CONFIRMATIONS]")
-        and "Completed actions:" in stripped
-    )
+    if stripped.startswith(_CONFIRMATION_REQUIRED_PREFIX):
+        stripped = stripped[len(_CONFIRMATION_REQUIRED_PREFIX) :].lstrip()
+    if not stripped.startswith(_PENDING_CONFIRMATIONS_HEADER):
+        return False
+
+    completed_at = stripped.rfind(_COMPLETED_ACTIONS_HEADER)
+    footer_at = stripped.rfind(_PENDING_CONFIRMATIONS_FOOTER)
+    return completed_at > footer_at >= 0
 
 
 def _transcript_entry_context_role(

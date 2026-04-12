@@ -85,11 +85,13 @@ def test_lt2_mixed_pending_confirmation_context_stays_assistant(tmp_path: Path) 
         sid,
         role="assistant",
         content=(
-            "[PENDING CONFIRMATIONS]\n"
+            "[CONFIRMATION REQUIRED] [PENDING CONFIRMATIONS]\n"
+            "Queued for your approval:\n"
             "1. c-1\n"
             "   In chat: reply with 'confirm 1'\n\n"
             + "pending detail " * 30
             + "\n\n"
+            "Review all pending: shisad action pending\n\n"
             "Completed actions:\n"
             "- summarized current todo list"
         ),
@@ -105,8 +107,8 @@ def test_lt2_mixed_pending_confirmation_context_stays_assistant(tmp_path: Path) 
         exclude_latest_turn=False,
     )
 
-    assert "assistant: [PENDING CONFIRMATIONS]" in rendered
-    assert "system: [PENDING CONFIRMATIONS]" not in rendered
+    assert "assistant: [CONFIRMATION REQUIRED] [PENDING CONFIRMATIONS]" in rendered
+    assert "system: [CONFIRMATION REQUIRED] [PENDING CONFIRMATIONS]" not in rendered
 
     store.append(sid, role="user", content="next request")
     rendered_summary, _taints = _build_planner_conversation_context(
@@ -117,8 +119,43 @@ def test_lt2_mixed_pending_confirmation_context_stays_assistant(tmp_path: Path) 
     )
 
     assert "Summary of earlier turns:" in rendered_summary
-    assert "assistant: [PENDING CONFIRMATIONS]" in rendered_summary
-    assert "system: [PENDING CONFIRMATIONS]" not in rendered_summary
+    assert "assistant: [CONFIRMATION REQUIRED] [PENDING CONFIRMATIONS]" in rendered_summary
+    assert "system: [CONFIRMATION REQUIRED] [PENDING CONFIRMATIONS]" not in rendered_summary
+
+
+def test_lt2_pending_confirmation_preview_completed_actions_stays_system(
+    tmp_path: Path,
+) -> None:
+    store = TranscriptStore(tmp_path / "sessions", blob_threshold_bytes=80)
+    sid = SessionId("sess-lt2-preview-completed-actions")
+    store.append(sid, role="user", content="create a note")
+    entry = store.append(
+        sid,
+        role="assistant",
+        content=(
+            "[CONFIRMATION REQUIRED] [PENDING CONFIRMATIONS]\n"
+            "Queued for your approval:\n"
+            "1. c-1\n"
+            "   In chat: reply with 'confirm 1'\n"
+            "   Preview:\n"
+            "     Completed actions: user-provided label\n"
+            + "preview detail " * 30
+            + "\n\n"
+            "Review all pending: shisad action pending"
+        ),
+        metadata={"system_generated_pending_confirmations": True},
+    )
+    assert entry.blob_ref is not None
+
+    rendered, _taints = _build_planner_conversation_context(
+        transcript_store=store,
+        session_id=sid,
+        context_window=10,
+        exclude_latest_turn=False,
+    )
+
+    assert "system: [CONFIRMATION REQUIRED] [PENDING CONFIRMATIONS]" in rendered
+    assert "assistant: [CONFIRMATION REQUIRED] [PENDING CONFIRMATIONS]" not in rendered
 
 
 def test_m2_r_open_1_context_entries_are_not_double_excluded(tmp_path: Path) -> None:
