@@ -1046,7 +1046,7 @@ Based on the article and OpenClaw's architecture:
 | **v0.6** | Orchestration foundation, multi-turn taint/task handoff, typed delegated execution, safe subagent/task runtime for later assistant surfaces |
 | **v0.6.1** | Security hardening: isolated control-plane analysis, PromptGuard 2 screening, phantom-action detection, and Tool Dependency Graph verification |
 | **v0.6.2** | Stronger approval flows: TOTP/passkeys/local helper/signer-backed approvals plus optional evidence encryption at rest |
-| **v0.6.3** | Critical UX stabilization: actionable pending confirmations, chat TOTP approval, terminal QR enrollment, clearer no-model/startup diagnostics, and more truthful configured-tool advertising |
+| **v0.6.3** | Critical UX stabilization: actionable pending confirmations, chat TOTP approval, terminal QR enrollment, clearer no-model/startup diagnostics, more truthful configured-tool advertising, clean trusted-CLI confirmation behavior, stale pending-action pruning, and low-friction internal bookkeeping |
 | **v0.6.4** | MCP/A2A interop and remote-tool trust work |
 | **v0.7** | Email (read/send/triage), calendar (read/write), morning briefings (full), attachment pipeline, weekly reports, content drafting, TTS, meeting transcription, voice-to-journal, health/fitness dashboards, financial alerts/queries, receipt processing, document filing/OCR, personal CRM, job search, package tracking, flight tracking, Google Workspace, media server management |
 | **v0.6+** | Music control, smart home, grocery/shopping, bulk data ingestion, news monitoring (structured), content repurposing, customer support agent, social media management, voice telephony |
