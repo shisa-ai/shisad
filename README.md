@@ -55,8 +55,8 @@ GitHub release tag and PyPI package. Live testing reopened the `v0.6.3`
 release process for CLI trust and confirmation-flow fixes; this tree now
 contains the recut candidate. Post-LT validation evidence is recorded for the
 candidate line, and the follow-up LT5 live-retest reconciliation gate is green;
-the release-close validation bundle still needs a refresh before ReleaseClose
-reviewer sign-off and explicit publication can resume.
+the release-close validation bundle is green; ReleaseClose reviewer sign-off and
+explicit publication remain pending.
 
 `v0.6.3` is the critical UX stabilization follow-up to `v0.6.2`: pending
 confirmations now produce actionable daemon-owned replies, TOTP approvals can

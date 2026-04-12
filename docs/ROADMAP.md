@@ -39,8 +39,8 @@ Reach a genuinely useful personal-assistant baseline while preserving the projec
   bookkeeping confirmation fixes; this tree now contains that recut candidate.
   Post-LT validation evidence is recorded for the candidate line, and the
   follow-up LT5 live-retest reconciliation gate is green. The release-close
-  validation bundle still needs a refresh before ReleaseClose reviewer sign-off
-  and explicit tag/PyPI publication can resume. Textual chat
+  validation bundle is green; ReleaseClose reviewer sign-off and explicit
+  tag/PyPI publication remain pending. Textual chat
   TUI newline rendering remains deferred to the TUI overhaul.
 
 ## Milestones
@@ -185,9 +185,9 @@ confirmation replies before planner flow; LT5 live evidence is recorded for the
 CLI-trust, stale pending-action, and low-risk internal bookkeeping portions of
 that recut. Post-LT validation evidence is recorded for the candidate line, and
 the follow-up LT5 live-retest reconciliation gate is green. The release-close
-validation bundle still needs a refresh before ReleaseClose reviewer sign-off
-and explicit tag/PyPI publication can resume; Textual chat TUI newline rendering
-and web-page TOTP entry remain deferred to `v0.8.0`.
+validation bundle is green; ReleaseClose reviewer sign-off and explicit tag/PyPI
+publication remain pending; Textual chat TUI newline rendering and web-page TOTP
+entry remain deferred to `v0.8.0`.
 
 #### v0.6.4 — MCP/A2A interop
 

@@ -40,8 +40,8 @@ Versioning follows semver (see `docs/PUBLISH.md` for policy and style guide).
   chat dependencies point to the `shisad[chat]` install extra.
 - **Clean direct CLI trust is covered by LT5 live evidence before publication.**
   Local operator input stays trusted unless suspicious content or untrusted
-  history says otherwise; ReleaseClose still requires a refreshed validation
-  bundle before treating this as releasable behavior.
+  history says otherwise; ReleaseClose reviewer sign-off remains pending before
+  treating this as releasable behavior.
 - **Confirmation replies are handled as commands before planner flow.** Reply
   text such as confirm/reject, bare approval numbers, yes/no responses, and
   daemon-owned CLI action guidance no longer create fresh planner actions.
@@ -52,8 +52,9 @@ Versioning follows semver (see `docs/PUBLISH.md` for policy and style guide).
 - **Low-risk internal bookkeeping from clean CLI sessions is covered by LT5 live
   evidence before publication.** Notes, todos, reminders, and note search keep
   normal safety gates for suspicious input or stronger policy requirements; the
-  release-close validation bundle still needs a refresh before treating clean
-  local no-prompt completion as releasable behavior.
+  release-close validation bundle is green, and ReleaseClose reviewer sign-off
+  remains pending before treating clean local no-prompt completion as releasable
+  behavior.
 - **Planner-visible tools better match the configured runtime.** When
   filesystem or git roots are not configured, the planner no longer advertises
   those tools as generally usable while delegated task scopes remain available
