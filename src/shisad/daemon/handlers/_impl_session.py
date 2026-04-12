@@ -529,15 +529,18 @@ def _chat_confirmation_command_error_text(text: str) -> str:
             )
         return ""
     suggested_action = _nearest_confirmation_action(first)
-    if suggested_action is None or len(tokens) < 2:
+    if suggested_action is None:
         return ""
-    target = tokens[1]
-    if target.isdigit():
-        suggestion = f"{suggested_action} {int(target)}"
-    elif target == "all":
-        suggestion = f"{suggested_action} all"
+    if len(tokens) < 2:
+        suggestion = suggested_action
     else:
-        suggestion = f"{suggested_action} N"
+        target = tokens[1]
+        if target.isdigit():
+            suggestion = f"{suggested_action} {int(target)}"
+        elif target == "all":
+            suggestion = f"{suggested_action} all"
+        else:
+            suggestion = f"{suggested_action} N"
     return (
         f"Did you mean '{suggestion}'? No action was taken. "
         f"{_confirmation_command_guidance()}"
@@ -1698,9 +1701,22 @@ def _normalize_context_role(role: str) -> str:
     return "system"
 
 
+def _is_system_generated_pending_confirmation_context(text: str) -> bool:
+    stripped = str(text or "").strip()
+    if not stripped:
+        return False
+    if "\n\nCompleted actions:" in stripped:
+        return False
+    return stripped.startswith("[PENDING CONFIRMATIONS]") or stripped.startswith(
+        "Pending confirmations"
+    )
+
+
 def _transcript_entry_context_role(entry: TranscriptEntry) -> str:
     metadata = entry.metadata if isinstance(entry.metadata, dict) else {}
-    if bool(metadata.get("system_generated_pending_confirmations")):
+    if bool(metadata.get("system_generated_pending_confirmations")) and (
+        _is_system_generated_pending_confirmation_context(entry.content_preview)
+    ):
         return "system"
     return _normalize_context_role(entry.role)
 
@@ -3268,7 +3284,9 @@ class SessionImplMixin(HandlerMixinBase):
                 if response_pending_confirmation_ids is not None
                 else visible_pending_confirmation_ids
             )
-            if returned_pending_confirmation_ids:
+            if returned_pending_confirmation_ids and (
+                _is_system_generated_pending_confirmation_context(response_text)
+            ):
                 assistant_transcript_metadata["system_generated_pending_confirmations"] = True
             self._transcript_store.append(
                 sid,
@@ -4944,7 +4962,9 @@ class SessionImplMixin(HandlerMixinBase):
             channel=validated.channel,
             session_mode=validated.session_mode,
         )
-        if execution.pending_confirmation_ids:
+        if execution.pending_confirmation_ids and (
+            _is_system_generated_pending_confirmation_context(response_text)
+        ):
             assistant_transcript_metadata["system_generated_pending_confirmations"] = True
         if evidence_ref_ids:
             assistant_transcript_metadata["evidence_ref_ids"] = list(evidence_ref_ids)

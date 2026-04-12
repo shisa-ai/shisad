@@ -77,6 +77,34 @@ def test_lt2_pending_confirmation_context_uses_system_provenance(tmp_path: Path)
     assert "assistant: [PENDING CONFIRMATIONS]" not in rendered
 
 
+def test_lt2_mixed_pending_confirmation_context_stays_assistant(tmp_path: Path) -> None:
+    store = TranscriptStore(tmp_path / "sessions")
+    sid = SessionId("sess-lt2-mixed-pending")
+    store.append(sid, role="user", content="create a todo and summarize it")
+    store.append(
+        sid,
+        role="assistant",
+        content=(
+            "[PENDING CONFIRMATIONS]\n"
+            "1. c-1\n"
+            "   In chat: reply with 'confirm 1'\n\n"
+            "Completed actions:\n"
+            "- summarized current todo list"
+        ),
+        metadata={"system_generated_pending_confirmations": True},
+    )
+
+    rendered, _taints = _build_planner_conversation_context(
+        transcript_store=store,
+        session_id=sid,
+        context_window=10,
+        exclude_latest_turn=False,
+    )
+
+    assert "assistant: [PENDING CONFIRMATIONS]" in rendered
+    assert "system: [PENDING CONFIRMATIONS]" not in rendered
+
+
 def test_m2_r_open_1_context_entries_are_not_double_excluded(tmp_path: Path) -> None:
     store = TranscriptStore(tmp_path / "sessions")
     sid = SessionId("sess-m2-r1")

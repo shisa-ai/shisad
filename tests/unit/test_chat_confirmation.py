@@ -379,8 +379,19 @@ async def test_lt2_chat_confirmation_accepts_bare_pending_number(tmp_path) -> No
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("content", "suggestion"),
+    [
+        ("comfirm 1", "confirm 1"),
+        ("rejct 1", "reject 1"),
+        ("comfirm", "confirm"),
+        ("rejcet", "reject"),
+    ],
+)
 async def test_lt2_chat_confirmation_typo_returns_suggestion_without_planner_pass_through(
     tmp_path,
+    content: str,
+    suggestion: str,
 ) -> None:
     harness = _ChatConfirmationHarness(tmp_path)
     pending = PendingAction(
@@ -407,13 +418,13 @@ async def test_lt2_chat_confirmation_typo_returns_suggestion_without_planner_pas
         trust_level="trusted",
         trusted_input=True,
         is_internal_ingress=False,
-        content="comfirm 1",
-        firewall_result=FirewallResult(sanitized_text="comfirm 1", original_hash="0" * 64),
+        content=content,
+        firewall_result=FirewallResult(sanitized_text=content, original_hash="0" * 64),
     )
 
     assert result is not None
     response = str(result["response"]).lower()
-    assert "did you mean 'confirm 1'" in response
+    assert f"did you mean '{suggestion}'" in response
     assert "no action was taken" in response
     assert harness.confirm_calls == []
     assert harness._pending_actions["c-1"].status == "pending"

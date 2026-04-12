@@ -245,6 +245,26 @@ async def test_lt2_session_message_confirmation_commands_do_not_reenter_planner(
         assert "no action was taken" in typo_response
         assert "[lockdown notice]" not in typo_response
         assert typo["lockdown_level"] == "normal"
+        entries = transcript_store.list_entries(SessionId(sid))
+        assert entries[-1].metadata.get("system_generated_pending_confirmations") is not True
+        assert await _pending_count(sid) == 1
+
+        reject_typo = await _send(sid, "rejct 1")
+        assert len(planner_calls) == before_calls
+        reject_typo_response = str(reject_typo.get("response", "")).lower()
+        assert "did you mean 'reject 1'" in reject_typo_response
+        assert "no action was taken" in reject_typo_response
+        assert "[lockdown notice]" not in reject_typo_response
+        assert reject_typo["lockdown_level"] == "normal"
+        assert await _pending_count(sid) == 1
+
+        single_word_typo = await _send(sid, "comfirm")
+        assert len(planner_calls) == before_calls
+        single_word_typo_response = str(single_word_typo.get("response", "")).lower()
+        assert "did you mean 'confirm'" in single_word_typo_response
+        assert "no action was taken" in single_word_typo_response
+        assert "[lockdown notice]" not in single_word_typo_response
+        assert single_word_typo["lockdown_level"] == "normal"
         assert await _pending_count(sid) == 1
 
         bad_index = await _send(sid, "confirm 2")
@@ -254,6 +274,8 @@ async def test_lt2_session_message_confirmation_commands_do_not_reenter_planner(
         assert "no action was taken" in bad_index_response
         assert "[lockdown notice]" not in bad_index_response
         assert bad_index["lockdown_level"] == "normal"
+        entries = transcript_store.list_entries(SessionId(sid))
+        assert entries[-1].metadata.get("system_generated_pending_confirmations") is not True
         assert await _pending_count(sid) == 1
 
         bare_index = await _send(sid, "1")
