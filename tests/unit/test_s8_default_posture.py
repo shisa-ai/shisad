@@ -22,6 +22,7 @@ from shisad.core.types import (
     TaintLabel,
     ToolName,
 )
+from shisad.daemon.handlers._impl import HandlerImplementation
 from shisad.daemon.handlers._impl_session import (
     SessionImplMixin,
     _child_task_trust_level,
@@ -509,6 +510,13 @@ async def test_lt1_validate_default_cli_keeps_suspicious_operator_risk_signals(
     assert TaintLabel.UNTRUSTED not in validated.incoming_taint_labels
     assert "instruction_override" in validated.firewall_result.risk_factors
     assert _user_goal_host_patterns_for_validated_input(validated) == set()
+    entries = harness._transcript_store.list_entries(validated.sid)
+    assert "instruction_override" in entries[-1].metadata["firewall_risk_factors"]
+    history_probe = SimpleNamespace(_transcript_store=harness._transcript_store)
+    assert HandlerImplementation._session_has_tainted_user_history(
+        history_probe,  # type: ignore[arg-type]
+        validated.sid,
+    )
 
 
 @pytest.mark.asyncio

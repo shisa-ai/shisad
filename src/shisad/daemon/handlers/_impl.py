@@ -1541,12 +1541,33 @@ class HandlerImplementation(
                 return SessionMode.DEFAULT
         return session.mode
 
+    @staticmethod
+    def _transcript_entry_has_firewall_risk(entry: Any) -> bool:
+        metadata = getattr(entry, "metadata", {})
+        if not isinstance(metadata, Mapping):
+            return False
+        for key in (
+            "firewall_risk_factors",
+            "firewall_secret_findings",
+            "firewall_decode_reason_codes",
+        ):
+            value = metadata.get(key)
+            if isinstance(value, list) and value:
+                return True
+        try:
+            return float(metadata.get("firewall_risk_score", 0.0) or 0.0) > 0.0
+        except (TypeError, ValueError):
+            return True
+
     def _session_has_tainted_history(self, session_id: SessionId) -> bool:
-        return any(entry.taint_labels for entry in self._transcript_store.list_entries(session_id))
+        return any(
+            entry.taint_labels or HandlerImplementation._transcript_entry_has_firewall_risk(entry)
+            for entry in self._transcript_store.list_entries(session_id)
+        )
 
     def _session_has_tainted_user_history(self, session_id: SessionId) -> bool:
         return any(
-            entry.taint_labels
+            entry.taint_labels or HandlerImplementation._transcript_entry_has_firewall_risk(entry)
             for entry in self._transcript_store.list_entries(session_id)
             if str(entry.role).strip().lower() == "user"
         )

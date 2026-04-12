@@ -1858,6 +1858,21 @@ def _transcript_metadata_for_channel(*, channel: str, session_mode: SessionMode)
     }
 
 
+def _transcript_metadata_for_firewall_risk(
+    firewall_result: FirewallResult,
+) -> dict[str, Any]:
+    metadata: dict[str, Any] = {}
+    if firewall_result.risk_score > 0.0:
+        metadata["firewall_risk_score"] = firewall_result.risk_score
+    if firewall_result.risk_factors:
+        metadata["firewall_risk_factors"] = list(firewall_result.risk_factors)
+    if firewall_result.secret_findings:
+        metadata["firewall_secret_findings"] = list(firewall_result.secret_findings)
+    if firewall_result.decode_reason_codes:
+        metadata["firewall_decode_reason_codes"] = list(firewall_result.decode_reason_codes)
+    return metadata
+
+
 def _entry_is_ephemeral_evidence_read(entry: TranscriptEntry) -> bool:
     metadata = entry.metadata if isinstance(entry.metadata, dict) else {}
     return bool(metadata.get("ephemeral_evidence_read"))
@@ -3667,6 +3682,7 @@ class SessionImplMixin(HandlerMixinBase):
                 channel=channel,
                 session_mode=session_mode,
             )
+            user_transcript_metadata.update(_transcript_metadata_for_firewall_risk(firewall_result))
             if channel_message_id:
                 user_transcript_metadata["channel_message_id"] = channel_message_id
             if delivery_target is not None:
