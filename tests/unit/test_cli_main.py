@@ -2233,6 +2233,151 @@ def test_action_pending_keeps_escaped_preview_newlines_literal(
     assert "line1\nline2" not in result.output
 
 
+def test_lt5_action_pending_defaults_to_live_pending_status(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _config(tmp_path)
+    monkeypatch.setattr(cli_main, "_get_config", lambda: config)
+    calls: list[tuple[str, dict[str, object] | None]] = []
+
+    def _fake_rpc_call(
+        effective_config: DaemonConfig,
+        method: str,
+        params: dict[str, object] | None = None,
+        *,
+        response_model: type[object] | None = None,
+    ) -> object:
+        assert effective_config is config
+        calls.append((method, params))
+        payload = {"actions": [], "count": 0}
+        if response_model is None:
+            return payload
+        return response_model.model_validate(payload)  # type: ignore[attr-defined]
+
+    monkeypatch.setattr(cli_main, "rpc_call", _fake_rpc_call)
+    runner = CliRunner()
+
+    result = runner.invoke(cli_main.cli, ["action", "pending"])
+
+    assert result.exit_code == 0, result.output
+    assert calls == [
+        (
+            "action.pending",
+            {
+                "session_id": None,
+                "status": "pending",
+                "limit": 50,
+                "include_ui": True,
+            },
+        )
+    ]
+
+
+def test_lt5_action_pending_status_all_clears_status_filter(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _config(tmp_path)
+    monkeypatch.setattr(cli_main, "_get_config", lambda: config)
+    captured: dict[str, object] = {}
+
+    def _fake_rpc_call(
+        _effective_config: DaemonConfig,
+        method: str,
+        params: dict[str, object] | None = None,
+        *,
+        response_model: type[object] | None = None,
+    ) -> object:
+        assert method == "action.pending"
+        captured.update(params or {})
+        payload = {"actions": [], "count": 0}
+        if response_model is None:
+            return payload
+        return response_model.model_validate(payload)  # type: ignore[attr-defined]
+
+    monkeypatch.setattr(cli_main, "rpc_call", _fake_rpc_call)
+    runner = CliRunner()
+
+    result = runner.invoke(cli_main.cli, ["action", "pending", "--status", "all"])
+
+    assert result.exit_code == 0, result.output
+    assert captured["status"] is None
+
+
+def test_lt5_action_purge_routes_rpc(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _config(tmp_path)
+    monkeypatch.setattr(cli_main, "_get_config", lambda: config)
+    calls: list[tuple[str, dict[str, object] | None]] = []
+
+    def _fake_rpc_call(
+        effective_config: DaemonConfig,
+        method: str,
+        params: dict[str, object] | None = None,
+        *,
+        response_model: type[object] | None = None,
+    ) -> object:
+        assert effective_config is config
+        calls.append((method, params))
+        payload = {
+            "purged": 1,
+            "confirmation_ids": ["c-old"],
+            "remaining": 0,
+            "dry_run": False,
+        }
+        if response_model is None:
+            return payload
+        return response_model.model_validate(payload)  # type: ignore[attr-defined]
+
+    monkeypatch.setattr(cli_main, "rpc_call", _fake_rpc_call)
+    runner = CliRunner()
+
+    result = runner.invoke(
+        cli_main.cli,
+        ["action", "purge", "--status", "failed", "--session", "s-1", "--limit", "5"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert calls == [
+        (
+            "action.purge",
+            {
+                "session_id": "s-1",
+                "status": "failed",
+                "older_than_days": None,
+                "limit": 5,
+                "dry_run": False,
+            },
+        )
+    ]
+    assert "Purged 1 pending action row(s); remaining=0" in result.output
+    assert "confirmation_ids=c-old" in result.output
+
+
+def test_lt5_action_purge_requires_age_for_pending_status() -> None:
+    runner = CliRunner()
+
+    result = runner.invoke(cli_main.cli, ["action", "purge", "--status", "pending"])
+
+    assert result.exit_code == 1
+    assert "--older-than-days must be positive" in result.output
+
+
+def test_lt5_action_purge_requires_positive_age_for_pending_status() -> None:
+    runner = CliRunner()
+
+    result = runner.invoke(
+        cli_main.cli,
+        ["action", "purge", "--status", "pending", "--older-than-days", "0"],
+    )
+
+    assert result.exit_code == 1
+    assert "--older-than-days must be positive" in result.output
+
+
 def test_action_confirm_webauthn_opens_browser_and_waits_for_resolution(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

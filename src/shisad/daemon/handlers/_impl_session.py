@@ -421,6 +421,14 @@ _CRC_CLI_ACTION_OPTIONS = {
         "--status": True,
         "--help": False,
     },
+    "purge": {
+        "--dry-run": False,
+        "--limit": True,
+        "--older-than-days": True,
+        "--session": True,
+        "--status": True,
+        "--help": False,
+    },
 }
 _CRC_CLI_ACTION_ALLOWED_QUOTED_TAILS = {"to inspect pending approvals"}
 _CRC_CLI_ACTION_GUIDANCE_PREFIXES = (
@@ -602,7 +610,7 @@ def _is_cli_action_command_candidate(candidate: str) -> bool:
         return True
 
     index = 3
-    confirmation_id_seen = action == "pending"
+    confirmation_id_seen = action in {"pending", "purge"}
     while index < len(tokens):
         token = tokens[index]
         if token.startswith("--"):

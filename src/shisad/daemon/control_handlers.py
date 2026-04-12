@@ -9,6 +9,8 @@ from shisad.core.api.schema import (
     ActionDecisionParams,
     ActionPendingParams,
     ActionPendingResult,
+    ActionPurgeParams,
+    ActionPurgeResult,
     ActionRejectResult,
     AdminSelfModApplyParams,
     AdminSelfModApplyResult,
@@ -604,6 +606,11 @@ class DaemonControlHandlers:
         self, params: ActionPendingParams, ctx: RequestContext
     ) -> ActionPendingResult:
         return await self._confirmation.handle_action_pending(params, ctx)
+
+    async def handle_action_purge(
+        self, params: ActionPurgeParams, ctx: RequestContext
+    ) -> ActionPurgeResult:
+        return await self._confirmation.handle_action_purge(params, ctx)
 
     async def handle_action_confirm(
         self, params: ActionDecisionParams, ctx: RequestContext

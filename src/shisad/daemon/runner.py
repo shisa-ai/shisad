@@ -13,6 +13,7 @@ from pydantic import BaseModel
 from shisad.core.api.schema import (
     ActionDecisionParams,
     ActionPendingParams,
+    ActionPurgeParams,
     AdminSelfModApplyParams,
     AdminSelfModProposeParams,
     AdminSelfModRollbackParams,
@@ -243,6 +244,7 @@ def _method_specs(
         ("git.diff", handlers.handle_git_diff, False, GitDiffParams),
         ("git.log", handlers.handle_git_log, False, GitLogParams),
         ("action.pending", handlers.handle_action_pending, True, ActionPendingParams),
+        ("action.purge", handlers.handle_action_purge, True, ActionPurgeParams),
         ("action.confirm", handlers.handle_action_confirm, True, ActionDecisionParams),
         ("action.reject", handlers.handle_action_reject, True, ActionDecisionParams),
         (

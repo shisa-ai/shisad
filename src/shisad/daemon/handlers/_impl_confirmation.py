@@ -61,6 +61,7 @@ _STALE_PENDING_APPROVAL_REASONS = frozenset(
         "action_digest_missing",
     }
 )
+_TERMINAL_PENDING_ACTION_STATUSES = frozenset({"approved", "failed", "rejected"})
 
 
 def _confirmation_control_plane_reason(exc: ControlPlaneRpcError) -> str:
@@ -872,6 +873,87 @@ class ConfirmationImplMixin(HandlerMixinBase):
             if len(rows) >= limit:
                 break
         return {"actions": rows, "count": len(rows)}
+
+    async def do_action_purge(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        session_filter = str(params.get("session_id") or "").strip()
+        status_filter = str(params.get("status") or "terminal").strip().lower() or "terminal"
+        older_than_days_raw = params.get("older_than_days")
+        dry_run = bool(params.get("dry_run", False))
+        limit = int(params.get("limit", 1000))
+        if limit < 0:
+            raise ValueError("limit must be non-negative")
+        older_than_days: int | None = None
+        if older_than_days_raw is not None:
+            older_than_days = int(older_than_days_raw)
+            if older_than_days < 0:
+                raise ValueError("older_than_days must be non-negative")
+        if status_filter not in {
+            "terminal",
+            "all",
+            "pending",
+            "approved",
+            "failed",
+            "rejected",
+        }:
+            raise ValueError(
+                "status must be one of terminal, pending, approved, failed, rejected, all"
+            )
+        if status_filter in {"pending", "all"} and (
+            older_than_days is None or older_than_days <= 0
+        ):
+            raise ValueError(
+                "older_than_days must be positive when purging pending or all actions"
+            )
+
+        cutoff = (
+            datetime.now(UTC) - timedelta(days=older_than_days)
+            if older_than_days is not None
+            else None
+        )
+        candidates = sorted(
+            self._pending_actions.values(),
+            key=lambda item: item.created_at,
+        )
+        purge_ids: list[str] = []
+        for item in candidates:
+            if len(purge_ids) >= limit:
+                break
+            if session_filter and str(item.session_id) != session_filter:
+                continue
+            item_status = str(item.status).strip().lower()
+            if status_filter == "terminal":
+                if item_status not in _TERMINAL_PENDING_ACTION_STATUSES:
+                    continue
+            elif status_filter != "all" and item_status != status_filter:
+                continue
+            if cutoff is not None and item.created_at > cutoff:
+                continue
+            purge_ids.append(item.confirmation_id)
+
+        if not dry_run and purge_ids:
+            purge_id_set = set(purge_ids)
+            for confirmation_id in purge_ids:
+                self._pending_actions.pop(confirmation_id, None)
+            pending_by_session = getattr(self, "_pending_by_session", {})
+            if isinstance(pending_by_session, dict):
+                for session_id, confirmation_ids in list(pending_by_session.items()):
+                    remaining = [
+                        confirmation_id
+                        for confirmation_id in confirmation_ids
+                        if confirmation_id not in purge_id_set
+                    ]
+                    if remaining:
+                        pending_by_session[session_id] = remaining
+                    else:
+                        pending_by_session.pop(session_id, None)
+            self._persist_pending_actions()
+
+        return {
+            "purged": len(purge_ids),
+            "confirmation_ids": purge_ids,
+            "remaining": len(self._pending_actions),
+            "dry_run": dry_run,
+        }
 
     async def do_action_confirm(self, params: Mapping[str, Any]) -> dict[str, Any]:
         batch_ids = params.get("confirmation_ids")

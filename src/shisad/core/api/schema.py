@@ -824,6 +824,14 @@ class ActionPendingParams(_StrictParams):
     include_ui: bool = True
 
 
+class ActionPurgeParams(_StrictParams):
+    session_id: str | None = None
+    status: str = "terminal"
+    older_than_days: int | None = None
+    limit: int = 1000
+    dry_run: bool = False
+
+
 class ActionDecisionParams(_StrictParams):
     confirmation_id: str
     decision_nonce: str | None = None
@@ -879,6 +887,13 @@ class ActionPendingEntry(BaseModel):
 class ActionPendingResult(BaseModel):
     actions: list[ActionPendingEntry] = Field(default_factory=list)
     count: int = 0
+
+
+class ActionPurgeResult(BaseModel):
+    purged: int = 0
+    confirmation_ids: list[str] = Field(default_factory=list)
+    remaining: int = 0
+    dry_run: bool = False
 
 
 class ActionConfirmResult(BaseModel):

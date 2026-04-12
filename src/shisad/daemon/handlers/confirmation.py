@@ -7,6 +7,8 @@ from shisad.core.api.schema import (
     ActionDecisionParams,
     ActionPendingParams,
     ActionPendingResult,
+    ActionPurgeParams,
+    ActionPurgeResult,
     ActionRejectResult,
     ConfirmationMetricsParams,
     ConfirmationMetricsResult,
@@ -48,6 +50,18 @@ class ConfirmationHandlers:
             internal_ingress_marker=self._internal_ingress_marker,
         )
         return ActionPendingResult.model_validate(await self._impl.do_action_pending(payload))
+
+    async def handle_action_purge(
+        self,
+        params: ActionPurgeParams,
+        ctx: RequestContext,
+    ) -> ActionPurgeResult:
+        payload = build_params_payload(
+            params,
+            ctx,
+            internal_ingress_marker=self._internal_ingress_marker,
+        )
+        return ActionPurgeResult.model_validate(await self._impl.do_action_purge(payload))
 
     async def handle_action_confirm(
         self,

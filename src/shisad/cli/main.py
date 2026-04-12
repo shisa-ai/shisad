@@ -28,6 +28,7 @@ from shisad.core.api.schema import (
     ActionConfirmResult,
     ActionPendingEntry,
     ActionPendingResult,
+    ActionPurgeResult,
     ActionRejectResult,
     AdminSelfModApplyResult,
     AdminSelfModProposeResult,
@@ -1294,7 +1295,7 @@ def action_pending(session_id: str, status: str, limit: int, raw: bool) -> None:
         "action.pending",
         {
             "session_id": session_id or None,
-            "status": status or None,
+            "status": None if status.strip().lower() == "all" else (status or "pending"),
             "limit": limit,
             "include_ui": not raw,
         },
@@ -1326,6 +1327,62 @@ def action_pending(session_id: str, status: str, limit: int, raw: bool) -> None:
             click.echo(approval_qr_ascii)
         if preview or approval_url or approval_qr_ascii:
             click.echo("")
+
+
+@action.command("purge")
+@click.option("--session", "session_id", default="", help="Filter by session id")
+@click.option(
+    "--status",
+    default="terminal",
+    type=click.Choice(["terminal", "pending", "approved", "failed", "rejected", "all"]),
+    help="Rows to purge. pending/all require --older-than-days.",
+)
+@click.option(
+    "--older-than-days",
+    type=int,
+    default=None,
+    help="Only purge rows older than N days",
+)
+@click.option("--limit", type=int, default=1000, help="Maximum rows to purge")
+@click.option("--dry-run", is_flag=True, help="Show rows that would be purged without deleting")
+def action_purge(
+    session_id: str,
+    status: str,
+    older_than_days: int | None,
+    limit: int,
+    dry_run: bool,
+) -> None:
+    """Purge terminal or aged pending confirmation rows."""
+    if limit < 0:
+        raise click.ClickException("--limit must be non-negative")
+    if older_than_days is not None and older_than_days < 0:
+        raise click.ClickException("--older-than-days must be non-negative")
+    if status in {"pending", "all"} and (
+        older_than_days is None or older_than_days <= 0
+    ):
+        raise click.ClickException(
+            "--older-than-days must be positive with --status pending or --status all"
+        )
+    config = _get_config()
+    result = rpc_call(
+        config,
+        "action.purge",
+        {
+            "session_id": session_id or None,
+            "status": status,
+            "older_than_days": older_than_days,
+            "limit": limit,
+            "dry_run": dry_run,
+        },
+        response_model=ActionPurgeResult,
+    )
+    action_word = "Would purge" if result.dry_run else "Purged"
+    _echo(f"{action_word} {result.purged} pending action row(s); remaining={result.remaining}")
+    if result.confirmation_ids:
+        click.echo(
+            "confirmation_ids="
+            + ",".join(sanitize_terminal_field(item) for item in result.confirmation_ids)
+        )
 
 
 def _pending_action_row(

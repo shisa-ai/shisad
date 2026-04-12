@@ -11,6 +11,7 @@ import pytest
 from shisad.core.api.schema import (
     ActionDecisionParams,
     ActionPendingParams,
+    ActionPurgeParams,
     ConfirmationMetricsParams,
 )
 from shisad.core.approval import (
@@ -68,6 +69,15 @@ class _StubImpl:
         self.calls.append("pending")
         return {"actions": [payload], "count": 1}
 
+    async def do_action_purge(self, payload: dict[str, object]) -> dict[str, object]:
+        self.calls.append("purge")
+        return {
+            "purged": 1,
+            "confirmation_ids": [str(payload.get("status", "terminal"))],
+            "remaining": 0,
+            "dry_run": bool(payload.get("dry_run", False)),
+        }
+
     async def do_action_confirm(self, payload: dict[str, object]) -> dict[str, object]:
         self.calls.append("confirm")
         return {"confirmed": True, "confirmation_id": str(payload["confirmation_id"])}
@@ -89,6 +99,12 @@ async def test_confirmation_wrappers_validate_shapes() -> None:
     )
     result = await handlers.handle_action_pending(ActionPendingParams(limit=5), RequestContext())
     assert result.count == 1
+
+    purged = await handlers.handle_action_purge(
+        ActionPurgeParams(status="terminal"),
+        RequestContext(),
+    )
+    assert purged.purged == 1
 
 
 @pytest.mark.asyncio
@@ -490,6 +506,88 @@ async def test_m1_rr3_action_pending_filters_by_confirmation_id(tmp_path) -> Non
     filtered = await harness.do_action_pending({"confirmation_id": "c-2", "limit": 10})
     assert filtered["count"] == 1
     assert filtered["actions"][0]["confirmation_id"] == "c-2"
+
+
+@pytest.mark.asyncio
+async def test_lt5_action_purge_defaults_to_terminal_rows(tmp_path) -> None:
+    harness = _ConfirmationImplHarness(tmp_path)
+    pending = _pending_action(nonce="pending")
+    failed = _pending_action(nonce="failed")
+    failed.confirmation_id = "c-failed"
+    failed.status = "failed"
+    failed.status_reason = "approval_envelope_missing"
+    harness._pending_actions[pending.confirmation_id] = pending
+    harness._pending_actions[failed.confirmation_id] = failed
+
+    result = await harness.do_action_purge({"status": "terminal", "limit": 10})
+
+    assert result == {
+        "purged": 1,
+        "confirmation_ids": ["c-failed"],
+        "remaining": 1,
+        "dry_run": False,
+    }
+    assert pending.confirmation_id in harness._pending_actions
+    assert "c-failed" not in harness._pending_actions
+
+
+@pytest.mark.asyncio
+async def test_lt5_action_purge_can_clear_aged_pending_rows(tmp_path) -> None:
+    harness = _ConfirmationImplHarness(tmp_path)
+    recent = _pending_action(nonce="recent")
+    old = _pending_action(nonce="old")
+    old.confirmation_id = "c-old"
+    old.created_at = datetime.now(UTC) - timedelta(days=10)
+    harness._pending_actions[recent.confirmation_id] = recent
+    harness._pending_actions[old.confirmation_id] = old
+
+    result = await harness.do_action_purge(
+        {"status": "pending", "older_than_days": 7, "limit": 10}
+    )
+
+    assert result["confirmation_ids"] == ["c-old"]
+    assert recent.confirmation_id in harness._pending_actions
+    assert "c-old" not in harness._pending_actions
+
+
+@pytest.mark.asyncio
+async def test_lt5_action_purge_limit_zero_purges_no_rows(tmp_path) -> None:
+    harness = _ConfirmationImplHarness(tmp_path)
+    failed = _pending_action(nonce="failed")
+    failed.confirmation_id = "c-failed"
+    failed.status = "failed"
+    failed.status_reason = "approval_envelope_missing"
+    harness._pending_actions[failed.confirmation_id] = failed
+
+    result = await harness.do_action_purge({"status": "terminal", "limit": 0})
+
+    assert result == {
+        "purged": 0,
+        "confirmation_ids": [],
+        "remaining": 1,
+        "dry_run": False,
+    }
+    assert "c-failed" in harness._pending_actions
+
+
+@pytest.mark.asyncio
+async def test_lt5_action_purge_requires_age_for_pending_rows(tmp_path) -> None:
+    harness = _ConfirmationImplHarness(tmp_path)
+
+    with pytest.raises(ValueError, match="older_than_days must be positive"):
+        await harness.do_action_purge({"status": "pending", "limit": 10})
+
+
+@pytest.mark.asyncio
+async def test_lt5_action_purge_rejects_nonpositive_age_for_pending_rows(
+    tmp_path,
+) -> None:
+    harness = _ConfirmationImplHarness(tmp_path)
+
+    with pytest.raises(ValueError, match="older_than_days must be positive"):
+        await harness.do_action_purge(
+            {"status": "pending", "older_than_days": 0, "limit": 10}
+        )
 
 
 @pytest.mark.asyncio
