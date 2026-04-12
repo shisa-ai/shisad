@@ -1357,9 +1357,7 @@ def action_purge(
         raise click.ClickException("--limit must be non-negative")
     if older_than_days is not None and older_than_days < 0:
         raise click.ClickException("--older-than-days must be non-negative")
-    if status in {"pending", "all"} and (
-        older_than_days is None or older_than_days <= 0
-    ):
+    if status in {"pending", "all"} and (older_than_days is None or older_than_days <= 0):
         raise click.ClickException(
             "--older-than-days must be positive with --status pending or --status all"
         )

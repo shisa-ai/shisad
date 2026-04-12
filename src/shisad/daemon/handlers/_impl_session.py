@@ -553,10 +553,7 @@ def _confirmation_command_guidance() -> str:
 
 
 def _starts_with_supported_cli_command(text: str) -> bool:
-    return any(
-        text == cli_name or text.startswith(f"{cli_name} ")
-        for cli_name in _CRC_CLI_NAMES
-    )
+    return any(text == cli_name or text.startswith(f"{cli_name} ") for cli_name in _CRC_CLI_NAMES)
 
 
 def _extract_cli_action_command_candidate(
@@ -708,10 +705,7 @@ def _chat_confirmation_command_error_text(
             suggestion = f"{suggested_action} all"
         else:
             suggestion = f"{suggested_action} N"
-    return (
-        f"Did you mean '{suggestion}'? No action was taken. "
-        f"{_confirmation_command_guidance()}"
-    )
+    return f"Did you mean '{suggestion}'? No action was taken. {_confirmation_command_guidance()}"
 
 
 def _internal_ingress_confirmation_approval_not_allowed_text() -> str:
@@ -1020,10 +1014,7 @@ def _is_direct_trusted_cli_default_ingress(
         not is_internal_ingress
         and channel == "cli"
         and session_mode == SessionMode.DEFAULT
-        and (
-            _is_trusted_cli_confirmation_level(trust_level)
-            or _is_trusted_level(trust_level)
-        )
+        and (_is_trusted_cli_confirmation_level(trust_level) or _is_trusted_level(trust_level))
     )
 
 

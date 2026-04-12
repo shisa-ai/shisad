@@ -559,7 +559,9 @@ def test_b1b4_clean_turn_tolerates_small_promptguard_scores() -> None:
 
     # Risk factors present — not clean regardless of score
     factors = FirewallResult(
-        sanitized_text="x", risk_score=0.0, risk_factors=["instruction_override"],
+        sanitized_text="x",
+        risk_score=0.0,
+        risk_factors=["instruction_override"],
         original_hash="h",
     )
     assert _trusted_cli_firewall_result_is_clean(factors) is False

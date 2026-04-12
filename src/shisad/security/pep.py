@@ -511,10 +511,7 @@ class PEP:
         taint_requires_confirmation: bool,
     ) -> ConfirmationRequirement | None:
         trusted_cli_clean = (
-            (
-                trust_level.strip().lower() == "trusted_cli"
-                or trusted_cli_confirmation_bypass
-            )
+            (trust_level.strip().lower() == "trusted_cli" or trusted_cli_confirmation_bypass)
             and not egress_requires_confirmation
             and not taint_requires_confirmation
         )

@@ -88,9 +88,7 @@ def test_lt2_mixed_pending_confirmation_context_stays_assistant(tmp_path: Path) 
             "[CONFIRMATION REQUIRED] [PENDING CONFIRMATIONS]\n"
             "Queued for your approval:\n"
             "1. c-1\n"
-            "   In chat: reply with 'confirm 1'\n\n"
-            + "pending detail " * 30
-            + "\n\n"
+            "   In chat: reply with 'confirm 1'\n\n" + "pending detail " * 30 + "\n\n"
             "Review all pending: shisad action pending\n\n"
             "Completed actions:\n"
             "Tool results summary:\n"
@@ -142,9 +140,7 @@ def test_lt2_pending_confirmation_preview_completed_actions_stays_system(
             "   Preview:\n"
             "     Review all pending: shisad action pending\n"
             "     Completed actions:\n"
-            "     Tool results summary: user-provided label\n"
-            + "preview detail " * 30
-            + "\n\n"
+            "     Tool results summary: user-provided label\n" + "preview detail " * 30 + "\n\n"
             "Review all pending: shisad action pending"
         ),
         metadata={"system_generated_pending_confirmations": True},
