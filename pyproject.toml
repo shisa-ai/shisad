@@ -62,6 +62,10 @@ warn_return_any = true
 warn_unused_configs = true
 plugins = ["pydantic.mypy"]
 
+[[tool.mypy.overrides]]
+module = ["onnxruntime", "transformers", "transformers.*"]
+ignore_missing_imports = true
+
 [dependency-groups]
 dev = [
     "numpy>=2.3,<3",

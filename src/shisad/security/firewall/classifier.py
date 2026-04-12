@@ -185,7 +185,7 @@ class OnnxPromptGuardBackend:
 
         try:
             import numpy as np
-            import onnxruntime as ort  # type: ignore[import-untyped]
+            import onnxruntime as ort
             from transformers import AutoConfig, AutoTokenizer
         except ImportError as exc:  # pragma: no cover - exercised via loader surface
             raise PromptGuardLoadError("promptguard_runtime_missing") from exc
