@@ -42,7 +42,7 @@ from shisad.core.types import (
     WorkspaceId,
 )
 from shisad.daemon.context import RequestContext
-from shisad.daemon.handlers._impl import PendingAction
+from shisad.daemon.handlers._impl import HandlerImplementation, PendingAction
 from shisad.daemon.handlers._impl_confirmation import ConfirmationImplMixin
 from shisad.daemon.handlers._pending_approval import (
     PendingPepContextSnapshot,
@@ -400,6 +400,30 @@ def _software_approval_envelope(*, tool_name: ToolName) -> ApprovalEnvelope:
     )
 
 
+def test_lt3_load_pending_actions_fails_legacy_missing_approval_envelope(tmp_path) -> None:
+    pending = _pending_action(nonce="expected")
+    payload = HandlerImplementation._pending_to_dict(pending)
+    payload.pop("approval_envelope", None)
+    payload["approval_envelope_hash"] = ""
+    pending_actions_file = tmp_path / "data" / "pending_actions.json"
+    pending_actions_file.parent.mkdir(parents=True)
+    pending_actions_file.write_text(json.dumps([payload]), encoding="utf-8")
+    harness = object.__new__(HandlerImplementation)
+    harness._pending_actions_file = pending_actions_file
+    harness._pending_actions = {}
+    harness._pending_by_session = {}
+    harness._confirmation_failure_tracker = ConfirmationMethodLockoutTracker()
+
+    HandlerImplementation._load_pending_actions(harness)
+
+    loaded = harness._pending_actions["c-1"]
+    assert loaded.status == "failed"
+    assert loaded.status_reason == "approval_envelope_missing"
+    persisted = json.loads(pending_actions_file.read_text(encoding="utf-8"))
+    assert persisted[0]["status"] == "failed"
+    assert persisted[0]["status_reason"] == "approval_envelope_missing"
+
+
 def _pep_context_snapshot(
     *,
     capabilities: set[Capability],
@@ -597,6 +621,28 @@ async def test_a0_confirmation_lockout_triggers_after_repeated_invalid_nonce(tmp
     assert locked["confirmed"] is False
     assert locked["reason"] == "confirmation_method_locked_out"
     assert float(locked["retry_after_seconds"]) > 0
+    assert harness._pending_actions["c-1"].status == "failed"
+    assert harness._pending_actions["c-1"].status_reason == "confirmation_method_locked_out"
+
+
+@pytest.mark.asyncio
+async def test_lt3_action_confirm_fails_missing_approval_envelope_terminally(tmp_path) -> None:
+    harness = _ConfirmationImplHarness(tmp_path)
+    pending = _pending_action(nonce="expected")
+    pending.approval_envelope = None
+    pending.approval_envelope_hash = ""
+    harness._pending_actions["c-1"] = pending
+
+    result = await harness.do_action_confirm(
+        {"confirmation_id": "c-1", "decision_nonce": "expected"}
+    )
+
+    assert result["confirmed"] is False
+    assert result["reason"] == "approval_envelope_missing"
+    assert result["status"] == "failed"
+    assert pending.status == "failed"
+    assert pending.status_reason == "approval_envelope_missing"
+    assert harness.execution_kwargs == []
 
 
 @pytest.mark.asyncio

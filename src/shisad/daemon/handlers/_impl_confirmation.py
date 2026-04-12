@@ -55,6 +55,12 @@ from shisad.security.control_plane.sidecar import ControlPlaneRpcError
 from shisad.security.credentials import ApprovalFactorRecord, RecoveryCodeRecord, SignerKeyRecord
 
 logger = logging.getLogger(__name__)
+_STALE_PENDING_APPROVAL_REASONS = frozenset(
+    {
+        "approval_envelope_missing",
+        "action_digest_missing",
+    }
+)
 
 
 def _confirmation_control_plane_reason(exc: ControlPlaneRpcError) -> str:
@@ -83,6 +89,50 @@ class PendingTwoFactorEnrollment:
 
 
 class ConfirmationImplMixin(HandlerMixinBase):
+    @staticmethod
+    def _pending_confirmation_method_for_lockout(pending: Any) -> str:
+        method = str(getattr(pending, "selected_backend_method", "") or "software").strip()
+        return method or "software"
+
+    @staticmethod
+    def _pending_approval_stale_reason(pending: Any) -> str:
+        if str(getattr(pending, "status", "")).strip().lower() != "pending":
+            return ""
+        approval_envelope = getattr(pending, "approval_envelope", None)
+        if approval_envelope is None:
+            return "approval_envelope_missing"
+        if not str(getattr(approval_envelope, "action_digest", "")).strip():
+            return "action_digest_missing"
+        return ""
+
+    def _stale_pending_action_reason(self, pending: Any) -> str:
+        reason = self._pending_approval_stale_reason(pending)
+        if reason:
+            return reason
+        tracker = getattr(self, "_confirmation_failure_tracker", None)
+        status = getattr(tracker, "status", None)
+        if not callable(status):
+            return ""
+        retry_after = status(
+            user_id=str(getattr(pending, "user_id", "")),
+            method=self._pending_confirmation_method_for_lockout(pending),
+        )
+        return "confirmation_method_locked_out" if retry_after is not None else ""
+
+    def _mark_stale_pending_action(
+        self,
+        pending: Any,
+        *,
+        reason: str,
+        persist: bool = True,
+    ) -> None:
+        pending.status = "failed"
+        pending.status_reason = reason
+        self._sync_task_confirmation_status(pending)
+        self._record_task_confirmation_outcome(pending, success=False)
+        if persist:
+            self._persist_pending_actions()
+
     @staticmethod
     def _requested_confirmation_method(*, params: Mapping[str, Any], pending: Any) -> str:
         requested = str(
@@ -860,11 +910,17 @@ class ConfirmationImplMixin(HandlerMixinBase):
             method=confirmation_method,
         )
         if retry_after is not None:
+            self._mark_stale_pending_action(
+                pending,
+                reason="confirmation_method_locked_out",
+            )
             return {
                 "confirmed": False,
                 "confirmation_id": confirmation_id,
                 "reason": "confirmation_method_locked_out",
                 "retry_after_seconds": round(retry_after, 3),
+                "status": pending.status,
+                "status_reason": pending.status_reason,
             }
         raw_nonce = params.get("decision_nonce", "")
         provided_nonce = raw_nonce.strip() if isinstance(raw_nonce, str) else ""
@@ -1018,6 +1074,16 @@ class ConfirmationImplMixin(HandlerMixinBase):
                     params=dict(params),
                 )
         except ConfirmationVerificationError as exc:
+            reason = str(exc.reason)
+            if reason in _STALE_PENDING_APPROVAL_REASONS:
+                self._mark_stale_pending_action(pending, reason=reason)
+                return {
+                    "confirmed": False,
+                    "confirmation_id": confirmation_id,
+                    "reason": reason,
+                    "status": pending.status,
+                    "status_reason": pending.status_reason,
+                }
             self._confirmation_failure_tracker.record_failure(
                 user_id=str(pending.user_id),
                 method=confirmation_method,
@@ -1029,7 +1095,7 @@ class ConfirmationImplMixin(HandlerMixinBase):
             response: dict[str, Any] = {
                 "confirmed": False,
                 "confirmation_id": confirmation_id,
-                "reason": str(exc.reason),
+                "reason": reason,
             }
             if retry_after is not None:
                 response["retry_after_seconds"] = round(retry_after, 3)

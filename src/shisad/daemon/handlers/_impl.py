@@ -2220,6 +2220,7 @@ class HandlerImplementation(
             return
         if not isinstance(raw, list):
             return
+        pruned_stale = False
         for item in raw:
             if not isinstance(item, dict):
                 continue
@@ -2353,6 +2354,16 @@ class HandlerImplementation(
                 pending.session_id,
                 [],
             ).append(pending.confirmation_id)
+            stale_reason = self._stale_pending_action_reason(pending)
+            if stale_reason:
+                self._mark_stale_pending_action(
+                    pending,
+                    reason=stale_reason,
+                    persist=False,
+                )
+                pruned_stale = True
+        if pruned_stale:
+            self._persist_pending_actions()
 
     def _is_verified_channel_identity(self, *, channel: str, external_user_id: str) -> bool:
         if channel == "matrix" and self._matrix_channel is not None:

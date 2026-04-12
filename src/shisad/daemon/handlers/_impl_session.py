@@ -3105,6 +3105,20 @@ class SessionImplMixin(HandlerMixinBase):
         if is_internal_ingress and totp_submission is None:
             intent = _classify_chat_confirmation_intent(content)
 
+        def _confirmation_result_status_text(
+            result: Mapping[str, Any],
+            *,
+            confirmed: bool,
+        ) -> str:
+            if confirmed:
+                return str(result.get("status") or result.get("reason") or "approved").strip()
+            return str(
+                result.get("status_reason")
+                or result.get("reason")
+                or result.get("status")
+                or "failed"
+            ).strip()
+
         async def _finalize_chat_confirmation_response(
             *,
             response_text: str,
@@ -3288,7 +3302,7 @@ class SessionImplMixin(HandlerMixinBase):
                 checkpoint_id = _checkpoint_id_from_action_result(result)
                 if checkpoint_id:
                     checkpoint_ids.append(checkpoint_id)
-                status = str(result.get("status") or result.get("reason") or "failed").strip()
+                status = _confirmation_result_status_text(result, confirmed=confirmed)
                 confirmation_label = str(getattr(target_pending, "confirmation_id", "")).strip()
                 if confirmed:
                     response_text = (
@@ -3391,9 +3405,7 @@ class SessionImplMixin(HandlerMixinBase):
                         checkpoint_id = _checkpoint_id_from_action_result(result)
                         if checkpoint_id:
                             checkpoint_ids.append(checkpoint_id)
-                        status = str(
-                            result.get("status") or result.get("reason") or "failed"
-                        ).strip()
+                        status = _confirmation_result_status_text(result, confirmed=confirmed)
                         outcome_lines.append(
                             f"confirmed {index + 1} ({pending.tool_name}): {status}"
                         )
