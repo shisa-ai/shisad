@@ -93,6 +93,7 @@ def test_lt2_mixed_pending_confirmation_context_stays_assistant(tmp_path: Path) 
             + "\n\n"
             "Review all pending: shisad action pending\n\n"
             "Completed actions:\n"
+            "Tool results summary:\n"
             "- summarized current todo list; quoted footer text: "
             "Review all pending: shisad action pending"
         ),
@@ -139,6 +140,7 @@ def test_lt2_pending_confirmation_preview_completed_actions_stays_system(
             "1. c-1\n"
             "   In chat: reply with 'confirm 1'\n"
             "   Preview:\n"
+            "     Review all pending: shisad action pending\n"
             "     Completed actions: user-provided label\n"
             + "preview detail " * 30
             + "\n\n"
