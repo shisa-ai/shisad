@@ -797,6 +797,39 @@ async def _reject_pending_action(
     return dict(result)
 
 
+async def _run_contract_cli(config: DaemonConfig, *args: str) -> subprocess.CompletedProcess[str]:
+    repo_root = Path(__file__).resolve().parents[2]
+    env = os.environ.copy()
+    env.update(
+        {
+            "SHISAD_DATA_DIR": str(config.data_dir),
+            "SHISAD_SOCKET_PATH": str(config.socket_path),
+            "SHISAD_POLICY_PATH": str(config.policy_path),
+            "SHISAD_ENV_FILE": "",
+        }
+    )
+    command = [sys.executable, "-m", "shisad.cli.main", "--no-color", *args]
+    process = await asyncio.create_subprocess_exec(
+        *command,
+        cwd=repo_root,
+        env=env,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=10)
+    except TimeoutError:
+        process.kill()
+        await process.wait()
+        raise
+    return subprocess.CompletedProcess(
+        args=command,
+        returncode=int(process.returncode or 0),
+        stdout=stdout.decode(errors="replace"),
+        stderr=stderr.decode(errors="replace"),
+    )
+
+
 async def _wait_for_audit_event(
     client: ControlClient,
     *,
@@ -1333,6 +1366,83 @@ async def test_contract_browser_click_confirmation_approve_executes_after_confir
             and bool(event.get("data", {}).get("success")) is True
         ),
     )
+
+
+@pytest.mark.asyncio
+async def test_contract_action_pending_cli_defaults_and_purge_terminal_rows(
+    contract_harness: ContractHarness,
+) -> None:
+    sid = await _create_session(contract_harness.client)
+    await contract_harness.client.call(
+        "session.message",
+        {
+            "session_id": sid,
+            "content": f"browser navigate {contract_harness.browser_base_url}/browser",
+        },
+    )
+    first = await contract_harness.client.call(
+        "session.message",
+        {"session_id": sid, "content": "browser click the continue button in the browser"},
+    )
+    first_ids = first.get("pending_confirmation_ids")
+    assert isinstance(first_ids, list)
+    assert first_ids
+    rejected_id = str(first_ids[0])
+    rejected = await _reject_pending_action(contract_harness.client, rejected_id)
+    assert rejected.get("rejected") is True
+
+    second = await contract_harness.client.call(
+        "session.message",
+        {"session_id": sid, "content": "browser click the continue button in the browser"},
+    )
+    second_ids = second.get("pending_confirmation_ids")
+    assert isinstance(second_ids, list)
+    assert second_ids
+    pending_id = str(second_ids[0])
+    assert pending_id != rejected_id
+
+    default_pending = await _run_contract_cli(contract_harness.config, "action", "pending")
+    assert default_pending.returncode == 0, default_pending.stderr or default_pending.stdout
+    assert pending_id in default_pending.stdout
+    assert rejected_id not in default_pending.stdout
+
+    all_pending = await _run_contract_cli(
+        contract_harness.config,
+        "action",
+        "pending",
+        "--status",
+        "all",
+    )
+    assert all_pending.returncode == 0, all_pending.stderr or all_pending.stdout
+    assert pending_id in all_pending.stdout
+    assert rejected_id in all_pending.stdout
+
+    dry_run = await _run_contract_cli(contract_harness.config, "action", "purge", "--dry-run")
+    assert dry_run.returncode == 0, dry_run.stderr or dry_run.stdout
+    assert "Would purge 1 pending action row(s)" in dry_run.stdout
+    assert rejected_id in dry_run.stdout
+
+    after_dry_run = await contract_harness.client.call(
+        "action.pending",
+        {"confirmation_id": rejected_id},
+    )
+    assert after_dry_run["count"] == 1
+
+    purged = await _run_contract_cli(contract_harness.config, "action", "purge")
+    assert purged.returncode == 0, purged.stderr or purged.stdout
+    assert "Purged 1 pending action row(s)" in purged.stdout
+    assert rejected_id in purged.stdout
+
+    after_purge = await _run_contract_cli(
+        contract_harness.config,
+        "action",
+        "pending",
+        "--status",
+        "all",
+    )
+    assert after_purge.returncode == 0, after_purge.stderr or after_purge.stdout
+    assert pending_id in after_purge.stdout
+    assert rejected_id not in after_purge.stdout
 
 
 @pytest.mark.asyncio
