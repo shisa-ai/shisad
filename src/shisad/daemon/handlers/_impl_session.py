@@ -410,10 +410,18 @@ _CRC_CLI_ACTION_OPTIONS = {
         "--recovery-code": True,
         "--totp-code": True,
         "--wait-timeout": True,
+        "--help": False,
     },
-    "reject": {"--nonce": True, "--reason": True},
-    "pending": {"--limit": True, "--raw": False, "--session": True, "--status": True},
+    "reject": {"--nonce": True, "--reason": True, "--help": False},
+    "pending": {
+        "--limit": True,
+        "--raw": False,
+        "--session": True,
+        "--status": True,
+        "--help": False,
+    },
 }
+_CRC_CLI_ACTION_ALLOWED_QUOTED_TAILS = {"to inspect pending approvals"}
 _CRC_CLI_ACTION_GUIDANCE_PREFIXES = (
     "cli fallback: run ",
     "cli fallback: ",
@@ -535,7 +543,11 @@ def _confirmation_command_guidance() -> str:
     return "Use 'confirm N', 'reject N', 'yes to all', or 'no to all'."
 
 
-def _extract_cli_action_command_candidate(text: str) -> str:
+def _extract_cli_action_command_candidate(
+    text: str,
+    *,
+    allowed_quoted_tails: set[str] | None = None,
+) -> str:
     candidate = text.strip().removesuffix(".").strip()
     if not candidate:
         return ""
@@ -544,6 +556,10 @@ def _extract_cli_action_command_candidate(text: str) -> str:
     closing_index = candidate.find(candidate[0], 1)
     if closing_index == -1:
         return candidate[1:].strip()
+    tail = candidate[closing_index + 1 :].strip()
+    normalized_tail = tail.removesuffix(".").strip()
+    if normalized_tail and normalized_tail not in (allowed_quoted_tails or set()):
+        return ""
     return candidate[1:closing_index].strip()
 
 
@@ -555,9 +571,13 @@ def _is_cli_action_command_candidate(candidate: str) -> bool:
     if len(tokens) < 3 or tokens[:2] != ["shisad", "action"]:
         return False
     action = tokens[2]
+    if action == "--help":
+        return len(tokens) == 3
     option_value_required = _CRC_CLI_ACTION_OPTIONS.get(action)
     if option_value_required is None:
         return False
+    if len(tokens) == 4 and tokens[3] == "--help":
+        return True
 
     index = 3
     confirmation_id_seen = action == "pending"
@@ -594,7 +614,10 @@ def _looks_like_cli_action_command_or_guidance(normalized: str) -> bool:
     for prefix in _CRC_CLI_ACTION_GUIDANCE_PREFIXES:
         if not normalized.startswith(prefix):
             continue
-        candidate = _extract_cli_action_command_candidate(normalized.removeprefix(prefix))
+        candidate = _extract_cli_action_command_candidate(
+            normalized.removeprefix(prefix),
+            allowed_quoted_tails=_CRC_CLI_ACTION_ALLOWED_QUOTED_TAILS,
+        )
         return _is_cli_action_command_candidate(candidate)
     return False
 

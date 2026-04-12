@@ -483,6 +483,9 @@ async def test_lt2_chat_confirmation_bad_index_returns_error_without_planner_pas
         "shisad action confirm c-1 --recovery-code abcd-1234",
         "shisad action reject c-1 --nonce nonce-1 --reason manual_reject",
         "shisad action pending --session sess-chat --status pending --limit 10 --raw",
+        "shisad action --help",
+        "shisad action confirm --help",
+        "shisad action pending --help",
         "run 'shisad action confirm c-1'",
         "Then run 'shisad action reject c-1'",
         "Review all pending: shisad action pending",
@@ -538,6 +541,8 @@ async def test_h1_chat_confirmation_does_not_treat_cli_command_or_id_as_approval
         "shisad action reject c-1 now?",
         "shisad action pending --session sess-chat what does this show?",
         "shisad action confirm c-1 --reason approved now?",
+        '"shisad action reject c-1" now?',
+        "`shisad action pending --session sess-chat` what does this show?",
     ],
 )
 async def test_h1_chat_confirmation_cli_command_mentions_still_reach_planner(
