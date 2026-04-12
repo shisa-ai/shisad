@@ -93,7 +93,8 @@ def test_lt2_mixed_pending_confirmation_context_stays_assistant(tmp_path: Path) 
             + "\n\n"
             "Review all pending: shisad action pending\n\n"
             "Completed actions:\n"
-            "- summarized current todo list"
+            "- summarized current todo list; quoted footer text: "
+            "Review all pending: shisad action pending"
         ),
         metadata={"system_generated_pending_confirmations": True},
     )

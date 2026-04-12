@@ -1720,6 +1720,9 @@ _CONFIRMATION_REQUIRED_PREFIX = "[CONFIRMATION REQUIRED]"
 _PENDING_CONFIRMATIONS_HEADER = "[PENDING CONFIRMATIONS]"
 _PENDING_CONFIRMATIONS_FOOTER = "Review all pending: shisad action pending"
 _COMPLETED_ACTIONS_HEADER = "Completed actions:"
+_PENDING_COMPLETED_ACTIONS_SEQUENCE = (
+    f"{_PENDING_CONFIRMATIONS_FOOTER} {_COMPLETED_ACTIONS_HEADER}"
+)
 
 
 def _is_mixed_pending_confirmation_context(text: str) -> bool:
@@ -1729,9 +1732,8 @@ def _is_mixed_pending_confirmation_context(text: str) -> bool:
     if not stripped.startswith(_PENDING_CONFIRMATIONS_HEADER):
         return False
 
-    completed_at = stripped.rfind(_COMPLETED_ACTIONS_HEADER)
-    footer_at = stripped.rfind(_PENDING_CONFIRMATIONS_FOOTER)
-    return completed_at > footer_at >= 0
+    compact = " ".join(stripped.split())
+    return _PENDING_COMPLETED_ACTIONS_SEQUENCE in compact
 
 
 def _transcript_entry_context_role(
