@@ -7,6 +7,7 @@ import hashlib
 import json
 import logging
 import re
+import shlex
 import time
 from collections.abc import Mapping, Sequence
 from contextlib import suppress
@@ -398,9 +399,21 @@ _CRC_REJECT_ALL_PATTERNS = {"no to all", "reject all", "deny all", "cancel all"}
 _CRC_CONFIRM_INDEX_RE = re.compile(r"^(?:confirm|approve|yes)\s+(\d+)$")
 _CRC_REJECT_INDEX_RE = re.compile(r"^(?:reject|deny|no)\s+(\d+)$")
 _CRC_BARE_INDEX_RE = re.compile(r"^(\d{1,3})$")
-_CRC_CLI_ACTION_COMMAND_RE = re.compile(
-    r"^shisad\s+action\s+(?:confirm|reject|pending)(?:\s+\S+)*$"
-)
+_CRC_CLI_ACTION_OPTIONS = {
+    "confirm": {
+        "--approval-method": True,
+        "--credential-id": True,
+        "--no-open": False,
+        "--nonce": True,
+        "--principal-id": True,
+        "--reason": True,
+        "--recovery-code": True,
+        "--totp-code": True,
+        "--wait-timeout": True,
+    },
+    "reject": {"--nonce": True, "--reason": True},
+    "pending": {"--limit": True, "--raw": False, "--session": True, "--status": True},
+}
 _CRC_CLI_ACTION_GUIDANCE_PREFIXES = (
     "cli fallback: run ",
     "cli fallback: ",
@@ -534,15 +547,55 @@ def _extract_cli_action_command_candidate(text: str) -> str:
     return candidate[1:closing_index].strip()
 
 
+def _is_cli_action_command_candidate(candidate: str) -> bool:
+    try:
+        tokens = shlex.split(candidate)
+    except ValueError:
+        return False
+    if len(tokens) < 3 or tokens[:2] != ["shisad", "action"]:
+        return False
+    action = tokens[2]
+    option_value_required = _CRC_CLI_ACTION_OPTIONS.get(action)
+    if option_value_required is None:
+        return False
+
+    index = 3
+    confirmation_id_seen = action == "pending"
+    while index < len(tokens):
+        token = tokens[index]
+        if token.startswith("--"):
+            flag, has_inline_value, inline_value = token.partition("=")
+            requires_value = option_value_required.get(flag)
+            if requires_value is None:
+                return False
+            if requires_value:
+                if has_inline_value:
+                    if not inline_value:
+                        return False
+                    index += 1
+                    continue
+                index += 1
+                if index >= len(tokens) or tokens[index].startswith("--"):
+                    return False
+            elif has_inline_value:
+                return False
+        elif action in {"confirm", "reject"} and not confirmation_id_seen:
+            confirmation_id_seen = True
+        else:
+            return False
+        index += 1
+    return confirmation_id_seen
+
+
 def _looks_like_cli_action_command_or_guidance(normalized: str) -> bool:
     candidate = _extract_cli_action_command_candidate(normalized)
-    if _CRC_CLI_ACTION_COMMAND_RE.fullmatch(candidate) is not None:
+    if _is_cli_action_command_candidate(candidate):
         return True
     for prefix in _CRC_CLI_ACTION_GUIDANCE_PREFIXES:
         if not normalized.startswith(prefix):
             continue
         candidate = _extract_cli_action_command_candidate(normalized.removeprefix(prefix))
-        return _CRC_CLI_ACTION_COMMAND_RE.fullmatch(candidate) is not None
+        return _is_cli_action_command_candidate(candidate)
     return False
 
 

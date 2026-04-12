@@ -535,6 +535,9 @@ async def test_h1_chat_confirmation_does_not_treat_cli_command_or_id_as_approval
     [
         'What does "shisad action pending" show?',
         'Should I run "shisad action reject c-1" now?',
+        "shisad action reject c-1 now?",
+        "shisad action pending --session sess-chat what does this show?",
+        "shisad action confirm c-1 --reason approved now?",
     ],
 )
 async def test_h1_chat_confirmation_cli_command_mentions_still_reach_planner(
