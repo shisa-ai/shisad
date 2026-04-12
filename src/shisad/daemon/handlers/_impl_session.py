@@ -399,6 +399,7 @@ _CRC_REJECT_ALL_PATTERNS = {"no to all", "reject all", "deny all", "cancel all"}
 _CRC_CONFIRM_INDEX_RE = re.compile(r"^(?:confirm|approve|yes)\s+(\d+)$")
 _CRC_REJECT_INDEX_RE = re.compile(r"^(?:reject|deny|no)\s+(\d+)$")
 _CRC_BARE_INDEX_RE = re.compile(r"^(\d{1,3})$")
+_CRC_CLI_NAMES = {"shisad", "shisactl"}
 _CRC_CLI_ACTION_OPTIONS = {
     "confirm": {
         "--approval-method": True,
@@ -543,6 +544,13 @@ def _confirmation_command_guidance() -> str:
     return "Use 'confirm N', 'reject N', 'yes to all', or 'no to all'."
 
 
+def _starts_with_supported_cli_command(text: str) -> bool:
+    return any(
+        text == cli_name or text.startswith(f"{cli_name} ")
+        for cli_name in _CRC_CLI_NAMES
+    )
+
+
 def _extract_cli_action_command_candidate(
     text: str,
     *,
@@ -560,9 +568,9 @@ def _extract_cli_action_command_candidate(
         tail = body_and_tail[closing_index + 3 :].strip()
         if tail:
             return ""
-        if body and not body.startswith("shisad "):
+        if body and not _starts_with_supported_cli_command(body):
             _, _, possible_command = body.partition(" ")
-            if possible_command.startswith("shisad "):
+            if _starts_with_supported_cli_command(possible_command):
                 body = possible_command
         return body
     if candidate[0] not in {"'", '"', "`"}:
@@ -582,7 +590,7 @@ def _is_cli_action_command_candidate(candidate: str) -> bool:
         tokens = shlex.split(candidate)
     except ValueError:
         return False
-    if len(tokens) < 3 or tokens[:2] != ["shisad", "action"]:
+    if len(tokens) < 3 or tokens[0] not in _CRC_CLI_NAMES or tokens[1] != "action":
         return False
     action = tokens[2]
     if action == "--help":
@@ -665,7 +673,7 @@ def _chat_confirmation_command_error_text(
             f"Confirmation ID {normalized} is not a chat confirmation command. "
             f"No action was taken. {_confirmation_command_guidance()}"
         )
-    if first == "shisad":
+    if first in _CRC_CLI_NAMES:
         return ""
     if first in _CRC_CONFIRMATION_VERB_ACTIONS:
         if (

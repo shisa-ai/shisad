@@ -285,13 +285,21 @@ async def test_lt2_session_message_confirmation_commands_do_not_reenter_planner(
         confirmation_id = str(pending["actions"][0]["confirmation_id"])
         for invalid_command in (
             f"shisad action confirm {confirmation_id}",
+            f"shisactl action confirm {confirmation_id}",
             f"shisad action confirm {confirmation_id} --nonce nonce-1 --reason approved",
+            f"shisactl action confirm {confirmation_id} --nonce nonce-1 --reason approved",
             f"run 'shisad action confirm {confirmation_id}'",
+            f"run 'shisactl action confirm {confirmation_id}'",
             f"Then run 'shisad action reject {confirmation_id}'",
+            f"Then run 'shisactl action reject {confirmation_id}'",
             f"Then run 'shisad action reject {confirmation_id} --nonce nonce-1'",
+            f"Then run 'shisactl action reject {confirmation_id} --nonce nonce-1'",
             "shisad action pending --session sess-chat --status pending --limit 10 --raw",
+            "shisactl action pending --session sess-chat --status pending --limit 10 --raw",
             f"```\nshisad action confirm {confirmation_id} --nonce nonce-1\n```",
+            f"```\nshisactl action confirm {confirmation_id} --nonce nonce-1\n```",
             "Review all pending: shisad action pending",
+            "Review all pending: shisactl action pending",
             confirmation_id,
         ):
             invalid = await _send(sid, invalid_command)

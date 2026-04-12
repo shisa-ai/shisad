@@ -53,8 +53,9 @@ This repo is public and still pre-alpha. This tree contains the pre-publication
 `v0.6.3` candidate content; published installability is determined by the
 GitHub release tag and PyPI package. Live testing reopened the `v0.6.3`
 release process for CLI trust and confirmation-flow fixes; this tree now
-contains the recut candidate pending release-close validation and explicit
-publication.
+contains the recut candidate. Post-LT validation evidence is recorded for the
+candidate line; ReleaseClose reviewer sign-off and explicit publication remain
+pending.
 
 `v0.6.3` is the critical UX stabilization follow-up to `v0.6.2`: pending
 confirmations now produce actionable daemon-owned replies, TOTP approvals can
