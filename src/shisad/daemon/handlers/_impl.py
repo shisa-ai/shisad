@@ -1554,10 +1554,7 @@ class HandlerImplementation(
             value = metadata.get(key)
             if isinstance(value, list) and value:
                 return True
-        try:
-            return float(metadata.get("firewall_risk_score", 0.0) or 0.0) > 0.0
-        except (TypeError, ValueError):
-            return True
+        return False
 
     def _session_has_tainted_history(self, session_id: SessionId) -> bool:
         return any(

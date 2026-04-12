@@ -13,7 +13,7 @@ from shisad.core.config import DaemonConfig, SecurityConfig
 from shisad.core.session import SessionManager
 from shisad.core.tools.registry import ToolRegistry
 from shisad.core.tools.schema import ToolDefinition, ToolParameter
-from shisad.core.transcript import TranscriptStore
+from shisad.core.transcript import TranscriptEntry, TranscriptStore
 from shisad.core.types import (
     Capability,
     PEPDecisionKind,
@@ -27,9 +27,10 @@ from shisad.daemon.handlers._impl_session import (
     SessionImplMixin,
     _child_task_trust_level,
     _is_trusted_level,
+    _transcript_metadata_for_firewall_risk,
     _user_goal_host_patterns_for_validated_input,
 )
-from shisad.security.firewall import ContentFirewall
+from shisad.security.firewall import ContentFirewall, FirewallResult
 from shisad.security.pep import PEP, PolicyContext
 from shisad.security.policy import EgressRule, PolicyBundle, ToolPolicy
 
@@ -512,11 +513,23 @@ async def test_lt1_validate_default_cli_keeps_suspicious_operator_risk_signals(
     assert _user_goal_host_patterns_for_validated_input(validated) == set()
     entries = harness._transcript_store.list_entries(validated.sid)
     assert "instruction_override" in entries[-1].metadata["firewall_risk_factors"]
-    history_probe = SimpleNamespace(_transcript_store=harness._transcript_store)
-    assert HandlerImplementation._session_has_tainted_user_history(
-        history_probe,  # type: ignore[arg-type]
-        validated.sid,
+    assert HandlerImplementation._transcript_entry_has_firewall_risk(entries[-1])
+
+
+def test_lt4_score_only_firewall_metadata_is_not_durable_taint() -> None:
+    result = FirewallResult(
+        sanitized_text="hello",
+        risk_score=0.01,
+        original_hash="hash",
     )
+    assert _transcript_metadata_for_firewall_risk(result) == {}
+    entry = TranscriptEntry(
+        role="user",
+        content_hash="hash",
+        metadata={"firewall_risk_score": 0.01},
+    )
+
+    assert HandlerImplementation._transcript_entry_has_firewall_risk(entry) is False
 
 
 @pytest.mark.asyncio

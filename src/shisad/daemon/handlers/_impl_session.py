@@ -1861,6 +1861,13 @@ def _transcript_metadata_for_channel(*, channel: str, session_mode: SessionMode)
 def _transcript_metadata_for_firewall_risk(
     firewall_result: FirewallResult,
 ) -> dict[str, Any]:
+    has_durable_risk_evidence = bool(
+        firewall_result.risk_factors
+        or firewall_result.secret_findings
+        or firewall_result.decode_reason_codes
+    )
+    if not has_durable_risk_evidence:
+        return {}
     metadata: dict[str, Any] = {}
     if firewall_result.risk_score > 0.0:
         metadata["firewall_risk_score"] = firewall_result.risk_score
