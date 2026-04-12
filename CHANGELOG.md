@@ -38,9 +38,19 @@ Versioning follows semver (see `docs/PUBLISH.md` for policy and style guide).
   works without a subcommand, missing filesystem roots or embeddings routes
   are easier to spot, overridden presets are labeled as custom, and missing
   chat dependencies point to the `shisad[chat]` install extra.
-- **Trusted CLI write friction is being recut before publication.** The
-  candidate contains initial low-friction local write work, but live testing
-  reopened that flow before release.
+- **Clean direct CLI sessions no longer inherit mediated-channel taint.** Local
+  operator input stays trusted unless suspicious content or untrusted history
+  says otherwise.
+- **Confirmation replies are handled as commands before planner flow.** Reply
+  text such as confirm/reject, bare approval numbers, yes/no responses, and
+  daemon-owned CLI action guidance no longer create fresh planner actions.
+- **Stale unapprovable pending actions are pruned or terminally failed.**
+  Legacy pending rows missing approval envelopes or locked out of their
+  confirmation method stop cycling through pending lists.
+- **Low-risk internal bookkeeping from clean CLI sessions avoids needless
+  confirmation.** Notes, todos, reminders, and note search keep normal safety
+  gates for suspicious input or stronger policy requirements, but clean local
+  requests can complete without spurious approval prompts.
 - **Planner-visible tools better match the configured runtime.** When
   filesystem or git roots are not configured, the planner no longer advertises
   those tools as generally usable while delegated task scopes remain available
@@ -52,10 +62,10 @@ Versioning follows semver (see `docs/PUBLISH.md` for policy and style guide).
   defaults, extensionless filenames, semantic IDs, and numeric chat-thread IDs
   now stay in the correct resource scope instead of accidentally authorizing a
   different kind of resource.
-- **Trusted CLI convenience must keep safety checks.** The recut keeps this
-  boundary: local convenience may reduce confirmation friction only when
-  suspicious content, untrusted history, external side effects, and stronger
-  policy requirements still take the normal confirmation path.
+- **Trusted CLI convenience keeps safety checks.** Local convenience may reduce
+  confirmation friction only when suspicious content, untrusted history,
+  external side effects, and stronger policy requirements still take the normal
+  confirmation path.
 
 ## [0.6.2] - 2026-04-09
 

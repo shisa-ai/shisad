@@ -145,6 +145,9 @@ cannot be retrieved later.
 
 Preferred path: when the daemon posts a TOTP approval prompt to a trusted
 chat / command channel, reply with your current 6-digit code.
+Confirmation-style replies are handled as control commands before planner
+flow, so approving, rejecting, or asking for pending action status does not
+create a fresh agent task.
 
 If exactly one TOTP action is pending in that session, a bare code is enough:
 

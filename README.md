@@ -51,8 +51,9 @@ Rather than ignoring the elephant in the room, our design targets the [lethal tr
 
 This repo is public and still pre-alpha. This tree contains the pre-publication
 `v0.6.3` candidate content; published installability is determined by the
-GitHub release tag and PyPI package. Live testing has reopened the `v0.6.3`
-release process for follow-up CLI trust and confirmation-flow fixes before
+GitHub release tag and PyPI package. Live testing reopened the `v0.6.3`
+release process for CLI trust and confirmation-flow fixes; this tree now
+contains the recut candidate pending release-close validation and explicit
 publication.
 
 `v0.6.3` is the critical UX stabilization follow-up to `v0.6.2`: pending
@@ -60,9 +61,13 @@ confirmations now produce actionable daemon-owned replies, TOTP approvals can
 be completed from trusted chat / command replies, TOTP enrollment can render a
 terminal QR code, session-message output preserves line breaks, no-model and
 startup diagnostics are clearer, and planner-visible tool surfaces better
-reflect what is actually configured. Textual chat TUI newline rendering remains
-deferred to the TUI overhaul. The next planned lane is `v0.6.4` for MCP/A2A
-interop after the `v0.6.3` recut closes.
+reflect what is actually configured. The LT recut keeps clean direct CLI
+sessions out of mediated-channel taint, routes confirmation replies as control
+commands before planner flow, prunes stale unapprovable pending actions, and
+avoids needless confirmation for low-risk internal bookkeeping from clean CLI
+sessions. Textual chat TUI newline rendering remains deferred to the TUI
+overhaul. The next planned lane is `v0.6.4` for MCP/A2A interop after
+`v0.6.3` closes.
 
 | Version | Focus |
 |---------|-------|
