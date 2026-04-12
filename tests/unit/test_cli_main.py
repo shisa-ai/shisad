@@ -2113,7 +2113,7 @@ def test_action_pending_renders_webauthn_link_and_qr(
         assert method == "action.pending"
         assert params == {
             "session_id": None,
-            "status": None,
+            "status": "pending",
             "limit": 50,
             "include_ui": True,
         }
