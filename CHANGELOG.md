@@ -28,8 +28,10 @@ Versioning follows semver (see `docs/PUBLISH.md` for policy and style guide).
 
 ### Changed
 
-- **Chat output keeps readable line breaks.** Markdown-style responses no
-  longer collapse into hard-to-read single-line chat output.
+- **Session-message output keeps readable line breaks.** Markdown-style
+  responses no longer collapse into hard-to-read single-line output on the
+  session-message / terminal path; Textual `shisad chat` TUI newline rendering
+  remains deferred to the TUI overhaul.
 - **Missing model configuration now fails with useful guidance.** Local
   no-model fallbacks now tell the operator what to configure instead of
   echoing a fake response.
@@ -37,9 +39,10 @@ Versioning follows semver (see `docs/PUBLISH.md` for policy and style guide).
   works without a subcommand, missing filesystem roots or embeddings routes
   are easier to spot, overridden presets are labeled as custom, and missing
   chat dependencies point to the `shisad[chat]` install extra.
-- **Clean CLI writes have less unnecessary approval friction.** Trusted local
-  CLI requests can proceed without a confirmation prompt when the current turn
-  is clean and no egress or stronger policy requirement applies.
+- **Trusted CLI write friction is being recut before publication.** The
+  candidate contains initial clean-local-CLI approval-friction work, but live
+  testing reopened CLI trust and internal-write auto-approval as LT1/LT4 before
+  release.
 - **Planner-visible tools better match the configured runtime.** When
   filesystem or git roots are not configured, the planner no longer advertises
   those tools as generally usable while delegated task scopes remain available
@@ -51,10 +54,11 @@ Versioning follows semver (see `docs/PUBLISH.md` for policy and style guide).
   defaults, extensionless filenames, semantic IDs, and numeric chat-thread IDs
   now stay in the correct resource scope instead of accidentally authorizing a
   different kind of resource.
-- **Trusted CLI convenience does not skip taint or egress checks.** Clean local
-  CLI input can reduce confirmation friction, but suspicious content,
-  untrusted history, external side effects, and stronger policy requirements
-  still take the normal confirmation path.
+- **Trusted CLI convenience must not skip taint or egress checks.** The
+  reopened LT recut keeps this boundary: clean local CLI input may reduce
+  confirmation friction only when suspicious content, untrusted history,
+  external side effects, and stronger policy requirements still take the normal
+  confirmation path.
 
 ## [0.6.2] - 2026-04-09
 
