@@ -33,8 +33,20 @@ Install dependencies:
 ```bash
 git clone https://github.com/shisa-ai/shisad.git
 cd shisad
-uv sync --dev
+uv sync --group dev --extra chat
 ```
+
+If you want local PromptGuard/YARA runtime checks in the daemon, include the
+security runtime dependency group:
+
+```bash
+uv sync --group security-runtime --group dev --extra chat
+```
+
+`security-runtime`, `security-build`, `channels-runtime`, and `coverage` are uv
+dependency groups from `[dependency-groups]`; install them with `--group`. The
+chat UI dependencies are a project optional extra; install them with
+`--extra chat`.
 
 Optional groups:
 
@@ -44,6 +56,13 @@ uv sync --group security-build      # PromptGuard download/export/model-pack bui
 uv sync --group channels-runtime    # Matrix, Discord, Telegram, Slack
 uv sync --group coverage            # pytest-cov
 ```
+
+`security-build` is only needed for PromptGuard model export/download/build
+workflows. It is heavier than `security-runtime` and includes PyTorch. Daemon
+operation with `security-runtime` alone should have `onnxruntime` and
+`transformers` available but not `torch`; if Transformers logs "PyTorch was not
+found" during startup in that profile, that warning is expected and does not
+mean the daemon runtime group was installed incorrectly.
 
 ## Preflight Checklist
 
@@ -281,6 +300,16 @@ Create a policy file (copy `runner/policy.default.yaml` as a starting point) and
 **`doctor.check` reports `<channel>_dependency_missing`:**
 Install channel runtime dependencies: `uv sync --group channels-runtime`.
 
+**`uv sync --extra security-runtime` fails:**
+`security-runtime` is a dependency group, not an optional extra. Use
+`uv sync --group security-runtime` or the combined source-checkout command
+`uv sync --group security-runtime --group dev --extra chat`.
+
+**Startup logs say PyTorch was not found:**
+This is expected when only `security-runtime` is installed. The daemon runtime
+uses `onnxruntime`/`transformers`; PyTorch is only in `security-build` for model
+build/export workflows.
+
 **`doctor.check` reports `<channel>_not_connected`:**
 Verify bot/app tokens and channel auth configuration.
 
@@ -294,7 +323,7 @@ Install or update the CA trust bundle: `sudo apt install ca-certificates`.
 This is the expected confirmation gate. Rerun with `--confirm`.
 
 **`session.message` fails with planner parse errors:**
-Ensure you are on the latest code (`uv sync --dev`), restart the daemon, and verify `SHISAD_MODEL_*` settings point at an OpenAI-compatible endpoint that supports JSON response formatting.
+Ensure you are on the latest code (`uv sync --group dev --extra chat`), restart the daemon, and verify `SHISAD_MODEL_*` settings point at an OpenAI-compatible endpoint that supports JSON response formatting.
 
 **Env values with JSON lists cause `SettingsError`:**
 Wrap JSON values in single quotes in env files: `SHISAD_WEB_ALLOWED_DOMAINS='["a.com","b.com"]'`.

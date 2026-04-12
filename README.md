@@ -94,8 +94,19 @@ Users and agents looking to set up ShisaD on their own system should see [`docs/
 ```bash
 git clone https://github.com/shisa-ai/shisad.git
 cd shisad
-uv sync --dev
+uv sync --group dev --extra chat
 ```
+
+For local PromptGuard/YARA runtime checks, add the security runtime dependency
+group:
+
+```bash
+uv sync --group security-runtime --group dev --extra chat
+```
+
+`security-runtime` is a uv dependency group, not a pip extra; use `--group
+security-runtime`, not `--extra security-runtime`. The `chat` package set is
+the optional extra and uses `--extra chat`.
 
 ### Configuration
 

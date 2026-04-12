@@ -14,7 +14,10 @@ For current public operator guidance, see:
 ## Preconditions
 
 - You are in the `shisad` repo root.
-- Python deps are installed (`uv sync --dev`).
+- Python deps are installed (`uv sync --group dev --extra chat`).
+  For local PromptGuard/YARA runtime checks, use
+  `uv sync --group security-runtime --group dev --extra chat`.
+  `security-runtime` is a dependency group, not an extra; `chat` is the extra.
 - If you want live remote planner calls, the right API key is set for your
   preset (see *Credentials* below).
 - If using coding-agent workflows (`shisad dev ...`), at least one agent CLI
