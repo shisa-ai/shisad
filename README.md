@@ -62,13 +62,12 @@ confirmations now produce actionable daemon-owned replies, TOTP approvals can
 be completed from trusted chat / command replies, TOTP enrollment can render a
 terminal QR code, session-message output preserves line breaks, no-model and
 startup diagnostics are clearer, and planner-visible tool surfaces better
-reflect what is actually configured. The LT recut keeps clean direct CLI
-sessions out of mediated-channel taint, routes confirmation replies as control
-commands before planner flow, prunes stale unapprovable pending actions, and
-avoids needless confirmation for low-risk internal bookkeeping from clean CLI
-sessions. Textual chat TUI newline rendering remains deferred to the TUI
-overhaul. The next planned lane is `v0.6.4` for MCP/A2A interop after
-`v0.6.3` closes.
+reflect what is actually configured. The LT recut routes confirmation replies
+as control commands before planner flow; LT5 is rechecking the CLI-trust,
+stale pending-action, and low-risk internal bookkeeping portions of that recut
+before they can be treated as release-close evidence. Textual chat TUI newline
+rendering remains deferred to the TUI overhaul. The next planned lane is
+`v0.6.4` for MCP/A2A interop after `v0.6.3` closes.
 
 | Version | Focus |
 |---------|-------|

@@ -179,14 +179,14 @@ session-message output preserves line breaks, no-model and startup diagnostics
 are actionable, `shisad doctor` works as a bare command, Anthropic default
 routing and chat optional install guidance are documented, and planner-visible
 tool manifests truthfully hide unconfigured filesystem/git surfaces while
-preserving delegated task scope enforcement. The reopened LT recut keeps clean
-direct CLI sessions out of mediated-channel taint, parses confirmation replies
-before planner flow, prunes stale unapprovable pending actions, and avoids
-spurious approval prompts for low-risk internal bookkeeping from clean CLI
-sessions. Post-LT validation evidence is recorded for the candidate line, and a
-follow-up LT5 live-retest reconciliation gate is active before ReleaseClose
-reviewer sign-off and explicit tag/PyPI publication can resume; Textual chat
-TUI newline rendering and web-page TOTP entry remain deferred to `v0.8.0`.
+preserving delegated task scope enforcement. The reopened LT recut parses
+confirmation replies before planner flow; LT5 is rechecking the CLI-trust,
+stale pending-action, and low-risk internal bookkeeping portions of that recut
+before they can be treated as release-close evidence. Post-LT validation
+evidence is recorded for the candidate line, and a follow-up LT5 live-retest
+reconciliation gate is active before ReleaseClose reviewer sign-off and
+explicit tag/PyPI publication can resume; Textual chat TUI newline rendering
+and web-page TOTP entry remain deferred to `v0.8.0`.
 
 #### v0.6.4 — MCP/A2A interop
 

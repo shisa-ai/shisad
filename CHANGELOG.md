@@ -38,19 +38,23 @@ Versioning follows semver (see `docs/PUBLISH.md` for policy and style guide).
   works without a subcommand, missing filesystem roots or embeddings routes
   are easier to spot, overridden presets are labeled as custom, and missing
   chat dependencies point to the `shisad[chat]` install extra.
-- **Clean direct CLI sessions no longer inherit mediated-channel taint.** Local
-  operator input stays trusted unless suspicious content or untrusted history
-  says otherwise.
+- **Clean direct CLI trust is under LT5 live retest before publication.** The
+  recut target is that local operator input stays trusted unless suspicious
+  content or untrusted history says otherwise; ReleaseClose requires fresh LT5
+  live evidence before treating this as release behavior.
 - **Confirmation replies are handled as commands before planner flow.** Reply
   text such as confirm/reject, bare approval numbers, yes/no responses, and
   daemon-owned CLI action guidance no longer create fresh planner actions.
-- **Stale unapprovable pending actions are pruned or terminally failed.**
-  Legacy pending rows missing approval envelopes or locked out of their
-  confirmation method stop cycling through pending lists.
-- **Low-risk internal bookkeeping from clean CLI sessions avoids needless
-  confirmation.** Notes, todos, reminders, and note search keep normal safety
-  gates for suspicious input or stronger policy requirements, but clean local
-  requests can complete without spurious approval prompts.
+- **Stale pending-action cleanup is under LT5 disposition before publication.**
+  The recut target is that legacy pending rows missing approval envelopes or
+  locked out of their confirmation method stop cycling through pending lists;
+  LT5 must confirm the operator-visible cleanup behavior or record an accepted
+  disposition.
+- **Low-risk internal bookkeeping from clean CLI sessions is under LT5 live
+  retest before publication.** Notes, todos, reminders, and note search keep
+  normal safety gates for suspicious input or stronger policy requirements;
+  ReleaseClose requires fresh LT5 live evidence before treating clean local
+  no-prompt completion as release behavior.
 - **Planner-visible tools better match the configured runtime.** When
   filesystem or git roots are not configured, the planner no longer advertises
   those tools as generally usable while delegated task scopes remain available
@@ -62,9 +66,9 @@ Versioning follows semver (see `docs/PUBLISH.md` for policy and style guide).
   defaults, extensionless filenames, semantic IDs, and numeric chat-thread IDs
   now stay in the correct resource scope instead of accidentally authorizing a
   different kind of resource.
-- **Trusted CLI convenience keeps safety checks.** Local convenience may reduce
-  confirmation friction only when suspicious content, untrusted history,
-  external side effects, and stronger policy requirements still take the normal
+- **Trusted CLI convenience remains conditional.** LT5 is rechecking the clean
+  direct CLI path; any convenience must keep suspicious content, untrusted
+  history, external side effects, and stronger policy requirements on the normal
   confirmation path.
 
 ## [0.6.2] - 2026-04-09
