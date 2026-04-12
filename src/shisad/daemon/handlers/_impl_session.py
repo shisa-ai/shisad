@@ -398,6 +398,7 @@ _CRC_REJECT_ALL_PATTERNS = {"no to all", "reject all", "deny all", "cancel all"}
 _CRC_CONFIRM_INDEX_RE = re.compile(r"^(?:confirm|approve|yes)\s+(\d+)$")
 _CRC_REJECT_INDEX_RE = re.compile(r"^(?:reject|deny|no)\s+(\d+)$")
 _CRC_BARE_INDEX_RE = re.compile(r"^(\d{1,3})$")
+_CRC_CLI_CONFIRM_COMMAND_RE = re.compile(r"^shisad\s+action\s+confirm(?:\s+\S.*)?$")
 _CRC_CONFIRMATION_VERB_ACTIONS = {
     "confirm": "confirm",
     "approve": "confirm",
@@ -523,12 +524,23 @@ def _chat_confirmation_command_error_text(
     text: str,
     *,
     allowed_actions: set[str] | None = None,
+    pending_confirmation_ids: set[str] | None = None,
 ) -> str:
     normalized = " ".join(text.strip().lower().split())
     if not normalized:
         return ""
     tokens = normalized.split()
     first = tokens[0]
+    if _CRC_CLI_CONFIRM_COMMAND_RE.fullmatch(normalized):
+        return (
+            "CLI confirmation commands must be run from a shell, not sent as chat. "
+            f"No action was taken. {_confirmation_command_guidance()}"
+        )
+    if pending_confirmation_ids is not None and normalized in pending_confirmation_ids:
+        return (
+            f"Confirmation ID {normalized} is not a chat confirmation command. "
+            f"No action was taken. {_confirmation_command_guidance()}"
+        )
     if first == "shisad":
         return ""
     if first in _CRC_CONFIRMATION_VERB_ACTIONS:
@@ -559,6 +571,14 @@ def _chat_confirmation_command_error_text(
     return (
         f"Did you mean '{suggestion}'? No action was taken. "
         f"{_confirmation_command_guidance()}"
+    )
+
+
+def _internal_ingress_confirmation_approval_not_allowed_text() -> str:
+    return (
+        "Chat approval commands from this channel are not accepted without proof. "
+        "No action was taken. Use the CLI confirmation command or TOTP code flow "
+        "to confirm, or reply with 'reject N' to reject in chat."
     )
 
 
@@ -3256,6 +3276,11 @@ class SessionImplMixin(HandlerMixinBase):
         )
         if not pending_rows:
             return None
+        pending_confirmation_ids = {
+            str(getattr(pending, "confirmation_id", "")).strip().lower()
+            for pending in pending_rows
+            if str(getattr(pending, "confirmation_id", "")).strip()
+        }
 
         def _visible_pending_rows(rows: Sequence[Any]) -> list[Any]:
             return _visible_pending_rows_for_delivery_target(
@@ -3389,18 +3414,26 @@ class SessionImplMixin(HandlerMixinBase):
         if is_internal_ingress and totp_submission is None:
             assert intent is not None
             if intent.action != "reject":
-                if intent.action == "none":
-                    error_text = _chat_confirmation_command_error_text(
+                error_text = _chat_confirmation_command_error_text(
+                    content,
+                    allowed_actions={"reject"},
+                    pending_confirmation_ids=pending_confirmation_ids,
+                )
+                if not error_text and (
+                    intent.action != "none"
+                    or _chat_confirmation_command_error_text(
                         content,
-                        allowed_actions={"reject"},
+                        pending_confirmation_ids=pending_confirmation_ids,
                     )
-                    if error_text:
-                        return await _finalize_chat_confirmation_response(
-                            response_text=error_text,
-                            blocked_actions=0,
-                            executed_actions=0,
-                            checkpoint_ids=[],
-                        )
+                ):
+                    error_text = _internal_ingress_confirmation_approval_not_allowed_text()
+                if error_text:
+                    return await _finalize_chat_confirmation_response(
+                        response_text=error_text,
+                        blocked_actions=0,
+                        executed_actions=0,
+                        checkpoint_ids=[],
+                    )
                 return None
         system_generated_pending_confirmation_response = False
         if totp_submission is not None:
@@ -3519,7 +3552,10 @@ class SessionImplMixin(HandlerMixinBase):
             if intent is None:
                 intent = _classify_chat_confirmation_intent(content)
             if intent.action == "none":
-                error_text = _chat_confirmation_command_error_text(content)
+                error_text = _chat_confirmation_command_error_text(
+                    content,
+                    pending_confirmation_ids=pending_confirmation_ids,
+                )
                 if error_text:
                     return await _finalize_chat_confirmation_response(
                         response_text=error_text,

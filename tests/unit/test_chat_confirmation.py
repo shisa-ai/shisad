@@ -509,7 +509,10 @@ async def test_h1_chat_confirmation_does_not_treat_cli_command_or_id_as_approval
         firewall_result=FirewallResult(sanitized_text=content, original_hash="0" * 64),
     )
 
-    assert result is None
+    assert result is not None
+    response = str(result["response"]).lower()
+    assert "no action was taken" in response
+    assert "use 'confirm n'" in response
     assert harness._pending_actions["c-1"].status == "pending"
 
 
@@ -1024,7 +1027,7 @@ async def test_u9_chat_totp_internal_ingress_mismatched_non_confirmation_message
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("content", ["yes", "confirm 1", "yes to all"])
+@pytest.mark.parametrize("content", ["yes", "confirm 1", "comfirm 1", "yes to all"])
 async def test_u9_chat_internal_channel_ingress_does_not_reopen_non_totp_proofless_approval(
     tmp_path,
     content: str,
@@ -1061,7 +1064,10 @@ async def test_u9_chat_internal_channel_ingress_does_not_reopen_non_totp_proofle
         firewall_result=FirewallResult(sanitized_text=content, original_hash="0" * 64),
     )
 
-    assert result is None
+    assert result is not None
+    response = str(result["response"]).lower()
+    assert "not accepted without proof" in response
+    assert "no action was taken" in response
     assert harness.confirm_calls == []
     assert harness._pending_actions["c-1"].status == "pending"
 
