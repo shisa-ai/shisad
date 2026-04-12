@@ -28,6 +28,7 @@ from shisad.daemon.handlers._impl_session import (
     _child_task_trust_level,
     _is_trusted_level,
     _transcript_metadata_for_firewall_risk,
+    _trusted_cli_firewall_result_is_clean,
     _user_goal_host_patterns_for_validated_input,
 )
 from shisad.security.firewall import ContentFirewall, FirewallResult
@@ -535,6 +536,33 @@ async def test_lt1_validate_default_cli_keeps_suspicious_operator_risk_signals(
     entries = harness._transcript_store.list_entries(validated.sid)
     assert "instruction_override" in entries[-1].metadata["firewall_risk_factors"]
     assert HandlerImplementation._transcript_entry_has_firewall_risk(entries[-1])
+
+
+def test_b1b4_clean_turn_tolerates_small_promptguard_scores() -> None:
+    """B1/B4 fix layer 2: sub-medium PromptGuard scores must not block trusted CLI.
+
+    The old <= 0.0 threshold was impossible to meet when PromptGuard was active
+    because softmax never returns exactly 0.0 for benign input.  The fix uses
+    < 0.35 (the PromptGuard medium-tier boundary).
+    """
+    # Simulates PromptGuard returning a tiny benign score
+    clean = FirewallResult(sanitized_text="create a todo", risk_score=0.001, original_hash="h")
+    assert _trusted_cli_firewall_result_is_clean(clean) is True
+
+    # Just below medium threshold — still clean
+    borderline = FirewallResult(sanitized_text="x", risk_score=0.349, original_hash="h")
+    assert _trusted_cli_firewall_result_is_clean(borderline) is True
+
+    # At medium threshold — not clean
+    medium = FirewallResult(sanitized_text="x", risk_score=0.35, original_hash="h")
+    assert _trusted_cli_firewall_result_is_clean(medium) is False
+
+    # Risk factors present — not clean regardless of score
+    factors = FirewallResult(
+        sanitized_text="x", risk_score=0.0, risk_factors=["instruction_override"],
+        original_hash="h",
+    )
+    assert _trusted_cli_firewall_result_is_clean(factors) is False
 
 
 def test_lt4_score_only_firewall_metadata_is_not_durable_taint() -> None:

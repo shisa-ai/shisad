@@ -96,6 +96,7 @@ class ContentFirewall:
         classification = self._classifier.classify(
             redacted,
             context_factors=decoded.reason_codes,
+            skip_semantic=trusted_input,
         )
 
         sanitized = redacted

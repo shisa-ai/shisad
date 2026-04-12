@@ -661,8 +661,16 @@ class PatternInjectionClassifier:
         text: str,
         *,
         context_factors: list[str] | tuple[str, ...] | None = None,
+        skip_semantic: bool = False,
     ) -> InjectionClassification:
-        """Classify text for likely injection indicators."""
+        """Classify text for likely injection indicators.
+
+        When *skip_semantic* is True the PromptGuard neural-net classifier is
+        not invoked.  Pattern/YARA scoring still runs (cheap, deterministic).
+        This is the correct mode for trusted operator input — the operator is
+        the trust root, so asking a neural net "did they inject themselves?"
+        only adds latency and false-positive risk scores.
+        """
         score = 0.0
         factors: list[str] = []
         matches: list[str] = []
@@ -685,7 +693,7 @@ class PatternInjectionClassifier:
             factors.append("encoded_payload")
             score += 0.25
 
-        if self._semantic_classifier is not None:
+        if self._semantic_classifier is not None and not skip_semantic:
             semantic = self._semantic_classifier.classify(text)
             factors.extend(semantic.risk_factors)
             matches.extend(semantic.matched_patterns)

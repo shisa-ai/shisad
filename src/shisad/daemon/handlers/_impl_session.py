@@ -1028,8 +1028,12 @@ def _is_direct_trusted_cli_default_ingress(
 
 
 def _trusted_cli_firewall_result_is_clean(firewall_result: FirewallResult) -> bool:
+    # Threshold: anything below the PromptGuard "medium" tier (0.35) is
+    # SemanticRiskTier.NONE — the system's own definition of "not risky".
+    # The old <= 0.0 threshold was impossible to meet when PromptGuard was
+    # active because softmax never returns exactly 0.0 for benign input.
     return (
-        firewall_result.risk_score <= 0.0
+        firewall_result.risk_score < 0.35
         and not firewall_result.risk_factors
         and not firewall_result.secret_findings
         and not firewall_result.decode_reason_codes
