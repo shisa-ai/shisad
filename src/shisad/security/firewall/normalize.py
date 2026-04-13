@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import unicodedata
 from typing import cast
 
@@ -19,6 +20,8 @@ _STRIP_CODEPOINTS = {
 _BIDI_OVERRIDES = set(range(0x202A, 0x202F)) | set(range(0x2066, 0x206A))
 _INVISIBLE_FORMATTING = set(range(0x2060, 0x2070))
 _LEGACY_EGRESS_STRIP_CODEPOINTS = _STRIP_CODEPOINTS | _INVISIBLE_FORMATTING | _BIDI_OVERRIDES
+_ANSI_RE = re.compile(r"\x1B\[[0-?]*[ -/]*[@-~]")
+_ANSI_SENTINEL = "\u200b"
 
 
 def normalize_text(text: str) -> str:
@@ -26,9 +29,9 @@ def normalize_text(text: str) -> str:
     normalized = cast(
         str,
         _tg_normalize(
-            text,
+            _ANSI_RE.sub(_ANSI_SENTINEL, text),
             form="NFC",
-            strip_ansi=True,
+            strip_ansi=False,
             strip_invisible=False,
             strip_bidi=False,
             strip_variation_selectors=False,
