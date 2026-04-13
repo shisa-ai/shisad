@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from shisad.core.types import TaintLabel
 from shisad.security.firewall import ContentFirewall
 from shisad.security.firewall.normalize import normalize_text
@@ -34,6 +36,27 @@ def test_m1_t5_firewall_strips_bidi_overrides() -> None:
     assert "\u202e" not in normalized
     assert "\u202c" not in normalized
     assert normalized == "safetext"
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("co\u00adoperate", "co\u00adoperate"),
+        ("safe\U000e0001tag", "safe\U000e0001tag"),
+        ("safe\ufe0f text", "safe\ufe0f text"),
+        ("e" + "\u0301" * 10, "\u00e9" + "\u0301" * 9),
+        ("a\u034fb\u061cc\u180ed", "a\u034fb\u061cc\u180ed"),
+        ("a\u200bb\u200cc\u200dd\ufeffe", "abcde"),
+        ("a\u2060b\u206fc", "abc"),
+        ("safe\u202ehidden\u202c", "safehidden"),
+        (" safe\x1b[31m   text ", "safe text"),
+    ],
+)
+def test_t2_egress_normalize_shim_preserves_legacy_outputs(
+    raw: str,
+    expected: str,
+) -> None:
+    assert normalize_text(raw) == expected
 
 
 def test_b1b4_trusted_input_skips_semantic_classifier() -> None:
