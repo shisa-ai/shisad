@@ -93,6 +93,9 @@ class ContentFirewall:
     def classifier_mode(self) -> str:
         return _TEXTGUARD_MODE
 
+    def validate_yara_backend(self) -> None:
+        self._guard.match_yara("")
+
     def status_snapshot(self) -> dict[str, Any]:
         semantic_status = self._semantic_classifier_status
         runtime_status = getattr(self._semantic_classifier, "runtime_status", None)
@@ -127,6 +130,7 @@ class ContentFirewall:
             classification,
             redacted,
             skip_semantic=trusted_input,
+            decode_reason_codes=scan_result.decode_reason_codes,
         )
 
         sanitized = redacted
@@ -162,14 +166,18 @@ class ContentFirewall:
         text: str,
         *,
         skip_semantic: bool,
+        decode_reason_codes: list[str],
     ) -> InjectionClassification:
         if self._semantic_classifier is None or skip_semantic:
             return classification
 
         semantic = self._semantic_classifier.classify(text)
+        risk_factors = {*classification.risk_factors, *semantic.risk_factors}
+        if risk_factors:
+            risk_factors.update(str(item) for item in decode_reason_codes)
         return InjectionClassification(
             risk_score=min(max(classification.risk_score, semantic.risk_score), 1.0),
-            risk_factors=sorted({*classification.risk_factors, *semantic.risk_factors}),
+            risk_factors=sorted(risk_factors),
             matched_patterns=sorted({*classification.matched_patterns, *semantic.matched_patterns}),
             semantic_risk_score=min(max(semantic.semantic_risk_score, 0.0), 1.0),
             semantic_risk_tier=semantic.semantic_risk_tier,

@@ -154,6 +154,21 @@ def test_t1_decode_reason_codes_do_not_promote_benign_decodes(
     assert result.risk_factors == []
 
 
+def test_t1_semantic_only_encoded_detection_preserves_decode_provenance() -> None:
+    firewall = ContentFirewall(
+        semantic_classifier=PromptGuardSemanticClassifier(
+            backend=_FakePromptGuardBackend([0.91]),
+            thresholds=PromptGuardThresholds(medium=0.35, high=0.7, critical=0.9),
+        )
+    )
+    payload = base64.b64encode(b"please summarize the quarterly roadmap").decode("ascii")
+
+    result = firewall.inspect(payload)
+
+    assert "promptguard:critical" in result.risk_factors
+    assert "encoding:base64_decoded" in result.risk_factors
+
+
 def test_t1_content_firewall_status_reports_textguard_yara_mode() -> None:
     firewall = ContentFirewall()
 

@@ -526,11 +526,14 @@ class DaemonServices:
                 semantic_classifier=semantic_classifier,
                 semantic_classifier_status=semantic_status,
             )
-            if policy_loader.policy.yara_required and firewall.classifier_mode != "textguard_yara":
-                raise ValueError(
-                    "Policy requires textguard YARA mode, but classifier is not running "
-                    "with bundled YARA"
-                )
+            if policy_loader.policy.yara_required:
+                try:
+                    firewall.validate_yara_backend()
+                except RuntimeError as exc:
+                    raise ValueError(
+                        "Policy requires textguard YARA mode, but the bundled YARA "
+                        "backend is unavailable"
+                    ) from exc
             output_firewall = OutputFirewall(
                 safe_domains=policy_loader.policy.safe_output_domains
                 or ["api.example.com", "example.com"],

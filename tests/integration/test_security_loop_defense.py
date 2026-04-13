@@ -779,7 +779,7 @@ async def test_m2_t22_daemon_honors_yara_required_policy(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from shisad.security.firewall import ContentFirewall
+    from textguard import TextGuard
 
     monkeypatch.setenv("SHISAD_MODEL_BASE_URL", "https://api.example.com/v1")
     monkeypatch.setenv("SHISAD_MODEL_PLANNER_BASE_URL", "https://planner.example.com/v1")
@@ -804,8 +804,11 @@ async def test_m2_t22_daemon_honors_yara_required_policy(
         log_level="INFO",
     )
 
-    monkeypatch.setattr(ContentFirewall, "classifier_mode", property(lambda _self: "disabled"))
-    with pytest.raises(ValueError, match="textguard YARA"):
+    def _raise_yara_unavailable(*_args: object, **_kwargs: object) -> list[object]:
+        raise RuntimeError("YARA backend requires the optional dependency")
+
+    monkeypatch.setattr(TextGuard, "match_yara", _raise_yara_unavailable)
+    with pytest.raises(ValueError, match=r"textguard YARA.*unavailable"):
         await run_daemon(config)
 
 
