@@ -41,7 +41,9 @@ Reach a genuinely useful personal-assistant baseline while preserving the projec
   follow-up LT5 live-retest reconciliation gate is green. The release-close
   validation bundle is green; ReleaseClose reviewer sign-off and explicit
   tag/PyPI publication remain pending. Textual chat
-  TUI newline rendering remains deferred to the TUI overhaul.
+  TUI newline rendering remains deferred to the TUI overhaul. This development
+  tree also contains the in-progress `v0.6.4` T1 TextGuard
+  ContentFirewall/runtime dependency surface; the full `v0.6.4` line is not release-closed.
 
 ## Milestones
 
