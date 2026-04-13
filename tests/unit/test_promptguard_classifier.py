@@ -176,6 +176,18 @@ def test_t1_content_firewall_status_reports_textguard_yara_mode() -> None:
     assert firewall.status_snapshot()["pattern_mode"] == "textguard_yara"
 
 
+def test_t1_content_firewall_ignores_ambient_textguard_promptguard_config(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("TEXTGUARD_PROMPTGUARD_MODEL", str(tmp_path / "ambient-missing-model"))
+
+    result = ContentFirewall().inspect("hello world")
+
+    assert result.risk_factors == []
+    assert result.semantic_classifier_id == ""
+
+
 @pytest.mark.parametrize(
     ("payload", "expected_factors"),
     [

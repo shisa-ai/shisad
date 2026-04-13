@@ -83,7 +83,14 @@ class ContentFirewall:
         semantic_classifier_status: PromptGuardRuntimeStatus | None = None,
     ) -> None:
         self._semantic_classifier = semantic_classifier
-        self._guard = TextGuard(yara_bundled=True)
+        self._guard = TextGuard(
+            confusables="trimmed",
+            preset="default",
+            promptguard_model_path="",
+            split_tokens=False,
+            yara_bundled=True,
+            yara_rules_dir="",
+        )
         self._semantic_classifier_status = semantic_classifier_status or PromptGuardRuntimeStatus(
             posture="best_effort" if semantic_classifier is not None else "off",
             status="active" if semantic_classifier is not None else "disabled",
