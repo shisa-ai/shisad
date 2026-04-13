@@ -198,7 +198,7 @@ async def test_h1_daemon_services_closes_started_sidecar_on_late_build_failure(
 
     monkeypatch.setattr("shisad.daemon.services.start_control_plane_sidecar", _fake_start)
     monkeypatch.setattr(
-        "shisad.daemon.services._load_provenance",
+        "shisad.daemon.services._build_tool_registry",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("boom")),
     )
     config = DaemonConfig(

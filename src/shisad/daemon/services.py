@@ -69,7 +69,6 @@ from shisad.security.lockdown import LockdownManager
 from shisad.security.monitor import ActionMonitor
 from shisad.security.pep import PEP
 from shisad.security.policy import PolicyLoader
-from shisad.security.provenance import SecurityAssetManifest, load_manifest, verify_assets
 from shisad.security.ratelimit import RateLimitConfig, RateLimiter
 from shisad.security.risk import RiskCalibrator
 from shisad.selfmod import SelfModificationManager
@@ -680,11 +679,14 @@ class DaemonServices:
             )
             control_plane = control_plane_sidecar.client
 
-            provenance_manifest_path = (
-                Path(__file__).resolve().parents[1] / "security" / "rules" / "provenance.json"
-            )
-            provenance_root = Path(__file__).resolve().parents[1] / "security" / "rules"
-            provenance_status, _ = _load_provenance(provenance_manifest_path, provenance_root)
+            provenance_status = {
+                "available": False,
+                "version": "",
+                "source_commit": "",
+                "manifest_hash": "",
+                "drift": [],
+                "reason": "local_security_assets_removed_textguard_bundled_rules",
+            }
 
             search_backend_destination = _normalize_tool_destination(config.web_search_backend_url)
             browser_destinations = [
@@ -1745,32 +1747,3 @@ def _validate_security_route_pins(model_config: ModelConfig, router: ModelRouter
             "Security planner route model id mismatch: "
             f"expected {model_config.pinned_planner_model_id}, got {planner_route.model_id}"
         )
-
-
-def _load_provenance(
-    manifest_path: Path,
-    root: Path,
-) -> tuple[dict[str, Any], SecurityAssetManifest | None]:
-    if not manifest_path.exists():
-        return (
-            {
-                "available": False,
-                "version": "",
-                "source_commit": "",
-                "manifest_hash": "",
-                "drift": [],
-            },
-            None,
-        )
-    manifest = load_manifest(manifest_path)
-    drift = verify_assets(root, manifest)
-    return (
-        {
-            "available": True,
-            "version": manifest.version,
-            "source_commit": manifest.source_commit,
-            "manifest_hash": manifest.digest()[:16],
-            "drift": drift,
-        },
-        manifest,
-    )

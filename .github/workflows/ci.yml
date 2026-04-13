@@ -50,9 +50,6 @@ jobs:
       - name: Type check with mypy
         run: uv run mypy src/shisad/
 
-      - name: Verify security asset provenance
-        run: uv run python scripts/security_assets.py verify
-
       - name: Audit test files contain test functions
         run: uv run python scripts/test_function_audit.py --tests-root tests
 
@@ -76,9 +73,6 @@ jobs:
 
       - name: Install dependencies (security-runtime + coverage + channels-runtime)
         run: uv sync --exclude-newer P7D --frozen --dev --group security-runtime --group coverage --group channels-runtime
-
-      - name: Verify security asset provenance
-        run: uv run python scripts/security_assets.py verify
 
       - name: Run tests with coverage
         run: uv run pytest -m "not requires_cap_net_admin" --cov=src --cov-report=term-missing --cov-report=xml -q

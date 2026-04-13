@@ -90,8 +90,7 @@ def main() -> int:
     parser.add_argument("--threshold", type=float, default=0.3, help="Malicious threshold")
     args = parser.parse_args()
 
-    rules_dir = Path("src/shisad/security/rules/yara")
-    classifier = PatternInjectionClassifier(yara_rules_dir=rules_dir)
+    classifier = PatternInjectionClassifier()
     metrics = _metrics(classifier, args.threshold)
 
     payload = {

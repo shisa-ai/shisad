@@ -273,7 +273,7 @@ def test_t3_pattern_injection_classifier_uses_textguard_scan_findings(
 
     instances: list[_FakePatternTextGuard] = []
     monkeypatch.setattr(classifier_module, "TextGuard", _FakePatternTextGuard, raising=False)
-    classifier = PatternInjectionClassifier(yara_rules_dir=Path("src/shisad/security/rules/yara"))
+    classifier = PatternInjectionClassifier(yara_rules_dir=Path("unused-local-rules"))
 
     result = classifier.classify("adapter-only content", context_factors=["skill_manifest"])
 
