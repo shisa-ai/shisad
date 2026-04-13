@@ -45,6 +45,7 @@ def test_m1_t5_firewall_strips_bidi_overrides() -> None:
         ("safe\U000e0001tag", "safe\U000e0001tag"),
         ("safe\ufe0f text", "safe\ufe0f text"),
         ("e" + "\u0301" * 10, "\u00e9" + "\u0301" * 9),
+        ("e\u200b\u0301", "e\u0301"),
         ("a\u034fb\u061cc\u180ed", "a\u034fb\u061cc\u180ed"),
         ("a\u200bb\u200cc\u200dd\ufeffe", "abcde"),
         ("a\u2060b\u206fc", "abc"),
