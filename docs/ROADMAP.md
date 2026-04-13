@@ -90,8 +90,8 @@ crosses back into COMMAND context, a browser tool surface with
 confirmation-gated browser writes plus local skill tool-surface integrity
 checks, a hardened public release path using OIDC trusted publishing, SBOMs,
 and provenance attestations, and the `v0.6.3` critical UX stabilization lane.
-The active follow-on lanes are `v0.6.4` (MCP/A2A interop) and `v0.6.5`
-(connector/skill expansion).
+The active follow-on lanes are `v0.6.4` (textguard port), `v0.6.5`
+(MCP/A2A interop), and `v0.6.6` (connector/skill expansion).
 
 #### v0.6.1 — Security hardening
 
@@ -189,13 +189,19 @@ validation bundle is green; ReleaseClose reviewer sign-off and explicit tag/PyPI
 publication remain pending; Textual chat TUI newline rendering and web-page TOTP
 entry remain deferred to `v0.8.0`.
 
-#### v0.6.4 — MCP/A2A interop
+#### v0.6.4 — textguard port
+
+- Port PromptGuard 2 integration to the `textguard` library
+- Unify prompt-injection detection behind the textguard API surface
+- Preserve existing PEP screening semantics and threshold tuning
+
+#### v0.6.5 — MCP/A2A interop
 
 - MCP/A2A compatibility
 - Remote tool/server trust policy
 - Interop layer for consuming or exposing remote tools without weakening local enforcement
 
-#### v0.6.5 — Connector + skill expansions
+#### v0.6.6 — Connector + skill expansions
 
 - Email and calendar connectors
 - Attachment pipeline (voice + image)
@@ -254,9 +260,10 @@ entry remain deferred to `v0.8.0`.
 | Control-plane isolation | v0.6.1 |
 | Hardware-backed approvals | v0.6.2 |
 | Critical UX stabilization | v0.6.3 |
-| MCP/A2A interop | v0.6.4 |
-| Email / calendar connectors | v0.6.5 |
-| Attachment pipeline | v0.6.5 |
+| textguard port | v0.6.4 |
+| MCP/A2A interop | v0.6.5 |
+| Email / calendar connectors | v0.6.6 |
+| Attachment pipeline | v0.6.6 |
 | Long-term memory | v0.7 |
 | UX overhaul + operator web UI | v0.8 |
 | Security infrastructure consolidation | v0.9 |
@@ -269,12 +276,13 @@ entry remain deferred to `v0.8.0`.
 3. Security hardening + control-plane isolation (`v0.6.1`)
 4. Hardware-backed high-risk approvals (`v0.6.2`)
 5. Critical UX stabilization from first-user testing (`v0.6.3`)
-6. Remote-tool trust and interop (`v0.6.4`)
-7. High-value connectors on top of stable orchestration + interop (`v0.6.5`)
-8. Durable memory with gated writes (`v0.7`)
-9. UX overhaul and operator web UI (`v0.8`)
-10. Security infrastructure consolidation (`v0.9`)
-11. Multi-tenant support (`v0.10`)
+6. Port prompt-injection detection to textguard (`v0.6.4`)
+7. Remote-tool trust and interop (`v0.6.5`)
+8. High-value connectors on top of stable orchestration + interop (`v0.6.6`)
+9. Durable memory with gated writes (`v0.7`)
+10. UX overhaul and operator web UI (`v0.8`)
+11. Security infrastructure consolidation (`v0.9`)
+12. Multi-tenant support (`v0.10`)
 
 ## Public Announcement Criteria
 

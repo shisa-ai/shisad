@@ -67,8 +67,8 @@ reflect what is actually configured. The LT recut routes confirmation replies
 as control commands before planner flow; LT5 live evidence is recorded for the
 CLI-trust, stale pending-action, and low-risk internal bookkeeping portions of
 that recut. Textual chat TUI newline rendering remains deferred to the TUI
-overhaul. The next planned lane is `v0.6.4` for MCP/A2A interop after `v0.6.3`
-closes.
+overhaul. The next planned lane is `v0.6.4` for the `textguard` port after
+`v0.6.3` closes.
 
 | Version | Focus |
 |---------|-------|
