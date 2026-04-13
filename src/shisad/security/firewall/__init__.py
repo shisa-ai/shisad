@@ -25,6 +25,9 @@ from shisad.security.firewall.classifier import (
 from shisad.security.firewall.classifier import (
     detect_split_base64_payload_finding as _detect_split_base64_payload_finding,
 )
+from shisad.security.firewall.classifier import (
+    legacy_skill_review_findings as _legacy_skill_review_findings,
+)
 from shisad.security.firewall.secrets import SecretFinding, redact_ingress_secrets
 
 
@@ -113,6 +116,8 @@ class ContentFirewall:
         )
         if split_base64_finding is not None:
             findings.append(split_base64_finding)
+        for candidate_text in {text, scan_result.decoded_text}:
+            findings.extend(_legacy_skill_review_findings(candidate_text))
         redacted, secret_findings = redact_ingress_secrets(scan_result.decoded_text)
         classification = _classify_textguard_findings(
             findings,
