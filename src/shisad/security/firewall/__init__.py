@@ -59,8 +59,8 @@ _FACTOR_WEIGHTS = {
     "encoded_payload": 0.25,
 }
 _TEXTGUARD_FACTOR_MAP = {
-    "yara:prompt_injection_direct": ("instruction_override", "prompt_leak_request"),
-    "yara:prompt_injection_indirect": ("prompt_leak_request",),
+    "yara:prompt_injection_direct": ("instruction_override",),
+    "yara:prompt_injection_indirect": ("instruction_override",),
     "yara:credential_harvesting": ("credential_harvest",),
     "yara:tool_spoofing": ("tool_spoofing_tag",),
     "yara:masquerading_authority": ("role_impersonation",),

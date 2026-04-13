@@ -1194,6 +1194,7 @@ class DaemonStatusResult(BaseModel):
     classifier_mode: str = ""
     content_firewall: dict[str, Any] = Field(default_factory=dict)
     yara_required: bool = False
+    yara_policy_required: bool = False
     risk_policy_version: str = ""
     risk_thresholds: dict[str, float] = Field(default_factory=dict)
     channels: dict[str, Any] = Field(default_factory=dict)

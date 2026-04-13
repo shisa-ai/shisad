@@ -209,12 +209,12 @@ def test_t1_content_firewall_ignores_ambient_textguard_promptguard_config(
 @pytest.mark.parametrize(
     ("kind", "expected_factors"),
     [
-        ("yara:prompt_injection_direct", {"instruction_override", "prompt_leak_request"}),
-        ("yara:prompt_injection_indirect", {"prompt_leak_request"}),
+        ("yara:prompt_injection_direct", {"instruction_override"}),
+        ("yara:prompt_injection_indirect", {"instruction_override"}),
         ("yara:system_manipulation", {"prompt_leak_request"}),
     ],
 )
-def test_t1_textguard_leak_rules_map_to_shisad_prompt_leak_factor(
+def test_t1_textguard_yara_rules_map_to_shisad_taxonomy_factors(
     kind: str,
     expected_factors: set[str],
 ) -> None:

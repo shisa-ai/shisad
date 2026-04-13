@@ -169,7 +169,8 @@ class AdminImplMixin(HandlerMixinBase):
             "model_routes": dict(self._model_routes),
             "classifier_mode": self._classifier_mode,
             "content_firewall": self._firewall.status_snapshot(),
-            "yara_required": self._policy_loader.policy.yara_required,
+            "yara_required": True,
+            "yara_policy_required": self._policy_loader.policy.yara_required,
             "risk_policy_version": self._policy_loader.policy.risk_policy.version,
             "risk_thresholds": {
                 "auto_approve": self._policy_loader.policy.risk_policy.auto_approve_threshold,

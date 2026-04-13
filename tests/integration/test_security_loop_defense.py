@@ -723,6 +723,8 @@ async def test_m2_t22_daemon_status_exposes_classifier_mode(
         await client.connect()
         status = await client.call("daemon.status")
         assert status["classifier_mode"] == "textguard_yara"
+        assert status["yara_required"] is True
+        assert status["yara_policy_required"] is False
         assert "content_firewall" in status
         assert "semantic_classifier" in status["content_firewall"]
         assert "risk_policy_version" in status

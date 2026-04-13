@@ -1,7 +1,7 @@
 # shisad Supply Chain Audit
 
 *Created: 2026-03-31*  
-*Updated: 2026-04-11 (v0.6.3 release-close docs parity: optional `chat` extra and `textual` exposure)*
+*Updated: 2026-04-13 (v0.6.4 T1 TextGuard dependency-surface parity; v0.6.3 release-close optional `chat` extra and `textual` exposure retained)*
 *Status: In Progress*  
 *Snapshot basis: repository state on `main` at audit time (clean tree)*
 
