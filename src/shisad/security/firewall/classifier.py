@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import base64
+import binascii
 import logging
 import re
 import time
@@ -47,6 +49,63 @@ _TEXTGUARD_FACTOR_MAP = {
     "encoded_payload": ("encoded_payload",),
 }
 _DECODE_FINDING_PREFIX = "encoding:"
+_BASE64_SPLIT_RE = re.compile(r"(?:[A-Za-z0-9+/]{8,}={0,2}(?:[\s\"'`:,;|\\/-]+|$)){3,}")
+_BASE64_SPLIT_SEPARATOR_RE = re.compile(r"[\s\"'`:,;|\\/-]+")
+_ENCODED_SIGNAL_TOKENS = (
+    "ignore previous",
+    "disregard instructions",
+    "system prompt",
+    "curl ",
+    "wget ",
+    "http://",
+    "https://",
+    "exfiltrate",
+    "token",
+    "secret",
+)
+_LEGACY_SKILL_REVIEW_PATTERNS = (
+    (
+        "instruction_override",
+        re.compile(
+            r"\b(ignore|disregard|bypass)\b.{0,40}\b(instruction|policy|rule)s?\b",
+            re.IGNORECASE,
+        ),
+        "Legacy instruction-override pattern",
+    ),
+    (
+        "prompt_leak_request",
+        re.compile(r"\b(system prompt|developer message|hidden prompt)\b", re.IGNORECASE),
+        "Legacy prompt-leak request pattern",
+    ),
+    (
+        "credential_harvest",
+        re.compile(
+            r"\b(api key|token|password|secret)\b.{0,24}\b(send|exfiltrate|share)\b",
+            re.IGNORECASE,
+        ),
+        "Legacy credential-harvest pattern",
+    ),
+    (
+        "tool_spoofing_tag",
+        re.compile(r"<\s*(use_tool|tool_call|function_call)[^>]*>", re.IGNORECASE),
+        "Legacy tool-spoofing tag pattern",
+    ),
+    (
+        "role_impersonation",
+        re.compile(r"\b(as system|i am the system|as developer)\b", re.IGNORECASE),
+        "Legacy role-impersonation pattern",
+    ),
+    (
+        "command_chain",
+        re.compile(r"\b(curl|wget|bash -c|python -c|powershell)\b", re.IGNORECASE),
+        "Legacy command-chain pattern",
+    ),
+    (
+        "egress_lure",
+        re.compile(r"\b(send email|post to webhook|upload to)\b", re.IGNORECASE),
+        "Legacy egress-lure pattern",
+    ),
+)
 
 
 class InjectionClassification(BaseModel):
@@ -462,6 +521,58 @@ def classify_textguard_findings(
     )
 
 
+def detect_split_base64_payload_finding(
+    text: str,
+    decoded_text: str,
+) -> TextGuardFinding | None:
+    for candidate_text in {text, decoded_text}:
+        if _contains_split_base64_signal(candidate_text):
+            return TextGuardFinding(
+                "encoded_payload",
+                "error",
+                "Split base64 payload decodes to instruction-like text",
+            )
+    return None
+
+
+def legacy_skill_review_findings(text: str) -> list[TextGuardFinding]:
+    findings: list[TextGuardFinding] = []
+    for factor, pattern, detail in _LEGACY_SKILL_REVIEW_PATTERNS:
+        if pattern.search(text):
+            findings.append(TextGuardFinding(factor, "error", detail))
+    return findings
+
+
+def _contains_split_base64_signal(text: str) -> bool:
+    for blob in _BASE64_SPLIT_RE.findall(text):
+        collapsed = _BASE64_SPLIT_SEPARATOR_RE.sub("", blob)
+        if len(collapsed) < 40:
+            continue
+        if _contains_base64_encoded_signal(collapsed):
+            return True
+    return False
+
+
+def _contains_base64_encoded_signal(chunk: str) -> bool:
+    current = chunk.strip()
+    for _ in range(2):
+        padding = "=" * ((4 - (len(current) % 4)) % 4)
+        try:
+            decoded = base64.b64decode(current + padding, validate=True)
+            decoded_text = decoded.decode("utf-8", errors="ignore")
+        except (ValueError, binascii.Error):
+            return False
+        lowered = decoded_text.lower()
+        if any(token in lowered for token in _ENCODED_SIGNAL_TOKENS):
+            return True
+
+        next_candidate = re.sub(r"\s+", "", decoded_text)
+        if next_candidate == current:
+            return False
+        current = next_candidate
+    return False
+
+
 class PatternInjectionClassifier:
     """Compatibility adapter over TextGuard structural detections."""
 
@@ -503,7 +614,14 @@ class PatternInjectionClassifier:
         """
         scan_result = self._guard.scan(text)
         findings = list(scan_result.findings)
-        findings.extend(self._guard.match_yara(text))
+        split_base64_finding = detect_split_base64_payload_finding(
+            text,
+            scan_result.decoded_text,
+        )
+        if split_base64_finding is not None:
+            findings.append(split_base64_finding)
+        for candidate_text in {text, scan_result.decoded_text}:
+            findings.extend(legacy_skill_review_findings(candidate_text))
         classification = classify_textguard_findings(
             findings,
             decode_reason_codes=list(scan_result.decode_reason_codes),

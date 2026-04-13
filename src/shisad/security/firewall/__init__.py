@@ -2,15 +2,12 @@
 
 from __future__ import annotations
 
-import base64
-import binascii
 import hashlib
 import re
 from enum import StrEnum
 from typing import Any
 
 from pydantic import BaseModel, Field
-from textguard import Finding as TextGuardFinding
 from textguard import TextGuard
 
 from shisad.core.types import TaintLabel
@@ -24,6 +21,9 @@ from shisad.security.firewall.classifier import (
 )
 from shisad.security.firewall.classifier import (
     classify_textguard_findings as _classify_textguard_findings,
+)
+from shisad.security.firewall.classifier import (
+    detect_split_base64_payload_finding as _detect_split_base64_payload_finding,
 )
 from shisad.security.firewall.secrets import SecretFinding, redact_ingress_secrets
 
@@ -49,21 +49,6 @@ class FirewallResult(BaseModel):
     semantic_risk_tier: str = "none"
     semantic_classifier_id: str = ""
 
-
-_BASE64_SPLIT_RE = re.compile(r"(?:[A-Za-z0-9+/]{8,}={0,2}(?:[\s\"'`:,;|\\/-]+|$)){3,}")
-_BASE64_SPLIT_SEPARATOR_RE = re.compile(r"[\s\"'`:,;|\\/-]+")
-_ENCODED_SIGNAL_TOKENS = (
-    "ignore previous",
-    "disregard instructions",
-    "system prompt",
-    "curl ",
-    "wget ",
-    "http://",
-    "https://",
-    "exfiltrate",
-    "token",
-    "secret",
-)
 
 
 class ContentFirewall:
@@ -233,47 +218,3 @@ class ContentFirewall:
 def redact_findings(findings: list[SecretFinding]) -> list[str]:
     """Helper for serializing secret findings."""
     return [f.kind for f in findings]
-
-
-def _detect_split_base64_payload_finding(
-    text: str,
-    decoded_text: str,
-) -> TextGuardFinding | None:
-    for candidate_text in {text, decoded_text}:
-        if _contains_split_base64_signal(candidate_text):
-            return TextGuardFinding(
-                "encoded_payload",
-                "error",
-                "Split base64 payload decodes to instruction-like text",
-            )
-    return None
-
-
-def _contains_split_base64_signal(text: str) -> bool:
-    for blob in _BASE64_SPLIT_RE.findall(text):
-        collapsed = _BASE64_SPLIT_SEPARATOR_RE.sub("", blob)
-        if len(collapsed) < 40:
-            continue
-        if _contains_base64_encoded_signal(collapsed):
-            return True
-    return False
-
-
-def _contains_base64_encoded_signal(chunk: str) -> bool:
-    current = chunk.strip()
-    for _ in range(2):
-        padding = "=" * ((4 - (len(current) % 4)) % 4)
-        try:
-            decoded = base64.b64decode(current + padding, validate=True)
-            decoded_text = decoded.decode("utf-8", errors="ignore")
-        except (ValueError, binascii.Error):
-            return False
-        lowered = decoded_text.lower()
-        if any(token in lowered for token in _ENCODED_SIGNAL_TOKENS):
-            return True
-
-        next_candidate = re.sub(r"\s+", "", decoded_text)
-        if next_candidate == current:
-            return False
-        current = next_candidate
-    return False
