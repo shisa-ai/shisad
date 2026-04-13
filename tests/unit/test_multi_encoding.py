@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+from dataclasses import FrozenInstanceError
 from urllib.parse import quote
 
+import pytest
+
 from shisad.security.firewall import ContentFirewall
-from shisad.security.firewall.normalize import decode_text_layers
+from shisad.security.firewall.normalize import DecodedText, decode_text_layers
 
 
 def test_m6_t15_url_encoded_injection_is_decoded_and_flagged() -> None:
@@ -80,3 +83,12 @@ def test_t2_decode_text_layers_preserves_legacy_nonpositive_bounds() -> None:
     chars_coerced = decode_text_layers("%69%67%6E%6F%72%65", max_total_chars=0)
     assert chars_coerced.text == "ignore"
     assert "encoding:url_decoded" in chars_coerced.reason_codes
+
+
+def test_t2_decoded_text_preserves_legacy_frozen_value_type() -> None:
+    decoded = decode_text_layers("hello")
+
+    assert isinstance(decoded, DecodedText)
+    assert hash(decoded) == hash(DecodedText(text="hello"))
+    with pytest.raises(FrozenInstanceError):
+        decoded.text = "mutated"  # type: ignore[misc]

@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import re
 import unicodedata
+from dataclasses import dataclass
 from typing import cast
 
-from textguard.decode import DecodedText
 from textguard.decode import decode_text_layers as _tg_decode_text_layers
 from textguard.normalize import normalize_text as _tg_normalize
 from textguard.types import Finding as TextGuardFinding
@@ -22,6 +22,13 @@ _INVISIBLE_FORMATTING = set(range(0x2060, 0x2070))
 _LEGACY_EGRESS_STRIP_CODEPOINTS = _STRIP_CODEPOINTS | _INVISIBLE_FORMATTING | _BIDI_OVERRIDES
 _ANSI_RE = re.compile(r"\x1B\[[0-?]*[ -/]*[@-~]")
 _ANSI_SENTINEL = "\u200b"
+
+
+@dataclass(slots=True, frozen=True)
+class DecodedText:
+    text: str
+    reason_codes: tuple[str, ...] = ()
+    decode_depth: int = 0
 
 
 def normalize_text(text: str) -> str:
@@ -59,15 +66,17 @@ def decode_text_layers(
         max_total_chars = 32768
     if max_expansion_ratio <= 0:
         max_expansion_ratio = 1.0
-    return cast(
-        DecodedText,
-        _tg_decode_text_layers(
-            text,
-            max_depth=max_depth,
-            max_expansion_ratio=max_expansion_ratio,
-            max_total_chars=max_total_chars,
-            findings=findings,
-        ),
+    decoded = _tg_decode_text_layers(
+        text,
+        max_depth=max_depth,
+        max_expansion_ratio=max_expansion_ratio,
+        max_total_chars=max_total_chars,
+        findings=findings,
+    )
+    return DecodedText(
+        text=decoded.text,
+        reason_codes=tuple(decoded.reason_codes),
+        decode_depth=decoded.decode_depth,
     )
 
 
