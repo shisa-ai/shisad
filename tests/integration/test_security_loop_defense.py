@@ -813,6 +813,32 @@ async def test_m2_t22_daemon_honors_yara_required_policy(
 
 
 @pytest.mark.asyncio
+async def test_t1_daemon_validates_yara_backend_under_default_policy(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from textguard import TextGuard
+
+    monkeypatch.setenv("SHISAD_MODEL_BASE_URL", "https://api.example.com/v1")
+    monkeypatch.setenv("SHISAD_MODEL_PLANNER_BASE_URL", "https://planner.example.com/v1")
+    monkeypatch.setenv("SHISAD_MODEL_EMBEDDINGS_BASE_URL", "https://embed.example.com/v1")
+    monkeypatch.setenv("SHISAD_MODEL_MONITOR_BASE_URL", "https://monitor.example.com/v1")
+    config = DaemonConfig(
+        data_dir=tmp_path / "data",
+        socket_path=tmp_path / "control.sock",
+        policy_path=tmp_path / "policy.yaml",
+        log_level="INFO",
+    )
+
+    def _raise_yara_unavailable(*_args: object, **_kwargs: object) -> list[object]:
+        raise RuntimeError("YARA backend requires the optional dependency")
+
+    monkeypatch.setattr(TextGuard, "match_yara", _raise_yara_unavailable)
+    with pytest.raises(ValueError, match=r"textguard YARA.*unavailable"):
+        await run_daemon(config)
+
+
+@pytest.mark.asyncio
 async def test_h2_daemon_status_exposes_promptguard_best_effort_state(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
