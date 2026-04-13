@@ -36,8 +36,9 @@ cd shisad
 uv sync --group dev --extra chat
 ```
 
-If you want local PromptGuard/YARA runtime checks in the daemon, include the
-security runtime dependency group:
+YARA-backed content scanning is included in the base install through
+`textguard[yara]`. If you want local PromptGuard runtime checks in the daemon,
+include the security runtime dependency group:
 
 ```bash
 uv sync --group security-runtime --group dev --extra chat
@@ -51,7 +52,7 @@ chat UI dependencies are a project optional extra; install them with
 Optional groups:
 
 ```bash
-uv sync --group security-runtime    # YARA + local ONNX PromptGuard runtime checks
+uv sync --group security-runtime    # Local ONNX PromptGuard runtime checks
 uv sync --group security-build      # PromptGuard download/export/model-pack build tooling
 uv sync --group channels-runtime    # Matrix, Discord, Telegram, Slack
 uv sync --group coverage            # pytest-cov
@@ -59,10 +60,11 @@ uv sync --group coverage            # pytest-cov
 
 `security-build` is only needed for PromptGuard model export/download/build
 workflows. It is heavier than `security-runtime` and includes PyTorch. Daemon
-operation with `security-runtime` alone should have `onnxruntime` and
-`transformers` available but not `torch`; if Transformers logs "PyTorch was not
-found" during startup in that profile, that warning is expected and does not
-mean the daemon runtime group was installed incorrectly.
+operation with `security-runtime` alone should have PromptGuard's
+`onnxruntime` and `transformers` dependencies available through
+`textguard[promptguard]`, but not `torch`; if Transformers logs "PyTorch was
+not found" during startup in that profile, that warning is expected and does
+not mean the daemon runtime group was installed incorrectly.
 
 ## Preflight Checklist
 
@@ -307,7 +309,8 @@ Install channel runtime dependencies: `uv sync --group channels-runtime`.
 
 **Startup logs say PyTorch was not found:**
 This is expected when only `security-runtime` is installed. The daemon runtime
-uses `onnxruntime`/`transformers`; PyTorch is only in `security-build` for model
+uses PromptGuard's `onnxruntime`/`transformers` path through
+`textguard[promptguard]`; PyTorch is only in `security-build` for model
 build/export workflows.
 
 **`doctor.check` reports `<channel>_not_connected`:**

@@ -98,8 +98,9 @@ cd shisad
 uv sync --group dev --extra chat
 ```
 
-For local PromptGuard/YARA runtime checks, add the security runtime dependency
-group:
+YARA-backed content scanning is included in the base install through
+`textguard[yara]`. For local PromptGuard runtime checks, add the security
+runtime dependency group:
 
 ```bash
 uv sync --group security-runtime --group dev --extra chat

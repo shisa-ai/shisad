@@ -231,9 +231,9 @@ sed -n '1,140p' docs/DEPLOY.md
 
 ### A. Python dependency chain summary
 
-- `uv.lock` entries: `129` packages total.
-- Third-party packages from registry: `128` (plus editable root package `shisad`).
-- Registry source in lockfile: `128` entries from `https://pypi.org/simple`.
+- `uv.lock` entries: `126` packages total.
+- Third-party packages from registry: `125` (plus editable root package `shisad`).
+- Registry source in lockfile: `125` entries from `https://pypi.org/simple`.
 - Non-registry sources in lockfile: none (except local editable `shisad` root).
 
 ### B. Direct dependency declarations vs lock resolution
@@ -251,6 +251,7 @@ sed -n '1,140p' docs/DEPLOY.md
 | `pydantic-settings` | `>=2.7,<3` | `2.12.0` | Range in spec, exact in lock |
 | `qrcode` | `>=8.2,<9` | `8.2` | Range in spec, exact in lock |
 | `pyyaml` | `>=6.0,<7` | `6.0.3` | Range in spec, exact in lock |
+| `textguard[yara]` | `>=1.0,<2` | `1.0.0` | Range in spec, exact in lock |
 
 #### Optional extras (`[project.optional-dependencies]`)
 
@@ -265,13 +266,16 @@ sed -n '1,140p' docs/DEPLOY.md
 | `dev` | `numpy`, `pytest`, `pytest-asyncio`, `ruff`, `mypy`, `types-pyyaml`, `textual` | All exact in lock; all declared as ranges |
 | `channels-runtime` | `matrix-nio[e2e]`, `discord.py`, `python-telegram-bot`, `slack-bolt`, `slack-sdk` | All exact in lock; all declared as ranges |
 | `coverage` | `pytest-cov` | Exact in lock; declared as range |
-| `security-runtime` | `yara-python`, `transformers`, `onnxruntime`, `safetensors`, `sentencepiece` | All exact in lock; all declared as ranges |
-| `security-build` | `transformers`, `torch`, `onnx`, `onnxscript`, `onnxruntime`, `huggingface-hub`, `safetensors`, `sentencepiece` | All exact in lock; all declared as ranges |
+| `security-runtime` | `textguard[promptguard]`, `safetensors`, `sentencepiece` | All exact in lock; all declared as ranges |
+| `security-build` | `textguard[promptguard]`, `torch`, `onnx`, `onnxscript`, `huggingface-hub`, `safetensors`, `sentencepiece` | All exact in lock; all declared as ranges |
 
 `security-build` is intentionally heavier than `security-runtime`: it carries the
 local PromptGuard download/export/model-pack toolchain and, on Linux, the
 current `torch` build lane resolves CUDA-family packages in the lock. The live
-daemon runtime does not require that group.
+daemon runtime does not require that group. After the v0.6.4 textguard
+migration, `yara-python`, `onnxruntime`, and `transformers` are no longer
+direct shisad declarations; they resolve transitively through `textguard[yara]`
+or `textguard[promptguard]`.
 
 ### C. Full upstream package inventory (all groups)
 
@@ -284,6 +288,7 @@ aiohappyeyeballs==2.6.1
 aiohttp==3.13.5
 aiohttp-socks==0.11.0
 aiosignal==1.4.0
+annotated-doc==0.0.4
 annotated-types==0.7.0
 anyio==4.12.1
 atomicwrites==1.4.1
@@ -292,7 +297,6 @@ audioop-lts==0.2.2 ; python_full_version >= '3.13'
 cachetools==5.5.2
 certifi==2026.1.4
 cffi==2.0.0
-charset-normalizer==3.4.7
 click==8.3.1
 colorama==0.4.6 ; sys_platform == 'win32'
 coverage==7.13.4
@@ -301,17 +305,18 @@ cuda-bindings==13.2.0 ; sys_platform == 'linux'
 cuda-pathfinder==1.5.1 ; sys_platform == 'linux'
 cuda-toolkit==13.0.2 ; sys_platform == 'linux'
 discord-py==2.6.4
+fido2==2.1.1
 filelock==3.25.2
 flatbuffers==25.12.19
 frozenlist==1.8.0
 fsspec==2026.3.0
 h11==0.16.0
 h2==4.3.0
-hf-xet==1.4.3 ; platform_machine == 'aarch64' or platform_machine == 'amd64' or platform_machine == 'arm64' or platform_machine == 'x86_64'
+hf-xet==1.4.3 ; platform_machine == 'AMD64' or platform_machine == 'aarch64' or platform_machine == 'amd64' or platform_machine == 'arm64' or platform_machine == 'x86_64'
 hpack==4.1.0
 httpcore==1.0.9
 httpx==0.28.1
-huggingface-hub==1.3.0
+huggingface-hub==1.10.1
 hyperframe==6.1.0
 idna==3.11
 iniconfig==2.3.0
@@ -373,30 +378,32 @@ python-olm==3.2.16
 python-socks==2.8.0
 python-telegram-bot==21.11.1
 pyyaml==6.0.3
+qrcode==8.2
 referencing==0.37.0
 regex==2026.4.4
-requests==2.33.1
 rich==14.3.2
 rpds-py==0.30.0
 ruff==0.15.0
 safetensors==0.7.0
 sentencepiece==0.2.1
 setuptools==81.0.0
+shellingham==1.5.4
 slack-bolt==1.27.0
 slack-sdk==3.40.0
 sympy==1.14.0
+textguard==1.0.0
 textual==0.89.1
 tokenizers==0.22.2
 torch==2.11.0
 tqdm==4.67.3
-transformers==5.0.0rc3
+transformers==5.5.3
 triton==3.6.0 ; sys_platform == 'linux'
+typer==0.24.1
 types-pyyaml==6.0.12.20250915
 typing-extensions==4.15.0
 typing-inspection==0.4.2
 uc-micro-py==1.0.3
 unpaddedbase64==2.1.0
-urllib3==2.6.3
 win32-setctime==1.2.0 ; sys_platform == 'win32'
 yara-python==4.5.4
 yarl==1.22.0
@@ -422,6 +429,8 @@ aiohttp-socks==0.11.0
     # via matrix-nio
 aiosignal==1.4.0
     # via aiohttp
+annotated-doc==0.0.4
+    # via typer
 annotated-types==0.7.0
     # via pydantic
 anyio==4.12.1
@@ -446,32 +455,65 @@ cffi==2.0.0
     #   cryptography
     #   python-olm
 click==8.3.1
-    # via shisad
+    # via
+    #   shisad
+    #   typer
 colorama==0.4.6 ; sys_platform == 'win32'
     # via
     #   click
     #   loguru
     #   pytest
+    #   qrcode
+    #   tqdm
 coverage==7.13.4
     # via pytest-cov
 cryptography==46.0.7
+    # via
+    #   fido2
+    #   shisad
+cuda-bindings==13.2.0 ; sys_platform == 'linux'
+    # via torch
+cuda-pathfinder==1.5.1 ; sys_platform == 'linux'
+    # via cuda-bindings
+cuda-toolkit==13.0.2 ; sys_platform == 'linux'
+    # via torch
+discord-py==2.6.4
+fido2==2.1.1
     # via shisad
+filelock==3.25.2
+    # via
+    #   huggingface-hub
+    #   torch
+flatbuffers==25.12.19
+    # via onnxruntime
 frozenlist==1.8.0
     # via
     #   aiohttp
     #   aiosignal
+fsspec==2026.3.0
+    # via
+    #   huggingface-hub
+    #   torch
 h11==0.16.0
     # via
     #   httpcore
     #   matrix-nio
 h2==4.3.0
     # via matrix-nio
+hf-xet==1.4.3 ; platform_machine == 'AMD64' or platform_machine == 'aarch64' or platform_machine == 'amd64' or platform_machine == 'arm64' or platform_machine == 'x86_64'
+    # via huggingface-hub
 hpack==4.1.0
     # via h2
 httpcore==1.0.9
     # via httpx
 httpx==0.28.1
-    # via python-telegram-bot
+    # via
+    #   huggingface-hub
+    #   python-telegram-bot
+huggingface-hub==1.10.1
+    # via
+    #   tokenizers
+    #   transformers
 hyperframe==6.1.0
     # via h2
 idna==3.11
@@ -481,6 +523,8 @@ idna==3.11
     #   yarl
 iniconfig==2.3.0
     # via pytest
+jinja2==3.1.6
+    # via torch
 jsonschema==4.26.0
     # via matrix-nio
 jsonschema-specifications==2025.9.1
@@ -496,18 +540,92 @@ markdown-it-py==4.0.0
     #   mdit-py-plugins
     #   rich
     #   textual
+markupsafe==3.0.3
+    # via jinja2
+matrix-nio==0.25.2
 mdit-py-plugins==0.5.0
     # via markdown-it-py
 mdurl==0.1.2
     # via markdown-it-py
+ml-dtypes==0.5.4
+    # via
+    #   onnx
+    #   onnx-ir
+    #   onnxscript
+mpmath==1.3.0
+    # via sympy
 multidict==6.7.1
     # via
     #   aiohttp
     #   yarl
+mypy==1.19.1
 mypy-extensions==1.1.0
     # via mypy
+networkx==3.6.1
+    # via torch
+numpy==2.4.4
+    # via
+    #   ml-dtypes
+    #   onnx
+    #   onnx-ir
+    #   onnxruntime
+    #   onnxscript
+    #   transformers
+nvidia-cublas==13.1.0.3 ; sys_platform == 'linux'
+    # via
+    #   cuda-toolkit
+    #   nvidia-cudnn-cu13
+    #   nvidia-cusolver
+nvidia-cuda-cupti==13.0.85 ; sys_platform == 'linux'
+    # via cuda-toolkit
+nvidia-cuda-nvrtc==13.0.88 ; sys_platform == 'linux'
+    # via cuda-toolkit
+nvidia-cuda-runtime==13.0.96 ; sys_platform == 'linux'
+    # via cuda-toolkit
+nvidia-cudnn-cu13==9.19.0.56 ; sys_platform == 'linux'
+    # via torch
+nvidia-cufft==12.0.0.61 ; sys_platform == 'linux'
+    # via cuda-toolkit
+nvidia-cufile==1.15.1.6 ; sys_platform == 'linux'
+    # via cuda-toolkit
+nvidia-curand==10.4.0.35 ; sys_platform == 'linux'
+    # via cuda-toolkit
+nvidia-cusolver==12.0.4.66 ; sys_platform == 'linux'
+    # via cuda-toolkit
+nvidia-cusparse==12.6.3.3 ; sys_platform == 'linux'
+    # via
+    #   cuda-toolkit
+    #   nvidia-cusolver
+nvidia-cusparselt-cu13==0.8.0 ; sys_platform == 'linux'
+    # via torch
+nvidia-nccl-cu13==2.28.9 ; sys_platform == 'linux'
+    # via torch
+nvidia-nvjitlink==13.0.88 ; sys_platform == 'linux'
+    # via
+    #   cuda-toolkit
+    #   nvidia-cufft
+    #   nvidia-cusolver
+    #   nvidia-cusparse
+nvidia-nvshmem-cu13==3.4.5 ; sys_platform == 'linux'
+    # via torch
+nvidia-nvtx==13.0.85 ; sys_platform == 'linux'
+    # via cuda-toolkit
+onnx==1.21.0
+    # via
+    #   onnx-ir
+    #   onnxscript
+onnx-ir==0.2.0
+    # via onnxscript
+onnxruntime==1.24.4
+    # via textguard
+onnxscript==0.6.2
 packaging==26.0
-    # via pytest
+    # via
+    #   huggingface-hub
+    #   onnxruntime
+    #   onnxscript
+    #   pytest
+    #   transformers
 pathspec==1.0.4
     # via mypy
 peewee==3.19.0
@@ -522,39 +640,109 @@ propcache==0.4.1
     # via
     #   aiohttp
     #   yarl
+protobuf==7.34.1
+    # via
+    #   onnx
+    #   onnxruntime
 pycparser==3.0 ; implementation_name != 'PyPy'
     # via cffi
 pycryptodome==3.23.0
     # via matrix-nio
+pydantic==2.12.5
+    # via
+    #   agent-client-protocol
+    #   pydantic-settings
+    #   shisad
 pydantic-core==2.41.5
     # via pydantic
+pydantic-settings==2.12.0
+    # via shisad
+pygments==2.20.0
+    # via
+    #   pytest
+    #   rich
+pytest==8.4.2
+    # via
+    #   pytest-asyncio
+    #   pytest-cov
+pytest-asyncio==0.26.0
+pytest-cov==6.3.0
 python-dotenv==1.2.1
     # via pydantic-settings
 python-olm==3.2.16
     # via matrix-nio
 python-socks==2.8.0
     # via aiohttp-socks
+python-telegram-bot==21.11.1
+pyyaml==6.0.3
+    # via
+    #   huggingface-hub
+    #   shisad
+    #   transformers
+qrcode==8.2
+    # via shisad
 referencing==0.37.0
     # via
     #   jsonschema
     #   jsonschema-specifications
+regex==2026.4.4
+    # via transformers
 rich==14.3.2
-    # via textual
+    # via
+    #   textual
+    #   typer
 rpds-py==0.30.0
     # via
     #   jsonschema
     #   referencing
+safetensors==0.7.0
+    # via transformers
+sentencepiece==0.2.1
+setuptools==81.0.0
+    # via torch
+shellingham==1.5.4
+    # via typer
+slack-bolt==1.27.0
 slack-sdk==3.40.0
     # via slack-bolt
+sympy==1.14.0
+    # via
+    #   onnx-ir
+    #   onnxruntime
+    #   torch
+textguard==1.0.0
+    # via shisad
+textual==0.89.1
+tokenizers==0.22.2
+    # via transformers
+torch==2.11.0
+tqdm==4.67.3
+    # via
+    #   huggingface-hub
+    #   transformers
+transformers==5.5.3
+    # via textguard
+triton==3.6.0 ; sys_platform == 'linux'
+    # via torch
+typer==0.24.1
+    # via
+    #   huggingface-hub
+    #   transformers
+types-pyyaml==6.0.12.20250915
 typing-extensions==4.15.0
     # via
     #   aiosignal
     #   anyio
+    #   huggingface-hub
     #   mypy
+    #   onnx
+    #   onnx-ir
+    #   onnxscript
     #   pydantic
     #   pydantic-core
     #   referencing
     #   textual
+    #   torch
     #   typing-inspection
 typing-inspection==0.4.2
     # via
@@ -566,6 +754,8 @@ unpaddedbase64==2.1.0
     # via matrix-nio
 win32-setctime==1.2.0 ; sys_platform == 'win32'
     # via loguru
+yara-python==4.5.4
+    # via textguard
 yarl==1.22.0
     # via aiohttp
 ```

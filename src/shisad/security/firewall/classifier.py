@@ -11,11 +11,10 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
-from typing import Any, ClassVar, Protocol, cast
+from typing import Any, ClassVar, Protocol
 
 from pydantic import BaseModel, Field
-
-from shisad.security.firewall.promptguard_pack import inspect_promptguard_model_pack
+from textguard.backends.promptguard import load_promptguard_backend
 
 logger = logging.getLogger(__name__)
 _REMOTE_PATH_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*://")
@@ -150,184 +149,6 @@ class PromptGuardLoadError(RuntimeError):
         self.reason = reason
 
 
-class OnnxPromptGuardBackend:
-    """Local-only PromptGuard 2 backend using Transformers tokenizer + ONNX Runtime."""
-
-    def __init__(
-        self,
-        *,
-        model_source: str,
-        tokenizer: Any,
-        config: Any,
-        session: Any,
-        numpy_module: Any,
-        max_length: int = 512,
-        stride: int = 64,
-        max_segments: int = 8,
-    ) -> None:
-        self.model_source = model_source
-        self._tokenizer = tokenizer
-        self._config = config
-        self._session = session
-        self._np = numpy_module
-        self._max_length = max_length
-        self._stride = stride
-        self._max_segments = max_segments
-        self._input_names = tuple(item.name for item in self._session.get_inputs())
-        outputs = self._session.get_outputs()
-        self._output_name = outputs[0].name if outputs else "logits"
-
-    @classmethod
-    def from_local_path(cls, model_path: Path) -> OnnxPromptGuardBackend:
-        onnx_path = _resolve_promptguard_onnx_path(model_path)
-        if onnx_path is None:
-            raise PromptGuardLoadError("promptguard_onnx_model_missing")
-
-        try:
-            import numpy as np
-            import onnxruntime as ort
-            from transformers import AutoConfig, AutoTokenizer
-        except ImportError as exc:  # pragma: no cover - exercised via loader surface
-            raise PromptGuardLoadError("promptguard_runtime_missing") from exc
-
-        if "CPUExecutionProvider" not in ort.get_available_providers():
-            raise PromptGuardLoadError("promptguard_cpu_provider_unavailable")
-
-        try:
-            tokenizer_loader = cast(Any, AutoTokenizer)
-            config_loader = cast(Any, AutoConfig)
-            tokenizer = tokenizer_loader.from_pretrained(
-                str(model_path),
-                local_files_only=True,
-                trust_remote_code=False,
-            )
-            config = config_loader.from_pretrained(
-                str(model_path),
-                local_files_only=True,
-                trust_remote_code=False,
-            )
-            session = ort.InferenceSession(
-                str(onnx_path),
-                providers=["CPUExecutionProvider"],
-            )
-        except Exception as exc:  # pragma: no cover - exercised via loader surface
-            raise PromptGuardLoadError("promptguard_model_load_failed") from exc
-
-        return cls(
-            model_source=str(model_path),
-            tokenizer=tokenizer,
-            config=config,
-            session=session,
-            numpy_module=np,
-        )
-
-    def score_text(self, text: str) -> list[float]:
-        try:
-            batch = self._tokenizer(
-                text,
-                return_tensors="np",
-                truncation=True,
-                padding=True,
-                max_length=self._max_length,
-                stride=self._stride,
-                return_overflowing_tokens=True,
-            )
-        except Exception as exc:
-            raise PromptGuardLoadError("promptguard_tokenization_failed") from exc
-
-        payload = dict(batch)
-        payload.pop("overflow_to_sample_mapping", None)
-        segment_count = self._segment_count(payload)
-        if segment_count > self._max_segments:
-            logger.debug(
-                "PromptGuard scoring long input in %s batches (%s segments total)",
-                ((segment_count - 1) // self._max_segments) + 1,
-                segment_count,
-            )
-
-        all_scores: list[float] = []
-        for model_inputs in self._iter_model_batches(payload):
-            input_feed = {
-                key: value for key, value in model_inputs.items() if key in self._input_names
-            }
-
-            try:
-                logits = self._session.run([self._output_name], input_feed)[0]
-                probabilities = self._softmax(logits)
-            except Exception as exc:
-                raise PromptGuardLoadError("promptguard_inference_failed") from exc
-
-            label_count = int(getattr(probabilities, "shape", [0, 0])[-1])
-            malicious_index = self._malicious_index(label_count)
-            score_tensor = probabilities[:, malicious_index]
-            raw_scores = (
-                score_tensor.tolist() if hasattr(score_tensor, "tolist") else [score_tensor]
-            )
-            all_scores.extend(min(max(float(item), 0.0), 1.0) for item in raw_scores)
-        return all_scores
-
-    def _iter_model_batches(self, payload: dict[str, Any]) -> list[dict[str, Any]]:
-        segment_count = self._segment_count(payload)
-        if segment_count <= 0 or segment_count <= self._max_segments:
-            return [payload]
-        return [
-            self._slice_batch(payload, start, start + self._max_segments)
-            for start in range(0, segment_count, self._max_segments)
-        ]
-
-    def _segment_count(self, payload: dict[str, Any]) -> int:
-        for value in payload.values():
-            shape = getattr(value, "shape", None)
-            if shape:
-                try:
-                    return int(shape[0])
-                except (TypeError, ValueError):
-                    pass
-            if hasattr(value, "__len__") and hasattr(value, "__getitem__"):
-                try:
-                    return len(value)
-                except (TypeError, ValueError):
-                    pass
-        return 0
-
-    def _slice_batch(self, payload: dict[str, Any], start: int, stop: int) -> dict[str, Any]:
-        truncated: dict[str, Any] = {}
-        for key, value in payload.items():
-            if hasattr(value, "__getitem__"):
-                try:
-                    truncated[key] = value[start:stop]
-                    continue
-                except Exception:
-                    pass
-            truncated[key] = value
-        return truncated
-
-    def _malicious_index(self, label_count: int) -> int:
-        id2label = getattr(self._config, "id2label", {}) if self._config is not None else {}
-        if isinstance(id2label, dict):
-            benign_indices: set[int] = set()
-            for raw_index, raw_label in id2label.items():
-                index = _coerce_promptguard_label_index(raw_index)
-                if index is None:
-                    continue
-                label = str(raw_label).strip().lower()
-                if label == "malicious":
-                    return index
-                if label == "benign":
-                    benign_indices.add(index)
-            if label_count == 2 and benign_indices == {0}:
-                return 1
-        if label_count <= 1:
-            return 0
-        return 1
-
-    def _softmax(self, logits: Any) -> Any:
-        array = self._np.asarray(logits, dtype="float32")
-        shifted = array - array.max(axis=-1, keepdims=True)
-        exponents = self._np.exp(shifted)
-        return exponents / exponents.sum(axis=-1, keepdims=True)
-
-
 class PromptGuardSemanticClassifier:
     """PromptGuard 2 wrapper behind the semantic-classifier protocol."""
 
@@ -367,6 +188,22 @@ class PromptGuardSemanticClassifier:
             logger.warning(
                 "PromptGuard degraded; reason_code=%s",
                 exc.reason,
+                exc_info=True,
+            )
+            return InjectionClassification(semantic_classifier_id=self.classifier_id)
+        except RuntimeError as exc:
+            reason = _promptguard_runtime_reason(exc)
+            self._status = PromptGuardRuntimeStatus(
+                posture=self._posture,
+                status="degraded",
+                reason=reason,
+                thresholds=self._thresholds.as_dict(),
+            )
+            if self._posture == "required":
+                raise PromptGuardLoadError(reason) from exc
+            logger.warning(
+                "PromptGuard degraded; reason_code=%s",
+                reason,
                 exc_info=True,
             )
             return InjectionClassification(semantic_classifier_id=self.classifier_id)
@@ -437,30 +274,21 @@ def build_promptguard_classifier(
         reason = "model_path_not_directory"
         return _promptguard_unavailable(settings=settings, reason=reason)
 
-    runtime_model_path = model_path
-    if (model_path / "manifest.json").is_file():
-        allowed_signers_path = None
-        raw_allowed_signers_path = settings.allowed_signers_path.strip()
-        if raw_allowed_signers_path:
-            try:
-                allowed_signers_path = _expand_local_path(
-                    raw_allowed_signers_path,
-                    reason="promptguard_pack_trust_store_path_invalid",
-                )
-            except PromptGuardLoadError as exc:
-                return _promptguard_unavailable(settings=settings, reason=exc.reason)
-        inspection = inspect_promptguard_model_pack(
-            model_path,
-            allowed_signers_path=allowed_signers_path,
-        )
-        if not inspection.valid or inspection.payload_dir is None:
-            return _promptguard_unavailable(settings=settings, reason=inspection.reason)
-        runtime_model_path = inspection.payload_dir
+    allowed_signers_path = None
+    raw_allowed_signers_path = settings.allowed_signers_path.strip()
+    if raw_allowed_signers_path:
+        try:
+            allowed_signers_path = _expand_local_path(
+                raw_allowed_signers_path,
+                reason="promptguard_pack_trust_store_path_invalid",
+            )
+        except PromptGuardLoadError as exc:
+            return _promptguard_unavailable(settings=settings, reason=exc.reason)
 
     try:
-        backend = OnnxPromptGuardBackend.from_local_path(runtime_model_path)
-    except PromptGuardLoadError as exc:
-        return _promptguard_unavailable(settings=settings, reason=exc.reason)
+        backend = load_promptguard_backend(model_path, allowed_signers_path=allowed_signers_path)
+    except RuntimeError as exc:
+        return _promptguard_unavailable(settings=settings, reason=_promptguard_load_reason(exc))
     classifier = PromptGuardSemanticClassifier(
         backend=backend,
         thresholds=settings.thresholds,
@@ -484,33 +312,31 @@ def _expand_local_path(raw_path: str, *, reason: str) -> Path:
         raise PromptGuardLoadError(reason) from exc
 
 
-def _coerce_promptguard_label_index(raw_index: object) -> int | None:
-    if isinstance(raw_index, int):
-        return raw_index
-    if isinstance(raw_index, str):
-        try:
-            return int(raw_index)
-        except ValueError:
-            return None
-    return None
+def _promptguard_load_reason(exc: RuntimeError) -> str:
+    return _promptguard_reason_from_message(str(exc), default="promptguard_model_load_failed")
 
 
-def _resolve_promptguard_onnx_path(model_path: Path) -> Path | None:
-    candidates = (
-        model_path / "model.onnx",
-        model_path / "onnx" / "model.onnx",
-    )
-    for candidate in candidates:
-        if candidate.is_file():
-            return candidate
-    root_matches = sorted(model_path.glob("*.onnx"))
-    if len(root_matches) == 1:
-        return root_matches[0]
-    nested_dir = model_path / "onnx"
-    nested_matches = sorted(nested_dir.glob("*.onnx")) if nested_dir.is_dir() else []
-    if len(nested_matches) == 1:
-        return nested_matches[0]
-    return None
+def _promptguard_runtime_reason(exc: RuntimeError) -> str:
+    return _promptguard_reason_from_message(str(exc), default="promptguard_unexpected_error")
+
+
+def _promptguard_reason_from_message(message: str, *, default: str) -> str:
+    lowered = message.lower()
+    if "model pack verification failed:" in lowered:
+        return message.rsplit(":", 1)[-1].strip() or default
+    if "onnx model is missing" in lowered:
+        return "promptguard_onnx_model_missing"
+    if "optional dependencies" in lowered or "install hint: textguard[promptguard]" in lowered:
+        return "promptguard_runtime_missing"
+    if "cpuexecutionprovider" in lowered:
+        return "promptguard_cpu_provider_unavailable"
+    if "model load failed" in lowered:
+        return "promptguard_model_load_failed"
+    if "tokenization failed" in lowered:
+        return "promptguard_tokenization_failed"
+    if "inference failed" in lowered:
+        return "promptguard_inference_failed"
+    return default
 
 
 def _promptguard_unavailable(

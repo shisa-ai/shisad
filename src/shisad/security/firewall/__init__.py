@@ -5,18 +5,18 @@ from __future__ import annotations
 import hashlib
 import re
 from enum import StrEnum
-from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel, Field
+from textguard import Finding as TextGuardFinding
+from textguard import TextGuard
 
 from shisad.core.types import TaintLabel
 from shisad.security.firewall.classifier import (
-    PatternInjectionClassifier,
+    InjectionClassification,
     PromptGuardRuntimeStatus,
     SemanticClassifier,
 )
-from shisad.security.firewall.normalize import decode_text_layers, normalize_text
 from shisad.security.firewall.secrets import SecretFinding, redact_ingress_secrets
 
 
@@ -42,6 +42,37 @@ class FirewallResult(BaseModel):
     semantic_classifier_id: str = ""
 
 
+_TEXTGUARD_MODE = "textguard_yara"
+_SEVERITY_WEIGHTS = {
+    "info": 0.0,
+    "warn": 0.15,
+    "error": 0.35,
+}
+_FACTOR_WEIGHTS = {
+    "instruction_override": 0.35,
+    "prompt_leak_request": 0.35,
+    "credential_harvest": 0.45,
+    "tool_spoofing_tag": 0.35,
+    "role_impersonation": 0.25,
+    "command_chain": 0.2,
+    "egress_lure": 0.2,
+    "encoded_payload": 0.25,
+}
+_TEXTGUARD_FACTOR_MAP = {
+    "yara:prompt_injection_direct": ("instruction_override", "prompt_leak_request"),
+    "yara:prompt_injection_indirect": ("prompt_leak_request",),
+    "yara:credential_harvesting": ("credential_harvest",),
+    "yara:tool_spoofing": ("tool_spoofing_tag",),
+    "yara:masquerading_authority": ("role_impersonation",),
+    "yara:command_injection": ("command_chain",),
+    "yara:code_execution": ("command_chain",),
+    "yara:data_exfiltration": ("egress_lure",),
+    "yara:system_manipulation": ("prompt_leak_request",),
+    "encoded_payload": ("encoded_payload",),
+}
+_DECODE_FINDING_PREFIX = "encoding:"
+
+
 class ContentFirewall:
     """Normalizes, classifies, and sanitizes untrusted content."""
 
@@ -52,11 +83,7 @@ class ContentFirewall:
         semantic_classifier_status: PromptGuardRuntimeStatus | None = None,
     ) -> None:
         self._semantic_classifier = semantic_classifier
-        rules_dir = Path(__file__).resolve().parent.parent / "rules" / "yara"
-        self._classifier = PatternInjectionClassifier(
-            semantic_classifier=semantic_classifier,
-            yara_rules_dir=rules_dir,
-        )
+        self._guard = TextGuard(yara_bundled=True)
         self._semantic_classifier_status = semantic_classifier_status or PromptGuardRuntimeStatus(
             posture="best_effort" if semantic_classifier is not None else "off",
             status="active" if semantic_classifier is not None else "disabled",
@@ -64,7 +91,7 @@ class ContentFirewall:
 
     @property
     def classifier_mode(self) -> str:
-        return self._classifier.mode
+        return _TEXTGUARD_MODE
 
     def status_snapshot(self) -> dict[str, Any]:
         semantic_status = self._semantic_classifier_status
@@ -90,12 +117,15 @@ class ContentFirewall:
     ) -> FirewallResult:
         """Process untrusted input and return sanitized content + metadata."""
         original_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()
-        normalized = normalize_text(text)
-        decoded = decode_text_layers(normalized)
-        redacted, secret_findings = redact_ingress_secrets(decoded.text)
-        classification = self._classifier.classify(
+        scan_result = self._guard.scan(text)
+        redacted, secret_findings = redact_ingress_secrets(scan_result.decoded_text)
+        classification = _classify_textguard_findings(
+            scan_result.findings,
+            decode_reason_codes=scan_result.decode_reason_codes,
+        )
+        classification = self._classify_semantic(
+            classification,
             redacted,
-            context_factors=decoded.reason_codes,
             skip_semantic=trusted_input,
         )
 
@@ -119,11 +149,31 @@ class ContentFirewall:
             original_hash=original_hash,
             taint_labels=sorted(taints),
             secret_findings=[f.kind for f in secret_findings],
-            decode_depth=decoded.decode_depth,
-            decode_reason_codes=list(decoded.reason_codes),
+            decode_depth=scan_result.decode_depth,
+            decode_reason_codes=list(scan_result.decode_reason_codes),
             semantic_risk_score=classification.semantic_risk_score,
             semantic_risk_tier=classification.semantic_risk_tier,
             semantic_classifier_id=classification.semantic_classifier_id,
+        )
+
+    def _classify_semantic(
+        self,
+        classification: InjectionClassification,
+        text: str,
+        *,
+        skip_semantic: bool,
+    ) -> InjectionClassification:
+        if self._semantic_classifier is None or skip_semantic:
+            return classification
+
+        semantic = self._semantic_classifier.classify(text)
+        return InjectionClassification(
+            risk_score=min(max(classification.risk_score, semantic.risk_score), 1.0),
+            risk_factors=sorted({*classification.risk_factors, *semantic.risk_factors}),
+            matched_patterns=sorted({*classification.matched_patterns, *semantic.matched_patterns}),
+            semantic_risk_score=min(max(semantic.semantic_risk_score, 0.0), 1.0),
+            semantic_risk_tier=semantic.semantic_risk_tier,
+            semantic_classifier_id=semantic.semantic_classifier_id,
         )
 
     @staticmethod
@@ -168,3 +218,38 @@ class ContentFirewall:
 def redact_findings(findings: list[SecretFinding]) -> list[str]:
     """Helper for serializing secret findings."""
     return [f.kind for f in findings]
+
+
+def _classify_textguard_findings(
+    findings: list[TextGuardFinding],
+    *,
+    decode_reason_codes: list[str],
+) -> InjectionClassification:
+    score = 0.0
+    factors: list[str] = []
+    matches: list[str] = []
+
+    for finding in findings:
+        if finding.kind.startswith(_DECODE_FINDING_PREFIX):
+            continue
+        mapped_factors = _TEXTGUARD_FACTOR_MAP.get(finding.kind)
+        if mapped_factors is None:
+            mapped_factors = (finding.kind,)
+            score += _SEVERITY_WEIGHTS.get(finding.severity, 0.0)
+        else:
+            for factor in mapped_factors:
+                score += _FACTOR_WEIGHTS.get(
+                    factor,
+                    _SEVERITY_WEIGHTS.get(finding.severity, 0.0),
+                )
+        factors.extend(mapped_factors)
+        matches.append(finding.detail or finding.kind)
+
+    if factors:
+        factors.extend(str(item) for item in decode_reason_codes)
+
+    return InjectionClassification(
+        risk_score=min(score, 1.0),
+        risk_factors=sorted(set(factors)),
+        matched_patterns=sorted(set(matches)),
+    )

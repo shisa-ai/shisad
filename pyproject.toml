@@ -15,6 +15,7 @@ dependencies = [
     "fido2>=2.1,<3",
     "loguru>=0.7,<1",
     "qrcode>=8.2,<9",
+    "textguard[yara]>=1.0,<2",
 ]
 
 [project.urls]
@@ -63,7 +64,7 @@ warn_unused_configs = true
 plugins = ["pydantic.mypy"]
 
 [[tool.mypy.overrides]]
-module = ["onnxruntime", "transformers", "transformers.*"]
+module = ["textguard", "textguard.*", "transformers", "transformers.*"]
 ignore_missing_imports = true
 
 [dependency-groups]
@@ -77,18 +78,15 @@ dev = [
     "textual>=0.89,<1",
 ]
 security-runtime = [
-    "yara-python>=4.5,<5",
-    "transformers>=5.0.0rc3,<6",
-    "onnxruntime>=1.18,<2",
+    "textguard[promptguard]>=1.0,<2",
     "safetensors>=0.5,<1",
     "sentencepiece>=0.2,<1",
 ]
 security-build = [
-    "transformers>=5.0.0rc3,<6",
+    "textguard[promptguard]>=1.0,<2",
     "torch>=2.7,<3",
     "onnx>=1.16,<2",
     "onnxscript>=0.1,<1",
-    "onnxruntime>=1.18,<2",
     "huggingface-hub>=1.3,<2",
     "safetensors>=0.5,<1",
     "sentencepiece>=0.2,<1",
