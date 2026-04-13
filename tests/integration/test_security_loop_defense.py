@@ -702,18 +702,32 @@ async def test_m2_t16_session_message_trust_override_rejected_by_schema(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("policy_required", [False, True])
 async def test_m2_t22_daemon_status_exposes_classifier_mode(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    policy_required: bool,
 ) -> None:
     monkeypatch.setenv("SHISAD_MODEL_BASE_URL", "https://api.example.com/v1")
     monkeypatch.setenv("SHISAD_MODEL_PLANNER_BASE_URL", "https://planner.example.com/v1")
     monkeypatch.setenv("SHISAD_MODEL_EMBEDDINGS_BASE_URL", "https://embed.example.com/v1")
     monkeypatch.setenv("SHISAD_MODEL_MONITOR_BASE_URL", "https://monitor.example.com/v1")
+    policy_path = tmp_path / "policy.yaml"
+    if policy_required:
+        policy_path.write_text(
+            textwrap.dedent(
+                """
+                version: "1"
+                yara_required: true
+                default_require_confirmation: false
+                """
+            ).strip()
+            + "\n"
+        )
     config = DaemonConfig(
         data_dir=tmp_path / "data",
         socket_path=tmp_path / "control.sock",
-        policy_path=tmp_path / "policy.yaml",
+        policy_path=policy_path,
         log_level="INFO",
     )
     daemon_task = asyncio.create_task(run_daemon(config))
@@ -724,7 +738,7 @@ async def test_m2_t22_daemon_status_exposes_classifier_mode(
         status = await client.call("daemon.status")
         assert status["classifier_mode"] == "textguard_yara"
         assert status["yara_required"] is True
-        assert status["yara_policy_required"] is False
+        assert status["yara_policy_required"] is policy_required
         assert "content_firewall" in status
         assert "semantic_classifier" in status["content_firewall"]
         assert "risk_policy_version" in status
