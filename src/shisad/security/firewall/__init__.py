@@ -240,7 +240,7 @@ def _classify_textguard_findings(
     *,
     decode_reason_codes: list[str],
 ) -> InjectionClassification:
-    score = 0.0
+    factor_weights: dict[str, float] = {}
     factors: list[str] = []
     matches: list[str] = []
 
@@ -248,15 +248,12 @@ def _classify_textguard_findings(
         if finding.kind.startswith(_DECODE_FINDING_PREFIX):
             continue
         mapped_factors = _TEXTGUARD_FACTOR_MAP.get(finding.kind)
+        severity_weight = _SEVERITY_WEIGHTS.get(finding.severity, 0.0)
         if mapped_factors is None:
             mapped_factors = (finding.kind,)
-            score += _SEVERITY_WEIGHTS.get(finding.severity, 0.0)
-        else:
-            for factor in mapped_factors:
-                score += _FACTOR_WEIGHTS.get(
-                    factor,
-                    _SEVERITY_WEIGHTS.get(finding.severity, 0.0),
-                )
+        for factor in mapped_factors:
+            weight = _FACTOR_WEIGHTS.get(factor, severity_weight)
+            factor_weights[factor] = max(factor_weights.get(factor, 0.0), weight)
         factors.extend(mapped_factors)
         matches.append(finding.detail or finding.kind)
 
@@ -264,7 +261,7 @@ def _classify_textguard_findings(
         factors.extend(str(item) for item in decode_reason_codes)
 
     return InjectionClassification(
-        risk_score=min(score, 1.0),
+        risk_score=min(sum(factor_weights.values()), 1.0),
         risk_factors=sorted(set(factors)),
         matched_patterns=sorted(set(matches)),
     )
