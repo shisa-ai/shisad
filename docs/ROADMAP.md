@@ -170,27 +170,31 @@ tools:
 
 #### v0.6.3 — Critical UX fixes
 
-Current execution note (2026-04-12): this tree contains pre-publication
-`v0.6.3` candidate content; published installability is determined by the
-GitHub release tag and PyPI package. The candidate includes first-user UX
-stabilization work: confirmation-gated actions surface actionable daemon-owned
-pending status, TOTP approvals can be completed from trusted chat / command
-replies, TOTP enrollment renders a terminal QR code when possible,
-session-message output preserves line breaks, no-model and startup diagnostics
-are actionable, `shisad doctor` works as a bare command, Anthropic default
-routing and chat optional install guidance are documented, and planner-visible
-tool manifests truthfully hide unconfigured filesystem/git surfaces while
-preserving delegated task scope enforcement. The reopened LT recut parses
-confirmation replies before planner flow; LT5 live evidence is recorded for the
-CLI-trust, stale pending-action, and low-risk internal bookkeeping portions of
-that recut. Post-LT validation evidence is recorded for the candidate line, and
-the follow-up LT5 live-retest reconciliation gate is green. The release-close
-validation bundle is green; ReleaseClose reviewer sign-off and explicit tag/PyPI
-publication remain pending; Textual chat TUI newline rendering and web-page TOTP
-entry remain deferred to `v0.8.0`.
+Current execution note (2026-04-13): this tree contains pre-publication
+`v0.6.3` candidate content plus the in-progress `v0.6.4` TextGuard T1
+ContentFirewall/runtime dependency surface; published installability is
+determined by the GitHub release tag and PyPI package. The `v0.6.3` candidate
+includes first-user UX stabilization work: confirmation-gated actions surface
+actionable daemon-owned pending status, TOTP approvals can be completed from
+trusted chat / command replies, TOTP enrollment renders a terminal QR code when
+possible, session-message output preserves line breaks, no-model and startup
+diagnostics are actionable, `shisad doctor` works as a bare command, Anthropic
+default routing and chat optional install guidance are documented, and
+planner-visible tool manifests truthfully hide unconfigured filesystem/git
+surfaces while preserving delegated task scope enforcement. The reopened LT
+recut parses confirmation replies before planner flow; LT5 live evidence is
+recorded for the CLI-trust, stale pending-action, and low-risk internal
+bookkeeping portions of that recut. Post-LT validation evidence is recorded for
+the candidate line, and the follow-up LT5 live-retest reconciliation gate is
+green. The release-close validation bundle is green; ReleaseClose reviewer
+sign-off and explicit tag/PyPI publication remain pending; Textual chat TUI
+newline rendering and web-page TOTP entry remain deferred to `v0.8.0`.
 
 #### v0.6.4 — textguard port
 
+- Status (2026-04-13): T1 ContentFirewall TextGuard YARA runtime/dependency
+  wiring is present in this development tree; the full `v0.6.4` line is not
+  release-closed.
 - Port PromptGuard 2 integration to the `textguard` library
 - Unify prompt-injection detection behind the textguard API surface
 - Preserve existing PEP screening semantics and threshold tuning
