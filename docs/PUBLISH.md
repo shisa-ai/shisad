@@ -101,10 +101,11 @@ Version must be updated in both places:
 - [ ] Push the release commit and tag:
       `git push origin main`, `git push origin vX.Y.Z`
 - [ ] Publish via trusted publishing workflow (primary path):
-      Go to Actions > "Publish to PyPI" > Run workflow, enter `vX.Y.Z`.
-      The workflow builds, runs tests, generates SBOM, creates attestations,
-      and publishes via OIDC. Requires approval in the `pypi-publish`
-      environment.
+      `gh -R shisa-ai/shisad workflow run "Publish to PyPI" -f tag=vX.Y.Z`
+      (or: Actions > "Publish to PyPI" > Run workflow, enter `vX.Y.Z`).
+      The workflow is fully automated once triggered — no human approval gate.
+      It builds, runs tests, audits dependencies, verifies metadata, generates
+      SBOM, creates attestations, and publishes to PyPI via OIDC.
 - [ ] Create a GitHub Release from the tag:
       `gh release create vX.Y.Z --title "vX.Y.Z" --notes-file -` (pipe the
       matching `CHANGELOG.md` section, or use `--notes "..."` inline)
@@ -224,7 +225,8 @@ setup required on PyPI:
    - Workflow name: `publish.yml`
    - Environment name: `pypi-publish`
 3. Create a GitHub Environment named `pypi-publish` in the repo settings
-   (Settings > Environments) with required reviewers enabled.
+   (Settings > Environments). No required-reviewers gate — the workflow
+   publishes automatically once triggered.
 
 After setup, the workflow can publish without any stored API tokens.
 
