@@ -743,6 +743,14 @@ async def test_m2_t22_daemon_status_exposes_classifier_mode(
         assert "semantic_classifier" in status["content_firewall"]
         assert "risk_policy_version" in status
         assert "delivery" in status
+        assert status["provenance"] == {
+            "available": False,
+            "version": "",
+            "source_commit": "",
+            "manifest_hash": "",
+            "drift": [],
+            "reason": "local_security_assets_removed_textguard_bundled_rules",
+        }
     finally:
         with suppress(Exception):
             await client.call("daemon.shutdown")
