@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import base64
+import binascii
 import hashlib
 import re
 from enum import StrEnum
@@ -71,6 +73,20 @@ _TEXTGUARD_FACTOR_MAP = {
     "encoded_payload": ("encoded_payload",),
 }
 _DECODE_FINDING_PREFIX = "encoding:"
+_BASE64_SPLIT_RE = re.compile(r"(?:[A-Za-z0-9+/]{8,}={0,2}(?:[\s\"'`:,;|\\/-]+|$)){3,}")
+_BASE64_SPLIT_SEPARATOR_RE = re.compile(r"[\s\"'`:,;|\\/-]+")
+_ENCODED_SIGNAL_TOKENS = (
+    "ignore previous",
+    "disregard instructions",
+    "system prompt",
+    "curl ",
+    "wget ",
+    "http://",
+    "https://",
+    "exfiltrate",
+    "token",
+    "secret",
+)
 
 
 class ContentFirewall:
@@ -128,9 +144,16 @@ class ContentFirewall:
         """Process untrusted input and return sanitized content + metadata."""
         original_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()
         scan_result = self._guard.scan(text)
+        findings = list(scan_result.findings)
+        split_base64_finding = _detect_split_base64_payload_finding(
+            text,
+            scan_result.decoded_text,
+        )
+        if split_base64_finding is not None:
+            findings.append(split_base64_finding)
         redacted, secret_findings = redact_ingress_secrets(scan_result.decoded_text)
         classification = _classify_textguard_findings(
-            scan_result.findings,
+            findings,
             decode_reason_codes=scan_result.decode_reason_codes,
         )
         classification = self._classify_semantic(
@@ -265,3 +288,47 @@ def _classify_textguard_findings(
         risk_factors=sorted(set(factors)),
         matched_patterns=sorted(set(matches)),
     )
+
+
+def _detect_split_base64_payload_finding(
+    text: str,
+    decoded_text: str,
+) -> TextGuardFinding | None:
+    for candidate_text in {text, decoded_text}:
+        if _contains_split_base64_signal(candidate_text):
+            return TextGuardFinding(
+                "encoded_payload",
+                "error",
+                "Split base64 payload decodes to instruction-like text",
+            )
+    return None
+
+
+def _contains_split_base64_signal(text: str) -> bool:
+    for blob in _BASE64_SPLIT_RE.findall(text):
+        collapsed = _BASE64_SPLIT_SEPARATOR_RE.sub("", blob)
+        if len(collapsed) < 40:
+            continue
+        if _contains_base64_encoded_signal(collapsed):
+            return True
+    return False
+
+
+def _contains_base64_encoded_signal(chunk: str) -> bool:
+    current = chunk.strip()
+    for _ in range(2):
+        padding = "=" * ((4 - (len(current) % 4)) % 4)
+        try:
+            decoded = base64.b64decode(current + padding, validate=True)
+            decoded_text = decoded.decode("utf-8", errors="ignore")
+        except (ValueError, binascii.Error):
+            return False
+        lowered = decoded_text.lower()
+        if any(token in lowered for token in _ENCODED_SIGNAL_TOKENS):
+            return True
+
+        next_candidate = re.sub(r"\s+", "", decoded_text)
+        if next_candidate == current:
+            return False
+        current = next_candidate
+    return False
