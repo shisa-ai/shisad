@@ -9,6 +9,31 @@ left unlinked until the tag exists. There is no standing "Unreleased" section.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Versioning follows semver (see `docs/PUBLISH.md` for policy and style guide).
 
+## 0.6.4 Release Content - 2026-04-13
+
+### Security
+
+- **Prompt-injection screening now runs through one scanner.** The daemon
+  firewall and the analyzer path now share `textguard` for structural
+  detection, so the same prompt-injection checks apply across both surfaces
+  instead of drifting between separate implementations.
+- **Hidden-text and encoded-input detection is broader.** The new scanner
+  brings deeper decode coverage and stronger unicode normalization while
+  shisad keeps the split-base64 and legacy analyzer compatibility shims it
+  still needs for existing workflows.
+- **Runtime rule sourcing is simpler and harder to drift.** The daemon
+  validates textguard's bundled YARA backend at startup and no longer ships a
+  second copied local rule set.
+
+### Changed
+
+- **PromptGuard stays optional.** Base installs now include `textguard[yara]`,
+  while local PromptGuard runtime checks remain opt-in through the
+  `security-runtime` dependency group.
+- **Operator status reflects bundled-rule provenance explicitly.**
+  `daemon.status` now reports that the old local security-asset copy is gone
+  and that the runtime is using bundled rules.
+
 ## [0.6.3] - 2026-04-12
 
 ### Added

@@ -30,20 +30,19 @@ Reach a genuinely useful personal-assistant baseline while preserving the projec
 - `v0.6.2` is release-closed: multi-factor approvals, signer-backed
   authorization, local-helper approvals, and optional evidence encryption at
   rest are now on the shipped line.
-- This tree contains pre-publication `v0.6.3` candidate content: critical UX
-  fixes from first-user testing, including actionable pending confirmations,
-  chat TOTP approvals, terminal QR enrollment, session-message newline
-  rendering, no-model/startup diagnostics, and more truthful planner tool
-  advertising for unconfigured resources. Live testing reopened the release
-  process for CLI trust, confirmation-flow, stale pending-action, and internal
-  bookkeeping confirmation fixes; this tree now contains that recut candidate.
-  Post-LT validation evidence is recorded for the candidate line, and the
-  follow-up LT5 live-retest reconciliation gate is green. The release-close
-  validation bundle is green; ReleaseClose reviewer sign-off and explicit
-  tag/PyPI publication remain pending. Textual chat
-  TUI newline rendering remains deferred to the TUI overhaul. This development
-  tree also contains the in-progress `v0.6.4` T1 TextGuard
-  ContentFirewall/runtime dependency surface; the full `v0.6.4` line is not release-closed.
+- `v0.6.3` is published: critical UX fixes from first-user testing, including
+  actionable pending confirmations, chat TOTP approvals, terminal QR
+  enrollment, session-message newline rendering, no-model/startup diagnostics,
+  and more truthful planner tool advertising for unconfigured resources. The
+  LT follow-up also closed trusted-CLI confirmation handling, stale
+  pending-action cleanup, and low-friction internal bookkeeping confirmation
+  paths. Textual chat TUI newline rendering remains deferred to the TUI
+  overhaul.
+- This tree contains pre-tag `v0.6.4` release content: firewall scanning now
+  routes through `textguard`, bundled YARA rules are validated at startup,
+  analyzer compatibility shims preserve the required legacy split-base64 and
+  phrase coverage, and the duplicated local shisad YARA asset copy has been
+  removed. ReleaseClose is the remaining gate before tag/PyPI publication.
 
 ## Milestones
 
@@ -91,9 +90,10 @@ events, a mandatory TASK summary-firewall checkpoint before delegated output
 crosses back into COMMAND context, a browser tool surface with
 confirmation-gated browser writes plus local skill tool-surface integrity
 checks, a hardened public release path using OIDC trusted publishing, SBOMs,
-and provenance attestations, and the `v0.6.3` critical UX stabilization lane.
-The active follow-on lanes are `v0.6.4` (textguard port), `v0.6.5`
-(MCP/A2A interop), and `v0.6.6` (connector/skill expansion).
+and provenance attestations, and the published `v0.6.3` critical UX
+stabilization lane. The active lane is `v0.6.4` (textguard port; ReleaseClose
+in progress), with `v0.6.5` (MCP/A2A interop) and `v0.6.6`
+(connector/skill expansion) queued next.
 
 #### v0.6.1 — Security hardening
 
@@ -172,34 +172,30 @@ tools:
 
 #### v0.6.3 — Critical UX fixes
 
-Current execution note (2026-04-13): this tree contains pre-publication
-`v0.6.3` candidate content plus the in-progress `v0.6.4` TextGuard T1
-ContentFirewall/runtime dependency surface; published installability is
-determined by the GitHub release tag and PyPI package. The `v0.6.3` candidate
-includes first-user UX stabilization work: confirmation-gated actions surface
-actionable daemon-owned pending status, TOTP approvals can be completed from
-trusted chat / command replies, TOTP enrollment renders a terminal QR code when
-possible, session-message output preserves line breaks, no-model and startup
-diagnostics are actionable, `shisad doctor` works as a bare command, Anthropic
-default routing and chat optional install guidance are documented, and
-planner-visible tool manifests truthfully hide unconfigured filesystem/git
-surfaces while preserving delegated task scope enforcement. The reopened LT
-recut parses confirmation replies before planner flow; LT5 live evidence is
-recorded for the CLI-trust, stale pending-action, and low-risk internal
-bookkeeping portions of that recut. Post-LT validation evidence is recorded for
-the candidate line, and the follow-up LT5 live-retest reconciliation gate is
-green. The release-close validation bundle is green; ReleaseClose reviewer
-sign-off and explicit tag/PyPI publication remain pending; Textual chat TUI
-newline rendering and web-page TOTP entry remain deferred to `v0.8.0`.
+Current execution note (2026-04-13): `v0.6.3` is published on GitHub and PyPI.
+The shipped line includes first-user UX stabilization work: confirmation-gated
+actions surface actionable daemon-owned pending status, TOTP approvals can be
+completed from trusted chat / command replies, TOTP enrollment renders a
+terminal QR code when possible, session-message output preserves line breaks,
+no-model and startup diagnostics are actionable, `shisad doctor` works as a
+bare command, Anthropic default routing and chat optional install guidance are
+documented, and planner-visible tool manifests truthfully hide unconfigured
+filesystem/git surfaces while preserving delegated task scope enforcement. The
+LT follow-up also parses confirmation replies before planner flow and closes
+the CLI-trust, stale pending-action, and low-risk internal bookkeeping fixes
+found during live testing. Textual chat TUI newline rendering and web-page
+TOTP entry remain deferred to `v0.8.0`.
 
 #### v0.6.4 — textguard port
 
-- Status (2026-04-13): T1 ContentFirewall TextGuard YARA runtime/dependency
-  wiring is present in this development tree; the full `v0.6.4` line is not
-  release-closed.
-- Port PromptGuard 2 integration to the `textguard` library
+- Status (2026-04-13): T1-T4 are review-closed and this tree contains pre-tag
+  `v0.6.4` release content; ReleaseClose is the remaining gate before
+  publication.
+- Port PromptGuard-backed screening to the `textguard` library while keeping
+  PromptGuard opt-in through the existing `security-runtime` dependency group
 - Unify prompt-injection detection behind the textguard API surface
-- Preserve existing PEP screening semantics and threshold tuning
+- Preserve existing PEP screening semantics and threshold tuning while
+  removing the copied local YARA asset set
 
 #### v0.6.5 — MCP/A2A interop
 

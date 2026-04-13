@@ -49,26 +49,21 @@ Rather than ignoring the elephant in the room, our design targets the [lethal tr
 
 ## Status
 
-This repo is public and still pre-alpha. This tree contains the pre-publication
-`v0.6.3` recut candidate plus the in-progress `v0.6.4` TextGuard T1
-ContentFirewall/runtime dependency surface; published installability is
-determined by the GitHub release tag and PyPI package. Live testing reopened the
-`v0.6.3` release process for CLI trust and confirmation-flow fixes. Post-LT
-validation evidence is recorded for the candidate line, and the follow-up LT5
-live-retest reconciliation gate is green; the release-close validation bundle is
-green; ReleaseClose reviewer sign-off and explicit publication remain pending.
+This repo is public and still pre-alpha. The latest published line is
+`v0.6.3` (GitHub Release and PyPI package). This tree contains pre-tag
+`v0.6.4` release content for the TextGuard migration; published
+installability is still determined by the GitHub release tag and PyPI
+package.
 
-`v0.6.3` is the critical UX stabilization follow-up to `v0.6.2`: pending
-confirmations now produce actionable daemon-owned replies, TOTP approvals can
-be completed from trusted chat / command replies, TOTP enrollment can render a
-terminal QR code, session-message output preserves line breaks, no-model and
-startup diagnostics are clearer, and planner-visible tool surfaces better
-reflect what is actually configured. The LT recut routes confirmation replies
-as control commands before planner flow; LT5 live evidence is recorded for the
-CLI-trust, stale pending-action, and low-risk internal bookkeeping portions of
-that recut. Textual chat TUI newline rendering remains deferred to the TUI
-overhaul. `v0.6.4` T1 is present in this development tree for the TextGuard
-ContentFirewall port, while the full `v0.6.4` line is not release-closed.
+`v0.6.4` consolidates the firewall scanning stack onto `textguard`:
+`ContentFirewall` and `PatternInjectionClassifier` now share the same
+TextGuard-backed detection path, outbound normalization/decode compatibility
+shims preserve existing operator-visible behavior where needed, and the daemon
+validates bundled YARA rules at startup instead of carrying a second copied
+local rule set. Local PromptGuard runtime checks remain opt-in through the
+`security-runtime` dependency group, and `daemon.status` now truthfully
+reports bundled-rule provenance. ReleaseClose is the remaining gate before
+`v0.6.4` can be tagged and published.
 
 | Version | Focus |
 |---------|-------|

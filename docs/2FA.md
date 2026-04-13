@@ -1,13 +1,13 @@
 # Multi-Factor Approval (2FA)
 
-> **v0.6.3 release-content status:** The approval protocol, credential store,
-> and currently available approval backends documented here are implemented and
-> tested in this tree. TOTP confirmation works through trusted chat / command
-> replies and through the CLI. Passkey (WebAuthn) and signer approvals work via
-> browser and remote KMS respectively. QR code rendering for TOTP enrollment is
-> also part of the `v0.6.3` release content. Entering a TOTP code on the
-> approval web page is not included yet; browser approval today is WebAuthn
-> only.
+> **Current shipped status (`v0.6.3`):** The approval protocol, credential
+> store, and currently available approval backends documented here are
+> implemented and tested in the latest published line. TOTP confirmation works
+> through trusted chat / command replies and through the CLI. Passkey
+> (WebAuthn) and signer approvals work via browser and remote KMS
+> respectively. QR code rendering for TOTP enrollment is also included.
+> Entering a TOTP code on the approval web page is not included yet; browser
+> approval today is WebAuthn only.
 
 ---
 
@@ -563,7 +563,8 @@ See [ENV-VARS.md](ENV-VARS.md) for the complete reference.
   signer public keys are stored in a daemon-owned JSON file.
 - Default location: `SHISAD_DATA_DIR/approval-factors.json`
 - Override with: `SHISAD_SECURITY_APPROVAL_FACTOR_STORE_PATH`
-- **Not encrypted at rest** in v0.6.3. Protect with filesystem permissions.
+- **Not encrypted at rest** in the current shipped line. Protect with
+  filesystem permissions.
 
 ### What the audit trail records
 
@@ -620,7 +621,7 @@ For L3+ signed approvals, the audit trail also includes:
   currently plaintext JSON. At-rest encryption is follow-on.
 - **TOTP via approval web page:** planned follow-on.
 
-## Included in the v0.6.3 Release Content
+## Included Since v0.6.3
 
 - **TOTP via chat reply:** included for trusted chat / command replies.
 - **QR code for TOTP enrollment:** included as a best-effort terminal rendering
