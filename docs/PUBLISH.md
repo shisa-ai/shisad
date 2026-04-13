@@ -103,9 +103,9 @@ Version must be updated in both places:
 - [ ] Publish via trusted publishing workflow (primary path):
       `gh -R shisa-ai/shisad workflow run "Publish to PyPI" -f tag=vX.Y.Z`
       (or: Actions > "Publish to PyPI" > Run workflow, enter `vX.Y.Z`).
-      The workflow is fully automated once triggered — no human approval gate.
-      It builds, runs tests, audits dependencies, verifies metadata, generates
-      SBOM, creates attestations, and publishes to PyPI via OIDC.
+      The build phase takes ~7 minutes (builds, runs tests, audits
+      dependencies, verifies metadata, generates SBOM, creates attestations).
+      The publish step requires confirmation before uploading to PyPI via OIDC.
 - [ ] Create a GitHub Release from the tag:
       `gh release create vX.Y.Z --title "vX.Y.Z" --notes-file -` (pipe the
       matching `CHANGELOG.md` section, or use `--notes "..."` inline)
@@ -225,8 +225,8 @@ setup required on PyPI:
    - Workflow name: `publish.yml`
    - Environment name: `pypi-publish`
 3. Create a GitHub Environment named `pypi-publish` in the repo settings
-   (Settings > Environments). No required-reviewers gate — the workflow
-   publishes automatically once triggered.
+   (Settings > Environments) with a required-reviewers gate so the publish
+   step requires confirmation.
 
 After setup, the workflow can publish without any stored API tokens.
 
