@@ -15,9 +15,15 @@ from textguard import TextGuard
 
 from shisad.core.types import TaintLabel
 from shisad.security.firewall.classifier import (
+    TEXTGUARD_MODE as _TEXTGUARD_MODE,
+)
+from shisad.security.firewall.classifier import (
     InjectionClassification,
     PromptGuardRuntimeStatus,
     SemanticClassifier,
+)
+from shisad.security.firewall.classifier import (
+    classify_textguard_findings as _classify_textguard_findings,
 )
 from shisad.security.firewall.secrets import SecretFinding, redact_ingress_secrets
 
@@ -44,35 +50,6 @@ class FirewallResult(BaseModel):
     semantic_classifier_id: str = ""
 
 
-_TEXTGUARD_MODE = "textguard_yara"
-_SEVERITY_WEIGHTS = {
-    "info": 0.0,
-    "warn": 0.15,
-    "error": 0.35,
-}
-_FACTOR_WEIGHTS = {
-    "instruction_override": 0.35,
-    "prompt_leak_request": 0.35,
-    "credential_harvest": 0.45,
-    "tool_spoofing_tag": 0.35,
-    "role_impersonation": 0.25,
-    "command_chain": 0.2,
-    "egress_lure": 0.2,
-    "encoded_payload": 0.25,
-}
-_TEXTGUARD_FACTOR_MAP = {
-    "yara:prompt_injection_direct": ("instruction_override",),
-    "yara:prompt_injection_indirect": ("instruction_override",),
-    "yara:credential_harvesting": ("credential_harvest",),
-    "yara:tool_spoofing": ("tool_spoofing_tag",),
-    "yara:masquerading_authority": ("role_impersonation",),
-    "yara:command_injection": ("command_chain",),
-    "yara:code_execution": ("command_chain",),
-    "yara:data_exfiltration": ("egress_lure",),
-    "yara:system_manipulation": ("prompt_leak_request",),
-    "encoded_payload": ("encoded_payload",),
-}
-_DECODE_FINDING_PREFIX = "encoding:"
 _BASE64_SPLIT_RE = re.compile(r"(?:[A-Za-z0-9+/]{8,}={0,2}(?:[\s\"'`:,;|\\/-]+|$)){3,}")
 _BASE64_SPLIT_SEPARATOR_RE = re.compile(r"[\s\"'`:,;|\\/-]+")
 _ENCODED_SIGNAL_TOKENS = (
@@ -256,38 +233,6 @@ class ContentFirewall:
 def redact_findings(findings: list[SecretFinding]) -> list[str]:
     """Helper for serializing secret findings."""
     return [f.kind for f in findings]
-
-
-def _classify_textguard_findings(
-    findings: list[TextGuardFinding],
-    *,
-    decode_reason_codes: list[str],
-) -> InjectionClassification:
-    factor_weights: dict[str, float] = {}
-    factors: list[str] = []
-    matches: list[str] = []
-
-    for finding in findings:
-        if finding.kind.startswith(_DECODE_FINDING_PREFIX):
-            continue
-        mapped_factors = _TEXTGUARD_FACTOR_MAP.get(finding.kind)
-        severity_weight = _SEVERITY_WEIGHTS.get(finding.severity, 0.0)
-        if mapped_factors is None:
-            mapped_factors = (finding.kind,)
-        for factor in mapped_factors:
-            weight = _FACTOR_WEIGHTS.get(factor, severity_weight)
-            factor_weights[factor] = max(factor_weights.get(factor, 0.0), weight)
-        factors.extend(mapped_factors)
-        matches.append(finding.detail or finding.kind)
-
-    if factors:
-        factors.extend(str(item) for item in decode_reason_codes)
-
-    return InjectionClassification(
-        risk_score=min(sum(factor_weights.values()), 1.0),
-        risk_factors=sorted(set(factors)),
-        matched_patterns=sorted(set(matches)),
-    )
 
 
 def _detect_split_base64_payload_finding(

@@ -92,7 +92,7 @@ jobs:
       - name: Generate per-package coverage trend artifact
         run: uv run python scripts/coverage_trend.py --xml coverage.xml --output artifacts/coverage-trend.json
 
-      - name: Generate YARA parity metrics artifact
+      - name: Generate TextGuard classifier metrics artifact
         run: uv run python scripts/yara_parity_report.py --output artifacts/yara-parity.json
 
       - name: Upload security runtime artifacts

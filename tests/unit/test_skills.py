@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 import yaml
+from textguard import Finding as TextGuardFinding
 
 from shisad.core.providers.base import Message, ProviderResponse
+from shisad.security.firewall import classifier as classifier_module
 from shisad.security.policy import SkillPolicy
 from shisad.skills import (
     CapabilityInferenceAnalyzer,
@@ -28,6 +31,7 @@ from shisad.skills import (
     verify_dependency_chain,
     verify_manifest_signature,
 )
+from shisad.skills.analyzer import ToolSurfaceAnalyzer
 from shisad.skills.manager import SkillManager
 from shisad.skills.signatures import KeyRing, SigningKey
 
@@ -361,6 +365,112 @@ def test_m4_t20_findings_include_aitech_taxonomy_codes(tmp_path: Path) -> None:
     findings = DangerousPatternAnalyzer().analyze(load_skill_bundle(skill))
     assert findings
     assert all(str(finding.category.value).startswith("AITech-") for finding in findings)
+
+
+def test_t3_dangerous_pattern_analyzer_uses_textguard_adapter_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    class _FakePatternTextGuard:
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+        def scan(self, text: str) -> SimpleNamespace:
+            return SimpleNamespace(
+                decoded_text=text,
+                findings=[
+                    TextGuardFinding(
+                        "yara:tool_spoofing",
+                        "error",
+                        "fake scan tool-spoofing detail",
+                    )
+                ],
+                decode_depth=0,
+                decode_reason_codes=[],
+            )
+
+        def match_yara(self, text: str) -> list[TextGuardFinding]:
+            return [
+                TextGuardFinding(
+                    "yara:prompt_injection_direct",
+                    "error",
+                    "fake yara direct-injection detail",
+                )
+            ]
+
+    monkeypatch.setattr(classifier_module, "TextGuard", _FakePatternTextGuard, raising=False)
+    skill = _write_skill(
+        tmp_path / "skill",
+        manifest=_manifest_payload(),
+        files={"SKILL.md": "adapter-only content"},
+    )
+
+    findings = DangerousPatternAnalyzer().analyze(load_skill_bundle(skill))
+    finding = next(item for item in findings if item.title == "Potential prompt-injection payload")
+
+    assert finding.metadata["risk_score"] == pytest.approx(0.70)
+    assert finding.metadata["risk_factors"] == ["instruction_override", "tool_spoofing_tag"]
+    assert finding.metadata["matched_patterns"] == [
+        "fake scan tool-spoofing detail",
+        "fake yara direct-injection detail",
+    ]
+
+
+def test_t3_tool_surface_analyzer_uses_textguard_adapter_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    class _FakePatternTextGuard:
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+        def scan(self, text: str) -> SimpleNamespace:
+            return SimpleNamespace(
+                decoded_text=text,
+                findings=[
+                    TextGuardFinding(
+                        "yara:tool_spoofing",
+                        "error",
+                        "fake scan tool-spoofing detail",
+                    )
+                ],
+                decode_depth=0,
+                decode_reason_codes=[],
+            )
+
+        def match_yara(self, text: str) -> list[TextGuardFinding]:
+            return [
+                TextGuardFinding(
+                    "yara:prompt_injection_direct",
+                    "error",
+                    "fake yara direct-injection detail",
+                )
+            ]
+
+    monkeypatch.setattr(classifier_module, "TextGuard", _FakePatternTextGuard, raising=False)
+    manifest = _manifest_payload()
+    manifest["tools"] = [
+        {
+            "name": "sync_metadata",
+            "description": "adapter-only metadata",
+            "parameters": [],
+            "destinations": [],
+        }
+    ]
+    skill = _write_skill(
+        tmp_path / "skill",
+        manifest=manifest,
+        files={"SKILL.md": "safe"},
+    )
+
+    findings = ToolSurfaceAnalyzer().analyze(load_skill_bundle(skill))
+    finding = next(
+        item for item in findings if item.title == "Potential prompt-injection in tool metadata"
+    )
+
+    assert finding.metadata["tool_name"] == "sync_metadata"
+    assert finding.metadata["risk_score"] == pytest.approx(0.70)
+    assert finding.metadata["risk_factors"] == ["instruction_override", "tool_spoofing_tag"]
 
 
 def test_m4_t35_dependency_verifier_blocks_unpinned_and_unallowlisted(tmp_path: Path) -> None:

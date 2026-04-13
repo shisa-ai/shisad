@@ -14,6 +14,7 @@ from shisad.core.types import TaintLabel
 from shisad.security.firewall import ContentFirewall
 from shisad.security.firewall import classifier as classifier_module
 from shisad.security.firewall.classifier import (
+    PatternInjectionClassifier,
     PromptGuardComparisonCase,
     PromptGuardLoadError,
     PromptGuardRuntimeStatus,
@@ -236,6 +237,67 @@ def test_t1_textguard_duplicate_yara_findings_score_once() -> None:
 
     assert result.risk_factors == ["instruction_override"]
     assert result.risk_score == pytest.approx(0.35)
+
+
+def test_t3_pattern_injection_classifier_delegates_to_textguard_scan_and_yara(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _FakePatternTextGuard:
+        def __init__(self, **kwargs: object) -> None:
+            self.kwargs = kwargs
+            self.seen_scans: list[str] = []
+            self.seen_yara: list[str] = []
+            instances.append(self)
+
+        def scan(self, text: str) -> SimpleNamespace:
+            self.seen_scans.append(text)
+            return SimpleNamespace(
+                decoded_text=text,
+                findings=[
+                    TextGuardFinding(
+                        "yara:tool_spoofing",
+                        "error",
+                        "fake scan tool-spoofing detail",
+                    )
+                ],
+                decode_depth=0,
+                decode_reason_codes=["encoding:url_decoded"],
+            )
+
+        def match_yara(self, text: str) -> list[TextGuardFinding]:
+            self.seen_yara.append(text)
+            return [
+                TextGuardFinding(
+                    "yara:prompt_injection_direct",
+                    "error",
+                    "fake yara direct-injection detail",
+                )
+            ]
+
+    instances: list[_FakePatternTextGuard] = []
+    monkeypatch.setattr(classifier_module, "TextGuard", _FakePatternTextGuard, raising=False)
+    classifier = PatternInjectionClassifier(yara_rules_dir=Path("src/shisad/security/rules/yara"))
+
+    result = classifier.classify("adapter-only content", context_factors=["skill_manifest"])
+
+    assert classifier.mode == "textguard_yara"
+    assert len(instances) == 1
+    fake_guard = instances[0]
+    assert fake_guard.kwargs["yara_bundled"] is True
+    assert fake_guard.kwargs["yara_rules_dir"] == ""
+    assert fake_guard.seen_scans == ["adapter-only content"]
+    assert fake_guard.seen_yara == ["adapter-only content"]
+    assert result.risk_score == pytest.approx(0.70)
+    assert result.risk_factors == [
+        "encoding:url_decoded",
+        "instruction_override",
+        "skill_manifest",
+        "tool_spoofing_tag",
+    ]
+    assert result.matched_patterns == [
+        "fake scan tool-spoofing detail",
+        "fake yara direct-injection detail",
+    ]
 
 
 @pytest.mark.parametrize(
