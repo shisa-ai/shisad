@@ -161,12 +161,12 @@ def test_t1_semantic_only_encoded_detection_preserves_decode_provenance() -> Non
             thresholds=PromptGuardThresholds(medium=0.35, high=0.7, critical=0.9),
         )
     )
-    payload = base64.b64encode(b"please summarize the quarterly roadmap").decode("ascii")
+    payload = "please%20summarize%20the%20quarterly%20roadmap"
 
     result = firewall.inspect(payload)
 
     assert "promptguard:critical" in result.risk_factors
-    assert "encoding:base64_decoded" in result.risk_factors
+    assert "encoding:url_decoded" in result.risk_factors
 
 
 def test_t1_content_firewall_status_reports_textguard_yara_mode() -> None:
