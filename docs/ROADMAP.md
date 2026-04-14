@@ -1,7 +1,7 @@
 # shisad Roadmap
 
 *Created: 2026-02-26*
-*Updated: 2026-04-13*
+*Updated: 2026-04-14*
 *Status: Active*
 
 ## Goal
@@ -188,9 +188,9 @@ TOTP entry remain deferred to `v0.8.0`.
 
 #### v0.6.4 — textguard port
 
-- Status (2026-04-13): T1-T4 are review-closed and this tree contains pre-tag
-  `v0.6.4` release content; ReleaseClose is the remaining gate before
-  publication.
+- Status (2026-04-14): `v0.6.4` is published. textguard-backed screening is on
+  the shipped line; PromptGuard remains opt-in through the
+  `security-runtime` dependency group.
 - Port PromptGuard-backed screening to the `textguard` library while keeping
   PromptGuard opt-in through the existing `security-runtime` dependency group
 - Unify prompt-injection detection behind the textguard API surface
@@ -199,9 +199,10 @@ TOTP entry remain deferred to `v0.8.0`.
 
 #### v0.6.5 — MCP/A2A interop
 
-- MCP/A2A compatibility
+- MCP client-only interop with external servers
 - Remote tool/server trust policy
-- Interop layer for consuming or exposing remote tools without weakening local enforcement
+- Signed A2A external-ingress foundation
+- Exposing shisad as an MCP server remains deferred
 
 #### v0.6.6 — Connector + skill expansions
 
