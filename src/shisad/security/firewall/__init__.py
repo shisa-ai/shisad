@@ -53,7 +53,6 @@ class FirewallResult(BaseModel):
     semantic_classifier_id: str = ""
 
 
-
 class ContentFirewall:
     """Normalizes, classifies, and sanitizes untrusted content."""
 

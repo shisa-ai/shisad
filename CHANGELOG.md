@@ -9,7 +9,7 @@ left unlinked until the tag exists. There is no standing "Unreleased" section.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Versioning follows semver (see `docs/PUBLISH.md` for policy and style guide).
 
-## 0.6.4 Release Content - 2026-04-13
+## [0.6.4] - 2026-04-13
 
 ### Security
 
@@ -254,6 +254,7 @@ Initial public release.
   recording.
 - **End-to-end demo** script and runner harness for live verification.
 
+[0.6.4]: https://github.com/shisa-ai/shisad/compare/v0.6.3...v0.6.4
 [0.6.3]: https://github.com/shisa-ai/shisad/compare/v0.6.2...v0.6.3
 [0.6.2]: https://github.com/shisa-ai/shisad/compare/v0.6.1...v0.6.2
 [0.6.1]: https://github.com/shisa-ai/shisad/compare/v0.6.0...v0.6.1
