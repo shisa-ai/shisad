@@ -115,8 +115,10 @@ def _warn_on_startup_config_gaps(config: DaemonConfig) -> None:
 
 def _method_specs(
     handlers: DaemonControlHandlers,
+    *,
+    test_mode: bool,
 ) -> list[tuple[str, Any, bool, type[BaseModel]]]:
-    return [
+    specs: list[tuple[str, Any, bool, type[BaseModel]]] = [
         ("session.create", handlers.handle_session_create, False, SessionCreateParams),
         ("session.message", handlers.handle_session_message, False, SessionMessageParams),
         ("session.list", handlers.handle_session_list, False, NoParams),
@@ -158,7 +160,6 @@ def _method_specs(
         ("dev.close", handlers.handle_dev_close, True, DevCloseParams),
         ("policy.explain", handlers.handle_policy_explain, False, PolicyExplainParams),
         ("daemon.shutdown", handlers.handle_daemon_shutdown, False, NoParams),
-        ("daemon.reset", handlers.handle_daemon_reset, True, NoParams),
         ("audit.query", handlers.handle_audit_query, False, AuditQueryParams),
         (
             "dashboard.audit_explorer",
@@ -278,6 +279,35 @@ def _method_specs(
         ("browser.paste", handlers.handle_browser_paste, True, BrowserPasteParams),
         ("browser.screenshot", handlers.handle_browser_screenshot, True, BrowserScreenshotParams),
     ]
+    if test_mode:
+        shutdown_index = next(
+            (
+                index
+                for index, (method_name, *_rest) in enumerate(specs)
+                if method_name == "daemon.shutdown"
+            ),
+            len(specs) - 1,
+        )
+        specs.insert(
+            shutdown_index + 1,
+            ("daemon.reset", handlers.handle_daemon_reset, True, NoParams),
+        )
+    return specs
+
+
+def _wrap_tracked_handler(
+    *,
+    services: DaemonServices,
+    method_handler: TypedHandler,
+) -> TypedHandler:
+    async def _tracked_handler(params: BaseModel, ctx: Any) -> Any:
+        services.active_rpc_calls += 1
+        try:
+            return await method_handler(params, ctx)
+        finally:
+            services.active_rpc_calls = max(services.active_rpc_calls - 1, 0)
+
+    return cast(TypedHandler, _tracked_handler)
 
 
 async def _reminder_delivery_pump(
@@ -316,10 +346,16 @@ async def run_daemon(config: DaemonConfig) -> None:
     handlers = DaemonControlHandlers(services=services)
     await services.approval_web.start()
 
-    for method_name, method_handler, admin_only, params_model in _method_specs(handlers):
+    for method_name, method_handler, admin_only, params_model in _method_specs(
+        handlers,
+        test_mode=config.test_mode,
+    ):
         services.server.register_method(
             method_name,
-            cast(TypedHandler, method_handler),
+            _wrap_tracked_handler(
+                services=services,
+                method_handler=cast(TypedHandler, method_handler),
+            ),
             admin_only=admin_only,
             params_model=params_model,
         )

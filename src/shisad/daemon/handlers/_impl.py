@@ -1071,6 +1071,170 @@ class HandlerImplementation(
             approval_complete=self._complete_webauthn_approval_ceremony,
         )
 
+    async def reset_test_state(self) -> dict[str, Any]:
+        """Clear handler-owned mutable state in addition to service state."""
+        if not self._config.test_mode:
+            raise RuntimeError("daemon.reset is unavailable outside explicit test mode")
+        if self._services.active_rpc_calls > 1:
+            raise RuntimeError("Cannot reset daemon while another control RPC is in flight")
+        if len(getattr(self._services.embeddings_adapter, "_inflight", ())) > 0:
+            raise RuntimeError("Cannot reset daemon while embeddings requests are in flight")
+
+        scheduler_pending = sum(
+            len(rows) for rows in self._scheduler._pending_confirmations.values()
+        )
+        quiescent = not any(
+            (
+                scheduler_pending,
+                len(self._pending_actions),
+                len(self._pending_by_session),
+                len(self._pending_two_factor_enrollments),
+                len(self._monitor_reject_counts),
+                len(self._plan_violation_counts),
+                len(self._confirmation_alerted_at),
+                len(self._identity_map._pairing_requests),
+                len(self._confirmation_failure_tracker._state),
+            )
+        )
+
+        service_result = await self._services.reset_test_state()
+        cleared = dict(service_result.get("cleared", {}))
+        if "identity_pairing_requests" in cleared:
+            cleared.setdefault("pairing_requests", int(cleared["identity_pairing_requests"]))
+        cleared.update(self._clear_handler_test_state())
+        invariants = self._reset_invariants()
+        status = "reset" if all(invariants.values()) else "reset_failed"
+        return {
+            "status": status,
+            "cleared": cleared,
+            "quiescent": quiescent,
+            "invariants": invariants,
+        }
+
+    def _clear_handler_test_state(self) -> dict[str, int]:
+        pairing_request_artifacts = int(self._pairing_requests_file.exists())
+        cleared = {
+            "pending_actions": len(self._pending_actions),
+            "pending_action_sessions": len(self._pending_by_session),
+            "monitor_reject_counts": len(self._monitor_reject_counts),
+            "plan_violation_counts": len(self._plan_violation_counts),
+            "confirmation_alerts": len(self._confirmation_alerted_at),
+            "pending_two_factor_enrollments": len(self._pending_two_factor_enrollments),
+            "confirmation_lockouts": len(self._confirmation_failure_tracker._state),
+            "pairing_request_artifacts": pairing_request_artifacts,
+        }
+        self._pending_actions.clear()
+        self._pending_by_session.clear()
+        self._monitor_reject_counts.clear()
+        self._plan_violation_counts.clear()
+        self._confirmation_alerted_at.clear()
+        self._pending_two_factor_enrollments.clear()
+        self._confirmation_failure_tracker._state.clear()
+        self._pending_actions_file.unlink(missing_ok=True)
+        self._pairing_requests_file.unlink(missing_ok=True)
+        lockout_state_path = self._confirmation_failure_tracker._state_path
+        if lockout_state_path is not None:
+            lockout_state_path.unlink(missing_ok=True)
+        return cleared
+
+    def _reset_invariants(self) -> dict[str, bool]:
+        def _dir_empty(path: Path) -> bool:
+            return (not path.exists()) or (not any(path.iterdir()))
+
+        archive_dir = self._config.data_dir / "session_archives"
+        trace_dir = self._config.data_dir / "traces"
+        channel_state_root = self._services.channel_state_store._root_dir
+        approval_store_path = self._credential_store._approval_store_path
+        identity_allowlists_match = {
+            channel: set(values)
+            for channel, values in self._identity_map._allowlists.items()
+        } == {
+            channel: set(values)
+            for channel, values in self._services.identity_allowlists_baseline.items()
+        }
+        return {
+            "sessions_empty": not self._session_manager._sessions,
+            "scheduler_empty": (
+                not self._scheduler._tasks
+                and not any(self._scheduler._pending_confirmations.values())
+            ),
+            "memory_empty": not self._memory_manager._entries,
+            "lockdown_empty": not self._lockdown_manager._states,
+            "rate_limiter_empty": not (
+                self._rate_limiter._by_tool
+                or self._rate_limiter._by_user
+                or self._rate_limiter._by_session
+                or self._rate_limiter._by_tool_burst
+            ),
+            "audit_empty": self._audit_log.entry_count == 0,
+            "checkpoints_empty": not any(self._checkpoint_store._dir.iterdir()),
+            "channel_state_empty": not (
+                self._services.channel_state_store._seen_ids
+                or self._services.channel_state_store._seen_id_sets
+            ),
+            "channel_state_disk_empty": _dir_empty(channel_state_root),
+            "transcripts_empty": _dir_empty(self._transcript_store._transcript_dir),
+            "transcript_blobs_empty": _dir_empty(self._transcript_store._blob_dir),
+            "evidence_empty": not self._evidence_store._refs,
+            "evidence_disk_empty": _dir_empty(self._evidence_store._blob_dir)
+            and not self._evidence_store._metadata_path.exists()
+            and _dir_empty(self._evidence_store._quarantine_dir),
+            "ingestion_empty": not self._ingestion._records and not self._ingestion._vectors,
+            "ingestion_artifacts_empty": _dir_empty(self._ingestion._sanitized_dir)
+            and _dir_empty(self._ingestion._original_dir),
+            "selfmod_empty": not self._selfmod_manager._inventory.skills
+            and not self._selfmod_manager._inventory.behavior_packs,
+            "selfmod_artifacts_empty": _dir_empty(self._selfmod_manager._proposal_dir)
+            and _dir_empty(self._selfmod_manager._change_dir)
+            and _dir_empty(self._selfmod_manager._artifact_root)
+            and not self._selfmod_manager._inventory_path.exists()
+            and not self._selfmod_manager._incident_path.exists(),
+            "skills_empty": not self._skill_manager._inventory
+            and not self._skill_manager._skill_tool_map
+            and not self._skill_manager._pending_registration_events,
+            "skill_storage_empty": _dir_empty(self._skill_manager._storage_dir),
+            "trace_empty": not trace_dir.exists() or not any(trace_dir.iterdir()),
+            "archives_empty": not archive_dir.exists() or not any(archive_dir.iterdir()),
+            "approval_state_empty": not (
+                self._credential_store._approval_factors or self._credential_store._signer_keys
+            )
+            and (
+                approval_store_path is None
+                or (
+                    not approval_store_path.exists()
+                    and not any(
+                        approval_store_path.parent.glob(f"{approval_store_path.name}.corrupt.*")
+                    )
+                )
+            ),
+            "identity_runtime_empty": (
+                not self._identity_map._map
+                and not self._identity_map._pairing_requests
+                and dict(self._identity_map._default_trust)
+                == dict(self._services.identity_default_trust_baseline)
+                and identity_allowlists_match
+            ),
+            "risk_files_empty": (
+                not self._risk_calibrator.observations_path.exists()
+                and not self._risk_calibrator.policy_path.exists()
+            ),
+            "handler_pending_empty": not (
+                self._pending_actions
+                or self._pending_by_session
+                or self._pending_two_factor_enrollments
+                or self._monitor_reject_counts
+                or self._plan_violation_counts
+                or self._confirmation_alerted_at
+                or self._confirmation_failure_tracker._state
+            )
+            and not self._pending_actions_file.exists()
+            and not self._pairing_requests_file.exists()
+            and (
+                self._confirmation_failure_tracker._state_path is None
+                or not self._confirmation_failure_tracker._state_path.exists()
+            ),
+        }
+
     async def _prepare_browser_tool_arguments(
         self,
         *,

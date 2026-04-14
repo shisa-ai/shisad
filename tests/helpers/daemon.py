@@ -6,10 +6,11 @@ import asyncio
 import contextlib
 import os
 import textwrap
-from contextlib import suppress
+from collections.abc import AsyncIterator
+from contextlib import AsyncExitStack, suppress
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, AsyncIterator
+from typing import Any
 
 _DEFAULT_STARTUP_TIMEOUT_SECONDS = 15.0
 
@@ -99,6 +100,86 @@ class DaemonHarness:
             await asyncio.wait_for(self.daemon_task, timeout=5.0)
 
 
+@dataclass
+class SharedDaemonController:
+    """Reusable daemon controller with reset-or-restart semantics."""
+
+    tmp_dir: Path
+    policy_text: str | None = None
+    config_kwargs: dict[str, Any] | None = None
+    _stack: AsyncExitStack | None = field(default=None, init=False, repr=False)
+    _harness: DaemonHarness | None = field(default=None, init=False, repr=False)
+
+    @property
+    def harness(self) -> DaemonHarness:
+        if self._harness is None:
+            raise RuntimeError("shared daemon controller has not been started")
+        return self._harness
+
+    @property
+    def client(self) -> Any:
+        return self.harness.client
+
+    @property
+    def config(self) -> Any:
+        return self.harness.config
+
+    async def start(self) -> None:
+        if self._harness is not None:
+            return
+        stack = AsyncExitStack()
+        try:
+            harness = await stack.enter_async_context(
+                daemon_harness(
+                    self.tmp_dir,
+                    policy_text=self.policy_text,
+                    config_kwargs=self.config_kwargs,
+                )
+            )
+        except Exception:
+            await stack.aclose()
+            raise
+        self._stack = stack
+        self._harness = harness
+
+    async def call(self, method: str, params: dict[str, Any] | None = None) -> Any:
+        await self.start()
+        return await self.harness.call(method, params)
+
+    async def recycle(self) -> dict[str, Any]:
+        """Reset the shared daemon, or restart it if reuse is not safe."""
+        await self.start()
+        try:
+            result = await self.harness.reset()
+        except Exception as exc:
+            await self.restart()
+            raise AssertionError(
+                "shared daemon reset failed; restarted daemon for the next test"
+            ) from exc
+
+        invariants = result.get("invariants", {})
+        invariant_ok = bool(invariants) and all(bool(value) for value in invariants.values())
+        if result.get("status") != "reset" or not invariant_ok:
+            await self.restart()
+            raise AssertionError(
+                f"shared daemon reset returned a failed invariant summary: {result}"
+            )
+        if not bool(result.get("quiescent", False)):
+            await self.restart()
+        return result
+
+    async def restart(self) -> None:
+        await self.close()
+        await self.start()
+
+    async def close(self) -> None:
+        stack = self._stack
+        self._stack = None
+        self._harness = None
+        if stack is not None:
+            await stack.aclose()
+
+
 @contextlib.asynccontextmanager
 async def daemon_harness(
     tmp_dir: Path,
@@ -133,6 +214,8 @@ async def daemon_harness(
         "socket_path": tmp_dir / "control.sock",
         "policy_path": policy_path,
         "log_level": "INFO",
+        "test_mode": True,
+        "control_plane_startup_timeout_seconds": _startup_timeout(),
     }
     if config_kwargs:
         merged.update(config_kwargs)
@@ -143,8 +226,31 @@ async def daemon_harness(
     harness = DaemonHarness(config=config, client=client, daemon_task=daemon_task)
 
     try:
-        await wait_for_socket(config.socket_path)
+        await wait_for_socket(
+            config.socket_path,
+            timeout=float(config.control_plane_startup_timeout_seconds),
+        )
         await client.connect()
         yield harness
     finally:
         await harness.shutdown()
+
+
+@contextlib.asynccontextmanager
+async def shared_daemon_controller(
+    tmp_dir: Path,
+    *,
+    policy_text: str | None = None,
+    config_kwargs: dict[str, Any] | None = None,
+) -> AsyncIterator[SharedDaemonController]:
+    """Yield a reusable daemon controller for module-scoped fixtures."""
+    controller = SharedDaemonController(
+        tmp_dir=tmp_dir,
+        policy_text=policy_text,
+        config_kwargs=config_kwargs,
+    )
+    await controller.start()
+    try:
+        yield controller
+    finally:
+        await controller.close()

@@ -1223,6 +1223,8 @@ class DaemonShutdownResult(BaseModel):
 class DaemonResetResult(BaseModel):
     status: str
     cleared: dict[str, int] = Field(default_factory=dict)
+    quiescent: bool = True
+    invariants: dict[str, bool] = Field(default_factory=dict)
 
 
 class LockdownSetResult(BaseModel):
