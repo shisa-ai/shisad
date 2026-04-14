@@ -1220,6 +1220,11 @@ class DaemonShutdownResult(BaseModel):
     status: str
 
 
+class DaemonResetResult(BaseModel):
+    status: str
+    cleared: dict[str, int] = Field(default_factory=dict)
+
+
 class LockdownSetResult(BaseModel):
     session_id: str
     level: str

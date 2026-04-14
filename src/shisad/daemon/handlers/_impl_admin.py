@@ -255,6 +255,10 @@ class AdminImplMixin(HandlerMixinBase):
         self._shutdown_event.set()
         return {"status": "shutting_down"}
 
+    async def do_daemon_reset(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        _ = params
+        return await self._services.reset_test_state()
+
     async def do_admin_selfmod_propose(self, params: Mapping[str, Any]) -> dict[str, Any]:
         artifact_path_raw = str(params.get("artifact_path", "")).strip()
         if not artifact_path_raw:

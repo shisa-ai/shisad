@@ -13,6 +13,7 @@ from shisad.core.api.schema import (
     ChannelIngestResult,
     ChannelPairingProposalParams,
     ChannelPairingProposalResult,
+    DaemonResetResult,
     DaemonShutdownResult,
     DaemonStatusResult,
     DevCloseParams,
@@ -71,6 +72,14 @@ class AdminHandlers:
     ) -> DaemonShutdownResult:
         _ = params, ctx
         return DaemonShutdownResult.model_validate(await self._impl.do_daemon_shutdown({}))
+
+    async def handle_daemon_reset(
+        self,
+        params: NoParams,
+        ctx: RequestContext,
+    ) -> DaemonResetResult:
+        _ = params, ctx
+        return DaemonResetResult.model_validate(await self._impl.do_daemon_reset({}))
 
     async def handle_doctor_check(
         self,
