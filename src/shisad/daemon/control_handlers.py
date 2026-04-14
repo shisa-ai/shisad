@@ -28,6 +28,7 @@ from shisad.core.api.schema import (
     ChannelPairingProposalResult,
     ConfirmationMetricsParams,
     ConfirmationMetricsResult,
+    DaemonResetResult,
     DaemonShutdownResult,
     DaemonStatusResult,
     DashboardMarkFalsePositiveParams,
@@ -284,6 +285,11 @@ class DaemonControlHandlers:
         self, params: NoParams, ctx: RequestContext
     ) -> DaemonShutdownResult:
         return await self._admin.handle_daemon_shutdown(params, ctx)
+
+    async def handle_daemon_reset(
+        self, params: NoParams, ctx: RequestContext
+    ) -> DaemonResetResult:
+        return await self._admin.handle_daemon_reset(params, ctx)
 
     async def handle_doctor_check(
         self, params: DoctorCheckParams, ctx: RequestContext

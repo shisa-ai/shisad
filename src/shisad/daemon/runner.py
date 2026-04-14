@@ -158,6 +158,7 @@ def _method_specs(
         ("dev.close", handlers.handle_dev_close, True, DevCloseParams),
         ("policy.explain", handlers.handle_policy_explain, False, PolicyExplainParams),
         ("daemon.shutdown", handlers.handle_daemon_shutdown, False, NoParams),
+        ("daemon.reset", handlers.handle_daemon_reset, True, NoParams),
         ("audit.query", handlers.handle_audit_query, False, AuditQueryParams),
         (
             "dashboard.audit_explorer",

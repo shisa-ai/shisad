@@ -84,6 +84,27 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+
+def _wipe_dir_contents(directory: Path) -> None:
+    """Remove all files and subdirectories inside *directory* without removing it."""
+    import shutil
+
+    if not directory.is_dir():
+        return
+    for child in directory.iterdir():
+        if child.is_dir():
+            shutil.rmtree(child, ignore_errors=True)
+        else:
+            child.unlink(missing_ok=True)
+
+
+def _count_files(directory: Path) -> int:
+    """Count files inside *directory* (non-recursive)."""
+    if not directory.is_dir():
+        return 0
+    return sum(1 for child in directory.iterdir() if child.is_file())
+
+
 _CHANNEL_TRUST_DEFAULTS: dict[str, str] = {
     "cli": "trusted",
     "matrix": "untrusted",
@@ -828,6 +849,96 @@ class DaemonServices:
                         await control_plane_sidecar.close()
                 with contextlib.suppress(OSError, RuntimeError):
                     await server.stop()
+
+    async def reset_test_state(self) -> dict[str, Any]:
+        """Clear mutable runtime state for test isolation.
+
+        Wipes sessions, memory, scheduler, lockdown, rate limiter, audit,
+        checkpoints, transcripts, evidence, and channel state.  The daemon
+        process, control-plane sidecar, tool registry, PEP, firewall, and
+        provider connections remain intact.
+
+        Returns a summary dict with counts of cleared items.
+
+        **Not for production use.**
+        """
+        cleared: dict[str, int] = {}
+
+        # -- Sessions --
+        session_ids = list(self.session_manager._sessions.keys())
+        self.session_manager._sessions.clear()
+        cleared["sessions"] = len(session_ids)
+        if self.session_manager._state_dir is not None:
+            _wipe_dir_contents(self.session_manager._state_dir)
+
+        # -- Scheduler --
+        cleared["scheduler_tasks"] = len(self.scheduler._tasks)
+        self.scheduler._tasks.clear()
+        self.scheduler._pending_confirmations.clear()
+        if self.scheduler._tasks_file is not None and self.scheduler._tasks_file.exists():
+            self.scheduler._tasks_file.unlink(missing_ok=True)
+        if self.scheduler._pending_file is not None and self.scheduler._pending_file.exists():
+            self.scheduler._pending_file.unlink(missing_ok=True)
+
+        # -- Memory --
+        cleared["memory_entries"] = len(self.memory_manager._entries)
+        self.memory_manager._entries.clear()
+        _wipe_dir_contents(self.memory_manager._storage_dir)
+
+        # -- Lockdown --
+        cleared["lockdown_states"] = len(self.lockdown_manager._states)
+        self.lockdown_manager._states.clear()
+
+        # -- Rate limiter --
+        cleared["rate_limiter_windows"] = (
+            len(self.rate_limiter._by_tool)
+            + len(self.rate_limiter._by_user)
+            + len(self.rate_limiter._by_session)
+        )
+        self.rate_limiter._by_tool.clear()
+        self.rate_limiter._by_user.clear()
+        self.rate_limiter._by_session.clear()
+        self.rate_limiter._by_tool_burst.clear()
+
+        # -- Audit log --
+        cleared["audit_entries"] = self.audit_log.entry_count
+        from shisad.core.audit import _GENESIS_HASH
+
+        self.audit_log._previous_hash = _GENESIS_HASH
+        self.audit_log._entry_count = 0
+        if self.audit_log._log_path.exists():
+            self.audit_log._log_path.write_text("", encoding="utf-8")
+
+        # -- Checkpoints --
+        cleared["checkpoints"] = _count_files(self.checkpoint_store._dir)
+        _wipe_dir_contents(self.checkpoint_store._dir)
+
+        # -- Transcripts --
+        cleared["transcripts"] = (
+            _count_files(self.transcript_store._transcript_dir)
+            + _count_files(self.transcript_store._blob_dir)
+        )
+        _wipe_dir_contents(self.transcript_store._transcript_dir)
+        _wipe_dir_contents(self.transcript_store._blob_dir)
+
+        # -- Evidence --
+        cleared["evidence_refs"] = len(self.evidence_store._refs)
+        self.evidence_store._refs.clear()
+        self.evidence_store._temporarily_unreadable_refs.clear()
+        _wipe_dir_contents(self.evidence_store._blob_dir)
+        _wipe_dir_contents(self.evidence_store._quarantine_dir)
+        if self.evidence_store._metadata_path.exists():
+            self.evidence_store._metadata_path.unlink(missing_ok=True)
+
+        # -- Channel state --
+        cleared["channel_state_channels"] = len(self.channel_state_store._seen_ids)
+        self.channel_state_store._seen_ids.clear()
+        self.channel_state_store._seen_id_sets.clear()
+        self.channel_state_store._journal_appends_since_compaction.clear()
+        self.channel_state_store._loaded_channels.clear()
+
+        logger.info("Test state reset: %s", cleared)
+        return {"status": "reset", "cleared": cleared}
 
     async def shutdown(self) -> None:
         """Close async/sync resources in reverse runtime order."""

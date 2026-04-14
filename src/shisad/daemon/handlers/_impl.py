@@ -912,6 +912,7 @@ class HandlerImplementation(
     """Owns JSON-RPC control handlers for the daemon."""
 
     def __init__(self, *, services: DaemonServices) -> None:
+        self._services = services
         self._config = services.config
         self._audit_log = services.audit_log
         self._event_bus = _EventPublisher(services.event_bus)
