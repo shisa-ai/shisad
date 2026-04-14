@@ -34,6 +34,7 @@ from shisad.core.planner import (
 from shisad.core.transcript import TranscriptStore
 from shisad.core.types import ToolName
 from shisad.daemon.runner import run_daemon
+from tests.helpers.daemon import wait_for_socket as _wait_for_socket
 from tests.helpers.signer import StubSignerService, generate_ed25519_private_key, public_key_pem
 from tests.helpers.webauthn import make_authentication_payload, make_registration_payload
 
@@ -79,15 +80,6 @@ def _http_post_json(url: str, payload: dict[str, Any]) -> tuple[int, dict[str, A
     except urllib.error.HTTPError as exc:
         body = exc.read().decode("utf-8")
         return exc.code, json.loads(body) if body else {}
-
-
-async def _wait_for_socket(path: Path, timeout: float = 5.0) -> None:
-    end = asyncio.get_running_loop().time() + timeout
-    while asyncio.get_running_loop().time() < end:
-        if path.exists():
-            return
-        await asyncio.sleep(0.01)
-    raise TimeoutError(f"Timed out waiting for socket {path}")
 
 
 async def _start_daemon(

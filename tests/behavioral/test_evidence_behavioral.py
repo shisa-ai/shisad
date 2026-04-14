@@ -21,6 +21,7 @@ from shisad.core.transcript import TranscriptStore
 from shisad.core.types import SessionId
 from shisad.daemon.runner import run_daemon
 from tests.helpers.artifact_kms import StubArtifactKmsService
+from tests.helpers.daemon import wait_for_socket as _wait_for_socket
 
 _USER_GOAL_RE = re.compile(
     (
@@ -184,15 +185,6 @@ def _stub_fetch(
         "error": "",
         "snapshot_path": "",
     }
-
-
-async def _wait_for_socket(path: Path, timeout: float = 5.0) -> None:
-    end = asyncio.get_running_loop().time() + timeout
-    while asyncio.get_running_loop().time() < end:
-        if path.exists():
-            return
-        await asyncio.sleep(0.01)
-    raise TimeoutError(f"Timed out waiting for socket {path}")
 
 
 async def _create_session(client: ControlClient) -> str:

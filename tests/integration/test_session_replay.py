@@ -19,6 +19,7 @@ from shisad.core.config import DaemonConfig
 from shisad.core.providers.base import Message, ProviderResponse
 from shisad.core.providers.local_planner import LocalPlannerProvider
 from shisad.daemon.runner import run_daemon
+from tests.helpers.daemon import wait_for_socket as _wait_for_socket
 
 _USER_GOAL_RE = re.compile(
     (
@@ -153,15 +154,6 @@ def _start_stub_search_backend() -> tuple[ThreadingHTTPServer, threading.Thread,
     thread.start()
     _host, port = server.server_address
     return server, thread, f"http://localhost:{port}", int(port)
-
-
-async def _wait_for_socket(path: Path, timeout: float = 5.0) -> None:
-    end = asyncio.get_running_loop().time() + timeout
-    while asyncio.get_running_loop().time() < end:
-        if path.exists():
-            return
-        await asyncio.sleep(0.01)
-    raise TimeoutError(f"Timed out waiting for socket {path}")
 
 
 @pytest.mark.asyncio
