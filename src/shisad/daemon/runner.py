@@ -116,7 +116,7 @@ def _warn_on_startup_config_gaps(config: DaemonConfig) -> None:
 def _method_specs(
     handlers: DaemonControlHandlers,
     *,
-    test_mode: bool,
+    test_mode: bool = False,
 ) -> list[tuple[str, Any, bool, type[BaseModel]]]:
     specs: list[tuple[str, Any, bool, type[BaseModel]]] = [
         ("session.create", handlers.handle_session_create, False, SessionCreateParams),
