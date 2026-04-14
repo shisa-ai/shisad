@@ -7,26 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.helpers.daemon import daemon_harness
-
-
-def _clear_remote_provider_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    for key in (
-        "SHISA_API_KEY",
-        "SHISAD_MODEL_API_KEY",
-        "SHISAD_MODEL_PLANNER_API_KEY",
-        "OPENAI_API_KEY",
-        "OPENROUTER_API_KEY",
-        "GEMINI_API_KEY",
-    ):
-        monkeypatch.delenv(key, raising=False)
-    for var in (
-        "SHISAD_MODEL_REMOTE_ENABLED",
-        "SHISAD_MODEL_PLANNER_REMOTE_ENABLED",
-        "SHISAD_MODEL_EMBEDDINGS_REMOTE_ENABLED",
-        "SHISAD_MODEL_MONITOR_REMOTE_ENABLED",
-    ):
-        monkeypatch.setenv(var, "false")
+from tests.helpers.daemon import clear_remote_provider_env, daemon_harness
 
 
 @pytest.mark.asyncio
@@ -35,7 +16,7 @@ async def test_daemon_reset_clears_sessions(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """daemon.reset wipes sessions so a subsequent list returns empty."""
-    _clear_remote_provider_env(monkeypatch)
+    clear_remote_provider_env(monkeypatch)
 
     async with daemon_harness(tmp_path) as harness:
         # Create two sessions.
@@ -54,6 +35,8 @@ async def test_daemon_reset_clears_sessions(
         # Reset.
         result = await harness.reset()
         assert result["status"] == "reset"
+        assert result["quiescent"] is True
+        assert all(result["invariants"].values())
         assert result["cleared"]["sessions"] == 2
 
         # Post-reset: no sessions.
@@ -67,7 +50,7 @@ async def test_daemon_reset_clears_audit_chain(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """daemon.reset resets the audit log chain so new entries start fresh."""
-    _clear_remote_provider_env(monkeypatch)
+    clear_remote_provider_env(monkeypatch)
 
     async with daemon_harness(tmp_path) as harness:
         # Create a session to generate audit entries.
@@ -81,6 +64,8 @@ async def test_daemon_reset_clears_audit_chain(
 
         # Reset.
         result = await harness.reset()
+        assert result["quiescent"] is True
+        assert all(result["invariants"].values())
         assert result["cleared"]["audit_entries"] >= 1
 
         # Post-reset: audit count resets.
@@ -94,7 +79,7 @@ async def test_daemon_reset_allows_new_work(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """After reset the daemon accepts new sessions and messages normally."""
-    _clear_remote_provider_env(monkeypatch)
+    clear_remote_provider_env(monkeypatch)
 
     async with daemon_harness(tmp_path) as harness:
         # First round of work.
@@ -116,7 +101,9 @@ async def test_daemon_reset_allows_new_work(
         assert reply_1["response"]
 
         # Reset.
-        await harness.reset()
+        result = await harness.reset()
+        assert result["quiescent"] is True
+        assert all(result["invariants"].values())
 
         # Second round of work — must succeed.
         created_2 = await harness.call(
@@ -149,7 +136,7 @@ async def test_daemon_harness_context_manager_lifecycle(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """daemon_harness starts the daemon and shuts it down on context exit."""
-    _clear_remote_provider_env(monkeypatch)
+    clear_remote_provider_env(monkeypatch)
 
     task_ref: asyncio.Task[None] | None = None
 
@@ -163,3 +150,15 @@ async def test_daemon_harness_context_manager_lifecycle(
     # After exiting the context, the task should be done.
     assert task_ref is not None
     assert task_ref.done()
+
+
+@pytest.mark.asyncio
+async def test_daemon_reset_is_not_registered_without_test_mode(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clear_remote_provider_env(monkeypatch)
+
+    async with daemon_harness(tmp_path, config_kwargs={"test_mode": False}) as harness:
+        with pytest.raises(RuntimeError, match=r"RPC error -32601|Method not found"):
+            await harness.call("daemon.reset")

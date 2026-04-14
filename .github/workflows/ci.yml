@@ -53,6 +53,9 @@ jobs:
       - name: Audit test files contain test functions
         run: uv run python scripts/test_function_audit.py --tests-root tests
 
+      - name: Guard daemon test startup/build site baseline
+        run: uv run python scripts/test_daemon_site_guard.py --baseline tests/fixtures/daemon_site_baseline.json --tests-root tests
+
       - name: Run tests
         run: uv run pytest -v -m "not requires_cap_net_admin"
 

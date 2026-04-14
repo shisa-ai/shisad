@@ -635,6 +635,7 @@ async def start_control_plane_sidecar(
     data_dir: Path,
     policy_path: Path,
     assistant_fs_roots: list[Path] | None = None,
+    startup_timeout_seconds: float = _SIDECAR_STARTUP_TIMEOUT_SECONDS,
 ) -> ControlPlaneSidecarHandle:
     socket_path = data_dir / "control_plane" / "sidecar.sock"
     socket_path.parent.mkdir(parents=True, exist_ok=True)
@@ -660,6 +661,7 @@ async def start_control_plane_sidecar(
         socket_path=socket_path,
         process=process,
         client=ControlPlaneSidecarClient(socket_path),
+        startup_timeout_seconds=float(startup_timeout_seconds),
     )
     try:
         await _wait_for_sidecar_ready(handle)

@@ -103,6 +103,24 @@ async def test_h1_control_plane_sidecar_round_trips_evaluation_and_audit_writes(
 
 
 @pytest.mark.asyncio
+async def test_h1_control_plane_sidecar_respects_overridden_startup_timeout(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clear_remote_provider_env(monkeypatch)
+    handle = await start_control_plane_sidecar(
+        data_dir=tmp_path / "data",
+        policy_path=tmp_path / "policy.yaml",
+        startup_timeout_seconds=7.25,
+    )
+    try:
+        assert handle.startup_timeout_seconds == pytest.approx(7.25)
+        assert await handle.client.ping() is True
+    finally:
+        await handle.close()
+
+
+@pytest.mark.asyncio
 async def test_u5_control_plane_sidecar_round_trips_operator_owned_cli_metadata(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,

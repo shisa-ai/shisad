@@ -257,7 +257,7 @@ class AdminImplMixin(HandlerMixinBase):
 
     async def do_daemon_reset(self, params: Mapping[str, Any]) -> dict[str, Any]:
         _ = params
-        return await self._services.reset_test_state()
+        return cast(dict[str, Any], await self.reset_test_state())
 
     async def do_admin_selfmod_propose(self, params: Mapping[str, Any]) -> dict[str, Any]:
         artifact_path_raw = str(params.get("artifact_path", "")).strip()

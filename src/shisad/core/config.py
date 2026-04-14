@@ -110,6 +110,15 @@ class DaemonConfig(BaseSettings):
 
     # Runtime
     log_level: str = Field(default="INFO", description="Logging level")
+    test_mode: bool = Field(
+        default=False,
+        description="Enable test-only daemon helpers such as reset RPC registration.",
+    )
+    control_plane_startup_timeout_seconds: float = Field(
+        default=5.0,
+        ge=0.1,
+        description="Startup timeout for the control-plane sidecar readiness probe.",
+    )
     checkpoint_trigger: Literal[
         "before_side_effects",
         "before_any_tool",

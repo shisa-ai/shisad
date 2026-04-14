@@ -7,7 +7,7 @@ import contextlib
 import hashlib
 import logging
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 from urllib.parse import urlparse
@@ -70,7 +70,7 @@ from shisad.security.monitor import ActionMonitor
 from shisad.security.pep import PEP
 from shisad.security.policy import PolicyLoader
 from shisad.security.ratelimit import RateLimitConfig, RateLimiter
-from shisad.security.risk import RiskCalibrator
+from shisad.security.risk import RiskCalibrator, RiskPolicyVersion
 from shisad.selfmod import SelfModificationManager
 from shisad.skills.manager import SkillManager
 
@@ -103,6 +103,21 @@ def _count_files(directory: Path) -> int:
     if not directory.is_dir():
         return 0
     return sum(1 for child in directory.iterdir() if child.is_file())
+
+
+def _count_files_recursive(directory: Path) -> int:
+    """Count files inside *directory* recursively."""
+    if not directory.is_dir():
+        return 0
+    return sum(1 for child in directory.rglob("*") if child.is_file())
+
+
+def _unlink_if_exists(path: Path) -> bool:
+    """Remove a file if present and report whether it existed."""
+    if not path.exists():
+        return False
+    path.unlink(missing_ok=True)
+    return True
 
 
 _CHANNEL_TRUST_DEFAULTS: dict[str, str] = {
@@ -416,6 +431,9 @@ class DaemonServices:
     model_routes: dict[str, str]
     provider_diagnostics: dict[str, Any]
     internal_ingress_marker: object
+    identity_default_trust_baseline: dict[str, str]
+    identity_allowlists_baseline: dict[str, set[str]]
+    active_rpc_calls: int = field(default=0)
 
     @classmethod
     async def build(cls, config: DaemonConfig) -> DaemonServices:
@@ -697,6 +715,7 @@ class DaemonServices:
                 data_dir=config.data_dir,
                 policy_path=config.policy_path,
                 assistant_fs_roots=list(config.assistant_fs_roots),
+                startup_timeout_seconds=config.control_plane_startup_timeout_seconds,
             )
             control_plane = control_plane_sidecar.client
 
@@ -774,6 +793,10 @@ class DaemonServices:
                 component.value: router.route_for(component).base_url
                 for component in ModelComponent
             }
+            identity_default_trust_baseline = dict(identity_map._default_trust)
+            identity_allowlists_baseline = {
+                channel: set(values) for channel, values in identity_map._allowlists.items()
+            }
             services = cls(
                 config=config,
                 audit_log=audit_log,
@@ -833,6 +856,8 @@ class DaemonServices:
                 model_routes=model_routes,
                 provider_diagnostics=provider_diagnostics,
                 internal_ingress_marker=internal_ingress_marker,
+                identity_default_trust_baseline=identity_default_trust_baseline,
+                identity_allowlists_baseline=identity_allowlists_baseline,
             )
             startup_complete = True
             return services
@@ -853,32 +878,37 @@ class DaemonServices:
     async def reset_test_state(self) -> dict[str, Any]:
         """Clear mutable runtime state for test isolation.
 
-        Wipes sessions, memory, scheduler, lockdown, rate limiter, audit,
-        checkpoints, transcripts, evidence, and channel state.  The daemon
-        process, control-plane sidecar, tool registry, PEP, firewall, and
-        provider connections remain intact.
+        Wipes mutable runtime state while preserving the daemon process,
+        control-plane sidecar, tool registry, firewall, and other static
+        runtime wiring.
 
         Returns a summary dict with counts of cleared items.
 
         **Not for production use.**
         """
+        inflight_embeddings = len(getattr(self.embeddings_adapter, "_inflight", ()))
+        if inflight_embeddings > 0:
+            raise RuntimeError("Cannot reset test state while embeddings requests are in flight")
+
         cleared: dict[str, int] = {}
 
         # -- Sessions --
-        session_ids = list(self.session_manager._sessions.keys())
+        cleared["sessions"] = len(self.session_manager._sessions)
         self.session_manager._sessions.clear()
-        cleared["sessions"] = len(session_ids)
         if self.session_manager._state_dir is not None:
             _wipe_dir_contents(self.session_manager._state_dir)
 
         # -- Scheduler --
         cleared["scheduler_tasks"] = len(self.scheduler._tasks)
+        cleared["scheduler_pending_confirmations"] = sum(
+            len(rows) for rows in self.scheduler._pending_confirmations.values()
+        )
         self.scheduler._tasks.clear()
         self.scheduler._pending_confirmations.clear()
-        if self.scheduler._tasks_file is not None and self.scheduler._tasks_file.exists():
-            self.scheduler._tasks_file.unlink(missing_ok=True)
-        if self.scheduler._pending_file is not None and self.scheduler._pending_file.exists():
-            self.scheduler._pending_file.unlink(missing_ok=True)
+        if self.scheduler._tasks_file is not None:
+            _unlink_if_exists(self.scheduler._tasks_file)
+        if self.scheduler._pending_file is not None:
+            _unlink_if_exists(self.scheduler._pending_file)
 
         # -- Memory --
         cleared["memory_entries"] = len(self.memory_manager._entries)
@@ -894,6 +924,7 @@ class DaemonServices:
             len(self.rate_limiter._by_tool)
             + len(self.rate_limiter._by_user)
             + len(self.rate_limiter._by_session)
+            + len(self.rate_limiter._by_tool_burst)
         )
         self.rate_limiter._by_tool.clear()
         self.rate_limiter._by_user.clear()
@@ -910,91 +941,204 @@ class DaemonServices:
             self.audit_log._log_path.write_text("", encoding="utf-8")
 
         # -- Checkpoints --
-        cleared["checkpoints"] = _count_files(self.checkpoint_store._dir)
+        cleared["checkpoints"] = _count_files_recursive(self.checkpoint_store._dir)
         _wipe_dir_contents(self.checkpoint_store._dir)
+
+        # -- Channel state --
+        cleared["channel_state_channels"] = len(self.channel_state_store._seen_ids)
+        channel_state_root = self.channel_state_store._root_dir
+        cleared["channel_state_files"] = _count_files_recursive(channel_state_root)
+        self.channel_state_store._seen_ids.clear()
+        self.channel_state_store._seen_id_sets.clear()
+        self.channel_state_store._journal_appends_since_compaction.clear()
+        self.channel_state_store._loaded_channels.clear()
+        self.channel_state_store._compaction_warning_logged.clear()
+        _wipe_dir_contents(channel_state_root)
 
         # -- Transcripts --
         cleared["transcripts"] = (
-            _count_files(self.transcript_store._transcript_dir)
-            + _count_files(self.transcript_store._blob_dir)
+            _count_files_recursive(self.transcript_store._transcript_dir)
+            + _count_files_recursive(self.transcript_store._blob_dir)
         )
         _wipe_dir_contents(self.transcript_store._transcript_dir)
         _wipe_dir_contents(self.transcript_store._blob_dir)
 
         # -- Evidence --
         cleared["evidence_refs"] = len(self.evidence_store._refs)
+        cleared["evidence_files"] = _count_files_recursive(self.evidence_store._blob_dir) + int(
+            self.evidence_store._metadata_path.exists()
+        )
         self.evidence_store._refs.clear()
         self.evidence_store._temporarily_unreadable_refs.clear()
         _wipe_dir_contents(self.evidence_store._blob_dir)
         _wipe_dir_contents(self.evidence_store._quarantine_dir)
-        if self.evidence_store._metadata_path.exists():
-            self.evidence_store._metadata_path.unlink(missing_ok=True)
+        _unlink_if_exists(self.evidence_store._metadata_path)
 
-        # -- Channel state --
-        cleared["channel_state_channels"] = len(self.channel_state_store._seen_ids)
-        self.channel_state_store._seen_ids.clear()
-        self.channel_state_store._seen_id_sets.clear()
-        self.channel_state_store._journal_appends_since_compaction.clear()
-        self.channel_state_store._loaded_channels.clear()
+        # -- Ingestion --
+        cleared["ingestion_records"] = len(self.ingestion._records)
+        cleared["ingestion_vectors"] = len(self.ingestion._vectors)
+        cleared["ingestion_keys"] = len(self.ingestion._key_metadata_by_id)
+        cleared["ingestion_artifacts"] = (
+            _count_files_recursive(self.ingestion._sanitized_dir)
+            + _count_files_recursive(self.ingestion._original_dir)
+        )
+        self.ingestion._records.clear()
+        self.ingestion._vectors.clear()
+        self.ingestion._key_material_by_id.clear()
+        self.ingestion._key_metadata_by_id.clear()
+        self.ingestion._active_key_id = ""
+        _wipe_dir_contents(self.ingestion._sanitized_dir)
+        _wipe_dir_contents(self.ingestion._original_dir)
+        self.ingestion._load_or_create_keys()
+
+        # -- Self-modification --
+        cleared["selfmod_entries"] = (
+            len(self.selfmod_manager._inventory.skills)
+            + len(self.selfmod_manager._inventory.behavior_packs)
+        )
+        cleared["selfmod_artifacts"] = (
+            _count_files_recursive(self.selfmod_manager._proposal_dir)
+            + _count_files_recursive(self.selfmod_manager._change_dir)
+            + _count_files_recursive(self.selfmod_manager._artifact_root)
+            + int(self.selfmod_manager._inventory_path.exists())
+            + int(self.selfmod_manager._incident_path.exists())
+        )
+        self.selfmod_manager._inventory = self.selfmod_manager._inventory.__class__()
+        _wipe_dir_contents(self.selfmod_manager._proposal_dir)
+        _wipe_dir_contents(self.selfmod_manager._change_dir)
+        _wipe_dir_contents(self.selfmod_manager._artifact_root)
+        _unlink_if_exists(self.selfmod_manager._inventory_path)
+        _unlink_if_exists(self.selfmod_manager._incident_path)
+        self.selfmod_manager._proposal_dir.mkdir(parents=True, exist_ok=True)
+        self.selfmod_manager._change_dir.mkdir(parents=True, exist_ok=True)
+        self.selfmod_manager._artifact_root.mkdir(parents=True, exist_ok=True)
+        self.selfmod_manager._apply_behavior_overlay()
+
+        # -- Skills --
+        cleared["skill_entries"] = len(self.skill_manager._inventory)
+        cleared["skill_tool_registrations"] = sum(
+            len(items) for items in self.skill_manager._skill_tool_map.values()
+        )
+        cleared["skill_pending_events"] = len(self.skill_manager._pending_registration_events)
+        for skill_name in list(self.skill_manager._skill_tool_map):
+            self.skill_manager._unregister_skill_tools(skill_name)
+        self.skill_manager._inventory.clear()
+        self.skill_manager._pending_registration_events.clear()
+        _wipe_dir_contents(self.skill_manager._storage_dir)
+
+        # -- Credentials / approvals --
+        approval_store_path = self.credential_store._approval_store_path
+        approval_store_artifacts = 0
+        if approval_store_path is not None:
+            approval_store_artifacts += int(approval_store_path.exists())
+            approval_store_artifacts += len(
+                list(approval_store_path.parent.glob(f"{approval_store_path.name}.corrupt.*"))
+            )
+        cleared["approval_factors"] = len(self.credential_store._approval_factors)
+        cleared["signer_keys"] = len(self.credential_store._signer_keys)
+        cleared["approval_store_artifacts"] = approval_store_artifacts
+        self.credential_store._approval_factors.clear()
+        self.credential_store._signer_keys.clear()
+        self.credential_store._local_fido2_realm_id = None
+        if approval_store_path is not None:
+            _unlink_if_exists(approval_store_path)
+            corrupt_glob = f"{approval_store_path.name}.corrupt.*"
+            for artifact in approval_store_path.parent.glob(corrupt_glob):
+                artifact.unlink(missing_ok=True)
+
+        # -- Channel identity map --
+        cleared["identity_bindings"] = len(self.identity_map._map)
+        cleared["identity_pairing_requests"] = len(self.identity_map._pairing_requests)
+        self.identity_map._map.clear()
+        self.identity_map._pairing_requests.clear()
+        self.identity_map._default_trust = dict(self.identity_default_trust_baseline)
+        self.identity_map._allowlists = {
+            channel: set(values) for channel, values in self.identity_allowlists_baseline.items()
+        }
+
+        # -- Trace capture --
+        trace_dir = (
+            self.trace_recorder._traces_dir
+            if self.trace_recorder is not None
+            else self.config.data_dir / "traces"
+        )
+        cleared["trace_files"] = _count_files_recursive(trace_dir)
+        _wipe_dir_contents(trace_dir)
+
+        # -- Session archives --
+        session_archive_dir = self.config.data_dir / "session_archives"
+        cleared["session_archives"] = _count_files_recursive(session_archive_dir)
+        _wipe_dir_contents(session_archive_dir)
+
+        # -- Risk calibrator --
+        cleared["risk_observations"] = int(self.risk_calibrator.observations_path.exists())
+        cleared["risk_policies"] = int(self.risk_calibrator.policy_path.exists())
+        _unlink_if_exists(self.risk_calibrator.observations_path)
+        _unlink_if_exists(self.risk_calibrator.policy_path)
+        default_risk_policy = RiskPolicyVersion()
+        self.policy_loader.policy.risk_policy.version = default_risk_policy.version
+        self.policy_loader.policy.risk_policy.auto_approve_threshold = (
+            default_risk_policy.thresholds.auto_approve_threshold
+        )
+        self.policy_loader.policy.risk_policy.block_threshold = (
+            default_risk_policy.thresholds.block_threshold
+        )
 
         logger.info("Test state reset: %s", cleared)
         return {"status": "reset", "cleared": cleared}
 
     async def shutdown(self) -> None:
         """Close async/sync resources in reverse runtime order."""
-        try:
-            self.embeddings_adapter.close(wait=True)
-        except (OSError, RuntimeError):
-            logger.exception("Error closing embeddings adapter")
+        shutdown_ops: list[tuple[str, Any]] = []
+
+        embeddings_adapter = getattr(self, "embeddings_adapter", None)
+        if embeddings_adapter is not None:
+            shutdown_ops.append(
+                (
+                    "embeddings_adapter",
+                    asyncio.to_thread(embeddings_adapter.close, wait=True),
+                )
+            )
+
         disconnected_ids: set[int] = set()
         channels = getattr(self, "channels", {})
         if isinstance(channels, dict):
-            for channel in channels.values():
-                try:
-                    await channel.disconnect()
-                    disconnected_ids.add(id(channel))
-                except (OSError, RuntimeError):
-                    logger.exception("Error disconnecting channel")
+            for channel_name, channel in channels.items():
+                if id(channel) in disconnected_ids:
+                    continue
+                disconnected_ids.add(id(channel))
+                shutdown_ops.append((f"channel:{channel_name}", channel.disconnect()))
 
-        matrix_channel = getattr(self, "matrix_channel", None)
-        if matrix_channel is not None and id(matrix_channel) not in disconnected_ids:
-            try:
-                await matrix_channel.disconnect()
-            except (OSError, RuntimeError):
-                logger.exception("Error disconnecting matrix channel")
-        discord_channel = getattr(self, "discord_channel", None)
-        if discord_channel is not None and id(discord_channel) not in disconnected_ids:
-            try:
-                await discord_channel.disconnect()
-            except (OSError, RuntimeError):
-                logger.exception("Error disconnecting discord channel")
-        telegram_channel = getattr(self, "telegram_channel", None)
-        if telegram_channel is not None and id(telegram_channel) not in disconnected_ids:
-            try:
-                await telegram_channel.disconnect()
-            except (OSError, RuntimeError):
-                logger.exception("Error disconnecting telegram channel")
-        slack_channel = getattr(self, "slack_channel", None)
-        if slack_channel is not None and id(slack_channel) not in disconnected_ids:
-            try:
-                await slack_channel.disconnect()
-            except (OSError, RuntimeError):
-                logger.exception("Error disconnecting slack channel")
-        shutdown_tasks: list[asyncio.Task[None]] = []
+        for label in ("matrix", "discord", "telegram", "slack"):
+            channel = getattr(self, f"{label}_channel", None)
+            if channel is None or id(channel) in disconnected_ids:
+                continue
+            disconnected_ids.add(id(channel))
+            shutdown_ops.append((f"channel:{label}", channel.disconnect()))
+
         sidecar = getattr(self, "control_plane_sidecar", None)
         if sidecar is not None:
-            shutdown_tasks.append(asyncio.create_task(sidecar.close()))
+            shutdown_ops.append(("control_plane_sidecar", sidecar.close()))
+
         approval_web = getattr(self, "approval_web", None)
         if approval_web is not None:
-            shutdown_tasks.append(asyncio.create_task(approval_web.stop()))
-        shutdown_tasks.append(asyncio.create_task(self.server.stop()))
-        results = await asyncio.gather(*shutdown_tasks, return_exceptions=True)
-        for result in results:
+            shutdown_ops.append(("approval_web", approval_web.stop()))
+
+        server = getattr(self, "server", None)
+        if server is not None:
+            shutdown_ops.append(("control_server", server.stop()))
+
+        results = await asyncio.gather(
+            *(operation for _, operation in shutdown_ops),
+            return_exceptions=True,
+        )
+        for (label, _operation), result in zip(shutdown_ops, results, strict=False):
             if isinstance(result, BaseException):
                 if result.__class__.__name__ == "CancelledError":
                     continue
                 logger.error(
-                    "Error stopping daemon service",
+                    "Error stopping daemon service %s",
+                    label,
                     exc_info=(type(result), result, result.__traceback__),
                 )
 
