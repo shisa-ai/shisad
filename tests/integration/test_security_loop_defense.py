@@ -34,15 +34,7 @@ from shisad.scheduler.schema import Schedule
 from shisad.security.firewall import ContentFirewall
 from shisad.security.pep import PEP, PolicyContext
 from shisad.security.policy import EgressRule, PolicyBundle
-
-
-async def _wait_for_socket(path: Path, timeout: float = 5.0) -> None:
-    end = asyncio.get_running_loop().time() + timeout
-    while asyncio.get_running_loop().time() < end:
-        if path.exists():
-            return
-        await asyncio.sleep(0.01)
-    raise TimeoutError(f"Timed out waiting for socket {path}")
+from tests.helpers.daemon import wait_for_socket as _wait_for_socket
 
 
 def _decision_nonce_for_confirmation(

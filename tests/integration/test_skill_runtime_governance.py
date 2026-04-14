@@ -15,6 +15,7 @@ from shisad.core.api.transport import ControlClient
 from shisad.core.config import DaemonConfig
 from shisad.core.events import EventBus
 from shisad.daemon.runner import run_daemon
+from tests.helpers.daemon import wait_for_socket as _wait_for_socket
 
 
 def _manifest_payload(
@@ -55,15 +56,6 @@ def _write_skill(root: Path, *, manifest: dict[str, Any], files: dict[str, str])
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content, encoding="utf-8")
     return root
-
-
-async def _wait_for_socket(path: Path, timeout: float = 5.0) -> None:
-    end = asyncio.get_running_loop().time() + timeout
-    while asyncio.get_running_loop().time() < end:
-        if path.exists():
-            return
-        await asyncio.sleep(0.01)
-    raise TimeoutError(f"Timed out waiting for socket {path}")
 
 
 @pytest.fixture

@@ -15,6 +15,7 @@ from shisad.core.config import DaemonConfig
 from shisad.daemon.runner import run_daemon
 from shisad.security.adversarial import AdversarialMetrics, ci_gate
 from shisad.security.firewall import ContentFirewall
+from tests.helpers.daemon import wait_for_socket as _wait_for_socket
 
 
 @pytest.fixture
@@ -23,15 +24,6 @@ def model_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("SHISAD_MODEL_PLANNER_BASE_URL", "https://planner.example.com/v1")
     monkeypatch.setenv("SHISAD_MODEL_EMBEDDINGS_BASE_URL", "https://embed.example.com/v1")
     monkeypatch.setenv("SHISAD_MODEL_MONITOR_BASE_URL", "https://monitor.example.com/v1")
-
-
-async def _wait_for_socket(path: Path, timeout: float = 5.0) -> None:
-    end = asyncio.get_running_loop().time() + timeout
-    while asyncio.get_running_loop().time() < end:
-        if path.exists():
-            return
-        await asyncio.sleep(0.01)
-    raise TimeoutError(f"Timed out waiting for socket {path}")
 
 
 async def _start_daemon(tmp_path: Path) -> tuple[asyncio.Task[None], ControlClient]:
