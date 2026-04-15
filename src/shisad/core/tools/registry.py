@@ -257,6 +257,22 @@ class ToolRegistry:
                 continue
 
             item_schema = properties[key].get("items", {})
+            item_type = item_schema.get("type")
+            if item_type is not None and isinstance(value, list):
+                invalid_item_type = next(
+                    (
+                        type(item).__name__
+                        for item in value
+                        if not self._check_type(item, str(item_type))
+                    ),
+                    None,
+                )
+                if invalid_item_type is not None:
+                    errors.append(
+                        f"Argument '{key}': expected items of type '{item_type}', "
+                        f"got '{invalid_item_type}'"
+                    )
+                    continue
             items_semantic_type = item_schema.get("x-shisad-semantic-type")
             if (
                 items_semantic_type is not None

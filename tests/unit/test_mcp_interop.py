@@ -782,6 +782,49 @@ def test_i1_mcp_tool_translation_rejects_bool_for_number_enum_values() -> None:
     ]
 
 
+@pytest.mark.parametrize(
+    ("items_type", "valid_item", "invalid_item", "invalid_type"),
+    [
+        ("string", "tag", 1, "int"),
+        ("integer", 1, True, "bool"),
+        ("number", 1.5, False, "bool"),
+        ("boolean", True, "true", "str"),
+        ("object", {"key": "value"}, [], "list"),
+        ("array", ["nested"], {"key": "value"}, "dict"),
+    ],
+)
+def test_i1_mcp_tool_translation_enforces_array_item_types_at_runtime(
+    items_type: str,
+    valid_item: Any,
+    invalid_item: Any,
+    invalid_type: str,
+) -> None:
+    entry = mcp_tool_to_registry_entry(
+        McpDiscoveredTool(
+            name="pick-values",
+            description="Pick values.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "values": {
+                        "type": "array",
+                        "items": {"type": items_type},
+                    }
+                },
+                "required": ["values"],
+            },
+        ),
+        server_name="docs",
+    )
+    registry = ToolRegistry()
+    registry.register(entry)
+
+    assert registry.validate_call(entry.name, {"values": [valid_item]}) == []
+    assert registry.validate_call(entry.name, {"values": [invalid_item]}) == [
+        f"Argument 'values': expected items of type '{items_type}', got '{invalid_type}'"
+    ]
+
+
 def test_i1_tool_registry_rejects_provider_alias_collisions() -> None:
     registry = ToolRegistry()
     registry.register(
