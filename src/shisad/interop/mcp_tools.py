@@ -13,6 +13,7 @@ from shisad.core.types import ToolName
 _MCP_IDENTIFIER_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,127}$")
 _MCP_PARAMETER_NAME_MAX_LENGTH = 256
 _MCP_PARAMETER_NAME_FORBIDDEN_CHARS = frozenset({'"', "'", "`", "<", ">", "{", "}", "\\"})
+_MCP_ENUM_STRING_RE = re.compile(r"^[A-Za-z0-9_$./:+-]{1,64}$")
 _ALLOWED_MCP_JSON_SCHEMA_TYPES = frozenset(
     {"array", "boolean", "integer", "number", "object", "string"}
 )
@@ -83,6 +84,46 @@ def _json_schema_type(value: Any, *, field_name: str, default: str) -> str:
     return schema_type
 
 
+def _required_fields(input_schema: Mapping[str, Any]) -> set[str]:
+    raw_required = input_schema.get("required", [])
+    if raw_required is None:
+        return set()
+    if not isinstance(raw_required, list):
+        raise ValueError("MCP tool required must be a list of non-empty strings")
+    required: set[str] = set()
+    for item in raw_required:
+        if not isinstance(item, str) or not item.strip():
+            raise ValueError("MCP tool required must be a list of non-empty strings")
+        required.add(item)
+    return required
+
+
+def _enum_string(value: str, *, field_name: str) -> str:
+    enum_value = value.strip()
+    if not enum_value or enum_value != value or not _MCP_ENUM_STRING_RE.fullmatch(enum_value):
+        raise ValueError(
+            f"MCP {field_name} enum string values must match ^[A-Za-z0-9_$./:+-]{{1,64}}$"
+        )
+    return enum_value
+
+
+def _enum_values(value: Any, *, field_name: str) -> list[Any] | None:
+    if value is None:
+        return None
+    if not isinstance(value, list):
+        raise ValueError(f"MCP {field_name} enum must be a list")
+    normalized: list[Any] = []
+    for item in value:
+        if isinstance(item, str):
+            normalized.append(_enum_string(item, field_name=field_name))
+            continue
+        if item is None or isinstance(item, (bool, int, float)):
+            normalized.append(item)
+            continue
+        raise ValueError(f"MCP {field_name} enum values must be scalar JSON values")
+    return normalized
+
+
 def _tool_parameters(input_schema: Mapping[str, Any]) -> list[ToolParameter]:
     schema_type = _json_schema_type(
         input_schema.get("type"),
@@ -92,11 +133,7 @@ def _tool_parameters(input_schema: Mapping[str, Any]) -> list[ToolParameter]:
     if schema_type != "object":
         raise ValueError("MCP tool input schema must be an object schema")
     properties = _mapping(input_schema.get("properties", {}), field_name="tool properties")
-    required = {
-        str(item)
-        for item in input_schema.get("required", [])
-        if isinstance(item, str) and str(item).strip()
-    }
+    required = _required_fields(input_schema)
     parameters: list[ToolParameter] = []
     for raw_name, raw_schema in properties.items():
         parameter_name = _parameter_name(raw_name)
@@ -119,10 +156,7 @@ def _tool_parameters(input_schema: Mapping[str, Any]) -> list[ToolParameter]:
                 field_name=f"tool parameter '{parameter_name}' items.type",
                 default="string",
             )
-        enum_values = schema.get("enum")
-        enum: list[Any] | None = None
-        if isinstance(enum_values, list):
-            enum = list(enum_values)
+        enum = _enum_values(schema.get("enum"), field_name=f"tool parameter '{parameter_name}'")
         parameters.append(
             ToolParameter(
                 name=parameter_name,

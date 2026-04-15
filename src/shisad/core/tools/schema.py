@@ -103,7 +103,7 @@ class ToolDefinition(BaseModel):
                 prop["items"] = {"type": param.items_type or "string"}
                 if param.items_semantic_type is not None:
                     prop["items"]["x-shisad-semantic-type"] = param.items_semantic_type
-            if param.enum is not None and not (planner_safe and self.registration_source == "mcp"):
+            if param.enum is not None:
                 prop["enum"] = param.enum
             if param.semantic_type is not None:
                 prop["x-shisad-semantic-type"] = param.semantic_type
