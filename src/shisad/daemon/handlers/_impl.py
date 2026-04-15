@@ -885,6 +885,35 @@ class PendingAction:
     status: str = "pending"
     status_reason: str = ""
 
+    @staticmethod
+    def _is_legacy_direct_mcp_tool_execute_shape(
+        *,
+        tool_name: ToolName | str,
+        arguments: Mapping[str, Any],
+        preflight_action: ControlPlaneAction | Mapping[str, Any] | None,
+    ) -> bool:
+        if not str(tool_name).strip().startswith("mcp."):
+            return False
+        if not all(key in arguments for key in ("session_id", "tool_name", "command")):
+            return False
+        if isinstance(preflight_action, Mapping):
+            origin = preflight_action.get("origin")
+            if isinstance(origin, Mapping):
+                return str(origin.get("actor", "")).strip() == "control_api"
+            return False
+        return str(getattr(getattr(preflight_action, "origin", None), "actor", "")).strip() == (
+            "control_api"
+        )
+
+    def should_strip_direct_tool_execute_envelope_keys(self) -> bool:
+        return bool(self.strip_direct_tool_execute_envelope_keys) or (
+            PendingAction._is_legacy_direct_mcp_tool_execute_shape(
+                tool_name=self.tool_name,
+                arguments=self.arguments,
+                preflight_action=self.preflight_action,
+            )
+        )
+
 
 @dataclass(slots=True)
 class ToolOutputRecord:
@@ -2406,6 +2435,7 @@ class HandlerImplementation(
         if not isinstance(raw, list):
             return
         pruned_stale = False
+        migrated_legacy_strip_intent = False
         for item in raw:
             if not isinstance(item, dict):
                 continue
@@ -2537,6 +2567,12 @@ class HandlerImplementation(
                 )
             except (TypeError, ValueError, ValidationError):
                 continue
+            if (
+                not pending.strip_direct_tool_execute_envelope_keys
+                and pending.should_strip_direct_tool_execute_envelope_keys()
+            ):
+                pending.strip_direct_tool_execute_envelope_keys = True
+                migrated_legacy_strip_intent = True
             self._pending_actions[pending.confirmation_id] = pending
             self._pending_by_session.setdefault(
                 pending.session_id,
@@ -2550,7 +2586,7 @@ class HandlerImplementation(
                     persist=False,
                 )
                 pruned_stale = True
-        if pruned_stale:
+        if pruned_stale or migrated_legacy_strip_intent:
             self._persist_pending_actions()
 
     def _is_verified_channel_identity(self, *, channel: str, external_user_id: str) -> bool:

@@ -1508,7 +1508,7 @@ class ConfirmationImplMixin(HandlerMixinBase):
             approval_timestamp=decision_timestamp,
             approval_evidence=pending.confirmation_evidence,
             strip_direct_tool_execute_envelope_keys=bool(
-                getattr(pending, "strip_direct_tool_execute_envelope_keys", False)
+                pending.should_strip_direct_tool_execute_envelope_keys()
             ),
         )
         success = execution_result.success
