@@ -332,6 +332,17 @@ class DaemonConfig(BaseSettings):
         default="",
         description="Optional bearer token sent to the signer KMS endpoint.",
     )
+    signer_ledger_url: str = Field(
+        default="",
+        description=(
+            "Optional Ledger device bridge endpoint used for "
+            "L4 trusted-display authorization-grade approval requests."
+        ),
+    )
+    signer_ledger_bearer_token: str = Field(
+        default="",
+        description="Optional bearer token sent to the Ledger bridge endpoint.",
+    )
     evidence_kms_url: str = Field(
         default="",
         description=(

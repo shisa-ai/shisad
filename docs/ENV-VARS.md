@@ -138,6 +138,8 @@ Approval / WebAuthn / signer:
 - `SHISAD_APPROVAL_RATE_LIMIT_MAX_ATTEMPTS`
 - `SHISAD_SIGNER_KMS_URL`
 - `SHISAD_SIGNER_KMS_BEARER_TOKEN`
+- `SHISAD_SIGNER_LEDGER_URL`
+- `SHISAD_SIGNER_LEDGER_BEARER_TOKEN`
 - `SHISAD_EVIDENCE_KMS_URL`
 - `SHISAD_EVIDENCE_KMS_BEARER_TOKEN`
 - `SHISAD_EVIDENCE_KMS_TIMEOUT_SECONDS`
@@ -182,6 +184,10 @@ Approval notes:
 - `status`, `signed_at`, and `blind_sign_detected` are validated fail-closed; malformed values return `signer_backend_invalid_response`.
 - The daemon verifies the returned signature against the locally registered public key for `signer_key_id`; the KMS response can deny service or downgrade review quality, but it cannot mint approvals without a valid local signature check.
 - For the current `kms` backend, backend-reported review surfaces are clamped to the daemon's configured trust ceiling. In practice this means `opaque_device` can downgrade the approval, but `trusted_device_display` does not upgrade the enterprise HTTPS backend beyond `signed_authorization`.
+- `SHISAD_SIGNER_LEDGER_URL` enables the Ledger hardware device signer backend used for `trusted_display_authorization` (L4) approvals. When unset, the `ledger` signer method stays unavailable. The bridge service (`contrib/ledger-bridge/`) implements the same HTTP contract as the KMS backend but communicates with a Ledger device via USB/BLE.
+- `SHISAD_SIGNER_LEDGER_BEARER_TOKEN`, when set, is sent as an `Authorization: Bearer ...` header to the Ledger bridge endpoint.
+- The `ledger` backend uses the Ethereum app's `signPersonalMessage` to render action summaries on the device's trusted display and sign with ECDSA secp256k1. Keys registered with `--backend ledger` default to `signing_scheme=eth_personal_sign` and `algorithm=ecdsa-secp256k1`.
+- Unlike the `kms` backend, the Ledger backend's default review surface is `trusted_device_display`. When the device reports `blind_sign_detected: true` or `review_surface: opaque_device`, the approval level drops to `bound_approval` (L2).
 - Registered signer public keys still live in the same daemon-owned approval-factor store as TOTP/WebAuthn/helper factors. `L1` encrypts ArtifactLedger blob payloads only; approval-factor and recovery-code at-rest hardening remains follow-on.
 
 Evidence-at-rest notes:

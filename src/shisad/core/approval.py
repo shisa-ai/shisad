@@ -25,6 +25,7 @@ from urllib.request import Request, urlopen
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec, ed25519
+from cryptography.hazmat.primitives.asymmetric.utils import Prehashed as _Prehashed
 from fido2.server import Fido2Server
 from fido2.webauthn import (
     AttestedCredentialData,
@@ -765,6 +766,7 @@ class SignerKeyInfo(BaseModel):
     algorithm: str
     device_type: str
     public_key_pem: str
+    signing_scheme: str = "raw"
     created_at: datetime
     last_verified_at: datetime | None = None
     last_used_at: datetime | None = None
@@ -876,6 +878,22 @@ def _clamp_signer_review_surface(
     return default
 
 
+def _eth_personal_sign_digest(message: bytes) -> bytes:
+    """Compute the Ethereum personal-sign digest for ECDSA verification.
+
+    Ethereum's ``eth_sign`` / ``personal_sign`` hashes the message as::
+
+        keccak256("\\x19Ethereum Signed Message:\\n" + len(message) + message)
+
+    The result is a 32-byte digest suitable for ``Prehashed(SHA256())``
+    verification (both keccak-256 and SHA-256 produce 32-byte digests).
+    """
+    from shisad.core._keccak import keccak_256
+
+    prefix = b"\x19Ethereum Signed Message:\n" + str(len(message)).encode()
+    return keccak_256(prefix + message)
+
+
 def _signer_key_info_from_record(record: SignerKeyRecord) -> SignerKeyInfo:
     return SignerKeyInfo(
         key_id=record.credential_id,
@@ -884,6 +902,7 @@ def _signer_key_info_from_record(record: SignerKeyRecord) -> SignerKeyInfo:
         algorithm=record.algorithm,
         device_type=record.device_type,
         public_key_pem=record.public_key_pem,
+        signing_scheme=record.signing_scheme,
         created_at=record.created_at,
         last_verified_at=record.last_verified_at,
         last_used_at=record.last_used_at,
@@ -891,8 +910,8 @@ def _signer_key_info_from_record(record: SignerKeyRecord) -> SignerKeyInfo:
     )
 
 
-class EnterpriseKmsSignerBackend:
-    """Enterprise-style HTTPS signer backend for provider-UI approvals."""
+class _HttpSignerBackend:
+    """Base class for HTTP-based signer backends (KMS, Ledger bridge, etc.)."""
 
     def __init__(
         self,
@@ -901,17 +920,19 @@ class EnterpriseKmsSignerBackend:
         endpoint_url: str,
         bearer_token: str = "",
         request_timeout: timedelta | None = None,
+        backend_id: str,
+        method: str,
+        level: ConfirmationLevel,
+        review_surface: ReviewSurface,
+        capabilities: ConfirmationCapabilities,
+        third_party_verifiable: bool,
     ) -> None:
-        self.backend_id = "kms.default"
-        self.method = "kms"
-        self.level = ConfirmationLevel.SIGNED_AUTHORIZATION
-        self.review_surface = ReviewSurface.PROVIDER_UI
-        self.capabilities = ConfirmationCapabilities(
-            principal_binding=True,
-            full_intent_signature=True,
-            third_party_verifiable=True,
-        )
-        self.third_party_verifiable = True
+        self.backend_id = backend_id
+        self.method = method
+        self.level = level
+        self.review_surface = review_surface
+        self.capabilities = capabilities
+        self.third_party_verifiable = third_party_verifiable
         self._credential_store = credential_store
         self._endpoint_url = endpoint_url.strip()
         self._bearer_token = bearer_token.strip()
@@ -925,7 +946,7 @@ class EnterpriseKmsSignerBackend:
     ) -> list[SignerKeyInfo]:
         rows = self._credential_store.list_signer_keys(
             user_id=user_id,
-            backend="kms",
+            backend=self.method,
             include_revoked=include_revoked,
         )
         return [_signer_key_info_from_record(item) for item in rows]
@@ -997,7 +1018,7 @@ class EnterpriseKmsSignerBackend:
                         status="error",
                         reason="signer_backend_invalid_response",
                     )
-        review_surface = _clamp_signer_review_surface(
+        clamped_review_surface = _clamp_signer_review_surface(
             default=self.review_surface,
             reported=reported_review_surface,
         )
@@ -1021,7 +1042,7 @@ class EnterpriseKmsSignerBackend:
             signature=_normalize_signature_value(str(body.get("signature", ""))),
             signer_key_id=str(body.get("signer_key_id", "")).strip(),
             signed_at=signed_at,
-            review_surface=review_surface,
+            review_surface=clamped_review_surface,
             blind_sign_detected=blind_sign_raw,
             reason=str(body.get("reason", "")).strip(),
         )
@@ -1050,7 +1071,14 @@ class EnterpriseKmsSignerBackend:
                     return False
                 if public_key.curve.name.lower() != "secp256k1":
                     return False
-                public_key.verify(signed_bytes, message, ec.ECDSA(hashes.SHA256()))
+                scheme = signer_key.signing_scheme.strip().lower()
+                if scheme == "eth_personal_sign":
+                    digest = _eth_personal_sign_digest(message)
+                    public_key.verify(
+                        signed_bytes, digest, ec.ECDSA(_Prehashed(hashes.SHA256()))
+                    )
+                else:
+                    public_key.verify(signed_bytes, message, ec.ECDSA(hashes.SHA256()))
                 return True
         except (InvalidSignature, TypeError, ValueError):
             return False
@@ -1064,6 +1092,71 @@ class EnterpriseKmsSignerBackend:
         updated.last_verified_at = when
         updated.last_used_at = when
         self._credential_store.update_signer_key(updated)
+
+
+class EnterpriseKmsSignerBackend(_HttpSignerBackend):
+    """Enterprise-style HTTPS signer backend for provider-UI approvals."""
+
+    def __init__(
+        self,
+        *,
+        credential_store: ApprovalFactorStore,
+        endpoint_url: str,
+        bearer_token: str = "",
+        request_timeout: timedelta | None = None,
+    ) -> None:
+        super().__init__(
+            credential_store=credential_store,
+            endpoint_url=endpoint_url,
+            bearer_token=bearer_token,
+            request_timeout=request_timeout,
+            backend_id="kms.default",
+            method="kms",
+            level=ConfirmationLevel.SIGNED_AUTHORIZATION,
+            review_surface=ReviewSurface.PROVIDER_UI,
+            capabilities=ConfirmationCapabilities(
+                principal_binding=True,
+                full_intent_signature=True,
+                third_party_verifiable=True,
+            ),
+            third_party_verifiable=True,
+        )
+
+
+class LedgerSignerBackend(_HttpSignerBackend):
+    """Ledger hardware device signer backend for L4 trusted-display approvals.
+
+    Communicates with a Ledger DMK bridge service (Node.js) that handles
+    USB/BLE transport to the device.  The bridge implements the same HTTP
+    sign-request/response contract as the KMS backend.
+    """
+
+    def __init__(
+        self,
+        *,
+        credential_store: ApprovalFactorStore,
+        endpoint_url: str,
+        bearer_token: str = "",
+        request_timeout: timedelta | None = None,
+    ) -> None:
+        super().__init__(
+            credential_store=credential_store,
+            endpoint_url=endpoint_url,
+            bearer_token=bearer_token,
+            request_timeout=request_timeout,
+            backend_id="ledger.default",
+            method="ledger",
+            level=ConfirmationLevel.TRUSTED_DISPLAY_AUTHORIZATION,
+            review_surface=ReviewSurface.TRUSTED_DEVICE_DISPLAY,
+            capabilities=ConfirmationCapabilities(
+                principal_binding=True,
+                full_intent_signature=True,
+                third_party_verifiable=True,
+                trusted_display=True,
+                blind_sign_detection=True,
+            ),
+            third_party_verifiable=True,
+        )
 
 
 class SignerConfirmationAdapter:

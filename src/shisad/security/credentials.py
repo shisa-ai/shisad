@@ -115,6 +115,7 @@ class SignerKeyRecord(BaseModel):
     algorithm: str
     device_type: str
     public_key_pem: str
+    signing_scheme: str = "raw"
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     last_verified_at: datetime | None = None
     last_used_at: datetime | None = None

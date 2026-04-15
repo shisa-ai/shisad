@@ -1,4 +1,4 @@
-"""Helpers for L2 signer tests."""
+"""Helpers for L2+ signer tests."""
 
 from __future__ import annotations
 
@@ -11,20 +11,28 @@ from datetime import UTC, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
-from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives.asymmetric.ed25519 import (
     Ed25519PrivateKey,
     Ed25519PublicKey,
 )
+from cryptography.hazmat.primitives.asymmetric.utils import Prehashed
 
-from shisad.core.approval import canonical_json_dumps
+from shisad.core.approval import _eth_personal_sign_digest, canonical_json_dumps
 
 
 def generate_ed25519_private_key() -> Ed25519PrivateKey:
     return Ed25519PrivateKey.generate()
 
 
-def public_key_pem(private_key: Ed25519PrivateKey) -> str:
+def generate_secp256k1_private_key() -> ec.EllipticCurvePrivateKey:
+    return ec.generate_private_key(ec.SECP256K1())
+
+
+def public_key_pem(
+    private_key: Ed25519PrivateKey | ec.EllipticCurvePrivateKey,
+) -> str:
     return (
         private_key.public_key()
         .public_bytes(
@@ -37,6 +45,17 @@ def public_key_pem(private_key: Ed25519PrivateKey) -> str:
 
 def sign_intent_envelope(private_key: Ed25519PrivateKey, envelope: dict[str, Any]) -> str:
     signature = private_key.sign(canonical_json_dumps(envelope).encode("utf-8"))
+    return "base64:" + base64.b64encode(signature).decode("ascii")
+
+
+def sign_intent_envelope_eth_personal(
+    private_key: ec.EllipticCurvePrivateKey,
+    envelope: dict[str, Any],
+) -> str:
+    """Sign an intent envelope using Ethereum personal-sign (keccak256 prefix)."""
+    message = canonical_json_dumps(envelope).encode("utf-8")
+    digest = _eth_personal_sign_digest(message)
+    signature = private_key.sign(digest, ec.ECDSA(Prehashed(hashes.SHA256())))
     return "base64:" + base64.b64encode(signature).decode("ascii")
 
 
@@ -64,7 +83,8 @@ class StubSignerService:
     def __init__(
         self,
         *,
-        private_key: Ed25519PrivateKey,
+        private_key: Ed25519PrivateKey | ec.EllipticCurvePrivateKey,
+        algorithm: str = "ed25519",
         status: str = "approved",
         review_surface: str = "provider_ui",
         blind_sign_detected: bool = False,
@@ -73,6 +93,7 @@ class StubSignerService:
         signed_at_override: str = "",
     ) -> None:
         self._private_key = private_key
+        self._algorithm = algorithm
         self._status = status
         self._review_surface = review_surface
         self._blind_sign_detected = blind_sign_detected
@@ -105,10 +126,18 @@ class StubSignerService:
                     or datetime.now(UTC).isoformat().replace("+00:00", "Z"),
                 }
                 if owner._status == "approved":
-                    response["signature"] = sign_intent_envelope(
-                        owner._private_key,
-                        signed_envelope,
-                    )
+                    if owner._algorithm == "eth_personal_sign":
+                        assert isinstance(owner._private_key, ec.EllipticCurvePrivateKey)
+                        response["signature"] = sign_intent_envelope_eth_personal(
+                            owner._private_key,
+                            signed_envelope,
+                        )
+                    else:
+                        assert isinstance(owner._private_key, Ed25519PrivateKey)
+                        response["signature"] = sign_intent_envelope(
+                            owner._private_key,
+                            signed_envelope,
+                        )
                 encoded = json.dumps(response).encode("utf-8")
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")

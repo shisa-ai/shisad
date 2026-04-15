@@ -1,0 +1,21 @@
+{
+  "name": "shisad-ledger-bridge",
+  "version": "0.1.0",
+  "description": "Ledger DMK bridge service for shisad L4 trusted-display approval",
+  "scripts": {
+    "start": "tsx src/server.ts",
+    "extract-key": "tsx src/extract-key.ts"
+  },
+  "dependencies": {
+    "@ledgerhq/device-management-kit": "1.2.0",
+    "@ledgerhq/device-transport-kit-node-hid": "1.0.0",
+    "@ledgerhq/device-signer-kit-ethereum": "1.11.1",
+    "@ledgerhq/context-module": "1.14.1",
+    "rxjs": "^7.8.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsx": "^4.0.0",
+    "typescript": "^5.7.0"
+  }
+}

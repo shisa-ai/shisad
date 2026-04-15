@@ -39,6 +39,7 @@ from shisad.core.approval import (
     IntentAction,
     IntentEnvelope,
     IntentPolicyContext,
+    LedgerSignerBackend,
     LocalFido2Backend,
     SignerConfirmationAdapter,
     SoftwareConfirmationBackend,
@@ -907,6 +908,16 @@ class HandlerImplementation(
                         credential_store=services.credential_store,
                         endpoint_url=self._config.signer_kms_url,
                         bearer_token=self._config.signer_kms_bearer_token,
+                    )
+                )
+            )
+        if self._config.signer_ledger_url.strip():
+            self._confirmation_backend_registry.register(
+                SignerConfirmationAdapter(
+                    LedgerSignerBackend(
+                        credential_store=services.credential_store,
+                        endpoint_url=self._config.signer_ledger_url,
+                        bearer_token=self._config.signer_ledger_bearer_token,
                     )
                 )
             )
