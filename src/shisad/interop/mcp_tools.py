@@ -167,6 +167,29 @@ def _enum_values(value: Any, *, field_name: str) -> list[Any] | None:
     return normalized
 
 
+def _enum_value_matches_parameter_type(value: Any, parameter_type: str) -> bool:
+    if parameter_type == "string":
+        return isinstance(value, str)
+    if parameter_type == "integer":
+        return isinstance(value, int) and not isinstance(value, bool)
+    if parameter_type == "number":
+        return isinstance(value, (int, float)) and not isinstance(value, bool)
+    if parameter_type == "boolean":
+        return isinstance(value, bool)
+    return parameter_type not in {"array", "object"}
+
+
+def _typed_enum_values(value: Any, *, field_name: str, parameter_type: str) -> list[Any] | None:
+    normalized = _enum_values(value, field_name=field_name)
+    if normalized is None:
+        return None
+    if not all(_enum_value_matches_parameter_type(item, parameter_type) for item in normalized):
+        raise ValueError(
+            f"MCP {field_name} enum values must match declared type '{parameter_type}'"
+        )
+    return normalized
+
+
 def _tool_parameters(input_schema: Mapping[str, Any]) -> list[ToolParameter]:
     schema_type = _json_schema_type(
         input_schema.get("type"),
@@ -199,7 +222,11 @@ def _tool_parameters(input_schema: Mapping[str, Any]) -> list[ToolParameter]:
                 field_name=f"tool parameter '{parameter_name}' items.type",
                 default="string",
             )
-        enum = _enum_values(schema.get("enum"), field_name=f"tool parameter '{parameter_name}'")
+        enum = _typed_enum_values(
+            schema.get("enum"),
+            field_name=f"tool parameter '{parameter_name}'",
+            parameter_type=parameter_type,
+        )
         parameters.append(
             ToolParameter(
                 name=parameter_name,

@@ -668,6 +668,41 @@ def test_i1_mcp_tool_translation_rejects_unsafe_string_enum_values(
         )
 
 
+@pytest.mark.parametrize(
+    ("property_schema", "error_match"),
+    [
+        ({"type": "boolean", "enum": [1]}, "declared type 'boolean'"),
+        ({"type": "integer", "enum": [True]}, "declared type 'integer'"),
+        ({"type": "number", "enum": [False]}, "declared type 'number'"),
+        ({"type": "string", "enum": [1]}, "declared type 'string'"),
+        (
+            {"type": "array", "items": {"type": "string"}, "enum": ["summary"]},
+            "declared type 'array'",
+        ),
+        ({"type": "object", "enum": ["summary"]}, "declared type 'object'"),
+    ],
+)
+def test_i1_mcp_tool_translation_rejects_enums_incompatible_with_declared_parameter_type(
+    property_schema: dict[str, Any],
+    error_match: str,
+) -> None:
+    with pytest.raises(ValueError, match=error_match):
+        mcp_tool_to_registry_entry(
+            McpDiscoveredTool(
+                name="pick-mode",
+                description="Pick a mode.",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "mode": property_schema,
+                    },
+                    "required": ["mode"],
+                },
+            ),
+            server_name="docs",
+        )
+
+
 def test_i1_mcp_tool_translation_rejects_excessive_parameter_name_length() -> None:
     long_name = "vendor.param." + ("segment_" * 40)
 
