@@ -12,6 +12,7 @@ import json
 import logging
 import os
 import struct
+import sys
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -504,14 +505,39 @@ class ControlServer:
 
     @staticmethod
     def _get_peer_credentials(writer: asyncio.StreamWriter) -> PeerCredentials:
-        """Extract peer credentials from the socket (Linux SO_PEERCRED)."""
+        """Extract peer credentials from a Unix socket.
+
+        Linux: SO_PEERCRED on SOL_SOCKET returns (pid, uid, gid) in one call.
+        macOS/BSD: LOCAL_PEERCRED on SOL_LOCAL returns uid/gid (xucred struct),
+        and LOCAL_PEEREPID on SOL_LOCAL returns the peer PID separately.
+        """
         try:
             sock = writer.get_extra_info("socket")
-            if sock is not None:
-                SO_PEERCRED = 17  # Linux-specific
-                cred = sock.getsockopt(1, SO_PEERCRED, struct.calcsize("3i"))  # SOL_SOCKET=1
+            if sock is None:
+                return PeerCredentials()
+            if sys.platform == "linux":
+                SO_PEERCRED = 17
+                cred = sock.getsockopt(1, SO_PEERCRED, struct.calcsize("3i"))
                 pid, uid, gid = struct.unpack("3i", cred)
                 return PeerCredentials(pid=pid, uid=uid, gid=gid)
+            if sys.platform == "darwin":
+                SOL_LOCAL = 0
+                LOCAL_PEERCRED = 1
+                LOCAL_PEEREPID = 3
+                # xucred: uint32 cr_version, uid_t cr_uid, short cr_ngroups,
+                #         gid_t cr_groups[16]
+                xucred_fmt = "IiH16i"
+                xucred = sock.getsockopt(SOL_LOCAL, LOCAL_PEERCRED,
+                                         struct.calcsize(xucred_fmt))
+                _cr_version, cr_uid, _cr_ngroups = struct.unpack_from(
+                    "IiH", xucred,
+                )
+                cr_gid = struct.unpack_from("i", xucred, struct.calcsize("IiH"))[0]
+                pid_data = sock.getsockopt(
+                    SOL_LOCAL, LOCAL_PEEREPID, struct.calcsize("i"),
+                )
+                pid = struct.unpack("i", pid_data)[0]
+                return PeerCredentials(pid=pid, uid=cr_uid, gid=cr_gid)
         except OSError:
             pass
         return PeerCredentials()
