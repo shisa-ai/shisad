@@ -741,6 +741,46 @@ async def test_i1_mcp_discovery_rejects_cursor_cycles() -> None:
         await manager._discover_from_runtime("docs", runtime)  # type: ignore[arg-type]
 
 
+def test_i1_mcp_startup_error_lookup_prefers_longest_matching_server_alias() -> None:
+    manager = McpClientManager(
+        server_configs=[
+            McpStdioServerConfig(
+                name="docs",
+                command=[sys.executable, "-c", "pass"],
+                timeout_seconds=1.0,
+            ),
+            McpStdioServerConfig(
+                name="docs-http",
+                command=[sys.executable, "-c", "pass"],
+                timeout_seconds=1.0,
+            ),
+        ]
+    )
+    manager._startup_errors["docs"] = "docs startup failed"
+    manager._startup_errors["docs-http"] = "docs-http startup failed"
+
+    assert manager.startup_error_for_tool("mcp.docs.lookup-doc") == (
+        "docs",
+        "docs startup failed",
+    )
+    assert manager.startup_error_for_tool("mcp.docs-http.lookup-doc") == (
+        "docs-http",
+        "docs-http startup failed",
+    )
+    assert manager.startup_error_for_tool("mcp_docs_lookup_doc") == (
+        "docs",
+        "docs startup failed",
+    )
+    assert manager.startup_error_for_tool("mcp_docs_http_lookup_doc") == (
+        "docs-http",
+        "docs-http startup failed",
+    )
+    assert manager.startup_error_for_tool("functions.mcp_docs_http_lookup_doc") == (
+        "docs-http",
+        "docs-http startup failed",
+    )
+
+
 @pytest.mark.asyncio
 async def test_i1_mcp_call_timeout_is_actionable(tmp_path: Path) -> None:
     server_script = write_mock_mcp_server(tmp_path / "mock_mcp_server.py")
