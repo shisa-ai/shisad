@@ -7,6 +7,7 @@ Source of truth:
 - `src/shisad/core/config.py`
 - `src/shisad/core/providers/routing.py`
 - `src/shisad/daemon/services.py`
+- `src/shisad/interop/a2a_registry.py`
 - `src/shisad/memory/ingestion.py`
 
 ## Scope
@@ -130,6 +131,7 @@ Browser notes:
 MCP interop:
 
 - `SHISAD_MCP_SERVERS`
+- `SHISAD_MCP_TRUSTED_SERVERS`
 
 MCP notes:
 
@@ -141,9 +143,35 @@ MCP notes:
   the daemon's full environment by default.
 - MCP server names are normalized to lowercase and must remain unique after
   normalization.
+- `SHISAD_MCP_TRUSTED_SERVERS` accepts either a CSV string or JSON array of
+  normalized MCP server names. Servers in that allowlist bypass the default
+  confirmation gate for external MCP tools, but the tools still remain
+  externally sourced and untrusted for planner/runtime tainting purposes.
 - Discovered tools register under runtime ids like `mcp.<server>.<tool>`. The
   upstream MCP tool name is preserved separately for transport calls, and MCP
-  tools require confirmation by default until trusted-server allowlisting lands.
+  tools require confirmation by default unless the server name appears in
+  `SHISAD_MCP_TRUSTED_SERVERS`.
+
+A2A interop:
+
+- `SHISAD_A2A`
+
+A2A notes:
+
+- `SHISAD_A2A` accepts a JSON object for signed A2A listener, identity, and
+  static remote-agent registry configuration. The current `v0.6.5` I3 surface
+  is inbound signed external-ingress over direct socket or HTTP transports.
+- A minimal config object includes `enabled`, `identity.agent_id`,
+  `identity.private_key_path`, `identity.public_key_path`, `listen`, and
+  `agents`. Each configured remote agent must provide a fingerprint plus either
+  inline `public_key` PEM or `public_key_path`.
+- Socket agents use `address: "host:port"` with `transport: "socket"`. HTTP
+  agents use full `http(s)://...` URLs with `transport: "http"`.
+- `shisad a2a keygen` generates an Ed25519 keypair, writes the private key
+  owner-only, and prints the public-key fingerprint for out-of-band exchange.
+- `allowed_intents` and `rate_limits` are parsed in the A2A config shape now,
+  but enforcement for capability grants and rate limiting lands in `v0.6.5`
+  I4. Do not treat those fields as active policy until that milestone closes.
 
 Approval / WebAuthn / signer:
 

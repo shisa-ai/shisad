@@ -94,6 +94,11 @@ from shisad.core.api.schema import (
     WebSearchResult,
 )
 from shisad.core.config import DaemonConfig
+from shisad.interop.a2a_envelope import (
+    load_private_key_from_path,
+    load_public_key_from_path,
+    write_ed25519_keypair,
+)
 from shisad.ui.evidence import (
     render_evidence_refs_for_terminal,
     sanitize_terminal_field,
@@ -323,6 +328,54 @@ def web_ui(output: Path) -> None:
     config = _get_config()
     out_path = run_async(write_web_snapshot(socket_path=config.socket_path, output_path=output))
     _echo(f"Wrote dashboard snapshot: {out_path}", fg="green")
+
+
+@cli.group("a2a")
+def a2a() -> None:
+    """Manage local A2A identity material."""
+
+
+@a2a.command("keygen")
+@click.option(
+    "--private-key",
+    "private_key_path",
+    type=click.Path(path_type=Path, dir_okay=False),
+    default=None,
+    help="Override the private key output path.",
+)
+@click.option(
+    "--public-key",
+    "public_key_path",
+    type=click.Path(path_type=Path, dir_okay=False),
+    default=None,
+    help="Override the public key output path.",
+)
+def a2a_keygen(
+    private_key_path: Path | None,
+    public_key_path: Path | None,
+) -> None:
+    """Generate an Ed25519 A2A keypair and print its fingerprint."""
+
+    config = _get_config()
+    identity = config.a2a.identity
+    private_path = private_key_path or (
+        identity.private_key_path
+        if identity is not None
+        else config.data_dir / "a2a" / "private.key"
+    )
+    public_path = public_key_path or (
+        identity.public_key_path if identity is not None else config.data_dir / "a2a" / "public.key"
+    )
+    if private_path == public_path:
+        raise click.ClickException("A2A key paths must point to different files.")
+    with _progress("Generating A2A keypair"):
+        fingerprint = write_ed25519_keypair(private_path, public_path)
+        load_private_key_from_path(private_path)
+        load_public_key_from_path(public_path)
+    click.echo(f"Fingerprint: {fingerprint}")
+    click.echo(f"Private key: {private_path}")
+    click.echo(f"Public key: {public_path}")
+    click.echo(f"Verified public fingerprint: {fingerprint}")
 
 
 # --- Daemon lifecycle ---

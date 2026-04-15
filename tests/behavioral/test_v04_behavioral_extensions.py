@@ -32,8 +32,28 @@ from shisad.core.planner import (
     PlannerResult,
 )
 from shisad.core.transcript import TranscriptStore
-from shisad.core.types import ToolName
+from shisad.core.types import TaintLabel, ToolName
 from shisad.daemon.runner import run_daemon
+from shisad.interop.a2a_envelope import (
+    A2aEnvelope,
+    attach_signature,
+    create_envelope,
+    fingerprint_for_public_key,
+    generate_ed25519_keypair,
+    load_public_key_from_path,
+    serialize_public_key_pem,
+    sign_envelope,
+    verify_envelope,
+    write_ed25519_keypair,
+)
+from shisad.interop.a2a_registry import (
+    A2aAgentConfig,
+    A2aConfig,
+    A2aIdentityConfig,
+    A2aListenConfig,
+    A2aRegistry,
+)
+from shisad.interop.a2a_transport import SocketTransport
 from tests.helpers.daemon import wait_for_socket as _wait_for_socket
 from tests.helpers.mcp import write_mock_mcp_server
 from tests.helpers.signer import StubSignerService, generate_ed25519_private_key, public_key_pem
@@ -777,6 +797,89 @@ async def test_behavioral_mcp_stdio_tool_execute_rejects_invalid_arguments_befor
             ),
         )
         assert rejected["event_type"] == "ToolRejected"
+    finally:
+        await _shutdown_daemon(daemon_task, client)
+
+
+@pytest.mark.asyncio
+async def test_behavioral_a2a_socket_request_executes_and_returns_signed_response(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _capture_propose(
+        self: Planner,
+        user_content: str,
+        context: object,
+        *,
+        tools: list[dict[str, object]] | None = None,
+        persona_tone_override: str | None = None,
+    ) -> PlannerResult:
+        _ = (self, user_content, context, tools, persona_tone_override)
+        return PlannerResult(
+            output=PlannerOutput(actions=[], assistant_response="a2a:team status"),
+            evaluated=[],
+            attempts=1,
+            provider_response=None,
+            messages_sent=(),
+        )
+
+    monkeypatch.setattr(Planner, "propose", _capture_propose)
+    listen_port = _reserve_local_port()
+    local_private_path = tmp_path / "local-a2a.pem"
+    local_public_path = tmp_path / "local-a2a.pub"
+    write_ed25519_keypair(local_private_path, local_public_path)
+    remote_private, remote_public = generate_ed25519_keypair()
+    remote_fingerprint = fingerprint_for_public_key(remote_public)
+    daemon_task, client, _config = await _start_daemon(
+        tmp_path,
+        config_overrides={
+            "a2a": A2aConfig(
+                enabled=True,
+                identity=A2aIdentityConfig(
+                    agent_id="local-agent",
+                    private_key_path=local_private_path,
+                    public_key_path=local_public_path,
+                ),
+                listen=A2aListenConfig(transport="socket", host="127.0.0.1", port=listen_port),
+                agents=[
+                    A2aAgentConfig(
+                        agent_id="remote-agent",
+                        fingerprint=remote_fingerprint,
+                        public_key=serialize_public_key_pem(remote_public).decode("utf-8"),
+                        address=f"127.0.0.1:{listen_port}",
+                        transport="socket",
+                        trust_level="untrusted",
+                    )
+                ],
+            )
+        },
+    )
+    try:
+        request = create_envelope(
+            from_agent_id="remote-agent",
+            from_fingerprint=remote_fingerprint,
+            to_agent_id="local-agent",
+            message_type="request",
+            intent="query",
+            payload={"content": "team status"},
+        )
+        signed_request = attach_signature(request, sign_envelope(request, remote_private))
+        target = A2aRegistry.from_config(_config.a2a).require("remote-agent")
+        response_raw = await SocketTransport().send(
+            signed_request,
+            target,
+        )
+        response = A2aEnvelope.model_validate(response_raw)
+        local_public = load_public_key_from_path(local_public_path)
+        assert response.payload["ok"] is True
+        assert response.payload["response"] == "a2a:team status"
+        assert verify_envelope(response, local_public) is True
+        sid = str(response.payload["session_id"])
+        transcript = TranscriptStore(_config.data_dir / "sessions")
+        user_entries = [entry for entry in transcript.list_entries(sid) if entry.role == "user"]
+        assert user_entries
+        assert TaintLabel.A2A_EXTERNAL in user_entries[0].taint_labels
+        assert TaintLabel.UNTRUSTED in user_entries[0].taint_labels
     finally:
         await _shutdown_daemon(daemon_task, client)
 

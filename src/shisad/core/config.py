@@ -24,6 +24,9 @@ from shisad.core.providers.capabilities import (
     RequestParameters,
 )
 from shisad.core.providers.http_headers import validate_auth_header_name, validate_extra_headers
+from shisad.interop.a2a_registry import (
+    A2aConfig,
+)
 
 
 def _default_selfmod_allowed_signers_path() -> Path:
@@ -574,6 +577,10 @@ class DaemonConfig(BaseSettings):
             "Configured MCP server ids that bypass the confirm-by-default external-tool gate."
         ),
     )
+    a2a: A2aConfig = Field(
+        default_factory=A2aConfig,
+        description="Optional A2A identity, registry, and listener configuration.",
+    )
 
     @staticmethod
     def _parse_list_field(value: object, *, field_name: str) -> object:
@@ -781,6 +788,19 @@ class DaemonConfig(BaseSettings):
     @classmethod
     def _parse_mcp_trusted_servers(cls, value: object) -> object:
         return cls._parse_list_field(value, field_name="SHISAD_MCP_TRUSTED_SERVERS")
+
+    @field_validator("a2a", mode="before")
+    @classmethod
+    def _parse_a2a_config(cls, value: object) -> object:
+        if isinstance(value, str):
+            stripped = value.strip()
+            if not stripped:
+                return {}
+            parsed = json.loads(stripped)
+            if not isinstance(parsed, dict):
+                raise ValueError("SHISAD_A2A JSON must be an object")
+            return parsed
+        return value
 
     @field_validator("mcp_trusted_servers")
     @classmethod

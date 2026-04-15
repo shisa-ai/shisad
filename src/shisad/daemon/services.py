@@ -49,6 +49,8 @@ from shisad.daemon.event_wiring import DaemonEventWiring
 from shisad.executors.connect_path import IptablesConnectPathProxy
 from shisad.executors.proxy import EgressProxy
 from shisad.executors.sandbox import SandboxOrchestrator
+from shisad.interop.a2a_ingress import A2aRuntime
+from shisad.interop.a2a_registry import A2aRegistry, load_local_identity
 from shisad.interop.mcp_client import McpClientManager
 from shisad.memory.ingestion import EmbeddingFingerprint, IngestionPipeline, RetrieveRagTool
 from shisad.memory.manager import MemoryManager
@@ -416,6 +418,8 @@ class DaemonServices:
     coding_manager: CodingAgentManager
     selfmod_manager: SelfModificationManager
     mcp_manager: McpClientManager | None
+    a2a_registry: A2aRegistry | None
+    a2a_runtime: A2aRuntime | None
     realitycheck_toolkit: RealityCheckToolkit
     realitycheck_status: dict[str, Any]
     lockdown_manager: LockdownManager
@@ -506,6 +510,7 @@ class DaemonServices:
         embeddings_adapter: SyncEmbeddingsAdapter | None = None
         control_plane_sidecar: ControlPlaneSidecarHandle | None = None
         mcp_manager: McpClientManager | None = None
+        a2a_runtime: A2aRuntime | None = None
         startup_complete = False
 
         try:
@@ -850,6 +855,8 @@ class DaemonServices:
                 coding_manager=coding_manager,
                 selfmod_manager=selfmod_manager,
                 mcp_manager=mcp_manager,
+                a2a_registry=None,
+                a2a_runtime=None,
                 realitycheck_toolkit=realitycheck_toolkit,
                 realitycheck_status=realitycheck_status,
                 lockdown_manager=lockdown_manager,
@@ -870,10 +877,31 @@ class DaemonServices:
                 identity_default_trust_baseline=identity_default_trust_baseline,
                 identity_allowlists_baseline=identity_allowlists_baseline,
             )
+            if config.a2a.enabled:
+                if config.a2a.identity is None:
+                    raise ValueError("A2A is enabled but no local identity is configured")
+                local_identity = load_local_identity(config.a2a.identity)
+                services.a2a_registry = A2aRegistry.from_config(config.a2a)
+                from shisad.daemon.control_handlers import DaemonControlHandlers
+
+                handlers = DaemonControlHandlers(services=services)
+                a2a_runtime = A2aRuntime(
+                    local_identity=local_identity,
+                    registry=services.a2a_registry,
+                    firewall=firewall,
+                    session_create=handlers.handle_session_create,
+                    session_message=handlers.handle_session_message,
+                    listen_config=config.a2a.listen,
+                )
+                await a2a_runtime.start()
+                services.a2a_runtime = a2a_runtime
             startup_complete = True
             return services
         finally:
             if not startup_complete:
+                if a2a_runtime is not None:
+                    with contextlib.suppress(OSError, RuntimeError):
+                        await a2a_runtime.close()
                 if embeddings_adapter is not None:
                     with contextlib.suppress(OSError, RuntimeError):
                         embeddings_adapter.close(wait=False)
@@ -1112,6 +1140,9 @@ class DaemonServices:
             )
 
         mcp_manager = getattr(self, "mcp_manager", None)
+        a2a_runtime = getattr(self, "a2a_runtime", None)
+        if a2a_runtime is not None:
+            shutdown_ops.append(("a2a_runtime", a2a_runtime.close()))
 
         disconnected_ids: set[int] = set()
         channels = getattr(self, "channels", {})

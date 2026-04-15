@@ -67,6 +67,7 @@ class TaintLabel(StrEnum):
 
     UNTRUSTED = "untrusted"
     MCP_EXTERNAL = "mcp_external"
+    A2A_EXTERNAL = "a2a_external"
     USER_REVIEWED = "user_reviewed"
     SENSITIVE_EMAIL = "email"
     SENSITIVE_FILE = "file"
