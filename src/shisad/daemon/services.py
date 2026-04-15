@@ -113,10 +113,11 @@ def _count_files_recursive(directory: Path) -> int:
 
 
 def _unlink_if_exists(path: Path) -> bool:
-    """Remove a file if present and report whether it existed."""
-    if not path.exists():
+    """Remove a file if present and report whether it was removed."""
+    try:
+        path.unlink()
+    except FileNotFoundError:
         return False
-    path.unlink(missing_ok=True)
     return True
 
 
@@ -432,8 +433,10 @@ class DaemonServices:
     provider_diagnostics: dict[str, Any]
     internal_ingress_marker: object
     identity_default_trust_baseline: dict[str, str]
-    identity_allowlists_baseline: dict[str, set[str]]
+    identity_allowlists_baseline: dict[str, frozenset[str]]
     active_rpc_calls: int = field(default=0)
+    rpc_state_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    reset_in_progress: bool = field(default=False)
 
     @classmethod
     async def build(cls, config: DaemonConfig) -> DaemonServices:
@@ -795,7 +798,7 @@ class DaemonServices:
             }
             identity_default_trust_baseline = dict(identity_map._default_trust)
             identity_allowlists_baseline = {
-                channel: set(values) for channel, values in identity_map._allowlists.items()
+                channel: frozenset(values) for channel, values in identity_map._allowlists.items()
             }
             services = cls(
                 config=config,
@@ -886,6 +889,8 @@ class DaemonServices:
 
         **Not for production use.**
         """
+        if not self.config.test_mode:
+            raise RuntimeError("daemon.reset is unavailable outside explicit test mode")
         inflight_embeddings = len(getattr(self.embeddings_adapter, "_inflight", ()))
         if inflight_embeddings > 0:
             raise RuntimeError("Cannot reset test state while embeddings requests are in flight")
@@ -1132,7 +1137,7 @@ class DaemonServices:
             *(operation for _, operation in shutdown_ops),
             return_exceptions=True,
         )
-        for (label, _operation), result in zip(shutdown_ops, results, strict=False):
+        for (label, _operation), result in zip(shutdown_ops, results, strict=True):
             if isinstance(result, BaseException):
                 if result.__class__.__name__ == "CancelledError":
                     continue

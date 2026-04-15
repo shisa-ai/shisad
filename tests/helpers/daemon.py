@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 import os
 import textwrap
 from collections.abc import AsyncIterator
@@ -13,6 +14,10 @@ from pathlib import Path
 from typing import Any
 
 _DEFAULT_STARTUP_TIMEOUT_SECONDS = 15.0
+_STRICT_RECYCLE_ENV = "SHISAD_TEST_STRICT_DAEMON_RECYCLE"
+_TRUE_VALUES = {"1", "true", "yes", "on"}
+
+logger = logging.getLogger(__name__)
 
 _DEFAULT_POLICY_TEXT = textwrap.dedent("""\
     version: "1"
@@ -28,6 +33,11 @@ def _startup_timeout() -> float:
     if raw is not None:
         return float(raw)
     return _DEFAULT_STARTUP_TIMEOUT_SECONDS
+
+
+def _strict_recycle_enabled() -> bool:
+    raw = os.environ.get(_STRICT_RECYCLE_ENV, "")
+    return raw.strip().lower() in _TRUE_VALUES
 
 
 async def wait_for_socket(path: Path, timeout: float | None = None) -> None:
@@ -166,6 +176,12 @@ class SharedDaemonController:
             )
         if not bool(result.get("quiescent", False)):
             await self.restart()
+            if _strict_recycle_enabled():
+                raise AssertionError(
+                    "shared daemon reset reported non-quiescent state"
+                    f" (set {_STRICT_RECYCLE_ENV}=0 to allow auto-restart): {result}"
+                )
+            logger.warning("shared daemon recycle restarted after non-quiescent reset: %s", result)
         return result
 
     async def restart(self) -> None:

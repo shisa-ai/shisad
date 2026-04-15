@@ -286,8 +286,10 @@ def _method_specs(
                 for index, (method_name, *_rest) in enumerate(specs)
                 if method_name == "daemon.shutdown"
             ),
-            len(specs) - 1,
+            None,
         )
+        if shutdown_index is None:
+            raise ValueError("runner method registry is missing required daemon.shutdown entry")
         specs.insert(
             shutdown_index + 1,
             ("daemon.reset", handlers.handle_daemon_reset, True, NoParams),
@@ -298,14 +300,32 @@ def _method_specs(
 def _wrap_tracked_handler(
     *,
     services: DaemonServices,
+    method_name: str,
     method_handler: TypedHandler,
 ) -> TypedHandler:
     async def _tracked_handler(params: BaseModel, ctx: Any) -> Any:
-        services.active_rpc_calls += 1
+        async with services.rpc_state_lock:
+            if (
+                services.reset_in_progress
+                and method_name not in {"daemon.reset", "daemon.shutdown"}
+            ):
+                raise RuntimeError("Cannot execute control RPC while daemon.reset is in progress")
+            services.active_rpc_calls += 1
         try:
             return await method_handler(params, ctx)
         finally:
-            services.active_rpc_calls = max(services.active_rpc_calls - 1, 0)
+            async with services.rpc_state_lock:
+                if services.active_rpc_calls <= 0:
+                    logger.warning(
+                        (
+                            "RPC activity counter underflow while finishing "
+                            "method %s; resetting to zero"
+                        ),
+                        method_name,
+                    )
+                    services.active_rpc_calls = 0
+                else:
+                    services.active_rpc_calls -= 1
 
     return cast(TypedHandler, _tracked_handler)
 
@@ -354,6 +374,7 @@ async def run_daemon(config: DaemonConfig) -> None:
             method_name,
             _wrap_tracked_handler(
                 services=services,
+                method_name=method_name,
                 method_handler=cast(TypedHandler, method_handler),
             ),
             admin_only=admin_only,

@@ -273,3 +273,60 @@ class Helper:
     assert payload["status"] == "empty_files_found"
     assert payload["checked_files"] == 1
     assert str(target) in payload["empty_test_files"]
+
+
+def test_m6_daemon_site_guard_uses_ast_call_sites_only(tmp_path: Path) -> None:
+    tests_root = tmp_path / "tests"
+    tests_root.mkdir()
+    target = tests_root / "test_daemon_sites.py"
+    target.write_text(
+        '''
+"""run_daemon( DaemonServices.build("""
+# run_daemon(
+# DaemonServices.build(
+
+async def test_calls() -> None:
+    await run_daemon(object())
+    await DaemonServices.build(object())
+''',
+        encoding="utf-8",
+    )
+    baseline = tmp_path / "daemon-site-baseline.json"
+
+    write_result = subprocess.run(
+        [
+            sys.executable,
+            str(Path("scripts/test_daemon_site_guard.py").resolve()),
+            "--baseline",
+            str(baseline),
+            "--tests-root",
+            str(tests_root),
+            "--write-baseline",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+    )
+    assert write_result.returncode == 0, write_result.stdout + write_result.stderr
+    payload = json.loads(baseline.read_text(encoding="utf-8"))
+    assert payload["counts"]["run_daemon"] == {"tests/test_daemon_sites.py": 1}
+    assert payload["counts"]["DaemonServices.build"] == {"tests/test_daemon_sites.py": 1}
+    assert payload["totals"] == {"DaemonServices.build": 1, "run_daemon": 1}
+
+    check_result = subprocess.run(
+        [
+            sys.executable,
+            str(Path("scripts/test_daemon_site_guard.py").resolve()),
+            "--baseline",
+            str(baseline),
+            "--tests-root",
+            str(tests_root),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+    )
+    assert check_result.returncode == 0, check_result.stdout + check_result.stderr
+    assert "Daemon site guard passed" in check_result.stdout

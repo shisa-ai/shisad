@@ -554,6 +554,26 @@ async def test_daemon_services_reset_test_state_clears_documented_subsystems(
 
 
 @pytest.mark.asyncio
+async def test_daemon_services_reset_test_state_requires_explicit_test_mode(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clear_remote_provider_env(monkeypatch)
+    config = DaemonConfig(
+        data_dir=tmp_path / "data",
+        socket_path=tmp_path / "control.sock",
+        policy_path=tmp_path / "policy.yaml",
+        test_mode=False,
+    )
+    services = await DaemonServices.build(config)
+    try:
+        with pytest.raises(RuntimeError, match="outside explicit test mode"):
+            await services.reset_test_state()
+    finally:
+        await services.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_handler_daemon_reset_clears_handler_state_and_marks_non_quiescent_reset(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,
@@ -651,6 +671,29 @@ async def test_handler_daemon_reset_clears_handler_state_and_marks_non_quiescent
         assert not impl._pending_actions_file.exists()
         assert not impl._pairing_requests_file.exists()
     finally:
+        await services.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_handler_daemon_reset_rejects_concurrent_reset_attempts(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clear_remote_provider_env(monkeypatch)
+    config = DaemonConfig(
+        data_dir=tmp_path / "data",
+        socket_path=tmp_path / "control.sock",
+        policy_path=tmp_path / "policy.yaml",
+        test_mode=True,
+    )
+    services = await DaemonServices.build(config)
+    impl = HandlerImplementation(services=services)
+    try:
+        services.reset_in_progress = True
+        with pytest.raises(RuntimeError, match="already in progress"):
+            await impl.do_daemon_reset({})
+    finally:
+        services.reset_in_progress = False
         await services.shutdown()
 
 

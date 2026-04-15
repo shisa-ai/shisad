@@ -5,7 +5,7 @@
       "tests/adversarial/test_adversarial_task_handoffs.py": 2,
       "tests/integration/test_chat_confirmation_e2e.py": 6,
       "tests/integration/test_context_scaffold_degraded.py": 3,
-      "tests/unit/test_daemon_services.py": 21
+      "tests/unit/test_daemon_services.py": 23
     },
     "run_daemon": {
       "tests/adversarial/test_adversarial_cleanroom.py": 1,
@@ -41,7 +41,7 @@
   },
   "tests_root": "tests",
   "totals": {
-    "DaemonServices.build": 34,
+    "DaemonServices.build": 36,
     "run_daemon": 90
   }
 }

@@ -57,7 +57,7 @@ def test_runner_registers_m4_dev_methods_and_m3_realitycheck_and_doctor_methods(
 
             return _handler
 
-    specs = _method_specs(_HandlerStub())
+    specs = _method_specs(_HandlerStub(), test_mode=False)
     mapping = {name: params_model for name, _handler, _admin_only, params_model in specs}
     admin_only = {name: is_admin for name, _handler, is_admin, _params_model in specs}
     assert mapping["doctor.check"] is DoctorCheckParams
@@ -76,3 +76,9 @@ def test_runner_registers_m4_dev_methods_and_m3_realitycheck_and_doctor_methods(
     assert admin_only["dev.close"] is True
     assert admin_only["session.restore"] is True
     assert admin_only["session.export"] is True
+    assert "daemon.reset" not in mapping
+
+    test_mode_specs = _method_specs(_HandlerStub(), test_mode=True)
+    test_mode_methods = [name for name, _handler, _admin_only, _params_model in test_mode_specs]
+    assert "daemon.reset" in test_mode_methods
+    assert test_mode_methods.index("daemon.reset") == test_mode_methods.index("daemon.shutdown") + 1
