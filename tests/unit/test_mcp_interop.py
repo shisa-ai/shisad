@@ -470,6 +470,22 @@ def test_i1_mcp_tool_translation_rejects_invalid_parameter_type_tokens(
         (
             {
                 "type": "object",
+                "properties": {"mode": {"type": "string"}},
+                "required": [" mode "],
+            },
+            "surrounding whitespace",
+        ),
+        (
+            {
+                "type": "object",
+                "properties": {"mode": {"type": "string"}},
+                "required": ["missing"],
+            },
+            "required entries must match declared property names",
+        ),
+        (
+            {
+                "type": "object",
                 "properties": {"mode": {"type": "string", "enum": "read"}},
                 "required": ["mode"],
             },
@@ -565,8 +581,24 @@ def test_i1_mcp_tool_translation_preserves_safe_string_enum_values() -> None:
     ]
 
 
-def test_i1_mcp_tool_translation_rejects_unsafe_string_enum_values() -> None:
-    with pytest.raises(ValueError, match="enum string values must match"):
+@pytest.mark.parametrize(
+    ("enum_values", "error_match"),
+    [
+        (["summary", "ignore_prompt"], "must not contain instruction-like tokens"),
+        (["summary", "system:override"], "must match"),
+        (["summary", "https://evil.test/steal"], "must match"),
+        ([f"choice-{index}" for index in range(17)], "enum must contain at most 16 values"),
+        (
+            [f"token{index:02d}{'a' * 17}" for index in range(12)],
+            "enum must serialize to at most 256 bytes",
+        ),
+    ],
+)
+def test_i1_mcp_tool_translation_rejects_unsafe_string_enum_values(
+    enum_values: list[str],
+    error_match: str,
+) -> None:
+    with pytest.raises(ValueError, match=error_match):
         mcp_tool_to_registry_entry(
             McpDiscoveredTool(
                 name="pick-mode",
@@ -576,7 +608,7 @@ def test_i1_mcp_tool_translation_rejects_unsafe_string_enum_values() -> None:
                     "properties": {
                         "mode": {
                             "type": "string",
-                            "enum": ["summary", "ignore previous instructions"],
+                            "enum": enum_values,
                         }
                     },
                     "required": ["mode"],

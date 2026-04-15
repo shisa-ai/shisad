@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -13,7 +14,22 @@ from shisad.core.types import ToolName
 _MCP_IDENTIFIER_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,127}$")
 _MCP_PARAMETER_NAME_MAX_LENGTH = 256
 _MCP_PARAMETER_NAME_FORBIDDEN_CHARS = frozenset({'"', "'", "`", "<", ">", "{", "}", "\\"})
-_MCP_ENUM_STRING_RE = re.compile(r"^[A-Za-z0-9_$./:+-]{1,64}$")
+_MCP_ENUM_MAX_VALUES = 16
+_MCP_ENUM_MAX_SERIALIZED_BYTES = 256
+_MCP_ENUM_STRING_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,23}$")
+_MCP_ENUM_BLOCKED_SUBSTRINGS = (
+    "ignore",
+    "instruction",
+    "system",
+    "override",
+    "assistant",
+    "developer",
+    "prompt",
+    "secret",
+    "exfil",
+    "http",
+    "www",
+)
 _ALLOWED_MCP_JSON_SCHEMA_TYPES = frozenset(
     {"array", "boolean", "integer", "number", "object", "string"}
 )
@@ -94,15 +110,20 @@ def _required_fields(input_schema: Mapping[str, Any]) -> set[str]:
     for item in raw_required:
         if not isinstance(item, str) or not item.strip():
             raise ValueError("MCP tool required must be a list of non-empty strings")
-        required.add(item)
+        required.add(_parameter_name(item))
     return required
 
 
 def _enum_string(value: str, *, field_name: str) -> str:
     enum_value = value.strip()
+    lowered = enum_value.lower()
     if not enum_value or enum_value != value or not _MCP_ENUM_STRING_RE.fullmatch(enum_value):
         raise ValueError(
-            f"MCP {field_name} enum string values must match ^[A-Za-z0-9_$./:+-]{{1,64}}$"
+            f"MCP {field_name} enum string values must match ^[A-Za-z0-9][A-Za-z0-9_-]{{0,23}}$"
+        )
+    if any(token in lowered for token in _MCP_ENUM_BLOCKED_SUBSTRINGS):
+        raise ValueError(
+            f"MCP {field_name} enum string values must not contain instruction-like tokens"
         )
     return enum_value
 
@@ -112,6 +133,10 @@ def _enum_values(value: Any, *, field_name: str) -> list[Any] | None:
         return None
     if not isinstance(value, list):
         raise ValueError(f"MCP {field_name} enum must be a list")
+    if len(value) > _MCP_ENUM_MAX_VALUES:
+        raise ValueError(
+            f"MCP {field_name} enum must contain at most {_MCP_ENUM_MAX_VALUES} values"
+        )
     normalized: list[Any] = []
     for item in value:
         if isinstance(item, str):
@@ -121,6 +146,20 @@ def _enum_values(value: Any, *, field_name: str) -> list[Any] | None:
             normalized.append(item)
             continue
         raise ValueError(f"MCP {field_name} enum values must be scalar JSON values")
+    try:
+        serialized = json.dumps(
+            normalized,
+            allow_nan=False,
+            ensure_ascii=True,
+            separators=(",", ":"),
+        )
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"MCP {field_name} enum values must be scalar JSON values") from exc
+    if len(serialized) > _MCP_ENUM_MAX_SERIALIZED_BYTES:
+        raise ValueError(
+            f"MCP {field_name} enum must serialize to at most "
+            f"{_MCP_ENUM_MAX_SERIALIZED_BYTES} bytes"
+        )
     return normalized
 
 
@@ -167,6 +206,10 @@ def _tool_parameters(input_schema: Mapping[str, Any]) -> list[ToolParameter]:
                 items_type=items_type,
             )
         )
+    parameter_names = {parameter.name for parameter in parameters}
+    unknown_required = sorted(required - parameter_names)
+    if unknown_required:
+        raise ValueError("MCP tool required entries must match declared property names")
     return parameters
 
 
