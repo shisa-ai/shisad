@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -16,24 +15,9 @@ from shisad.interop.a2a_envelope import (
     load_private_key_from_path,
     load_public_key_from_path,
     load_public_key_from_pem,
+    normalize_a2a_agent_id,
+    normalize_a2a_intent,
 )
-
-_A2A_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
-_A2A_INTENT_RE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
-
-
-def _normalize_agent_id(value: object) -> str:
-    candidate = str(value).strip()
-    if not candidate or not _A2A_ID_RE.fullmatch(candidate):
-        raise ValueError("A2A agent_id must match ^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
-    return candidate
-
-
-def _normalize_intent(value: object) -> str:
-    candidate = str(value).strip().lower()
-    if not candidate or not _A2A_INTENT_RE.fullmatch(candidate):
-        raise ValueError("A2A intent names must match ^[a-z][a-z0-9_]{0,63}$")
-    return candidate
 
 
 class A2aIdentityConfig(BaseModel):
@@ -48,7 +32,7 @@ class A2aIdentityConfig(BaseModel):
     @field_validator("agent_id", mode="before")
     @classmethod
     def _validate_agent_id(cls, value: object) -> str:
-        return _normalize_agent_id(value)
+        return normalize_a2a_agent_id(value)
 
     @field_validator("private_key_path", "public_key_path", mode="before")
     @classmethod
@@ -109,7 +93,7 @@ class A2aAgentConfig(BaseModel):
     @field_validator("agent_id", mode="before")
     @classmethod
     def _validate_agent_id(cls, value: object) -> str:
-        return _normalize_agent_id(value)
+        return normalize_a2a_agent_id(value)
 
     @field_validator("fingerprint", mode="before")
     @classmethod
@@ -156,7 +140,7 @@ class A2aAgentConfig(BaseModel):
         normalized: list[str] = []
         seen: set[str] = set()
         for raw in value:
-            candidate = _normalize_intent(raw)
+            candidate = normalize_a2a_intent(raw)
             if candidate in seen:
                 continue
             seen.add(candidate)

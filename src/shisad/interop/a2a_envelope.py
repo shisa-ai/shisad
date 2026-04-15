@@ -6,8 +6,10 @@ import base64
 import hashlib
 import json
 import os
+import re
 import uuid
 from collections import OrderedDict
+from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -20,12 +22,21 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 A2A_PROTOCOL_VERSION = "shisad-a2a/0.1"
 DEFAULT_REPLAY_WINDOW_SECONDS = 300
+_A2A_AGENT_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+_A2A_INTENT_RE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 
 
-def _normalize_agent_id(value: object) -> str:
+def normalize_a2a_agent_id(value: object) -> str:
     candidate = str(value).strip()
-    if not candidate:
-        raise ValueError("A2A agent_id cannot be empty")
+    if not candidate or not _A2A_AGENT_ID_RE.fullmatch(candidate):
+        raise ValueError("A2A agent_id must match ^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+    return candidate
+
+
+def normalize_a2a_intent(value: object) -> str:
+    candidate = str(value).strip().lower()
+    if not candidate or not _A2A_INTENT_RE.fullmatch(candidate):
+        raise ValueError("A2A intent names must match ^[a-z][a-z0-9_]{0,63}$")
     return candidate
 
 
@@ -46,7 +57,7 @@ class A2aSender(BaseModel):
     @field_validator("agent_id", mode="before")
     @classmethod
     def _validate_agent_id(cls, value: object) -> str:
-        return _normalize_agent_id(value)
+        return normalize_a2a_agent_id(value)
 
     @field_validator("public_key_fingerprint", mode="before")
     @classmethod
@@ -69,7 +80,7 @@ class A2aRecipient(BaseModel):
     @field_validator("agent_id", mode="before")
     @classmethod
     def _validate_agent_id(cls, value: object) -> str:
-        return _normalize_agent_id(value)
+        return normalize_a2a_agent_id(value)
 
 
 class A2aEnvelope(BaseModel):
@@ -103,10 +114,18 @@ class A2aEnvelope(BaseModel):
     @field_validator("intent", mode="before")
     @classmethod
     def _validate_intent(cls, value: object) -> str:
-        candidate = str(value).strip()
-        if not candidate:
-            raise ValueError("A2A intent cannot be empty")
-        return candidate
+        return normalize_a2a_intent(value)
+
+
+def _write_bytes_exclusive(path: Path, data: bytes, *, mode: int) -> None:
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode)
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(data)
+    except Exception:
+        with suppress(OSError):
+            path.unlink(missing_ok=True)
+        raise
 
 
 def parse_a2a_timestamp(value: object) -> datetime:
@@ -191,10 +210,19 @@ def write_ed25519_keypair(private_key_path: Path, public_key_path: Path) -> str:
     private_key, public_key = generate_ed25519_keypair()
     private_key_path.parent.mkdir(parents=True, exist_ok=True)
     public_key_path.parent.mkdir(parents=True, exist_ok=True)
-    private_key_path.write_bytes(serialize_private_key_pem(private_key))
-    os.chmod(private_key_path, 0o600)
-    public_key_path.write_bytes(serialize_public_key_pem(public_key))
-    os.chmod(public_key_path, 0o644)
+    private_bytes = serialize_private_key_pem(private_key)
+    public_bytes = serialize_public_key_pem(public_key)
+    try:
+        _write_bytes_exclusive(private_key_path, private_bytes, mode=0o600)
+        try:
+            _write_bytes_exclusive(public_key_path, public_bytes, mode=0o644)
+        except Exception:
+            private_key_path.unlink(missing_ok=True)
+            raise
+    except FileExistsError as exc:
+        raise FileExistsError(
+            f"A2A key output already exists: {exc.filename or private_key_path}"
+        ) from exc
     return fingerprint_for_public_key(public_key)
 
 
@@ -301,7 +329,7 @@ class ReplayCache:
             return ReplayCheckResult(allowed=False, reason="timestamp_out_of_window")
         if envelope.message_id in self._entries:
             return ReplayCheckResult(allowed=False, reason="replay_detected")
-        self._entries[envelope.message_id] = current + self._window
+        self._entries[envelope.message_id] = message_time + self._window
         if len(self._entries) > self._max_entries:
             self._entries.popitem(last=False)
         return ReplayCheckResult(allowed=True)

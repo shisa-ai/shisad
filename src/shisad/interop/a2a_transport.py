@@ -8,12 +8,15 @@ import ssl
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import ParseResult, urlparse
+
+from pydantic import ValidationError
 
 from shisad.interop.a2a_envelope import A2aEnvelope
 from shisad.interop.a2a_registry import A2aAgentEntry
 
 type A2aTransportHandler = Callable[[A2aEnvelope], Awaitable[A2aEnvelope | Mapping[str, Any]]]
+DEFAULT_A2A_HTTP_MAX_BODY_BYTES = 1 << 20
 
 
 def _payload_bytes(response: A2aEnvelope | Mapping[str, Any]) -> bytes:
@@ -47,11 +50,26 @@ def _parse_http_response(payload: bytes) -> tuple[int, bytes]:
     return int(parts[1]), body
 
 
+def _error_payload(reason: str) -> dict[str, Any]:
+    return {"ok": False, "error": reason}
+
+
+def _http_host_header(parsed: ParseResult) -> str:
+    port = parsed.port
+    if port is None:
+        return str(parsed.hostname)
+    default_port = 443 if parsed.scheme == "https" else 80
+    if port == default_port:
+        return str(parsed.hostname)
+    return f"{parsed.hostname}:{port}"
+
+
 def _build_http_response(status: int, payload: A2aEnvelope | Mapping[str, Any]) -> bytes:
     body = _payload_bytes(payload)
     reason = {
         200: "OK",
         400: "Bad Request",
+        413: "Payload Too Large",
         404: "Not Found",
         405: "Method Not Allowed",
         500: "Internal Server Error",
@@ -107,14 +125,23 @@ class SocketTransport:
 
     async def listen(self, handler: A2aTransportHandler) -> A2aTransportListener:
         async def _serve(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+            response: A2aEnvelope | Mapping[str, Any] | None = None
             try:
                 raw = await reader.readline()
                 if not raw:
                     return
-                envelope = A2aEnvelope.model_validate_json(raw)
-                response = await handler(envelope)
-                writer.write(_payload_bytes(response) + b"\n")
-                await writer.drain()
+                try:
+                    envelope = A2aEnvelope.model_validate_json(raw)
+                except (ValidationError, ValueError, UnicodeDecodeError, json.JSONDecodeError):
+                    response = _error_payload("invalid_request")
+                else:
+                    try:
+                        response = await handler(envelope)
+                    except Exception:
+                        response = _error_payload("internal_error")
+                if response is not None:
+                    writer.write(_payload_bytes(response) + b"\n")
+                    await writer.drain()
             finally:
                 writer.close()
                 await writer.wait_closed()
@@ -137,10 +164,12 @@ class HttpTransport:
         host: str = "127.0.0.1",
         port: int = 9820,
         path: str = "/a2a",
+        max_body_bytes: int = DEFAULT_A2A_HTTP_MAX_BODY_BYTES,
     ) -> None:
         self._host = host
         self._port = port
         self._path = path if path.startswith("/") else "/" + path
+        self._max_body_bytes = max(1, int(max_body_bytes))
 
     async def send(self, envelope: A2aEnvelope, target: A2aAgentEntry) -> dict[str, Any]:
         if target.transport != "http":
@@ -150,12 +179,14 @@ class HttpTransport:
             raise ValueError("A2A HTTP targets must use full http(s) URLs")
         port = parsed.port or (443 if parsed.scheme == "https" else 80)
         path = parsed.path or self._path
+        if parsed.query:
+            path = f"{path}?{parsed.query}"
         ssl_context = ssl.create_default_context() if parsed.scheme == "https" else None
         reader, writer = await asyncio.open_connection(parsed.hostname, port, ssl=ssl_context)
         body = _payload_bytes(envelope)
         request = (
             f"POST {path} HTTP/1.1\r\n"
-            f"Host: {parsed.hostname}\r\n"
+            f"Host: {_http_host_header(parsed)}\r\n"
             "Content-Type: application/json\r\n"
             f"Content-Length: {len(body)}\r\n"
             "Connection: close\r\n"
@@ -166,12 +197,13 @@ class HttpTransport:
             await writer.drain()
             raw_response = await reader.read()
             status, response_body = _parse_http_response(raw_response)
-            if status >= 400:
-                raise RuntimeError(response_body.decode("utf-8") or f"http_status_{status}")
-            parsed = json.loads(response_body.decode("utf-8"))
-            if not isinstance(parsed, dict):
+            parsed_payload = json.loads(response_body.decode("utf-8"))
+            if not isinstance(parsed_payload, dict):
                 raise ValueError("A2A HTTP responses must be JSON objects")
-            return dict(parsed)
+            if status >= 400:
+                error = str(parsed_payload.get("error", "")).strip() or f"http_status_{status}"
+                raise RuntimeError(error)
+            return dict(parsed_payload)
         finally:
             writer.close()
             await writer.wait_closed()
@@ -179,34 +211,70 @@ class HttpTransport:
     async def listen(self, handler: A2aTransportHandler) -> A2aTransportListener:
         async def _serve(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
             status = 200
-            payload: A2aEnvelope | Mapping[str, Any] = {"ok": False, "error": "invalid_request"}
+            payload: A2aEnvelope | Mapping[str, Any] = _error_payload("invalid_request")
             try:
                 head = await reader.readuntil(b"\r\n\r\n")
                 header_text = head.decode("utf-8")
                 lines = header_text.split("\r\n")
                 request_line = lines[0]
                 method, path, _version = request_line.split(" ", 2)
+                request_target = urlparse(path)
                 headers: dict[str, str] = {}
                 for line in lines[1:]:
                     if not line:
                         continue
                     key, _separator, value = line.partition(":")
                     headers[key.strip().lower()] = value.strip()
-                content_length = int(headers.get("content-length", "0"))
-                body = await reader.readexactly(content_length)
                 if method != "POST":
                     status = 405
-                    payload = {"ok": False, "error": "method_not_allowed"}
-                elif path != self._path:
+                    payload = _error_payload("method_not_allowed")
+                elif (request_target.path or "/") != self._path:
                     status = 404
-                    payload = {"ok": False, "error": "not_found"}
+                    payload = _error_payload("not_found")
                 else:
-                    envelope = A2aEnvelope.model_validate_json(body)
-                    payload = await handler(envelope)
-            except Exception as exc:
+                    try:
+                        content_length = int(headers.get("content-length", "0"))
+                    except ValueError:
+                        status = 400
+                        payload = _error_payload("invalid_content_length")
+                    else:
+                        if content_length < 0:
+                            status = 400
+                            payload = _error_payload("invalid_content_length")
+                        elif content_length > self._max_body_bytes:
+                            status = 413
+                            payload = _error_payload("payload_too_large")
+                        else:
+                            body = await reader.readexactly(content_length)
+                            try:
+                                envelope = A2aEnvelope.model_validate_json(body)
+                            except (
+                                ValidationError,
+                                ValueError,
+                                UnicodeDecodeError,
+                                json.JSONDecodeError,
+                            ):
+                                status = 400
+                                payload = _error_payload("invalid_request")
+                            else:
+                                try:
+                                    payload = await handler(envelope)
+                                except Exception:
+                                    status = 500
+                                    payload = _error_payload("internal_error")
+            except (
+                asyncio.IncompleteReadError,
+                asyncio.LimitOverrunError,
+                UnicodeDecodeError,
+                ValueError,
+            ):
                 if status == 200:
                     status = 400
-                payload = {"ok": False, "error": str(exc).strip() or exc.__class__.__name__}
+                payload = _error_payload("invalid_request")
+            except Exception:
+                if status == 200:
+                    status = 500
+                payload = _error_payload("internal_error")
             finally:
                 writer.write(_build_http_response(status, payload))
                 await writer.drain()

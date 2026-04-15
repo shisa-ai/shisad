@@ -17,6 +17,7 @@ from shisad.core.request_context import RequestContext
 from shisad.core.types import TaintLabel
 from shisad.daemon.context import RequestContext as DaemonRequestContext
 from shisad.interop.a2a_envelope import (
+    A2A_PROTOCOL_VERSION,
     A2aEnvelope,
     ReplayCache,
     attach_signature,
@@ -90,8 +91,10 @@ class A2aIngress:
     async def handle_envelope(self, envelope: A2aEnvelope) -> A2aIngressResult:
         """Validate and dispatch an inbound A2A envelope."""
 
-        if envelope.version != self._local_identity_public_version:
+        if envelope.version != A2A_PROTOCOL_VERSION:
             raise A2aIngressError("unsupported_version")
+        if envelope.type != "request":
+            raise A2aIngressError("unsupported_message_type")
         if envelope.recipient.agent_id != self._local_identity.agent_id:
             raise A2aIngressError("unknown_recipient")
         entry = self._registry.resolve(envelope.sender.agent_id)
@@ -146,10 +149,6 @@ class A2aIngress:
             intent=envelope.intent,
             trust_level=entry.trust_level,
         )
-
-    @property
-    def _local_identity_public_version(self) -> str:
-        return "shisad-a2a/0.1"
 
 
 class A2aRuntime:
@@ -217,6 +216,8 @@ class A2aRuntime:
             }
         except A2aIngressError as exc:
             payload = {"ok": False, "error": exc.reason}
+        except Exception:
+            payload = {"ok": False, "error": "internal_error"}
         response = create_envelope(
             from_agent_id=self._local_identity.agent_id,
             from_fingerprint=self._local_identity.fingerprint,

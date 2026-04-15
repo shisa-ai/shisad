@@ -95,6 +95,7 @@ from shisad.core.api.schema import (
 )
 from shisad.core.config import DaemonConfig
 from shisad.interop.a2a_envelope import (
+    fingerprint_for_public_key,
     load_private_key_from_path,
     load_public_key_from_path,
     write_ed25519_keypair,
@@ -369,13 +370,19 @@ def a2a_keygen(
     if private_path == public_path:
         raise click.ClickException("A2A key paths must point to different files.")
     with _progress("Generating A2A keypair"):
-        fingerprint = write_ed25519_keypair(private_path, public_path)
+        try:
+            fingerprint = write_ed25519_keypair(private_path, public_path)
+        except FileExistsError as exc:
+            raise click.ClickException(str(exc)) from exc
         load_private_key_from_path(private_path)
-        load_public_key_from_path(public_path)
+        verified_public_key = load_public_key_from_path(public_path)
+        verified_fingerprint = fingerprint_for_public_key(verified_public_key)
+    if verified_fingerprint != fingerprint:
+        raise click.ClickException("A2A public key fingerprint mismatch after write.")
     click.echo(f"Fingerprint: {fingerprint}")
     click.echo(f"Private key: {private_path}")
     click.echo(f"Public key: {public_path}")
-    click.echo(f"Verified public fingerprint: {fingerprint}")
+    click.echo(f"Verified public fingerprint: {verified_fingerprint}")
 
 
 # --- Daemon lifecycle ---
