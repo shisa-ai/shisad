@@ -300,6 +300,7 @@ class _ConfirmationImplHarness(ConfirmationImplMixin):
         approval_task_envelope_id: str = "",
         approval_timestamp: str = "",
         approval_evidence: object | None = None,
+        strip_direct_tool_execute_envelope_keys: bool = False,
     ) -> object:
         _ = (
             sid,
@@ -321,6 +322,9 @@ class _ConfirmationImplHarness(ConfirmationImplMixin):
                 "approval_task_envelope_id": approval_task_envelope_id,
                 "approval_timestamp": approval_timestamp,
                 "approval_evidence": approval_evidence,
+                "strip_direct_tool_execute_envelope_keys": (
+                    strip_direct_tool_execute_envelope_keys
+                ),
             }
         )
         tool_output = None
@@ -358,6 +362,9 @@ class _ConfirmationImplHarness(ConfirmationImplMixin):
             "warnings": list(pending.warnings),
             "leak_check": dict(pending.leak_check),
             "approval_task_envelope_id": pending.approval_task_envelope_id,
+            "strip_direct_tool_execute_envelope_keys": bool(
+                pending.strip_direct_tool_execute_envelope_keys
+            ),
             "status": pending.status,
             "status_reason": pending.status_reason,
         }
@@ -939,6 +946,28 @@ async def test_m1_d11_confirmation_reuses_pending_merged_policy_snapshot(tmp_pat
 
     assert result["confirmed"] is True
     assert harness.execution_merged_policies == [pending.merged_policy]
+
+
+@pytest.mark.asyncio
+async def test_i1_confirmation_replays_direct_mcp_strip_intent(tmp_path) -> None:
+    harness = _ConfirmationImplHarness(tmp_path)
+    pending = _pending_action(nonce="expected")
+    pending.tool_name = ToolName("mcp.docs.lookup-doc")
+    pending.arguments = {
+        "session_id": "s-1",
+        "tool_name": "mcp.docs.lookup-doc",
+        "command": ["mcp"],
+        "query": "roadmap",
+    }
+    pending.strip_direct_tool_execute_envelope_keys = True
+    harness._pending_actions["c-1"] = pending
+
+    result = await harness.do_action_confirm(
+        {"confirmation_id": "c-1", "decision_nonce": "expected"}
+    )
+
+    assert result["confirmed"] is True
+    assert harness.execution_kwargs[0]["strip_direct_tool_execute_envelope_keys"] is True
 
 
 @pytest.mark.asyncio

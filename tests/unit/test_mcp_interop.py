@@ -161,6 +161,7 @@ class _McpToolExecuteHarness:
         *,
         payload: dict[str, Any],
         parameters: list[ToolParameter] | None = None,
+        require_confirmation: bool = False,
     ) -> None:
         self._session_manager = SessionManager()
         self._session = self._session_manager.create(
@@ -179,6 +180,7 @@ class _McpToolExecuteHarness:
                     ToolParameter(name="query", type="string", required=True),
                     ToolParameter(name="limit", type="integer", required=False),
                 ],
+                require_confirmation=require_confirmation,
                 registration_source="mcp",
                 registration_source_id="docs",
                 upstream_tool_name="lookup-doc",
@@ -191,6 +193,7 @@ class _McpToolExecuteHarness:
         )
         self._rate_limiter = _NoopRateLimiter()
         self._mcp_manager = _McpManagerStub(payload)
+        self.queued_pending_actions: list[dict[str, Any]] = []
         self._skill_manager = SimpleNamespace(
             authorize_runtime=lambda **_kwargs: SimpleNamespace(
                 allowed=True,
@@ -277,6 +280,17 @@ class _McpToolExecuteHarness:
 
     async def _execute_approved_action(self, **kwargs: Any) -> Any:
         return await HandlerImplementation._execute_approved_action(self, **kwargs)  # type: ignore[arg-type]
+
+    def _queue_pending_action(self, **kwargs: Any) -> Any:
+        self.queued_pending_actions.append(dict(kwargs))
+        return SimpleNamespace(
+            reason=str(kwargs.get("reason", "")),
+            confirmation_id="confirm-1",
+            decision_nonce="nonce-1",
+            safe_preview="preview",
+            warnings=[],
+            execute_after=None,
+        )
 
     def _tool_execute_result_from_execution(self, **kwargs: Any) -> dict[str, Any]:
         return HandlerImplementation._tool_execute_result_from_execution(self, **kwargs)  # type: ignore[arg-type]
@@ -759,3 +773,35 @@ async def test_i1_tool_execute_path_excludes_direct_envelope_keys_from_mcp_param
 
     assert result["allowed"] is True
     assert harness._mcp_manager.calls == [("docs", "lookup-doc", {"query": "roadmap"})]
+
+
+@pytest.mark.asyncio
+async def test_i1_tool_execute_confirmation_queue_preserves_direct_mcp_strip_intent() -> None:
+    harness = _McpToolExecuteHarness(
+        payload={
+            "ok": True,
+            "structured_content": {"query": "roadmap"},
+            "content": [{"type": "text", "text": "echo:roadmap"}],
+        },
+        parameters=[
+            ToolParameter(name="command", type="array", required=False),
+            ToolParameter(name="query", type="string", required=True),
+        ],
+        require_confirmation=True,
+    )
+
+    result = await HandlerImplementation.do_tool_execute(
+        harness,  # type: ignore[arg-type]
+        {
+            "session_id": str(harness.session_id),
+            "tool_name": "mcp.docs.lookup-doc",
+            "command": ["mcp"],
+            "arguments": {"query": "roadmap"},
+            "security_critical": False,
+            "degraded_mode": "fail_open",
+        },
+    )
+
+    assert result["allowed"] is False
+    assert result["confirmation_required"] is True
+    assert harness.queued_pending_actions[0]["strip_direct_tool_execute_envelope_keys"] is True

@@ -881,6 +881,7 @@ class PendingAction:
     selected_backend_id: str = ""
     selected_backend_method: str = ""
     fallback_used: bool = False
+    strip_direct_tool_execute_envelope_keys: bool = False
     status: str = "pending"
     status_reason: str = ""
 
@@ -2084,6 +2085,9 @@ class HandlerImplementation(
             "selected_backend_id": pending.selected_backend_id,
             "selected_backend_method": pending.selected_backend_method,
             "fallback_used": bool(pending.fallback_used),
+            "strip_direct_tool_execute_envelope_keys": bool(
+                pending.strip_direct_tool_execute_envelope_keys
+            ),
             "status": pending.status,
             "status_reason": pending.status_reason,
         }
@@ -2154,6 +2158,7 @@ class HandlerImplementation(
         pep_context: PendingPepContextSnapshot | None = None,
         pep_elevation: PendingPepElevationRequest | None = None,
         confirmation_requirement: ConfirmationRequirement | None = None,
+        strip_direct_tool_execute_envelope_keys: bool = False,
     ) -> PendingAction:
         created_at = datetime.now(UTC)
         decision_nonce = uuid.uuid4().hex
@@ -2375,6 +2380,7 @@ class HandlerImplementation(
             selected_backend_id=str(backend_resolution.backend.backend_id),
             selected_backend_method=str(backend_resolution.backend.method),
             fallback_used=bool(backend_resolution.fallback_used),
+            strip_direct_tool_execute_envelope_keys=bool(strip_direct_tool_execute_envelope_keys),
         )
         self._pending_actions[confirmation_id] = pending
         self._pending_by_session.setdefault(session_id, []).append(confirmation_id)
@@ -2523,6 +2529,9 @@ class HandlerImplementation(
                         str(item.get("selected_backend_method", "")).strip() or "software"
                     ),
                     fallback_used=bool(item.get("fallback_used", False)),
+                    strip_direct_tool_execute_envelope_keys=bool(
+                        item.get("strip_direct_tool_execute_envelope_keys", False)
+                    ),
                     status=str(item.get("status", "pending")),
                     status_reason=str(item.get("status_reason", "")),
                 )

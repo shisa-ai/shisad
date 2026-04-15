@@ -331,6 +331,9 @@ class ToolExecutionImplMixin(HandlerMixinBase):
             tool_name=tool_name,
             tool_definition=tool_def,
         )
+        strip_direct_tool_execute_envelope_keys = (
+            str(getattr(tool_def, "registration_source", "")).strip() == "mcp"
+        )
         if trace_only_stage2_block and not bool(
             self._policy_loader.policy.control_plane.trace.allow_amendment
         ):
@@ -390,6 +393,9 @@ class ToolExecutionImplMixin(HandlerMixinBase):
                     merged_policy=merged_policy,
                     taint_labels=[],
                     confirmation_requirement=confirmation_requirement,
+                    strip_direct_tool_execute_envelope_keys=(
+                        strip_direct_tool_execute_envelope_keys
+                    ),
                 )
             except ApprovalRoutingError as exc:
                 await self._event_bus.publish(
@@ -461,7 +467,7 @@ class ToolExecutionImplMixin(HandlerMixinBase):
             execution_action=cp_eval.action,
             merged_policy=merged_policy,
             user_confirmed=True,
-            strip_direct_tool_execute_envelope_keys=True,
+            strip_direct_tool_execute_envelope_keys=strip_direct_tool_execute_envelope_keys,
         )
         return cast(
             dict[str, Any],
