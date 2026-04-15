@@ -46,6 +46,21 @@ def test_a2a_rate_limiter_rejects_61st_request_with_retry_after() -> None:
     assert blocked.retry_after_seconds == pytest.approx(1.0, rel=1e-6)
 
 
+def test_a2a_rate_limiter_allows_request_at_exact_minute_boundary() -> None:
+    limiter = A2aRateLimiter(A2aRateLimitsConfig(max_per_minute=1, max_per_hour=10))
+    now = datetime(2026, 4, 15, 12, 0, tzinfo=UTC)
+
+    assert limiter.check_rate_limit(_FINGERPRINT, now=now).allowed is True
+    reopened = limiter.check_rate_limit(
+        _FINGERPRINT,
+        now=now + timedelta(seconds=60),
+    )
+
+    assert reopened.allowed is True
+    assert reopened.reason == "ok"
+    assert reopened.retry_after_seconds == 0.0
+
+
 def test_a2a_rate_limiter_rejects_hour_limit_until_oldest_entry_expires() -> None:
     limiter = A2aRateLimiter(A2aRateLimitsConfig(max_per_minute=10, max_per_hour=3))
     now = datetime(2026, 4, 15, 12, 0, tzinfo=UTC)
@@ -62,7 +77,7 @@ def test_a2a_rate_limiter_rejects_hour_limit_until_oldest_entry_expires() -> Non
     )
     reopened = limiter.check_rate_limit(
         _FINGERPRINT,
-        now=now + timedelta(hours=1, seconds=1),
+        now=now + timedelta(hours=1),
     )
 
     assert blocked.allowed is False

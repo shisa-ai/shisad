@@ -40,7 +40,7 @@ class A2aRateLimiter:
         key = str(fingerprint).strip().lower()
         bucket = self._entries.setdefault(key, deque())
         minute_cutoff = timestamp - _MINUTE_WINDOW_SECONDS
-        minute_entries = [entry for entry in bucket if entry >= minute_cutoff]
+        minute_entries = [entry for entry in bucket if entry > minute_cutoff]
         if len(minute_entries) + 1 > self._max_per_minute:
             retry_after = max(0.0, minute_entries[0] + _MINUTE_WINDOW_SECONDS - timestamp)
             return A2aRateLimitResult(
@@ -62,7 +62,7 @@ class A2aRateLimiter:
         cutoff = timestamp - _HOUR_WINDOW_SECONDS
         stale_keys: list[str] = []
         for key, bucket in self._entries.items():
-            while bucket and bucket[0] < cutoff:
+            while bucket and bucket[0] <= cutoff:
                 bucket.popleft()
             if not bucket:
                 stale_keys.append(key)

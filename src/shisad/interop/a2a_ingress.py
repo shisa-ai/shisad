@@ -131,12 +131,6 @@ class A2aIngress:
                 raise A2aIngressError("fingerprint_mismatch", status=403)
             if not verify_envelope(envelope, entry.public_key):
                 raise A2aIngressError("signature_invalid", status=403)
-            replay_result = self._replay_cache.check(envelope)
-            if not replay_result.allowed:
-                raise A2aIngressError(
-                    replay_result.reason,
-                    status=409 if replay_result.reason == "replay_detected" else 400,
-                )
             if self._rate_limiter is not None:
                 rate_limit = self._rate_limiter.check_rate_limit(entry.fingerprint)
                 if not rate_limit.allowed:
@@ -145,6 +139,12 @@ class A2aIngress:
                         status=429,
                         details={"retry_after_seconds": rate_limit.retry_after_seconds},
                     )
+            replay_result = self._replay_cache.check(envelope)
+            if not replay_result.allowed:
+                raise A2aIngressError(
+                    replay_result.reason,
+                    status=409 if replay_result.reason == "replay_detected" else 400,
+                )
             capability_granted = envelope.intent in (entry.allowed_intents or ())
             if not capability_granted:
                 raise A2aIngressError("intent_not_allowed", status=403)

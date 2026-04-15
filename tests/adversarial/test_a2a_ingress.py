@@ -180,6 +180,55 @@ async def test_adversarial_a2a_replay_is_rejected_and_audited(tmp_path: Path) ->
 
 
 @pytest.mark.asyncio
+async def test_adversarial_a2a_replay_flood_consumes_rate_budget_and_is_rate_limited(
+    tmp_path: Path,
+) -> None:
+    remote_private, remote_public = generate_ed25519_keypair()
+    remote_fingerprint = fingerprint_for_public_key(remote_public)
+    ingress, audit_log = _build_ingress(
+        tmp_path,
+        agents=[
+            A2aAgentConfig(
+                agent_id="remote-agent",
+                fingerprint=remote_fingerprint,
+                public_key=serialize_public_key_pem(remote_public).decode("utf-8"),
+                address="127.0.0.1:9820",
+                transport="socket",
+                allowed_intents=["query"],
+            )
+        ],
+        rate_limits=A2aRateLimitsConfig(max_per_minute=2, max_per_hour=10),
+    )
+    envelope = _signed_request(
+        private_key=remote_private,
+        sender_agent_id="remote-agent",
+        sender_fingerprint=remote_fingerprint,
+        recipient_agent_id="local-agent",
+    )
+
+    accepted = await ingress.handle_envelope(envelope)
+    with pytest.raises(A2aIngressError, match="replay_detected"):
+        await ingress.handle_envelope(envelope)
+    with pytest.raises(A2aIngressError, match="rate_limited") as exc_info:
+        await ingress.handle_envelope(envelope)
+
+    assert accepted.session_id == "sess-a2a"
+    assert exc_info.value.status == 429
+    assert float(exc_info.value.details["retry_after_seconds"]) > 0.0
+    events = _audit_events(audit_log)
+    assert len(events) == 3
+    accepted_data = dict(events[0]["data"])
+    replay_data = dict(events[1]["data"])
+    rate_limited_data = dict(events[2]["data"])
+    assert accepted_data["outcome"] == "accepted"
+    assert replay_data["message_id"] == envelope.message_id
+    assert replay_data["reason"] == "replay_detected"
+    assert rate_limited_data["message_id"] == envelope.message_id
+    assert rate_limited_data["reason"] == "rate_limited"
+    assert float(rate_limited_data["retry_after_seconds"]) > 0.0
+
+
+@pytest.mark.asyncio
 async def test_adversarial_a2a_capability_escalation_is_rejected_and_audited(
     tmp_path: Path,
 ) -> None:

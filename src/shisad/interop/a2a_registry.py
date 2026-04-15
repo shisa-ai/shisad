@@ -196,10 +196,14 @@ class A2aConfig(BaseModel):
     @model_validator(mode="after")
     def _validate_unique_agents(self) -> A2aConfig:
         seen: set[str] = set()
+        seen_fingerprints: set[str] = set()
         for agent in self.agents:
             if agent.agent_id in seen:
                 raise ValueError("A2A agent ids must be unique")
             seen.add(agent.agent_id)
+            if agent.fingerprint in seen_fingerprints:
+                raise ValueError("A2A agent fingerprints must be unique")
+            seen_fingerprints.add(agent.fingerprint)
         return self
 
 
@@ -257,6 +261,7 @@ class A2aRegistry:
     @classmethod
     def from_config(cls, config: A2aConfig) -> A2aRegistry:
         entries: list[A2aAgentEntry] = []
+        seen_fingerprints: set[str] = set()
         for agent in config.agents:
             if agent.public_key_path is not None:
                 public_key = load_public_key_from_path(agent.public_key_path)
@@ -269,6 +274,9 @@ class A2aRegistry:
                     f"A2A fingerprint mismatch for agent '{agent.agent_id}': "
                     f"expected {agent.fingerprint}, got {actual_fingerprint}"
                 )
+            if actual_fingerprint in seen_fingerprints:
+                raise ValueError("A2A agent fingerprints must be unique")
+            seen_fingerprints.add(actual_fingerprint)
             entries.append(
                 A2aAgentEntry(
                     agent_id=agent.agent_id,

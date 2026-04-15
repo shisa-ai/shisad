@@ -172,6 +172,9 @@ A2A notes:
 - `allowed_intents` is enforced fail-closed at A2A ingress. Missing
   `allowed_intents` rejects all requests from that configured remote agent
   until the operator adds explicit grants.
+- Configured remote-agent fingerprints must be unique. Shared-key aliases are
+  rejected so grants and rate limits remain anchored to one authenticated
+  remote principal.
 - `rate_limits` enforces per-source budgets keyed on the verified remote
   public-key fingerprint. Defaults: `60/minute`, `600/hour`.
 - Each accepted or rejected inbound A2A request emits an

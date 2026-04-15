@@ -126,9 +126,9 @@ Operator notes:
 - `allowed_intents` is fail-closed. If you omit it for a configured remote
   agent, that agent's inbound A2A requests are rejected until you add explicit
   grants.
-- Rate limits key on the verified remote public-key fingerprint, not the
-  self-reported `agent_id`, so reusing the same key across aliases still shares
-  one budget.
+- Each configured remote agent must have a unique verified public-key
+  fingerprint. Shared-key aliases are rejected at config load so grants and
+  rate limits stay anchored to one authenticated remote principal.
 - Socket peers use `address: "host:port"` with `transport: "socket"`. HTTP
   peers use full `http(s)://...` URLs with `transport: "http"`.
 - Each accepted or rejected inbound request emits an `A2aIngressEvaluated`

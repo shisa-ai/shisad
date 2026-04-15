@@ -41,13 +41,12 @@ from shisad.interop.a2a_envelope import (
     write_ed25519_keypair,
 )
 from shisad.interop.a2a_ingress import A2aIngress, A2aIngressError, A2aRuntime
-from shisad.interop.a2a_ratelimit import A2aRateLimiter
+from shisad.interop.a2a_ratelimit import A2aRateLimitResult
 from shisad.interop.a2a_registry import (
     A2aAgentConfig,
     A2aConfig,
     A2aIdentityConfig,
     A2aListenConfig,
-    A2aRateLimitsConfig,
     A2aRegistry,
     load_local_identity,
 )
@@ -272,6 +271,32 @@ def test_a2a_registry_rejects_unbracketed_ipv6_http_address() -> None:
                     address="http://::1:9820/a2a",
                     transport="http",
                 )
+            ]
+        )
+
+
+def test_a2a_config_rejects_duplicate_remote_fingerprints() -> None:
+    _private_key, public_key = generate_ed25519_keypair()
+    fingerprint = fingerprint_for_public_key(public_key)
+    public_key_pem = serialize_public_key_pem(public_key).decode("utf-8")
+
+    with pytest.raises(ValueError, match="A2A agent fingerprints must be unique"):
+        A2aConfig(
+            agents=[
+                A2aAgentConfig(
+                    agent_id="alice-agent",
+                    fingerprint=fingerprint,
+                    public_key=public_key_pem,
+                    address="127.0.0.1:9820",
+                    transport="socket",
+                ),
+                A2aAgentConfig(
+                    agent_id="alice-alias",
+                    fingerprint=fingerprint,
+                    public_key=public_key_pem,
+                    address="127.0.0.1:9821",
+                    transport="socket",
+                ),
             ]
         )
 
@@ -852,10 +877,10 @@ async def test_a2a_ingress_missing_allowed_intents_rejects_fail_closed(tmp_path:
 
 
 @pytest.mark.asyncio
-async def test_a2a_ingress_rate_limit_keys_on_verified_fingerprint(tmp_path: Path) -> None:
+async def test_a2a_ingress_passes_verified_fingerprint_to_rate_limiter(tmp_path: Path) -> None:
     write_ed25519_keypair(tmp_path / "local.pem", tmp_path / "local.pub")
-    shared_private, shared_public = generate_ed25519_keypair()
-    shared_fingerprint = fingerprint_for_public_key(shared_public)
+    remote_private, remote_public = generate_ed25519_keypair()
+    remote_fingerprint = fingerprint_for_public_key(remote_public)
     identity = load_local_identity(
         A2aIdentityConfig(
             agent_id="local-agent",
@@ -867,26 +892,16 @@ async def test_a2a_ingress_rate_limit_keys_on_verified_fingerprint(tmp_path: Pat
         A2aConfig(
             agents=[
                 A2aAgentConfig(
-                    agent_id="remote-one",
-                    fingerprint=shared_fingerprint,
-                    public_key=serialize_public_key_pem(shared_public).decode("utf-8"),
+                    agent_id="remote-agent",
+                    fingerprint=remote_fingerprint,
+                    public_key=serialize_public_key_pem(remote_public).decode("utf-8"),
                     address="127.0.0.1:9820",
                     transport="socket",
                     allowed_intents=["query"],
-                ),
-                A2aAgentConfig(
-                    agent_id="remote-two",
-                    fingerprint=shared_fingerprint,
-                    public_key=serialize_public_key_pem(shared_public).decode("utf-8"),
-                    address="127.0.0.1:9821",
-                    transport="socket",
-                    allowed_intents=["query"],
-                ),
-            ],
-            rate_limits=A2aRateLimitsConfig(max_per_minute=1, max_per_hour=10),
+                )
+            ]
         )
     )
-    audit_log = AuditLog(tmp_path / "audit.jsonl")
 
     async def _create(_params: SessionCreateParams, _ctx: RequestContext) -> SessionCreateResult:
         return SessionCreateResult(session_id="sess-a2a")
@@ -897,45 +912,41 @@ async def test_a2a_ingress_rate_limit_keys_on_verified_fingerprint(tmp_path: Pat
     ) -> SessionMessageResult:
         return SessionMessageResult(session_id="sess-a2a", response="ack")
 
+    class _SpyRateLimiter:
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+
+        def check_rate_limit(
+            self,
+            fingerprint: str,
+            *,
+            now: datetime | None = None,
+        ) -> A2aRateLimitResult:
+            _ = now
+            self.calls.append(fingerprint)
+            return A2aRateLimitResult(allowed=True)
+
+    rate_limiter = _SpyRateLimiter()
     ingress = A2aIngress(
         local_identity=identity,
         registry=registry,
         firewall=ContentFirewall(),
         session_create=_create,
         session_message=_message,
-        rate_limiter=A2aRateLimiter(A2aRateLimitsConfig(max_per_minute=1, max_per_hour=10)),
-        event_bus=EventBus(persister=audit_log),
+        rate_limiter=rate_limiter,
     )
 
-    accepted = await ingress.handle_envelope(
+    result = await ingress.handle_envelope(
         _signed_request(
-            private_key=shared_private,
-            sender_agent_id="remote-one",
-            sender_fingerprint=shared_fingerprint,
+            private_key=remote_private,
+            sender_agent_id="remote-agent",
+            sender_fingerprint=remote_fingerprint,
             recipient_agent_id="local-agent",
         )
     )
-    blocked_envelope = _signed_request(
-        private_key=shared_private,
-        sender_agent_id="remote-two",
-        sender_fingerprint=shared_fingerprint,
-        recipient_agent_id="local-agent",
-    )
 
-    with pytest.raises(A2aIngressError, match="rate_limited") as exc_info:
-        await ingress.handle_envelope(blocked_envelope)
-
-    assert accepted.session_id == "sess-a2a"
-    assert exc_info.value.status == 429
-    assert float(exc_info.value.details["retry_after_seconds"]) > 0.0
-    audit_events = _a2a_audit_events(audit_log)
-    assert len(audit_events) == 2
-    blocked_data = dict(audit_events[-1]["data"])
-    assert blocked_data["sender_agent_id"] == "remote-two"
-    assert blocked_data["verified_fingerprint"] == shared_fingerprint
-    assert blocked_data["outcome"] == "rejected"
-    assert blocked_data["reason"] == "rate_limited"
-    assert float(blocked_data["retry_after_seconds"]) > 0.0
+    assert result.session_id == "sess-a2a"
+    assert rate_limiter.calls == [remote_fingerprint]
 
 
 @pytest.mark.asyncio
