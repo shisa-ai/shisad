@@ -17,17 +17,22 @@ _MCP_PARAMETER_NAME_FORBIDDEN_CHARS = frozenset({'"', "'", "`", "<", ">", "{", "
 _MCP_ENUM_MAX_VALUES = 16
 _MCP_ENUM_MAX_SERIALIZED_BYTES = 256
 _MCP_ENUM_STRING_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,23}$")
-_MCP_ENUM_BLOCKED_SUBSTRINGS = (
-    "ignore",
-    "instruction",
-    "system",
-    "override",
-    "assistant",
-    "developer",
-    "prompt",
-    "secret",
-    "exfil",
+_MCP_ENUM_BLOCKED_TOKENS = frozenset(
+    {
+        "exfil",
+        "exfiltrate",
+        "exfiltration",
+        "ignore",
+        "instruction",
+        "instructions",
+        "override",
+        "prompt",
+        "prompts",
+        "secret",
+        "secrets",
+    }
 )
+_MCP_ENUM_TOKEN_SPLIT_RE = re.compile(r"[-_]+")
 _ALLOWED_MCP_JSON_SCHEMA_TYPES = frozenset(
     {"array", "boolean", "integer", "number", "object", "string"}
 )
@@ -119,7 +124,8 @@ def _enum_string(value: str, *, field_name: str) -> str:
         raise ValueError(
             f"MCP {field_name} enum string values must match ^[A-Za-z0-9][A-Za-z0-9_-]{{0,23}}$"
         )
-    if any(token in lowered for token in _MCP_ENUM_BLOCKED_SUBSTRINGS):
+    tokens = [token for token in _MCP_ENUM_TOKEN_SPLIT_RE.split(lowered) if token]
+    if any(token in _MCP_ENUM_BLOCKED_TOKENS for token in tokens):
         raise ValueError(
             f"MCP {field_name} enum string values must not contain instruction-like tokens"
         )

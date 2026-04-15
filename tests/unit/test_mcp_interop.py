@@ -606,6 +606,31 @@ def test_i1_mcp_tool_translation_preserves_token_safe_protocol_like_enum_values(
     assert registry.validate_call(entry.name, {"mode": "http2"}) == []
 
 
+def test_i1_mcp_tool_translation_preserves_token_safe_role_enum_values() -> None:
+    entry = mcp_tool_to_registry_entry(
+        McpDiscoveredTool(
+            name="pick-role",
+            description="Pick a role.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "role": {
+                        "type": "string",
+                        "enum": ["user", "assistant", "system", "developer"],
+                    }
+                },
+                "required": ["role"],
+            },
+        ),
+        server_name="docs",
+    )
+    registry = ToolRegistry()
+    registry.register(entry)
+
+    assert entry.parameters[0].enum == ["user", "assistant", "system", "developer"]
+    assert registry.validate_call(entry.name, {"role": "assistant"}) == []
+
+
 @pytest.mark.parametrize(
     ("enum_values", "error_match"),
     [
@@ -686,8 +711,39 @@ def test_i1_mcp_tool_translation_preserves_non_string_enum_values() -> None:
 
     assert entry.parameters[0].enum == [1, 2]
     assert registry.validate_call(entry.name, {"mode": 1}) == []
+    assert registry.validate_call(entry.name, {"mode": True}) == [
+        "Argument 'mode': expected type 'integer', got 'bool'"
+    ]
     assert registry.validate_call(entry.name, {"mode": "1"}) == [
         "Argument 'mode': expected type 'integer', got 'str'"
+    ]
+
+
+def test_i1_mcp_tool_translation_rejects_bool_for_number_enum_values() -> None:
+    entry = mcp_tool_to_registry_entry(
+        McpDiscoveredTool(
+            name="pick-threshold",
+            description="Pick a threshold.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "threshold": {
+                        "type": "number",
+                        "enum": [0.5, 1.5],
+                    }
+                },
+                "required": ["threshold"],
+            },
+        ),
+        server_name="docs",
+    )
+    registry = ToolRegistry()
+    registry.register(entry)
+
+    assert entry.parameters[0].enum == [0.5, 1.5]
+    assert registry.validate_call(entry.name, {"threshold": 1.5}) == []
+    assert registry.validate_call(entry.name, {"threshold": False}) == [
+        "Argument 'threshold': expected type 'number', got 'bool'"
     ]
 
 

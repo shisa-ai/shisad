@@ -321,10 +321,12 @@ class ToolRegistry:
     @staticmethod
     def _check_type(value: Any, expected: str) -> bool:
         """Basic JSON Schema type check."""
+        if expected == "integer":
+            return isinstance(value, int) and not isinstance(value, bool)
+        if expected == "number":
+            return isinstance(value, (int, float)) and not isinstance(value, bool)
         type_map: dict[str, type | tuple[type, ...]] = {
             "string": str,
-            "integer": int,
-            "number": (int, float),
             "boolean": bool,
             "object": dict,
             "array": list,
