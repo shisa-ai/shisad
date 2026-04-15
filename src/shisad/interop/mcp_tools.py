@@ -13,6 +13,9 @@ from shisad.core.types import ToolName
 _MCP_IDENTIFIER_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,127}$")
 _MCP_PARAMETER_NAME_MAX_LENGTH = 256
 _MCP_PARAMETER_NAME_FORBIDDEN_CHARS = frozenset({'"', "'", "`", "<", ">", "{", "}", "\\"})
+_ALLOWED_MCP_JSON_SCHEMA_TYPES = frozenset(
+    {"array", "boolean", "integer", "number", "object", "string"}
+)
 
 
 @dataclass(slots=True, frozen=True)
@@ -69,8 +72,23 @@ def _parameter_name(value: Any) -> str:
     return parameter_name
 
 
+def _json_schema_type(value: Any, *, field_name: str, default: str) -> str:
+    raw = "" if value is None else str(value)
+    schema_type = raw.strip().lower()
+    if not schema_type:
+        return default
+    if schema_type not in _ALLOWED_MCP_JSON_SCHEMA_TYPES:
+        allowed = ", ".join(sorted(_ALLOWED_MCP_JSON_SCHEMA_TYPES))
+        raise ValueError(f"MCP {field_name} must declare one of: {allowed}")
+    return schema_type
+
+
 def _tool_parameters(input_schema: Mapping[str, Any]) -> list[ToolParameter]:
-    schema_type = str(input_schema.get("type", "object")).strip() or "object"
+    schema_type = _json_schema_type(
+        input_schema.get("type"),
+        field_name="input schema type",
+        default="object",
+    )
     if schema_type != "object":
         raise ValueError("MCP tool input schema must be an object schema")
     properties = _mapping(input_schema.get("properties", {}), field_name="tool properties")
@@ -83,11 +101,24 @@ def _tool_parameters(input_schema: Mapping[str, Any]) -> list[ToolParameter]:
     for raw_name, raw_schema in properties.items():
         parameter_name = _parameter_name(raw_name)
         schema = _mapping(raw_schema, field_name=f"tool parameter '{parameter_name}'")
-        parameter_type = str(schema.get("type", "string")).strip() or "string"
-        items = schema.get("items", {})
+        parameter_type = _json_schema_type(
+            schema.get("type"),
+            field_name=f"tool parameter '{parameter_name}' type",
+            default="string",
+        )
         items_type: str | None = None
-        if parameter_type == "array" and isinstance(items, Mapping):
-            items_type = str(items.get("type", "string")).strip() or "string"
+        if parameter_type == "array":
+            raw_items = schema.get("items", {})
+            items = (
+                {}
+                if raw_items in ({}, None)
+                else _mapping(raw_items, field_name=f"tool parameter '{parameter_name}' items")
+            )
+            items_type = _json_schema_type(
+                items.get("type"),
+                field_name=f"tool parameter '{parameter_name}' items.type",
+                default="string",
+            )
         enum_values = schema.get("enum")
         enum: list[Any] | None = None
         if isinstance(enum_values, list):

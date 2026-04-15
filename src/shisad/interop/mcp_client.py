@@ -182,15 +182,19 @@ class McpClientManager:
         candidate = canonical_tool_name(str(tool_name), warn_on_alias=False)
         if not candidate:
             return None
+        matched_server: str | None = None
         for server_name in sorted(self._server_configs, key=len, reverse=True):
-            error = self._startup_errors.get(server_name)
-            if error is None:
-                continue
             dotted_prefix = f"mcp.{server_name}."
             provider_prefix = openai_function_name(dotted_prefix)
             if candidate.startswith(dotted_prefix) or candidate.startswith(provider_prefix):
-                return server_name, error
-        return None
+                matched_server = server_name
+                break
+        if matched_server is None:
+            return None
+        error = self._startup_errors.get(matched_server)
+        if error is None:
+            return None
+        return matched_server, error
 
     async def call_tool(
         self,
