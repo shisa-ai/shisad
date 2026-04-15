@@ -22,6 +22,7 @@ from shisad.core.api.schema import (
 from shisad.core.config import DaemonConfig
 from shisad.core.request_context import RequestContext
 from shisad.core.types import TaintLabel
+from shisad.interop import a2a_envelope as a2a_envelope_module
 from shisad.interop.a2a_envelope import (
     A2aEnvelope,
     ReplayCache,
@@ -287,6 +288,27 @@ def test_cli_a2a_keygen_rejects_existing_key_paths(
     assert first.exit_code == 0, first.output
     assert second.exit_code != 0
     assert "A2A key output already exists" in second.output
+
+
+def test_write_bytes_exclusive_closes_fd_and_removes_partial_file_on_fdopen_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = tmp_path / "broken.key"
+    captured_fd: dict[str, int] = {}
+
+    def _boom(fd: int, mode: str):
+        captured_fd["value"] = fd
+        raise OSError("fdopen failed")
+
+    monkeypatch.setattr(a2a_envelope_module.os, "fdopen", _boom)
+
+    with pytest.raises(OSError, match="fdopen failed"):
+        a2a_envelope_module._write_bytes_exclusive(target, b"secret", mode=0o600)
+
+    assert not target.exists()
+    with pytest.raises(OSError):
+        a2a_envelope_module.os.fstat(captured_fd["value"])
 
 
 @pytest.mark.asyncio
