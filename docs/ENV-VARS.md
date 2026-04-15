@@ -136,10 +136,14 @@ MCP notes:
 - `SHISAD_MCP_SERVERS` accepts a JSON array of server configs. `transport:
   "stdio"` entries require `command: ["executable", "arg1", ...]`; `transport:
   "http"` entries require `url: "http(s)://.../mcp"`.
+- `transport: "stdio"` entries can also set `env: {"NAME":"value"}` for
+  explicit subprocess environment variables. MCP stdio launches do not inherit
+  the daemon's full environment by default.
 - MCP server names are normalized to lowercase and must remain unique after
   normalization.
 - Discovered tools register under runtime ids like `mcp.<server>.<tool>`. The
-  upstream MCP tool name is preserved separately for transport calls.
+  upstream MCP tool name is preserved separately for transport calls, and MCP
+  tools require confirmation by default until trusted-server allowlisting lands.
 
 Approval / WebAuthn / signer:
 

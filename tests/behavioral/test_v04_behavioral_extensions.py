@@ -580,7 +580,9 @@ async def test_behavioral_tool_execute_confirmation_surfaces_approval_protocol_m
 
 
 @pytest.mark.asyncio
-async def test_behavioral_mcp_stdio_tool_execute_returns_remote_result(tmp_path: Path) -> None:
+async def test_behavioral_mcp_stdio_tool_execute_requires_confirmation_then_executes(
+    tmp_path: Path,
+) -> None:
     server_script = write_mock_mcp_server(tmp_path / "mock_mcp_server.py")
     daemon_task, client, _config = await _start_daemon(
         tmp_path,
@@ -590,7 +592,7 @@ async def test_behavioral_mcp_stdio_tool_execute_returns_remote_result(tmp_path:
                     "name": "docs",
                     "transport": "stdio",
                     "command": [sys.executable, str(server_script)],
-                    "timeout_seconds": 5.0,
+                    "timeout_seconds": 10.0,
                 }
             ]
         },
@@ -614,14 +616,36 @@ async def test_behavioral_mcp_stdio_tool_execute_returns_remote_result(tmp_path:
             },
         )
 
-        assert result["allowed"] is True
-        payload = json.loads(str(result["stdout"]))
-        assert payload["ok"] is True
-        assert payload["structured_content"] == {
-            "answer": "echo:roadmap",
-            "limit": 4,
-            "query": "roadmap",
-        }
+        assert result["allowed"] is False
+        assert result["confirmation_required"] is True
+        confirmation_id = str(result["confirmation_id"])
+
+        pending = await client.call("action.pending", {"confirmation_id": confirmation_id})
+        actions = list(pending.get("actions", []))
+        assert len(actions) == 1
+        action = actions[0]
+
+        confirmed = await client.call(
+            "action.confirm",
+            {
+                "confirmation_id": confirmation_id,
+                "decision_nonce": str(action["decision_nonce"]),
+                "reason": "behavioral_mcp_i1",
+            },
+        )
+        assert confirmed["confirmed"] is True
+        assert confirmed["status"] == "approved"
+
+        approved = await _wait_for_audit_event(
+            client,
+            event_type="ToolApproved",
+            session_id=sid,
+            predicate=lambda event: (
+                str(event.get("data", {}).get("tool_name", "")) == "mcp.docs.lookup-doc"
+                and str(event.get("data", {}).get("approval_level", "")) == "software"
+                and str(event.get("data", {}).get("approval_method", "")) == "software"
+            ),
+        )
 
         executed = await _wait_for_audit_event(
             client,
@@ -630,8 +654,11 @@ async def test_behavioral_mcp_stdio_tool_execute_returns_remote_result(tmp_path:
             predicate=lambda event: (
                 str(event.get("data", {}).get("tool_name", "")) == "mcp.docs.lookup-doc"
                 and bool(event.get("data", {}).get("success")) is True
+                and str(event.get("data", {}).get("approval_level", "")) == "software"
+                and str(event.get("data", {}).get("approval_method", "")) == "software"
             ),
         )
+        assert approved["event_type"] == "ToolApproved"
         assert str(executed.get("data", {}).get("actor", "")) == "tool_runtime"
     finally:
         await _shutdown_daemon(daemon_task, client)

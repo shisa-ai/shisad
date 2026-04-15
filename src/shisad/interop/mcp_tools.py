@@ -67,9 +67,9 @@ def _tool_parameters(input_schema: Mapping[str, Any]) -> list[ToolParameter]:
         if parameter_type == "array" and isinstance(items, Mapping):
             items_type = str(items.get("type", "string")).strip() or "string"
         enum_values = schema.get("enum")
-        enum: list[str] | None = None
+        enum: list[Any] | None = None
         if isinstance(enum_values, list):
-            enum = [str(item) for item in enum_values]
+            enum = list(enum_values)
         parameters.append(
             ToolParameter(
                 name=parameter_name,
@@ -90,6 +90,7 @@ def mcp_tool_to_registry_entry(mcp_tool: McpDiscoveredTool, server_name: str) ->
         name=runtime_name,
         description=str(mcp_tool.description).strip(),
         parameters=_tool_parameters(_mapping(mcp_tool.input_schema, field_name="input schema")),
+        require_confirmation=True,
         registration_source="mcp",
         registration_source_id=normalize_mcp_identifier(server_name, field_name="server name"),
         upstream_tool_name=str(mcp_tool.name).strip(),

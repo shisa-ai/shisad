@@ -14,6 +14,25 @@ from shisad.core.tools.registry import ToolRegistry
 from shisad.core.types import ToolName
 from shisad.interop.mcp_tools import McpDiscoveredTool, mcp_tool_to_registry_entry
 
+_STDIO_BLOCKED_ENV_PREFIXES = ("SHISAD_",)
+_STDIO_BLOCKED_ENV_EXACT = frozenset(
+    {
+        "ANTHROPIC_API_KEY",
+        "GEMINI_API_KEY",
+        "OPENAI_API_KEY",
+        "OPENROUTER_API_KEY",
+        "SHISA_API_KEY",
+    }
+)
+_STDIO_BLOCKED_ENV_SUFFIXES = (
+    "_ACCESS_TOKEN",
+    "_API_KEY",
+    "_AUTH_TOKEN",
+    "_PASSWORD",
+    "_SECRET",
+    "_TOKEN",
+)
+
 
 @dataclass(slots=True, frozen=True)
 class _McpSdk:
@@ -63,6 +82,19 @@ def _jsonable(value: Any) -> Any:
 
 def _is_timeout_error(exc: BaseException) -> bool:
     return isinstance(exc, TimeoutError) or "timed out" in str(exc).strip().lower()
+
+
+def _stdio_process_env(overrides: dict[str, str]) -> dict[str, str]:
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if value
+        and key not in _STDIO_BLOCKED_ENV_EXACT
+        and not key.startswith(_STDIO_BLOCKED_ENV_PREFIXES)
+        and not key.endswith(_STDIO_BLOCKED_ENV_SUFFIXES)
+    }
+    env.update(overrides)
+    return env
 
 
 async def _aclose_quietly(exit_stack: AsyncExitStack) -> None:
@@ -178,7 +210,7 @@ class McpClientManager:
                 stdio_parameters = sdk.StdioServerParameters(
                     command=config.command[0],
                     args=list(config.command[1:]),
-                    env={**os.environ, **config.env} if config.env else None,
+                    env=_stdio_process_env(dict(config.env)),
                     cwd=config.cwd,
                 )
                 read_stream, write_stream = await exit_stack.enter_async_context(

@@ -280,6 +280,22 @@ class ToolRegistry:
             if data is None:
                 continue
 
+            external_metadata_keys = {
+                "registration_source",
+                "registration_source_id",
+                "upstream_tool_name",
+            }
+            declared_external_metadata = sorted(
+                key
+                for key in external_metadata_keys
+                if key in data and str(data.get(key, "")).strip()
+            )
+            if declared_external_metadata:
+                raise ValueError(
+                    "Local tool definitions must not declare external registration metadata: "
+                    + ", ".join(declared_external_metadata)
+                )
+
             tool = ToolDefinition.model_validate(data)
             expected_hash = data.get("schema_hash")
             self.register(tool, expected_hash=expected_hash)

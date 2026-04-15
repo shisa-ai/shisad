@@ -44,6 +44,14 @@ MOCK_MCP_SERVER_SOURCE = textwrap.dedent(
         }
 
 
+    @app.tool(name="env-snapshot")
+    def env_snapshot(name: str) -> dict[str, object]:
+        return {
+            "name": name,
+            "value": os.environ.get(name),
+        }
+
+
     if __name__ == "__main__":
         app.run("streamable-http" if transport == "http" else "stdio")
     """
@@ -67,7 +75,7 @@ def wait_for_tcp_port(
     host: str,
     port: int,
     *,
-    timeout: float = 5.0,
+    timeout: float = 10.0,
     process: subprocess.Popen[str] | None = None,
 ) -> None:
     """Block until *host:port* accepts TCP connections or raise."""

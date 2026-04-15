@@ -69,7 +69,10 @@ not mean the daemon runtime group was installed incorrectly.
 
 `interop` installs the MCP client dependency. Configure MCP servers via
 `SHISAD_MCP_SERVERS` (JSON) or `DaemonConfig.mcp_servers`; discovered tools
-register under runtime ids like `mcp.<server>.<tool>`.
+register under runtime ids like `mcp.<server>.<tool>`. MCP tools require
+confirmation by default until trusted-server allowlisting lands, and stdio
+servers receive a sanitized subprocess environment plus any explicit `env`
+overrides you configure per server.
 
 ## Preflight Checklist
 
