@@ -95,7 +95,7 @@ class ToolExecutionImplMixin(HandlerMixinBase):
         tool_name_value = canonical_tool_name(str(params.get("tool_name", "")))
         if not tool_name_value:
             raise ValueError("tool_name is required")
-        tool_name = ToolName(tool_name_value)
+        tool_name = self._registry.resolve_name(tool_name_value) or ToolName(tool_name_value)
         tool_def = self._registry.get_tool(tool_name)
         if tool_def is None:
             await self._event_bus.publish(

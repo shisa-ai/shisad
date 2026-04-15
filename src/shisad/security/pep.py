@@ -161,7 +161,11 @@ class PEP:
         context: PolicyContext,
     ) -> PEPDecision:
         """Evaluate a tool call proposal."""
-        tool_name = canonical_tool_name_typed(tool_name)
+        resolved_tool_name = self._tool_registry.resolve_name(tool_name)
+        if resolved_tool_name is None:
+            tool_name = canonical_tool_name_typed(tool_name)
+        else:
+            tool_name = resolved_tool_name
         # 1. Tool allowlist check (default-deny)
         if not self._tool_registry.has_tool(tool_name):
             return self._reject(
@@ -510,10 +514,12 @@ class PEP:
         egress_requires_confirmation: bool,
         taint_requires_confirmation: bool,
     ) -> ConfirmationRequirement | None:
+        registration_source = str(getattr(tool, "registration_source", "")).strip().lower()
         trusted_cli_clean = (
             (trust_level.strip().lower() == "trusted_cli" or trusted_cli_confirmation_bypass)
             and not egress_requires_confirmation
             and not taint_requires_confirmation
+            and registration_source != "mcp"
         )
         requirements: list[tuple[str, ConfirmationRequirement]] = []
 

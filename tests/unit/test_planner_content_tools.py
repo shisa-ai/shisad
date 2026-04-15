@@ -67,6 +67,21 @@ def _tools_payload(registry: ToolRegistry, names: set[str]) -> list[dict[str, An
     ]
 
 
+def _mcp_registry() -> ToolRegistry:
+    registry = ToolRegistry()
+    registry.register(
+        ToolDefinition(
+            name=ToolName("mcp.docs.lookup-doc"),
+            description="Lookup remote docs.",
+            parameters=[ToolParameter(name="query", type="string", required=True)],
+            registration_source="mcp",
+            registration_source_id="docs",
+            upstream_tool_name="lookup-doc",
+        )
+    )
+    return registry
+
+
 @pytest.mark.asyncio
 async def test_m2_planner_extracts_hermes_content_tool_calls_when_capability_enabled() -> None:
     registry = _make_registry()
@@ -219,6 +234,86 @@ async def test_m2_planner_extracts_json_array_tool_calls_from_content() -> None:
     assert len(result.output.actions) == 1
     assert result.output.actions[0].tool_name == ToolName("web.search")
     assert result.output.actions[0].arguments == {"query": "shisad", "limit": 2}
+
+
+@pytest.mark.asyncio
+async def test_i1_planner_extracts_native_provider_alias_for_mcp_tool_call() -> None:
+    registry = _mcp_registry()
+    pep = PEP(PolicyBundle(default_require_confirmation=False), registry)
+    provider = _StaticProvider(
+        [
+            Message(
+                role="assistant",
+                content="native mcp",
+                tool_calls=[
+                    {
+                        "id": "native_mcp",
+                        "type": "function",
+                        "function": {
+                            "name": "mcp_docs_lookup_doc",
+                            "arguments": json.dumps({"query": "roadmap"}),
+                        },
+                    }
+                ],
+            )
+        ]
+    )
+    planner = Planner(
+        provider,
+        pep,
+        max_retries=0,
+        capabilities=ProviderCapabilities(
+            supports_tool_calls=True,
+            supports_content_tool_calls=True,
+        ),
+        tool_registry=registry,
+    )
+
+    result = await planner.propose(
+        "look up roadmap",
+        PolicyContext(capabilities=set()),
+        tools=tool_definitions_to_openai(registry.list_tools()),
+    )
+
+    assert len(result.output.actions) == 1
+    assert result.output.actions[0].action_id == "native_mcp"
+    assert result.output.actions[0].tool_name == ToolName("mcp.docs.lookup-doc")
+    assert result.output.actions[0].arguments == {"query": "roadmap"}
+
+
+@pytest.mark.asyncio
+async def test_i1_planner_extracts_content_provider_alias_for_mcp_tool_call() -> None:
+    registry = _mcp_registry()
+    pep = PEP(PolicyBundle(default_require_confirmation=False), registry)
+    provider = _StaticProvider(
+        [
+            Message(
+                role="assistant",
+                content='[{"name":"mcp_docs_lookup_doc","arguments":{"query":"roadmap"}}]',
+            )
+        ]
+    )
+    planner = Planner(
+        provider,
+        pep,
+        max_retries=0,
+        capabilities=ProviderCapabilities(
+            supports_tool_calls=False,
+            supports_content_tool_calls=True,
+        ),
+        tool_registry=registry,
+    )
+
+    result = await planner.propose(
+        "look up roadmap",
+        PolicyContext(capabilities=set()),
+        tools=tool_definitions_to_openai(registry.list_tools()),
+    )
+
+    assert result.output.assistant_response == ""
+    assert len(result.output.actions) == 1
+    assert result.output.actions[0].tool_name == ToolName("mcp.docs.lookup-doc")
+    assert result.output.actions[0].arguments == {"query": "roadmap"}
 
 
 @pytest.mark.asyncio

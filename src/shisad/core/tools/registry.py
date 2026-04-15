@@ -15,7 +15,7 @@ from urllib.parse import urlparse
 
 import yaml
 
-from shisad.core.tools.names import canonical_tool_name_typed
+from shisad.core.tools.names import canonical_tool_name, canonical_tool_name_typed
 from shisad.core.tools.schema import ToolDefinition, openai_function_name
 from shisad.core.types import ToolName
 
@@ -167,9 +167,21 @@ class ToolRegistry:
         self._provider_aliases[provider_alias] = canonical_name
         logger.debug("Registered tool: %s", canonical_name)
 
+    def resolve_name(self, name: ToolName | str, *, warn_on_alias: bool = True) -> ToolName | None:
+        """Resolve a canonical or provider-alias tool name to the registered id."""
+        candidate = canonical_tool_name(str(name), warn_on_alias=warn_on_alias)
+        if not candidate:
+            return None
+        canonical_name = ToolName(candidate)
+        if canonical_name in self._tools:
+            return canonical_name
+        return self._provider_aliases.get(candidate)
+
     def get_tool(self, name: ToolName) -> ToolDefinition | None:
         """Get a tool definition by name."""
-        canonical_name = canonical_tool_name_typed(name)
+        canonical_name = self.resolve_name(name)
+        if canonical_name is None:
+            return None
         tool = self._tools.get(canonical_name)
         if tool is None:
             return None
@@ -181,11 +193,13 @@ class ToolRegistry:
 
     def has_tool(self, name: ToolName) -> bool:
         """Check if a tool is registered."""
-        return canonical_tool_name_typed(name) in self._tools
+        return self.resolve_name(name) is not None
 
     def unregister(self, name: ToolName) -> bool:
         """Remove a tool definition if present."""
-        canonical_name = canonical_tool_name_typed(name)
+        canonical_name = self.resolve_name(name)
+        if canonical_name is None:
+            return False
         removed = self._tools.pop(canonical_name, None)
         self._expected_hashes.pop(canonical_name, None)
         provider_alias = openai_function_name(str(canonical_name))
@@ -198,7 +212,9 @@ class ToolRegistry:
 
         Returns a list of validation errors (empty = valid).
         """
-        canonical_name = canonical_tool_name_typed(name)
+        canonical_name = self.resolve_name(name)
+        if canonical_name is None:
+            canonical_name = canonical_tool_name_typed(name)
         tool = self._tools.get(canonical_name)
         if tool is None:
             return [f"Unknown tool: {canonical_name}"]
@@ -286,9 +302,7 @@ class ToolRegistry:
                 "upstream_tool_name",
             }
             declared_external_metadata = sorted(
-                key
-                for key in external_metadata_keys
-                if key in data and str(data.get(key, "")).strip()
+                key for key in external_metadata_keys if key in data
             )
             if declared_external_metadata:
                 raise ValueError(

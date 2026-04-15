@@ -1458,7 +1458,7 @@ def _build_planner_tool_context(
             caps = sorted(cap.value for cap in tool.capabilities_required)
             cap_suffix = f" (requires: {', '.join(caps)})" if caps else ""
             lines.append(
-                f"- {_planner_tool_display_name(tool)}: {tool.description}"
+                f"- {_planner_tool_display_name(tool)}: {tool.planner_description()}"
                 f"{_planner_tool_source_note(tool)}{cap_suffix}"
             )
         if disabled_tools:

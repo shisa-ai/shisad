@@ -150,7 +150,12 @@ class _ControlPlaneStub:
 
 
 class _McpToolExecuteHarness:
-    def __init__(self, *, payload: dict[str, Any]) -> None:
+    def __init__(
+        self,
+        *,
+        payload: dict[str, Any],
+        parameters: list[ToolParameter] | None = None,
+    ) -> None:
         self._session_manager = SessionManager()
         self._session = self._session_manager.create(
             channel="cli",
@@ -163,7 +168,8 @@ class _McpToolExecuteHarness:
             ToolDefinition(
                 name=ToolName("mcp.docs.lookup-doc"),
                 description="Lookup external docs.",
-                parameters=[
+                parameters=parameters
+                or [
                     ToolParameter(name="query", type="string", required=True),
                     ToolParameter(name="limit", type="integer", required=False),
                 ],
@@ -299,8 +305,16 @@ def test_i1_daemon_config_rejects_duplicate_mcp_server_names() -> None:
         )
 
 
+@pytest.mark.parametrize(
+    "metadata_payload",
+    [
+        {"registration_source": "mcp", "registration_source_id": "docs"},
+        {"registration_source": "", "registration_source_id": ""},
+    ],
+)
 def test_i1_tool_registry_rejects_external_registration_metadata_in_local_files(
     tmp_path: Path,
+    metadata_payload: dict[str, str],
 ) -> None:
     tools_dir = tmp_path / "tools"
     tools_dir.mkdir()
@@ -309,8 +323,7 @@ def test_i1_tool_registry_rejects_external_registration_metadata_in_local_files(
             {
                 "name": "lookup.doc",
                 "description": "Lookup docs.",
-                "registration_source": "mcp",
-                "registration_source_id": "docs",
+                **metadata_payload,
             }
         ),
         encoding="utf-8",
@@ -544,6 +557,9 @@ async def test_i1_mcp_stdio_manager_does_not_inherit_secret_env(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("OPENAI_API_KEY", "super-secret-key")
+    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "AKIAEXAMPLEKEY1234")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "aws-secret-key")
+    monkeypatch.setenv("SSH_AUTH_SOCK", "/tmp/fake-ssh-agent.sock")
     server_script = write_mock_mcp_server(tmp_path / "mock_mcp_server.py")
     manager = McpClientManager(
         server_configs=[
@@ -563,6 +579,21 @@ async def test_i1_mcp_stdio_manager_does_not_inherit_secret_env(
             "env-snapshot",
             {"name": "OPENAI_API_KEY"},
         )
+        aws_key_result = await manager.call_tool(
+            "docs",
+            "env-snapshot",
+            {"name": "AWS_ACCESS_KEY_ID"},
+        )
+        aws_secret_result = await manager.call_tool(
+            "docs",
+            "env-snapshot",
+            {"name": "AWS_SECRET_ACCESS_KEY"},
+        )
+        ssh_auth_sock_result = await manager.call_tool(
+            "docs",
+            "env-snapshot",
+            {"name": "SSH_AUTH_SOCK"},
+        )
         override_result = await manager.call_tool(
             "docs",
             "env-snapshot",
@@ -572,6 +603,15 @@ async def test_i1_mcp_stdio_manager_does_not_inherit_secret_env(
         await manager.shutdown()
 
     assert secret_result["structured_content"] == {"name": "OPENAI_API_KEY", "value": None}
+    assert aws_key_result["structured_content"] == {"name": "AWS_ACCESS_KEY_ID", "value": None}
+    assert aws_secret_result["structured_content"] == {
+        "name": "AWS_SECRET_ACCESS_KEY",
+        "value": None,
+    }
+    assert ssh_auth_sock_result["structured_content"] == {
+        "name": "SSH_AUTH_SOCK",
+        "value": None,
+    }
     assert override_result["structured_content"] == {"name": "MCP_VISIBLE_FLAG", "value": "visible"}
 
 
@@ -637,3 +677,33 @@ async def test_i1_tool_execute_path_strips_reserved_keys_before_mcp_call() -> No
         "query": "roadmap",
     }
     assert harness._mcp_manager.calls == [("docs", "lookup-doc", {"query": "roadmap", "limit": 4})]
+
+
+@pytest.mark.asyncio
+async def test_i1_tool_execute_path_excludes_direct_envelope_keys_from_mcp_params() -> None:
+    harness = _McpToolExecuteHarness(
+        payload={
+            "ok": True,
+            "structured_content": {"query": "roadmap"},
+            "content": [{"type": "text", "text": "echo:roadmap"}],
+        },
+        parameters=[
+            ToolParameter(name="command", type="array", required=False),
+            ToolParameter(name="query", type="string", required=True),
+        ],
+    )
+
+    result = await HandlerImplementation.do_tool_execute(
+        harness,  # type: ignore[arg-type]
+        {
+            "session_id": str(harness.session_id),
+            "tool_name": "mcp.docs.lookup-doc",
+            "command": ["mcp"],
+            "arguments": {"query": "roadmap"},
+            "security_critical": False,
+            "degraded_mode": "fail_open",
+        },
+    )
+
+    assert result["allowed"] is True
+    assert harness._mcp_manager.calls == [("docs", "lookup-doc", {"query": "roadmap"})]

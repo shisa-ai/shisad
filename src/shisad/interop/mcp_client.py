@@ -14,24 +14,33 @@ from shisad.core.tools.registry import ToolRegistry
 from shisad.core.types import ToolName
 from shisad.interop.mcp_tools import McpDiscoveredTool, mcp_tool_to_registry_entry
 
-_STDIO_BLOCKED_ENV_PREFIXES = ("SHISAD_",)
-_STDIO_BLOCKED_ENV_EXACT = frozenset(
+_STDIO_ALLOWED_ENV_EXACT = frozenset(
     {
-        "ANTHROPIC_API_KEY",
-        "GEMINI_API_KEY",
-        "OPENAI_API_KEY",
-        "OPENROUTER_API_KEY",
-        "SHISA_API_KEY",
+        "CURL_CA_BUNDLE",
+        "HOME",
+        "LANG",
+        "LOGNAME",
+        "PATH",
+        "PWD",
+        "PYTHONHOME",
+        "PYTHONIOENCODING",
+        "PYTHONNOUSERSITE",
+        "PYTHONPATH",
+        "PYTHONUNBUFFERED",
+        "REQUESTS_CA_BUNDLE",
+        "SHELL",
+        "SSL_CERT_DIR",
+        "SSL_CERT_FILE",
+        "TEMP",
+        "TERM",
+        "TMP",
+        "TMPDIR",
+        "TZ",
+        "USER",
+        "VIRTUAL_ENV",
     }
 )
-_STDIO_BLOCKED_ENV_SUFFIXES = (
-    "_ACCESS_TOKEN",
-    "_API_KEY",
-    "_AUTH_TOKEN",
-    "_PASSWORD",
-    "_SECRET",
-    "_TOKEN",
-)
+_STDIO_ALLOWED_ENV_PREFIXES = ("LC_", "XDG_")
 
 
 @dataclass(slots=True, frozen=True)
@@ -89,9 +98,7 @@ def _stdio_process_env(overrides: dict[str, str]) -> dict[str, str]:
         key: value
         for key, value in os.environ.items()
         if value
-        and key not in _STDIO_BLOCKED_ENV_EXACT
-        and not key.startswith(_STDIO_BLOCKED_ENV_PREFIXES)
-        and not key.endswith(_STDIO_BLOCKED_ENV_SUFFIXES)
+        and (key in _STDIO_ALLOWED_ENV_EXACT or key.startswith(_STDIO_ALLOWED_ENV_PREFIXES))
     }
     env.update(overrides)
     return env

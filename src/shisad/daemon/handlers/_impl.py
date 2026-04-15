@@ -94,7 +94,10 @@ from shisad.daemon.handlers._impl_memory import MemoryImplMixin
 from shisad.daemon.handlers._impl_session import SessionImplMixin
 from shisad.daemon.handlers._impl_skills import SkillsImplMixin
 from shisad.daemon.handlers._impl_tasks import TasksImplMixin
-from shisad.daemon.handlers._impl_tool_execution import ToolExecutionImplMixin
+from shisad.daemon.handlers._impl_tool_execution import (
+    _RESERVED_TOOL_EXECUTION_ARGUMENT_KEYS,
+    ToolExecutionImplMixin,
+)
 from shisad.daemon.handlers._mixin_typing import call_control_plane as _call_control_plane
 from shisad.daemon.handlers._pending_approval import (
     PendingPepContextSnapshot,
@@ -3040,10 +3043,17 @@ class HandlerImplementation(
         if tool is not None and str(getattr(tool, "registration_source", "")).strip() == "mcp":
             server_name = str(getattr(tool, "registration_source_id", "")).strip()
             upstream_tool_name = str(getattr(tool, "upstream_tool_name", "")).strip()
+            direct_tool_execute_arguments = (
+                "session_id" in arguments and "tool_name" in arguments and "command" in arguments
+            )
             mcp_arguments = {
                 parameter.name: arguments[parameter.name]
                 for parameter in getattr(tool, "parameters", [])
                 if parameter.name in arguments
+                and (
+                    not direct_tool_execute_arguments
+                    or parameter.name not in _RESERVED_TOOL_EXECUTION_ARGUMENT_KEYS
+                )
             }
             mcp_payload: Mapping[str, Any]
             mcp_manager = getattr(self, "_mcp_manager", None)
