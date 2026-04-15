@@ -11,6 +11,7 @@ from shisad.core.tools.schema import ToolDefinition, ToolParameter
 from shisad.core.types import ToolName
 
 _MCP_IDENTIFIER_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,127}$")
+_MCP_PARAMETER_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]{0,63}$")
 
 
 @dataclass(slots=True, frozen=True)
@@ -45,6 +46,15 @@ def _mapping(value: Any, *, field_name: str) -> Mapping[str, Any]:
     return value
 
 
+def _parameter_name(value: Any) -> str:
+    parameter_name = str(value)
+    if parameter_name != parameter_name.strip():
+        raise ValueError("MCP tool parameter names must not include surrounding whitespace")
+    if not _MCP_PARAMETER_NAME_RE.fullmatch(parameter_name):
+        raise ValueError("MCP tool parameter names must match ^[A-Za-z_][A-Za-z0-9_-]{0,63}$")
+    return parameter_name
+
+
 def _tool_parameters(input_schema: Mapping[str, Any]) -> list[ToolParameter]:
     schema_type = str(input_schema.get("type", "object")).strip() or "object"
     if schema_type != "object":
@@ -57,9 +67,7 @@ def _tool_parameters(input_schema: Mapping[str, Any]) -> list[ToolParameter]:
     }
     parameters: list[ToolParameter] = []
     for raw_name, raw_schema in properties.items():
-        parameter_name = str(raw_name).strip()
-        if not parameter_name:
-            raise ValueError("MCP tool parameter names cannot be empty")
+        parameter_name = _parameter_name(raw_name)
         schema = _mapping(raw_schema, field_name=f"tool parameter '{parameter_name}'")
         parameter_type = str(schema.get("type", "string")).strip() or "string"
         items = schema.get("items", {})

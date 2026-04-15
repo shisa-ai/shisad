@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 from contextlib import AsyncExitStack
 from dataclasses import dataclass
@@ -41,6 +42,9 @@ _STDIO_ALLOWED_ENV_EXACT = frozenset(
     }
 )
 _STDIO_ALLOWED_ENV_PREFIXES = ("LC_", "XDG_")
+_DISCOVERY_MAX_PAGES = 128
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(slots=True, frozen=True)
@@ -68,7 +72,7 @@ def _load_mcp_sdk() -> _McpSdk:
     except ImportError as exc:  # pragma: no cover - exercised via actionable runtime error
         raise RuntimeError(
             "MCP interop requires the optional 'interop' dependency group. "
-            "Install with `uv sync --dev --group interop`."
+            "Install with `uv sync --group interop`."
         ) from exc
     return _McpSdk(
         ClientSession=ClientSession,
@@ -130,7 +134,14 @@ class McpClientManager:
     async def connect_all(self) -> None:
         """Connect to every configured server and register discovered tools."""
         for server_name in self._server_configs:
-            await self._connect_and_register(server_name)
+            try:
+                await self._connect_and_register(server_name)
+            except Exception as exc:
+                logger.warning(
+                    "MCP server unavailable at startup; continuing without it: server=%s error=%s",
+                    server_name,
+                    exc,
+                )
 
     async def shutdown(self) -> None:
         """Close all active sessions and unregister bridged tools."""
@@ -265,7 +276,14 @@ class McpClientManager:
     ) -> list[McpDiscoveredTool]:
         cursor: str | None = None
         discovered: list[McpDiscoveredTool] = []
+        seen_cursors: set[str] = set()
+        page_count = 0
         while True:
+            page_count += 1
+            if page_count > _DISCOVERY_MAX_PAGES:
+                raise RuntimeError(
+                    f"MCP server '{server_name}' tools/list exceeded {_DISCOVERY_MAX_PAGES} pages"
+                )
             try:
                 result = await runtime.session.list_tools(cursor=cursor)
             except Exception as exc:
@@ -288,6 +306,11 @@ class McpClientManager:
             cursor = str(getattr(result, "nextCursor", "") or "").strip() or None
             if cursor is None:
                 break
+            if cursor in seen_cursors:
+                raise RuntimeError(
+                    f"MCP server '{server_name}' tools/list cursor cycle detected at '{cursor}'"
+                )
+            seen_cursors.add(cursor)
         return discovered
 
     async def _disconnect_runtime(self, server_name: str) -> None:
