@@ -568,6 +568,12 @@ class DaemonConfig(BaseSettings):
         default_factory=list,
         description="Configured external MCP servers to connect during daemon startup.",
     )
+    mcp_trusted_servers: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Configured MCP server ids that bypass the confirm-by-default external-tool gate."
+        ),
+    )
 
     @staticmethod
     def _parse_list_field(value: object, *, field_name: str) -> object:
@@ -770,6 +776,24 @@ class DaemonConfig(BaseSettings):
                 raise ValueError("SHISAD_MCP_SERVERS JSON must be a list")
             return parsed
         return value
+
+    @field_validator("mcp_trusted_servers", mode="before")
+    @classmethod
+    def _parse_mcp_trusted_servers(cls, value: object) -> object:
+        return cls._parse_list_field(value, field_name="SHISAD_MCP_TRUSTED_SERVERS")
+
+    @field_validator("mcp_trusted_servers")
+    @classmethod
+    def _normalize_mcp_trusted_servers(cls, value: list[str]) -> list[str]:
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for raw in value:
+            candidate = _normalize_mcp_server_name(raw)
+            if candidate in seen:
+                raise ValueError("MCP trusted server names must be unique after normalization")
+            seen.add(candidate)
+            normalized.append(candidate)
+        return normalized
 
     @model_validator(mode="after")
     def _ensure_data_dir(self) -> Self:

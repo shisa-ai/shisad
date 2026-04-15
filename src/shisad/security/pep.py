@@ -8,7 +8,7 @@ from __future__ import annotations
 import ipaddress
 import logging
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, ClassVar
@@ -41,6 +41,10 @@ from shisad.security.policy import PolicyBundle
 from shisad.security.taint import sink_decision_for_tool
 
 logger = logging.getLogger(__name__)
+
+
+def _normalize_mcp_server_ids(values: Iterable[str] | None) -> set[str]:
+    return {str(item).strip().lower() for item in values or [] if str(item).strip()}
 
 
 @dataclass(frozen=True)
@@ -145,12 +149,14 @@ class PEP:
         evidence_store: ArtifactLedger | None = None,
         credential_store: CredentialStore | None = None,
         credential_audit_hook: Callable[[CredentialUseAttempt], None] | None = None,
+        mcp_trusted_servers: Iterable[str] | None = None,
     ) -> None:
         self._policy = policy
         self._tool_registry = tool_registry
         self._evidence_store = evidence_store
         self._credential_store = credential_store
         self._credential_audit_hook = credential_audit_hook
+        self._mcp_trusted_servers = _normalize_mcp_server_ids(mcp_trusted_servers)
         self.egress_attempts: list[EgressAttempt] = []
         self.credential_attempts: list[CredentialUseAttempt] = []
 
@@ -515,6 +521,7 @@ class PEP:
         taint_requires_confirmation: bool,
     ) -> ConfirmationRequirement | None:
         registration_source = str(getattr(tool, "registration_source", "")).strip().lower()
+        mcp_requires_confirmation = self._mcp_server_requires_confirmation(tool)
         trusted_cli_clean = (
             (trust_level.strip().lower() == "trusted_cli" or trusted_cli_confirmation_bypass)
             and not egress_requires_confirmation
@@ -526,8 +533,11 @@ class PEP:
         if egress_requires_confirmation or taint_requires_confirmation:
             requirements.append(("taint_or_egress", legacy_software_confirmation_requirement()))
 
+        if mcp_requires_confirmation:
+            requirements.append(("mcp_external", legacy_software_confirmation_requirement()))
+
         if (
-            bool(getattr(tool, "require_confirmation", False))
+            (registration_source != "mcp" and bool(getattr(tool, "require_confirmation", False)))
             or bool(getattr(tool_policy, "require_confirmation", False))
             or bool(self._policy.default_require_confirmation)
         ):
@@ -560,6 +570,12 @@ class PEP:
             ]
 
         return merge_confirmation_requirements([requirement for _, requirement in requirements])
+
+    def _mcp_server_requires_confirmation(self, tool: Any) -> bool:
+        if str(getattr(tool, "registration_source", "")).strip().lower() != "mcp":
+            return False
+        server_name = str(getattr(tool, "registration_source_id", "")).strip().lower()
+        return not server_name or server_name not in self._mcp_trusted_servers
 
     @staticmethod
     def _is_migrated_legacy_policy_confirmation(

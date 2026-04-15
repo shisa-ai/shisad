@@ -82,6 +82,14 @@ def _tool_execute_runtime_arguments(
     return payload
 
 
+def _mcp_server_requires_confirmation(tool_definition: Any, trusted_servers: Any) -> bool:
+    if str(getattr(tool_definition, "registration_source", "")).strip().lower() != "mcp":
+        return False
+    server_name = str(getattr(tool_definition, "registration_source_id", "")).strip().lower()
+    allowlist = {str(item).strip().lower() for item in trusted_servers or [] if str(item).strip()}
+    return not server_name or server_name not in allowlist
+
+
 class ToolExecutionImplMixin(HandlerMixinBase):
     def _operator_confirmation_requirement(
         self,
@@ -91,8 +99,17 @@ class ToolExecutionImplMixin(HandlerMixinBase):
     ) -> ConfirmationRequirement | None:
         tool_policy = self._policy_loader.policy.tools.get(str(tool_name))
         requirements: list[ConfirmationRequirement] = []
+        mcp_requires_confirmation = _mcp_server_requires_confirmation(
+            tool_definition,
+            getattr(self._config, "mcp_trusted_servers", []),
+        )
+        if mcp_requires_confirmation:
+            requirements.append(legacy_software_confirmation_requirement())
         if (
-            bool(getattr(tool_definition, "require_confirmation", False))
+            (
+                str(getattr(tool_definition, "registration_source", "")).strip().lower() != "mcp"
+                and bool(getattr(tool_definition, "require_confirmation", False))
+            )
             or bool(getattr(tool_policy, "require_confirmation", False))
             or bool(self._policy_loader.policy.default_require_confirmation)
         ):

@@ -14,7 +14,7 @@ from shisad.core.config import McpServerConfig, McpStdioServerConfig
 from shisad.core.tools.names import canonical_tool_name
 from shisad.core.tools.registry import ToolRegistry
 from shisad.core.tools.schema import openai_function_name
-from shisad.core.types import ToolName
+from shisad.core.types import TaintLabel, ToolName
 from shisad.interop.mcp_tools import McpDiscoveredTool, mcp_tool_to_registry_entry
 
 _STDIO_ALLOWED_ENV_EXACT = frozenset(
@@ -222,6 +222,7 @@ class McpClientManager:
             "content": [_jsonable(item) for item in list(getattr(result, "content", []) or [])],
             "structured_content": _jsonable(getattr(result, "structuredContent", None)),
             "is_error": bool(getattr(result, "isError", False)),
+            "taint_labels": sorted({TaintLabel.UNTRUSTED.value, TaintLabel.MCP_EXTERNAL.value}),
         }
 
     async def _connect_and_register(self, server_name: str) -> None:

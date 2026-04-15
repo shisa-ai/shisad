@@ -271,7 +271,6 @@ class TestPepConfirmationPolicy:
                 name=ToolName("mcp.docs.lookup-doc"),
                 description="Lookup remote docs.",
                 parameters=[ToolParameter(name="query", type="string", required=True)],
-                require_confirmation=True,
                 registration_source="mcp",
                 registration_source_id="docs",
                 upstream_tool_name="lookup-doc",
@@ -291,6 +290,57 @@ class TestPepConfirmationPolicy:
         assert decision.kind == PEPDecisionKind.REQUIRE_CONFIRMATION
         assert decision.confirmation_requirement is not None
         assert decision.confirmation_requirement["level"] == "software"
+
+    def test_unallowlisted_mcp_tool_requires_confirmation(self) -> None:
+        registry = ToolRegistry()
+        registry.register(
+            ToolDefinition(
+                name=ToolName("mcp.docs.lookup-doc"),
+                description="Lookup remote docs.",
+                parameters=[ToolParameter(name="query", type="string", required=True)],
+                registration_source="mcp",
+                registration_source_id="docs",
+                upstream_tool_name="lookup-doc",
+            )
+        )
+        pep = PEP(PolicyBundle(default_require_confirmation=False), registry)
+
+        decision = pep.evaluate(
+            ToolName("mcp.docs.lookup-doc"),
+            {"query": "roadmap"},
+            PolicyContext(capabilities=set(), trust_level="trusted"),
+        )
+
+        assert decision.kind == PEPDecisionKind.REQUIRE_CONFIRMATION
+        assert decision.reason_code == "pep:confirmation_required"
+        assert decision.confirmation_requirement is not None
+        assert decision.confirmation_requirement["level"] == "software"
+
+    def test_allowlisted_mcp_tool_bypasses_default_confirmation(self) -> None:
+        registry = ToolRegistry()
+        registry.register(
+            ToolDefinition(
+                name=ToolName("mcp.docs.lookup-doc"),
+                description="Lookup remote docs.",
+                parameters=[ToolParameter(name="query", type="string", required=True)],
+                registration_source="mcp",
+                registration_source_id="docs",
+                upstream_tool_name="lookup-doc",
+            )
+        )
+        pep = PEP(
+            PolicyBundle(default_require_confirmation=False),
+            registry,
+            mcp_trusted_servers={"docs"},
+        )
+
+        decision = pep.evaluate(
+            ToolName("mcp.docs.lookup-doc"),
+            {"query": "roadmap"},
+            PolicyContext(capabilities=set(), trust_level="trusted"),
+        )
+
+        assert decision.kind == PEPDecisionKind.ALLOW
 
     def test_risk_confirmation_levels_escalate_to_highest_threshold(self) -> None:
         registry = ToolRegistry()

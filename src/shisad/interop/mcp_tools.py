@@ -6,10 +6,12 @@ import json
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import Any
 
 from shisad.core.tools.schema import ToolDefinition, ToolParameter
 from shisad.core.types import ToolName
+from shisad.security.firewall import ContentFirewall
 
 _MCP_IDENTIFIER_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,127}$")
 _MCP_PARAMETER_NAME_MAX_LENGTH = 256
@@ -45,6 +47,18 @@ class McpDiscoveredTool:
     name: str
     description: str
     input_schema: dict[str, Any]
+
+
+@lru_cache(maxsize=1)
+def _description_firewall() -> ContentFirewall:
+    return ContentFirewall()
+
+
+def _sanitize_untrusted_description(value: Any) -> str:
+    candidate = str(value).strip()
+    if not candidate:
+        return ""
+    return _description_firewall().inspect(candidate).sanitized_text.strip()
 
 
 def normalize_mcp_identifier(value: str, *, field_name: str) -> str:
@@ -231,7 +245,7 @@ def _tool_parameters(input_schema: Mapping[str, Any]) -> list[ToolParameter]:
             ToolParameter(
                 name=parameter_name,
                 type=parameter_type,
-                description=str(schema.get("description", "")).strip(),
+                description=_sanitize_untrusted_description(schema.get("description", "")),
                 required=parameter_name in required,
                 enum=enum,
                 items_type=items_type,
@@ -249,9 +263,8 @@ def mcp_tool_to_registry_entry(mcp_tool: McpDiscoveredTool, server_name: str) ->
     runtime_name = mcp_runtime_tool_name(server_name=server_name, remote_tool_name=mcp_tool.name)
     return ToolDefinition(
         name=runtime_name,
-        description=str(mcp_tool.description).strip(),
+        description=_sanitize_untrusted_description(mcp_tool.description),
         parameters=_tool_parameters(_mapping(mcp_tool.input_schema, field_name="input schema")),
-        require_confirmation=True,
         registration_source="mcp",
         registration_source_id=normalize_mcp_identifier(server_name, field_name="server name"),
         upstream_tool_name=str(mcp_tool.name).strip(),

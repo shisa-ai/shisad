@@ -3026,6 +3026,10 @@ class HandlerImplementation(
             *,
             default_error: str,
         ) -> ApprovedToolExecutionResult:
+            execution_taints = label_tool_output(str(tool_name))
+            sanitize_output = self._sanitize_tool_output_text
+            if TaintLabel.MCP_EXTERNAL in execution_taints:
+                sanitize_output = self._sanitize_untrusted_tool_output_text
             result = await execute_structured_tool(
                 session_id=sid,
                 tool_name=tool_name,
@@ -3034,8 +3038,8 @@ class HandlerImplementation(
                 actor="tool_runtime",
                 emit_event=self._event_bus.publish,
                 record_execution=_record_execution,
-                sanitize_output=self._sanitize_tool_output_text,
-                taint_labels=label_tool_output(str(tool_name)),
+                sanitize_output=sanitize_output,
+                taint_labels=execution_taints,
                 approval_event_fields=approval_event_fields,
             )
             return ApprovedToolExecutionResult(
@@ -3268,6 +3272,16 @@ class HandlerImplementation(
             .replace("TOOL_OUTPUT_END", "TOOL_OUTPUT_MARKER")
             .strip()
         )
+
+    def _sanitize_untrusted_tool_output_text(self, raw: str) -> str:
+        if not raw:
+            return ""
+        firewall = getattr(self, "_firewall", None)
+        if firewall is not None:
+            inspect = getattr(firewall, "inspect", None)
+            if callable(inspect):
+                raw = str(inspect(raw).sanitized_text)
+        return self._sanitize_tool_output_text(raw)
 
     async def _execute_via_sandbox(
         self,

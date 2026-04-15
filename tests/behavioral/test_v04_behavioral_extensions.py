@@ -665,6 +665,68 @@ async def test_behavioral_mcp_stdio_tool_execute_requires_confirmation_then_exec
 
 
 @pytest.mark.asyncio
+async def test_behavioral_mcp_stdio_tool_execute_allowlisted_server_executes_without_confirmation(
+    tmp_path: Path,
+) -> None:
+    server_script = write_mock_mcp_server(tmp_path / "mock_mcp_server.py")
+    daemon_task, client, _config = await _start_daemon(
+        tmp_path,
+        config_overrides={
+            "mcp_servers": [
+                {
+                    "name": "docs",
+                    "transport": "stdio",
+                    "command": [sys.executable, str(server_script)],
+                    "timeout_seconds": 10.0,
+                }
+            ],
+            "mcp_trusted_servers": ["docs"],
+        },
+    )
+    try:
+        created = await client.call(
+            "session.create",
+            {"channel": "cli", "user_id": "alice", "workspace_id": "ws1"},
+        )
+        sid = str(created["session_id"])
+
+        result = await client.call(
+            "tool.execute",
+            {
+                "session_id": sid,
+                "tool_name": "mcp.docs.lookup-doc",
+                "command": ["mcp"],
+                "arguments": {"query": "roadmap", "limit": 4},
+                "security_critical": False,
+                "degraded_mode": "fail_open",
+            },
+        )
+
+        assert result["allowed"] is True
+        assert result.get("confirmation_required") is not True
+        payload = json.loads(str(result["stdout"]))
+        assert payload["structured_content"] == {
+            "answer": "echo:roadmap",
+            "limit": 4,
+            "query": "roadmap",
+        }
+
+        executed = await _wait_for_audit_event(
+            client,
+            event_type="ToolExecuted",
+            session_id=sid,
+            predicate=lambda event: (
+                str(event.get("data", {}).get("tool_name", "")) == "mcp.docs.lookup-doc"
+                and bool(event.get("data", {}).get("success")) is True
+                and str(event.get("data", {}).get("actor", "")) == "tool_runtime"
+            ),
+        )
+        assert executed["event_type"] == "ToolExecuted"
+    finally:
+        await _shutdown_daemon(daemon_task, client)
+
+
+@pytest.mark.asyncio
 async def test_behavioral_mcp_stdio_tool_execute_rejects_invalid_arguments_before_upstream_call(
     tmp_path: Path,
 ) -> None:
