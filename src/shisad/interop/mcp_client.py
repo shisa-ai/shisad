@@ -13,6 +13,7 @@ from typing import Any
 from shisad.core.config import McpServerConfig, McpStdioServerConfig
 from shisad.core.tools.names import canonical_tool_name
 from shisad.core.tools.registry import ToolRegistry
+from shisad.core.tools.schema import openai_function_name
 from shisad.core.types import ToolName
 from shisad.interop.mcp_tools import McpDiscoveredTool, mcp_tool_to_registry_entry
 
@@ -179,13 +180,15 @@ class McpClientManager:
     def startup_error_for_tool(self, tool_name: ToolName | str) -> tuple[str, str] | None:
         """Return a stored startup error for one MCP runtime tool, if any."""
         candidate = canonical_tool_name(str(tool_name), warn_on_alias=False)
-        if not candidate.startswith("mcp."):
+        if not candidate:
             return None
         for server_name in sorted(self._server_configs, key=len, reverse=True):
-            if candidate.startswith(f"mcp.{server_name}."):
-                error = self._startup_errors.get(server_name)
-                if error is None:
-                    return None
+            error = self._startup_errors.get(server_name)
+            if error is None:
+                continue
+            dotted_prefix = f"mcp.{server_name}."
+            provider_prefix = openai_function_name(dotted_prefix)
+            if candidate.startswith(dotted_prefix) or candidate.startswith(provider_prefix):
                 return server_name, error
         return None
 

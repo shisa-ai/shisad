@@ -11,6 +11,7 @@ from shisad.core.tools.schema import ToolDefinition, ToolParameter
 from shisad.core.types import ToolName
 
 _MCP_IDENTIFIER_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,127}$")
+_MCP_PARAMETER_NAME_MAX_LENGTH = 256
 _MCP_PARAMETER_NAME_FORBIDDEN_CHARS = frozenset({'"', "'", "`", "<", ">", "{", "}", "\\"})
 
 
@@ -52,6 +53,10 @@ def _parameter_name(value: Any) -> str:
         raise ValueError("MCP tool parameter names must not be empty")
     if parameter_name != parameter_name.strip():
         raise ValueError("MCP tool parameter names must not include surrounding whitespace")
+    if len(parameter_name) > _MCP_PARAMETER_NAME_MAX_LENGTH:
+        raise ValueError(
+            f"MCP tool parameter names must be at most {_MCP_PARAMETER_NAME_MAX_LENGTH} characters"
+        )
     if any(not char.isprintable() or char.isspace() for char in parameter_name):
         raise ValueError(
             "MCP tool parameter names must not contain whitespace or control characters"
