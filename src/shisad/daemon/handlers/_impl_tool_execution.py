@@ -98,6 +98,25 @@ class ToolExecutionImplMixin(HandlerMixinBase):
         tool_name = self._registry.resolve_name(tool_name_value) or ToolName(tool_name_value)
         tool_def = self._registry.get_tool(tool_name)
         if tool_def is None:
+            mcp_manager = getattr(self, "_mcp_manager", None)
+            if mcp_manager is not None:
+                startup_error_lookup = getattr(mcp_manager, "startup_error_for_tool", None)
+                if callable(startup_error_lookup):
+                    startup_error = startup_error_lookup(tool_name)
+                    if startup_error is not None:
+                        server_name, error = startup_error
+                        await self._event_bus.publish(
+                            ToolRejected(
+                                session_id=sid,
+                                actor="control_api",
+                                tool_name=tool_name,
+                                reason=f"mcp_startup_error:{server_name}",
+                            )
+                        )
+                        raise ValueError(
+                            f"MCP tool '{tool_name}' unavailable because server '{server_name}' "
+                            f"failed during startup: {error}"
+                        )
             await self._event_bus.publish(
                 ToolRejected(
                     session_id=sid,

@@ -12,7 +12,7 @@ import pytest
 from pydantic import ValidationError
 
 from shisad.core.config import DaemonConfig, McpHttpServerConfig, McpStdioServerConfig
-from shisad.core.events import ToolApproved, ToolExecuted
+from shisad.core.events import ToolApproved, ToolExecuted, ToolRejected
 from shisad.core.session import Session, SessionManager
 from shisad.core.tools.registry import ToolRegistry
 from shisad.core.tools.schema import ToolDefinition, ToolParameter
@@ -48,9 +48,15 @@ class _NoopRateLimiter:
 
 
 class _McpManagerStub:
-    def __init__(self, payload: dict[str, Any]) -> None:
+    def __init__(
+        self,
+        payload: dict[str, Any],
+        *,
+        startup_errors: dict[str, str] | None = None,
+    ) -> None:
         self._payload = dict(payload)
         self.calls: list[tuple[str, str, dict[str, Any]]] = []
+        self._startup_errors = dict(startup_errors or {})
 
     async def call_tool(
         self,
@@ -60,6 +66,13 @@ class _McpManagerStub:
     ) -> dict[str, Any]:
         self.calls.append((server_name, tool_name, dict(arguments)))
         return dict(self._payload)
+
+    def startup_error_for_tool(self, tool_name: ToolName | str) -> tuple[str, str] | None:
+        candidate = str(tool_name).strip().lower()
+        for server_name, error in self._startup_errors.items():
+            if candidate.startswith(f"mcp.{server_name}."):
+                return server_name, error
+        return None
 
 
 class _McpExecutionHarness:
@@ -162,6 +175,8 @@ class _McpToolExecuteHarness:
         payload: dict[str, Any],
         parameters: list[ToolParameter] | None = None,
         require_confirmation: bool = False,
+        register_tool: bool = True,
+        startup_errors: dict[str, str] | None = None,
     ) -> None:
         self._session_manager = SessionManager()
         self._session = self._session_manager.create(
@@ -171,28 +186,29 @@ class _McpToolExecuteHarness:
             metadata={"trust_level": "trusted"},
         )
         self._registry = ToolRegistry()
-        self._registry.register(
-            ToolDefinition(
-                name=ToolName("mcp.docs.lookup-doc"),
-                description="Lookup external docs.",
-                parameters=parameters
-                or [
-                    ToolParameter(name="query", type="string", required=True),
-                    ToolParameter(name="limit", type="integer", required=False),
-                ],
-                require_confirmation=require_confirmation,
-                registration_source="mcp",
-                registration_source_id="docs",
-                upstream_tool_name="lookup-doc",
+        if register_tool:
+            self._registry.register(
+                ToolDefinition(
+                    name=ToolName("mcp.docs.lookup-doc"),
+                    description="Lookup external docs.",
+                    parameters=parameters
+                    or [
+                        ToolParameter(name="query", type="string", required=True),
+                        ToolParameter(name="limit", type="integer", required=False),
+                    ],
+                    require_confirmation=require_confirmation,
+                    registration_source="mcp",
+                    registration_source_id="docs",
+                    upstream_tool_name="lookup-doc",
+                )
             )
-        )
         self._event_bus = _EventCollector()
         self._config = SimpleNamespace(
             assistant_fs_roots=[Path.cwd()],
             checkpoint_trigger="never",
         )
         self._rate_limiter = _NoopRateLimiter()
-        self._mcp_manager = _McpManagerStub(payload)
+        self._mcp_manager = _McpManagerStub(payload, startup_errors=startup_errors)
         self.queued_pending_actions: list[dict[str, Any]] = []
         self._skill_manager = SimpleNamespace(
             authorize_runtime=lambda **_kwargs: SimpleNamespace(
@@ -383,7 +399,7 @@ def test_i1_mcp_tool_translation_preserves_upstream_name_and_namespace() -> None
 
 
 def test_i1_mcp_tool_translation_rejects_unsafe_parameter_names() -> None:
-    with pytest.raises(ValueError, match="parameter names must match"):
+    with pytest.raises(ValueError, match="whitespace or control characters"):
         mcp_tool_to_registry_entry(
             McpDiscoveredTool(
                 name="lookup-doc",
@@ -398,6 +414,51 @@ def test_i1_mcp_tool_translation_rejects_unsafe_parameter_names() -> None:
             ),
             server_name="docs",
         )
+
+
+def test_i1_mcp_tool_translation_accepts_compatible_namespaced_and_long_parameter_names() -> None:
+    long_name = "vendor.param." + ("segment_" * 20)
+    entry = mcp_tool_to_registry_entry(
+        McpDiscoveredTool(
+            name="lookup-doc",
+            description="Lookup remote documentation.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "$schema": {"type": "string"},
+                    "profile.name": {"type": "string"},
+                    "filters[0]": {"type": "integer"},
+                    "vendor:param": {"type": "string"},
+                    long_name: {"type": "string"},
+                },
+                "required": ["$schema", "profile.name", "filters[0]", "vendor:param", long_name],
+            },
+        ),
+        server_name="docs",
+    )
+    registry = ToolRegistry()
+    registry.register(entry)
+
+    assert [parameter.name for parameter in entry.parameters] == [
+        "$schema",
+        "profile.name",
+        "filters[0]",
+        "vendor:param",
+        long_name,
+    ]
+    assert (
+        registry.validate_call(
+            entry.name,
+            {
+                "$schema": "https://example.test/schema",
+                "profile.name": "alice",
+                "filters[0]": 1,
+                "vendor:param": "enabled",
+                long_name: "value",
+            },
+        )
+        == []
+    )
 
 
 def test_i1_mcp_tool_translation_preserves_non_string_enum_values() -> None:
@@ -581,6 +642,46 @@ async def test_i1_mcp_connect_all_skips_broken_servers_and_keeps_good_tools_avai
         await manager.shutdown()
 
     assert registry.has_tool(ToolName("mcp.docs.lookup-doc")) is False
+
+
+@pytest.mark.asyncio
+async def test_i1_mcp_connect_all_cleans_up_registration_failures_and_records_startup_error(
+    tmp_path: Path,
+) -> None:
+    server_script = write_mock_mcp_server(tmp_path / "mock_mcp_server.py")
+    registry = ToolRegistry()
+    registry.register(
+        ToolDefinition(
+            name=ToolName("mcp.docs.lookup_doc"),
+            description="Alias collision placeholder.",
+            registration_source="mcp",
+            registration_source_id="docs",
+            upstream_tool_name="lookup_doc",
+        )
+    )
+    manager = McpClientManager(
+        server_configs=[
+            McpStdioServerConfig(
+                name="docs",
+                command=[sys.executable, str(server_script)],
+                timeout_seconds=10.0,
+            )
+        ],
+        tool_registry=registry,
+    )
+
+    await manager.connect_all()
+    try:
+        assert registry.has_tool(ToolName("mcp.docs.lookup-doc")) is False
+        assert manager.startup_error("docs") is not None
+        assert "provider alias collision" in str(manager.startup_error("docs"))
+        assert manager.startup_error_for_tool("mcp.docs.lookup-doc") == (
+            "docs",
+            str(manager.startup_error("docs")),
+        )
+        assert manager._runtimes == {}
+    finally:
+        await manager.shutdown()
 
 
 @pytest.mark.asyncio
@@ -860,3 +961,37 @@ async def test_i1_tool_execute_confirmation_queue_preserves_direct_mcp_strip_int
     assert result["allowed"] is False
     assert result["confirmation_required"] is True
     assert harness.queued_pending_actions[0]["strip_direct_tool_execute_envelope_keys"] is True
+
+
+@pytest.mark.asyncio
+async def test_i1_tool_execute_surfaces_mcp_startup_registration_errors() -> None:
+    harness = _McpToolExecuteHarness(
+        payload={
+            "ok": True,
+            "structured_content": {"query": "roadmap"},
+            "content": [{"type": "text", "text": "echo:roadmap"}],
+        },
+        register_tool=False,
+        startup_errors={
+            "docs": "MCP server 'docs' tool registration failed: provider alias collision"
+        },
+    )
+
+    with pytest.raises(ValueError, match="failed during startup"):
+        await HandlerImplementation.do_tool_execute(
+            harness,  # type: ignore[arg-type]
+            {
+                "session_id": str(harness.session_id),
+                "tool_name": "mcp.docs.lookup-doc",
+                "command": ["mcp"],
+                "arguments": {"query": "roadmap"},
+                "security_critical": False,
+                "degraded_mode": "fail_open",
+            },
+        )
+
+    assert harness._mcp_manager.calls == []
+    assert any(
+        isinstance(event, ToolRejected) and event.reason == "mcp_startup_error:docs"
+        for event in harness._event_bus.events
+    )

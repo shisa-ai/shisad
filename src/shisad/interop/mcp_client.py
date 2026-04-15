@@ -11,6 +11,7 @@ from datetime import timedelta
 from typing import Any
 
 from shisad.core.config import McpServerConfig, McpStdioServerConfig
+from shisad.core.tools.names import canonical_tool_name
 from shisad.core.tools.registry import ToolRegistry
 from shisad.core.types import ToolName
 from shisad.interop.mcp_tools import McpDiscoveredTool, mcp_tool_to_registry_entry
@@ -130,6 +131,7 @@ class McpClientManager:
         self._tool_registry = tool_registry
         self._runtimes: dict[str, _ServerRuntime] = {}
         self._registered_tools: dict[str, tuple[ToolName, ...]] = {}
+        self._startup_errors: dict[str, str] = {}
 
     async def connect_all(self) -> None:
         """Connect to every configured server and register discovered tools."""
@@ -137,11 +139,17 @@ class McpClientManager:
             try:
                 await self._connect_and_register(server_name)
             except Exception as exc:
+                await self._disconnect_runtime(server_name)
+                self._startup_errors[server_name] = (
+                    str(exc).strip() or f"MCP server '{server_name}' unavailable at startup"
+                )
                 logger.warning(
                     "MCP server unavailable at startup; continuing without it: server=%s error=%s",
                     server_name,
-                    exc,
+                    self._startup_errors[server_name],
                 )
+            else:
+                self._startup_errors.pop(server_name, None)
 
     async def shutdown(self) -> None:
         """Close all active sessions and unregister bridged tools."""
@@ -163,6 +171,23 @@ class McpClientManager:
             await self._disconnect_runtime(server_name)
             runtime = await self._ensure_connected(server_name)
             return await self._discover_from_runtime(server_name, runtime)
+
+    def startup_error(self, server_name: str) -> str | None:
+        """Return the last startup registration error for one configured server."""
+        return self._startup_errors.get(str(server_name).strip().lower())
+
+    def startup_error_for_tool(self, tool_name: ToolName | str) -> tuple[str, str] | None:
+        """Return a stored startup error for one MCP runtime tool, if any."""
+        candidate = canonical_tool_name(str(tool_name), warn_on_alias=False)
+        if not candidate.startswith("mcp."):
+            return None
+        for server_name in sorted(self._server_configs, key=len, reverse=True):
+            if candidate.startswith(f"mcp.{server_name}."):
+                error = self._startup_errors.get(server_name)
+                if error is None:
+                    return None
+                return server_name, error
+        return None
 
     async def call_tool(
         self,

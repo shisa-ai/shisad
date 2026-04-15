@@ -11,7 +11,7 @@ from shisad.core.tools.schema import ToolDefinition, ToolParameter
 from shisad.core.types import ToolName
 
 _MCP_IDENTIFIER_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,127}$")
-_MCP_PARAMETER_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]{0,63}$")
+_MCP_PARAMETER_NAME_FORBIDDEN_CHARS = frozenset({'"', "'", "`", "<", ">", "{", "}", "\\"})
 
 
 @dataclass(slots=True, frozen=True)
@@ -48,10 +48,19 @@ def _mapping(value: Any, *, field_name: str) -> Mapping[str, Any]:
 
 def _parameter_name(value: Any) -> str:
     parameter_name = str(value)
+    if not parameter_name:
+        raise ValueError("MCP tool parameter names must not be empty")
     if parameter_name != parameter_name.strip():
         raise ValueError("MCP tool parameter names must not include surrounding whitespace")
-    if not _MCP_PARAMETER_NAME_RE.fullmatch(parameter_name):
-        raise ValueError("MCP tool parameter names must match ^[A-Za-z_][A-Za-z0-9_-]{0,63}$")
+    if any(not char.isprintable() or char.isspace() for char in parameter_name):
+        raise ValueError(
+            "MCP tool parameter names must not contain whitespace or control characters"
+        )
+    if any(char in _MCP_PARAMETER_NAME_FORBIDDEN_CHARS for char in parameter_name):
+        raise ValueError(
+            "MCP tool parameter names must not contain quotes, backslashes, braces, "
+            "angle brackets, or backticks"
+        )
     return parameter_name
 
 
