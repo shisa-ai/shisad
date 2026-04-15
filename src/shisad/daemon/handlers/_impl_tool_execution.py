@@ -461,6 +461,7 @@ class ToolExecutionImplMixin(HandlerMixinBase):
             execution_action=cp_eval.action,
             merged_policy=merged_policy,
             user_confirmed=True,
+            strip_direct_tool_execute_envelope_keys=True,
         )
         return cast(
             dict[str, Any],

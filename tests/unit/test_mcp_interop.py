@@ -63,7 +63,12 @@ class _McpManagerStub:
 
 
 class _McpExecutionHarness:
-    def __init__(self, *, payload: dict[str, Any]) -> None:
+    def __init__(
+        self,
+        *,
+        payload: dict[str, Any],
+        parameters: list[ToolParameter] | None = None,
+    ) -> None:
         self._session_manager = SessionManager()
         self._session = self._session_manager.create(
             channel="cli",
@@ -80,7 +85,8 @@ class _McpExecutionHarness:
             get_tool=lambda _tool_name: ToolDefinition(
                 name=ToolName("mcp.docs.lookup-doc"),
                 description="Lookup external docs.",
-                parameters=[
+                parameters=parameters
+                or [
                     ToolParameter(name="query", type="string", required=True),
                     ToolParameter(name="limit", type="integer", required=False),
                 ],
@@ -645,6 +651,52 @@ async def test_i1_execute_approved_action_uses_upstream_mcp_tool_name() -> None:
     assert any(
         isinstance(event, ToolExecuted) and event.success for event in harness._event_bus.events
     )
+
+
+@pytest.mark.asyncio
+async def test_i1_shared_execution_path_preserves_reserved_named_mcp_params() -> None:
+    harness = _McpExecutionHarness(
+        payload={
+            "ok": True,
+            "structured_content": {"answer": "echo:roadmap"},
+            "content": [{"type": "text", "text": "echo:roadmap"}],
+        },
+        parameters=[
+            ToolParameter(name="session_id", type="string", required=True),
+            ToolParameter(name="tool_name", type="string", required=True),
+            ToolParameter(name="command", type="array", required=True),
+            ToolParameter(name="query", type="string", required=True),
+        ],
+    )
+
+    result = await HandlerImplementation._execute_approved_action(
+        harness,  # type: ignore[arg-type]
+        sid=harness.session_id,
+        user_id=UserId("alice"),
+        tool_name=ToolName("mcp.docs.lookup-doc"),
+        arguments={
+            "session_id": "remote-session",
+            "tool_name": "remote-tool",
+            "command": ["lookup", "roadmap"],
+            "query": "roadmap",
+        },
+        capabilities=set(),
+        approval_actor="policy_loop",
+    )
+
+    assert result.success is True
+    assert harness._mcp_manager.calls == [
+        (
+            "docs",
+            "lookup-doc",
+            {
+                "session_id": "remote-session",
+                "tool_name": "remote-tool",
+                "command": ["lookup", "roadmap"],
+                "query": "roadmap",
+            },
+        )
+    ]
 
 
 @pytest.mark.asyncio

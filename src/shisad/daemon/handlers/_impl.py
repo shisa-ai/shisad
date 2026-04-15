@@ -2632,6 +2632,7 @@ class HandlerImplementation(
         approval_task_envelope_id: str = "",
         approval_timestamp: str = "",
         approval_evidence: ConfirmationEvidence | None = None,
+        strip_direct_tool_execute_envelope_keys: bool = False,
     ) -> ApprovedToolExecutionResult:
         session = self._session_manager.get(sid)
         if session is None:
@@ -3043,15 +3044,12 @@ class HandlerImplementation(
         if tool is not None and str(getattr(tool, "registration_source", "")).strip() == "mcp":
             server_name = str(getattr(tool, "registration_source_id", "")).strip()
             upstream_tool_name = str(getattr(tool, "upstream_tool_name", "")).strip()
-            direct_tool_execute_arguments = (
-                "session_id" in arguments and "tool_name" in arguments and "command" in arguments
-            )
             mcp_arguments = {
                 parameter.name: arguments[parameter.name]
                 for parameter in getattr(tool, "parameters", [])
                 if parameter.name in arguments
                 and (
-                    not direct_tool_execute_arguments
+                    not strip_direct_tool_execute_envelope_keys
                     or parameter.name not in _RESERVED_TOOL_EXECUTION_ARGUMENT_KEYS
                 )
             }
