@@ -1,7 +1,7 @@
 """Tool registry.
 
-Loads tool definitions from a trusted config directory, verifies schema
-hashes on load, and provides lookup/validation methods.
+Loads locally trusted tool definitions, accepts explicitly-labeled external
+registrations, verifies schema hashes when provided, and rejects shadowing.
 """
 
 from __future__ import annotations
@@ -16,7 +16,7 @@ from urllib.parse import urlparse
 import yaml
 
 from shisad.core.tools.names import canonical_tool_name_typed
-from shisad.core.tools.schema import ToolDefinition
+from shisad.core.tools.schema import ToolDefinition, openai_function_name
 from shisad.core.types import ToolName
 
 logger = logging.getLogger(__name__)
@@ -118,6 +118,7 @@ class ToolRegistry:
     def __init__(self) -> None:
         self._tools: dict[ToolName, ToolDefinition] = {}
         self._expected_hashes: dict[ToolName, str] = {}
+        self._provider_aliases: dict[str, ToolName] = {}
 
     def register(self, tool: ToolDefinition, expected_hash: str | None = None) -> None:
         """Register a tool definition.
@@ -131,7 +132,27 @@ class ToolRegistry:
             ValueError: If the hash doesn't match (tampering detected).
         """
         canonical_name = canonical_tool_name_typed(tool.name)
-        canonical_tool = tool.model_copy(update={"name": canonical_name}, deep=True)
+        canonical_tool = tool.model_copy(
+            update={
+                "name": canonical_name,
+                "registration_source": str(tool.registration_source).strip().lower() or "local",
+                "registration_source_id": str(tool.registration_source_id).strip().lower(),
+                "upstream_tool_name": str(tool.upstream_tool_name).strip(),
+            },
+            deep=True,
+        )
+        existing = self._tools.get(canonical_name)
+        if existing is not None and existing != canonical_tool:
+            raise ValueError(f"Tool '{canonical_name}' is already registered")
+
+        provider_alias = openai_function_name(str(canonical_name))
+        alias_owner = self._provider_aliases.get(provider_alias)
+        if alias_owner is not None and alias_owner != canonical_name:
+            raise ValueError(
+                "Tool "
+                f"'{canonical_name}' provider alias collision with '{alias_owner}' "
+                f"({provider_alias})"
+            )
 
         if expected_hash is not None:
             actual_hash = canonical_tool.schema_hash()
@@ -143,6 +164,7 @@ class ToolRegistry:
             self._expected_hashes[canonical_name] = expected_hash
 
         self._tools[canonical_name] = canonical_tool
+        self._provider_aliases[provider_alias] = canonical_name
         logger.debug("Registered tool: %s", canonical_name)
 
     def get_tool(self, name: ToolName) -> ToolDefinition | None:
@@ -166,6 +188,9 @@ class ToolRegistry:
         canonical_name = canonical_tool_name_typed(name)
         removed = self._tools.pop(canonical_name, None)
         self._expected_hashes.pop(canonical_name, None)
+        provider_alias = openai_function_name(str(canonical_name))
+        if self._provider_aliases.get(provider_alias) == canonical_name:
+            self._provider_aliases.pop(provider_alias, None)
         return removed is not None
 
     def validate_call(self, name: ToolName, arguments: dict[str, Any]) -> list[str]:

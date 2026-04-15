@@ -1,8 +1,8 @@
 """Tool schema definitions.
 
-Tools are trusted configuration — their definitions are loaded from
-a designated config directory and verified via schema hashes. No dynamic
-tool discovery from the model or data plane.
+Locally defined tools are trusted configuration loaded from a designated
+config directory and verified via schema hashes. External adapters may also
+register compatibility metadata with explicit source labels.
 """
 
 from __future__ import annotations
@@ -46,6 +46,9 @@ class ToolDefinition(BaseModel):
     destinations: list[str] = Field(default_factory=list)
     require_confirmation: bool = False
     sandbox_type: str | None = None
+    registration_source: str = "local"
+    registration_source_id: str = ""
+    upstream_tool_name: str = ""
 
     model_config = {"frozen": True}
 

@@ -49,6 +49,7 @@ from shisad.daemon.event_wiring import DaemonEventWiring
 from shisad.executors.connect_path import IptablesConnectPathProxy
 from shisad.executors.proxy import EgressProxy
 from shisad.executors.sandbox import SandboxOrchestrator
+from shisad.interop.mcp_client import McpClientManager
 from shisad.memory.ingestion import EmbeddingFingerprint, IngestionPipeline, RetrieveRagTool
 from shisad.memory.manager import MemoryManager
 from shisad.scheduler.manager import SchedulerManager
@@ -414,6 +415,7 @@ class DaemonServices:
     skill_manager: SkillManager
     coding_manager: CodingAgentManager
     selfmod_manager: SelfModificationManager
+    mcp_manager: McpClientManager | None
     realitycheck_toolkit: RealityCheckToolkit
     realitycheck_status: dict[str, Any]
     lockdown_manager: LockdownManager
@@ -503,6 +505,7 @@ class DaemonServices:
         slack_channel: SlackChannel | None = None
         embeddings_adapter: SyncEmbeddingsAdapter | None = None
         control_plane_sidecar: ControlPlaneSidecarHandle | None = None
+        mcp_manager: McpClientManager | None = None
         startup_complete = False
 
         try:
@@ -751,6 +754,12 @@ class DaemonServices:
                     realitycheck_status.get("endpoint_host", "")
                 ).strip(),
             )
+            if config.mcp_servers:
+                mcp_manager = McpClientManager(
+                    server_configs=list(config.mcp_servers),
+                    tool_registry=registry,
+                )
+                await mcp_manager.connect_all()
             pep = PEP(
                 policy_loader.policy,
                 registry,
@@ -839,6 +848,7 @@ class DaemonServices:
                 skill_manager=skill_manager,
                 coding_manager=coding_manager,
                 selfmod_manager=selfmod_manager,
+                mcp_manager=mcp_manager,
                 realitycheck_toolkit=realitycheck_toolkit,
                 realitycheck_status=realitycheck_status,
                 lockdown_manager=lockdown_manager,
@@ -866,6 +876,9 @@ class DaemonServices:
                 if embeddings_adapter is not None:
                     with contextlib.suppress(OSError, RuntimeError):
                         embeddings_adapter.close(wait=False)
+                if mcp_manager is not None:
+                    with contextlib.suppress(OSError, RuntimeError):
+                        await mcp_manager.shutdown()
                 for channel in channels.values():
                     with contextlib.suppress(OSError, RuntimeError):
                         await channel.disconnect()
@@ -956,10 +969,9 @@ class DaemonServices:
         _wipe_dir_contents(channel_state_root)
 
         # -- Transcripts --
-        cleared["transcripts"] = (
-            _count_files_recursive(self.transcript_store._transcript_dir)
-            + _count_files_recursive(self.transcript_store._blob_dir)
-        )
+        cleared["transcripts"] = _count_files_recursive(
+            self.transcript_store._transcript_dir
+        ) + _count_files_recursive(self.transcript_store._blob_dir)
         _wipe_dir_contents(self.transcript_store._transcript_dir)
         _wipe_dir_contents(self.transcript_store._blob_dir)
 
@@ -978,10 +990,9 @@ class DaemonServices:
         cleared["ingestion_records"] = len(self.ingestion._records)
         cleared["ingestion_vectors"] = len(self.ingestion._vectors)
         cleared["ingestion_keys"] = len(self.ingestion._key_metadata_by_id)
-        cleared["ingestion_artifacts"] = (
-            _count_files_recursive(self.ingestion._sanitized_dir)
-            + _count_files_recursive(self.ingestion._original_dir)
-        )
+        cleared["ingestion_artifacts"] = _count_files_recursive(
+            self.ingestion._sanitized_dir
+        ) + _count_files_recursive(self.ingestion._original_dir)
         self.ingestion._records.clear()
         self.ingestion._vectors.clear()
         self.ingestion._key_material_by_id.clear()
@@ -992,9 +1003,8 @@ class DaemonServices:
         self.ingestion._load_or_create_keys()
 
         # -- Self-modification --
-        cleared["selfmod_entries"] = (
-            len(self.selfmod_manager._inventory.skills)
-            + len(self.selfmod_manager._inventory.behavior_packs)
+        cleared["selfmod_entries"] = len(self.selfmod_manager._inventory.skills) + len(
+            self.selfmod_manager._inventory.behavior_packs
         )
         cleared["selfmod_artifacts"] = (
             _count_files_recursive(self.selfmod_manager._proposal_dir)
@@ -1100,6 +1110,8 @@ class DaemonServices:
                 )
             )
 
+        mcp_manager = getattr(self, "mcp_manager", None)
+
         disconnected_ids: set[int] = set()
         channels = getattr(self, "channels", {})
         if isinstance(channels, dict):
@@ -1139,6 +1151,18 @@ class DaemonServices:
                 logger.error(
                     "Error stopping daemon service %s",
                     label,
+                    exc_info=(type(result), result, result.__traceback__),
+                )
+
+        if mcp_manager is not None:
+            try:
+                await mcp_manager.shutdown()
+            except BaseException as result:
+                if result.__class__.__name__ == "CancelledError":
+                    return
+                logger.error(
+                    "Error stopping daemon service %s",
+                    "mcp_manager",
                     exc_info=(type(result), result, result.__traceback__),
                 )
 

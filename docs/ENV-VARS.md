@@ -127,6 +127,20 @@ Browser notes:
 - Loopback/private browser targets remain blocked by the sandbox unless the target host is explicitly allowlisted for the browser surface in the current configuration.
 - `SHISAD_BROWSER_REQUIRE_HARDENED_ISOLATION` defaults to `1`. Keep it enabled unless you are deliberately running a non-production browser integration and understand that disabling it weakens the browser isolation boundary.
 
+MCP interop:
+
+- `SHISAD_MCP_SERVERS`
+
+MCP notes:
+
+- `SHISAD_MCP_SERVERS` accepts a JSON array of server configs. `transport:
+  "stdio"` entries require `command: ["executable", "arg1", ...]`; `transport:
+  "http"` entries require `url: "http(s)://.../mcp"`.
+- MCP server names are normalized to lowercase and must remain unique after
+  normalization.
+- Discovered tools register under runtime ids like `mcp.<server>.<tool>`. The
+  upstream MCP tool name is preserved separately for transport calls.
+
 Approval / WebAuthn / signer:
 
 - `SHISAD_APPROVAL_ORIGIN`

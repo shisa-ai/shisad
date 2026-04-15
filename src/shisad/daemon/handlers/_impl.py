@@ -956,6 +956,7 @@ class HandlerImplementation(
         self._skill_manager = services.skill_manager
         self._coding_manager = services.coding_manager
         self._selfmod_manager = services.selfmod_manager
+        self._mcp_manager = services.mcp_manager
         self._realitycheck_toolkit = services.realitycheck_toolkit
         self._sandbox = services.sandbox
         self._control_plane = services.control_plane
@@ -1146,8 +1147,7 @@ class HandlerImplementation(
         channel_state_root = self._services.channel_state_store._root_dir
         approval_store_path = self._credential_store._approval_store_path
         identity_allowlists_match = {
-            channel: set(values)
-            for channel, values in self._identity_map._allowlists.items()
+            channel: set(values) for channel, values in self._identity_map._allowlists.items()
         } == {
             channel: set(values)
             for channel, values in self._services.identity_allowlists_baseline.items()
@@ -3035,6 +3035,33 @@ class HandlerImplementation(
             return await _execute_structured_payload_tool(
                 structured_payload,
                 default_error=default_error,
+            )
+
+        if tool is not None and str(getattr(tool, "registration_source", "")).strip() == "mcp":
+            server_name = str(getattr(tool, "registration_source_id", "")).strip()
+            upstream_tool_name = str(getattr(tool, "upstream_tool_name", "")).strip()
+            mcp_payload: Mapping[str, Any]
+            mcp_manager = getattr(self, "_mcp_manager", None)
+            if mcp_manager is None or not server_name or not upstream_tool_name:
+                mcp_payload = {"ok": False, "error": "mcp_tool_unavailable"}
+            else:
+                try:
+                    mcp_payload = await mcp_manager.call_tool(
+                        server_name=server_name,
+                        tool_name=upstream_tool_name,
+                        arguments=dict(arguments),
+                    )
+                except Exception as exc:
+                    logger.exception(
+                        "MCP tool execution failed: server=%s upstream_tool=%s error=%s",
+                        server_name,
+                        upstream_tool_name,
+                        exc,
+                    )
+                    mcp_payload = {"ok": False, "error": str(exc).strip() or "mcp_tool_failed"}
+            return await _execute_structured_payload_tool(
+                mcp_payload,
+                default_error="mcp_tool_failed",
             )
 
         if tool is None:

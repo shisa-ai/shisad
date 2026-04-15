@@ -69,6 +69,7 @@ ignore_missing_imports = true
 
 [dependency-groups]
 dev = [
+    "mcp>=1.27,<2",
     "numpy>=2.3,<3",
     "pytest>=9.0.3,<10",
     "pytest-asyncio>=1,<2",
@@ -93,6 +94,9 @@ security-build = [
 ]
 coverage = [
     "pytest-cov>=5.0,<7",
+]
+interop = [
+    "mcp>=1.27,<2",
 ]
 channels-runtime = [
     "matrix-nio[e2e]>=0.25,<0.26",

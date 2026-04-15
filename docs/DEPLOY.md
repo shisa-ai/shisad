@@ -44,16 +44,17 @@ include the security runtime dependency group:
 uv sync --group security-runtime --group dev --extra chat
 ```
 
-`security-runtime`, `security-build`, `channels-runtime`, and `coverage` are uv
-dependency groups from `[dependency-groups]`; install them with `--group`. The
-chat UI dependencies are a project optional extra; install them with
-`--extra chat`.
+`security-runtime`, `security-build`, `interop`, `channels-runtime`, and
+`coverage` are uv dependency groups from `[dependency-groups]`; install them
+with `--group`. The chat UI dependencies are a project optional extra; install
+them with `--extra chat`.
 
 Optional groups:
 
 ```bash
 uv sync --group security-runtime    # Local ONNX PromptGuard runtime checks
 uv sync --group security-build      # PromptGuard download/export/model-pack build tooling
+uv sync --group interop             # MCP client runtime
 uv sync --group channels-runtime    # Matrix, Discord, Telegram, Slack
 uv sync --group coverage            # pytest-cov
 ```
@@ -65,6 +66,10 @@ operation with `security-runtime` alone should have PromptGuard's
 `textguard[promptguard]`, but not `torch`; if Transformers logs "PyTorch was
 not found" during startup in that profile, that warning is expected and does
 not mean the daemon runtime group was installed incorrectly.
+
+`interop` installs the MCP client dependency. Configure MCP servers via
+`SHISAD_MCP_SERVERS` (JSON) or `DaemonConfig.mcp_servers`; discovered tools
+register under runtime ids like `mcp.<server>.<tool>`.
 
 ## Preflight Checklist
 

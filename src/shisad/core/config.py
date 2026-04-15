@@ -8,11 +8,12 @@ from __future__ import annotations
 
 import ipaddress
 import json
+import re
 from pathlib import Path
-from typing import Literal, Self
+from typing import Annotated, Literal, Self
 from urllib.parse import urlparse
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from shisad.core.providers.capabilities import (
@@ -30,6 +31,7 @@ def _default_selfmod_allowed_signers_path() -> Path:
 
 
 _WILDCARD_HOST_TOKENS = {"*", "?", "[", "]"}
+_MCP_SERVER_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
 
 
 def _destination_host_pattern(destination: str) -> str:
@@ -83,6 +85,134 @@ def _canonical_origin(scheme: str, host: str, port: int | None) -> str:
     if port is None or port == default_port:
         return f"{normalized_scheme}://{host_component}"
     return f"{normalized_scheme}://{host_component}:{port}"
+
+
+def _normalize_mcp_server_name(value: object) -> str:
+    candidate = str(value).strip().lower()
+    if not candidate or not _MCP_SERVER_NAME_RE.fullmatch(candidate):
+        raise ValueError(
+            "MCP server names must match ^[a-z0-9][a-z0-9._-]{0,63}$ after normalization"
+        )
+    return candidate
+
+
+class _McpBaseServerConfig(BaseModel):
+    """Common MCP server configuration."""
+
+    name: str
+    timeout_seconds: float = Field(
+        default=30.0,
+        ge=0.1,
+        description="Timeout applied to MCP initialize/list/call operations.",
+    )
+
+    model_config = {"frozen": True}
+
+    @field_validator("name", mode="before")
+    @classmethod
+    def _validate_name(cls, value: object) -> str:
+        return _normalize_mcp_server_name(value)
+
+
+class McpStdioServerConfig(_McpBaseServerConfig):
+    """MCP server launched as a subprocess over stdio."""
+
+    transport: Literal["stdio"] = "stdio"
+    command: list[str] = Field(
+        min_length=1,
+        description="Executable and arguments used to launch the MCP server.",
+    )
+    env: dict[str, str] = Field(
+        default_factory=dict,
+        description="Optional environment overrides for the stdio MCP server.",
+    )
+    cwd: Path | None = Field(
+        default=None,
+        description="Optional working directory for the stdio MCP server process.",
+    )
+
+    @field_validator("command", mode="before")
+    @classmethod
+    def _parse_command(cls, value: object) -> object:
+        if isinstance(value, str):
+            stripped = value.strip()
+            if not stripped:
+                raise ValueError("MCP stdio server command cannot be empty")
+            if stripped.startswith("["):
+                parsed = json.loads(stripped)
+                if not isinstance(parsed, list):
+                    raise ValueError("MCP stdio server command JSON must be a list")
+                return [str(item).strip() for item in parsed if str(item).strip()]
+            return [piece.strip() for piece in stripped.split() if piece.strip()]
+        if isinstance(value, list):
+            return [str(item).strip() for item in value if str(item).strip()]
+        return value
+
+    @field_validator("env", mode="before")
+    @classmethod
+    def _parse_env(cls, value: object) -> object:
+        if isinstance(value, str):
+            stripped = value.strip()
+            if not stripped:
+                return {}
+            parsed = json.loads(stripped)
+            if not isinstance(parsed, dict):
+                raise ValueError("MCP stdio server env JSON must be an object")
+            return {str(key): str(item) for key, item in parsed.items()}
+        if isinstance(value, dict):
+            return {str(key): str(item) for key, item in value.items()}
+        return value
+
+    @field_validator("cwd", mode="before")
+    @classmethod
+    def _parse_cwd(cls, value: object) -> object:
+        if value in {None, ""}:
+            return None
+        if isinstance(value, str):
+            return Path(value).expanduser()
+        if isinstance(value, Path):
+            return value.expanduser()
+        return value
+
+
+class McpHttpServerConfig(_McpBaseServerConfig):
+    """MCP server reached over streamable HTTP."""
+
+    transport: Literal["http"] = "http"
+    url: str = Field(description="Base streamable HTTP MCP endpoint URL.")
+    headers: dict[str, str] = Field(
+        default_factory=dict,
+        description="Optional HTTP headers sent to the MCP server.",
+    )
+
+    @field_validator("url", mode="before")
+    @classmethod
+    def _validate_url(cls, value: object) -> str:
+        candidate = str(value).strip()
+        parsed = urlparse(candidate)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            raise ValueError("MCP HTTP server url must be a full http(s) URL")
+        return candidate
+
+    @field_validator("headers", mode="before")
+    @classmethod
+    def _parse_headers(cls, value: object) -> object:
+        if isinstance(value, str):
+            stripped = value.strip()
+            if not stripped:
+                return {}
+            parsed = json.loads(stripped)
+            if not isinstance(parsed, dict):
+                raise ValueError("MCP HTTP server headers JSON must be an object")
+            return {str(key): str(item) for key, item in parsed.items()}
+        if isinstance(value, dict):
+            return {str(key): str(item) for key, item in value.items()}
+        return value
+
+
+McpServerConfig = Annotated[
+    McpStdioServerConfig | McpHttpServerConfig, Field(discriminator="transport")
+]
 
 
 class DaemonConfig(BaseSettings):
@@ -434,6 +564,10 @@ class DaemonConfig(BaseSettings):
         ge=0.1,
         description="Default timeout for coding-agent TASK invocations.",
     )
+    mcp_servers: list[McpServerConfig] = Field(
+        default_factory=list,
+        description="Configured external MCP servers to connect during daemon startup.",
+    )
 
     @staticmethod
     def _parse_list_field(value: object, *, field_name: str) -> object:
@@ -624,6 +758,19 @@ class DaemonConfig(BaseSettings):
     def _parse_realitycheck_allowed_domains(cls, value: object) -> object:
         return cls._parse_list_field(value, field_name="SHISAD_REALITYCHECK_ALLOWED_DOMAINS")
 
+    @field_validator("mcp_servers", mode="before")
+    @classmethod
+    def _parse_mcp_servers(cls, value: object) -> object:
+        if isinstance(value, str):
+            stripped = value.strip()
+            if not stripped:
+                return []
+            parsed = json.loads(stripped)
+            if not isinstance(parsed, list):
+                raise ValueError("SHISAD_MCP_SERVERS JSON must be a list")
+            return parsed
+        return value
+
     @model_validator(mode="after")
     def _ensure_data_dir(self) -> Self:
         self.data_dir.mkdir(parents=True, exist_ok=True)
@@ -691,6 +838,15 @@ class DaemonConfig(BaseSettings):
                 self.approval_bind_port = int(_default_origin_port(scheme) or 8787)
             else:
                 self.approval_bind_port = 8787
+        return self
+
+    @model_validator(mode="after")
+    def _validate_mcp_server_names(self) -> Self:
+        seen: set[str] = set()
+        for server in self.mcp_servers:
+            if server.name in seen:
+                raise ValueError("MCP server names must be unique after normalization")
+            seen.add(server.name)
         return self
 
 

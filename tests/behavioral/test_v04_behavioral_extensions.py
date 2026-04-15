@@ -35,6 +35,7 @@ from shisad.core.transcript import TranscriptStore
 from shisad.core.types import ToolName
 from shisad.daemon.runner import run_daemon
 from tests.helpers.daemon import wait_for_socket as _wait_for_socket
+from tests.helpers.mcp import write_mock_mcp_server
 from tests.helpers.signer import StubSignerService, generate_ed25519_private_key, public_key_pem
 from tests.helpers.webauthn import make_authentication_payload, make_registration_payload
 
@@ -574,6 +575,64 @@ async def test_behavioral_tool_execute_confirmation_surfaces_approval_protocol_m
         )
         assert approved["event_type"] == "ToolApproved"
         assert executed["event_type"] == "ToolExecuted"
+    finally:
+        await _shutdown_daemon(daemon_task, client)
+
+
+@pytest.mark.asyncio
+async def test_behavioral_mcp_stdio_tool_execute_returns_remote_result(tmp_path: Path) -> None:
+    server_script = write_mock_mcp_server(tmp_path / "mock_mcp_server.py")
+    daemon_task, client, _config = await _start_daemon(
+        tmp_path,
+        config_overrides={
+            "mcp_servers": [
+                {
+                    "name": "docs",
+                    "transport": "stdio",
+                    "command": [sys.executable, str(server_script)],
+                    "timeout_seconds": 5.0,
+                }
+            ]
+        },
+    )
+    try:
+        created = await client.call(
+            "session.create",
+            {"channel": "cli", "user_id": "alice", "workspace_id": "ws1"},
+        )
+        sid = str(created["session_id"])
+
+        result = await client.call(
+            "tool.execute",
+            {
+                "session_id": sid,
+                "tool_name": "mcp.docs.lookup-doc",
+                "command": ["mcp"],
+                "arguments": {"query": "roadmap", "limit": 4},
+                "security_critical": False,
+                "degraded_mode": "fail_open",
+            },
+        )
+
+        assert result["allowed"] is True
+        payload = json.loads(str(result["stdout"]))
+        assert payload["ok"] is True
+        assert payload["structured_content"] == {
+            "answer": "echo:roadmap",
+            "limit": 4,
+            "query": "roadmap",
+        }
+
+        executed = await _wait_for_audit_event(
+            client,
+            event_type="ToolExecuted",
+            session_id=sid,
+            predicate=lambda event: (
+                str(event.get("data", {}).get("tool_name", "")) == "mcp.docs.lookup-doc"
+                and bool(event.get("data", {}).get("success")) is True
+            ),
+        )
+        assert str(executed.get("data", {}).get("actor", "")) == "tool_runtime"
     finally:
         await _shutdown_daemon(daemon_task, client)
 
