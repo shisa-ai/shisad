@@ -95,8 +95,8 @@ from shisad.daemon.handlers._impl_session import SessionImplMixin
 from shisad.daemon.handlers._impl_skills import SkillsImplMixin
 from shisad.daemon.handlers._impl_tasks import TasksImplMixin
 from shisad.daemon.handlers._impl_tool_execution import (
-    _RESERVED_TOOL_EXECUTION_ARGUMENT_KEYS,
     ToolExecutionImplMixin,
+    _tool_execute_runtime_arguments,
 )
 from shisad.daemon.handlers._mixin_typing import call_control_plane as _call_control_plane
 from shisad.daemon.handlers._pending_approval import (
@@ -3089,15 +3089,23 @@ class HandlerImplementation(
         if tool is not None and str(getattr(tool, "registration_source", "")).strip() == "mcp":
             server_name = str(getattr(tool, "registration_source_id", "")).strip()
             upstream_tool_name = str(getattr(tool, "upstream_tool_name", "")).strip()
-            mcp_arguments = {
-                parameter.name: arguments[parameter.name]
-                for parameter in getattr(tool, "parameters", [])
-                if parameter.name in arguments
-                and (
-                    not strip_direct_tool_execute_envelope_keys
-                    or parameter.name not in _RESERVED_TOOL_EXECUTION_ARGUMENT_KEYS
+            mcp_arguments = _tool_execute_runtime_arguments(
+                tool,
+                arguments,
+                strip_direct_tool_execute_envelope_keys=strip_direct_tool_execute_envelope_keys,
+            )
+            validation_errors = self._registry.validate_call(tool_name, mcp_arguments)
+            if validation_errors:
+                return await _execute_structured_payload_tool(
+                    {
+                        "ok": False,
+                        "error": (
+                            "invalid_tool_arguments:schema validation failed: "
+                            + "; ".join(validation_errors)
+                        ),
+                    },
+                    default_error="invalid_tool_arguments",
                 )
-            }
             mcp_payload: Mapping[str, Any]
             mcp_manager = getattr(self, "_mcp_manager", None)
             if mcp_manager is None or not server_name or not upstream_tool_name:

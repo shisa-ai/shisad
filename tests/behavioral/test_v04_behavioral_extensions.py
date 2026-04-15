@@ -665,6 +665,61 @@ async def test_behavioral_mcp_stdio_tool_execute_requires_confirmation_then_exec
 
 
 @pytest.mark.asyncio
+async def test_behavioral_mcp_stdio_tool_execute_rejects_invalid_arguments_before_upstream_call(
+    tmp_path: Path,
+) -> None:
+    server_script = write_mock_mcp_server(tmp_path / "mock_mcp_server.py")
+    daemon_task, client, _config = await _start_daemon(
+        tmp_path,
+        config_overrides={
+            "mcp_servers": [
+                {
+                    "name": "docs",
+                    "transport": "stdio",
+                    "command": [sys.executable, str(server_script)],
+                    "timeout_seconds": 10.0,
+                }
+            ]
+        },
+    )
+    try:
+        created = await client.call(
+            "session.create",
+            {"channel": "cli", "user_id": "alice", "workspace_id": "ws1"},
+        )
+        sid = str(created["session_id"])
+
+        with pytest.raises(RuntimeError, match=r"RPC error -32602"):
+            await client.call(
+                "tool.execute",
+                {
+                    "session_id": sid,
+                    "tool_name": "mcp.docs.lookup-doc",
+                    "command": ["mcp"],
+                    "arguments": {"query": "roadmap", "limit": True},
+                    "security_critical": False,
+                    "degraded_mode": "fail_open",
+                },
+            )
+
+        rejected = await _wait_for_audit_event(
+            client,
+            event_type="ToolRejected",
+            session_id=sid,
+            predicate=lambda event: (
+                str(event.get("data", {}).get("tool_name", "")) == "mcp.docs.lookup-doc"
+                and str(event.get("data", {}).get("reason", "")).startswith(
+                    "invalid_tool_arguments:schema validation failed: "
+                    "Argument 'limit': expected type 'integer', got 'bool'"
+                )
+            ),
+        )
+        assert rejected["event_type"] == "ToolRejected"
+    finally:
+        await _shutdown_daemon(daemon_task, client)
+
+
+@pytest.mark.asyncio
 async def test_behavioral_totp_confirmation_executes_and_records_l1_audit(
     tmp_path: Path,
 ) -> None:

@@ -97,8 +97,9 @@ class _McpExecutionHarness:
         self._event_bus = _EventCollector()
         self._control_plane = _ExecutionRecorder()
         self._mcp_manager = _McpManagerStub(payload)
-        self._registry = SimpleNamespace(
-            get_tool=lambda _tool_name: ToolDefinition(
+        self._registry = ToolRegistry()
+        self._registry.register(
+            ToolDefinition(
                 name=ToolName("mcp.docs.lookup-doc"),
                 description="Lookup external docs.",
                 parameters=parameters
@@ -1256,6 +1257,46 @@ async def test_i1_shared_execution_path_preserves_reserved_named_mcp_params() ->
 
 
 @pytest.mark.asyncio
+async def test_i1_execute_approved_action_rejects_invalid_direct_mcp_params() -> None:
+    harness = _McpExecutionHarness(
+        payload={
+            "ok": True,
+            "structured_content": {"answer": "echo:roadmap"},
+            "content": [{"type": "text", "text": "echo:roadmap"}],
+        },
+        parameters=[ToolParameter(name="values", type="array", required=True, items_type="string")],
+    )
+
+    result = await HandlerImplementation._execute_approved_action(
+        harness,  # type: ignore[arg-type]
+        sid=harness.session_id,
+        user_id=UserId("alice"),
+        tool_name=ToolName("mcp.docs.lookup-doc"),
+        arguments={"values": [1]},
+        capabilities=set(),
+        approval_actor="control_api",
+        strip_direct_tool_execute_envelope_keys=True,
+    )
+
+    assert result.success is False
+    assert result.tool_output is not None
+    payload = json.loads(result.tool_output.content)
+    assert payload == {
+        "ok": False,
+        "error": (
+            "invalid_tool_arguments:schema validation failed: "
+            "Argument 'values': expected items of type 'string', got 'int'"
+        ),
+    }
+    assert harness._mcp_manager.calls == []
+    assert harness._control_plane.results == [False]
+    assert any(
+        isinstance(event, ToolRejected) and event.reason == payload["error"]
+        for event in harness._event_bus.events
+    )
+
+
+@pytest.mark.asyncio
 async def test_i1_tool_execute_path_strips_reserved_keys_before_mcp_call() -> None:
     harness = _McpToolExecuteHarness(
         payload={
@@ -1315,6 +1356,61 @@ async def test_i1_tool_execute_path_excludes_direct_envelope_keys_from_mcp_param
 
     assert result["allowed"] is True
     assert harness._mcp_manager.calls == [("docs", "lookup-doc", {"query": "roadmap"})]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("parameters", "arguments", "expected_error"),
+    [
+        (
+            [
+                ToolParameter(name="query", type="string", required=True),
+                ToolParameter(name="limit", type="integer", required=False),
+            ],
+            {"query": "roadmap", "limit": True},
+            "Argument 'limit': expected type 'integer', got 'bool'",
+        ),
+        (
+            [ToolParameter(name="values", type="array", required=True, items_type="string")],
+            {"values": [1]},
+            "Argument 'values': expected items of type 'string', got 'int'",
+        ),
+    ],
+    ids=["integer-bool", "array-item-type"],
+)
+async def test_i1_tool_execute_path_rejects_invalid_mcp_arguments_before_call(
+    parameters: list[ToolParameter],
+    arguments: dict[str, Any],
+    expected_error: str,
+) -> None:
+    harness = _McpToolExecuteHarness(
+        payload={
+            "ok": True,
+            "structured_content": {"answer": "echo:roadmap"},
+            "content": [{"type": "text", "text": "echo:roadmap"}],
+        },
+        parameters=parameters,
+    )
+
+    with pytest.raises(ValueError, match="schema validation failed"):
+        await HandlerImplementation.do_tool_execute(
+            harness,  # type: ignore[arg-type]
+            {
+                "session_id": str(harness.session_id),
+                "tool_name": "mcp.docs.lookup-doc",
+                "command": ["mcp"],
+                "arguments": arguments,
+                "security_critical": False,
+                "degraded_mode": "fail_open",
+            },
+        )
+
+    assert harness._mcp_manager.calls == []
+    assert any(
+        isinstance(event, ToolRejected)
+        and event.reason == f"invalid_tool_arguments:schema validation failed: {expected_error}"
+        for event in harness._event_bus.events
+    )
 
 
 @pytest.mark.asyncio

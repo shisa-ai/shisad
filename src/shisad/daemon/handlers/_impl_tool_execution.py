@@ -62,6 +62,26 @@ _RESERVED_TOOL_EXECUTION_ARGUMENT_KEYS: frozenset[str] = frozenset(
 )
 
 
+def _tool_execute_runtime_arguments(
+    tool_definition: Any,
+    arguments: Mapping[str, Any],
+    *,
+    strip_direct_tool_execute_envelope_keys: bool = False,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {}
+    for parameter in getattr(tool_definition, "parameters", []):
+        name = str(getattr(parameter, "name", "")).strip()
+        if not name or name not in arguments:
+            continue
+        if (
+            strip_direct_tool_execute_envelope_keys
+            and name in _RESERVED_TOOL_EXECUTION_ARGUMENT_KEYS
+        ):
+            continue
+        payload[name] = arguments[name]
+    return payload
+
+
 class ToolExecutionImplMixin(HandlerMixinBase):
     def _operator_confirmation_requirement(
         self,
@@ -126,6 +146,9 @@ class ToolExecutionImplMixin(HandlerMixinBase):
                 )
             )
             raise ValueError(f"unknown tool: {tool_name}")
+        strip_direct_tool_execute_envelope_keys = (
+            str(getattr(tool_def, "registration_source", "")).strip() == "mcp"
+        )
         try:
             params = self._merge_tool_arguments(params)
         except ValueError as exc:
@@ -143,6 +166,23 @@ class ToolExecutionImplMixin(HandlerMixinBase):
             tool_name=tool_name,
             arguments=params,
         )
+        validation_arguments = _tool_execute_runtime_arguments(
+            tool_def,
+            params,
+            strip_direct_tool_execute_envelope_keys=strip_direct_tool_execute_envelope_keys,
+        )
+        validation_errors = self._registry.validate_call(tool_name, validation_arguments)
+        if validation_errors:
+            validation_error = f"schema validation failed: {'; '.join(validation_errors)}"
+            await self._event_bus.publish(
+                ToolRejected(
+                    session_id=sid,
+                    actor="control_api",
+                    tool_name=tool_name,
+                    reason=f"invalid_tool_arguments:{validation_error}",
+                )
+            )
+            raise ValueError(validation_error)
         skill_name = str(params.get("skill_name") or "").strip()
         if skill_name:
             network_hosts: list[str] = []
@@ -349,9 +389,6 @@ class ToolExecutionImplMixin(HandlerMixinBase):
         operator_confirmation_requirement = self._operator_confirmation_requirement(
             tool_name=tool_name,
             tool_definition=tool_def,
-        )
-        strip_direct_tool_execute_envelope_keys = (
-            str(getattr(tool_def, "registration_source", "")).strip() == "mcp"
         )
         if trace_only_stage2_block and not bool(
             self._policy_loader.policy.control_plane.trace.allow_amendment
