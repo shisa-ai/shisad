@@ -119,10 +119,15 @@ class A2aEnvelope(BaseModel):
 
 def _write_bytes_exclusive(path: Path, data: bytes, *, mode: int) -> None:
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode)
+    handle = None
     try:
-        with os.fdopen(fd, "wb") as handle:
+        handle = os.fdopen(fd, "wb")
+        with handle:
             handle.write(data)
     except Exception:
+        if handle is None:
+            with suppress(OSError):
+                os.close(fd)
         with suppress(OSError):
             path.unlink(missing_ok=True)
         raise
@@ -336,7 +341,7 @@ class ReplayCache:
 
     def _prune(self, now: datetime) -> None:
         expired = [
-            message_id for message_id, expires_at in self._entries.items() if expires_at <= now
+            message_id for message_id, expires_at in self._entries.items() if expires_at < now
         ]
         for message_id in expired:
             self._entries.pop(message_id, None)

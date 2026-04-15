@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import json
-import socket
 import stat
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from urllib.parse import urlparse
 
 import pytest
 from click.testing import CliRunner
@@ -43,14 +43,8 @@ from shisad.interop.a2a_registry import (
     A2aRegistry,
     load_local_identity,
 )
-from shisad.interop.a2a_transport import HttpTransport, SocketTransport
+from shisad.interop.a2a_transport import HttpTransport, SocketTransport, _http_host_header
 from shisad.security.firewall import ContentFirewall
-
-
-def _reserve_local_port() -> int:
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-        sock.bind(("127.0.0.1", 0))
-        return int(sock.getsockname()[1])
 
 
 def _signed_request(
@@ -196,11 +190,14 @@ def test_replay_cache_rejects_replay_until_future_skew_window_expires() -> None:
     cache = ReplayCache(window_seconds=300)
 
     first = cache.check(envelope, now=now)
-    duplicate = cache.check(envelope, now=now + timedelta(seconds=301))
+    boundary_duplicate = cache.check(envelope, now=now + timedelta(seconds=600))
+    duplicate = cache.check(envelope, now=now + timedelta(seconds=601))
 
     assert first.allowed is True
+    assert boundary_duplicate.allowed is False
+    assert boundary_duplicate.reason == "replay_detected"
     assert duplicate.allowed is False
-    assert duplicate.reason == "replay_detected"
+    assert duplicate.reason == "timestamp_out_of_window"
 
 
 def test_a2a_registry_loads_agent_entries_and_validates_fingerprint(tmp_path: Path) -> None:
@@ -296,28 +293,14 @@ def test_cli_a2a_keygen_rejects_existing_key_paths(
 async def test_socket_transport_round_trip() -> None:
     server_private, server_public = generate_ed25519_keypair()
     client_private, client_public = generate_ed25519_keypair()
-    server_fingerprint = fingerprint_for_public_key(server_public)
     client_fingerprint = fingerprint_for_public_key(client_public)
-    listen_port = _reserve_local_port()
-    registry = A2aRegistry.from_config(
-        A2aConfig(
-            agents=[
-                A2aAgentConfig(
-                    agent_id="server-agent",
-                    fingerprint=server_fingerprint,
-                    public_key=serialize_public_key_pem(server_public).decode("utf-8"),
-                    address=f"127.0.0.1:{listen_port}",
-                    transport="socket",
-                )
-            ]
-        )
-    )
-    transport = SocketTransport(host="127.0.0.1", port=listen_port)
+    server_fingerprint = fingerprint_for_public_key(server_public)
+    transport = SocketTransport(host="127.0.0.1", port=0)
     listener = await transport.listen(
         lambda envelope: _echo_response(envelope, server_private, server_fingerprint)
     )
     try:
-        target = registry.require("server-agent")
+        target = _socket_target(server_public=server_public, address=listener.address)
         envelope = _signed_request(
             private_key=client_private,
             sender_agent_id="client-agent",
@@ -339,26 +322,11 @@ async def test_socket_transport_round_trip() -> None:
 async def test_socket_transport_returns_reason_coded_error_on_handler_failure() -> None:
     _server_private, server_public = generate_ed25519_keypair()
     client_private, client_public = generate_ed25519_keypair()
-    server_fingerprint = fingerprint_for_public_key(server_public)
     client_fingerprint = fingerprint_for_public_key(client_public)
-    listen_port = _reserve_local_port()
-    registry = A2aRegistry.from_config(
-        A2aConfig(
-            agents=[
-                A2aAgentConfig(
-                    agent_id="server-agent",
-                    fingerprint=server_fingerprint,
-                    public_key=serialize_public_key_pem(server_public).decode("utf-8"),
-                    address=f"127.0.0.1:{listen_port}",
-                    transport="socket",
-                )
-            ]
-        )
-    )
-    transport = SocketTransport(host="127.0.0.1", port=listen_port)
+    transport = SocketTransport(host="127.0.0.1", port=0)
     listener = await transport.listen(_raising_handler)
     try:
-        target = registry.require("server-agent")
+        target = _socket_target(server_public=server_public, address=listener.address)
         envelope = _signed_request(
             private_key=client_private,
             sender_agent_id="client-agent",
@@ -374,31 +342,35 @@ async def test_socket_transport_returns_reason_coded_error_on_handler_failure() 
 
 
 @pytest.mark.asyncio
+async def test_socket_transport_returns_invalid_request_on_overlong_line() -> None:
+    transport = SocketTransport(host="127.0.0.1", port=0)
+    listener = await transport.listen(_raising_handler)
+    try:
+        host, port_text = listener.address.rsplit(":", 1)
+        reader, writer = await asyncio.open_connection(host, int(port_text))
+        writer.write(b"x" * 70000 + b"\n")
+        await writer.drain()
+        raw_response = await reader.readline()
+        writer.close()
+        await writer.wait_closed()
+    finally:
+        await listener.close()
+
+    assert json.loads(raw_response.decode("utf-8")) == {"error": "invalid_request", "ok": False}
+
+
+@pytest.mark.asyncio
 async def test_http_transport_round_trip() -> None:
     server_private, server_public = generate_ed25519_keypair()
     client_private, client_public = generate_ed25519_keypair()
-    server_fingerprint = fingerprint_for_public_key(server_public)
     client_fingerprint = fingerprint_for_public_key(client_public)
-    listen_port = _reserve_local_port()
-    registry = A2aRegistry.from_config(
-        A2aConfig(
-            agents=[
-                A2aAgentConfig(
-                    agent_id="server-agent",
-                    fingerprint=server_fingerprint,
-                    public_key=serialize_public_key_pem(server_public).decode("utf-8"),
-                    address=f"http://127.0.0.1:{listen_port}/a2a",
-                    transport="http",
-                )
-            ]
-        )
-    )
-    transport = HttpTransport(host="127.0.0.1", port=listen_port, path="/a2a")
+    server_fingerprint = fingerprint_for_public_key(server_public)
+    transport = HttpTransport(host="127.0.0.1", port=0, path="/a2a")
     listener = await transport.listen(
         lambda envelope: _echo_response(envelope, server_private, server_fingerprint)
     )
     try:
-        target = registry.require("server-agent")
+        target = _http_target(server_public=server_public, address=listener.address)
         envelope = _signed_request(
             private_key=client_private,
             sender_agent_id="client-agent",
@@ -420,9 +392,7 @@ async def test_http_transport_round_trip() -> None:
 async def test_http_transport_preserves_query_and_host_header() -> None:
     _server_private, server_public = generate_ed25519_keypair()
     client_private, client_public = generate_ed25519_keypair()
-    server_fingerprint = fingerprint_for_public_key(server_public)
     client_fingerprint = fingerprint_for_public_key(client_public)
-    listen_port = _reserve_local_port()
     observed: dict[str, str] = {}
 
     async def _server(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
@@ -450,21 +420,13 @@ async def test_http_transport_preserves_query_and_host_header() -> None:
         writer.close()
         await writer.wait_closed()
 
-    server = await asyncio.start_server(_server, "127.0.0.1", listen_port)
+    server = await asyncio.start_server(_server, "127.0.0.1", 0)
     try:
-        target = A2aRegistry.from_config(
-            A2aConfig(
-                agents=[
-                    A2aAgentConfig(
-                        agent_id="server-agent",
-                        fingerprint=server_fingerprint,
-                        public_key=serialize_public_key_pem(server_public).decode("utf-8"),
-                        address=f"http://127.0.0.1:{listen_port}/a2a?token=abc123",
-                        transport="http",
-                    )
-                ]
-            )
-        ).require("server-agent")
+        listen_port = int(server.sockets[0].getsockname()[1]) if server.sockets else 0
+        target = _http_target(
+            server_public=server_public,
+            address=f"http://127.0.0.1:{listen_port}/a2a?token=abc123",
+        )
         envelope = _signed_request(
             private_key=client_private,
             sender_agent_id="client-agent",
@@ -480,32 +442,18 @@ async def test_http_transport_preserves_query_and_host_header() -> None:
     assert response == {"ok": True}
     assert observed["request_line"] == "POST /a2a?token=abc123 HTTP/1.1"
     assert observed["host"] == f"127.0.0.1:{listen_port}"
+    assert _http_host_header(urlparse("http://[::1]:9820/a2a")) == "[::1]:9820"
 
 
 @pytest.mark.asyncio
 async def test_http_transport_returns_reason_coded_error_on_handler_failure() -> None:
     _server_private, server_public = generate_ed25519_keypair()
     client_private, client_public = generate_ed25519_keypair()
-    server_fingerprint = fingerprint_for_public_key(server_public)
     client_fingerprint = fingerprint_for_public_key(client_public)
-    listen_port = _reserve_local_port()
-    registry = A2aRegistry.from_config(
-        A2aConfig(
-            agents=[
-                A2aAgentConfig(
-                    agent_id="server-agent",
-                    fingerprint=server_fingerprint,
-                    public_key=serialize_public_key_pem(server_public).decode("utf-8"),
-                    address=f"http://127.0.0.1:{listen_port}/a2a",
-                    transport="http",
-                )
-            ]
-        )
-    )
-    transport = HttpTransport(host="127.0.0.1", port=listen_port, path="/a2a")
+    transport = HttpTransport(host="127.0.0.1", port=0, path="/a2a")
     listener = await transport.listen(_raising_handler)
     try:
-        target = registry.require("server-agent")
+        target = _http_target(server_public=server_public, address=listener.address)
         envelope = _signed_request(
             private_key=client_private,
             sender_agent_id="client-agent",
@@ -521,15 +469,15 @@ async def test_http_transport_returns_reason_coded_error_on_handler_failure() ->
 
 @pytest.mark.asyncio
 async def test_http_transport_rejects_oversized_request_body_without_leaking_details() -> None:
-    listen_port = _reserve_local_port()
     transport = HttpTransport(
         host="127.0.0.1",
-        port=listen_port,
+        port=0,
         path="/a2a",
         max_body_bytes=8,
     )
     listener = await transport.listen(_raising_handler)
     try:
+        listen_port = urlparse(listener.address).port or 0
         reader, writer = await asyncio.open_connection("127.0.0.1", listen_port)
         request = (
             b"POST /a2a HTTP/1.1\r\n"
@@ -703,3 +651,35 @@ async def _unused_message(
     _ctx: RequestContext,
 ) -> SessionMessageResult:
     raise AssertionError("session_message should not run")
+
+
+def _socket_target(*, server_public, address: str):
+    return A2aRegistry.from_config(
+        A2aConfig(
+            agents=[
+                A2aAgentConfig(
+                    agent_id="server-agent",
+                    fingerprint=fingerprint_for_public_key(server_public),
+                    public_key=serialize_public_key_pem(server_public).decode("utf-8"),
+                    address=address,
+                    transport="socket",
+                )
+            ]
+        )
+    ).require("server-agent")
+
+
+def _http_target(*, server_public, address: str):
+    return A2aRegistry.from_config(
+        A2aConfig(
+            agents=[
+                A2aAgentConfig(
+                    agent_id="server-agent",
+                    fingerprint=fingerprint_for_public_key(server_public),
+                    public_key=serialize_public_key_pem(server_public).decode("utf-8"),
+                    address=address,
+                    transport="http",
+                )
+            ]
+        )
+    ).require("server-agent")

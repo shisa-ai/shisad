@@ -55,13 +55,16 @@ def _error_payload(reason: str) -> dict[str, Any]:
 
 
 def _http_host_header(parsed: ParseResult) -> str:
+    host = str(parsed.hostname)
+    if ":" in host and not host.startswith("["):
+        host = f"[{host}]"
     port = parsed.port
     if port is None:
-        return str(parsed.hostname)
+        return host
     default_port = 443 if parsed.scheme == "https" else 80
     if port == default_port:
-        return str(parsed.hostname)
-    return f"{parsed.hostname}:{port}"
+        return host
+    return f"{host}:{port}"
 
 
 def _build_http_response(status: int, payload: A2aEnvelope | Mapping[str, Any]) -> bytes:
@@ -127,18 +130,24 @@ class SocketTransport:
         async def _serve(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
             response: A2aEnvelope | Mapping[str, Any] | None = None
             try:
-                raw = await reader.readline()
-                if not raw:
-                    return
                 try:
-                    envelope = A2aEnvelope.model_validate_json(raw)
-                except (ValidationError, ValueError, UnicodeDecodeError, json.JSONDecodeError):
+                    raw = await reader.readline()
+                except (ValueError, asyncio.LimitOverrunError):
                     response = _error_payload("invalid_request")
+                    raw = b""
+                if not raw:
+                    if response is None:
+                        return
                 else:
                     try:
-                        response = await handler(envelope)
-                    except Exception:
-                        response = _error_payload("internal_error")
+                        envelope = A2aEnvelope.model_validate_json(raw)
+                    except (ValidationError, ValueError, UnicodeDecodeError, json.JSONDecodeError):
+                        response = _error_payload("invalid_request")
+                    else:
+                        try:
+                            response = await handler(envelope)
+                        except Exception:
+                            response = _error_payload("internal_error")
                 if response is not None:
                     writer.write(_payload_bytes(response) + b"\n")
                     await writer.drain()
