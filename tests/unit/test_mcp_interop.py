@@ -581,6 +581,31 @@ def test_i1_mcp_tool_translation_preserves_safe_string_enum_values() -> None:
     ]
 
 
+def test_i1_mcp_tool_translation_preserves_token_safe_protocol_like_enum_values() -> None:
+    entry = mcp_tool_to_registry_entry(
+        McpDiscoveredTool(
+            name="pick-mode",
+            description="Pick a mode.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "mode": {
+                        "type": "string",
+                        "enum": ["http2", "www_auth"],
+                    }
+                },
+                "required": ["mode"],
+            },
+        ),
+        server_name="docs",
+    )
+    registry = ToolRegistry()
+    registry.register(entry)
+
+    assert entry.parameters[0].enum == ["http2", "www_auth"]
+    assert registry.validate_call(entry.name, {"mode": "http2"}) == []
+
+
 @pytest.mark.parametrize(
     ("enum_values", "error_match"),
     [

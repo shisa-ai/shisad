@@ -27,8 +27,6 @@ _MCP_ENUM_BLOCKED_SUBSTRINGS = (
     "prompt",
     "secret",
     "exfil",
-    "http",
-    "www",
 )
 _ALLOWED_MCP_JSON_SCHEMA_TYPES = frozenset(
     {"array", "boolean", "integer", "number", "object", "string"}
