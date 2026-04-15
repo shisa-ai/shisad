@@ -708,9 +708,15 @@ async def test_i1_mcp_connect_all_cleans_up_registration_failures_and_records_st
         assert registry.has_tool(ToolName("mcp.docs.lookup-doc")) is False
         assert manager.startup_error("docs") is not None
         assert "provider alias collision" in str(manager.startup_error("docs"))
-        assert manager.startup_error_for_tool("mcp.docs.lookup-doc") == (
+        expected_startup_error = (
             "docs",
             str(manager.startup_error("docs")),
+        )
+        assert manager.startup_error_for_tool("mcp.docs.lookup-doc") == expected_startup_error
+        assert manager.startup_error_for_tool("mcp_docs_lookup_doc") == expected_startup_error
+        assert (
+            manager.startup_error_for_tool("functions.mcp_docs_lookup_doc")
+            == expected_startup_error
         )
         assert manager._runtimes == {}
     finally:
