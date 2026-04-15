@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import socket
 import stat
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -36,11 +37,12 @@ from shisad.interop.a2a_envelope import (
     verify_envelope,
     write_ed25519_keypair,
 )
-from shisad.interop.a2a_ingress import A2aIngress, A2aIngressError
+from shisad.interop.a2a_ingress import A2aIngress, A2aIngressError, A2aRuntime
 from shisad.interop.a2a_registry import (
     A2aAgentConfig,
     A2aConfig,
     A2aIdentityConfig,
+    A2aListenConfig,
     A2aRegistry,
     load_local_identity,
 )
@@ -228,6 +230,43 @@ def test_a2a_registry_loads_agent_entries_and_validates_fingerprint(tmp_path: Pa
     assert fingerprint_for_public_key(entry.public_key) == fingerprint
 
 
+def test_a2a_registry_rejects_trusted_cli_remote_trust_level() -> None:
+    _private_key, public_key = generate_ed25519_keypair()
+    fingerprint = fingerprint_for_public_key(public_key)
+
+    with pytest.raises(ValueError, match="cannot use trust_level 'trusted_cli'"):
+        A2aConfig(
+            agents=[
+                A2aAgentConfig(
+                    agent_id="alice-agent",
+                    fingerprint=fingerprint,
+                    public_key=serialize_public_key_pem(public_key).decode("utf-8"),
+                    address="127.0.0.1:9820",
+                    transport="socket",
+                    trust_level="trusted_cli",
+                )
+            ]
+        )
+
+
+def test_a2a_registry_rejects_unbracketed_ipv6_http_address() -> None:
+    _private_key, public_key = generate_ed25519_keypair()
+    fingerprint = fingerprint_for_public_key(public_key)
+
+    with pytest.raises(ValueError, match="bracketed IPv6 literals"):
+        A2aConfig(
+            agents=[
+                A2aAgentConfig(
+                    agent_id="alice-agent",
+                    fingerprint=fingerprint,
+                    public_key=serialize_public_key_pem(public_key).decode("utf-8"),
+                    address="http://::1:9820/a2a",
+                    transport="http",
+                )
+            ]
+        )
+
+
 def test_cli_a2a_keygen_writes_valid_owner_only_private_key(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -410,6 +449,16 @@ async def test_http_transport_round_trip() -> None:
     assert verify_envelope(response, server_public) is True
 
 
+def _require_ipv6_loopback() -> None:
+    if not socket.has_ipv6:
+        pytest.skip("IPv6 is unavailable on this platform")
+    with socket.socket(socket.AF_INET6, socket.SOCK_STREAM) as probe:
+        try:
+            probe.bind(("::1", 0))
+        except OSError:
+            pytest.skip("IPv6 loopback is unavailable on this platform")
+
+
 @pytest.mark.asyncio
 async def test_http_transport_preserves_query_and_host_header() -> None:
     _server_private, server_public = generate_ed25519_keypair()
@@ -465,6 +514,76 @@ async def test_http_transport_preserves_query_and_host_header() -> None:
     assert observed["request_line"] == "POST /a2a?token=abc123 HTTP/1.1"
     assert observed["host"] == f"127.0.0.1:{listen_port}"
     assert _http_host_header(urlparse("http://[::1]:9820/a2a")) == "[::1]:9820"
+
+
+@pytest.mark.asyncio
+async def test_a2a_runtime_http_ipv6_status_address_round_trips(tmp_path: Path) -> None:
+    _require_ipv6_loopback()
+    local_fingerprint = write_ed25519_keypair(tmp_path / "local.pem", tmp_path / "local.pub")
+    remote_private, remote_public = generate_ed25519_keypair()
+    remote_fingerprint = fingerprint_for_public_key(remote_public)
+    identity = load_local_identity(
+        A2aIdentityConfig(
+            agent_id="local-agent",
+            private_key_path=tmp_path / "local.pem",
+            public_key_path=tmp_path / "local.pub",
+        )
+    )
+    registry = A2aRegistry.from_config(
+        A2aConfig(
+            agents=[
+                A2aAgentConfig(
+                    agent_id="remote-agent",
+                    fingerprint=remote_fingerprint,
+                    public_key=serialize_public_key_pem(remote_public).decode("utf-8"),
+                    address="http://127.0.0.1:9820/a2a",
+                    transport="http",
+                    trust_level="untrusted",
+                )
+            ]
+        )
+    )
+
+    async def _create(_params: SessionCreateParams, _ctx: RequestContext) -> SessionCreateResult:
+        return SessionCreateResult(session_id="sess-a2a")
+
+    async def _message(
+        _params: SessionMessageParams,
+        _ctx: RequestContext,
+    ) -> SessionMessageResult:
+        return SessionMessageResult(session_id="sess-a2a", response="ipv6 http ok")
+
+    runtime = A2aRuntime(
+        local_identity=identity,
+        registry=registry,
+        firewall=ContentFirewall(),
+        session_create=_create,
+        session_message=_message,
+        listen_config=A2aListenConfig(transport="http", host="::1", port=0, path="/a2a"),
+    )
+    await runtime.start()
+    try:
+        status = runtime.status()
+        target = _http_target(server_public=identity.public_key, address=status["address"])
+        envelope = _signed_request(
+            private_key=remote_private,
+            sender_agent_id="remote-agent",
+            sender_fingerprint=remote_fingerprint,
+            recipient_agent_id="local-agent",
+            payload={"content": "hello ipv6 http"},
+        )
+        raw_response = await HttpTransport().send(envelope, target)
+        response = A2aEnvelope.model_validate(raw_response)
+    finally:
+        await runtime.close()
+
+    assert local_fingerprint == identity.fingerprint
+    assert status["enabled"] is True
+    assert status["transport"] == "http"
+    assert status["address"].startswith("http://[::1]:")
+    assert response.payload["ok"] is True
+    assert response.payload["response"] == "ipv6 http ok"
+    assert verify_envelope(response, identity.public_key) is True
 
 
 @pytest.mark.asyncio

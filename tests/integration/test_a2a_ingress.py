@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import socket
 from pathlib import Path
 
 import pytest
@@ -28,14 +27,9 @@ from shisad.interop.a2a_registry import (
     A2aConfig,
     A2aIdentityConfig,
     A2aListenConfig,
+    A2aRegistry,
 )
 from shisad.interop.a2a_transport import SocketTransport
-
-
-def _reserve_local_port() -> int:
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-        sock.bind(("127.0.0.1", 0))
-        return int(sock.getsockname()[1])
 
 
 @pytest.mark.asyncio
@@ -71,7 +65,6 @@ async def test_i3_a2a_socket_ingress_creates_tainted_session(
     local_fingerprint = write_ed25519_keypair(local_private_path, local_public_path)
     remote_private, remote_public = generate_ed25519_keypair()
     remote_fingerprint = fingerprint_for_public_key(remote_public)
-    listen_port = _reserve_local_port()
     policy_path = tmp_path / "policy.yaml"
     policy_path.write_text('version: "1"\ndefault_require_confirmation: false\n', encoding="utf-8")
     config = DaemonConfig(
@@ -85,13 +78,13 @@ async def test_i3_a2a_socket_ingress_creates_tainted_session(
                 private_key_path=local_private_path,
                 public_key_path=local_public_path,
             ),
-            listen=A2aListenConfig(transport="socket", host="127.0.0.1", port=listen_port),
+            listen=A2aListenConfig(transport="socket", host="127.0.0.1", port=0),
             agents=[
                 A2aAgentConfig(
                     agent_id="remote-agent",
                     fingerprint=remote_fingerprint,
                     public_key=serialize_public_key_pem(remote_public).decode("utf-8"),
-                    address=f"127.0.0.1:{listen_port}",
+                    address="127.0.0.1:9820",
                     transport="socket",
                     trust_level="untrusted",
                 )
@@ -110,11 +103,22 @@ async def test_i3_a2a_socket_ingress_creates_tainted_session(
             payload={"content": "hello from a2a"},
         )
         signed = attach_signature(envelope, sign_envelope(envelope, remote_private))
-        target = (
-            services.a2a_registry.require("remote-agent")
-            if services.a2a_registry is not None
-            else None
+        runtime_status = (
+            services.a2a_runtime.status() if services.a2a_runtime is not None else {"address": ""}
         )
+        target = A2aRegistry.from_config(
+            A2aConfig(
+                agents=[
+                    A2aAgentConfig(
+                        agent_id="local-agent",
+                        fingerprint=local_fingerprint,
+                        public_key_path=local_public_path,
+                        address=str(runtime_status["address"]),
+                        transport="socket",
+                    )
+                ]
+            )
+        ).require("local-agent")
         assert target is not None
         raw_response = await SocketTransport().send(signed, target)
         response = A2aEnvelope.model_validate(raw_response)
@@ -126,6 +130,8 @@ async def test_i3_a2a_socket_ingress_creates_tainted_session(
         await services.shutdown()
 
     assert local_fingerprint
+    assert runtime_status["enabled"] is True
+    assert runtime_status["address"] != "127.0.0.1:0"
     assert response.payload["ok"] is True
     assert response.payload["response"] == "A2A received"
     user_entries = [entry for entry in entries if entry.role == "user"]

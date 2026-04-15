@@ -1203,6 +1203,7 @@ class DaemonStatusResult(BaseModel):
     selfmod: dict[str, Any] = Field(default_factory=dict)
     realitycheck: dict[str, Any] = Field(default_factory=dict)
     provenance: dict[str, Any] = Field(default_factory=dict)
+    a2a: dict[str, Any] = Field(default_factory=dict)
 
 
 class DoctorCheckParams(_StrictParams):

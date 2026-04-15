@@ -54,10 +54,15 @@ def _error_payload(reason: str) -> dict[str, Any]:
     return {"ok": False, "error": reason}
 
 
+def _format_http_host(host: str) -> str:
+    candidate = str(host).strip()
+    if ":" in candidate and not candidate.startswith("["):
+        return f"[{candidate}]"
+    return candidate
+
+
 def _http_host_header(parsed: ParseResult) -> str:
-    host = str(parsed.hostname)
-    if ":" in host and not host.startswith("["):
-        host = f"[{host}]"
+    host = _format_http_host(str(parsed.hostname))
     port = parsed.port
     if port is None:
         return host
@@ -186,7 +191,12 @@ class HttpTransport:
         parsed = urlparse(target.address)
         if parsed.scheme not in {"http", "https"} or not parsed.hostname:
             raise ValueError("A2A HTTP targets must use full http(s) URLs")
-        port = parsed.port or (443 if parsed.scheme == "https" else 80)
+        try:
+            port = parsed.port or (443 if parsed.scheme == "https" else 80)
+        except ValueError as exc:
+            raise ValueError(
+                "A2A HTTP targets must use bracketed IPv6 literals when needed"
+            ) from exc
         path = parsed.path or self._path
         if parsed.query:
             path = f"{path}?{parsed.query}"
@@ -294,6 +304,6 @@ class HttpTransport:
         bound_port = int(server.sockets[0].getsockname()[1]) if server.sockets else self._port
         return A2aTransportListener(
             transport="http",
-            address=f"http://{self._host}:{bound_port}{self._path}",
+            address=f"http://{_format_http_host(self._host)}:{bound_port}{self._path}",
             _server=server,
         )

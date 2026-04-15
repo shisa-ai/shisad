@@ -47,7 +47,7 @@ class A2aListenConfig(BaseModel):
 
     transport: Literal["socket", "http"] = "socket"
     host: str = "127.0.0.1"
-    port: int = Field(default=9820, ge=1, le=65535)
+    port: int = Field(default=9820, ge=0, le=65535)
     path: str = "/a2a"
 
     @field_validator("host", mode="before")
@@ -113,6 +113,14 @@ class A2aAgentConfig(BaseModel):
             raise ValueError("A2A agent address cannot be empty")
         return candidate
 
+    @field_validator("trust_level", mode="before")
+    @classmethod
+    def _normalize_trust_level(cls, value: object) -> str:
+        normalized = str(value).strip().lower() or "untrusted"
+        if normalized == "trusted_cli":
+            raise ValueError("A2A agents cannot use trust_level 'trusted_cli'")
+        return normalized
+
     @field_validator("public_key_path", mode="before")
     @classmethod
     def _expand_public_key_path(cls, value: object) -> Path | None:
@@ -161,6 +169,15 @@ class A2aAgentConfig(BaseModel):
         else:
             parsed = urlparse(self.address)
             if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+                raise ValueError("A2A HTTP addresses must be full http(s) URLs")
+            try:
+                parsed_host = parsed.hostname
+                _port = parsed.port
+            except ValueError as exc:
+                raise ValueError(
+                    "A2A HTTP addresses must use bracketed IPv6 literals when needed"
+                ) from exc
+            if not parsed_host:
                 raise ValueError("A2A HTTP addresses must be full http(s) URLs")
         return self
 
@@ -259,7 +276,7 @@ class A2aRegistry:
                     public_key=public_key,
                     fingerprint=actual_fingerprint,
                     transport=agent.transport,
-                    trust_level=str(agent.trust_level).strip().lower() or "untrusted",
+                    trust_level=agent.trust_level,
                     allowed_intents=(
                         tuple(agent.allowed_intents) if agent.allowed_intents is not None else None
                     ),

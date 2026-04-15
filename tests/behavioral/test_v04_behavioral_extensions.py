@@ -824,10 +824,9 @@ async def test_behavioral_a2a_socket_request_executes_and_returns_signed_respons
         )
 
     monkeypatch.setattr(Planner, "propose", _capture_propose)
-    listen_port = _reserve_local_port()
     local_private_path = tmp_path / "local-a2a.pem"
     local_public_path = tmp_path / "local-a2a.pub"
-    write_ed25519_keypair(local_private_path, local_public_path)
+    local_fingerprint = write_ed25519_keypair(local_private_path, local_public_path)
     remote_private, remote_public = generate_ed25519_keypair()
     remote_fingerprint = fingerprint_for_public_key(remote_public)
     daemon_task, client, _config = await _start_daemon(
@@ -840,13 +839,13 @@ async def test_behavioral_a2a_socket_request_executes_and_returns_signed_respons
                     private_key_path=local_private_path,
                     public_key_path=local_public_path,
                 ),
-                listen=A2aListenConfig(transport="socket", host="127.0.0.1", port=listen_port),
+                listen=A2aListenConfig(transport="socket", host="127.0.0.1", port=0),
                 agents=[
                     A2aAgentConfig(
                         agent_id="remote-agent",
                         fingerprint=remote_fingerprint,
                         public_key=serialize_public_key_pem(remote_public).decode("utf-8"),
-                        address=f"127.0.0.1:{listen_port}",
+                        address="127.0.0.1:9820",
                         transport="socket",
                         trust_level="untrusted",
                     )
@@ -864,13 +863,29 @@ async def test_behavioral_a2a_socket_request_executes_and_returns_signed_respons
             payload={"content": "team status"},
         )
         signed_request = attach_signature(request, sign_envelope(request, remote_private))
-        target = A2aRegistry.from_config(_config.a2a).require("remote-agent")
+        daemon_status = await client.call("daemon.status")
+        a2a_status = dict(daemon_status.get("a2a", {}))
+        target = A2aRegistry.from_config(
+            A2aConfig(
+                agents=[
+                    A2aAgentConfig(
+                        agent_id="local-agent",
+                        fingerprint=local_fingerprint,
+                        public_key_path=local_public_path,
+                        address=str(a2a_status["address"]),
+                        transport="socket",
+                    )
+                ]
+            )
+        ).require("local-agent")
         response_raw = await SocketTransport().send(
             signed_request,
             target,
         )
         response = A2aEnvelope.model_validate(response_raw)
         local_public = load_public_key_from_path(local_public_path)
+        assert a2a_status["enabled"] is True
+        assert a2a_status["address"] != "127.0.0.1:0"
         assert response.payload["ok"] is True
         assert response.payload["response"] == "a2a:team status"
         assert verify_envelope(response, local_public) is True
