@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from shisad.core.audit import AuditLog
 from shisad.core.config import DaemonConfig
 from shisad.core.planner import Planner, PlannerOutput, PlannerResult
 from shisad.core.types import SessionId, TaintLabel
@@ -87,6 +88,7 @@ async def test_i3_a2a_socket_ingress_creates_tainted_session(
                     address="127.0.0.1:9820",
                     transport="socket",
                     trust_level="untrusted",
+                    allowed_intents=["query"],
                 )
             ],
         ),
@@ -125,6 +127,11 @@ async def test_i3_a2a_socket_ingress_creates_tainted_session(
         session_id = SessionId(str(response.payload.get("session_id", "")))
         entries = services.transcript_store.list_entries(session_id)
         local_public = load_public_key_from_path(local_public_path)
+        audit_events = AuditLog(config.data_dir / "audit.jsonl").query(
+            event_type="A2aIngressEvaluated",
+            session_id=str(session_id),
+            limit=10,
+        )
         assert verify_envelope(response, local_public) is True
     finally:
         await services.shutdown()
@@ -138,3 +145,13 @@ async def test_i3_a2a_socket_ingress_creates_tainted_session(
     assert user_entries
     assert TaintLabel.A2A_EXTERNAL in user_entries[0].taint_labels
     assert TaintLabel.UNTRUSTED in user_entries[0].taint_labels
+    assert len(audit_events) == 1
+    audit_data = dict(audit_events[0]["data"])
+    assert audit_data["sender_agent_id"] == "remote-agent"
+    assert audit_data["sender_fingerprint"] == remote_fingerprint
+    assert audit_data["receiver_agent_id"] == "local-agent"
+    assert audit_data["message_id"] == envelope.message_id
+    assert audit_data["intent"] == "query"
+    assert audit_data["capability_granted"] is True
+    assert audit_data["outcome"] == "accepted"
+    assert audit_data["reason"] == "ok"

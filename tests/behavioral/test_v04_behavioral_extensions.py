@@ -848,6 +848,7 @@ async def test_behavioral_a2a_socket_request_executes_and_returns_signed_respons
                         address="127.0.0.1:9820",
                         transport="socket",
                         trust_level="untrusted",
+                        allowed_intents=["query"],
                     )
                 ],
             )
@@ -890,11 +891,119 @@ async def test_behavioral_a2a_socket_request_executes_and_returns_signed_respons
         assert response.payload["response"] == "a2a:team status"
         assert verify_envelope(response, local_public) is True
         sid = str(response.payload["session_id"])
+        audit_event = await _wait_for_audit_event(
+            client,
+            event_type="A2aIngressEvaluated",
+            session_id=sid,
+            predicate=lambda item: (
+                str(item.get("data", {}).get("message_id", "")) == request.message_id
+            ),
+        )
         transcript = TranscriptStore(_config.data_dir / "sessions")
         user_entries = [entry for entry in transcript.list_entries(sid) if entry.role == "user"]
         assert user_entries
         assert TaintLabel.A2A_EXTERNAL in user_entries[0].taint_labels
         assert TaintLabel.UNTRUSTED in user_entries[0].taint_labels
+        audit_data = dict(audit_event.get("data", {}))
+        assert audit_data["sender_agent_id"] == "remote-agent"
+        assert audit_data["sender_fingerprint"] == remote_fingerprint
+        assert audit_data["receiver_agent_id"] == "local-agent"
+        assert audit_data["message_id"] == request.message_id
+        assert audit_data["intent"] == "query"
+        assert audit_data["capability_granted"] is True
+        assert audit_data["outcome"] == "accepted"
+        assert audit_data["reason"] == "ok"
+    finally:
+        await _shutdown_daemon(daemon_task, client)
+
+
+@pytest.mark.asyncio
+async def test_behavioral_a2a_socket_request_rejects_ungranted_intent_and_records_audit(
+    tmp_path: Path,
+) -> None:
+    local_private_path = tmp_path / "local-a2a.pem"
+    local_public_path = tmp_path / "local-a2a.pub"
+    local_fingerprint = write_ed25519_keypair(local_private_path, local_public_path)
+    remote_private, remote_public = generate_ed25519_keypair()
+    remote_fingerprint = fingerprint_for_public_key(remote_public)
+    daemon_task, client, _config = await _start_daemon(
+        tmp_path,
+        config_overrides={
+            "a2a": A2aConfig(
+                enabled=True,
+                identity=A2aIdentityConfig(
+                    agent_id="local-agent",
+                    private_key_path=local_private_path,
+                    public_key_path=local_public_path,
+                ),
+                listen=A2aListenConfig(transport="socket", host="127.0.0.1", port=0),
+                agents=[
+                    A2aAgentConfig(
+                        agent_id="remote-agent",
+                        fingerprint=remote_fingerprint,
+                        public_key=serialize_public_key_pem(remote_public).decode("utf-8"),
+                        address="127.0.0.1:9820",
+                        transport="socket",
+                        trust_level="untrusted",
+                        allowed_intents=["query"],
+                    )
+                ],
+            )
+        },
+    )
+    try:
+        request = create_envelope(
+            from_agent_id="remote-agent",
+            from_fingerprint=remote_fingerprint,
+            to_agent_id="local-agent",
+            message_type="request",
+            intent="delegate_task",
+            payload={"content": "delegate now"},
+        )
+        signed_request = attach_signature(request, sign_envelope(request, remote_private))
+        daemon_status = await client.call("daemon.status")
+        a2a_status = dict(daemon_status.get("a2a", {}))
+        target = A2aRegistry.from_config(
+            A2aConfig(
+                agents=[
+                    A2aAgentConfig(
+                        agent_id="local-agent",
+                        fingerprint=local_fingerprint,
+                        public_key_path=local_public_path,
+                        address=str(a2a_status["address"]),
+                        transport="socket",
+                    )
+                ]
+            )
+        ).require("local-agent")
+        response_raw = await SocketTransport().send(signed_request, target)
+        response = A2aEnvelope.model_validate(response_raw)
+        local_public = load_public_key_from_path(local_public_path)
+        audit_event = await _wait_for_audit_event(
+            client,
+            event_type="A2aIngressEvaluated",
+            predicate=lambda item: (
+                str(item.get("data", {}).get("message_id", "")) == request.message_id
+                and str(item.get("data", {}).get("reason", "")) == "intent_not_allowed"
+            ),
+        )
+        assert a2a_status["enabled"] is True
+        assert a2a_status["address"] != "127.0.0.1:0"
+        assert response.payload["ok"] is False
+        assert response.payload["error"] == "intent_not_allowed"
+        assert response.payload["status"] == 403
+        assert verify_envelope(response, local_public) is True
+        assert "session_id" not in response.payload
+        audit_data = dict(audit_event.get("data", {}))
+        assert audit_event.get("session_id") in {None, ""}
+        assert audit_data["sender_agent_id"] == "remote-agent"
+        assert audit_data["sender_fingerprint"] == remote_fingerprint
+        assert audit_data["receiver_agent_id"] == "local-agent"
+        assert audit_data["message_id"] == request.message_id
+        assert audit_data["intent"] == "delegate_task"
+        assert audit_data["capability_granted"] is False
+        assert audit_data["outcome"] == "rejected"
+        assert audit_data["reason"] == "intent_not_allowed"
     finally:
         await _shutdown_daemon(daemon_task, client)
 

@@ -321,6 +321,23 @@ class RateLimitTriggered(BaseEvent):
     count: int = 0
 
 
+class A2aIngressEvaluated(BaseEvent):
+    """A2A ingress decision and audit evidence."""
+
+    sender_agent_id: str = ""
+    sender_fingerprint: str = ""
+    verified_fingerprint: str = ""
+    receiver_agent_id: str = ""
+    message_id: str = ""
+    intent: str = ""
+    trust_level: str = ""
+    outcome: str = ""
+    reason: str = ""
+    status_code: int = 200
+    capability_granted: bool | None = None
+    retry_after_seconds: float = 0.0
+
+
 class MemoryEntryStored(BaseEvent):
     """Memory entry persisted."""
 
@@ -650,6 +667,7 @@ type AnyEvent = (
     | MonitorEvaluated
     | LockdownChanged
     | RateLimitTriggered
+    | A2aIngressEvaluated
     | MemoryEntryStored
     | MemoryEntryDeleted
     | SkillReviewRequested
@@ -703,6 +721,7 @@ EVENT_TYPES: dict[str, type[BaseEvent]] = {
     "MonitorEvaluated": MonitorEvaluated,
     "LockdownChanged": LockdownChanged,
     "RateLimitTriggered": RateLimitTriggered,
+    "A2aIngressEvaluated": A2aIngressEvaluated,
     "MemoryEntryStored": MemoryEntryStored,
     "MemoryEntryDeleted": MemoryEntryDeleted,
     "SkillReviewRequested": SkillReviewRequested,

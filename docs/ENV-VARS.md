@@ -159,8 +159,8 @@ A2A interop:
 A2A notes:
 
 - `SHISAD_A2A` accepts a JSON object for signed A2A listener, identity, and
-  static remote-agent registry configuration. The current `v0.6.5` I3 surface
-  is inbound signed external-ingress over direct socket or HTTP transports.
+  static remote-agent registry configuration. The current `v0.6.5` surface is
+  inbound signed external-ingress over direct socket or HTTP transports.
 - A minimal config object includes `enabled`, `identity.agent_id`,
   `identity.private_key_path`, `identity.public_key_path`, `listen`, and
   `agents`. Each configured remote agent must provide a fingerprint plus either
@@ -169,9 +169,14 @@ A2A notes:
   agents use full `http(s)://...` URLs with `transport: "http"`.
 - `shisad a2a keygen` generates an Ed25519 keypair, writes the private key
   owner-only, and prints the public-key fingerprint for out-of-band exchange.
-- `allowed_intents` and `rate_limits` are parsed in the A2A config shape now,
-  but enforcement for capability grants and rate limiting lands in `v0.6.5`
-  I4. Do not treat those fields as active policy until that milestone closes.
+- `allowed_intents` is enforced fail-closed at A2A ingress. Missing
+  `allowed_intents` rejects all requests from that configured remote agent
+  until the operator adds explicit grants.
+- `rate_limits` enforces per-source budgets keyed on the verified remote
+  public-key fingerprint. Defaults: `60/minute`, `600/hour`.
+- Each accepted or rejected inbound A2A request emits an
+  `A2aIngressEvaluated` audit event with sender identity, intent, outcome, and
+  rejection reason when applicable.
 
 Approval / WebAuthn / signer:
 

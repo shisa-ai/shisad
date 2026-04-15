@@ -1,4 +1,4 @@
-"""I3 A2A unit coverage for envelope, registry, keygen, transport, and ingress."""
+"""I4 A2A unit coverage for envelope, registry, transport, ingress, and hardening."""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ import socket
 import stat
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 from urllib.parse import urlparse
 
 import pytest
@@ -20,7 +21,9 @@ from shisad.core.api.schema import (
     SessionMessageParams,
     SessionMessageResult,
 )
+from shisad.core.audit import AuditLog
 from shisad.core.config import DaemonConfig
+from shisad.core.events import EventBus
 from shisad.core.request_context import RequestContext
 from shisad.core.types import TaintLabel
 from shisad.interop import a2a_envelope as a2a_envelope_module
@@ -38,11 +41,13 @@ from shisad.interop.a2a_envelope import (
     write_ed25519_keypair,
 )
 from shisad.interop.a2a_ingress import A2aIngress, A2aIngressError, A2aRuntime
+from shisad.interop.a2a_ratelimit import A2aRateLimiter
 from shisad.interop.a2a_registry import (
     A2aAgentConfig,
     A2aConfig,
     A2aIdentityConfig,
     A2aListenConfig,
+    A2aRateLimitsConfig,
     A2aRegistry,
     load_local_identity,
 )
@@ -70,6 +75,10 @@ def _signed_request(
         timestamp=timestamp,
     )
     return attach_signature(envelope, sign_envelope(envelope, private_key))
+
+
+def _a2a_audit_events(audit_log: AuditLog, *, limit: int = 50) -> list[dict[str, Any]]:
+    return audit_log.query(event_type="A2aIngressEvaluated", limit=limit)
 
 
 def test_a2a_envelope_sign_verify_round_trip() -> None:
@@ -539,6 +548,7 @@ async def test_a2a_runtime_http_ipv6_status_address_round_trips(tmp_path: Path) 
                     address="http://127.0.0.1:9820/a2a",
                     transport="http",
                     trust_level="untrusted",
+                    allowed_intents=["query"],
                 )
             ]
         )
@@ -666,10 +676,12 @@ async def test_a2a_ingress_routes_message_with_a2a_external_taint(tmp_path: Path
                     address="127.0.0.1:9820",
                     transport="socket",
                     trust_level="untrusted",
+                    allowed_intents=["query"],
                 )
             ]
         )
     )
+    audit_log = AuditLog(tmp_path / "audit.jsonl")
     captured_create: list[tuple[SessionCreateParams, RequestContext]] = []
     captured_message: list[tuple[SessionMessageParams, RequestContext]] = []
 
@@ -687,6 +699,7 @@ async def test_a2a_ingress_routes_message_with_a2a_external_taint(tmp_path: Path
         firewall=ContentFirewall(),
         session_create=_create,
         session_message=_message,
+        event_bus=EventBus(persister=audit_log),
     )
     envelope = _signed_request(
         private_key=remote_private,
@@ -711,6 +724,218 @@ async def test_a2a_ingress_routes_message_with_a2a_external_taint(tmp_path: Path
     assert message_ctx.firewall_result is not None
     assert TaintLabel.A2A_EXTERNAL in message_ctx.firewall_result.taint_labels
     assert TaintLabel.UNTRUSTED in message_ctx.firewall_result.taint_labels
+    audit_events = _a2a_audit_events(audit_log)
+    assert len(audit_events) == 1
+    assert audit_events[0]["session_id"] == "sess-a2a"
+    assert audit_events[0]["actor"] == "a2a_ingress"
+    audit_data = dict(audit_events[0]["data"])
+    assert audit_data["sender_agent_id"] == "remote-agent"
+    assert audit_data["sender_fingerprint"] == remote_fingerprint
+    assert audit_data["verified_fingerprint"] == remote_fingerprint
+    assert audit_data["receiver_agent_id"] == "local-agent"
+    assert audit_data["message_id"] == envelope.message_id
+    assert audit_data["intent"] == "query"
+    assert audit_data["trust_level"] == "untrusted"
+    assert audit_data["capability_granted"] is True
+    assert audit_data["outcome"] == "accepted"
+    assert audit_data["reason"] == "ok"
+
+
+@pytest.mark.asyncio
+async def test_a2a_ingress_rejects_ungranted_intent_before_session_creation(tmp_path: Path) -> None:
+    write_ed25519_keypair(tmp_path / "local.pem", tmp_path / "local.pub")
+    remote_private, remote_public = generate_ed25519_keypair()
+    remote_fingerprint = fingerprint_for_public_key(remote_public)
+    identity = load_local_identity(
+        A2aIdentityConfig(
+            agent_id="local-agent",
+            private_key_path=tmp_path / "local.pem",
+            public_key_path=tmp_path / "local.pub",
+        )
+    )
+    registry = A2aRegistry.from_config(
+        A2aConfig(
+            agents=[
+                A2aAgentConfig(
+                    agent_id="remote-agent",
+                    fingerprint=remote_fingerprint,
+                    public_key=serialize_public_key_pem(remote_public).decode("utf-8"),
+                    address="127.0.0.1:9820",
+                    transport="socket",
+                    allowed_intents=["query"],
+                )
+            ]
+        )
+    )
+    audit_log = AuditLog(tmp_path / "audit.jsonl")
+    ingress = A2aIngress(
+        local_identity=identity,
+        registry=registry,
+        firewall=ContentFirewall(),
+        session_create=_unused_create,
+        session_message=_unused_message,
+        event_bus=EventBus(persister=audit_log),
+    )
+    envelope = _signed_request(
+        private_key=remote_private,
+        sender_agent_id="remote-agent",
+        sender_fingerprint=remote_fingerprint,
+        recipient_agent_id="local-agent",
+        intent="delegate_task",
+        payload={"content": "delegate now"},
+    )
+
+    with pytest.raises(A2aIngressError, match="intent_not_allowed"):
+        await ingress.handle_envelope(envelope)
+
+    audit_events = _a2a_audit_events(audit_log)
+    assert len(audit_events) == 1
+    assert audit_events[0]["session_id"] is None
+    audit_data = dict(audit_events[0]["data"])
+    assert audit_data["message_id"] == envelope.message_id
+    assert audit_data["intent"] == "delegate_task"
+    assert audit_data["capability_granted"] is False
+    assert audit_data["outcome"] == "rejected"
+    assert audit_data["reason"] == "intent_not_allowed"
+
+
+@pytest.mark.asyncio
+async def test_a2a_ingress_missing_allowed_intents_rejects_fail_closed(tmp_path: Path) -> None:
+    write_ed25519_keypair(tmp_path / "local.pem", tmp_path / "local.pub")
+    remote_private, remote_public = generate_ed25519_keypair()
+    remote_fingerprint = fingerprint_for_public_key(remote_public)
+    identity = load_local_identity(
+        A2aIdentityConfig(
+            agent_id="local-agent",
+            private_key_path=tmp_path / "local.pem",
+            public_key_path=tmp_path / "local.pub",
+        )
+    )
+    registry = A2aRegistry.from_config(
+        A2aConfig(
+            agents=[
+                A2aAgentConfig(
+                    agent_id="remote-agent",
+                    fingerprint=remote_fingerprint,
+                    public_key=serialize_public_key_pem(remote_public).decode("utf-8"),
+                    address="127.0.0.1:9820",
+                    transport="socket",
+                )
+            ]
+        )
+    )
+    audit_log = AuditLog(tmp_path / "audit.jsonl")
+    ingress = A2aIngress(
+        local_identity=identity,
+        registry=registry,
+        firewall=ContentFirewall(),
+        session_create=_unused_create,
+        session_message=_unused_message,
+        event_bus=EventBus(persister=audit_log),
+    )
+    envelope = _signed_request(
+        private_key=remote_private,
+        sender_agent_id="remote-agent",
+        sender_fingerprint=remote_fingerprint,
+        recipient_agent_id="local-agent",
+    )
+
+    with pytest.raises(A2aIngressError, match="intent_not_allowed"):
+        await ingress.handle_envelope(envelope)
+
+    audit_events = _a2a_audit_events(audit_log)
+    assert len(audit_events) == 1
+    audit_data = dict(audit_events[0]["data"])
+    assert audit_data["capability_granted"] is False
+    assert audit_data["reason"] == "intent_not_allowed"
+    assert audit_data["sender_agent_id"] == "remote-agent"
+
+
+@pytest.mark.asyncio
+async def test_a2a_ingress_rate_limit_keys_on_verified_fingerprint(tmp_path: Path) -> None:
+    write_ed25519_keypair(tmp_path / "local.pem", tmp_path / "local.pub")
+    shared_private, shared_public = generate_ed25519_keypair()
+    shared_fingerprint = fingerprint_for_public_key(shared_public)
+    identity = load_local_identity(
+        A2aIdentityConfig(
+            agent_id="local-agent",
+            private_key_path=tmp_path / "local.pem",
+            public_key_path=tmp_path / "local.pub",
+        )
+    )
+    registry = A2aRegistry.from_config(
+        A2aConfig(
+            agents=[
+                A2aAgentConfig(
+                    agent_id="remote-one",
+                    fingerprint=shared_fingerprint,
+                    public_key=serialize_public_key_pem(shared_public).decode("utf-8"),
+                    address="127.0.0.1:9820",
+                    transport="socket",
+                    allowed_intents=["query"],
+                ),
+                A2aAgentConfig(
+                    agent_id="remote-two",
+                    fingerprint=shared_fingerprint,
+                    public_key=serialize_public_key_pem(shared_public).decode("utf-8"),
+                    address="127.0.0.1:9821",
+                    transport="socket",
+                    allowed_intents=["query"],
+                ),
+            ],
+            rate_limits=A2aRateLimitsConfig(max_per_minute=1, max_per_hour=10),
+        )
+    )
+    audit_log = AuditLog(tmp_path / "audit.jsonl")
+
+    async def _create(_params: SessionCreateParams, _ctx: RequestContext) -> SessionCreateResult:
+        return SessionCreateResult(session_id="sess-a2a")
+
+    async def _message(
+        _params: SessionMessageParams,
+        _ctx: RequestContext,
+    ) -> SessionMessageResult:
+        return SessionMessageResult(session_id="sess-a2a", response="ack")
+
+    ingress = A2aIngress(
+        local_identity=identity,
+        registry=registry,
+        firewall=ContentFirewall(),
+        session_create=_create,
+        session_message=_message,
+        rate_limiter=A2aRateLimiter(A2aRateLimitsConfig(max_per_minute=1, max_per_hour=10)),
+        event_bus=EventBus(persister=audit_log),
+    )
+
+    accepted = await ingress.handle_envelope(
+        _signed_request(
+            private_key=shared_private,
+            sender_agent_id="remote-one",
+            sender_fingerprint=shared_fingerprint,
+            recipient_agent_id="local-agent",
+        )
+    )
+    blocked_envelope = _signed_request(
+        private_key=shared_private,
+        sender_agent_id="remote-two",
+        sender_fingerprint=shared_fingerprint,
+        recipient_agent_id="local-agent",
+    )
+
+    with pytest.raises(A2aIngressError, match="rate_limited") as exc_info:
+        await ingress.handle_envelope(blocked_envelope)
+
+    assert accepted.session_id == "sess-a2a"
+    assert exc_info.value.status == 429
+    assert float(exc_info.value.details["retry_after_seconds"]) > 0.0
+    audit_events = _a2a_audit_events(audit_log)
+    assert len(audit_events) == 2
+    blocked_data = dict(audit_events[-1]["data"])
+    assert blocked_data["sender_agent_id"] == "remote-two"
+    assert blocked_data["verified_fingerprint"] == shared_fingerprint
+    assert blocked_data["outcome"] == "rejected"
+    assert blocked_data["reason"] == "rate_limited"
+    assert float(blocked_data["retry_after_seconds"]) > 0.0
 
 
 @pytest.mark.asyncio

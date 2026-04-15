@@ -74,6 +74,67 @@ confirmation by default until trusted-server allowlisting lands, and stdio
 servers receive a sanitized subprocess environment plus any explicit `env`
 overrides you configure per server.
 
+A2A ingress uses the same `interop` group. Configure it via `SHISAD_A2A`
+(JSON) or `DaemonConfig.a2a`. The current `v0.6.5` A2A surface is signed
+inbound ingress over direct socket or HTTP transports, with fail-closed
+`allowed_intents` grants, per-fingerprint sliding-window rate limits, and
+`A2aIngressEvaluated` audit events for success and rejection outcomes.
+
+Generate the local daemon identity first:
+
+```bash
+uv run shisad a2a keygen \
+  --private-key "$HOME/.config/shisad/a2a/private.key" \
+  --public-key "$HOME/.config/shisad/a2a/public.key"
+```
+
+Example `SHISAD_A2A` payload:
+
+```bash
+export SHISAD_A2A='{
+  "enabled": true,
+  "identity": {
+    "agent_id": "local-agent",
+    "private_key_path": "/home/ubuntu/.config/shisad/a2a/private.key",
+    "public_key_path": "/home/ubuntu/.config/shisad/a2a/public.key"
+  },
+  "listen": {
+    "transport": "socket",
+    "host": "127.0.0.1",
+    "port": 9820
+  },
+  "agents": [
+    {
+      "agent_id": "remote-agent",
+      "fingerprint": "sha256:<remote-public-key-fingerprint>",
+      "public_key_path": "/home/ubuntu/.config/shisad/a2a/remote-agent.pub",
+      "address": "127.0.0.1:9820",
+      "transport": "socket",
+      "trust_level": "untrusted",
+      "allowed_intents": ["query"]
+    }
+  ],
+  "rate_limits": {
+    "max_per_minute": 60,
+    "max_per_hour": 600
+  }
+}'
+```
+
+Operator notes:
+
+- `allowed_intents` is fail-closed. If you omit it for a configured remote
+  agent, that agent's inbound A2A requests are rejected until you add explicit
+  grants.
+- Rate limits key on the verified remote public-key fingerprint, not the
+  self-reported `agent_id`, so reusing the same key across aliases still shares
+  one budget.
+- Socket peers use `address: "host:port"` with `transport: "socket"`. HTTP
+  peers use full `http(s)://...` URLs with `transport: "http"`.
+- Each accepted or rejected inbound request emits an `A2aIngressEvaluated`
+  audit event with sender identity, intent, outcome, and rejection reason when
+  applicable.
+
 ## Preflight Checklist
 
 Before starting the daemon:

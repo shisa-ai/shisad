@@ -13,8 +13,9 @@ from shisad.core.api.schema import (
     SessionMessageParams,
     SessionMessageResult,
 )
+from shisad.core.events import A2aIngressEvaluated, EventBus
 from shisad.core.request_context import RequestContext
-from shisad.core.types import TaintLabel
+from shisad.core.types import SessionId, TaintLabel
 from shisad.daemon.context import RequestContext as DaemonRequestContext
 from shisad.interop.a2a_envelope import (
     A2A_PROTOCOL_VERSION,
@@ -25,6 +26,7 @@ from shisad.interop.a2a_envelope import (
     sign_envelope,
     verify_envelope,
 )
+from shisad.interop.a2a_ratelimit import A2aRateLimiter
 from shisad.interop.a2a_registry import A2aListenConfig, A2aLocalIdentity, A2aRegistry
 from shisad.interop.a2a_transport import A2aTransportListener, HttpTransport, SocketTransport
 from shisad.security.firewall import ContentFirewall, FirewallResult
@@ -63,9 +65,26 @@ class A2aIngressResult:
 class A2aIngressError(RuntimeError):
     """Structured A2A ingress rejection."""
 
-    def __init__(self, reason: str) -> None:
+    def __init__(
+        self,
+        reason: str,
+        *,
+        status: int = 400,
+        details: dict[str, Any] | None = None,
+    ) -> None:
         super().__init__(reason)
         self.reason = reason
+        self.status = int(status)
+        self.details = dict(details or {})
+
+    def response_payload(self) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "ok": False,
+            "error": self.reason,
+            "status": self.status,
+        }
+        payload.update(self.details)
+        return payload
 
 
 class A2aIngress:
@@ -80,6 +99,8 @@ class A2aIngress:
         session_create: SessionCreateHandler,
         session_message: SessionMessageHandler,
         replay_cache: ReplayCache | None = None,
+        rate_limiter: A2aRateLimiter | None = None,
+        event_bus: EventBus | None = None,
     ) -> None:
         self._local_identity = local_identity
         self._registry = registry
@@ -87,67 +108,153 @@ class A2aIngress:
         self._session_create = session_create
         self._session_message = session_message
         self._replay_cache = replay_cache or ReplayCache()
+        self._rate_limiter = rate_limiter
+        self._event_bus = event_bus
 
     async def handle_envelope(self, envelope: A2aEnvelope) -> A2aIngressResult:
         """Validate and dispatch an inbound A2A envelope."""
 
-        if envelope.version != A2A_PROTOCOL_VERSION:
-            raise A2aIngressError("unsupported_version")
-        if envelope.type != "request":
-            raise A2aIngressError("unsupported_message_type")
-        if envelope.recipient.agent_id != self._local_identity.agent_id:
-            raise A2aIngressError("unknown_recipient")
-        entry = self._registry.resolve(envelope.sender.agent_id)
-        if entry is None:
-            raise A2aIngressError("unknown_sender")
-        if envelope.sender.public_key_fingerprint != entry.fingerprint:
-            raise A2aIngressError("fingerprint_mismatch")
-        if not verify_envelope(envelope, entry.public_key):
-            raise A2aIngressError("signature_invalid")
-        replay_result = self._replay_cache.check(envelope)
-        if not replay_result.allowed:
-            raise A2aIngressError(replay_result.reason)
+        entry = None
+        capability_granted: bool | None = None
+        session_id = ""
+        try:
+            if envelope.version != A2A_PROTOCOL_VERSION:
+                raise A2aIngressError("unsupported_version", status=400)
+            if envelope.type != "request":
+                raise A2aIngressError("unsupported_message_type", status=400)
+            if envelope.recipient.agent_id != self._local_identity.agent_id:
+                raise A2aIngressError("unknown_recipient", status=404)
+            entry = self._registry.resolve(envelope.sender.agent_id)
+            if entry is None:
+                raise A2aIngressError("unknown_sender", status=403)
+            if envelope.sender.public_key_fingerprint != entry.fingerprint:
+                raise A2aIngressError("fingerprint_mismatch", status=403)
+            if not verify_envelope(envelope, entry.public_key):
+                raise A2aIngressError("signature_invalid", status=403)
+            replay_result = self._replay_cache.check(envelope)
+            if not replay_result.allowed:
+                raise A2aIngressError(
+                    replay_result.reason,
+                    status=409 if replay_result.reason == "replay_detected" else 400,
+                )
+            if self._rate_limiter is not None:
+                rate_limit = self._rate_limiter.check_rate_limit(entry.fingerprint)
+                if not rate_limit.allowed:
+                    raise A2aIngressError(
+                        "rate_limited",
+                        status=429,
+                        details={"retry_after_seconds": rate_limit.retry_after_seconds},
+                    )
+            capability_granted = envelope.intent in (entry.allowed_intents or ())
+            if not capability_granted:
+                raise A2aIngressError("intent_not_allowed", status=403)
 
-        payload_text = _payload_text(envelope.payload)
-        firewall_result = self._firewall.inspect(payload_text, trusted_input=False)
-        taint_labels = sorted({*firewall_result.taint_labels, TaintLabel.A2A_EXTERNAL})
-        a2a_firewall_result = FirewallResult.model_validate(
-            {
-                **firewall_result.model_dump(mode="json"),
-                "taint_labels": taint_labels,
-            }
-        )
-        request_ctx = DaemonRequestContext(
-            is_internal_ingress=True,
-            trust_level_override=entry.trust_level,
-            firewall_result=a2a_firewall_result,
-        )
-        created = await self._session_create(
-            SessionCreateParams(
-                channel="a2a",
-                user_id=envelope.sender.agent_id,
-                workspace_id=envelope.recipient.agent_id,
-            ),
-            request_ctx,
-        )
-        result = await self._session_message(
-            SessionMessageParams(
-                session_id=created.session_id,
-                channel="a2a",
-                user_id=envelope.sender.agent_id,
-                workspace_id=envelope.recipient.agent_id,
-                content=payload_text,
-            ),
-            request_ctx,
-        )
-        return A2aIngressResult(
-            session_id=result.session_id,
-            response=result.response,
-            sender_agent_id=entry.agent_id,
-            sender_fingerprint=entry.fingerprint,
-            receiver_agent_id=self._local_identity.agent_id,
-            intent=envelope.intent,
-            trust_level=entry.trust_level,
+            payload_text = _payload_text(envelope.payload)
+            firewall_result = self._firewall.inspect(payload_text, trusted_input=False)
+            taint_labels = sorted({*firewall_result.taint_labels, TaintLabel.A2A_EXTERNAL})
+            a2a_firewall_result = FirewallResult.model_validate(
+                {
+                    **firewall_result.model_dump(mode="json"),
+                    "taint_labels": taint_labels,
+                }
+            )
+            request_ctx = DaemonRequestContext(
+                is_internal_ingress=True,
+                trust_level_override=entry.trust_level,
+                firewall_result=a2a_firewall_result,
+            )
+            created = await self._session_create(
+                SessionCreateParams(
+                    channel="a2a",
+                    user_id=envelope.sender.agent_id,
+                    workspace_id=envelope.recipient.agent_id,
+                ),
+                request_ctx,
+            )
+            session_id = created.session_id
+            result = await self._session_message(
+                SessionMessageParams(
+                    session_id=created.session_id,
+                    channel="a2a",
+                    user_id=envelope.sender.agent_id,
+                    workspace_id=envelope.recipient.agent_id,
+                    content=payload_text,
+                ),
+                request_ctx,
+            )
+            await self._publish_audit(
+                envelope,
+                entry=entry,
+                session_id=result.session_id,
+                outcome="accepted",
+                reason="ok",
+                status_code=200,
+                capability_granted=True,
+            )
+            return A2aIngressResult(
+                session_id=result.session_id,
+                response=result.response,
+                sender_agent_id=entry.agent_id,
+                sender_fingerprint=entry.fingerprint,
+                receiver_agent_id=self._local_identity.agent_id,
+                intent=envelope.intent,
+                trust_level=entry.trust_level,
+            )
+        except A2aIngressError as exc:
+            await self._publish_audit(
+                envelope,
+                entry=entry,
+                session_id=session_id,
+                outcome="rejected",
+                reason=exc.reason,
+                status_code=exc.status,
+                capability_granted=capability_granted,
+                retry_after_seconds=float(exc.details.get("retry_after_seconds", 0.0) or 0.0),
+            )
+            raise
+        except Exception:
+            await self._publish_audit(
+                envelope,
+                entry=entry,
+                session_id=session_id,
+                outcome="rejected",
+                reason="internal_error",
+                status_code=500,
+                capability_granted=capability_granted,
+            )
+            raise
+
+    async def _publish_audit(
+        self,
+        envelope: A2aEnvelope,
+        *,
+        entry: Any,
+        session_id: str,
+        outcome: str,
+        reason: str,
+        status_code: int,
+        capability_granted: bool | None,
+        retry_after_seconds: float = 0.0,
+    ) -> None:
+        if self._event_bus is None:
+            return
+        await self._event_bus.publish(
+            A2aIngressEvaluated(
+                session_id=SessionId(session_id) if session_id else None,
+                actor="a2a_ingress",
+                sender_agent_id=envelope.sender.agent_id,
+                sender_fingerprint=envelope.sender.public_key_fingerprint,
+                verified_fingerprint=entry.fingerprint if entry is not None else "",
+                receiver_agent_id=self._local_identity.agent_id,
+                message_id=envelope.message_id,
+                intent=envelope.intent,
+                trust_level=entry.trust_level if entry is not None else "",
+                outcome=outcome,
+                reason=reason,
+                status_code=status_code,
+                capability_granted=capability_granted,
+                retry_after_seconds=retry_after_seconds,
+            )
         )
 
 
@@ -163,6 +270,8 @@ class A2aRuntime:
         session_create: SessionCreateHandler,
         session_message: SessionMessageHandler,
         listen_config: A2aListenConfig,
+        rate_limiter: A2aRateLimiter | None = None,
+        event_bus: EventBus | None = None,
     ) -> None:
         self._local_identity = local_identity
         self._listen_config = listen_config
@@ -172,6 +281,8 @@ class A2aRuntime:
             firewall=firewall,
             session_create=session_create,
             session_message=session_message,
+            rate_limiter=rate_limiter,
+            event_bus=event_bus,
         )
         self._listener: A2aTransportListener | None = None
 
@@ -215,9 +326,9 @@ class A2aRuntime:
                 "intent": result.intent,
             }
         except A2aIngressError as exc:
-            payload = {"ok": False, "error": exc.reason}
+            payload = exc.response_payload()
         except Exception:
-            payload = {"ok": False, "error": "internal_error"}
+            payload = {"ok": False, "error": "internal_error", "status": 500}
         response = create_envelope(
             from_agent_id=self._local_identity.agent_id,
             from_fingerprint=self._local_identity.fingerprint,

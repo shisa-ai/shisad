@@ -50,6 +50,7 @@ from shisad.executors.connect_path import IptablesConnectPathProxy
 from shisad.executors.proxy import EgressProxy
 from shisad.executors.sandbox import SandboxOrchestrator
 from shisad.interop.a2a_ingress import A2aRuntime
+from shisad.interop.a2a_ratelimit import A2aRateLimiter
 from shisad.interop.a2a_registry import A2aRegistry, load_local_identity
 from shisad.interop.mcp_client import McpClientManager
 from shisad.memory.ingestion import EmbeddingFingerprint, IngestionPipeline, RetrieveRagTool
@@ -892,6 +893,8 @@ class DaemonServices:
                     session_create=handlers.handle_session_create,
                     session_message=handlers.handle_session_message,
                     listen_config=config.a2a.listen,
+                    rate_limiter=A2aRateLimiter(config.a2a.rate_limits),
+                    event_bus=event_bus,
                 )
                 await a2a_runtime.start()
                 services.a2a_runtime = a2a_runtime
