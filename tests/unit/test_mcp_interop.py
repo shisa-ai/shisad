@@ -1578,3 +1578,186 @@ async def test_i1_tool_execute_surfaces_mcp_startup_registration_errors(
         isinstance(event, ToolRejected) and event.reason == "mcp_startup_error:docs"
         for event in harness._event_bus.events
     )
+
+
+# ---------------------------------------------------------------------------
+# MCP-H1..H5: review/test-analysis-v0.6.5.md coverage for MCP security gates.
+# ---------------------------------------------------------------------------
+
+
+class _RaisingMcpManagerStub:
+    """MCP manager stub whose call_tool always raises — covers MCP-H3."""
+
+    def __init__(self, error: Exception) -> None:
+        self._error = error
+        self.calls: list[tuple[str, str, dict[str, Any]]] = []
+
+    async def call_tool(
+        self,
+        server_name: str,
+        tool_name: str,
+        arguments: dict[str, Any],
+    ) -> dict[str, Any]:
+        self.calls.append((server_name, tool_name, dict(arguments)))
+        raise self._error
+
+    def startup_error_for_tool(self, tool_name: ToolName | str) -> tuple[str, str] | None:
+        _ = tool_name
+        return None
+
+
+@pytest.mark.asyncio
+async def test_mcp_h3_call_tool_exception_returns_ok_false_payload() -> None:
+    """MCP-H3: when the MCP transport raises, the handler must convert the
+    exception into a structured `{"ok": False, "error": ...}` payload instead
+    of propagating the error.
+    """
+
+    harness = _McpExecutionHarness(
+        payload={
+            "ok": True,
+            "structured_content": {"answer": "echo:roadmap"},
+            "content": [{"type": "text", "text": "echo:roadmap"}],
+        }
+    )
+    harness._mcp_manager = _RaisingMcpManagerStub(  # type: ignore[assignment]
+        RuntimeError("upstream connection reset"),
+    )
+
+    result = await HandlerImplementation._execute_approved_action(
+        harness,  # type: ignore[arg-type]
+        sid=harness.session_id,
+        user_id=UserId("alice"),
+        tool_name=ToolName("mcp.docs.lookup-doc"),
+        arguments={"query": "roadmap"},
+        capabilities=set(),
+        approval_actor="control_api",
+    )
+
+    assert result.success is False
+    assert result.tool_output is not None
+    payload = json.loads(result.tool_output.content)
+    assert payload["ok"] is False
+    assert "upstream connection reset" in payload["error"]
+    # Taint labels from label_tool_output must still apply even on the
+    # failure branch.
+    assert result.tool_output.taint_labels == {TaintLabel.UNTRUSTED, TaintLabel.MCP_EXTERNAL}
+
+
+@pytest.mark.asyncio
+async def test_mcp_h3_call_tool_empty_error_message_falls_back_to_default() -> None:
+    harness = _McpExecutionHarness(payload={"ok": True, "structured_content": None, "content": []})
+    harness._mcp_manager = _RaisingMcpManagerStub(RuntimeError(""))  # type: ignore[assignment]
+
+    result = await HandlerImplementation._execute_approved_action(
+        harness,  # type: ignore[arg-type]
+        sid=harness.session_id,
+        user_id=UserId("alice"),
+        tool_name=ToolName("mcp.docs.lookup-doc"),
+        arguments={"query": "roadmap"},
+        capabilities=set(),
+        approval_actor="control_api",
+    )
+
+    payload = json.loads(result.tool_output.content) if result.tool_output else {}
+    assert payload["ok"] is False
+    assert payload["error"] == "mcp_tool_failed"
+
+
+@pytest.mark.asyncio
+async def test_mcp_h4_untrusted_server_forces_confirmation_even_when_tool_opts_out() -> None:
+    """MCP-H4: even if the MCP tool definition declares
+    ``require_confirmation=False``, confirmation must still be required
+    unless the operator has explicitly added the server to
+    ``mcp_trusted_servers``.
+    """
+
+    harness = _McpToolExecuteHarness(
+        payload={
+            "ok": True,
+            "structured_content": {"answer": "echo:roadmap"},
+            "content": [{"type": "text", "text": "echo:roadmap"}],
+        },
+        require_confirmation=False,  # tool says "no confirmation needed"
+        trusted_servers=[],  # ...but server is not allowlisted
+    )
+
+    result = await HandlerImplementation.do_tool_execute(
+        harness,  # type: ignore[arg-type]
+        {
+            "session_id": str(harness.session_id),
+            "tool_name": "mcp.docs.lookup-doc",
+            "command": ["mcp"],
+            "arguments": {"query": "roadmap"},
+            "security_critical": False,
+            "degraded_mode": "fail_open",
+        },
+    )
+
+    assert result["allowed"] is False
+    assert result["confirmation_required"] is True
+    # The upstream tool must not be invoked before confirmation lands.
+    assert harness._mcp_manager.calls == []
+
+
+@pytest.mark.asyncio
+async def test_mcp_h4_trusted_server_clears_confirmation_when_tool_opts_out() -> None:
+    """Counterpart to the H4 check: adding the server to the trusted list
+    lets the opt-out actually take effect."""
+
+    harness = _McpToolExecuteHarness(
+        payload={
+            "ok": True,
+            "structured_content": {"answer": "echo:roadmap"},
+            "content": [{"type": "text", "text": "echo:roadmap"}],
+        },
+        require_confirmation=False,
+        trusted_servers=["docs"],
+    )
+
+    result = await HandlerImplementation.do_tool_execute(
+        harness,  # type: ignore[arg-type]
+        {
+            "session_id": str(harness.session_id),
+            "tool_name": "mcp.docs.lookup-doc",
+            "command": ["mcp"],
+            "arguments": {"query": "roadmap"},
+            "security_critical": False,
+            "degraded_mode": "fail_open",
+        },
+    )
+
+    assert result["allowed"] is True
+    # Upstream call actually happens once the server is allowlisted.
+    assert harness._mcp_manager.calls == [("docs", "lookup-doc", {"query": "roadmap"})]
+
+
+@pytest.mark.asyncio
+async def test_mcp_h1_execute_approved_action_tool_output_carries_mcp_taint_on_success() -> None:
+    """MCP-H1 (unit-level counterpart): a successful MCP invocation must
+    tag the tool output with MCP_EXTERNAL + UNTRUSTED. This pins the
+    core security property so a regression that drops taint labels is
+    caught outside the prompt-injection sanitization test too.
+    """
+
+    harness = _McpExecutionHarness(
+        payload={
+            "ok": True,
+            "structured_content": {"answer": "echo:roadmap"},
+            "content": [{"type": "text", "text": "echo:roadmap"}],
+        }
+    )
+
+    result = await HandlerImplementation._execute_approved_action(
+        harness,  # type: ignore[arg-type]
+        sid=harness.session_id,
+        user_id=UserId("alice"),
+        tool_name=ToolName("mcp.docs.lookup-doc"),
+        arguments={"query": "roadmap"},
+        capabilities=set(),
+        approval_actor="control_api",
+    )
+
+    assert result.success is True
+    assert result.tool_output is not None
+    assert result.tool_output.taint_labels == {TaintLabel.UNTRUSTED, TaintLabel.MCP_EXTERNAL}
