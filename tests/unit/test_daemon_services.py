@@ -1103,6 +1103,13 @@ async def test_daemon_services_shutdown_continues_after_disconnect_error() -> No
         async def stop(self) -> None:
             calls.append("server")
 
+    # HDL-M1: construct a minimal DaemonServices via object.__new__ so this
+    # test can pin the shutdown ordering (embeddings → matrix → server) and
+    # the continue-past-disconnect-error invariant without standing up the
+    # full services container. If DaemonServices.shutdown starts touching a
+    # new attribute this test will raise AttributeError inside the call below
+    # — that is the intended drift signal. A deeper cleanup would split
+    # shutdown logic into a pure function; tracked as a follow-up.
     services = object.__new__(DaemonServices)
     services.embeddings_adapter = _EmbeddingsAdapterStub()  # type: ignore[assignment]
     services.matrix_channel = _MatrixStub()  # type: ignore[assignment]
