@@ -285,6 +285,50 @@ async def test_daemon_services_threads_control_plane_startup_timeout(
 
 
 @pytest.mark.asyncio
+async def test_daemon_services_uses_default_control_plane_startup_timeout(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clear_remote_provider_env(monkeypatch)
+    captured: dict[str, float] = {}
+
+    class _FakeSidecar:
+        def __init__(self) -> None:
+            self.client = SimpleNamespace(ping=self._ping)
+            self.process = SimpleNamespace(returncode=None)
+            self.socket_path = tmp_path / "data" / "control_plane" / "fake.sock"
+
+        async def _ping(self) -> bool:
+            return True
+
+        async def close(self) -> None:
+            return None
+
+    async def _fake_start(  # type: ignore[no-untyped-def]
+        *,
+        data_dir,
+        policy_path,
+        assistant_fs_roots,
+        startup_timeout_seconds,
+    ):
+        _ = (data_dir, policy_path, assistant_fs_roots)
+        captured["startup_timeout_seconds"] = float(startup_timeout_seconds)
+        return _FakeSidecar()
+
+    monkeypatch.setattr("shisad.daemon.services.start_control_plane_sidecar", _fake_start)
+    config = DaemonConfig(
+        data_dir=tmp_path / "data",
+        socket_path=tmp_path / "control.sock",
+        policy_path=tmp_path / "policy.yaml",
+    )
+    services = await DaemonServices.build(config)
+    try:
+        assert captured["startup_timeout_seconds"] == pytest.approx(15.0)
+    finally:
+        await services.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_daemon_services_reset_test_state_clears_documented_subsystems(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,

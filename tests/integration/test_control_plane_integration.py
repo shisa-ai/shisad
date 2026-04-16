@@ -752,7 +752,7 @@ async def test_g2_t1_direct_structured_tool_execute_matches_session_execution_ev
             {
                 "session_id": direct_sid,
                 "tool_name": "fs.read",
-                "command": [sys.executable, "-c", "print('sandbox fallback')"],
+                "command": [sys.executable, "-c", "print('sandbox_fallback')"],
                 "arguments": {"path": str(target)},
                 "security_critical": False,
                 "degraded_mode": "fail_open",
@@ -1167,7 +1167,7 @@ async def test_g2_t2_direct_structured_tool_failure_preserves_policy_allow_seman
             {
                 "session_id": sid,
                 "tool_name": "fs.read",
-                "command": [sys.executable, "-c", "print('sandbox fallback')"],
+                "command": [sys.executable, "-c", "print('sandbox_fallback')"],
                 "arguments": {"path": str(missing_path)},
                 "security_critical": False,
                 "degraded_mode": "fail_open",

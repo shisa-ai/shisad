@@ -325,7 +325,7 @@ async def test_m3_t4_timeout_and_t5_output_truncation(model_env: None, tmp_path:
             {
                 "session_id": sid,
                 "tool_name": "shell.exec",
-                "command": [sys.executable, "-c", "import time; time.sleep(2)"],
+                "command": [sys.executable, "-c", "__import__('time').sleep(2)"],
                 "limits": {"timeout_seconds": 1, "output_bytes": 2048},
                 "degraded_mode": "fail_open",
                 "security_critical": False,
@@ -340,7 +340,7 @@ async def test_m3_t4_timeout_and_t5_output_truncation(model_env: None, tmp_path:
             {
                 "session_id": sid,
                 "tool_name": "shell.exec",
-                "command": [sys.executable, "-c", "print('x' * 7000)"],
+                "command": [sys.executable, "-c", "print('x'*7000)"],
                 "limits": {"timeout_seconds": 5, "output_bytes": 128},
                 "degraded_mode": "fail_open",
                 "security_critical": False,
