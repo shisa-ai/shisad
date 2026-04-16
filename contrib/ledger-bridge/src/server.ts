@@ -187,6 +187,74 @@ function encodeDerSignature(r: Uint8Array, s: Uint8Array): Uint8Array {
 }
 
 // ---------------------------------------------------------------------------
+// Extract public key handler
+// ---------------------------------------------------------------------------
+
+interface ExtractKeyResponse {
+  ok: boolean;
+  public_key_pem: string;
+  address: string;
+  derivation_path: string;
+  error: string;
+}
+
+function uncompressedSecp256k1ToPem(pubKeyHex: string): string {
+  let hex = pubKeyHex.replace(/^0x/, "");
+  if (!hex.startsWith("04") && hex.length === 128) hex = "04" + hex;
+  const pubKeyBytes = hexToBytes(hex);
+  const header = hexToBytes("3056301006072a8648ce3d020106052b8104000a034200");
+  const der = new Uint8Array(header.length + pubKeyBytes.length);
+  der.set(header);
+  der.set(pubKeyBytes, header.length);
+  const b64 = Buffer.from(der).toString("base64");
+  const lines = b64.match(/.{1,64}/g) ?? [];
+  return `-----BEGIN PUBLIC KEY-----\n${lines.join("\n")}\n-----END PUBLIC KEY-----\n`;
+}
+
+async function handleExtractKey(): Promise<ExtractKeyResponse> {
+  const dmk = getDmk();
+  const device = await connectDevice(dmk);
+  await waitForUnlock(dmk, device.sessionId);
+  const signerEth = buildEthSigner(dmk, device.sessionId);
+
+  try {
+    const { observable } = signerEth.getAddress(DERIVATION_PATH, {
+      checkOnDevice: false,
+    });
+
+    const output = await firstValueFrom(
+      observable.pipe(
+        filter((state: any) => {
+          if (state.status === DeviceActionStatus.Pending) {
+            const interaction = state.intermediateValue.requiredUserInteraction;
+            if (interaction) printDeviceInteraction(interaction);
+          }
+          return (
+            state.status === DeviceActionStatus.Completed ||
+            state.status === DeviceActionStatus.Error
+          );
+        }),
+        map((state: any) => {
+          if (state.status === DeviceActionStatus.Error) throw state.error;
+          return state.output as { address: string; publicKey: string };
+        }),
+      ),
+    );
+
+    const pem = uncompressedSecp256k1ToPem(output.publicKey);
+    return {
+      ok: true,
+      public_key_pem: pem,
+      address: output.address,
+      derivation_path: DERIVATION_PATH,
+      error: "",
+    };
+  } finally {
+    await dmk.disconnect({ sessionId: device.sessionId }).catch(() => {});
+  }
+}
+
+// ---------------------------------------------------------------------------
 // HTTP server
 // ---------------------------------------------------------------------------
 
@@ -199,40 +267,45 @@ function readBody(req: IncomingMessage): Promise<Buffer> {
   });
 }
 
+function sendJson(res: ServerResponse, status: number, payload: object): void {
+  const encoded = JSON.stringify(payload);
+  res.writeHead(status, {
+    "Content-Type": "application/json",
+    "Content-Length": Buffer.byteLength(encoded).toString(),
+  });
+  res.end(encoded);
+}
+
 const server = createServer(async (req: IncomingMessage, res: ServerResponse) => {
-  if (req.method !== "POST" || !req.url?.startsWith("/sign")) {
-    res.writeHead(404, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({ error: "not_found" }));
+  // GET /extract-key — extract public key from connected Ledger
+  if (req.url?.startsWith("/extract-key")) {
+    try {
+      const response = await handleExtractKey();
+      sendJson(res, 200, response);
+    } catch (err) {
+      sendJson(res, 500, { ok: false, public_key_pem: "", address: "", derivation_path: "", error: (err as Error)?.message ?? "extract_key_failed" });
+    }
     return;
   }
 
-  try {
-    const body = await readBody(req);
-    const payload: SignRequest = JSON.parse(body.toString("utf-8"));
-    const response = await handleSignRequest(payload);
-    const encoded = JSON.stringify(response);
-    res.writeHead(200, {
-      "Content-Type": "application/json",
-      "Content-Length": Buffer.byteLength(encoded).toString(),
-    });
-    res.end(encoded);
-  } catch (err) {
-    const errResponse: SignResponse = {
-      status: "error",
-      signer_key_id: "",
-      signature: "",
-      signed_at: "",
-      review_surface: "",
-      blind_sign_detected: false,
-      reason: (err as Error)?.message ?? "internal_bridge_error",
-    };
-    const encoded = JSON.stringify(errResponse);
-    res.writeHead(500, {
-      "Content-Type": "application/json",
-      "Content-Length": Buffer.byteLength(encoded).toString(),
-    });
-    res.end(encoded);
+  // POST /sign — sign an intent envelope
+  if (req.method === "POST" && req.url?.startsWith("/sign")) {
+    try {
+      const body = await readBody(req);
+      const payload: SignRequest = JSON.parse(body.toString("utf-8"));
+      const response = await handleSignRequest(payload);
+      sendJson(res, 200, response);
+    } catch (err) {
+      sendJson(res, 500, {
+        status: "error", signer_key_id: "", signature: "", signed_at: "",
+        review_surface: "", blind_sign_detected: false,
+        reason: (err as Error)?.message ?? "internal_bridge_error",
+      });
+    }
+    return;
   }
+
+  sendJson(res, 404, { error: "not_found" });
 });
 
 server.on("error", (err: NodeJS.ErrnoException) => {
