@@ -20,6 +20,7 @@ from shisad.core.providers.local_planner import LocalPlannerProvider
 from shisad.core.transcript import TranscriptStore
 from shisad.core.types import SessionId
 from shisad.daemon.runner import run_daemon
+from shisad.memory.summarizer import _SUMMARY_SYSTEM_PROMPT
 from tests.helpers.artifact_kms import StubArtifactKmsService
 from tests.helpers.daemon import wait_for_socket as _wait_for_socket
 
@@ -32,7 +33,11 @@ _USER_GOAL_RE = re.compile(
     ),
     flags=re.DOTALL,
 )
-_SUMMARIZER_SYSTEM_MARKER = "You extract durable memory candidates from conversation history."
+# ADV-M3: take the first sentence of the live summarizer system prompt as the
+# stub's routing marker. Before this, the test embedded a hardcoded string
+# that could silently drift from production and leave the stub's summarizer
+# branch forever unreachable.
+_SUMMARIZER_SYSTEM_MARKER = _SUMMARY_SYSTEM_PROMPT.split(". ")[0] + "."
 _UNIQUE_MARKER = "EVIDENCE_BEHAVIORAL_MARKER"
 _REF_RE = re.compile(r"\bev-[0-9a-f]{16}\b")
 
@@ -86,7 +91,11 @@ async def _evidence_stub_complete(
     goal = _extract_user_goal(planner_input)
     goal_lower = goal.lower()
 
-    if goal_lower.startswith("fetch https://example.com"):
+    # ADV-M3: the `startswith("fetch https://...")` literal is still the
+    # simplest test-input match, but we also tolerate additional leading
+    # verbs like "please fetch https://..." so minor phrasing tweaks in
+    # the harness test text don't silently skip this stub branch.
+    if "fetch https://example.com" in goal_lower and "fetch" in goal_lower.split():
         return ProviderResponse(
             message=Message(
                 role="assistant",
