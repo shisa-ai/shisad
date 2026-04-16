@@ -1,5 +1,9 @@
 /**
- * Ledger DMK device connection and model detection helpers.
+ * Ledger DMK device connection management.
+ *
+ * Maintains a persistent device session that is reused across sign requests.
+ * Automatically reconnects if the device disconnects or the session becomes
+ * stale. This avoids the 200-500ms USB enumeration cost per request.
  */
 
 import {
@@ -7,7 +11,6 @@ import {
   DeviceManagementKitBuilder,
   ConsoleLogger,
   DeviceStatus,
-  DeviceSessionStateType,
 } from "@ledgerhq/device-management-kit";
 import { nodeHidTransportFactory } from "@ledgerhq/device-transport-kit-node-hid";
 import { SignerEthBuilder, type SignerEth } from "@ledgerhq/device-signer-kit-ethereum";
@@ -31,6 +34,74 @@ export interface ConnectedDevice {
   sessionId: string;
   model: string;
 }
+
+// ---------------------------------------------------------------------------
+// Persistent session management
+// ---------------------------------------------------------------------------
+
+let cachedSession: { sessionId: string; model: string; signerEth: SignerEth } | null = null;
+
+/**
+ * Get an active device session, reusing the existing one if still connected.
+ * Reconnects automatically if the device was disconnected or unplugged.
+ */
+export async function getOrConnectDevice(
+  dmk: DeviceManagementKit,
+): Promise<{ sessionId: string; model: string; signerEth: SignerEth }> {
+  // Check if cached session is still alive
+  if (cachedSession) {
+    try {
+      const state = await firstValueFrom(
+        dmk.getDeviceSessionState({ sessionId: cachedSession.sessionId }).pipe(
+          take(1),
+          timeout(3_000),
+        ),
+      );
+      if (state.deviceStatus !== DeviceStatus.NOT_CONNECTED) {
+        // Session is alive — check if locked
+        if (state.deviceStatus === DeviceStatus.LOCKED) {
+          process.stderr.write("Device is locked. Enter your PIN...\n");
+          await firstValueFrom(
+            dmk.getDeviceSessionState({ sessionId: cachedSession.sessionId }).pipe(
+              filter((s) => s.deviceStatus !== DeviceStatus.LOCKED),
+              take(1),
+              timeout(CONNECT_TIMEOUT_MS),
+            ),
+          );
+          process.stderr.write("Device unlocked.\n");
+        }
+        return cachedSession;
+      }
+    } catch {
+      // Session is stale — fall through to reconnect
+    }
+    process.stderr.write("Device session lost, reconnecting...\n");
+    cachedSession = null;
+  }
+
+  // Fresh connection
+  const device = await connectDevice(dmk);
+  await waitForUnlock(dmk, device.sessionId);
+  const signerEth = buildEthSigner(dmk, device.sessionId);
+  cachedSession = { ...device, signerEth };
+  return cachedSession;
+}
+
+/**
+ * Invalidate the cached session (e.g., after a device error).
+ */
+export function invalidateSession(): void {
+  if (cachedSession) {
+    const { sessionId } = cachedSession;
+    cachedSession = null;
+    const dmk = getDmk();
+    dmk.disconnect({ sessionId }).catch(() => {});
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Low-level connection helpers (used by getOrConnectDevice and extract-key)
+// ---------------------------------------------------------------------------
 
 /**
  * Wait for a Ledger device to appear and connect to it.
@@ -94,8 +165,7 @@ export function buildEthSigner(
 
 /**
  * Map device model to a shisad review_surface value.
- * All Ledger devices with screens report trusted_device_display.
  */
-export function reviewSurfaceForModel(model: string): string {
+export function reviewSurfaceForModel(_model: string): string {
   return "trusted_device_display";
 }

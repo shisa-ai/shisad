@@ -15,7 +15,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { DeviceActionStatus, UserInteractionRequired } from "@ledgerhq/device-management-kit";
 import { firstValueFrom, filter, map } from "rxjs";
 
-import { getDmk, connectDevice, waitForUnlock, buildEthSigner, reviewSurfaceForModel } from "./device";
+import { getDmk, getOrConnectDevice, invalidateSession, connectDevice, waitForUnlock, buildEthSigner, reviewSurfaceForModel } from "./device";
 import { buildTypedData, formatForDevice, type IntentEnvelope } from "./format";
 import { hexToBytes, uncompressedSecp256k1ToPem } from "./crypto-utils";
 
@@ -62,10 +62,8 @@ function printDeviceInteraction(interaction: string): void {
 async function handleSignRequest(req: SignRequest): Promise<SignResponse> {
   const dmk = getDmk();
 
-  // Connect and prepare device.
-  const device = await connectDevice(dmk);
-  await waitForUnlock(dmk, device.sessionId);
-  const signerEth = buildEthSigner(dmk, device.sessionId);
+  // Reuse persistent device session (reconnects automatically if stale).
+  const session = await getOrConnectDevice(dmk);
 
   // Build EIP-712 typed data for structured device display.
   const typedData = buildTypedData(req.intent_envelope);
@@ -75,7 +73,7 @@ async function handleSignRequest(req: SignRequest): Promise<SignResponse> {
   try {
     // Sign via EIP-712 signTypedData — device renders structured labeled
     // fields on its trusted display and the user confirms with physical touch.
-    const { observable, cancel } = signerEth.signTypedData(
+    const { observable, cancel } = session.signerEth.signTypedData(
       DERIVATION_PATH,
       typedData,
     );
@@ -114,7 +112,7 @@ async function handleSignRequest(req: SignRequest): Promise<SignResponse> {
       signer_key_id: req.signer_key_id,
       signature: signatureB64,
       signed_at: new Date().toISOString().replace(/\.\d{3}Z$/, "Z"),
-      review_surface: reviewSurfaceForModel(device.model),
+      review_surface: reviewSurfaceForModel(session.model),
       blind_sign_detected: false,
       reason: "",
     };
@@ -126,11 +124,13 @@ async function handleSignRequest(req: SignRequest): Promise<SignResponse> {
         signer_key_id: req.signer_key_id,
         signature: "",
         signed_at: "",
-        review_surface: reviewSurfaceForModel(device.model),
+        review_surface: reviewSurfaceForModel(session.model),
         blind_sign_detected: false,
         reason: "user_rejected_on_device",
       };
     }
+    // Device error — invalidate session so next request reconnects.
+    invalidateSession();
     return {
       status: "error",
       signer_key_id: req.signer_key_id,
@@ -140,8 +140,6 @@ async function handleSignRequest(req: SignRequest): Promise<SignResponse> {
       blind_sign_detected: false,
       reason: (err as Error)?.message ?? "unknown_device_error",
     };
-  } finally {
-    await dmk.disconnect({ sessionId: device.sessionId }).catch(() => {});
   }
 }
 
@@ -193,15 +191,13 @@ interface ExtractKeyResponse {
 
 async function handleExtractKey(): Promise<ExtractKeyResponse> {
   const dmk = getDmk();
-  const device = await connectDevice(dmk);
-  await waitForUnlock(dmk, device.sessionId);
-  const signerEth = buildEthSigner(dmk, device.sessionId);
+  const session = await getOrConnectDevice(dmk);
+
+  const { observable } = session.signerEth.getAddress(DERIVATION_PATH, {
+    checkOnDevice: false,
+  });
 
   try {
-    const { observable } = signerEth.getAddress(DERIVATION_PATH, {
-      checkOnDevice: false,
-    });
-
     const output = await firstValueFrom(
       observable.pipe(
         filter((state: any) => {
@@ -229,8 +225,9 @@ async function handleExtractKey(): Promise<ExtractKeyResponse> {
       derivation_path: DERIVATION_PATH,
       error: "",
     };
-  } finally {
-    await dmk.disconnect({ sessionId: device.sessionId }).catch(() => {});
+  } catch (err) {
+    invalidateSession();
+    throw err;
   }
 }
 
