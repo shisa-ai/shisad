@@ -33,8 +33,9 @@ Versioning follows semver (see `docs/PUBLISH.md` for policy and style guide).
 
 - **`shisad restart --fresh-config` reloads environment on restart.** Changed
   environment variables take effect immediately instead of requiring a manual
-  stop-then-start cycle. The prior configuration is saved as a snapshot before
-  the reload.
+  stop-then-start cycle. The prior configuration is saved as an owner-only
+  snapshot before the reload; that backup can contain secrets and should be
+  handled accordingly.
 
 ### Security
 
@@ -46,8 +47,9 @@ Versioning follows semver (see `docs/PUBLISH.md` for policy and style guide).
 - **MCP tool definitions are validated before registration.** Parameter names,
   types, enum values, and descriptions are screened for injection patterns at
   startup. Tools that fail validation are rejected. Subprocess-based MCP
-  servers run in an isolated environment that does not inherit the daemon's
-  credentials or runtime variables.
+  servers launch with a sanitized environment allowlist instead of inheriting
+  the daemon's full environment by default, but they are not sandboxed and
+  still run with the daemon's OS privileges.
 
 - **A2A requests are cryptographically verified.** Every inbound request must
   carry a valid Ed25519 signature matching the agent's registered public-key

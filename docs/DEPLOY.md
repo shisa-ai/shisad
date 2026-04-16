@@ -70,15 +70,17 @@ not mean the daemon runtime group was installed incorrectly.
 `interop` installs the MCP client dependency. Configure MCP servers via
 `SHISAD_MCP_SERVERS` (JSON) or `DaemonConfig.mcp_servers`; discovered tools
 register under runtime ids like `mcp.<server>.<tool>`. MCP tools require
-confirmation by default until trusted-server allowlisting lands, and stdio
-servers receive a sanitized subprocess environment plus any explicit `env`
-overrides you configure per server.
+confirmation by default unless the server name appears in
+`SHISAD_MCP_TRUSTED_SERVERS`, and stdio servers receive a sanitized
+subprocess environment plus any explicit `env` overrides you configure per
+server.
 
-A2A ingress uses the same `interop` group. Configure it via `SHISAD_A2A`
-(JSON) or `DaemonConfig.a2a`. The current `v0.6.5` A2A surface is signed
-inbound ingress over direct socket or HTTP transports, with fail-closed
-`allowed_intents` grants, per-fingerprint sliding-window rate limits, and
-`A2aIngressEvaluated` audit events for success and rejection outcomes.
+A2A ingress is included in the base install; no extra dependency group is
+required. Configure it via `SHISAD_A2A` (JSON) or `DaemonConfig.a2a`. The
+current `v0.6.5` A2A surface is signed inbound ingress over direct socket or
+HTTP transports, with fail-closed `allowed_intents` grants, per-fingerprint
+sliding-window rate limits, and `A2aIngressEvaluated` audit events for
+success and rejection outcomes.
 
 Generate the local daemon identity first:
 
