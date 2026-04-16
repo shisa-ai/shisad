@@ -17,6 +17,7 @@ import { firstValueFrom, filter, map } from "rxjs";
 
 import { getDmk, connectDevice, waitForUnlock, buildEthSigner, reviewSurfaceForModel } from "./device";
 import { buildTypedData, formatForDevice, type IntentEnvelope } from "./format";
+import { hexToBytes, uncompressedSecp256k1ToPem } from "./crypto-utils";
 
 // ---------------------------------------------------------------------------
 // CLI args
@@ -148,14 +149,6 @@ async function handleSignRequest(req: SignRequest): Promise<SignResponse> {
 // DER encoding helpers
 // ---------------------------------------------------------------------------
 
-function hexToBytes(hex: string): Uint8Array {
-  const bytes = new Uint8Array(hex.length / 2);
-  for (let i = 0; i < hex.length; i += 2) {
-    bytes[i / 2] = parseInt(hex.slice(i, i + 2), 16);
-  }
-  return bytes;
-}
-
 function encodeDerInteger(value: Uint8Array): Uint8Array {
   // Strip leading zeros but keep one if the high bit is set.
   let start = 0;
@@ -196,19 +189,6 @@ interface ExtractKeyResponse {
   address: string;
   derivation_path: string;
   error: string;
-}
-
-function uncompressedSecp256k1ToPem(pubKeyHex: string): string {
-  let hex = pubKeyHex.replace(/^0x/, "");
-  if (!hex.startsWith("04") && hex.length === 128) hex = "04" + hex;
-  const pubKeyBytes = hexToBytes(hex);
-  const header = hexToBytes("3056301006072a8648ce3d020106052b8104000a034200");
-  const der = new Uint8Array(header.length + pubKeyBytes.length);
-  der.set(header);
-  der.set(pubKeyBytes, header.length);
-  const b64 = Buffer.from(der).toString("base64");
-  const lines = b64.match(/.{1,64}/g) ?? [];
-  return `-----BEGIN PUBLIC KEY-----\n${lines.join("\n")}\n-----END PUBLIC KEY-----\n`;
 }
 
 async function handleExtractKey(): Promise<ExtractKeyResponse> {
@@ -258,10 +238,17 @@ async function handleExtractKey(): Promise<ExtractKeyResponse> {
 // HTTP server
 // ---------------------------------------------------------------------------
 
+const MAX_BODY_BYTES = 1024 * 1024; // 1 MB
+
 function readBody(req: IncomingMessage): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
-    req.on("data", (chunk: Buffer) => chunks.push(chunk));
+    let total = 0;
+    req.on("data", (chunk: Buffer) => {
+      total += chunk.length;
+      if (total > MAX_BODY_BYTES) { req.destroy(); reject(new Error("body_too_large")); return; }
+      chunks.push(chunk);
+    });
     req.on("end", () => resolve(Buffer.concat(chunks)));
     req.on("error", reject);
   });

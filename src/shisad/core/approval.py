@@ -942,12 +942,34 @@ def _eip712_encode_type(primary: str) -> str:
     return _fmt(primary) + "".join(_fmt(d) for d in sorted(deps))
 
 
+def _eip712_type_hash(primary: str) -> bytes:
+    """Compute the keccak-256 type hash for a named EIP-712 struct.
+
+    Since ``_EIP712_TYPES`` is static, the result is cached.
+    """
+    from shisad.core._keccak import keccak_256
+
+    return keccak_256(_eip712_encode_type(primary).encode())
+
+
+# Precomputed type hashes for static EIP-712 types.
+_EIP712_TYPE_HASHES: dict[str, bytes] = {}
+
+
+def _get_type_hash(primary: str) -> bytes:
+    cached = _EIP712_TYPE_HASHES.get(primary)
+    if cached is not None:
+        return cached
+    h = _eip712_type_hash(primary)
+    _EIP712_TYPE_HASHES[primary] = h
+    return h
+
+
 def _eip712_hash_struct(primary: str, data: dict[str, object]) -> bytes:
     """Compute ``hashStruct(primaryType, data)`` per EIP-712."""
     from shisad.core._keccak import keccak_256
 
-    type_hash = keccak_256(_eip712_encode_type(primary).encode())
-    encoded = type_hash
+    encoded = _get_type_hash(primary)
     for field_name, field_type in _EIP712_TYPES[primary]:
         value = data.get(field_name)
         if field_type == "string":

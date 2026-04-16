@@ -30,7 +30,6 @@ export function getDmk(): DeviceManagementKit {
 export interface ConnectedDevice {
   sessionId: string;
   model: string;
-  hasLargeScreen: boolean;
 }
 
 /**
@@ -51,13 +50,12 @@ export async function connectDevice(
   const device = devices[0]!;
   const sessionId = await dmk.connect({ device });
   const model = device.deviceModel?.model ?? "unknown";
-  const hasLargeScreen = /stax|flex/i.test(model);
 
   process.stderr.write(
     `Connected to ${model} (session: ${sessionId.slice(0, 8)}...)\n`,
   );
 
-  return { sessionId, model, hasLargeScreen };
+  return { sessionId, model };
 }
 
 /**

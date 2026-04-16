@@ -679,6 +679,8 @@ class ConfirmationImplMixin(HandlerMixinBase):
             str(params.get("signing_scheme") or default_signing_scheme).strip().lower()
             or default_signing_scheme
         )
+        if signing_scheme not in {"raw", "eip712", "eth_personal_sign"}:
+            return {"registered": False, "reason": "unsupported_signing_scheme"}
         existing = self._credential_store.get_signer_key(key_id)
         if existing is not None:
             return {
