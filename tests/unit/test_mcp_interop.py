@@ -71,7 +71,16 @@ class _McpManagerStub:
 
     def startup_error_for_tool(self, tool_name: ToolName | str) -> tuple[str, str] | None:
         candidate = canonical_tool_name(str(tool_name), warn_on_alias=False)
-        for server_name, error in self._startup_errors.items():
+        # MCP-M3: match production's longest-server-name-first ordering so the
+        # stub cannot silently diverge on overlapping names (e.g. `docs` vs.
+        # `docs-http`). Iterating in dict insertion order would return the
+        # wrong server for `mcp.docs-http.lookup-doc` when `docs` is listed
+        # before `docs-http`.
+        for server_name, error in sorted(
+            self._startup_errors.items(),
+            key=lambda item: len(item[0]),
+            reverse=True,
+        ):
             if candidate.startswith(f"mcp.{server_name}.") or candidate.startswith(
                 openai_function_name(f"mcp.{server_name}.")
             ):
@@ -1062,18 +1071,23 @@ async def test_i1_mcp_connect_all_cleans_up_registration_failures_and_records_st
     await manager.connect_all()
     try:
         assert registry.has_tool(ToolName("mcp.docs.lookup-doc")) is False
-        assert manager.startup_error("docs") is not None
-        assert "provider alias collision" in str(manager.startup_error("docs"))
-        expected_startup_error = (
-            "docs",
-            str(manager.startup_error("docs")),
-        )
-        assert manager.startup_error_for_tool("mcp.docs.lookup-doc") == expected_startup_error
-        assert manager.startup_error_for_tool("mcp_docs_lookup_doc") == expected_startup_error
-        assert (
-            manager.startup_error_for_tool("functions.mcp_docs_lookup_doc")
-            == expected_startup_error
-        )
+        # MCP-M2: assert against a known literal substring rather than
+        # round-tripping `startup_error` into the expected value. If both
+        # `startup_error` and `startup_error_for_tool` regressed to the
+        # wrong string the previous equality check would still have passed.
+        startup_error = str(manager.startup_error("docs"))
+        assert "provider alias collision" in startup_error
+        for tool_id in (
+            "mcp.docs.lookup-doc",
+            "mcp_docs_lookup_doc",
+            "functions.mcp_docs_lookup_doc",
+        ):
+            lookup = manager.startup_error_for_tool(tool_id)
+            assert lookup is not None
+            server_name, error_text = lookup
+            assert server_name == "docs"
+            assert "provider alias collision" in error_text
+            assert error_text == startup_error
         assert manager._runtimes == {}
     finally:
         await manager.shutdown()
