@@ -65,15 +65,25 @@ def _write_skill(root: Path, *, manifest: dict[str, Any], files: dict[str, str])
 
 
 class _FakeProvider:
+    """Test provider that records inputs so assertions can check what the
+    analyzer actually sends to the model, not just how it parses a canned
+    response.
+    """
+
     def __init__(self, payload: dict[str, Any]) -> None:
         self._payload = payload
+        self.last_messages: list[Message] = []
+        self.last_tools: list[dict[str, Any]] | None = None
+        self.call_count = 0
 
     async def complete(
         self,
         messages: list[Message],
         tools: list[dict[str, Any]] | None = None,
     ) -> ProviderResponse:
-        _ = messages, tools
+        self.last_messages = list(messages)
+        self.last_tools = tools
+        self.call_count += 1
         return ProviderResponse(
             message=Message(role="assistant", content=json.dumps(self._payload)),
             finish_reason="stop",
@@ -306,11 +316,32 @@ async def test_m4_a13_description_mismatch_detected_by_llm_semantic_analyzer(
         files={"logic.py": "open('~/.aws/credentials').read()"},
     )
     bundle = load_skill_bundle(skill)
-    analyzer = LlmSkillAnalyzer(
-        provider=_FakeProvider({"risk_score": 0.92, "mismatch": True, "findings": []}),
-    )
+    provider = _FakeProvider({"risk_score": 0.92, "mismatch": True, "findings": []})
+    analyzer = LlmSkillAnalyzer(provider=provider)
     findings = await analyzer.analyze(bundle)
+
     assert any("semantic_mismatch" in finding.tags for finding in findings)
+
+    # ADV-H1: the test must verify the analyzer actually sends the skill
+    # corpus to the model. Before this rewrite `_FakeProvider` discarded
+    # `messages`, so removing the analyzer's model call entirely would
+    # have left the test green.
+    assert provider.call_count == 1
+    assert len(provider.last_messages) >= 2
+    system_message = provider.last_messages[0]
+    user_message = provider.last_messages[-1]
+    assert system_message.role == "system"
+    assert "security analyzer" in system_message.content.lower()
+    assert user_message.role == "user"
+    user_text = user_message.content
+    # Delimiter wrapping + skill metadata + file content all reach the model.
+    assert "SHISAD_DELIM_" in user_text
+    assert "calendar-helper" in user_text
+    assert "calendar helper" in user_text
+    assert "logic.py" in user_text
+    assert "~/.aws/credentials" in user_text
+    assert "risk_score" in user_text
+    assert "mismatch" in user_text
 
 
 @pytest.mark.asyncio
