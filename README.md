@@ -50,20 +50,16 @@ Rather than ignoring the elephant in the room, our design targets the [lethal tr
 ## Status
 
 This repo is public and still pre-alpha. The latest published line is
-`v0.6.3` (GitHub Release and PyPI package). This tree contains pre-tag
-`v0.6.4` release content for the TextGuard migration; published
-installability is still determined by the GitHub release tag and PyPI
-package.
+`v0.6.4` (GitHub Release and PyPI package). This tree contains pre-tag
+`v0.6.5` release content for MCP/A2A interop; published installability is
+still determined by the GitHub release tag and PyPI package.
 
-`v0.6.4` consolidates the firewall scanning stack onto `textguard`:
-`ContentFirewall` and `PatternInjectionClassifier` now share the same
-TextGuard-backed detection path, outbound normalization/decode compatibility
-shims preserve existing operator-visible behavior where needed, and the daemon
-validates bundled YARA rules at startup instead of carrying a second copied
-local rule set. Local PromptGuard runtime checks remain opt-in through the
-`security-runtime` dependency group, and `daemon.status` now truthfully
-reports bundled-rule provenance. ReleaseClose is the remaining gate before
-`v0.6.4` can be tagged and published.
+`v0.6.5` adds client-only MCP tool discovery/execution with stable
+`mcp.<server>.<tool>` runtime ids, confirm-by-default trust handling for
+externally sourced tool metadata/results, and a signed A2A ingress baseline
+with static peer registry, fingerprint verification, grant enforcement,
+replay protection, and per-peer rate limiting. ReleaseClose is the remaining
+gate before `v0.6.5` can be tagged and published.
 
 | Version | Focus |
 |---------|-------|

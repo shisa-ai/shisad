@@ -9,6 +9,72 @@ left unlinked until the tag exists. There is no standing "Unreleased" section.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Versioning follows semver (see `docs/PUBLISH.md` for policy and style guide).
 
+## 0.6.5 Release Content - 2026-04-16
+
+### Added
+
+- **External tool servers can connect via the Model Context Protocol (MCP).**
+  Configure one or more MCP servers — stdio subprocesses or HTTP endpoints —
+  through `SHISAD_MCP_SERVERS`, and the daemon discovers their tools at
+  startup. Discovered tools appear in sessions as `mcp.<server>.<tool>` and
+  work like built-in tools. If a configured server is unreachable, the daemon
+  continues without it.
+
+- **External agents can send signed requests over socket or HTTP.** A new A2A
+  listener accepts Ed25519-signed requests from registered remote agents,
+  verifies identity and intent, and routes accepted work into a session.
+  Operators define which agents can connect and what they can ask for.
+  Configure via `SHISAD_A2A`.
+
+- **`shisad a2a keygen` generates an identity keypair.** Run it once to
+  create the Ed25519 keys the daemon needs for A2A signing and verification.
+  The command prints the public-key fingerprint for out-of-band exchange with
+  remote operators.
+
+- **`shisad restart --fresh-config` reloads environment on restart.** Changed
+  environment variables take effect immediately instead of requiring a manual
+  stop-then-start cycle. The prior configuration is saved as a snapshot before
+  the reload.
+
+### Security
+
+- **MCP tools require confirmation by default.** Unless a server appears in
+  `SHISAD_MCP_TRUSTED_SERVERS`, every tool call from that server asks for
+  operator approval before executing. Trusted servers skip the prompt, but
+  their outputs are still treated as external input for screening purposes.
+
+- **MCP tool definitions are validated before registration.** Parameter names,
+  types, enum values, and descriptions are screened for injection patterns at
+  startup. Tools that fail validation are rejected. Subprocess-based MCP
+  servers run in an isolated environment that does not inherit the daemon's
+  credentials or runtime variables.
+
+- **A2A requests are cryptographically verified.** Every inbound request must
+  carry a valid Ed25519 signature matching the agent's registered public-key
+  fingerprint. Unsigned envelopes, signature mismatches, and replayed messages
+  are rejected.
+
+- **A2A access is fail-closed.** Each remote agent can only send requests for
+  intents the operator has explicitly allowed. Omitting the allowlist means
+  zero access until the operator adds grants. Per-agent rate limits (default
+  60/min, 600/hour) are enforced on the verified cryptographic identity to
+  prevent abuse.
+
+- **Every A2A ingress decision is audited.** Accepted requests, rejections,
+  and rate-limit violations emit structured audit events with sender identity,
+  intent, outcome, and reason.
+
+### Changed
+
+- **Startup logs show resolved configuration.** The daemon now logs which
+  capabilities are active at startup — web search, web fetch, filesystem
+  roots, backend URL — so misconfigurations surface immediately instead of at
+  first tool call.
+
+- **Operator docs cover MCP and A2A setup.** `docs/DEPLOY.md` and
+  `docs/ENV-VARS.md` include configuration examples and trust-model
+  explanations for both new interoperability features.
+
 ## [0.6.4] - 2026-04-13
 
 ### Security

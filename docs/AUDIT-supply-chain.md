@@ -1,9 +1,9 @@
 # shisad Supply Chain Audit
 
 *Created: 2026-03-31*  
-*Updated: 2026-04-13 (v0.6.4 T1 TextGuard dependency-surface parity; v0.6.3 release-close optional `chat` extra and `textual` exposure retained)*
+*Updated: 2026-04-16 (v0.6.5 release-close MCP/A2A dependency-surface parity; v0.6.4 T1 TextGuard dependency-surface parity; v0.6.3 release-close optional `chat` extra and `textual` exposure retained)*
 *Status: In Progress*  
-*Snapshot basis: repository state on `main` at audit time (clean tree)*
+*Snapshot basis: pre-tag `v0.6.5` release-close candidate at audit time (clean tree)*
 
 ## Scope and Intent
 
@@ -22,7 +22,7 @@ Goals:
 | Primary ecosystem | Python |
 | Package manager | uv |
 | Lockfile | `uv.lock` |
-| CI install path | `uv sync --exclude-newer P7D --frozen --dev` |
+| CI install path | `uv sync --exclude-newer P7D --frozen --dev` (coverage/security-runtime/channel jobs add focused groups) |
 | Release path | GitHub Actions workflow (`publish.yml`) via OIDC trusted publishing |
 | Current risk summary | Low (all major surfaces hardened; npx lockdown available) |
 
@@ -37,6 +37,27 @@ Goals:
 - Accepted risk decision: Python interpreter version remains `>=3.12` and is not treated as a primary attack vector for this audit lane.
 
 ## Follow-up Worklog
+
+### 2026-04-16 — v0.6.5 MCP/A2A release-close parity refresh
+
+- Scope: refresh the dependency audit for the release-close candidate after
+  the MCP/A2A interop lane introduced the direct `mcp` dependency groups and
+  the new ASGI/SSE transitives they pull into the lock.
+- Threat/risk read before update:
+  - `mcp` is intentionally non-runtime by default in this release; it is
+    declared in `dev` and the dedicated `interop` group so operators do not
+    pick it up accidentally from the base install path.
+  - The interop stack adds `httpx-sse`, `python-multipart`,
+    `sse-starlette`, `starlette`, `uvicorn`, and `pyjwt` transitively.
+    Release-close parity needs those packages called out explicitly so the
+    audit doc matches the current lock surface.
+- Execution and outcomes:
+  - `python3 /home/ubuntu/shisad-dev/scripts/audit_supply_chain_check.py --repo /tmp/shisad-v0.6.5-rc`
+    initially reported missing `mcp` entries for the `dev` and `interop`
+    dependency groups.
+  - The direct-dependency tables and selected lock inventory/edge-map rows
+    below were refreshed to include the new interop surface plus the already
+    published `pytest 9.0.3` / `pytest-asyncio 1.3.0` dev-toolchain state.
 
 ### 2026-04-03 — v0.6.0 release-close dependency audit remediation
 
@@ -231,9 +252,9 @@ sed -n '1,140p' docs/DEPLOY.md
 
 ### A. Python dependency chain summary
 
-- `uv.lock` entries: `126` packages total.
-- Third-party packages from registry: `125` (plus editable root package `shisad`).
-- Registry source in lockfile: `125` entries from `https://pypi.org/simple`.
+- `uv.lock` entries: `134` packages total.
+- Third-party packages from registry: `133` (plus editable root package `shisad`).
+- Registry source in lockfile: `133` entries from `https://pypi.org/simple`.
 - Non-registry sources in lockfile: none (except local editable `shisad` root).
 
 ### B. Direct dependency declarations vs lock resolution
@@ -263,9 +284,10 @@ sed -n '1,140p' docs/DEPLOY.md
 
 | Group | Direct packages in group | Lock status |
 | --- | --- | --- |
-| `dev` | `numpy`, `pytest`, `pytest-asyncio`, `ruff`, `mypy`, `types-pyyaml`, `textual` | All exact in lock; all declared as ranges |
+| `dev` | `mcp`, `numpy`, `pytest`, `pytest-asyncio`, `ruff`, `mypy`, `types-pyyaml`, `textual` | All exact in lock; all declared as ranges |
 | `channels-runtime` | `matrix-nio[e2e]`, `discord.py`, `python-telegram-bot`, `slack-bolt`, `slack-sdk` | All exact in lock; all declared as ranges |
 | `coverage` | `pytest-cov` | Exact in lock; declared as range |
+| `interop` | `mcp` | Exact in lock; declared as range |
 | `security-runtime` | `textguard[promptguard]`, `safetensors`, `sentencepiece` | All exact in lock; all declared as ranges |
 | `security-build` | `textguard[promptguard]`, `torch`, `onnx`, `onnxscript`, `huggingface-hub`, `safetensors`, `sentencepiece` | All exact in lock; all declared as ranges |
 
@@ -275,7 +297,10 @@ current `torch` build lane resolves CUDA-family packages in the lock. The live
 daemon runtime does not require that group. After the v0.6.4 textguard
 migration, `yara-python`, `onnxruntime`, and `transformers` are no longer
 direct shisad declarations; they resolve transitively through `textguard[yara]`
-or `textguard[promptguard]`.
+or `textguard[promptguard]`. The v0.6.5 interop lane adds `mcp` as a direct
+`dev`/`interop` dependency, with `httpx-sse`, `pyjwt`, `python-multipart`,
+`sse-starlette`, `starlette`, and `uvicorn` resolving transitively through
+that path.
 
 ### C. Full upstream package inventory (all groups)
 
@@ -316,6 +341,7 @@ hf-xet==1.4.3 ; platform_machine == 'AMD64' or platform_machine == 'aarch64' or 
 hpack==4.1.0
 httpcore==1.0.9
 httpx==0.28.1
+httpx-sse==0.4.3
 huggingface-hub==1.10.1
 hyperframe==6.1.0
 idna==3.11
@@ -329,6 +355,7 @@ loguru==0.7.3
 markdown-it-py==4.0.0
 markupsafe==3.0.3
 matrix-nio==0.25.2
+mcp==1.27.0
 mdit-py-plugins==0.5.0
 mdurl==0.1.2
 ml-dtypes==0.5.4
@@ -370,13 +397,16 @@ pydantic==2.12.5
 pydantic-core==2.41.5
 pydantic-settings==2.12.0
 pygments==2.20.0
-pytest==8.4.2
-pytest-asyncio==0.26.0
+pyjwt==2.12.1
+pytest==9.0.3
+pytest-asyncio==1.3.0
 pytest-cov==6.3.0
 python-dotenv==1.2.1
+python-multipart==0.0.26
 python-olm==3.2.16
 python-socks==2.8.0
 python-telegram-bot==21.11.1
+pywin32==311 ; sys_platform == 'win32'
 pyyaml==6.0.3
 qrcode==8.2
 referencing==0.37.0
@@ -390,6 +420,8 @@ setuptools==81.0.0
 shellingham==1.5.4
 slack-bolt==1.27.0
 slack-sdk==3.40.0
+sse-starlette==3.3.4
+starlette==1.0.0
 sympy==1.14.0
 textguard==1.0.0
 textual==0.89.1
@@ -404,6 +436,7 @@ typing-extensions==4.15.0
 typing-inspection==0.4.2
 uc-micro-py==1.0.3
 unpaddedbase64==2.1.0
+uvicorn==0.44.0 ; sys_platform != 'emscripten'
 win32-setctime==1.2.0 ; sys_platform == 'win32'
 yara-python==4.5.4
 yarl==1.22.0
@@ -434,7 +467,11 @@ annotated-doc==0.0.4
 annotated-types==0.7.0
     # via pydantic
 anyio==4.12.1
-    # via httpx
+    # via
+    #   httpx
+    #   mcp
+    #   sse-starlette
+    #   starlette
 atomicwrites==1.4.1
     # via matrix-nio
 attrs==25.4.0
@@ -458,6 +495,7 @@ click==8.3.1
     # via
     #   shisad
     #   typer
+    #   uvicorn
 colorama==0.4.6 ; sys_platform == 'win32'
     # via
     #   click
@@ -470,6 +508,7 @@ coverage==7.13.4
 cryptography==46.0.7
     # via
     #   fido2
+    #   pyjwt
     #   shisad
 cuda-bindings==13.2.0 ; sys_platform == 'linux'
     # via torch
@@ -498,6 +537,7 @@ h11==0.16.0
     # via
     #   httpcore
     #   matrix-nio
+    #   uvicorn
 h2==4.3.0
     # via matrix-nio
 hf-xet==1.4.3 ; platform_machine == 'AMD64' or platform_machine == 'aarch64' or platform_machine == 'amd64' or platform_machine == 'arm64' or platform_machine == 'x86_64'
@@ -509,7 +549,10 @@ httpcore==1.0.9
 httpx==0.28.1
     # via
     #   huggingface-hub
+    #   mcp
     #   python-telegram-bot
+httpx-sse==0.4.3
+    # via mcp
 huggingface-hub==1.10.1
     # via
     #   tokenizers
@@ -526,7 +569,9 @@ iniconfig==2.3.0
 jinja2==3.1.6
     # via torch
 jsonschema==4.26.0
-    # via matrix-nio
+    # via
+    #   matrix-nio
+    #   mcp
 jsonschema-specifications==2025.9.1
     # via jsonschema
 librt==0.7.8 ; platform_python_implementation != 'PyPy'
@@ -543,6 +588,7 @@ markdown-it-py==4.0.0
 markupsafe==3.0.3
     # via jinja2
 matrix-nio==0.25.2
+mcp==1.27.0
 mdit-py-plugins==0.5.0
     # via markdown-it-py
 mdurl==0.1.2
@@ -651,29 +697,38 @@ pycryptodome==3.23.0
 pydantic==2.12.5
     # via
     #   agent-client-protocol
+    #   mcp
     #   pydantic-settings
     #   shisad
 pydantic-core==2.41.5
     # via pydantic
 pydantic-settings==2.12.0
-    # via shisad
+    # via
+    #   mcp
+    #   shisad
 pygments==2.20.0
     # via
     #   pytest
     #   rich
-pytest==8.4.2
+pyjwt==2.12.1
+    # via mcp
+pytest==9.0.3
     # via
     #   pytest-asyncio
     #   pytest-cov
-pytest-asyncio==0.26.0
+pytest-asyncio==1.3.0
 pytest-cov==6.3.0
 python-dotenv==1.2.1
     # via pydantic-settings
+python-multipart==0.0.26
+    # via mcp
 python-olm==3.2.16
     # via matrix-nio
 python-socks==2.8.0
     # via aiohttp-socks
 python-telegram-bot==21.11.1
+pywin32==311 ; sys_platform == 'win32'
+    # via mcp
 pyyaml==6.0.3
     # via
     #   huggingface-hub
@@ -695,6 +750,7 @@ rpds-py==0.30.0
     # via
     #   jsonschema
     #   referencing
+ruff==0.15.0
 safetensors==0.7.0
     # via transformers
 sentencepiece==0.2.1
@@ -705,6 +761,12 @@ shellingham==1.5.4
 slack-bolt==1.27.0
 slack-sdk==3.40.0
     # via slack-bolt
+sse-starlette==3.3.4
+    # via mcp
+starlette==1.0.0
+    # via
+    #   mcp
+    #   sse-starlette
 sympy==1.14.0
     # via
     #   onnx-ir
@@ -734,24 +796,30 @@ typing-extensions==4.15.0
     #   aiosignal
     #   anyio
     #   huggingface-hub
+    #   mcp
     #   mypy
     #   onnx
     #   onnx-ir
     #   onnxscript
     #   pydantic
     #   pydantic-core
+    #   pytest-asyncio
     #   referencing
+    #   starlette
     #   textual
     #   torch
     #   typing-inspection
 typing-inspection==0.4.2
     # via
+    #   mcp
     #   pydantic
     #   pydantic-settings
 uc-micro-py==1.0.3
     # via linkify-it-py
 unpaddedbase64==2.1.0
     # via matrix-nio
+uvicorn==0.44.0 ; sys_platform != 'emscripten'
+    # via mcp
 win32-setctime==1.2.0 ; sys_platform == 'win32'
     # via loguru
 yara-python==4.5.4
