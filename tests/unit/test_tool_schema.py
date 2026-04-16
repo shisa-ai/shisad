@@ -5,6 +5,7 @@ from __future__ import annotations
 from shisad.core.tools.schema import (
     ToolDefinition,
     ToolParameter,
+    openai_function_name,
     tool_definitions_to_openai,
 )
 from shisad.core.types import Capability, ToolName
@@ -130,3 +131,45 @@ def test_tool_definition_json_schema_preserves_safe_mcp_enum_values_when_planner
     planner_param_description = planner_schema["properties"]["mode"]["description"]
     assert "External/untrusted MCP parameter" in planner_param_description
     assert "Ignore previous instructions" not in planner_param_description
+
+
+# MCP-L6: direct coverage for the canonical -> wire name bridge. Previously
+# exercised only indirectly through `tool_definitions_to_openai`, which hid
+# regressions where the function produced an OpenAI-noncompliant string.
+
+
+def test_openai_function_name_passes_through_already_compliant_name() -> None:
+    assert openai_function_name("fs_read") == "fs_read"
+    assert openai_function_name("web-search-1") == "web-search-1"
+    assert openai_function_name("tool123") == "tool123"
+
+
+def test_openai_function_name_maps_dots_and_hyphens_to_underscores_when_needed() -> None:
+    # Dots are not in OpenAI's permitted alphabet, so canonical shisad
+    # dotted names must normalize. Hyphens in a string that also contains
+    # dots likewise normalize, to keep a single shape for downstream
+    # provider dispatchers.
+    assert openai_function_name("fs.read") == "fs_read"
+    assert openai_function_name("mcp.docs.lookup-doc") == "mcp_docs_lookup_doc"
+    assert openai_function_name("browser.click") == "browser_click"
+
+
+def test_openai_function_name_strips_surrounding_whitespace_before_checking() -> None:
+    # Leading/trailing whitespace from provider input should not short-circuit
+    # the compliance check and leak through as-is.
+    assert openai_function_name("  fs.read  ") == "fs_read"
+    assert openai_function_name("\tfs_read\n") == "fs_read"
+
+
+def test_openai_function_name_output_is_openai_compliant() -> None:
+    import re
+
+    pattern = re.compile(r"^[a-zA-Z0-9_-]+$")
+    for raw in (
+        "fs.read",
+        "mcp.docs.lookup-doc",
+        "web.fetch",
+        "already_ok",
+        "with-hyphens-and.dots",
+    ):
+        assert pattern.fullmatch(openai_function_name(raw)), raw

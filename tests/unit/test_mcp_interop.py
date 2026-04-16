@@ -170,6 +170,11 @@ class _ControlPlaneStub:
         return "plan-1"
 
     async def evaluate_action(self, **_kwargs: object) -> object:
+        # MCP-L2: use ActionKind.UNKNOWN to match what production's
+        # `infer_action_kind` returns for unmapped MCP tool names
+        # (`mcp.docs.lookup-doc` is not in `_TOOL_KIND_MAP` and has no
+        # file/net/env arguments, so it falls through to UNKNOWN). Prior
+        # SHELL_EXEC was a latent risk if downstream code branched on kind.
         return SimpleNamespace(
             decision=ControlDecision.ALLOW,
             reason_codes=[],
@@ -180,7 +185,7 @@ class _ControlPlaneStub:
             ),
             consensus=SimpleNamespace(votes=[]),
             action=SimpleNamespace(
-                action_kind=ActionKind.SHELL_EXEC,
+                action_kind=ActionKind.UNKNOWN,
                 resource_id="mcp.docs.lookup-doc",
                 resource_ids=[],
                 origin=SimpleNamespace(model_dump=lambda mode="json": {}),
