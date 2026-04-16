@@ -69,7 +69,14 @@ def test_channel_identity_map_default_deny_allowlist_and_pairing_requests() -> N
     assert repeated == pairing
 
     identity_map.allow_identity(channel="discord", external_user_id="123")
-    assert identity_map.is_allowed(channel="discord", external_user_id="123 ")
+    # PLN-M2: `is_allowed` intentionally strips whitespace so trailing spaces
+    # on the inbound id do not bypass the allowlist. Pin both sides of the
+    # check to avoid masking genuine identity-check laxity.
+    assert identity_map.is_allowed(channel="discord", external_user_id="123") is True
+    assert identity_map.is_allowed(channel="discord", external_user_id="123 ") is True
+    assert identity_map.is_allowed(channel="discord", external_user_id=" 123") is True
+    assert identity_map.is_allowed(channel="discord", external_user_id="1234") is False
+    assert identity_map.is_allowed(channel="discord", external_user_id="12") is False
 
 
 def test_channel_trust_level_influences_pep_risk_outcome() -> None:

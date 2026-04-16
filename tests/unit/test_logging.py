@@ -83,7 +83,10 @@ def test_setup_logging_level_filtering() -> None:
         logger.remove(handler_id)
 
     joined = "\n".join(captured)
-    assert "should-not-appear" not in joined or "WARNING should-appear" in joined
+    # PLN-M1: the DEBUG/INFO markers are distinct from the WARNING marker so
+    # a straightforward negative check works without disjunction.
+    assert "DEBUG should-not-appear" not in joined
+    assert "INFO should-not-appear-either" not in joined
     assert "WARNING should-appear" in joined
     assert "ERROR should-also-appear" in joined
 
