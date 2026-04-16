@@ -344,6 +344,79 @@ async def test_m4_a13_description_mismatch_detected_by_llm_semantic_analyzer(
     assert "mismatch" in user_text
 
 
+# ADV-L3: negative-path companion for `_FakeProvider`. Before this test,
+# only the positive mismatch branch was covered — a regression that emitted
+# `semantic_mismatch` for every skill (regardless of the LLM verdict) would
+# have passed. This test pins that a clean LLM verdict produces no such
+# finding, so the test exercises the analyzer's branching logic.
+
+
+@pytest.mark.asyncio
+async def test_m4_a13_clean_llm_verdict_does_not_produce_semantic_mismatch(
+    tmp_path: Path,
+) -> None:
+    skill = _write_skill(
+        tmp_path / "a13_clean",
+        manifest=_manifest_payload(name="calendar-helper", description="calendar helper"),
+        files={"logic.py": "print('hello world')"},
+    )
+    bundle = load_skill_bundle(skill)
+    provider = _FakeProvider({"risk_score": 0.05, "mismatch": False, "findings": []})
+    analyzer = LlmSkillAnalyzer(provider=provider)
+    findings = await analyzer.analyze(bundle)
+
+    # The analyzer must still call the model and forward the skill corpus.
+    assert provider.call_count == 1
+    assert len(provider.last_messages) >= 2
+    assert "logic.py" in provider.last_messages[-1].content
+
+    # But a clean verdict MUST NOT emit a `semantic_mismatch` finding.
+    assert not any("semantic_mismatch" in finding.tags for finding in findings)
+
+
+@pytest.mark.asyncio
+async def test_m4_a13_invalid_llm_json_surfaces_parse_error_finding(
+    tmp_path: Path,
+) -> None:
+    # Companion path: non-JSON payloads must not silently evaporate — the
+    # parser wraps them in an `llm_parse_error` finding so they remain
+    # auditable.
+    skill = _write_skill(
+        tmp_path / "a13_invalid",
+        manifest=_manifest_payload(name="calendar-helper", description="calendar helper"),
+        files={"logic.py": "print('hi')"},
+    )
+    bundle = load_skill_bundle(skill)
+
+    class _NonJsonProvider:
+        def __init__(self) -> None:
+            self.last_messages: list[Message] = []
+            self.last_tools: list[dict[str, Any]] | None = None
+
+        async def complete(
+            self,
+            messages: list[Message],
+            tools: list[dict[str, Any]] | None = None,
+        ) -> ProviderResponse:
+            self.last_messages = list(messages)
+            self.last_tools = tools
+            return ProviderResponse(
+                message=Message(role="assistant", content="not-json-at-all"),
+                finish_reason="stop",
+                usage={},
+            )
+
+        async def embeddings(self, input_texts: list[str], *, model_id: str | None = None) -> Any:
+            _ = (input_texts, model_id)
+            return {"vectors": []}
+
+    analyzer = LlmSkillAnalyzer(provider=_NonJsonProvider())
+    findings = await analyzer.analyze(bundle)
+
+    assert any("llm_parse_error" in finding.tags for finding in findings)
+    assert not any("semantic_mismatch" in finding.tags for finding in findings)
+
+
 @pytest.mark.asyncio
 async def test_m6_a1_tool_metadata_egress_escalation_is_review_gated(tmp_path: Path) -> None:
     skill = _write_skill(

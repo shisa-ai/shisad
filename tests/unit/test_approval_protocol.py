@@ -40,11 +40,13 @@ from shisad.core.approval import (
 )
 from shisad.core.tools.schema import ToolDefinition, ToolParameter
 from shisad.core.types import Capability, ToolName
+from shisad.daemon.handlers._impl import PendingAction
 from shisad.security.credentials import (
     ApprovalFactorRecord,
     InMemoryCredentialStore,
     RecoveryCodeRecord,
 )
+from tests.helpers.approval import make_pending_action
 from tests.helpers.webauthn import make_authentication_payload, make_registration_payload
 
 
@@ -86,7 +88,10 @@ def _pending_action(
     user_id: str = "alice",
     credential_ids: list[str] | None = None,
     principal_ids: list[str] | None = None,
-) -> SimpleNamespace:
+) -> PendingAction:
+    # ADV-L4: return a real ``PendingAction`` instead of ``SimpleNamespace``
+    # so added-required-fields on the dataclass immediately fail these tests
+    # rather than slipping through getattr-with-default backend access.
     envelope = ApprovalEnvelope(
         approval_id=f"approval-{confirmation_id}",
         pending_action_id=confirmation_id,
@@ -101,14 +106,16 @@ def _pending_action(
         nonce="nonce",
         action_summary="test approval",
     )
-    return SimpleNamespace(
+    return make_pending_action(
         confirmation_id=confirmation_id,
         user_id=user_id,
-        allowed_principals=list(principal_ids or []),
-        allowed_credentials=list(credential_ids or []),
+        allowed_principals=principal_ids,
+        allowed_credentials=credential_ids,
         approval_envelope=envelope,
         approval_envelope_hash=approval_envelope_hash(envelope),
-        fallback_used=False,
+        required_level=ConfirmationLevel.REAUTHENTICATED,
+        selected_backend_id="software.default",
+        selected_backend_method="software",
     )
 
 
@@ -452,14 +459,13 @@ def test_registry_rejects_principal_restricted_software_backend() -> None:
 
 
 def test_software_backend_requires_approval_envelope_hash() -> None:
+    # ADV-L4: real ``PendingAction`` rather than ``SimpleNamespace`` so the
+    # missing-envelope error path remains sensitive to dataclass drift.
     backend = SoftwareConfirmationBackend()
-    pending = SimpleNamespace(
+    pending = make_pending_action(
         confirmation_id="c-1",
-        approval_envelope_hash="",
         approval_envelope=None,
-        allowed_principals=[],
-        allowed_credentials=[],
-        fallback_used=False,
+        approval_envelope_hash="",
     )
 
     with pytest.raises(ConfirmationVerificationError, match="approval_envelope_missing"):

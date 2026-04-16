@@ -3,23 +3,24 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
-from types import SimpleNamespace
 
 import pytest
 
 from shisad.core.approval import (
     ApprovalEnvelope,
+    ConfirmationLevel,
     ConfirmationMethodLockoutTracker,
     ConfirmationVerificationError,
     TOTPBackend,
     approval_envelope_hash,
     generate_totp_code,
 )
-from shisad.core.types import ToolName
+from shisad.daemon.handlers._impl import PendingAction
 from shisad.security.credentials import ApprovalFactorRecord, InMemoryCredentialStore
+from tests.helpers.approval import make_pending_action
 
 
-def _pending_action(*, confirmation_id: str) -> SimpleNamespace:
+def _pending_action(*, confirmation_id: str) -> PendingAction:
     envelope = ApprovalEnvelope(
         approval_id=f"approval-{confirmation_id}",
         pending_action_id=confirmation_id,
@@ -32,15 +33,18 @@ def _pending_action(*, confirmation_id: str) -> SimpleNamespace:
         nonce="nonce",
         action_summary="test approval",
     )
-    return SimpleNamespace(
+    # ADV-L4: real ``PendingAction`` (previously ``SimpleNamespace``) so new
+    # required dataclass fields surface as test failures, not silent
+    # attribute defaults.
+    return make_pending_action(
         confirmation_id=confirmation_id,
         user_id="alice",
-        tool_name=ToolName("shell.exec"),
+        tool_name="shell.exec",
         approval_envelope=envelope,
         approval_envelope_hash=approval_envelope_hash(envelope),
-        allowed_principals=[],
-        allowed_credentials=[],
-        fallback_used=False,
+        required_level=ConfirmationLevel.REAUTHENTICATED,
+        selected_backend_id="totp.default",
+        selected_backend_method="totp",
     )
 
 
