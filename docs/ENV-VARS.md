@@ -7,6 +7,7 @@ Source of truth:
 - `src/shisad/core/config.py`
 - `src/shisad/core/providers/routing.py`
 - `src/shisad/daemon/services.py`
+- `src/shisad/interop/a2a_registry.py`
 - `src/shisad/memory/ingestion.py`
 
 ## Scope
@@ -126,6 +127,59 @@ Browser notes:
 - Read-mostly browser actions (`browser.navigate`, `browser.read_page`, `browser.screenshot`, `browser.end_session`) are intended to proceed without confirmation when the destination is authorized. Browser write actions (`browser.click`, `browser.type_text`) are confirmation-gated.
 - Loopback/private browser targets remain blocked by the sandbox unless the target host is explicitly allowlisted for the browser surface in the current configuration.
 - `SHISAD_BROWSER_REQUIRE_HARDENED_ISOLATION` defaults to `1`. Keep it enabled unless you are deliberately running a non-production browser integration and understand that disabling it weakens the browser isolation boundary.
+
+MCP interop:
+
+- `SHISAD_MCP_SERVERS`
+- `SHISAD_MCP_TRUSTED_SERVERS`
+
+MCP notes:
+
+- `SHISAD_MCP_SERVERS` accepts a JSON array of server configs. `transport:
+  "stdio"` entries require `command: ["executable", "arg1", ...]`; `transport:
+  "http"` entries require `url: "http(s)://.../mcp"`.
+- `transport: "stdio"` entries can also set `env: {"NAME":"value"}` for
+  explicit subprocess environment variables. MCP stdio launches do not inherit
+  the daemon's full environment by default.
+- MCP server names are normalized to lowercase and must remain unique after
+  normalization.
+- `SHISAD_MCP_TRUSTED_SERVERS` accepts either a CSV string or JSON array of
+  normalized MCP server names. Servers in that allowlist bypass the default
+  confirmation gate for external MCP tools, but the tools still remain
+  externally sourced and untrusted for planner/runtime tainting purposes.
+- Discovered tools register under runtime ids like `mcp.<server>.<tool>`. The
+  upstream MCP tool name is preserved separately for transport calls, and MCP
+  tools require confirmation by default unless the server name appears in
+  `SHISAD_MCP_TRUSTED_SERVERS`.
+
+A2A interop:
+
+- `SHISAD_A2A`
+
+A2A notes:
+
+- `SHISAD_A2A` accepts a JSON object for signed A2A listener, identity, and
+  static remote-agent registry configuration. The current `v0.6.5` surface is
+  inbound signed external-ingress over direct socket or HTTP transports.
+- A minimal config object includes `enabled`, `identity.agent_id`,
+  `identity.private_key_path`, `identity.public_key_path`, `listen`, and
+  `agents`. Each configured remote agent must provide a fingerprint plus either
+  inline `public_key` PEM or `public_key_path`.
+- Socket agents use `address: "host:port"` with `transport: "socket"`. HTTP
+  agents use full `http(s)://...` URLs with `transport: "http"`.
+- `shisad a2a keygen` generates an Ed25519 keypair, writes the private key
+  owner-only, and prints the public-key fingerprint for out-of-band exchange.
+- `allowed_intents` is enforced fail-closed at A2A ingress. Missing
+  `allowed_intents` rejects all requests from that configured remote agent
+  until the operator adds explicit grants.
+- Configured remote-agent fingerprints must be unique. Shared-key aliases are
+  rejected so grants and rate limits remain anchored to one authenticated
+  remote principal.
+- `rate_limits` enforces per-source budgets keyed on the verified remote
+  public-key fingerprint. Defaults: `60/minute`, `600/hour`.
+- Each accepted or rejected inbound A2A request emits an
+  `A2aIngressEvaluated` audit event with sender identity, intent, outcome, and
+  rejection reason when applicable.
 
 Approval / WebAuthn / signer:
 

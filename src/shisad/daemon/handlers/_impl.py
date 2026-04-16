@@ -94,7 +94,10 @@ from shisad.daemon.handlers._impl_memory import MemoryImplMixin
 from shisad.daemon.handlers._impl_session import SessionImplMixin
 from shisad.daemon.handlers._impl_skills import SkillsImplMixin
 from shisad.daemon.handlers._impl_tasks import TasksImplMixin
-from shisad.daemon.handlers._impl_tool_execution import ToolExecutionImplMixin
+from shisad.daemon.handlers._impl_tool_execution import (
+    ToolExecutionImplMixin,
+    _tool_execute_runtime_arguments,
+)
 from shisad.daemon.handlers._mixin_typing import call_control_plane as _call_control_plane
 from shisad.daemon.handlers._pending_approval import (
     PendingPepContextSnapshot,
@@ -878,8 +881,38 @@ class PendingAction:
     selected_backend_id: str = ""
     selected_backend_method: str = ""
     fallback_used: bool = False
+    strip_direct_tool_execute_envelope_keys: bool = False
     status: str = "pending"
     status_reason: str = ""
+
+    @staticmethod
+    def _is_legacy_direct_mcp_tool_execute_shape(
+        *,
+        tool_name: ToolName | str,
+        arguments: Mapping[str, Any],
+        preflight_action: ControlPlaneAction | Mapping[str, Any] | None,
+    ) -> bool:
+        if not str(tool_name).strip().startswith("mcp."):
+            return False
+        if not all(key in arguments for key in ("session_id", "tool_name", "command")):
+            return False
+        if isinstance(preflight_action, Mapping):
+            origin = preflight_action.get("origin")
+            if isinstance(origin, Mapping):
+                return str(origin.get("actor", "")).strip() == "control_api"
+            return False
+        return str(getattr(getattr(preflight_action, "origin", None), "actor", "")).strip() == (
+            "control_api"
+        )
+
+    def should_strip_direct_tool_execute_envelope_keys(self) -> bool:
+        return bool(self.strip_direct_tool_execute_envelope_keys) or (
+            PendingAction._is_legacy_direct_mcp_tool_execute_shape(
+                tool_name=self.tool_name,
+                arguments=self.arguments,
+                preflight_action=self.preflight_action,
+            )
+        )
 
 
 @dataclass(slots=True)
@@ -956,6 +989,7 @@ class HandlerImplementation(
         self._skill_manager = services.skill_manager
         self._coding_manager = services.coding_manager
         self._selfmod_manager = services.selfmod_manager
+        self._mcp_manager = services.mcp_manager
         self._realitycheck_toolkit = services.realitycheck_toolkit
         self._sandbox = services.sandbox
         self._control_plane = services.control_plane
@@ -2089,6 +2123,9 @@ class HandlerImplementation(
             "selected_backend_id": pending.selected_backend_id,
             "selected_backend_method": pending.selected_backend_method,
             "fallback_used": bool(pending.fallback_used),
+            "strip_direct_tool_execute_envelope_keys": bool(
+                pending.strip_direct_tool_execute_envelope_keys
+            ),
             "status": pending.status,
             "status_reason": pending.status_reason,
         }
@@ -2159,6 +2196,7 @@ class HandlerImplementation(
         pep_context: PendingPepContextSnapshot | None = None,
         pep_elevation: PendingPepElevationRequest | None = None,
         confirmation_requirement: ConfirmationRequirement | None = None,
+        strip_direct_tool_execute_envelope_keys: bool = False,
     ) -> PendingAction:
         created_at = datetime.now(UTC)
         decision_nonce = uuid.uuid4().hex
@@ -2380,6 +2418,7 @@ class HandlerImplementation(
             selected_backend_id=str(backend_resolution.backend.backend_id),
             selected_backend_method=str(backend_resolution.backend.method),
             fallback_used=bool(backend_resolution.fallback_used),
+            strip_direct_tool_execute_envelope_keys=bool(strip_direct_tool_execute_envelope_keys),
         )
         self._pending_actions[confirmation_id] = pending
         self._pending_by_session.setdefault(session_id, []).append(confirmation_id)
@@ -2405,6 +2444,7 @@ class HandlerImplementation(
         if not isinstance(raw, list):
             return
         pruned_stale = False
+        migrated_legacy_strip_intent = False
         for item in raw:
             if not isinstance(item, dict):
                 continue
@@ -2528,11 +2568,20 @@ class HandlerImplementation(
                         str(item.get("selected_backend_method", "")).strip() or "software"
                     ),
                     fallback_used=bool(item.get("fallback_used", False)),
+                    strip_direct_tool_execute_envelope_keys=bool(
+                        item.get("strip_direct_tool_execute_envelope_keys", False)
+                    ),
                     status=str(item.get("status", "pending")),
                     status_reason=str(item.get("status_reason", "")),
                 )
             except (TypeError, ValueError, ValidationError):
                 continue
+            if (
+                not pending.strip_direct_tool_execute_envelope_keys
+                and pending.should_strip_direct_tool_execute_envelope_keys()
+            ):
+                pending.strip_direct_tool_execute_envelope_keys = True
+                migrated_legacy_strip_intent = True
             self._pending_actions[pending.confirmation_id] = pending
             self._pending_by_session.setdefault(
                 pending.session_id,
@@ -2546,7 +2595,7 @@ class HandlerImplementation(
                     persist=False,
                 )
                 pruned_stale = True
-        if pruned_stale:
+        if pruned_stale or migrated_legacy_strip_intent:
             self._persist_pending_actions()
 
     def _is_verified_channel_identity(self, *, channel: str, external_user_id: str) -> bool:
@@ -2637,6 +2686,7 @@ class HandlerImplementation(
         approval_task_envelope_id: str = "",
         approval_timestamp: str = "",
         approval_evidence: ConfirmationEvidence | None = None,
+        strip_direct_tool_execute_envelope_keys: bool = False,
     ) -> ApprovedToolExecutionResult:
         session = self._session_manager.get(sid)
         if session is None:
@@ -2985,6 +3035,10 @@ class HandlerImplementation(
             *,
             default_error: str,
         ) -> ApprovedToolExecutionResult:
+            execution_taints = label_tool_output(str(tool_name))
+            sanitize_output = self._sanitize_tool_output_text
+            if TaintLabel.MCP_EXTERNAL in execution_taints:
+                sanitize_output = self._sanitize_untrusted_tool_output_text
             result = await execute_structured_tool(
                 session_id=sid,
                 tool_name=tool_name,
@@ -2993,8 +3047,8 @@ class HandlerImplementation(
                 actor="tool_runtime",
                 emit_event=self._event_bus.publish,
                 record_execution=_record_execution,
-                sanitize_output=self._sanitize_tool_output_text,
-                taint_labels=label_tool_output(str(tool_name)),
+                sanitize_output=sanitize_output,
+                taint_labels=execution_taints,
                 approval_event_fields=approval_event_fields,
             )
             return ApprovedToolExecutionResult(
@@ -3043,6 +3097,50 @@ class HandlerImplementation(
             return await _execute_structured_payload_tool(
                 structured_payload,
                 default_error=default_error,
+            )
+
+        if tool is not None and str(getattr(tool, "registration_source", "")).strip() == "mcp":
+            server_name = str(getattr(tool, "registration_source_id", "")).strip()
+            upstream_tool_name = str(getattr(tool, "upstream_tool_name", "")).strip()
+            mcp_arguments = _tool_execute_runtime_arguments(
+                tool,
+                arguments,
+                strip_direct_tool_execute_envelope_keys=strip_direct_tool_execute_envelope_keys,
+            )
+            validation_errors = self._registry.validate_call(tool_name, mcp_arguments)
+            if validation_errors:
+                return await _execute_structured_payload_tool(
+                    {
+                        "ok": False,
+                        "error": (
+                            "invalid_tool_arguments:schema validation failed: "
+                            + "; ".join(validation_errors)
+                        ),
+                    },
+                    default_error="invalid_tool_arguments",
+                )
+            mcp_payload: Mapping[str, Any]
+            mcp_manager = getattr(self, "_mcp_manager", None)
+            if mcp_manager is None or not server_name or not upstream_tool_name:
+                mcp_payload = {"ok": False, "error": "mcp_tool_unavailable"}
+            else:
+                try:
+                    mcp_payload = await mcp_manager.call_tool(
+                        server_name=server_name,
+                        tool_name=upstream_tool_name,
+                        arguments=mcp_arguments,
+                    )
+                except Exception as exc:
+                    logger.exception(
+                        "MCP tool execution failed: server=%s upstream_tool=%s error=%s",
+                        server_name,
+                        upstream_tool_name,
+                        exc,
+                    )
+                    mcp_payload = {"ok": False, "error": str(exc).strip() or "mcp_tool_failed"}
+            return await _execute_structured_payload_tool(
+                mcp_payload,
+                default_error="mcp_tool_failed",
             )
 
         if tool is None:
@@ -3183,6 +3281,16 @@ class HandlerImplementation(
             .replace("TOOL_OUTPUT_END", "TOOL_OUTPUT_MARKER")
             .strip()
         )
+
+    def _sanitize_untrusted_tool_output_text(self, raw: str) -> str:
+        if not raw:
+            return ""
+        firewall = getattr(self, "_firewall", None)
+        if firewall is not None:
+            inspect = getattr(firewall, "inspect", None)
+            if callable(inspect):
+                raw = str(inspect(raw).sanitized_text)
+        return self._sanitize_tool_output_text(raw)
 
     async def _execute_via_sandbox(
         self,

@@ -50,7 +50,7 @@ from shisad.daemon.handlers._pending_approval import (
     PendingPepElevationRequest,
 )
 from shisad.daemon.handlers.confirmation import ConfirmationHandlers
-from shisad.security.control_plane.schema import Origin, RiskTier
+from shisad.security.control_plane.schema import ActionKind, ControlPlaneAction, Origin, RiskTier
 from shisad.security.control_plane.sidecar import ControlPlaneRpcError
 from shisad.security.credentials import (
     ApprovalFactorRecord,
@@ -300,6 +300,7 @@ class _ConfirmationImplHarness(ConfirmationImplMixin):
         approval_task_envelope_id: str = "",
         approval_timestamp: str = "",
         approval_evidence: object | None = None,
+        strip_direct_tool_execute_envelope_keys: bool = False,
     ) -> object:
         _ = (
             sid,
@@ -321,6 +322,9 @@ class _ConfirmationImplHarness(ConfirmationImplMixin):
                 "approval_task_envelope_id": approval_task_envelope_id,
                 "approval_timestamp": approval_timestamp,
                 "approval_evidence": approval_evidence,
+                "strip_direct_tool_execute_envelope_keys": (
+                    strip_direct_tool_execute_envelope_keys
+                ),
             }
         )
         tool_output = None
@@ -358,6 +362,9 @@ class _ConfirmationImplHarness(ConfirmationImplMixin):
             "warnings": list(pending.warnings),
             "leak_check": dict(pending.leak_check),
             "approval_task_envelope_id": pending.approval_task_envelope_id,
+            "strip_direct_tool_execute_envelope_keys": bool(
+                pending.strip_direct_tool_execute_envelope_keys
+            ),
             "status": pending.status,
             "status_reason": pending.status_reason,
         }
@@ -506,6 +513,40 @@ def test_lt3_load_pending_actions_fails_pending_rows_during_lockout_only(tmp_pat
     assert persisted["c-1"]["status_reason"] == "confirmation_method_locked_out"
     assert persisted["c-2"]["status"] == "approved"
     assert persisted["c-2"]["status_reason"] == "approved"
+
+
+def test_i1_load_pending_actions_migrates_legacy_direct_mcp_strip_intent(tmp_path) -> None:
+    pending = _pending_action(nonce="expected")
+    pending.tool_name = ToolName("mcp.docs.lookup-doc")
+    pending.arguments = {
+        "session_id": "s-1",
+        "tool_name": "mcp.docs.lookup-doc",
+        "command": ["mcp"],
+        "query": "roadmap",
+    }
+    pending.preflight_action = ControlPlaneAction(
+        tool_name="mcp.docs.lookup-doc",
+        action_kind=ActionKind.SHELL_EXEC,
+        origin=Origin(actor="control_api"),
+        resource_id="mcp.docs.lookup-doc",
+    )
+    payload = HandlerImplementation._pending_to_dict(pending)
+    payload.pop("strip_direct_tool_execute_envelope_keys", None)
+    pending_actions_file = tmp_path / "data" / "pending_actions.json"
+    pending_actions_file.parent.mkdir(parents=True)
+    pending_actions_file.write_text(json.dumps([payload]), encoding="utf-8")
+    harness = object.__new__(HandlerImplementation)
+    harness._pending_actions_file = pending_actions_file
+    harness._pending_actions = {}
+    harness._pending_by_session = {}
+    harness._confirmation_failure_tracker = ConfirmationMethodLockoutTracker()
+
+    HandlerImplementation._load_pending_actions(harness)
+
+    loaded = harness._pending_actions["c-1"]
+    assert loaded.strip_direct_tool_execute_envelope_keys is True
+    persisted = json.loads(pending_actions_file.read_text(encoding="utf-8"))
+    assert persisted[0]["strip_direct_tool_execute_envelope_keys"] is True
 
 
 def _pep_context_snapshot(
@@ -939,6 +980,28 @@ async def test_m1_d11_confirmation_reuses_pending_merged_policy_snapshot(tmp_pat
 
     assert result["confirmed"] is True
     assert harness.execution_merged_policies == [pending.merged_policy]
+
+
+@pytest.mark.asyncio
+async def test_i1_confirmation_replays_direct_mcp_strip_intent(tmp_path) -> None:
+    harness = _ConfirmationImplHarness(tmp_path)
+    pending = _pending_action(nonce="expected")
+    pending.tool_name = ToolName("mcp.docs.lookup-doc")
+    pending.arguments = {
+        "session_id": "s-1",
+        "tool_name": "mcp.docs.lookup-doc",
+        "command": ["mcp"],
+        "query": "roadmap",
+    }
+    pending.strip_direct_tool_execute_envelope_keys = True
+    harness._pending_actions["c-1"] = pending
+
+    result = await harness.do_action_confirm(
+        {"confirmation_id": "c-1", "decision_nonce": "expected"}
+    )
+
+    assert result["confirmed"] is True
+    assert harness.execution_kwargs[0]["strip_direct_tool_execute_envelope_keys"] is True
 
 
 @pytest.mark.asyncio

@@ -257,6 +257,9 @@ class AuditLog:
             decision = "allow"
         elif event_type == "ToolRejected":
             decision = "reject"
+        elif event_type == "A2aIngressEvaluated":
+            decision = "allow" if str(data.get("outcome", "")).strip() == "accepted" else "reject"
+            target = str(data.get("sender_agent_id") or data.get("message_id") or target)
 
         reason_value = data.get("reason")
         if isinstance(reason_value, str):

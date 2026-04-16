@@ -1,6 +1,6 @@
 # Multi-Factor Approval (2FA)
 
-> **Current shipped status (`v0.6.3`):** The approval protocol, credential
+> **Current shipped status (`v0.6.4`):** The approval protocol, credential
 > store, and currently available approval backends documented here are
 > implemented and tested in the latest published line. TOTP confirmation works
 > through trusted chat / command replies and through the CLI. Passkey

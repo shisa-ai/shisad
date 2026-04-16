@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sys
 import textwrap
 from contextlib import suppress
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -29,6 +31,7 @@ from shisad.daemon.runner import run_daemon
 from shisad.security.firewall import ContentFirewall, FirewallResult
 from shisad.security.spotlight import datamark_text
 from tests.helpers.daemon import wait_for_socket as _wait_for_socket
+from tests.helpers.mcp import write_mock_mcp_server
 
 
 def _captured_tool_names(tools_payload: object) -> set[str]:
@@ -1475,6 +1478,234 @@ async def test_m5_s7_memory_context_taint_propagates_into_policy_context(
 
         assert observed_taints
         assert TaintLabel.UNTRUSTED in observed_taints[-1]
+    finally:
+        with suppress(Exception):
+            await client.call("daemon.shutdown")
+        await client.close()
+        await asyncio.wait_for(daemon_task, timeout=3)
+
+
+@pytest.mark.asyncio
+async def test_i2_mcp_tool_output_taint_reaches_later_planner_context(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from shisad.daemon import services as daemon_services
+    from shisad.daemon.handlers import _impl_session as impl_session_module
+    from shisad.security.control_plane import schema as control_plane_schema
+    from shisad.security.control_plane.engine import ControlPlaneEngine
+
+    monkeypatch.setenv("SHISAD_MODEL_BASE_URL", "https://api.example.com/v1")
+    monkeypatch.setenv("SHISAD_MODEL_PLANNER_BASE_URL", "https://planner.example.com/v1")
+    monkeypatch.setenv("SHISAD_MODEL_EMBEDDINGS_BASE_URL", "https://embed.example.com/v1")
+    monkeypatch.setenv("SHISAD_MODEL_MONITOR_BASE_URL", "https://monitor.example.com/v1")
+
+    observed_taints: list[set[TaintLabel]] = []
+    planner_invocations = 0
+    server_script = write_mock_mcp_server(tmp_path / "mock_mcp_server.py")
+    original_infer_action_kind = control_plane_schema.infer_action_kind
+
+    def _infer_action_kind(tool_name: str, arguments: dict[str, Any]) -> object:
+        if canonical_tool_name(tool_name) == "mcp.docs.lookup-doc":
+            return control_plane_schema.ActionKind.MESSAGE_READ
+        return original_infer_action_kind(tool_name, arguments)
+
+    class _InProcessControlPlaneClient:
+        def __init__(self, engine: ControlPlaneEngine) -> None:
+            self._engine = engine
+
+        async def ping(self) -> bool:
+            return True
+
+        async def begin_precontent_plan(self, **kwargs: Any) -> str:
+            return self._engine.begin_precontent_plan(
+                session_id=str(kwargs["session_id"]),
+                goal=str(kwargs["goal"]),
+                origin=kwargs["origin"],
+                ttl_seconds=int(kwargs["ttl_seconds"]),
+                max_actions=int(kwargs["max_actions"]),
+                capabilities=kwargs.get("capabilities"),
+                declared_resource_roots=set(kwargs.get("declared_resource_roots") or []),
+            )
+
+        async def evaluate_action(self, **kwargs: Any) -> Any:
+            return await self._engine.evaluate_action(
+                tool_name=str(kwargs["tool_name"]),
+                arguments=dict(kwargs.get("arguments") or {}),
+                origin=kwargs["origin"],
+                risk_tier=kwargs["risk_tier"],
+                declared_domains=list(kwargs.get("declared_domains") or []),
+                session_tainted=bool(kwargs.get("session_tainted", False)),
+                trusted_input=bool(kwargs.get("trusted_input", False)),
+                operator_owned_cli_input=bool(kwargs.get("operator_owned_cli_input", False)),
+                raw_user_text=str(kwargs.get("raw_user_text", "")),
+            )
+
+        async def record_execution(self, *, action: Any, success: bool) -> None:
+            self._engine.record_execution(action=action, success=success)
+
+        async def observe_denied_action(self, *, action: Any, source: str, reason_code: str) -> Any:
+            return self._engine.observe_denied_action(
+                action=action,
+                source=source,
+                reason_code=reason_code,
+            )
+
+        async def approve_stage2(self, *, action: Any, approved_by: str) -> str:
+            return self._engine.approve_stage2(action=action, approved_by=approved_by)
+
+        async def cancel_plan(self, *, session_id: str, reason: str, actor: str) -> bool:
+            return self._engine.cancel_plan(session_id=session_id, reason=reason, actor=actor)
+
+        async def active_plan_hash(self, session_id: str) -> str:
+            return self._engine.active_plan_hash(session_id)
+
+        async def observe_runtime_network(self, **kwargs: Any) -> None:
+            self._engine.observe_runtime_network(
+                origin=kwargs["origin"],
+                tool_name=str(kwargs["tool_name"]),
+                destination_host=str(kwargs["destination_host"]),
+                destination_port=kwargs.get("destination_port"),
+                protocol=str(kwargs.get("protocol", "")),
+                allowed=bool(kwargs.get("allowed", False)),
+                reason=str(kwargs.get("reason", "")),
+                request_size=int(kwargs.get("request_size", 0)),
+                resolved_addresses=list(kwargs.get("resolved_addresses") or []),
+            )
+
+    class _InProcessControlPlaneHandle:
+        def __init__(self, client: _InProcessControlPlaneClient) -> None:
+            self.client = client
+
+        async def close(self) -> None:
+            return None
+
+    async def _start_control_plane_sidecar(**kwargs: Any) -> _InProcessControlPlaneHandle:
+        engine = ControlPlaneEngine.build(
+            data_dir=Path(kwargs["data_dir"]),
+            workspace_roots=list(kwargs.get("assistant_fs_roots") or []),
+        )
+        return _InProcessControlPlaneHandle(_InProcessControlPlaneClient(engine))
+
+    async def _planner(
+        self: Planner,
+        user_content: str,
+        context: object,
+        *,
+        tools: list[dict[str, object]] | None = None,
+        persona_tone_override: str | None = None,
+    ) -> PlannerResult:
+        nonlocal planner_invocations
+        planner_invocations += 1
+        _ = (user_content, tools, persona_tone_override)
+        if planner_invocations == 1:
+            proposal = ActionProposal(
+                action_id="i2-mcp-taint-1",
+                tool_name=ToolName("mcp.docs.lookup-doc"),
+                arguments={"query": "roadmap", "limit": 4},
+                reasoning="Read the configured MCP docs server for the user request.",
+                data_sources=[],
+            )
+            decision = self._pep.evaluate(proposal.tool_name, proposal.arguments, context)
+            return PlannerResult(
+                output=PlannerOutput(actions=[proposal], assistant_response="lookup started"),
+                evaluated=[EvaluatedProposal(proposal=proposal, decision=decision)],
+                attempts=1,
+                provider_response=None,
+                messages_sent=(),
+            )
+        assert hasattr(context, "taint_labels")
+        observed_taints.append(set(context.taint_labels))  # type: ignore[attr-defined]
+        return PlannerResult(
+            output=PlannerOutput(actions=[], assistant_response="follow-up complete"),
+            evaluated=[],
+            attempts=1,
+            provider_response=None,
+            messages_sent=(),
+        )
+
+    monkeypatch.setattr(Planner, "propose", _planner)
+    monkeypatch.setattr(control_plane_schema, "infer_action_kind", _infer_action_kind)
+    monkeypatch.setattr(impl_session_module, "infer_action_kind", _infer_action_kind)
+    monkeypatch.setattr(
+        daemon_services, "start_control_plane_sidecar", _start_control_plane_sidecar
+    )
+
+    policy_path = tmp_path / "policy.yaml"
+    policy_path.write_text(
+        textwrap.dedent(
+            """
+            version: "1"
+            default_require_confirmation: false
+            """
+        ).strip()
+        + "\n"
+    )
+
+    config = DaemonConfig(
+        data_dir=tmp_path / "data",
+        socket_path=tmp_path / "control.sock",
+        policy_path=policy_path,
+        log_level="INFO",
+        mcp_servers=[
+            {
+                "name": "docs",
+                "transport": "stdio",
+                "command": [sys.executable, str(server_script)],
+                "timeout_seconds": 10.0,
+            }
+        ],
+        mcp_trusted_servers=["docs"],
+    )
+
+    daemon_task = asyncio.create_task(run_daemon(config))
+    client = ControlClient(config.socket_path)
+
+    try:
+        await _wait_for_socket(config.socket_path)
+        await client.connect()
+        created = await client.call(
+            "session.create",
+            {"channel": "cli", "user_id": "alice", "workspace_id": "ws1"},
+        )
+        sid = created["session_id"]
+
+        first = await client.call(
+            "session.message",
+            {
+                "session_id": sid,
+                "channel": "cli",
+                "user_id": "alice",
+                "workspace_id": "ws1",
+                "content": "Look up the roadmap in docs.",
+            },
+        )
+        assert int(first.get("confirmation_required_actions", 0)) == 0
+        assert int(first.get("executed_actions", 0)) == 1
+        outputs = first.get("tool_outputs", [])
+        docs_output = next(
+            item for item in outputs if item.get("tool_name") == "mcp.docs.lookup-doc"
+        )
+        assert docs_output.get("success") is True
+        assert docs_output.get("taint_labels") == [
+            TaintLabel.MCP_EXTERNAL.value,
+            TaintLabel.UNTRUSTED.value,
+        ]
+
+        await client.call(
+            "session.message",
+            {
+                "session_id": sid,
+                "channel": "cli",
+                "user_id": "alice",
+                "workspace_id": "ws1",
+                "content": "Continue from the previous tool result.",
+            },
+        )
+
+        assert observed_taints
+        assert TaintLabel.UNTRUSTED in observed_taints[-1]
+        assert TaintLabel.MCP_EXTERNAL in observed_taints[-1]
     finally:
         with suppress(Exception):
             await client.call("daemon.shutdown")

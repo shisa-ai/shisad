@@ -1507,6 +1507,9 @@ class ConfirmationImplMixin(HandlerMixinBase):
             ).strip(),
             approval_timestamp=decision_timestamp,
             approval_evidence=pending.confirmation_evidence,
+            strip_direct_tool_execute_envelope_keys=bool(
+                pending.should_strip_direct_tool_execute_envelope_keys()
+            ),
         )
         success = execution_result.success
         checkpoint_id = execution_result.checkpoint_id

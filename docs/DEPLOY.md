@@ -44,16 +44,17 @@ include the security runtime dependency group:
 uv sync --group security-runtime --group dev --extra chat
 ```
 
-`security-runtime`, `security-build`, `channels-runtime`, and `coverage` are uv
-dependency groups from `[dependency-groups]`; install them with `--group`. The
-chat UI dependencies are a project optional extra; install them with
-`--extra chat`.
+`security-runtime`, `security-build`, `interop`, `channels-runtime`, and
+`coverage` are uv dependency groups from `[dependency-groups]`; install them
+with `--group`. The chat UI dependencies are a project optional extra; install
+them with `--extra chat`.
 
 Optional groups:
 
 ```bash
 uv sync --group security-runtime    # Local ONNX PromptGuard runtime checks
 uv sync --group security-build      # PromptGuard download/export/model-pack build tooling
+uv sync --group interop             # MCP client runtime
 uv sync --group channels-runtime    # Matrix, Discord, Telegram, Slack
 uv sync --group coverage            # pytest-cov
 ```
@@ -65,6 +66,76 @@ operation with `security-runtime` alone should have PromptGuard's
 `textguard[promptguard]`, but not `torch`; if Transformers logs "PyTorch was
 not found" during startup in that profile, that warning is expected and does
 not mean the daemon runtime group was installed incorrectly.
+
+`interop` installs the MCP client dependency. Configure MCP servers via
+`SHISAD_MCP_SERVERS` (JSON) or `DaemonConfig.mcp_servers`; discovered tools
+register under runtime ids like `mcp.<server>.<tool>`. MCP tools require
+confirmation by default unless the server name appears in
+`SHISAD_MCP_TRUSTED_SERVERS`, and stdio servers receive a sanitized
+subprocess environment plus any explicit `env` overrides you configure per
+server.
+
+A2A ingress is included in the base install; no extra dependency group is
+required. Configure it via `SHISAD_A2A` (JSON) or `DaemonConfig.a2a`. The
+current `v0.6.5` A2A surface is signed inbound ingress over direct socket or
+HTTP transports, with fail-closed `allowed_intents` grants, per-fingerprint
+sliding-window rate limits, and `A2aIngressEvaluated` audit events for
+success and rejection outcomes.
+
+Generate the local daemon identity first:
+
+```bash
+uv run shisad a2a keygen \
+  --private-key "$HOME/.config/shisad/a2a/private.key" \
+  --public-key "$HOME/.config/shisad/a2a/public.key"
+```
+
+Example `SHISAD_A2A` payload:
+
+```bash
+export SHISAD_A2A='{
+  "enabled": true,
+  "identity": {
+    "agent_id": "local-agent",
+    "private_key_path": "/home/ubuntu/.config/shisad/a2a/private.key",
+    "public_key_path": "/home/ubuntu/.config/shisad/a2a/public.key"
+  },
+  "listen": {
+    "transport": "socket",
+    "host": "127.0.0.1",
+    "port": 9820
+  },
+  "agents": [
+    {
+      "agent_id": "remote-agent",
+      "fingerprint": "sha256:<remote-public-key-fingerprint>",
+      "public_key_path": "/home/ubuntu/.config/shisad/a2a/remote-agent.pub",
+      "address": "127.0.0.1:9820",
+      "transport": "socket",
+      "trust_level": "untrusted",
+      "allowed_intents": ["query"]
+    }
+  ],
+  "rate_limits": {
+    "max_per_minute": 60,
+    "max_per_hour": 600
+  }
+}'
+```
+
+Operator notes:
+
+- `allowed_intents` is fail-closed. If you omit it for a configured remote
+  agent, that agent's inbound A2A requests are rejected until you add explicit
+  grants.
+- Each configured remote agent must have a unique verified public-key
+  fingerprint. Shared-key aliases are rejected at config load so grants and
+  rate limits stay anchored to one authenticated remote principal.
+- Socket peers use `address: "host:port"` with `transport: "socket"`. HTTP
+  peers use full `http(s)://...` URLs with `transport: "http"`.
+- Each accepted or rejected inbound request emits an `A2aIngressEvaluated`
+  audit event with sender identity, intent, outcome, and rejection reason when
+  applicable.
 
 ## Preflight Checklist
 

@@ -158,6 +158,7 @@ class AdminImplMixin(HandlerMixinBase):
 
     async def do_daemon_status(self, params: Mapping[str, Any]) -> dict[str, Any]:
         _ = params
+        a2a_runtime = getattr(self._services, "a2a_runtime", None)
         return {
             "status": "running",
             "sessions_active": len(self._session_manager.list_active()),
@@ -218,6 +219,7 @@ class AdminImplMixin(HandlerMixinBase):
             "selfmod": self._selfmod_manager.status(),
             "realitycheck": self._realitycheck_toolkit.doctor_status(),
             "provenance": self._provenance_status,
+            "a2a": a2a_runtime.status() if a2a_runtime is not None else {"enabled": False},
         }
 
     async def do_policy_explain(self, params: Mapping[str, Any]) -> dict[str, Any]:

@@ -43,3 +43,23 @@ def test_tool_registry_rejects_null_for_required_argument() -> None:
     )
 
     assert errors == ["Missing required argument: content"]
+
+
+def test_tool_registry_resolves_provider_alias_to_registered_tool() -> None:
+    registry = ToolRegistry()
+    registry.register(
+        ToolDefinition(
+            name=ToolName("mcp.docs.lookup-doc"),
+            description="Lookup remote docs.",
+            parameters=[ToolParameter(name="query", type="string", required=True)],
+            registration_source="mcp",
+            registration_source_id="docs",
+            upstream_tool_name="lookup-doc",
+        )
+    )
+
+    resolved = registry.get_tool(ToolName("mcp_docs_lookup_doc"))
+
+    assert resolved is not None
+    assert resolved.name == ToolName("mcp.docs.lookup-doc")
+    assert registry.validate_call(ToolName("mcp_docs_lookup_doc"), {"query": "roadmap"}) == []

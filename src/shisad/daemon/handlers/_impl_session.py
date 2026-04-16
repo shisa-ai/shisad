@@ -995,6 +995,27 @@ def _planner_enabled_tools(
     return sorted(enabled, key=lambda item: str(item.name))
 
 
+def _planner_tool_source_note(tool: ToolDefinition) -> str:
+    if str(getattr(tool, "registration_source", "")).strip().lower() != "mcp":
+        return ""
+    details = ["external/untrusted"]
+    source_id = str(getattr(tool, "registration_source_id", "")).strip()
+    upstream_tool_name = str(getattr(tool, "upstream_tool_name", "")).strip()
+    if source_id:
+        details.append(f"via mcp/{source_id}")
+    if upstream_tool_name:
+        details.append(f"upstream tool: {upstream_tool_name}")
+    return " [" + "; ".join(details) + "]"
+
+
+def _planner_tool_display_name(tool: ToolDefinition) -> str:
+    display_name = str(tool.name)
+    native_name = openai_function_name(display_name)
+    if native_name != display_name:
+        display_name = f"{display_name} (native function: {native_name})"
+    return display_name
+
+
 def _is_trusted_level(trust_level: str) -> bool:
     return trust_level.strip().lower() in {"trusted", "verified", "internal"}
 
@@ -1402,7 +1423,7 @@ def _build_planner_tool_context(
             "not policy confusion."
         )
     lines: list[str] = [
-        "Use only tools from the trusted runtime manifest below.",
+        "Use only tools from the runtime manifest below.",
         "Never invent tool names.",
         "If asked which tools are available, list only enabled tools from this manifest.",
         (
@@ -1412,6 +1433,11 @@ def _build_planner_tool_context(
         ),
         f"Runtime tool catalog entries: {len(visible_tools)}",
     ]
+    if any(_planner_tool_source_note(tool) for tool in visible_tools):
+        lines.append(
+            "Entries marked [external/untrusted] come from configured MCP servers, "
+            "not trusted local tool config."
+        )
     if alias_note:
         lines.append(alias_note)
     if not enabled_tools:
@@ -1419,7 +1445,10 @@ def _build_planner_tool_context(
         if _shows_trusted_tool_context(trust_level) and disabled_tools:
             lines.append("Unavailable tools in this session:")
             for tool, missing in disabled_tools:
-                lines.append(f"- {tool.name}: blocked (missing: {', '.join(missing)})")
+                lines.append(
+                    f"- {_planner_tool_display_name(tool)}{_planner_tool_source_note(tool)}: "
+                    f"blocked (missing: {', '.join(missing)})"
+                )
         lines.append("If no tool is needed, respond conversationally without calling tools.")
         return "\n".join(lines)
 
@@ -1428,21 +1457,22 @@ def _build_planner_tool_context(
         for tool in enabled_tools:
             caps = sorted(cap.value for cap in tool.capabilities_required)
             cap_suffix = f" (requires: {', '.join(caps)})" if caps else ""
-            display_name = str(tool.name)
-            native_name = openai_function_name(display_name)
-            if native_name != display_name:
-                display_name = f"{display_name} (native function: {native_name})"
-            lines.append(f"- {display_name}: {tool.description}{cap_suffix}")
+            lines.append(
+                f"- {_planner_tool_display_name(tool)}: {tool.planner_description()}"
+                f"{_planner_tool_source_note(tool)}{cap_suffix}"
+            )
         if disabled_tools:
             lines.append("Unavailable tools in this session:")
             for tool, missing in disabled_tools:
-                display_name = str(tool.name)
-                native_name = openai_function_name(display_name)
-                if native_name != display_name:
-                    display_name = f"{display_name} (native function: {native_name})"
-                lines.append(f"- {display_name}: blocked (missing: {', '.join(missing)})")
+                lines.append(
+                    f"- {_planner_tool_display_name(tool)}{_planner_tool_source_note(tool)}: "
+                    f"blocked (missing: {', '.join(missing)})"
+                )
     else:
-        lines.append("Enabled tools: " + ", ".join(str(tool.name) for tool in enabled_tools))
+        lines.append(
+            "Enabled tools: "
+            + ", ".join(str(tool.name) + _planner_tool_source_note(tool) for tool in enabled_tools)
+        )
     if any(str(tool.name) in {"evidence.read", "evidence.promote"} for tool in enabled_tools):
         lines.append(
             "If a tool result includes an [EVIDENCE ref=...] stub, call evidence.read(ref_id) "

@@ -1,7 +1,7 @@
 """Tool registry.
 
-Loads tool definitions from a trusted config directory, verifies schema
-hashes on load, and provides lookup/validation methods.
+Loads locally trusted tool definitions, accepts explicitly-labeled external
+registrations, verifies schema hashes when provided, and rejects shadowing.
 """
 
 from __future__ import annotations
@@ -15,8 +15,8 @@ from urllib.parse import urlparse
 
 import yaml
 
-from shisad.core.tools.names import canonical_tool_name_typed
-from shisad.core.tools.schema import ToolDefinition
+from shisad.core.tools.names import canonical_tool_name, canonical_tool_name_typed
+from shisad.core.tools.schema import ToolDefinition, openai_function_name
 from shisad.core.types import ToolName
 
 logger = logging.getLogger(__name__)
@@ -118,6 +118,7 @@ class ToolRegistry:
     def __init__(self) -> None:
         self._tools: dict[ToolName, ToolDefinition] = {}
         self._expected_hashes: dict[ToolName, str] = {}
+        self._provider_aliases: dict[str, ToolName] = {}
 
     def register(self, tool: ToolDefinition, expected_hash: str | None = None) -> None:
         """Register a tool definition.
@@ -131,7 +132,27 @@ class ToolRegistry:
             ValueError: If the hash doesn't match (tampering detected).
         """
         canonical_name = canonical_tool_name_typed(tool.name)
-        canonical_tool = tool.model_copy(update={"name": canonical_name}, deep=True)
+        canonical_tool = tool.model_copy(
+            update={
+                "name": canonical_name,
+                "registration_source": str(tool.registration_source).strip().lower() or "local",
+                "registration_source_id": str(tool.registration_source_id).strip().lower(),
+                "upstream_tool_name": str(tool.upstream_tool_name).strip(),
+            },
+            deep=True,
+        )
+        existing = self._tools.get(canonical_name)
+        if existing is not None and existing != canonical_tool:
+            raise ValueError(f"Tool '{canonical_name}' is already registered")
+
+        provider_alias = openai_function_name(str(canonical_name))
+        alias_owner = self._provider_aliases.get(provider_alias)
+        if alias_owner is not None and alias_owner != canonical_name:
+            raise ValueError(
+                "Tool "
+                f"'{canonical_name}' provider alias collision with '{alias_owner}' "
+                f"({provider_alias})"
+            )
 
         if expected_hash is not None:
             actual_hash = canonical_tool.schema_hash()
@@ -143,11 +164,24 @@ class ToolRegistry:
             self._expected_hashes[canonical_name] = expected_hash
 
         self._tools[canonical_name] = canonical_tool
+        self._provider_aliases[provider_alias] = canonical_name
         logger.debug("Registered tool: %s", canonical_name)
+
+    def resolve_name(self, name: ToolName | str, *, warn_on_alias: bool = True) -> ToolName | None:
+        """Resolve a canonical or provider-alias tool name to the registered id."""
+        candidate = canonical_tool_name(str(name), warn_on_alias=warn_on_alias)
+        if not candidate:
+            return None
+        canonical_name = ToolName(candidate)
+        if canonical_name in self._tools:
+            return canonical_name
+        return self._provider_aliases.get(candidate)
 
     def get_tool(self, name: ToolName) -> ToolDefinition | None:
         """Get a tool definition by name."""
-        canonical_name = canonical_tool_name_typed(name)
+        canonical_name = self.resolve_name(name)
+        if canonical_name is None:
+            return None
         tool = self._tools.get(canonical_name)
         if tool is None:
             return None
@@ -159,13 +193,18 @@ class ToolRegistry:
 
     def has_tool(self, name: ToolName) -> bool:
         """Check if a tool is registered."""
-        return canonical_tool_name_typed(name) in self._tools
+        return self.resolve_name(name) is not None
 
     def unregister(self, name: ToolName) -> bool:
         """Remove a tool definition if present."""
-        canonical_name = canonical_tool_name_typed(name)
+        canonical_name = self.resolve_name(name)
+        if canonical_name is None:
+            return False
         removed = self._tools.pop(canonical_name, None)
         self._expected_hashes.pop(canonical_name, None)
+        provider_alias = openai_function_name(str(canonical_name))
+        if self._provider_aliases.get(provider_alias) == canonical_name:
+            self._provider_aliases.pop(provider_alias, None)
         return removed is not None
 
     def validate_call(self, name: ToolName, arguments: dict[str, Any]) -> list[str]:
@@ -173,7 +212,9 @@ class ToolRegistry:
 
         Returns a list of validation errors (empty = valid).
         """
-        canonical_name = canonical_tool_name_typed(name)
+        canonical_name = self.resolve_name(name)
+        if canonical_name is None:
+            canonical_name = canonical_tool_name_typed(name)
         tool = self._tools.get(canonical_name)
         if tool is None:
             return [f"Unknown tool: {canonical_name}"]
@@ -216,6 +257,22 @@ class ToolRegistry:
                 continue
 
             item_schema = properties[key].get("items", {})
+            item_type = item_schema.get("type")
+            if item_type is not None and isinstance(value, list):
+                invalid_item_type = next(
+                    (
+                        type(item).__name__
+                        for item in value
+                        if not self._check_type(item, str(item_type))
+                    ),
+                    None,
+                )
+                if invalid_item_type is not None:
+                    errors.append(
+                        f"Argument '{key}': expected items of type '{item_type}', "
+                        f"got '{invalid_item_type}'"
+                    )
+                    continue
             items_semantic_type = item_schema.get("x-shisad-semantic-type")
             if (
                 items_semantic_type is not None
@@ -255,6 +312,20 @@ class ToolRegistry:
             if data is None:
                 continue
 
+            external_metadata_keys = {
+                "registration_source",
+                "registration_source_id",
+                "upstream_tool_name",
+            }
+            declared_external_metadata = sorted(
+                key for key in external_metadata_keys if key in data
+            )
+            if declared_external_metadata:
+                raise ValueError(
+                    "Local tool definitions must not declare external registration metadata: "
+                    + ", ".join(declared_external_metadata)
+                )
+
             tool = ToolDefinition.model_validate(data)
             expected_hash = data.get("schema_hash")
             self.register(tool, expected_hash=expected_hash)
@@ -266,10 +337,12 @@ class ToolRegistry:
     @staticmethod
     def _check_type(value: Any, expected: str) -> bool:
         """Basic JSON Schema type check."""
+        if expected == "integer":
+            return isinstance(value, int) and not isinstance(value, bool)
+        if expected == "number":
+            return isinstance(value, (int, float)) and not isinstance(value, bool)
         type_map: dict[str, type | tuple[type, ...]] = {
             "string": str,
-            "integer": int,
-            "number": (int, float),
             "boolean": bool,
             "object": dict,
             "array": list,

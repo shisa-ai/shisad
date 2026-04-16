@@ -1,7 +1,7 @@
 # shisad Roadmap
 
 *Created: 2026-02-26*
-*Updated: 2026-04-14*
+*Updated: 2026-04-16*
 *Status: Active*
 
 ## Goal
@@ -38,11 +38,14 @@ Reach a genuinely useful personal-assistant baseline while preserving the projec
   pending-action cleanup, and low-friction internal bookkeeping confirmation
   paths. Textual chat TUI newline rendering remains deferred to the TUI
   overhaul.
-- This tree contains pre-tag `v0.6.4` release content: firewall scanning now
-  routes through `textguard`, bundled YARA rules are validated at startup,
-  analyzer compatibility shims preserve the required legacy split-base64 and
-  phrase coverage, and the duplicated local shisad YARA asset copy has been
-  removed. ReleaseClose is the remaining gate before tag/PyPI publication.
+- `v0.6.4` is published: firewall scanning now routes through `textguard`,
+  bundled YARA rules are validated at startup, analyzer compatibility shims
+  preserve the required legacy split-base64 and phrase coverage, and the
+  duplicated local shisad YARA asset copy has been removed.
+- This tree contains pre-tag `v0.6.5` release content: MCP client discovery
+  and execution, explicit remote tool trust semantics, and a signed A2A
+  ingress foundation with replay/rate-limit controls. ReleaseClose is the
+  remaining gate before tag/PyPI publication.
 
 ## Milestones
 
@@ -90,9 +93,9 @@ events, a mandatory TASK summary-firewall checkpoint before delegated output
 crosses back into COMMAND context, a browser tool surface with
 confirmation-gated browser writes plus local skill tool-surface integrity
 checks, a hardened public release path using OIDC trusted publishing, SBOMs,
-and provenance attestations, and the published `v0.6.3` critical UX
-stabilization lane. The active lane is `v0.6.4` (textguard port; ReleaseClose
-in progress), with `v0.6.5` (MCP/A2A interop) and `v0.6.6`
+and provenance attestations, the published `v0.6.3` critical UX
+stabilization lane, and the shipped `v0.6.4` textguard migration. The active
+lane is `v0.6.5` (MCP/A2A interop; ReleaseClose in progress), with `v0.6.6`
 (connector/skill expansion) queued next.
 
 #### v0.6.1 — Security hardening
@@ -199,6 +202,10 @@ TOTP entry remain deferred to `v0.8.0`.
 
 #### v0.6.5 — MCP/A2A interop
 
+- Status (2026-04-16): pre-tag `v0.6.5` release content is in ReleaseClose.
+  MCP client-only interop, remote tool trust policy, and the signed A2A
+  socket/HTTP ingress baseline are on the release-prepared tree. Exposing
+  shisad as an MCP server remains deferred.
 - MCP client-only interop with external servers
 - Remote tool/server trust policy
 - Signed A2A external-ingress foundation

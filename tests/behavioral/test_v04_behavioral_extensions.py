@@ -32,9 +32,30 @@ from shisad.core.planner import (
     PlannerResult,
 )
 from shisad.core.transcript import TranscriptStore
-from shisad.core.types import ToolName
+from shisad.core.types import TaintLabel, ToolName
 from shisad.daemon.runner import run_daemon
+from shisad.interop.a2a_envelope import (
+    A2aEnvelope,
+    attach_signature,
+    create_envelope,
+    fingerprint_for_public_key,
+    generate_ed25519_keypair,
+    load_public_key_from_path,
+    serialize_public_key_pem,
+    sign_envelope,
+    verify_envelope,
+    write_ed25519_keypair,
+)
+from shisad.interop.a2a_registry import (
+    A2aAgentConfig,
+    A2aConfig,
+    A2aIdentityConfig,
+    A2aListenConfig,
+    A2aRegistry,
+)
+from shisad.interop.a2a_transport import SocketTransport
 from tests.helpers.daemon import wait_for_socket as _wait_for_socket
+from tests.helpers.mcp import write_mock_mcp_server
 from tests.helpers.signer import StubSignerService, generate_ed25519_private_key, public_key_pem
 from tests.helpers.webauthn import make_authentication_payload, make_registration_payload
 
@@ -574,6 +595,415 @@ async def test_behavioral_tool_execute_confirmation_surfaces_approval_protocol_m
         )
         assert approved["event_type"] == "ToolApproved"
         assert executed["event_type"] == "ToolExecuted"
+    finally:
+        await _shutdown_daemon(daemon_task, client)
+
+
+@pytest.mark.asyncio
+async def test_behavioral_mcp_stdio_tool_execute_requires_confirmation_then_executes(
+    tmp_path: Path,
+) -> None:
+    server_script = write_mock_mcp_server(tmp_path / "mock_mcp_server.py")
+    daemon_task, client, _config = await _start_daemon(
+        tmp_path,
+        config_overrides={
+            "mcp_servers": [
+                {
+                    "name": "docs",
+                    "transport": "stdio",
+                    "command": [sys.executable, str(server_script)],
+                    "timeout_seconds": 10.0,
+                }
+            ]
+        },
+    )
+    try:
+        created = await client.call(
+            "session.create",
+            {"channel": "cli", "user_id": "alice", "workspace_id": "ws1"},
+        )
+        sid = str(created["session_id"])
+
+        result = await client.call(
+            "tool.execute",
+            {
+                "session_id": sid,
+                "tool_name": "mcp.docs.lookup-doc",
+                "command": ["mcp"],
+                "arguments": {"query": "roadmap", "limit": 4},
+                "security_critical": False,
+                "degraded_mode": "fail_open",
+            },
+        )
+
+        assert result["allowed"] is False
+        assert result["confirmation_required"] is True
+        confirmation_id = str(result["confirmation_id"])
+
+        pending = await client.call("action.pending", {"confirmation_id": confirmation_id})
+        actions = list(pending.get("actions", []))
+        assert len(actions) == 1
+        action = actions[0]
+
+        confirmed = await client.call(
+            "action.confirm",
+            {
+                "confirmation_id": confirmation_id,
+                "decision_nonce": str(action["decision_nonce"]),
+                "reason": "behavioral_mcp_i1",
+            },
+        )
+        assert confirmed["confirmed"] is True
+        assert confirmed["status"] == "approved"
+
+        approved = await _wait_for_audit_event(
+            client,
+            event_type="ToolApproved",
+            session_id=sid,
+            predicate=lambda event: (
+                str(event.get("data", {}).get("tool_name", "")) == "mcp.docs.lookup-doc"
+                and str(event.get("data", {}).get("approval_level", "")) == "software"
+                and str(event.get("data", {}).get("approval_method", "")) == "software"
+            ),
+        )
+
+        executed = await _wait_for_audit_event(
+            client,
+            event_type="ToolExecuted",
+            session_id=sid,
+            predicate=lambda event: (
+                str(event.get("data", {}).get("tool_name", "")) == "mcp.docs.lookup-doc"
+                and bool(event.get("data", {}).get("success")) is True
+                and str(event.get("data", {}).get("approval_level", "")) == "software"
+                and str(event.get("data", {}).get("approval_method", "")) == "software"
+            ),
+        )
+        assert approved["event_type"] == "ToolApproved"
+        assert str(executed.get("data", {}).get("actor", "")) == "tool_runtime"
+    finally:
+        await _shutdown_daemon(daemon_task, client)
+
+
+@pytest.mark.asyncio
+async def test_behavioral_mcp_stdio_tool_execute_allowlisted_server_executes_without_confirmation(
+    tmp_path: Path,
+) -> None:
+    server_script = write_mock_mcp_server(tmp_path / "mock_mcp_server.py")
+    daemon_task, client, _config = await _start_daemon(
+        tmp_path,
+        config_overrides={
+            "mcp_servers": [
+                {
+                    "name": "docs",
+                    "transport": "stdio",
+                    "command": [sys.executable, str(server_script)],
+                    "timeout_seconds": 10.0,
+                }
+            ],
+            "mcp_trusted_servers": ["docs"],
+        },
+    )
+    try:
+        created = await client.call(
+            "session.create",
+            {"channel": "cli", "user_id": "alice", "workspace_id": "ws1"},
+        )
+        sid = str(created["session_id"])
+
+        result = await client.call(
+            "tool.execute",
+            {
+                "session_id": sid,
+                "tool_name": "mcp.docs.lookup-doc",
+                "command": ["mcp"],
+                "arguments": {"query": "roadmap", "limit": 4},
+                "security_critical": False,
+                "degraded_mode": "fail_open",
+            },
+        )
+
+        assert result["allowed"] is True
+        assert result.get("confirmation_required") is not True
+        payload = json.loads(str(result["stdout"]))
+        assert payload["structured_content"] == {
+            "answer": "echo:roadmap",
+            "limit": 4,
+            "query": "roadmap",
+        }
+
+        executed = await _wait_for_audit_event(
+            client,
+            event_type="ToolExecuted",
+            session_id=sid,
+            predicate=lambda event: (
+                str(event.get("data", {}).get("tool_name", "")) == "mcp.docs.lookup-doc"
+                and bool(event.get("data", {}).get("success")) is True
+                and str(event.get("data", {}).get("actor", "")) == "tool_runtime"
+            ),
+        )
+        assert executed["event_type"] == "ToolExecuted"
+    finally:
+        await _shutdown_daemon(daemon_task, client)
+
+
+@pytest.mark.asyncio
+async def test_behavioral_mcp_stdio_tool_execute_rejects_invalid_arguments_before_upstream_call(
+    tmp_path: Path,
+) -> None:
+    server_script = write_mock_mcp_server(tmp_path / "mock_mcp_server.py")
+    daemon_task, client, _config = await _start_daemon(
+        tmp_path,
+        config_overrides={
+            "mcp_servers": [
+                {
+                    "name": "docs",
+                    "transport": "stdio",
+                    "command": [sys.executable, str(server_script)],
+                    "timeout_seconds": 10.0,
+                }
+            ]
+        },
+    )
+    try:
+        created = await client.call(
+            "session.create",
+            {"channel": "cli", "user_id": "alice", "workspace_id": "ws1"},
+        )
+        sid = str(created["session_id"])
+
+        with pytest.raises(RuntimeError, match=r"RPC error -32602"):
+            await client.call(
+                "tool.execute",
+                {
+                    "session_id": sid,
+                    "tool_name": "mcp.docs.lookup-doc",
+                    "command": ["mcp"],
+                    "arguments": {"query": "roadmap", "limit": True},
+                    "security_critical": False,
+                    "degraded_mode": "fail_open",
+                },
+            )
+
+        rejected = await _wait_for_audit_event(
+            client,
+            event_type="ToolRejected",
+            session_id=sid,
+            predicate=lambda event: (
+                str(event.get("data", {}).get("tool_name", "")) == "mcp.docs.lookup-doc"
+                and str(event.get("data", {}).get("reason", "")).startswith(
+                    "invalid_tool_arguments:schema validation failed: "
+                    "Argument 'limit': expected type 'integer', got 'bool'"
+                )
+            ),
+        )
+        assert rejected["event_type"] == "ToolRejected"
+    finally:
+        await _shutdown_daemon(daemon_task, client)
+
+
+@pytest.mark.asyncio
+async def test_behavioral_a2a_socket_request_executes_and_returns_signed_response(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _capture_propose(
+        self: Planner,
+        user_content: str,
+        context: object,
+        *,
+        tools: list[dict[str, object]] | None = None,
+        persona_tone_override: str | None = None,
+    ) -> PlannerResult:
+        _ = (self, user_content, context, tools, persona_tone_override)
+        return PlannerResult(
+            output=PlannerOutput(actions=[], assistant_response="a2a:team status"),
+            evaluated=[],
+            attempts=1,
+            provider_response=None,
+            messages_sent=(),
+        )
+
+    monkeypatch.setattr(Planner, "propose", _capture_propose)
+    local_private_path = tmp_path / "local-a2a.pem"
+    local_public_path = tmp_path / "local-a2a.pub"
+    local_fingerprint = write_ed25519_keypair(local_private_path, local_public_path)
+    remote_private, remote_public = generate_ed25519_keypair()
+    remote_fingerprint = fingerprint_for_public_key(remote_public)
+    daemon_task, client, _config = await _start_daemon(
+        tmp_path,
+        config_overrides={
+            "a2a": A2aConfig(
+                enabled=True,
+                identity=A2aIdentityConfig(
+                    agent_id="local-agent",
+                    private_key_path=local_private_path,
+                    public_key_path=local_public_path,
+                ),
+                listen=A2aListenConfig(transport="socket", host="127.0.0.1", port=0),
+                agents=[
+                    A2aAgentConfig(
+                        agent_id="remote-agent",
+                        fingerprint=remote_fingerprint,
+                        public_key=serialize_public_key_pem(remote_public).decode("utf-8"),
+                        address="127.0.0.1:9820",
+                        transport="socket",
+                        trust_level="untrusted",
+                        allowed_intents=["query"],
+                    )
+                ],
+            )
+        },
+    )
+    try:
+        request = create_envelope(
+            from_agent_id="remote-agent",
+            from_fingerprint=remote_fingerprint,
+            to_agent_id="local-agent",
+            message_type="request",
+            intent="query",
+            payload={"content": "team status"},
+        )
+        signed_request = attach_signature(request, sign_envelope(request, remote_private))
+        daemon_status = await client.call("daemon.status")
+        a2a_status = dict(daemon_status.get("a2a", {}))
+        target = A2aRegistry.from_config(
+            A2aConfig(
+                agents=[
+                    A2aAgentConfig(
+                        agent_id="local-agent",
+                        fingerprint=local_fingerprint,
+                        public_key_path=local_public_path,
+                        address=str(a2a_status["address"]),
+                        transport="socket",
+                    )
+                ]
+            )
+        ).require("local-agent")
+        response_raw = await SocketTransport().send(
+            signed_request,
+            target,
+        )
+        response = A2aEnvelope.model_validate(response_raw)
+        local_public = load_public_key_from_path(local_public_path)
+        assert a2a_status["enabled"] is True
+        assert a2a_status["address"] != "127.0.0.1:0"
+        assert response.payload["ok"] is True
+        assert response.payload["response"] == "a2a:team status"
+        assert verify_envelope(response, local_public) is True
+        sid = str(response.payload["session_id"])
+        audit_event = await _wait_for_audit_event(
+            client,
+            event_type="A2aIngressEvaluated",
+            session_id=sid,
+            predicate=lambda item: (
+                str(item.get("data", {}).get("message_id", "")) == request.message_id
+            ),
+        )
+        transcript = TranscriptStore(_config.data_dir / "sessions")
+        user_entries = [entry for entry in transcript.list_entries(sid) if entry.role == "user"]
+        assert user_entries
+        assert TaintLabel.A2A_EXTERNAL in user_entries[0].taint_labels
+        assert TaintLabel.UNTRUSTED in user_entries[0].taint_labels
+        audit_data = dict(audit_event.get("data", {}))
+        assert audit_data["sender_agent_id"] == "remote-agent"
+        assert audit_data["sender_fingerprint"] == remote_fingerprint
+        assert audit_data["receiver_agent_id"] == "local-agent"
+        assert audit_data["message_id"] == request.message_id
+        assert audit_data["intent"] == "query"
+        assert audit_data["capability_granted"] is True
+        assert audit_data["outcome"] == "accepted"
+        assert audit_data["reason"] == "ok"
+    finally:
+        await _shutdown_daemon(daemon_task, client)
+
+
+@pytest.mark.asyncio
+async def test_behavioral_a2a_socket_request_rejects_ungranted_intent_and_records_audit(
+    tmp_path: Path,
+) -> None:
+    local_private_path = tmp_path / "local-a2a.pem"
+    local_public_path = tmp_path / "local-a2a.pub"
+    local_fingerprint = write_ed25519_keypair(local_private_path, local_public_path)
+    remote_private, remote_public = generate_ed25519_keypair()
+    remote_fingerprint = fingerprint_for_public_key(remote_public)
+    daemon_task, client, _config = await _start_daemon(
+        tmp_path,
+        config_overrides={
+            "a2a": A2aConfig(
+                enabled=True,
+                identity=A2aIdentityConfig(
+                    agent_id="local-agent",
+                    private_key_path=local_private_path,
+                    public_key_path=local_public_path,
+                ),
+                listen=A2aListenConfig(transport="socket", host="127.0.0.1", port=0),
+                agents=[
+                    A2aAgentConfig(
+                        agent_id="remote-agent",
+                        fingerprint=remote_fingerprint,
+                        public_key=serialize_public_key_pem(remote_public).decode("utf-8"),
+                        address="127.0.0.1:9820",
+                        transport="socket",
+                        trust_level="untrusted",
+                        allowed_intents=["query"],
+                    )
+                ],
+            )
+        },
+    )
+    try:
+        request = create_envelope(
+            from_agent_id="remote-agent",
+            from_fingerprint=remote_fingerprint,
+            to_agent_id="local-agent",
+            message_type="request",
+            intent="delegate_task",
+            payload={"content": "delegate now"},
+        )
+        signed_request = attach_signature(request, sign_envelope(request, remote_private))
+        daemon_status = await client.call("daemon.status")
+        a2a_status = dict(daemon_status.get("a2a", {}))
+        target = A2aRegistry.from_config(
+            A2aConfig(
+                agents=[
+                    A2aAgentConfig(
+                        agent_id="local-agent",
+                        fingerprint=local_fingerprint,
+                        public_key_path=local_public_path,
+                        address=str(a2a_status["address"]),
+                        transport="socket",
+                    )
+                ]
+            )
+        ).require("local-agent")
+        response_raw = await SocketTransport().send(signed_request, target)
+        response = A2aEnvelope.model_validate(response_raw)
+        local_public = load_public_key_from_path(local_public_path)
+        audit_event = await _wait_for_audit_event(
+            client,
+            event_type="A2aIngressEvaluated",
+            predicate=lambda item: (
+                str(item.get("data", {}).get("message_id", "")) == request.message_id
+                and str(item.get("data", {}).get("reason", "")) == "intent_not_allowed"
+            ),
+        )
+        assert a2a_status["enabled"] is True
+        assert a2a_status["address"] != "127.0.0.1:0"
+        assert response.payload["ok"] is False
+        assert response.payload["error"] == "intent_not_allowed"
+        assert response.payload["status"] == 403
+        assert verify_envelope(response, local_public) is True
+        assert "session_id" not in response.payload
+        audit_data = dict(audit_event.get("data", {}))
+        assert audit_event.get("session_id") in {None, ""}
+        assert audit_data["sender_agent_id"] == "remote-agent"
+        assert audit_data["sender_fingerprint"] == remote_fingerprint
+        assert audit_data["receiver_agent_id"] == "local-agent"
+        assert audit_data["message_id"] == request.message_id
+        assert audit_data["intent"] == "delegate_task"
+        assert audit_data["capability_granted"] is False
+        assert audit_data["outcome"] == "rejected"
+        assert audit_data["reason"] == "intent_not_allowed"
     finally:
         await _shutdown_daemon(daemon_task, client)
 
