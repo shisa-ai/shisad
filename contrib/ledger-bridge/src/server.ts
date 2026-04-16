@@ -2,9 +2,10 @@
  * shisad Ledger bridge — HTTP signing server.
  *
  * Implements the same sign-request/response contract as the shisad KMS
- * backend.  Receives an IntentEnvelope from the shisad daemon, formats
- * the action summary, pushes it to a connected Ledger device via DMK's
- * Ethereum signPersonalMessage, and returns the signature.
+ * backend.  Receives an IntentEnvelope from the shisad daemon, builds
+ * an EIP-712 typed-data payload, pushes it to a connected Ledger device
+ * via DMK's Ethereum signTypedData, and returns the signature.
+ * The device renders structured labeled fields with Clear Signing support.
  *
  * Usage:
  *   npx tsx src/server.ts [--port 9090] [--derivation-path "44'/60'/0'/0/0"]
@@ -15,7 +16,7 @@ import { DeviceActionStatus, UserInteractionRequired } from "@ledgerhq/device-ma
 import { firstValueFrom, filter, map } from "rxjs";
 
 import { getDmk, connectDevice, waitForUnlock, buildEthSigner, reviewSurfaceForModel } from "./device";
-import { formatForDevice, type IntentEnvelope } from "./format";
+import { buildTypedData, formatForDevice, type IntentEnvelope } from "./format";
 
 // ---------------------------------------------------------------------------
 // CLI args
@@ -51,6 +52,7 @@ function printDeviceInteraction(interaction: string): void {
     [UserInteractionRequired.UnlockDevice]: "Enter your PIN on the Ledger...",
     [UserInteractionRequired.ConfirmOpenApp]: "Confirm opening the app on your Ledger...",
     [UserInteractionRequired.SignPersonalMessage]: "Review and sign the message on your Ledger...",
+    [UserInteractionRequired.SignTypedData]: "Review and sign the typed data on your Ledger...",
   };
   const msg = messages[interaction];
   if (msg) process.stderr.write(`  ${msg}\n`);
@@ -64,16 +66,17 @@ async function handleSignRequest(req: SignRequest): Promise<SignResponse> {
   await waitForUnlock(dmk, device.sessionId);
   const signerEth = buildEthSigner(dmk, device.sessionId);
 
-  // Format the message for the device display.
+  // Build EIP-712 typed data for structured device display.
+  const typedData = buildTypedData(req.intent_envelope);
   const displayMessage = formatForDevice(req.intent_envelope);
-  process.stderr.write(`\nSigning message:\n${displayMessage}\n\n`);
+  process.stderr.write(`\nSigning (EIP-712):\n${displayMessage}\n\n`);
 
   try {
-    // Sign via Ethereum personal_sign — device renders the message text
-    // on its trusted display and the user confirms with physical touch.
-    const { observable, cancel } = signerEth.signMessage(
+    // Sign via EIP-712 signTypedData — device renders structured labeled
+    // fields on its trusted display and the user confirms with physical touch.
+    const { observable, cancel } = signerEth.signTypedData(
       DERIVATION_PATH,
-      displayMessage,
+      typedData,
     );
 
     const output = await firstValueFrom(

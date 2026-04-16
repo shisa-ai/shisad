@@ -1,7 +1,9 @@
 /**
- * Format an IntentEnvelope's action into a human-readable summary for the
- * Ledger device screen.  On Stax/Flex the full text is rendered; on Nano
- * devices the user scrolls through the fields.
+ * Format an IntentEnvelope for signing on a Ledger device.
+ *
+ * - buildTypedData() produces an EIP-712 typed-data structure for signTypedData.
+ *   The device renders labeled fields with Clear Signing support.
+ * - formatForDevice() produces a plain-text summary for logging/debug.
  */
 
 export interface IntentAction {
@@ -32,8 +34,59 @@ export interface IntentEnvelope {
 }
 
 /**
- * Produce the message string that the Ledger device will display and sign
- * via Ethereum personal_sign.
+ * EIP-712 typed-data payload for Ledger signTypedData.
+ *
+ * Keep type definitions in sync with the daemon-side EIP-712 digest
+ * computation in src/shisad/core/approval.py::_EIP712_TYPES.
+ */
+export function buildTypedData(envelope: IntentEnvelope) {
+  return {
+    domain: {
+      name: "shisad",
+      version: "1",
+      chainId: 0,
+    },
+    types: {
+      EIP712Domain: [
+        { name: "name", type: "string" },
+        { name: "version", type: "string" },
+        { name: "chainId", type: "uint256" },
+      ],
+      IntentAction: [
+        { name: "tool", type: "string" },
+        { name: "summary", type: "string" },
+        { name: "destinations", type: "string" },
+      ],
+      PolicyContext: [
+        { name: "level", type: "string" },
+        { name: "digest", type: "string" },
+      ],
+      IntentEnvelope: [
+        { name: "intentId", type: "string" },
+        { name: "action", type: "IntentAction" },
+        { name: "policy", type: "PolicyContext" },
+        { name: "nonce", type: "string" },
+      ],
+    },
+    primaryType: "IntentEnvelope",
+    message: {
+      intentId: envelope.intent_id,
+      action: {
+        tool: envelope.action.tool,
+        summary: envelope.action.display_summary,
+        destinations: envelope.action.destinations.join(", ") || "[none]",
+      },
+      policy: {
+        level: envelope.policy_context.required_level,
+        digest: envelope.policy_context.action_digest,
+      },
+      nonce: envelope.nonce,
+    },
+  };
+}
+
+/**
+ * Plain-text summary for logging / debug. Not used for signing.
  */
 export function formatForDevice(envelope: IntentEnvelope): string {
   const { action, policy_context, intent_id } = envelope;

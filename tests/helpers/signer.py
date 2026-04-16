@@ -19,7 +19,12 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import (
 )
 from cryptography.hazmat.primitives.asymmetric.utils import Prehashed
 
-from shisad.core.approval import _eth_personal_sign_digest, canonical_json_dumps
+from shisad.core.approval import (
+    IntentEnvelope,
+    _eip712_digest,
+    _eth_personal_sign_digest,
+    canonical_json_dumps,
+)
 
 
 def generate_ed25519_private_key() -> Ed25519PrivateKey:
@@ -55,6 +60,17 @@ def sign_intent_envelope_eth_personal(
     """Sign an intent envelope using Ethereum personal-sign (keccak256 prefix)."""
     message = canonical_json_dumps(envelope).encode("utf-8")
     digest = _eth_personal_sign_digest(message)
+    signature = private_key.sign(digest, ec.ECDSA(Prehashed(hashes.SHA256())))
+    return "base64:" + base64.b64encode(signature).decode("ascii")
+
+
+def sign_intent_envelope_eip712(
+    private_key: ec.EllipticCurvePrivateKey,
+    envelope: dict[str, Any],
+) -> str:
+    """Sign an intent envelope using EIP-712 typed data (keccak256 struct hash)."""
+    intent = IntentEnvelope.model_validate(envelope)
+    digest = _eip712_digest(intent)
     signature = private_key.sign(digest, ec.ECDSA(Prehashed(hashes.SHA256())))
     return "base64:" + base64.b64encode(signature).decode("ascii")
 
@@ -126,7 +142,13 @@ class StubSignerService:
                     or datetime.now(UTC).isoformat().replace("+00:00", "Z"),
                 }
                 if owner._status == "approved":
-                    if owner._algorithm == "eth_personal_sign":
+                    if owner._algorithm == "eip712":
+                        assert isinstance(owner._private_key, ec.EllipticCurvePrivateKey)
+                        response["signature"] = sign_intent_envelope_eip712(
+                            owner._private_key,
+                            signed_envelope,
+                        )
+                    elif owner._algorithm == "eth_personal_sign":
                         assert isinstance(owner._private_key, ec.EllipticCurvePrivateKey)
                         response["signature"] = sign_intent_envelope_eth_personal(
                             owner._private_key,

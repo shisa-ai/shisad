@@ -894,6 +894,104 @@ def _eth_personal_sign_digest(message: bytes) -> bytes:
     return keccak_256(prefix + message)
 
 
+# ---------------------------------------------------------------------------
+# EIP-712 typed-data digest (used by the Ledger signer backend)
+# ---------------------------------------------------------------------------
+
+# Fixed EIP-712 domain for shisad intent signing.
+_EIP712_DOMAIN = {"name": "shisad", "version": "1", "chainId": 0}
+
+# EIP-712 type definitions for the shisad IntentEnvelope.
+# Keep in sync with contrib/ledger-bridge/src/format.ts::buildTypedData().
+_EIP712_TYPES: dict[str, list[tuple[str, str]]] = {
+    "EIP712Domain": [("name", "string"), ("version", "string"), ("chainId", "uint256")],
+    "IntentAction": [("tool", "string"), ("summary", "string"), ("destinations", "string")],
+    "PolicyContext": [("level", "string"), ("digest", "string")],
+    "IntentEnvelope": [
+        ("intentId", "string"),
+        ("action", "IntentAction"),
+        ("policy", "PolicyContext"),
+        ("nonce", "string"),
+    ],
+}
+
+
+def _eip712_encode_type(primary: str) -> str:
+    """Encode the type string for ``hashType`` per EIP-712.
+
+    For a struct with referenced sub-structs, the encoding is::
+
+        PrimaryType(field1Type field1Name, ...) ++ ReferencedType1(...) ++ ...
+
+    Referenced types are sorted alphabetically and deduplicated.
+    """
+    deps: set[str] = set()
+
+    def _collect(name: str) -> None:
+        for _, field_type in _EIP712_TYPES.get(name, []):
+            if field_type in _EIP712_TYPES and field_type != name and field_type not in deps:
+                deps.add(field_type)
+                _collect(field_type)
+
+    _collect(primary)
+
+    def _fmt(name: str) -> str:
+        fields = ",".join(f"{ft} {fn}" for fn, ft in _EIP712_TYPES[name])
+        return f"{name}({fields})"
+
+    return _fmt(primary) + "".join(_fmt(d) for d in sorted(deps))
+
+
+def _eip712_hash_struct(primary: str, data: dict[str, object]) -> bytes:
+    """Compute ``hashStruct(primaryType, data)`` per EIP-712."""
+    from shisad.core._keccak import keccak_256
+
+    type_hash = keccak_256(_eip712_encode_type(primary).encode())
+    encoded = type_hash
+    for field_name, field_type in _EIP712_TYPES[primary]:
+        value = data.get(field_name)
+        if field_type == "string":
+            encoded += keccak_256(str(value or "").encode())
+        elif field_type == "uint256":
+            encoded += int(value or 0).to_bytes(32, "big")
+        elif field_type in _EIP712_TYPES:
+            encoded += _eip712_hash_struct(field_type, value if isinstance(value, dict) else {})
+        else:
+            encoded += keccak_256(str(value or "").encode())
+    return keccak_256(encoded)
+
+
+def _eip712_digest(envelope: IntentEnvelope) -> bytes:
+    """Compute the EIP-712 signing digest for a shisad IntentEnvelope.
+
+    Returns the 32-byte keccak-256 digest::
+
+        keccak256("\\x19\\x01" + domainSeparator + hashStruct(primaryType, message))
+
+    Compatible with ``Prehashed(SHA256())`` ECDSA verification (32-byte digest).
+    """
+    from shisad.core._keccak import keccak_256
+
+    domain_sep = _eip712_hash_struct("EIP712Domain", _EIP712_DOMAIN)
+    message_data: dict[str, object] = {
+        "intentId": envelope.intent_id,
+        "action": {
+            "tool": envelope.action.tool,
+            "summary": envelope.action.display_summary,
+            "destinations": ", ".join(envelope.action.destinations) or "[none]",
+        },
+        "policy": {
+            "level": envelope.policy_context.required_level.value
+            if hasattr(envelope.policy_context.required_level, "value")
+            else str(envelope.policy_context.required_level),
+            "digest": envelope.policy_context.action_digest,
+        },
+        "nonce": envelope.nonce,
+    }
+    struct_hash = _eip712_hash_struct("IntentEnvelope", message_data)
+    return keccak_256(b"\x19\x01" + domain_sep + struct_hash)
+
+
 def _signer_key_info_from_record(record: SignerKeyRecord) -> SignerKeyInfo:
     return SignerKeyInfo(
         key_id=record.credential_id,
@@ -1072,7 +1170,12 @@ class _HttpSignerBackend:
                 if public_key.curve.name.lower() != "secp256k1":
                     return False
                 scheme = signer_key.signing_scheme.strip().lower()
-                if scheme == "eth_personal_sign":
+                if scheme == "eip712":
+                    digest = _eip712_digest(envelope)
+                    public_key.verify(
+                        signed_bytes, digest, ec.ECDSA(_Prehashed(hashes.SHA256()))
+                    )
+                elif scheme == "eth_personal_sign":
                     digest = _eth_personal_sign_digest(message)
                     public_key.verify(
                         signed_bytes, digest, ec.ECDSA(_Prehashed(hashes.SHA256()))

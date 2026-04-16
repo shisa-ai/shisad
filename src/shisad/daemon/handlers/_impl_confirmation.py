@@ -674,7 +674,7 @@ class ConfirmationImplMixin(HandlerMixinBase):
             str(params.get("device_type") or default_device_type).strip()
             or default_device_type
         )
-        default_signing_scheme = "eth_personal_sign" if backend == "ledger" else "raw"
+        default_signing_scheme = "eip712" if backend == "ledger" else "raw"
         signing_scheme = (
             str(params.get("signing_scheme") or default_signing_scheme).strip().lower()
             or default_signing_scheme

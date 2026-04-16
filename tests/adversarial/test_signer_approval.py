@@ -381,13 +381,13 @@ def test_ledger_trusted_display_with_valid_signature(tmp_path) -> None:
             algorithm="ecdsa-secp256k1",
             device_type="ledger-consumer",
             public_key_pem=public_key_pem(private_key),
-            signing_scheme="eth_personal_sign",
+            signing_scheme="eip712",
         )
     )
     pending, params = _ledger_pending_action(key_id="ledger:stax-1")
     with StubSignerService(
         private_key=private_key,
-        algorithm="eth_personal_sign",
+        algorithm="eip712",
         review_surface="trusted_device_display",
     ).run() as signer_url:
         backend = SignerConfirmationAdapter(
@@ -415,13 +415,13 @@ def test_ledger_blind_sign_drops_to_bound_approval(tmp_path) -> None:
             algorithm="ecdsa-secp256k1",
             device_type="ledger-consumer",
             public_key_pem=public_key_pem(private_key),
-            signing_scheme="eth_personal_sign",
+            signing_scheme="eip712",
         )
     )
     pending, params = _ledger_pending_action(key_id="ledger:stax-1")
     with StubSignerService(
         private_key=private_key,
-        algorithm="eth_personal_sign",
+        algorithm="eip712",
         review_surface="opaque_device",
         blind_sign_detected=True,
     ).run() as signer_url:
@@ -464,13 +464,13 @@ def test_ledger_tampered_intent_rejected(tmp_path) -> None:
             algorithm="ecdsa-secp256k1",
             device_type="ledger-consumer",
             public_key_pem=public_key_pem(private_key),
-            signing_scheme="eth_personal_sign",
+            signing_scheme="eip712",
         )
     )
     pending, params = _ledger_pending_action(key_id="ledger:stax-1")
     with StubSignerService(
         private_key=private_key,
-        algorithm="eth_personal_sign",
+        algorithm="eip712",
         review_surface="trusted_device_display",
         tamper_intent=True,
     ).run() as signer_url:
@@ -499,13 +499,13 @@ def test_ledger_opaque_device_drops_below_signed_authorization(tmp_path) -> None
             algorithm="ecdsa-secp256k1",
             device_type="ledger-consumer",
             public_key_pem=public_key_pem(private_key),
-            signing_scheme="eth_personal_sign",
+            signing_scheme="eip712",
         )
     )
     pending, params = _ledger_pending_action(key_id="ledger:stax-1")
     with StubSignerService(
         private_key=private_key,
-        algorithm="eth_personal_sign",
+        algorithm="eip712",
         review_surface="opaque_device",
         blind_sign_detected=False,
     ).run() as signer_url:
