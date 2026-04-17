@@ -286,9 +286,7 @@ class DaemonControlHandlers:
     ) -> DaemonShutdownResult:
         return await self._admin.handle_daemon_shutdown(params, ctx)
 
-    async def handle_daemon_reset(
-        self, params: NoParams, ctx: RequestContext
-    ) -> DaemonResetResult:
+    async def handle_daemon_reset(self, params: NoParams, ctx: RequestContext) -> DaemonResetResult:
         return await self._admin.handle_daemon_reset(params, ctx)
 
     async def handle_doctor_check(

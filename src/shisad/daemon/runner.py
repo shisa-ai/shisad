@@ -305,10 +305,10 @@ def _wrap_tracked_handler(
 ) -> TypedHandler:
     async def _tracked_handler(params: BaseModel, ctx: Any) -> Any:
         async with services.rpc_state_lock:
-            if (
-                services.reset_in_progress
-                and method_name not in {"daemon.reset", "daemon.shutdown"}
-            ):
+            if services.reset_in_progress and method_name not in {
+                "daemon.reset",
+                "daemon.shutdown",
+            }:
                 raise RuntimeError("Cannot execute control RPC while daemon.reset is in progress")
             services.active_rpc_calls += 1
         try:

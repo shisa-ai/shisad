@@ -1188,8 +1188,7 @@ class HandlerImplementation(
         channel_state_root = self._services.channel_state_store._root_dir
         approval_store_path = self._credential_store._approval_store_path
         identity_allowlists_match = {
-            channel: set(values)
-            for channel, values in self._identity_map._allowlists.items()
+            channel: set(values) for channel, values in self._identity_map._allowlists.items()
         } == {
             channel: set(values)
             for channel, values in self._services.identity_allowlists_baseline.items()

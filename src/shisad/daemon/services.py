@@ -1006,10 +1006,9 @@ class DaemonServices:
         _wipe_dir_contents(channel_state_root)
 
         # -- Transcripts --
-        cleared["transcripts"] = (
-            _count_files_recursive(self.transcript_store._transcript_dir)
-            + _count_files_recursive(self.transcript_store._blob_dir)
-        )
+        cleared["transcripts"] = _count_files_recursive(
+            self.transcript_store._transcript_dir
+        ) + _count_files_recursive(self.transcript_store._blob_dir)
         _wipe_dir_contents(self.transcript_store._transcript_dir)
         _wipe_dir_contents(self.transcript_store._blob_dir)
 
@@ -1028,10 +1027,9 @@ class DaemonServices:
         cleared["ingestion_records"] = len(self.ingestion._records)
         cleared["ingestion_vectors"] = len(self.ingestion._vectors)
         cleared["ingestion_keys"] = len(self.ingestion._key_metadata_by_id)
-        cleared["ingestion_artifacts"] = (
-            _count_files_recursive(self.ingestion._sanitized_dir)
-            + _count_files_recursive(self.ingestion._original_dir)
-        )
+        cleared["ingestion_artifacts"] = _count_files_recursive(
+            self.ingestion._sanitized_dir
+        ) + _count_files_recursive(self.ingestion._original_dir)
         self.ingestion._records.clear()
         self.ingestion._vectors.clear()
         self.ingestion._key_material_by_id.clear()
@@ -1042,9 +1040,8 @@ class DaemonServices:
         self.ingestion._load_or_create_keys()
 
         # -- Self-modification --
-        cleared["selfmod_entries"] = (
-            len(self.selfmod_manager._inventory.skills)
-            + len(self.selfmod_manager._inventory.behavior_packs)
+        cleared["selfmod_entries"] = len(self.selfmod_manager._inventory.skills) + len(
+            self.selfmod_manager._inventory.behavior_packs
         )
         cleared["selfmod_artifacts"] = (
             _count_files_recursive(self.selfmod_manager._proposal_dir)
@@ -1154,7 +1151,6 @@ class DaemonServices:
         a2a_runtime = getattr(self, "a2a_runtime", None)
         if a2a_runtime is not None:
             shutdown_ops.append(("a2a_runtime", a2a_runtime.close()))
-
 
         disconnected_ids: set[int] = set()
         channels = getattr(self, "channels", {})
