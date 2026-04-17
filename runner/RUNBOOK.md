@@ -105,6 +105,24 @@ SHISAD_POLICY_PATH=/tmp/shisad-feature-policy.yaml \
 The `RUNNER_INHERIT_SHISAD_ENV=1` flag tells the harness to keep your
 shell's `SHISAD_*` values instead of clearing them.
 
+## Web Search Backend
+
+`tool.web.search` needs an external JSON search backend (SearxNG-style
+`/search?q=...&format=json`). If `SHISAD_WEB_SEARCH_BACKEND_URL` is unset,
+the tool reports `web_search_backend_unconfigured` in doctor output and
+returns no results — research-shaped prompts will degrade accordingly.
+
+Minimum config (local SearxNG example):
+
+```bash
+SHISAD_WEB_SEARCH_BACKEND_URL=http://127.0.0.1:8888
+SHISAD_WEB_ALLOWED_DOMAINS='["127.0.0.1:8888"]'
+```
+
+The backend host also needs to be in `SHISAD_WEB_ALLOWED_DOMAINS`. See
+`docs/DEPLOY.md` for the operator-level overview and `docs/ENV-VARS.md`
+for the full variable reference.
+
 ## Default Policy
 
 If no policy file exists at `SHISAD_POLICY_PATH`, the harness copies

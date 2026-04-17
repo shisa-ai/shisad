@@ -344,6 +344,32 @@ SHISAD_CHANNEL_IDENTITY_ALLOWLIST='{"slack":["<your-slack-user-id>"]}'
 
 ---
 
+## Web Search Backend (Recommended)
+
+`tool.web.search` calls a JSON search backend you supply — shisad does not
+ship an embedded search index. Without a backend configured, the tool stays
+registered but reports `web_search_backend_unconfigured` in live tool-status
+checks and returns no results at runtime. For research-style workflows
+(targeted lookups, multi-site comparisons) this materially affects output
+quality, so standing up a backend is the intended setup.
+
+The runtime expects a SearxNG-style `/search?q=...&format=json` endpoint. A
+local [SearxNG](https://docs.searxng.org/) instance is the typical dev setup;
+any SearxNG-compatible endpoint works.
+
+Minimum config:
+
+```bash
+export SHISAD_WEB_SEARCH_BACKEND_URL="http://127.0.0.1:8888"
+export SHISAD_WEB_ALLOWED_DOMAINS='["127.0.0.1:8888"]'
+```
+
+The backend host must also appear in `SHISAD_WEB_ALLOWED_DOMAINS` alongside
+any other destinations you want reachable for `web.fetch` / `web.search`. See
+`docs/ENV-VARS.md` for the full web-tooling variable reference.
+
+---
+
 ## Host Hardening (Optional)
 
 For production or internet-facing deployments:
