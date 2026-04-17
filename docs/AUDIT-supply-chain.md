@@ -3,7 +3,7 @@
 *Created: 2026-03-31*  
 *Updated: 2026-04-16 (v0.6.5 release-close MCP/A2A dependency-surface parity; v0.6.4 T1 TextGuard dependency-surface parity; v0.6.3 release-close optional `chat` extra and `textual` exposure retained)*
 *Status: In Progress*  
-*Snapshot basis: pre-tag `v0.6.5` release-close candidate at audit time (clean tree)*
+*Snapshot basis: `v0.6.5` shipped release (clean tree)*
 
 ## Scope and Intent
 
