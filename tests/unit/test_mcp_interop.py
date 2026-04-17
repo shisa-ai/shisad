@@ -24,6 +24,7 @@ from shisad.interop.mcp_client import McpClientManager
 from shisad.interop.mcp_tools import McpDiscoveredTool, mcp_tool_to_registry_entry
 from shisad.security.control_plane.schema import ActionKind, ControlDecision, RiskTier
 from shisad.security.firewall import ContentFirewall
+from shisad.security.firewall.output import OutputFirewall
 from tests.helpers.mcp import reserve_local_port, running_http_mcp_server, write_mock_mcp_server
 
 
@@ -33,15 +34,6 @@ class _EventCollector:
 
     async def publish(self, event: object) -> None:
         self.events.append(event)
-
-
-class _ExecutionRecorder:
-    def __init__(self) -> None:
-        self.results: list[bool] = []
-
-    def record_execution(self, *, action: object, success: bool) -> None:
-        _ = action
-        self.results.append(success)
 
 
 class _NoopRateLimiter:
@@ -88,81 +80,23 @@ class _McpManagerStub:
         return None
 
 
-class _McpExecutionHarness:
+class _ControlPlaneStub:
+    """Parameterizable control-plane stub. Subsumes the prior split between
+    the exec-only `_ExecutionRecorder` (sync `record_execution` + `results`
+    list) and the tool-execute `_ControlPlaneStub` (hardcoded
+    `ControlDecision.ALLOW` with no observable execution tracking). MCP-H2
+    requires a denial path; MCP-M8 consolidates the two fake surfaces."""
+
     def __init__(
         self,
         *,
-        payload: dict[str, Any],
-        parameters: list[ToolParameter] | None = None,
+        decision: ControlDecision = ControlDecision.ALLOW,
+        reason_codes: list[str] | None = None,
     ) -> None:
-        self._session_manager = SessionManager()
-        self._session = self._session_manager.create(
-            channel="cli",
-            user_id=UserId("alice"),
-            workspace_id=WorkspaceId("ws-1"),
-            metadata={"trust_level": "trusted"},
-        )
-        self._config = SimpleNamespace(checkpoint_trigger="never")
-        self._rate_limiter = _NoopRateLimiter()
-        self._event_bus = _EventCollector()
-        self._control_plane = _ExecutionRecorder()
-        self._mcp_manager = _McpManagerStub(payload)
-        self._firewall = ContentFirewall()
-        self._output_firewall = SimpleNamespace(
-            inspect=lambda text, context=None: SimpleNamespace(sanitized_text=text)
-        )
-        self._registry = ToolRegistry()
-        self._registry.register(
-            ToolDefinition(
-                name=ToolName("mcp.docs.lookup-doc"),
-                description="Lookup external docs.",
-                parameters=parameters
-                or [
-                    ToolParameter(name="query", type="string", required=True),
-                    ToolParameter(name="limit", type="integer", required=False),
-                ],
-                registration_source="mcp",
-                registration_source_id="docs",
-                upstream_tool_name="lookup-doc",
-            )
-        )
+        self._decision = decision
+        self._reason_codes = list(reason_codes or [])
+        self.results: list[bool] = []
 
-    @property
-    def session_id(self) -> SessionId:
-        return self._session.id
-
-    def _origin_for(
-        self,
-        *,
-        session: Session,
-        actor: str,
-        skill_name: str = "",
-        task_id: str = "",
-    ) -> Any:
-        from shisad.security.control_plane.schema import Origin
-
-        return Origin(
-            session_id=str(session.id),
-            user_id=str(session.user_id),
-            workspace_id=str(session.workspace_id),
-            actor=actor,
-            channel=str(session.channel),
-            trust_level=str(session.metadata.get("trust_level", "untrusted")),
-            skill_name=skill_name,
-            task_id=task_id,
-        )
-
-    def _sanitize_tool_output_text(self, raw: str) -> str:
-        return HandlerImplementation._sanitize_tool_output_text(self, raw)  # type: ignore[arg-type]
-
-    def _sanitize_untrusted_tool_output_text(self, raw: str) -> str:
-        return HandlerImplementation._sanitize_untrusted_tool_output_text(  # type: ignore[arg-type]
-            self,
-            raw,
-        )
-
-
-class _ControlPlaneStub:
     async def active_plan_hash(self, _sid: str) -> str:
         return ""
 
@@ -175,12 +109,14 @@ class _ControlPlaneStub:
         # (`mcp.docs.lookup-doc` is not in `_TOOL_KIND_MAP` and has no
         # file/net/env arguments, so it falls through to UNKNOWN). Prior
         # SHELL_EXEC was a latent risk if downstream code branched on kind.
+        allowed = self._decision != ControlDecision.BLOCK
+        primary_reason = self._reason_codes[0] if self._reason_codes else ""
         return SimpleNamespace(
-            decision=ControlDecision.ALLOW,
-            reason_codes=[],
+            decision=self._decision,
+            reason_codes=list(self._reason_codes),
             trace_result=SimpleNamespace(
-                allowed=True,
-                reason_code="",
+                allowed=allowed,
+                reason_code=primary_reason,
                 risk_tier=RiskTier.LOW,
             ),
             consensus=SimpleNamespace(votes=[]),
@@ -192,11 +128,27 @@ class _ControlPlaneStub:
             ),
         )
 
-    async def record_execution(self, *, action: object, success: bool) -> None:
-        _ = (action, success)
+    def record_execution(self, *, action: object, success: bool) -> None:
+        # `_call_control_plane` (src/shisad/daemon/handlers/_mixin_typing.py)
+        # awaits the return value only when it is awaitable, so keeping this
+        # sync is safe and lets `results` be inspected synchronously by
+        # direct `_execute_approved_action` tests.
+        _ = action
+        self.results.append(success)
 
 
-class _McpToolExecuteHarness:
+class _McpHarness:
+    """Unified MCP test harness. Drives both direct
+    `HandlerImplementation._execute_approved_action` calls and the full
+    `do_tool_execute` handler surface with the same set of fakes.
+
+    Replaces the prior split between `_McpExecutionHarness` (minimal, exec
+    path only) and `_McpToolExecuteHarness` (full policy/confirmation
+    infrastructure). Closes MCP-M8 (harness duplication), and opens MCP-H2
+    (parameterizable `control_decision`) and MCP-M1 (real `OutputFirewall`)
+    for targeted coverage.
+    """
+
     def __init__(
         self,
         *,
@@ -206,6 +158,9 @@ class _McpToolExecuteHarness:
         register_tool: bool = True,
         startup_errors: dict[str, str] | None = None,
         trusted_servers: list[str] | None = None,
+        control_decision: ControlDecision = ControlDecision.ALLOW,
+        control_reason_codes: list[str] | None = None,
+        output_firewall_safe_domains: list[str] | None = None,
     ) -> None:
         self._session_manager = SessionManager()
         self._session = self._session_manager.create(
@@ -240,8 +195,12 @@ class _McpToolExecuteHarness:
         self._rate_limiter = _NoopRateLimiter()
         self._mcp_manager = _McpManagerStub(payload, startup_errors=startup_errors)
         self._firewall = ContentFirewall()
-        self._output_firewall = SimpleNamespace(
-            inspect=lambda text, context=None: SimpleNamespace(sanitized_text=text)
+        # MCP-M1: use the real OutputFirewall so tests can observe the
+        # production sanitization/redaction logic on the MCP output path.
+        # Previously a passthrough `SimpleNamespace(inspect=lambda ...)` made
+        # the sanitizer invisible.
+        self._output_firewall = OutputFirewall(
+            safe_domains=list(output_firewall_safe_domains or []),
         )
         self.queued_pending_actions: list[dict[str, Any]] = []
         self._skill_manager = SimpleNamespace(
@@ -265,7 +224,10 @@ class _McpToolExecuteHarness:
         self._lockdown_manager = SimpleNamespace(
             apply_capability_restrictions=lambda _sid, capabilities: capabilities
         )
-        self._control_plane = _ControlPlaneStub()
+        self._control_plane = _ControlPlaneStub(
+            decision=control_decision,
+            reason_codes=control_reason_codes,
+        )
 
     @property
     def session_id(self) -> SessionId:
@@ -319,6 +281,13 @@ class _McpToolExecuteHarness:
         )
 
     async def _publish_control_plane_evaluation(self, **_kwargs: object) -> None:
+        return None
+
+    async def _record_plan_violation(self, **_kwargs: object) -> None:
+        # MCP-H2: BLOCK path in `do_tool_execute` calls this when
+        # `cp_eval.trace_result.allowed` is False; keep it a no-op so
+        # tests can focus on the ToolRejected event and upstream-call
+        # suppression without requiring a PlanViolationDetected fake.
         return None
 
     @staticmethod
@@ -1251,7 +1220,7 @@ async def test_i1_mcp_stdio_manager_does_not_inherit_secret_env(
 
 @pytest.mark.asyncio
 async def test_i1_execute_approved_action_uses_upstream_mcp_tool_name() -> None:
-    harness = _McpExecutionHarness(
+    harness = _McpHarness(
         payload={
             "ok": True,
             "structured_content": {"answer": "echo:roadmap"},
@@ -1285,7 +1254,7 @@ async def test_i1_execute_approved_action_uses_upstream_mcp_tool_name() -> None:
 async def test_i2_execute_approved_action_sanitizes_mcp_prompt_injection_and_preserves_taint() -> (
     None
 ):
-    harness = _McpExecutionHarness(
+    harness = _McpHarness(
         payload={
             "ok": True,
             "structured_content": {
@@ -1320,7 +1289,7 @@ async def test_i2_execute_approved_action_sanitizes_mcp_prompt_injection_and_pre
 
 @pytest.mark.asyncio
 async def test_i1_shared_execution_path_preserves_reserved_named_mcp_params() -> None:
-    harness = _McpExecutionHarness(
+    harness = _McpHarness(
         payload={
             "ok": True,
             "structured_content": {"answer": "echo:roadmap"},
@@ -1366,7 +1335,7 @@ async def test_i1_shared_execution_path_preserves_reserved_named_mcp_params() ->
 
 @pytest.mark.asyncio
 async def test_i1_execute_approved_action_rejects_invalid_direct_mcp_params() -> None:
-    harness = _McpExecutionHarness(
+    harness = _McpHarness(
         payload={
             "ok": True,
             "structured_content": {"answer": "echo:roadmap"},
@@ -1406,7 +1375,7 @@ async def test_i1_execute_approved_action_rejects_invalid_direct_mcp_params() ->
 
 @pytest.mark.asyncio
 async def test_i1_tool_execute_path_strips_reserved_keys_before_mcp_call() -> None:
-    harness = _McpToolExecuteHarness(
+    harness = _McpHarness(
         payload={
             "ok": True,
             "structured_content": {"answer": "echo:roadmap", "limit": 4, "query": "roadmap"},
@@ -1439,7 +1408,7 @@ async def test_i1_tool_execute_path_strips_reserved_keys_before_mcp_call() -> No
 
 @pytest.mark.asyncio
 async def test_i1_tool_execute_path_excludes_direct_envelope_keys_from_mcp_params() -> None:
-    harness = _McpToolExecuteHarness(
+    harness = _McpHarness(
         payload={
             "ok": True,
             "structured_content": {"query": "roadmap"},
@@ -1493,7 +1462,7 @@ async def test_i1_tool_execute_path_rejects_invalid_mcp_arguments_before_call(
     arguments: dict[str, Any],
     expected_error: str,
 ) -> None:
-    harness = _McpToolExecuteHarness(
+    harness = _McpHarness(
         payload={
             "ok": True,
             "structured_content": {"answer": "echo:roadmap"},
@@ -1525,7 +1494,7 @@ async def test_i1_tool_execute_path_rejects_invalid_mcp_arguments_before_call(
 
 @pytest.mark.asyncio
 async def test_i1_tool_execute_confirmation_queue_preserves_direct_mcp_strip_intent() -> None:
-    harness = _McpToolExecuteHarness(
+    harness = _McpHarness(
         payload={
             "ok": True,
             "structured_content": {"query": "roadmap"},
@@ -1567,7 +1536,7 @@ async def test_i1_tool_execute_confirmation_queue_preserves_direct_mcp_strip_int
 async def test_i1_tool_execute_surfaces_mcp_startup_registration_errors(
     requested_tool_name: str,
 ) -> None:
-    harness = _McpToolExecuteHarness(
+    harness = _McpHarness(
         payload={
             "ok": True,
             "structured_content": {"query": "roadmap"},
@@ -1632,7 +1601,7 @@ async def test_mcp_h3_call_tool_exception_returns_ok_false_payload() -> None:
     of propagating the error.
     """
 
-    harness = _McpExecutionHarness(
+    harness = _McpHarness(
         payload={
             "ok": True,
             "structured_content": {"answer": "echo:roadmap"},
@@ -1665,7 +1634,7 @@ async def test_mcp_h3_call_tool_exception_returns_ok_false_payload() -> None:
 
 @pytest.mark.asyncio
 async def test_mcp_h3_call_tool_empty_error_message_falls_back_to_default() -> None:
-    harness = _McpExecutionHarness(payload={"ok": True, "structured_content": None, "content": []})
+    harness = _McpHarness(payload={"ok": True, "structured_content": None, "content": []})
     harness._mcp_manager = _RaisingMcpManagerStub(RuntimeError(""))  # type: ignore[assignment]
 
     result = await HandlerImplementation._execute_approved_action(
@@ -1691,7 +1660,7 @@ async def test_mcp_h4_untrusted_server_forces_confirmation_even_when_tool_opts_o
     ``mcp_trusted_servers``.
     """
 
-    harness = _McpToolExecuteHarness(
+    harness = _McpHarness(
         payload={
             "ok": True,
             "structured_content": {"answer": "echo:roadmap"},
@@ -1724,7 +1693,7 @@ async def test_mcp_h4_trusted_server_clears_confirmation_when_tool_opts_out() ->
     """Counterpart to the H4 check: adding the server to the trusted list
     lets the opt-out actually take effect."""
 
-    harness = _McpToolExecuteHarness(
+    harness = _McpHarness(
         payload={
             "ok": True,
             "structured_content": {"answer": "echo:roadmap"},
@@ -1759,7 +1728,7 @@ async def test_mcp_h1_execute_approved_action_tool_output_carries_mcp_taint_on_s
     caught outside the prompt-injection sanitization test too.
     """
 
-    harness = _McpExecutionHarness(
+    harness = _McpHarness(
         payload={
             "ok": True,
             "structured_content": {"answer": "echo:roadmap"},
@@ -1780,3 +1749,222 @@ async def test_mcp_h1_execute_approved_action_tool_output_carries_mcp_taint_on_s
     assert result.success is True
     assert result.tool_output is not None
     assert result.tool_output.taint_labels == {TaintLabel.UNTRUSTED, TaintLabel.MCP_EXTERNAL}
+
+
+@pytest.mark.asyncio
+async def test_mcp_h2_control_plane_block_rejects_tool_execute_without_upstream_call() -> None:
+    """MCP-H2: when the control plane returns `ControlDecision.BLOCK`,
+    `do_tool_execute` must publish `ToolRejected` and return
+    `allowed=False` without invoking the upstream MCP tool. The server is
+    allowlisted (so the untrusted-server confirmation branch does not
+    shadow the block), proving the BLOCK path itself is wired up.
+    """
+
+    harness = _McpHarness(
+        payload={
+            "ok": True,
+            "structured_content": {"answer": "echo:roadmap"},
+            "content": [{"type": "text", "text": "echo:roadmap"}],
+        },
+        trusted_servers=["docs"],
+        control_decision=ControlDecision.BLOCK,
+        control_reason_codes=["trace:policy_denied"],
+    )
+
+    result = await HandlerImplementation.do_tool_execute(
+        harness,  # type: ignore[arg-type]
+        {
+            "session_id": str(harness.session_id),
+            "tool_name": "mcp.docs.lookup-doc",
+            "command": ["mcp"],
+            "arguments": {"query": "roadmap"},
+            "security_critical": False,
+            "degraded_mode": "fail_open",
+        },
+    )
+
+    assert result["allowed"] is False
+    assert result.get("confirmation_required") is not True
+    # Upstream must not be invoked when the control plane blocks.
+    assert harness._mcp_manager.calls == []
+    # Block path emits ToolRejected with the control-plane reason code(s).
+    assert any(
+        isinstance(event, ToolRejected) and event.reason == "trace:policy_denied"
+        for event in harness._event_bus.events
+    )
+
+
+@pytest.mark.asyncio
+async def test_mcp_h2_control_plane_require_confirmation_queues_tool_execute() -> None:
+    """MCP-H2 (companion): when the control plane returns
+    `ControlDecision.REQUIRE_CONFIRMATION`, `do_tool_execute` must queue a
+    pending action and return `confirmation_required=True` without
+    invoking the upstream MCP tool. Server is allowlisted so this is not
+    shadowed by the untrusted-server confirmation branch.
+    """
+
+    harness = _McpHarness(
+        payload={
+            "ok": True,
+            "structured_content": {"answer": "echo:roadmap"},
+            "content": [{"type": "text", "text": "echo:roadmap"}],
+        },
+        trusted_servers=["docs"],
+        control_decision=ControlDecision.REQUIRE_CONFIRMATION,
+        control_reason_codes=["trace:operator_gate"],
+    )
+
+    result = await HandlerImplementation.do_tool_execute(
+        harness,  # type: ignore[arg-type]
+        {
+            "session_id": str(harness.session_id),
+            "tool_name": "mcp.docs.lookup-doc",
+            "command": ["mcp"],
+            "arguments": {"query": "roadmap"},
+            "security_critical": False,
+            "degraded_mode": "fail_open",
+        },
+    )
+
+    assert result["allowed"] is False
+    assert result["confirmation_required"] is True
+    assert harness._mcp_manager.calls == []
+    assert len(harness.queued_pending_actions) == 1
+    # The queued pending action carries the control-plane reason code.
+    queued_reason = harness.queued_pending_actions[0].get("reason", "")
+    assert "trace:operator_gate" in queued_reason
+
+
+@pytest.mark.asyncio
+async def test_mcp_m1_output_firewall_redacts_aws_secret_in_mcp_payload() -> None:
+    """MCP-M1: the real `OutputFirewall` must actually run on the MCP
+    output-sanitization path. An AWS access-key embedded in the MCP
+    response content must be redacted by the time it reaches
+    `result.tool_output.content`. Previously the stub was a passthrough
+    lambda, so this sanitization was invisible to the harness.
+    """
+
+    aws_key = "AKIAIOSFODNN7EXAMPLE"
+    harness = _McpHarness(
+        payload={
+            "ok": True,
+            "structured_content": {"answer": f"secret leak: {aws_key}"},
+            "content": [{"type": "text", "text": f"secret leak: {aws_key}"}],
+        },
+    )
+
+    result = await HandlerImplementation._execute_approved_action(
+        harness,  # type: ignore[arg-type]
+        sid=harness.session_id,
+        user_id=UserId("alice"),
+        tool_name=ToolName("mcp.docs.lookup-doc"),
+        arguments={"query": "roadmap"},
+        capabilities=set(),
+        approval_actor="control_api",
+    )
+
+    assert result.success is True
+    assert result.tool_output is not None
+    # Real OutputFirewall._SECRET_PATTERNS replaces AKIA-prefixed tokens
+    # with a `[REDACTED:aws_access_key]` marker; the raw key must not
+    # appear anywhere in the outbound tool_output content.
+    assert aws_key not in result.tool_output.content
+    assert "[REDACTED:aws_access_key]" in result.tool_output.content
+
+
+@pytest.mark.asyncio
+async def test_mcp_m4_stdio_discovery_populates_shared_registry_with_full_manifest(
+    tmp_path: Path,
+) -> None:
+    """MCP-M4: the discovery→registry pipeline must expose every upstream
+    tool declared by the MCP server (not just one canonical entry), with
+    correct namespacing and registration metadata. The existing stdio
+    discovery test only asserts on `lookup-doc`; this test pins the full
+    manifest (`lookup-doc`, `sleepy`, `env-snapshot`) at the registry
+    level, which is what downstream planner/handler code actually sees.
+    """
+
+    server_script = write_mock_mcp_server(tmp_path / "mock_mcp_server.py")
+    registry = ToolRegistry()
+    manager = McpClientManager(
+        server_configs=[
+            McpStdioServerConfig(
+                name="docs",
+                command=[sys.executable, str(server_script)],
+                timeout_seconds=10.0,
+            )
+        ],
+        tool_registry=registry,
+    )
+
+    await manager.connect_all()
+    try:
+        expected_upstream_names = ["lookup-doc", "sleepy", "env-snapshot"]
+        for upstream in expected_upstream_names:
+            namespaced = ToolName(f"mcp.docs.{upstream}")
+            entry = registry.get_tool(namespaced)
+            assert entry is not None, f"{namespaced} missing from registry"
+            assert entry.registration_source == "mcp"
+            assert entry.registration_source_id == "docs"
+            assert entry.upstream_tool_name == upstream
+            assert entry.require_confirmation is False
+
+        # No phantom entries: the registry set for this server equals the
+        # discovered upstream set, nothing more.
+        docs_tools = {
+            tool.name for tool in registry.list_tools() if str(tool.name).startswith("mcp.docs.")
+        }
+        assert docs_tools == {
+            ToolName(f"mcp.docs.{upstream}") for upstream in expected_upstream_names
+        }
+    finally:
+        await manager.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_mcp_m9_http_manager_call_tool_returns_upstream_payload(tmp_path: Path) -> None:
+    """MCP-M9: HTTP-transport `call_tool` must round-trip a real invocation
+    end-to-end. Prior coverage exercised HTTP discovery only; the call
+    path over streamable-HTTP was untested. Uses the same mock MCP
+    server + `running_http_mcp_server` fixture as the discovery test.
+    """
+
+    server_script = write_mock_mcp_server(tmp_path / "mock_mcp_server.py")
+    port = reserve_local_port()
+    registry = ToolRegistry()
+
+    with running_http_mcp_server(server_script, port=port):
+        manager = McpClientManager(
+            server_configs=[
+                McpHttpServerConfig(
+                    name="docs-http",
+                    url=f"http://127.0.0.1:{port}/mcp",
+                    timeout_seconds=10.0,
+                )
+            ],
+            tool_registry=registry,
+        )
+        await manager.connect_all()
+        try:
+            result = await manager.call_tool(
+                "docs-http",
+                "lookup-doc",
+                {"query": "roadmap", "limit": 2},
+            )
+            assert result["ok"] is True
+            assert result["structured_content"] == {
+                "answer": "echo:roadmap",
+                "limit": 2,
+                "query": "roadmap",
+            }
+            # Taint labels applied on MCP call_tool output must match the
+            # stdio counterpart — transport differences must not weaken the
+            # default MCP_EXTERNAL/UNTRUSTED posture.
+            assert result["taint_labels"] == [
+                TaintLabel.MCP_EXTERNAL.value,
+                TaintLabel.UNTRUSTED.value,
+            ]
+            assert result["content"][0]["type"] == "text"
+            assert "roadmap" in result["content"][0]["text"]
+        finally:
+            await manager.shutdown()

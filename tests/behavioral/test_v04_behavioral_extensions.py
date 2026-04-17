@@ -644,12 +644,25 @@ async def test_behavioral_mcp_stdio_tool_execute_requires_confirmation_then_exec
         actions = list(pending.get("actions", []))
         assert len(actions) == 1
         action = actions[0]
+        # MCP-H5: verify the queued pending action preserves the caller's
+        # tool_name + MCP arguments content through the confirmation
+        # round-trip. A regression here (e.g. serialization that drops
+        # `limit` or normalizes `mcp.docs.lookup-doc` to a different name)
+        # would be silently caught only by event-metadata checks otherwise.
+        # The pending payload also carries transport envelope keys
+        # (`command`, `security_critical`, etc.) and the daemon-side
+        # `_rpc_peer`; only the MCP-visible arg subset is asserted here.
+        assert str(action.get("tool_name", "")) == "mcp.docs.lookup-doc"
+        pending_arguments = dict(action.get("arguments", {}))
+        assert pending_arguments.get("query") == "roadmap"
+        assert pending_arguments.get("limit") == 4
+        decision_nonce = str(action["decision_nonce"])
 
         confirmed = await client.call(
             "action.confirm",
             {
                 "confirmation_id": confirmation_id,
-                "decision_nonce": str(action["decision_nonce"]),
+                "decision_nonce": decision_nonce,
                 "reason": "behavioral_mcp_i1",
             },
         )
@@ -680,6 +693,26 @@ async def test_behavioral_mcp_stdio_tool_execute_requires_confirmation_then_exec
         )
         assert approved["event_type"] == "ToolApproved"
         assert str(executed.get("data", {}).get("actor", "")) == "tool_runtime"
+
+        # MCP-H5: pin the confirmation-chain integrity. The ToolApproved and
+        # ToolExecuted events must both reference the same confirmation_id
+        # and decision_nonce that the client confirmed with, and both must
+        # carry a non-empty approval_timestamp. This catches regressions
+        # where a tool runs successfully but the approval provenance has
+        # been dropped or stitched to a different approval record.
+        approved_data = dict(approved.get("data", {}))
+        executed_data = dict(executed.get("data", {}))
+        assert str(approved_data.get("approval_confirmation_id", "")) == confirmation_id
+        assert str(executed_data.get("approval_confirmation_id", "")) == confirmation_id
+        assert str(approved_data.get("approval_decision_nonce", "")) == decision_nonce
+        assert str(executed_data.get("approval_decision_nonce", "")) == decision_nonce
+        assert str(approved_data.get("approval_timestamp", "")).strip() != ""
+        assert str(executed_data.get("approval_timestamp", "")).strip() != ""
+        # Error field must be empty on the executed side (success=True was
+        # asserted above, but the empty-error invariant catches a separate
+        # regression shape where success is set but error metadata bleeds
+        # through).
+        assert str(executed_data.get("error", "")) == ""
     finally:
         await _shutdown_daemon(daemon_task, client)
 
