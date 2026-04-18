@@ -653,6 +653,7 @@ class _FinalizeEvidenceHarness(SessionImplMixin):
     def __init__(self) -> None:
         self._evidence_store = object()
         self._firewall = object()
+        self._planner: Any = None
         self._pending_actions: dict[str, Any] = {}
         self._event_bus = SimpleNamespace(publish=self._noop_publish)
         self._output_firewall = SimpleNamespace(
@@ -684,6 +685,41 @@ class _FinalizeEvidenceHarness(SessionImplMixin):
 
     async def _maybe_run_conversation_summarizer(self, **kwargs) -> None:
         _ = kwargs
+
+
+class _PostToolSynthesisPlanner:
+    def __init__(self, response_text: str) -> None:
+        self.response_text = response_text
+        self.calls: list[dict[str, Any]] = []
+
+    async def propose(
+        self,
+        user_content: str,
+        context: PolicyContext,
+        *,
+        tools: list[dict[str, Any]] | None = None,
+        persona_tone_override: str | None = None,
+    ) -> PlannerResult:
+        self.calls.append(
+            {
+                "user_content": user_content,
+                "context": context,
+                "tools": tools,
+                "persona_tone_override": persona_tone_override,
+            }
+        )
+        return PlannerResult(
+            output=PlannerOutput(actions=[], assistant_response=self.response_text),
+            evaluated=[],
+            attempts=1,
+            provider_response=ProviderResponse(
+                message=Message(role="assistant", content=self.response_text),
+                model="test-synthesis",
+                finish_reason="stop",
+                usage={},
+            ),
+            messages_sent=(Message(role="user", content=user_content),),
+        )
 
 
 @pytest.mark.asyncio
@@ -731,6 +767,82 @@ async def test_finalize_response_offloads_evidence_wrapping_from_event_loop(
 
     response = await finalize_task
     assert response["session_id"] == "sess-g1"
+
+
+@pytest.mark.asyncio
+async def test_finalize_response_synthesizes_after_tool_only_turn() -> None:
+    harness = _FinalizeEvidenceHarness()
+    synthesis = _PostToolSynthesisPlanner(
+        "I found two Hokkaido venues and drafted an itinerary from the search results."
+    )
+    harness._planner = synthesis
+    harness._evidence_store = None
+    execution = _finalize_execution_result(
+        tool_outputs=[
+            SimpleNamespace(
+                tool_name="web.search",
+                success=True,
+                content=json.dumps(
+                    {
+                        "ok": True,
+                        "results": [
+                            {
+                                "title": "Museum hours",
+                                "url": "https://example.test/museum",
+                                "content": "Museum is open 10:00-17:00.",
+                            },
+                            {
+                                "title": "Garden access",
+                                "url": "https://example.test/garden",
+                                "content": "Garden is near the station.",
+                            },
+                        ],
+                    }
+                ),
+                taint_labels={TaintLabel.UNTRUSTED},
+            )
+        ],
+        assistant_response="  ",
+    )
+
+    response = await SessionImplMixin._finalize_response(harness, execution)
+
+    text = str(response["response"])
+    assert text.startswith("I found two Hokkaido venues")
+    assert not text.startswith("Tool results summary:")
+    assert len(synthesis.calls) == 1
+    call = synthesis.calls[0]
+    assert call["tools"] == []
+    assert "same turn's tool outputs" in call["user_content"]
+    assert "tool_output_count=1" in call["user_content"]
+    assert "EVIDENCE_START" in call["user_content"]
+    assert call["context"].taint_labels == {TaintLabel.UNTRUSTED}
+
+
+@pytest.mark.asyncio
+async def test_finalize_response_marks_unsynthesized_tool_summary_as_intermediate() -> None:
+    harness = _FinalizeEvidenceHarness()
+    synthesis = _PostToolSynthesisPlanner("")
+    harness._planner = synthesis
+    harness._evidence_store = None
+    execution = _finalize_execution_result(
+        tool_outputs=[
+            SimpleNamespace(
+                tool_name="web.search",
+                success=True,
+                content=json.dumps({"ok": True, "results": [{"title": "Venue"}]}),
+                taint_labels={TaintLabel.UNTRUSTED},
+            )
+        ],
+        assistant_response="",
+    )
+
+    response = await SessionImplMixin._finalize_response(harness, execution)
+
+    text = str(response["response"])
+    assert text.startswith("I completed the tool step")
+    assert not text.startswith("Tool results summary:")
+    assert "Tool results summary:" in text
 
 
 @pytest.mark.asyncio
