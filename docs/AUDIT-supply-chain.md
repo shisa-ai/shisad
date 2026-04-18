@@ -224,6 +224,53 @@ The following low-friction controls were implemented immediately:
 
 These changes improve lock determinism and reduce same-day package ingestion risk without changing user-facing runtime capabilities.
 
+## Immediate Hardening Applied (2026-04-18)
+
+The coding-agent ACP registry was refreshed after upstream package metadata
+showed that the Claude adapter namespace moved:
+
+1. Replaced deprecated Claude ACP adapter:
+   - from `@zed-industries/claude-agent-acp@0.21.0`
+   - to `@agentclientprotocol/claude-agent-acp@0.29.2`
+   - npm `dist.shasum`: `a908d963ab3863fc83aa9b2ee27d77324149bed8`
+   - npm `dist.integrity`:
+     `sha512-Pg5sh8mxBsAmmKImlzgPYXGc+BW7xxXEC5/WWE+fQSPInj8ueRHinNxJxgIwRDwitlMs+NlMoVAGGgGMar92Bg==`
+   - published: `2026-04-17T15:55:51.170Z`
+   - rationale: the old `@zed-industries/claude-agent-acp` package is marked
+     deprecated and no longer picks up Opus 4.7 fixes.
+2. Refreshed Codex ACP adapter within its active namespace:
+   - from `@zed-industries/codex-acp@0.9.5`
+   - to `@zed-industries/codex-acp@0.11.1`
+   - npm `dist.shasum`: `8a7d3a8995fa5dbcee96486e11b99702e7b30356`
+   - npm `dist.integrity`:
+     `sha512-My2VSlBtvJipJhImHjFDej2ut/p00QqOISRnZgLgLrSIzjgvdcQvAhaZviWj7XPhk4UIdIb0OoA+Lrls824uiQ==`
+   - published: `2026-03-31T22:08:48.610Z`
+   - rationale: `@agentclientprotocol/codex-acp` does not exist on npm and
+     `@zed-industries/codex-acp` is not marked deprecated.
+3. Left OpenCode unchanged at `opencode-ai@1.3.10`:
+   - npm `dist.shasum`: `41a32d958fc2dbc8fce0fc6f42b50ed942bf8c90`
+   - npm `dist.integrity`:
+     `sha512-I0WgF6vrPIDK1XYknhNqbg5TsZwSEFX9l3T0SJkPuhUqhw1M5WsVM9Xb586KgOnJU8jJnjgZ8k+HP0p0PvaYSQ==`
+   - published: `2026-03-31T13:32:31.472Z`
+   - rationale: the newest `opencode-ai` package was modified on
+     `2026-04-18`, is outside the Zed namespace migration, and was not needed
+     for the Opus 4.7 fix.
+
+Security checks recorded for the proposed adapter set:
+
+- `npm audit --omit=dev --json` in a temporary npm project containing
+  `@agentclientprotocol/claude-agent-acp@0.29.2`,
+  `@zed-industries/codex-acp@0.11.1`, and `opencode-ai@1.3.10` reported
+  `0` vulnerabilities.
+- `npm audit signatures --json` for the installed temporary project reported
+  no invalid or missing signatures.
+- GitHub security-advisory queries for
+  `agentclientprotocol/claude-agent-acp` and `zed-industries/codex-acp`
+  returned no published advisories.
+- GitHub Dependabot and code-scanning alert queries for `shisa-ai/shisad`
+  returned no open alerts. Secret scanning is disabled on the repository, so no
+  secret-scanning alert query was available.
+
 ## Evidence and Commands (Snapshot Reproducibility)
 
 The audit findings below are based on these commands run against the working tree:
@@ -244,7 +291,7 @@ rg -o "source = \\{[^\\}]+\\}" uv.lock | sort | uniq -c
 rg -c "^\\[\\[package\\]\\]" uv.lock
 rg -n "hatchling|build-system" pyproject.toml uv.lock
 rg -n "actions/checkout|setup-uv|upload-artifact|@v[0-9]+|uv sync" .github/workflows/ci.yml
-rg -n "npx|@zed-industries|opencode-ai" src/shisad/coding/registry.py
+rg -n "npx|@agentclientprotocol|@zed-industries|opencode-ai" src/shisad/coding/registry.py
 sed -n '1,140p' docs/DEPLOY.md
 ```
 

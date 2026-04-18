@@ -93,11 +93,11 @@ def build_default_agent_registry(
         registry = {
             "claude": AgentCommandSpec(
                 name="claude",
-                command=("npx", "-y", "@zed-industries/claude-agent-acp@0.21.0"),
+                command=("npx", "-y", "@agentclientprotocol/claude-agent-acp@0.29.2"),
             ),
             "codex": AgentCommandSpec(
                 name="codex",
-                command=("npx", "@zed-industries/codex-acp@0.9.5"),
+                command=("npx", "@zed-industries/codex-acp@0.11.1"),
             ),
             "opencode": AgentCommandSpec(
                 name="opencode",

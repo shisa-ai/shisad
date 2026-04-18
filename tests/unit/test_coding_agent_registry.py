@@ -19,11 +19,11 @@ def test_m3_default_agent_registry_contains_pinned_acp_commands() -> None:
     assert registry["claude"].command == (
         "npx",
         "-y",
-        "@zed-industries/claude-agent-acp@0.21.0",
+        "@agentclientprotocol/claude-agent-acp@0.29.2",
     )
     assert registry["codex"].command == (
         "npx",
-        "@zed-industries/codex-acp@0.9.5",
+        "@zed-industries/codex-acp@0.11.1",
     )
     assert registry["opencode"].command == (
         "npx",
