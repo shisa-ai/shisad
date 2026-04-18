@@ -55,6 +55,7 @@ def _validation_result(
     *,
     params: Mapping[str, Any],
     early_response: dict[str, Any] | None = None,
+    sanitized_text: str | None = None,
 ) -> SessionMessageValidationResult:
     session = Session(
         id=SessionId("sess-g1"),
@@ -76,7 +77,9 @@ def _validation_result(
         trust_level="trusted",
         trusted_input=True,
         firewall_result=FirewallResult(
-            sanitized_text=str(params.get("content", "")),
+            sanitized_text=sanitized_text
+            if sanitized_text is not None
+            else str(params.get("content", "")),
             original_hash="0" * 64,
         ),
         incoming_taint_labels=set(),
@@ -578,12 +581,17 @@ def _finalize_execution_result(
     *,
     tool_outputs: list[Any],
     assistant_response: str = "planner response",
+    content: str = "hello",
+    sanitized_text: str | None = None,
     pending_confirmation: int = 0,
     pending_confirmation_ids: list[str] | None = None,
     provider_response_model: str | None = None,
     provider_response_trusted_origin: str = "",
 ) -> SessionMessageExecutionResult:
-    validated = _validation_result(params={"session_id": "sess-g1", "content": "hello"})
+    validated = _validation_result(
+        params={"session_id": "sess-g1", "content": content},
+        sanitized_text=sanitized_text,
+    )
     planner_context = SessionMessagePlannerContextResult(
         validated=validated,
         conversation_context="",
@@ -722,6 +730,14 @@ class _PostToolSynthesisPlanner:
         )
 
 
+class _RecordingTraceRecorder:
+    def __init__(self) -> None:
+        self.turns: list[Any] = []
+
+    def record(self, turn: Any) -> None:
+        self.turns.append(turn)
+
+
 @pytest.mark.asyncio
 async def test_finalize_response_offloads_evidence_wrapping_from_event_loop(
     monkeypatch: pytest.MonkeyPatch,
@@ -776,6 +792,8 @@ async def test_finalize_response_synthesizes_after_tool_only_turn() -> None:
         "I found two Hokkaido venues and drafted an itinerary from the search results."
     )
     harness._planner = synthesis
+    recorder = _RecordingTraceRecorder()
+    harness._trace_recorder = recorder
     harness._evidence_store = None
     execution = _finalize_execution_result(
         tool_outputs=[
@@ -803,6 +821,8 @@ async def test_finalize_response_synthesizes_after_tool_only_turn() -> None:
             )
         ],
         assistant_response="  ",
+        content="raw prompt with removed injection",
+        sanitized_text="look up Hokkaido venue hours",
     )
 
     response = await SessionImplMixin._finalize_response(harness, execution)
@@ -816,7 +836,19 @@ async def test_finalize_response_synthesizes_after_tool_only_turn() -> None:
     assert "same turn's tool outputs" in call["user_content"]
     assert "tool_output_count=1" in call["user_content"]
     assert "EVIDENCE_START" in call["user_content"]
+    assert "look up Hokkaido venue hours" in call["user_content"]
+    assert "raw prompt with removed injection" not in call["user_content"]
     assert call["context"].taint_labels == {TaintLabel.UNTRUSTED}
+    assert len(recorder.turns) == 1
+    trace_turn = recorder.turns[0]
+    assert trace_turn.llm_response == synthesis.response_text
+    assert any(
+        message.content == "POST-TOOL SYNTHESIS TRACE PHASE"
+        for message in trace_turn.messages_sent
+    )
+    assert any(
+        "same turn's tool outputs" in message.content for message in trace_turn.messages_sent
+    )
 
 
 @pytest.mark.asyncio
