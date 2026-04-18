@@ -1831,7 +1831,7 @@ async def test_behavioral_normal_admin_chat_does_not_false_trigger_cleanroom(
 
         reply = await client.call(
             "session.message",
-            {"session_id": sid, "content": "hello there"},
+            {"session_id": sid, "content": "show me soul music recommendations"},
         )
 
         assert reply["session_id"] == sid

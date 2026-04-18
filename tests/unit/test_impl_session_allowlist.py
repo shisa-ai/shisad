@@ -131,7 +131,14 @@ def test_m1_clean_orchestrator_manifest_omits_report_anomaly() -> None:
 
 def test_s9_soul_update_intent_triggers_admin_cleanroom_reroute() -> None:
     assert _looks_like_admin_cleanroom_request("update my SOUL.md to prefer shorter replies")
+    assert _looks_like_admin_cleanroom_request("edit my soul file")
     assert _looks_like_admin_cleanroom_request("please change assistant persona")
+
+
+def test_s9_unrelated_soul_language_does_not_trigger_admin_cleanroom() -> None:
+    assert not _looks_like_admin_cleanroom_request("show me soul music recommendations")
+    assert not _looks_like_admin_cleanroom_request("list soul albums from the 1970s")
+    assert not _looks_like_admin_cleanroom_request("review this persona poem")
 
 
 @pytest.mark.parametrize(

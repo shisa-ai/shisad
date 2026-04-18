@@ -476,7 +476,8 @@ _AUTO_CLEANROOM_ADMIN_SUBJECT_RE = re.compile(
     r"(?i)\b("
     r"selfmod|behavior\s+pack|skill\s+bundle|signed\s+behavior(?:\s+pack)?|"
     r"signed\s+skill(?:\s+bundle)?|assistant\s+behavior|assistant\s+persona|"
-    r"persona|SOUL\.md|soul"
+    r"persona\s+(?:config(?:uration)?|settings?|preferences?)|"
+    r"SOUL\.md|soul\s+(?:file|config(?:uration)?|preferences?)"
     r")\b"
 )
 _AUTO_CLEANROOM_ADMIN_COMMAND_RE = re.compile(
