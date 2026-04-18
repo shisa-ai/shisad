@@ -276,7 +276,10 @@ async def test_behavioral_soul_config_path_loads_and_admin_update_refreshes_plan
     soul_path.write_text("Prefer concise answers.", encoding="utf-8")
     daemon_task, client, _config = await _start_daemon(
         tmp_path,
-        config_overrides={"assistant_persona_soul_path": soul_path},
+        config_overrides={
+            "assistant_fs_roots": [tmp_path],
+            "assistant_persona_soul_path": soul_path,
+        },
     )
     try:
         created = await client.call(
@@ -294,10 +297,16 @@ async def test_behavioral_soul_config_path_loads_and_admin_update_refreshes_plan
             "admin.soul.update",
             {"content": "For the shisad repo, prefer calm release-note wording."},
         )
+        blocked_write = await client.call(
+            "fs.write",
+            {"path": str(soul_path), "content": "attacker persona", "confirm": True},
+        )
         await client.call("session.message", {"session_id": sid, "content": "hello again"})
 
         assert updated["updated"] is True
         assert "project_specific_memory_route_recommended" in updated["warnings"]
+        assert blocked_write["ok"] is False
+        assert blocked_write["error"] == "protected_control_plane_path"
         assert "Prefer concise answers." not in captured_persona_text[-1]
         assert "prefer calm release-note wording" in captured_persona_text[-1]
     finally:

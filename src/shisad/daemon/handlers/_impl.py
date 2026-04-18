@@ -541,6 +541,7 @@ def _fs_git_toolkit_for_context(
         roots=scoped_roots,
         max_read_bytes=handler._config.assistant_max_read_bytes,
         git_timeout_seconds=handler._config.assistant_git_timeout_seconds,
+        protected_write_paths=tuple(getattr(toolkit, "protected_write_paths", ())),
     )
 
 
@@ -1095,6 +1096,11 @@ class HandlerImplementation(
             roots=list(self._config.assistant_fs_roots),
             max_read_bytes=self._config.assistant_max_read_bytes,
             git_timeout_seconds=self._config.assistant_git_timeout_seconds,
+            protected_write_paths=(
+                (self._config.assistant_persona_soul_path,)
+                if self._config.assistant_persona_soul_path is not None
+                else ()
+            ),
         )
         self._load_pending_actions()
         self._approval_web.bind_callbacks(

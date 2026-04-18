@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from typing import Any
 
 import pytest
@@ -147,6 +148,32 @@ def test_s9_soul_path_rejects_symlink_escape(tmp_path) -> None:  # type: ignore[
 
     with pytest.raises(SoulFileError, match="symlink"):
         load_soul_text(soul_path, max_bytes=4096)
+
+
+def test_s9_soul_load_uses_no_follow_open(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:  # type: ignore[no-untyped-def]
+    soul_path = tmp_path / "SOUL.md"
+    soul_path.write_text("Prefer concise answers.", encoding="utf-8")
+    seen_flags: list[int] = []
+    real_open = os.open
+
+    def _recording_open(
+        path: str | bytes | os.PathLike[str] | os.PathLike[bytes],
+        flags: int,
+        mode: int = 0o777,
+        *,
+        dir_fd: int | None = None,
+    ) -> int:
+        seen_flags.append(flags)
+        if dir_fd is None:
+            return real_open(path, flags, mode)
+        return real_open(path, flags, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(os, "open", _recording_open)
+
+    assert load_soul_text(soul_path, max_bytes=4096) == "Prefer concise answers."
+    assert seen_flags
+    if hasattr(os, "O_NOFOLLOW"):
+        assert seen_flags[-1] & os.O_NOFOLLOW
 
 
 def test_s9_effective_persona_text_combines_inline_config_and_soul_file(tmp_path) -> None:  # type: ignore[no-untyped-def]

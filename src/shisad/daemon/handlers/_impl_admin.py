@@ -304,7 +304,7 @@ class AdminImplMixin(HandlerMixinBase):
         internal_marker = getattr(self, "_internal_ingress_marker", None)
         internal_ingress = params.get("_internal_ingress_marker")
         if internal_marker is not None and internal_ingress is internal_marker:
-            raise ValueError("SOUL.md update requires trusted admin command ingress")
+            raise ValueError("SOUL.md access requires trusted admin command ingress")
         checker = getattr(self, "_is_admin_rpc_peer", None)
         if callable(checker) and bool(checker(params)):
             return
@@ -313,19 +313,26 @@ class AdminImplMixin(HandlerMixinBase):
             uid = peer.get("uid")
             if isinstance(uid, int) and uid in {0, os.getuid()}:
                 return
-        raise ValueError("SOUL.md update requires trusted admin command ingress")
+        raise ValueError("SOUL.md access requires trusted admin command ingress")
 
     def _refresh_soul_persona_defaults(self) -> str:
         effective_text = load_effective_persona_text(self._config)
-        setter = getattr(self._planner, "set_persona_defaults", None)
-        if callable(setter):
-            setter(
-                tone=str(getattr(self._config, "assistant_persona_tone", "neutral")),
-                custom_text=effective_text,
-            )
+        tone = str(getattr(self._config, "assistant_persona_tone", "neutral"))
         selfmod_manager = getattr(self, "_selfmod_manager", None)
-        if selfmod_manager is not None and hasattr(selfmod_manager, "_default_persona_text"):
-            selfmod_manager._default_persona_text = effective_text
+        overlay_refreshed = False
+        if selfmod_manager is not None:
+            if hasattr(selfmod_manager, "_default_persona_tone"):
+                selfmod_manager._default_persona_tone = tone
+            if hasattr(selfmod_manager, "_default_persona_text"):
+                selfmod_manager._default_persona_text = effective_text
+            apply_overlay = getattr(selfmod_manager, "_apply_behavior_overlay", None)
+            if callable(apply_overlay):
+                apply_overlay()
+                overlay_refreshed = True
+        if not overlay_refreshed:
+            setter = getattr(self._planner, "set_persona_defaults", None)
+            if callable(setter):
+                setter(tone=tone, custom_text=effective_text)
         return effective_text
 
     async def do_admin_soul_read(self, params: Mapping[str, Any]) -> dict[str, Any]:

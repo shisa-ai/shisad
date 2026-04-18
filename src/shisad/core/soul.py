@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import os
 import re
+import stat
 from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
@@ -51,13 +52,26 @@ def validate_soul_path(raw_path: str | Path) -> Path:
 def load_soul_text(raw_path: str | Path, *, max_bytes: int = DEFAULT_SOUL_MAX_BYTES) -> str:
     """Load trusted SOUL.md text from the configured operator path."""
     path = validate_soul_path(raw_path)
-    if not path.exists():
-        return ""
-    if not path.is_file():
-        raise SoulFileError("SOUL.md path must point to a regular file")
     _validate_max_bytes(max_bytes)
-    with path.open("rb") as handle:
-        data = handle.read(max_bytes + 1)
+    flags = os.O_RDONLY
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    try:
+        fd = os.open(path, flags)
+    except FileNotFoundError:
+        return ""
+    except OSError as exc:
+        raise SoulFileError(f"SOUL.md read failed: {exc}") from exc
+    try:
+        file_stat = os.fstat(fd)
+        if not stat.S_ISREG(file_stat.st_mode):
+            raise SoulFileError("SOUL.md path must point to a regular file")
+        with os.fdopen(fd, "rb") as handle:
+            fd = -1
+            data = handle.read(max_bytes + 1)
+    finally:
+        if fd >= 0:
+            os.close(fd)
     if len(data) > max_bytes:
         raise SoulFileError(f"SOUL.md exceeds configured size limit ({max_bytes} bytes)")
     try:
