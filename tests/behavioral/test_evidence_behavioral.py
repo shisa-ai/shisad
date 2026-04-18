@@ -104,6 +104,38 @@ async def _evidence_stub_complete(
             usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
         )
 
+    if goal_lower.startswith("search hokkaido venues"):
+        return ProviderResponse(
+            message=Message(
+                role="assistant",
+                content="Searching Hokkaido venues.",
+                tool_calls=[
+                    _tool_call(
+                        "web.search",
+                        {"query": "Hokkaido venues", "limit": 1},
+                        call_id="t-search",
+                    )
+                ],
+            ),
+            model="behavioral-evidence-stub",
+            finish_reason="stop",
+            usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+        )
+
+    if "itinerary using what you found" in goal_lower:
+        has_working_packet = "WORKING EVIDENCE PACKET" in normalized_planner_input
+        has_evidence_ref = "[EVIDENCE ref=" in normalized_planner_input
+        if has_working_packet and has_evidence_ref:
+            response = "grounded-itinerary"
+        else:
+            response = "generic-itinerary"
+        return ProviderResponse(
+            message=Message(role="assistant", content=response),
+            model="behavioral-evidence-stub",
+            finish_reason="stop",
+            usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+        )
+
     if goal_lower.startswith("read evidence "):
         ref_id = _extract_ref_id(goal)
         return ProviderResponse(
@@ -187,6 +219,37 @@ def _stub_fetch(
     }
 
 
+def _stub_search(self: WebToolkit, *, query: str, limit: int = 5) -> dict[str, Any]:
+    _ = (self, limit)
+    return {
+        "ok": True,
+        "query": query,
+        "backend": "https://search.example.test/search",
+        "results": [
+            {
+                "title": "Yoichi distillery",
+                "url": "https://example.test/yoichi",
+                "snippet": "Yoichi distillery tours require advance booking.",
+                "host": "example.test",
+                "allowlisted_host": False,
+                "engine": "stub",
+            }
+        ],
+        "taint_labels": ["untrusted"],
+        "evidence": {
+            "operation": "web_search",
+            "backend_url": "https://search.example.test/search",
+            "query_hash": "stub",
+            "response_hash": "stub",
+            "fetched_at": "2026-04-18T00:00:00+00:00",
+            "status_code": 200,
+            "truncated": False,
+            "result_count": 1,
+            "final_url": "https://search.example.test/search",
+        },
+    }
+
+
 async def _create_session(client: ControlClient) -> str:
     created = await client.call(
         "session.create",
@@ -220,6 +283,7 @@ async def _run_evidence_harness(
 ):
     monkeypatch.setattr(LocalPlannerProvider, "complete", _evidence_stub_complete, raising=True)
     monkeypatch.setattr(WebToolkit, "fetch", _stub_fetch, raising=True)
+    monkeypatch.setattr(WebToolkit, "search", _stub_search, raising=True)
     for var in (
         "SHISAD_MODEL_REMOTE_ENABLED",
         "SHISAD_MODEL_PLANNER_REMOTE_ENABLED",
@@ -249,6 +313,7 @@ async def _run_evidence_harness(
         log_level="WARNING",
         context_window=6,
         web_fetch_enabled=True,
+        web_search_enabled=True,
         web_allowed_domains=["example.com"],
         evidence_kms_url=evidence_kms_url,
         evidence_kms_bearer_token=evidence_kms_bearer_token,
@@ -348,6 +413,28 @@ async def test_behavioral_fetch_stub_read_strip_promote_flow(evidence_harness) -
         {"session_id": sid, "content": "what was in that evidence again?"},
     )
     assert promoted["response"] == "promoted-context-visible"
+
+
+@pytest.mark.asyncio
+async def test_behavioral_search_followup_receives_working_evidence_packet(
+    evidence_harness,
+) -> None:
+    client: ControlClient = evidence_harness["client"]
+    sid = await _create_session(client)
+
+    searched = await client.call(
+        "session.message",
+        {"session_id": sid, "content": "search Hokkaido venues"},
+    )
+    assert int(searched.get("executed_actions", 0)) == 1
+    assert "[EVIDENCE ref=" in str(searched.get("response", ""))
+
+    followup = await client.call(
+        "session.message",
+        {"session_id": sid, "content": "now write the itinerary using what you found"},
+    )
+
+    assert followup["response"] == "grounded-itinerary"
 
 
 @pytest.mark.asyncio
