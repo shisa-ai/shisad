@@ -315,6 +315,13 @@ class SessionMessageExecutionResult:
 
 
 @dataclass(frozen=True, slots=True)
+class PostToolSynthesisResult:
+    response_text: str = ""
+    messages_sent: tuple[Any, ...] = ()
+    provider_response: Any | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class TaskSessionRequest:
     task_description: str
     file_refs: tuple[str, ...]
@@ -5102,13 +5109,13 @@ class SessionImplMixin(HandlerMixinBase):
         execution: SessionMessageExecutionResult,
         serialized_tool_outputs: Sequence[dict[str, Any]],
         tool_output_summary: str,
-    ) -> str:
+    ) -> PostToolSynthesisResult:
         planner_dispatch = execution.planner_dispatch
         planner_context = planner_dispatch.planner_context
         validated = planner_context.validated
         planner = getattr(self, "_planner", None)
         if planner is None:
-            return ""
+            return PostToolSynthesisResult()
 
         serialized_payload = (
             json.dumps(
@@ -5152,7 +5159,7 @@ class SessionImplMixin(HandlerMixinBase):
                 "Do not call tools. Do not ask the user to inspect internal tool summaries. "
                 "If the evidence is insufficient, say what was gathered and what remains."
             ),
-            user_goal=validated.content,
+            user_goal=validated.firewall_result.sanitized_text,
             untrusted_content="\n\n".join(evidence_blocks),
         )
         context = PolicyContext(
@@ -5178,7 +5185,7 @@ class SessionImplMixin(HandlerMixinBase):
                 "Post-tool synthesis timed out for session %s; returning intermediate summary",
                 validated.sid,
             )
-            return ""
+            return PostToolSynthesisResult()
         except PlannerOutputError:
             logger.warning(
                 "Post-tool synthesis planner output invalid for session %s; "
@@ -5186,14 +5193,14 @@ class SessionImplMixin(HandlerMixinBase):
                 validated.sid,
                 exc_info=True,
             )
-            return ""
+            return PostToolSynthesisResult()
         except Exception:
             logger.warning(
                 "Post-tool synthesis failed for session %s; returning intermediate summary",
                 validated.sid,
                 exc_info=True,
             )
-            return ""
+            return PostToolSynthesisResult()
 
         synthesized = str(result.output.assistant_response or "").strip()
         if result.output.actions:
@@ -5203,8 +5210,12 @@ class SessionImplMixin(HandlerMixinBase):
                 validated.sid,
             )
         if not synthesized or _is_tool_results_summary_only_response(synthesized):
-            return ""
-        return synthesized
+            synthesized = ""
+        return PostToolSynthesisResult(
+            response_text=synthesized,
+            messages_sent=result.messages_sent,
+            provider_response=result.provider_response,
+        )
 
     async def _finalize_response(
         self,
@@ -5238,6 +5249,7 @@ class SessionImplMixin(HandlerMixinBase):
             tool_output_summary = (
                 _summarize_tool_outputs_for_chat(chat_serialized_tool_outputs) or ""
             )
+        post_tool_synthesis_result = PostToolSynthesisResult()
         system_generated_pending_confirmation_response = False
         if execution.pending_confirmation_ids:
             fallback_notice = ""
@@ -5291,11 +5303,12 @@ class SessionImplMixin(HandlerMixinBase):
                 if response_text.strip():
                     response_text = f"{response_text}\n\n{tool_output_summary}"
                 else:
-                    synthesized_response = await self._synthesize_post_tool_response(
+                    post_tool_synthesis_result = await self._synthesize_post_tool_response(
                         execution=execution,
                         serialized_tool_outputs=raw_serialized_tool_outputs,
                         tool_output_summary=tool_output_summary,
                     )
+                    synthesized_response = post_tool_synthesis_result.response_text
                     response_text = (
                         f"{synthesized_response}\n\n{tool_output_summary}"
                         if synthesized_response
@@ -5401,7 +5414,10 @@ class SessionImplMixin(HandlerMixinBase):
 
         if self._trace_recorder is not None:
             try:
-                provider_resp = planner_dispatch.planner_result.provider_response
+                provider_resp = (
+                    post_tool_synthesis_result.provider_response
+                    or planner_dispatch.planner_result.provider_response
+                )
                 trace_messages = (
                     [
                         TraceMessage(
@@ -5415,6 +5431,22 @@ class SessionImplMixin(HandlerMixinBase):
                     if planner_dispatch.planner_result.messages_sent
                     else []
                 )
+                if post_tool_synthesis_result.messages_sent:
+                    trace_messages.append(
+                        TraceMessage(
+                            role="system",
+                            content="POST-TOOL SYNTHESIS TRACE PHASE",
+                        )
+                    )
+                    trace_messages.extend(
+                        TraceMessage(
+                            role=message.role,
+                            content=message.content,
+                            tool_calls=message.tool_calls,
+                            tool_call_id=message.tool_call_id,
+                        )
+                        for message in post_tool_synthesis_result.messages_sent
+                    )
                 model_id = self._planner_model_id
                 if provider_resp and provider_resp.model:
                     model_id = provider_resp.model
