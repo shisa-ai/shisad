@@ -11,7 +11,12 @@ from pydantic import ValidationError
 from shisad.core.config import DaemonConfig
 from shisad.core.planner import Planner
 from shisad.core.providers.base import Message, ProviderResponse
-from shisad.core.soul import SoulFileError, load_effective_persona_text, load_soul_text
+from shisad.core.soul import (
+    SoulFileError,
+    load_effective_persona_text,
+    load_soul_text,
+    write_soul_text,
+)
 from shisad.core.tools.registry import ToolRegistry
 from shisad.security.pep import PEP, PolicyContext
 from shisad.security.policy import PolicyBundle
@@ -174,6 +179,26 @@ def test_s9_soul_load_uses_no_follow_open(tmp_path, monkeypatch: pytest.MonkeyPa
     assert seen_flags
     if hasattr(os, "O_NOFOLLOW"):
         assert seen_flags[-1] & os.O_NOFOLLOW
+    if hasattr(os, "O_NONBLOCK"):
+        assert seen_flags[-1] & os.O_NONBLOCK
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="requires POSIX FIFO support")
+def test_s9_soul_load_rejects_fifo_without_blocking(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    soul_path = tmp_path / "SOUL.md"
+    os.mkfifo(soul_path)
+
+    with pytest.raises(SoulFileError, match="regular file"):
+        load_soul_text(soul_path, max_bytes=4096)
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="requires POSIX FIFO support")
+def test_s9_soul_write_rejects_fifo_without_blocking(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    soul_path = tmp_path / "SOUL.md"
+    os.mkfifo(soul_path)
+
+    with pytest.raises(SoulFileError, match="regular file"):
+        write_soul_text(soul_path, "Prefer concise answers.", max_bytes=4096)
 
 
 def test_s9_effective_persona_text_combines_inline_config_and_soul_file(tmp_path) -> None:  # type: ignore[no-untyped-def]

@@ -194,9 +194,18 @@ class FsGitToolkit:
     def _is_protected_write_path(self, resolved: Path) -> bool:
         for raw_path in self.protected_write_paths:
             protected = Path(raw_path).expanduser().resolve(strict=False)
-            if resolved == protected:
+            if resolved == protected or self._same_existing_file(resolved, protected):
                 return True
         return False
+
+    @staticmethod
+    def _same_existing_file(left: Path, right: Path) -> bool:
+        try:
+            left_stat = left.stat()
+            right_stat = right.stat()
+        except OSError:
+            return False
+        return (left_stat.st_dev, left_stat.st_ino) == (right_stat.st_dev, right_stat.st_ino)
 
     @staticmethod
     def _error(reason: str, *, path: str) -> dict[str, Any]:

@@ -53,9 +53,9 @@ def load_soul_text(raw_path: str | Path, *, max_bytes: int = DEFAULT_SOUL_MAX_BY
     """Load trusted SOUL.md text from the configured operator path."""
     path = validate_soul_path(raw_path)
     _validate_max_bytes(max_bytes)
-    flags = os.O_RDONLY
-    if hasattr(os, "O_NOFOLLOW"):
-        flags |= os.O_NOFOLLOW
+    if _existing_regular_soul_stat(path) is None:
+        return ""
+    flags = _soul_open_flags(os.O_RDONLY)
     try:
         fd = os.open(path, flags)
     except FileNotFoundError:
@@ -63,9 +63,7 @@ def load_soul_text(raw_path: str | Path, *, max_bytes: int = DEFAULT_SOUL_MAX_BY
     except OSError as exc:
         raise SoulFileError(f"SOUL.md read failed: {exc}") from exc
     try:
-        file_stat = os.fstat(fd)
-        if not stat.S_ISREG(file_stat.st_mode):
-            raise SoulFileError("SOUL.md path must point to a regular file")
+        _validate_open_soul_regular_file(fd)
         with os.fdopen(fd, "rb") as handle:
             fd = -1
             data = handle.read(max_bytes + 1)
@@ -124,15 +122,20 @@ def write_soul_text(
         raise SoulFileError(f"SOUL.md exceeds configured size limit ({max_bytes} bytes)")
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     _reject_symlink_components(path)
-    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
-    if hasattr(os, "O_NOFOLLOW"):
-        flags |= os.O_NOFOLLOW
+    _existing_regular_soul_stat(path)
+    flags = _soul_open_flags(os.O_WRONLY | os.O_CREAT | os.O_TRUNC)
     try:
         fd = os.open(path, flags, 0o600)
     except OSError as exc:
         raise SoulFileError(f"SOUL.md write failed: {exc}") from exc
-    with os.fdopen(fd, "wb") as handle:
-        handle.write(data)
+    try:
+        _validate_open_soul_regular_file(fd)
+        with os.fdopen(fd, "wb") as handle:
+            fd = -1
+            handle.write(data)
+    finally:
+        if fd >= 0:
+            os.close(fd)
     with suppress(PermissionError):
         path.chmod(0o600)
     return SoulWriteResult(
@@ -155,6 +158,33 @@ def _sha256_text(content: str) -> str:
 def _validate_max_bytes(max_bytes: int) -> None:
     if max_bytes < 1:
         raise SoulFileError("SOUL.md max_bytes must be positive")
+
+
+def _existing_regular_soul_stat(path: Path) -> os.stat_result | None:
+    try:
+        file_stat = os.lstat(path)
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise SoulFileError(f"SOUL.md stat failed: {exc}") from exc
+    if not stat.S_ISREG(file_stat.st_mode):
+        raise SoulFileError("SOUL.md path must point to a regular file")
+    return file_stat
+
+
+def _soul_open_flags(base_flags: int) -> int:
+    flags = base_flags
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    if hasattr(os, "O_NONBLOCK"):
+        flags |= os.O_NONBLOCK
+    return flags
+
+
+def _validate_open_soul_regular_file(fd: int) -> None:
+    file_stat = os.fstat(fd)
+    if not stat.S_ISREG(file_stat.st_mode):
+        raise SoulFileError("SOUL.md path must point to a regular file")
 
 
 def _reject_symlink_components(path: Path) -> None:
