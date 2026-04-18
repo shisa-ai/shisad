@@ -12,6 +12,7 @@ from shisad.core.session import Session, SessionManager
 from shisad.core.types import SessionId, SessionRole, TaintLabel, ToolName
 from shisad.daemon.handlers._impl_session import (
     SessionImplMixin,
+    _looks_like_admin_cleanroom_request,
     _planner_manifest_includes_report_anomaly,
 )
 from shisad.security.policy import PolicyBundle, ToolPolicy
@@ -126,6 +127,11 @@ def test_m1_clean_orchestrator_manifest_omits_report_anomaly() -> None:
         )
         is False
     )
+
+
+def test_s9_soul_update_intent_triggers_admin_cleanroom_reroute() -> None:
+    assert _looks_like_admin_cleanroom_request("update my SOUL.md to prefer shorter replies")
+    assert _looks_like_admin_cleanroom_request("please change assistant persona")
 
 
 @pytest.mark.parametrize(

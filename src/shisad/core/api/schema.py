@@ -1074,6 +1074,17 @@ class AdminSelfModRollbackParams(_StrictParams):
     change_id: str
 
 
+class AdminSoulReadParams(_StrictParams):
+    """Parameters for admin.soul.read."""
+
+
+class AdminSoulUpdateParams(_StrictParams):
+    """Parameters for admin.soul.update."""
+
+    content: str = ""
+    expected_sha256: str | None = None
+
+
 class DevImplementParams(_StrictParams):
     task: str = Field(min_length=1)
     agent: str | None = None
@@ -1151,6 +1162,25 @@ class AdminSelfModRollbackResult(BaseModel):
     name: str = ""
     restored_version: str = ""
     active_version: str = ""
+    reason: str = ""
+
+
+class AdminSoulReadResult(BaseModel):
+    configured: bool = False
+    path: str = ""
+    content: str = ""
+    sha256: str = ""
+    bytes: int = 0
+    warnings: list[str] = Field(default_factory=list)
+    reason: str = ""
+
+
+class AdminSoulUpdateResult(BaseModel):
+    updated: bool = False
+    path: str = ""
+    sha256: str = ""
+    bytes: int = 0
+    warnings: list[str] = Field(default_factory=list)
     reason: str = ""
 
 

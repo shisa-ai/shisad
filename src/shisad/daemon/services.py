@@ -37,6 +37,7 @@ from shisad.core.providers.monitor_adapter import MonitorProviderAdapter
 from shisad.core.providers.routed_openai import RoutedOpenAIProvider
 from shisad.core.providers.routing import ModelComponent, ModelRouter, provider_preset_label
 from shisad.core.session import CheckpointStore, Session, SessionManager
+from shisad.core.soul import load_effective_persona_text
 from shisad.core.tools.builtin.alarm import AlarmTool
 from shisad.core.tools.builtin.shell_exec import ShellExecTool
 from shisad.core.tools.registry import ToolRegistry
@@ -775,11 +776,12 @@ class DaemonServices:
                 mcp_trusted_servers=set(config.mcp_trusted_servers),
             )
             planner_route = router.route_for(ModelComponent.PLANNER)
+            effective_persona_text = load_effective_persona_text(config)
             planner = Planner(
                 provider,
                 pep,
                 persona_tone=config.assistant_persona_tone,
-                custom_persona_text=config.assistant_persona_custom_text,
+                custom_persona_text=effective_persona_text,
                 capabilities=planner_route.capabilities,
                 tool_registry=registry,
                 schema_strict_mode=bool(model_config.planner_schema_strict_mode),
@@ -801,7 +803,7 @@ class DaemonServices:
                 skill_manager=skill_manager,
                 planner=planner,
                 default_persona_tone=config.assistant_persona_tone,
-                default_persona_text=config.assistant_persona_custom_text,
+                default_persona_text=effective_persona_text,
             )
             shutdown_event = asyncio.Event()
             planner_model_id = planner_route.model_id

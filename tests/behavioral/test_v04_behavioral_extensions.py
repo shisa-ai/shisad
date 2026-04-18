@@ -246,6 +246,64 @@ def _generate_ssh_keypair(tmp_path: Path, *, name: str) -> Path:
     return key_path
 
 
+@pytest.mark.asyncio
+async def test_behavioral_soul_config_path_loads_and_admin_update_refreshes_planner(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured_persona_text: list[str] = []
+
+    async def _capture_persona(
+        self: Planner,
+        user_content: str,
+        context: object,
+        *,
+        tools: list[dict[str, object]] | None = None,
+        persona_tone_override: str | None = None,
+    ) -> PlannerResult:
+        _ = (user_content, context, tools, persona_tone_override)
+        captured_persona_text.append(str(getattr(self, "_custom_persona_text", "")))
+        return PlannerResult(
+            output=PlannerOutput(actions=[], assistant_response="ok"),
+            evaluated=[],
+            attempts=1,
+            provider_response=None,
+            messages_sent=(),
+        )
+
+    monkeypatch.setattr(Planner, "propose", _capture_persona)
+    soul_path = tmp_path / "SOUL.md"
+    soul_path.write_text("Prefer concise answers.", encoding="utf-8")
+    daemon_task, client, _config = await _start_daemon(
+        tmp_path,
+        config_overrides={"assistant_persona_soul_path": soul_path},
+    )
+    try:
+        created = await client.call(
+            "session.create",
+            {"channel": "cli", "user_id": "admin", "workspace_id": "ops"},
+        )
+        sid = str(created["session_id"])
+        await client.call("session.message", {"session_id": sid, "content": "hello"})
+
+        assert captured_persona_text
+        assert "SOUL.md persona preferences:" in captured_persona_text[-1]
+        assert "Prefer concise answers." in captured_persona_text[-1]
+
+        updated = await client.call(
+            "admin.soul.update",
+            {"content": "For the shisad repo, prefer calm release-note wording."},
+        )
+        await client.call("session.message", {"session_id": sid, "content": "hello again"})
+
+        assert updated["updated"] is True
+        assert "project_specific_memory_route_recommended" in updated["warnings"]
+        assert "Prefer concise answers." not in captured_persona_text[-1]
+        assert "prefer calm release-note wording" in captured_persona_text[-1]
+    finally:
+        await _shutdown_daemon(daemon_task, client)
+
+
 def _write_allowed_signers(path: Path, *, principal: str, public_key: Path) -> None:
     key_type, key_value, *_rest = public_key.read_text(encoding="utf-8").strip().split()
     path.parent.mkdir(parents=True, exist_ok=True)

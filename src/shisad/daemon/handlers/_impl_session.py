@@ -469,16 +469,19 @@ _CHAT_TOTP_TARGETED_CODE_RE = re.compile(r"^(?:confirm|approve)\s+(\S+)\s+(\d{6}
 _AUTO_CLEANROOM_ADMIN_ACTION_RE = re.compile(
     r"(?i)\b("
     r"install|apply|rollback|roll\s+back|update|enable|disable|activate|deactivate|"
-    r"propose|review|inspect|show|list"
+    r"propose|review|inspect|show|list|change|edit"
     r")\b"
 )
 _AUTO_CLEANROOM_ADMIN_SUBJECT_RE = re.compile(
     r"(?i)\b("
     r"selfmod|behavior\s+pack|skill\s+bundle|signed\s+behavior(?:\s+pack)?|"
-    r"signed\s+skill(?:\s+bundle)?|assistant\s+behavior"
+    r"signed\s+skill(?:\s+bundle)?|assistant\s+behavior|assistant\s+persona|"
+    r"persona|SOUL\.md|soul"
     r")\b"
 )
-_AUTO_CLEANROOM_ADMIN_COMMAND_RE = re.compile(r"(?i)\bselfmod\s+(?:propose|apply|rollback)\b")
+_AUTO_CLEANROOM_ADMIN_COMMAND_RE = re.compile(
+    r"(?i)\b(?:selfmod\s+(?:propose|apply|rollback)|soul(?:\.md)?\s+(?:read|update|edit))\b"
+)
 
 
 def _classify_chat_confirmation_intent(text: str) -> ChatConfirmationIntent:

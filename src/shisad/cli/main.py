@@ -33,6 +33,8 @@ from shisad.core.api.schema import (
     AdminSelfModApplyResult,
     AdminSelfModProposeResult,
     AdminSelfModRollbackResult,
+    AdminSoulReadResult,
+    AdminSoulUpdateResult,
     ChannelPairingProposalResult,
     ConfirmationMetricsResult,
     DaemonShutdownResult,
@@ -732,6 +734,42 @@ def admin_selfmod_rollback(change_id: str) -> None:
             ]
         )
     )
+
+
+@admin.group("soul")
+def admin_soul() -> None:
+    """Trusted SOUL.md persona preference controls."""
+
+
+@admin_soul.command("read")
+def admin_soul_read() -> None:
+    """Read the configured SOUL.md persona preference file."""
+    config = _get_config()
+    result = rpc_call(
+        config,
+        "admin.soul.read",
+        {},
+        response_model=AdminSoulReadResult,
+    )
+    click.echo(_dump_model(result))
+
+
+@admin_soul.command("update")
+@click.option("--content", required=True, help="Complete replacement SOUL.md content.")
+@click.option("--expected-sha256", default=None, help="Optional current sha256 precondition.")
+def admin_soul_update(content: str, expected_sha256: str | None) -> None:
+    """Replace the configured SOUL.md persona preference file."""
+    config = _get_config()
+    payload: dict[str, Any] = {"content": content}
+    if expected_sha256:
+        payload["expected_sha256"] = expected_sha256
+    result = rpc_call(
+        config,
+        "admin.soul.update",
+        payload,
+        response_model=AdminSoulUpdateResult,
+    )
+    click.echo(_dump_model(result))
 
 
 @cli.group()

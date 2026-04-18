@@ -18,6 +18,10 @@ from shisad.core.api.schema import (
     AdminSelfModProposeResult,
     AdminSelfModRollbackParams,
     AdminSelfModRollbackResult,
+    AdminSoulReadParams,
+    AdminSoulReadResult,
+    AdminSoulUpdateParams,
+    AdminSoulUpdateResult,
     AuditQueryParams,
     AuditQueryResult,
     BrowserPasteParams,
@@ -310,6 +314,16 @@ class DaemonControlHandlers:
         self, params: AdminSelfModRollbackParams, ctx: RequestContext
     ) -> AdminSelfModRollbackResult:
         return await self._admin.handle_admin_selfmod_rollback(params, ctx)
+
+    async def handle_admin_soul_read(
+        self, params: AdminSoulReadParams, ctx: RequestContext
+    ) -> AdminSoulReadResult:
+        return await self._admin.handle_admin_soul_read(params, ctx)
+
+    async def handle_admin_soul_update(
+        self, params: AdminSoulUpdateParams, ctx: RequestContext
+    ) -> AdminSoulUpdateResult:
+        return await self._admin.handle_admin_soul_update(params, ctx)
 
     async def handle_dev_implement(
         self, params: DevImplementParams, ctx: RequestContext

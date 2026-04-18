@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import uuid
 from collections.abc import Mapping
 from datetime import UTC, datetime
@@ -17,6 +18,13 @@ from shisad.core.events import (
     ChannelPairingProposalGenerated,
     ChannelPairingRequested,
     LockdownChanged,
+)
+from shisad.core.soul import (
+    load_effective_persona_text,
+    load_soul_text,
+    soul_content_warnings,
+    soul_text_sha256,
+    write_soul_text,
 )
 from shisad.core.tools.names import canonical_tool_name_typed
 from shisad.core.types import SessionId, UserId, WorkspaceId
@@ -285,6 +293,103 @@ class AdminImplMixin(HandlerMixinBase):
             raise ValueError("change_id is required")
         result = self._selfmod_manager.rollback(change_id)
         return cast(dict[str, Any], result.model_dump(mode="json"))
+
+    def _soul_config_path(self) -> Path | None:
+        return cast(Path | None, getattr(self._config, "assistant_persona_soul_path", None))
+
+    def _soul_max_bytes(self) -> int:
+        return int(getattr(self._config, "assistant_persona_soul_max_bytes", 64 * 1024))
+
+    def _require_trusted_admin_command(self, params: Mapping[str, Any]) -> None:
+        internal_marker = getattr(self, "_internal_ingress_marker", None)
+        internal_ingress = params.get("_internal_ingress_marker")
+        if internal_marker is not None and internal_ingress is internal_marker:
+            raise ValueError("SOUL.md update requires trusted admin command ingress")
+        checker = getattr(self, "_is_admin_rpc_peer", None)
+        if callable(checker) and bool(checker(params)):
+            return
+        peer = params.get("_rpc_peer", {})
+        if isinstance(peer, Mapping):
+            uid = peer.get("uid")
+            if isinstance(uid, int) and uid in {0, os.getuid()}:
+                return
+        raise ValueError("SOUL.md update requires trusted admin command ingress")
+
+    def _refresh_soul_persona_defaults(self) -> str:
+        effective_text = load_effective_persona_text(self._config)
+        setter = getattr(self._planner, "set_persona_defaults", None)
+        if callable(setter):
+            setter(
+                tone=str(getattr(self._config, "assistant_persona_tone", "neutral")),
+                custom_text=effective_text,
+            )
+        selfmod_manager = getattr(self, "_selfmod_manager", None)
+        if selfmod_manager is not None and hasattr(selfmod_manager, "_default_persona_text"):
+            selfmod_manager._default_persona_text = effective_text
+        return effective_text
+
+    async def do_admin_soul_read(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        self._require_trusted_admin_command(params)
+        soul_path = self._soul_config_path()
+        if soul_path is None:
+            return {
+                "configured": False,
+                "path": "",
+                "content": "",
+                "sha256": "",
+                "bytes": 0,
+                "warnings": [],
+                "reason": "soul_path_unconfigured",
+            }
+        soul_exists = soul_path.exists()
+        content = load_soul_text(soul_path, max_bytes=self._soul_max_bytes())
+        return {
+            "configured": True,
+            "path": str(soul_path),
+            "content": content,
+            "sha256": soul_text_sha256(content) if soul_exists else "",
+            "bytes": len(content.encode("utf-8")),
+            "warnings": list(soul_content_warnings(content)),
+            "reason": "ok",
+        }
+
+    async def do_admin_soul_update(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        self._require_trusted_admin_command(params)
+        soul_path = self._soul_config_path()
+        if soul_path is None:
+            return {
+                "updated": False,
+                "path": "",
+                "sha256": "",
+                "bytes": 0,
+                "warnings": [],
+                "reason": "soul_path_unconfigured",
+            }
+        content = str(params.get("content", ""))
+        expected_sha256 = str(params.get("expected_sha256", "") or "").strip()
+        if expected_sha256:
+            soul_exists = soul_path.exists()
+            current = load_soul_text(soul_path, max_bytes=self._soul_max_bytes())
+            current_sha256 = soul_text_sha256(current) if soul_exists else ""
+            if current_sha256 != expected_sha256:
+                return {
+                    "updated": False,
+                    "path": str(soul_path),
+                    "sha256": current_sha256,
+                    "bytes": len(current.encode("utf-8")),
+                    "warnings": list(soul_content_warnings(current)),
+                    "reason": "sha256_mismatch",
+                }
+        result = write_soul_text(soul_path, content, max_bytes=self._soul_max_bytes())
+        self._refresh_soul_persona_defaults()
+        return {
+            "updated": True,
+            "path": str(result.path),
+            "sha256": result.sha256,
+            "bytes": result.bytes_written,
+            "warnings": list(result.warnings),
+            "reason": "ok",
+        }
 
     async def do_dev_implement(self, params: Mapping[str, Any]) -> dict[str, Any]:
         task = str(params.get("task", "")).strip()

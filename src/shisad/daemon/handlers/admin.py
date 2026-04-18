@@ -9,6 +9,10 @@ from shisad.core.api.schema import (
     AdminSelfModProposeResult,
     AdminSelfModRollbackParams,
     AdminSelfModRollbackResult,
+    AdminSoulReadParams,
+    AdminSoulReadResult,
+    AdminSoulUpdateParams,
+    AdminSoulUpdateResult,
     ChannelIngestParams,
     ChannelIngestResult,
     ChannelPairingProposalParams,
@@ -180,6 +184,30 @@ class AdminHandlers:
         return AdminSelfModRollbackResult.model_validate(
             await self._impl.do_admin_selfmod_rollback(payload)
         )
+
+    async def handle_admin_soul_read(
+        self,
+        params: AdminSoulReadParams,
+        ctx: RequestContext,
+    ) -> AdminSoulReadResult:
+        payload = build_params_payload(
+            params,
+            ctx,
+            internal_ingress_marker=self._internal_ingress_marker,
+        )
+        return AdminSoulReadResult.model_validate(await self._impl.do_admin_soul_read(payload))
+
+    async def handle_admin_soul_update(
+        self,
+        params: AdminSoulUpdateParams,
+        ctx: RequestContext,
+    ) -> AdminSoulUpdateResult:
+        payload = build_params_payload(
+            params,
+            ctx,
+            internal_ingress_marker=self._internal_ingress_marker,
+        )
+        return AdminSoulUpdateResult.model_validate(await self._impl.do_admin_soul_update(payload))
 
     async def handle_dev_implement(
         self,

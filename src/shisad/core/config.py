@@ -24,6 +24,7 @@ from shisad.core.providers.capabilities import (
     RequestParameters,
 )
 from shisad.core.providers.http_headers import validate_auth_header_name, validate_extra_headers
+from shisad.core.soul import DEFAULT_SOUL_MAX_BYTES, SoulFileError, validate_soul_path
 from shisad.interop.a2a_registry import (
     A2aConfig,
 )
@@ -348,6 +349,18 @@ class DaemonConfig(BaseSettings):
     assistant_persona_custom_text: str = Field(
         default="",
         description="Trusted custom persona guidance appended as style-only instructions.",
+    )
+    assistant_persona_soul_path: Path | None = Field(
+        default=None,
+        description=(
+            "Optional absolute operator config path to SOUL.md persona preferences. "
+            "Workspace-local SOUL.md discovery is intentionally not supported."
+        ),
+    )
+    assistant_persona_soul_max_bytes: int = Field(
+        default=DEFAULT_SOUL_MAX_BYTES,
+        ge=1,
+        description="Maximum UTF-8 bytes loaded from the configured SOUL.md persona file.",
     )
     context_window: int = Field(
         default=20,
@@ -697,6 +710,30 @@ class DaemonConfig(BaseSettings):
                 return normalized
             raise ValueError("SHISAD_CHANNEL_IDENTITY_ALLOWLIST JSON must be an object")
         return value
+
+    @field_validator("assistant_persona_soul_path", mode="before")
+    @classmethod
+    def _parse_assistant_persona_soul_path(cls, value: object) -> object:
+        if value is None:
+            return None
+        if isinstance(value, str):
+            stripped = value.strip()
+            if not stripped:
+                return None
+            return Path(stripped).expanduser()
+        if isinstance(value, Path):
+            return value.expanduser()
+        return value
+
+    @field_validator("assistant_persona_soul_path")
+    @classmethod
+    def _validate_assistant_persona_soul_path(cls, value: Path | None) -> Path | None:
+        if value is None:
+            return None
+        try:
+            return validate_soul_path(value)
+        except SoulFileError as exc:
+            raise ValueError(str(exc)) from exc
 
     @field_validator("web_allowed_domains", mode="before")
     @classmethod
