@@ -460,12 +460,12 @@ class MsgvaultToolkit:
         return {"error": "msgvault_message_not_in_account_scope"}
 
     def _search_rows_include_message(self, rows: list[Any], *, message_id: str) -> bool:
-        normalized_id = message_id.strip().lower()
+        normalized_id = message_id.strip()
         for item in rows:
             row = self._normalize_search_row(item)
             candidates = {
-                row.get("id", "").strip().lower(),
-                row.get("source_message_id", "").strip().lower(),
+                row.get("id", "").strip(),
+                row.get("source_message_id", "").strip(),
             }
             if normalized_id in candidates:
                 return True

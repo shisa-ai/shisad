@@ -297,6 +297,51 @@ def test_msgvault_read_rejects_missing_or_unmatched_account_scope(tmp_path: Path
     assert "show-message" not in calls[0]
 
 
+def test_msgvault_read_scope_treats_message_ids_as_case_sensitive(tmp_path: Path) -> None:
+    calls_log = tmp_path / "case-calls.json"
+    script = tmp_path / "case-msgvault.py"
+    script.write_text(
+        textwrap.dedent(
+            f"""
+            #!{sys.executable}
+            import json
+            import sys
+            from pathlib import Path
+
+            path = Path({str(calls_log)!r})
+            calls = json.loads(path.read_text(encoding="utf-8")) if path.exists() else []
+            calls.append(sys.argv)
+            path.write_text(json.dumps(calls), encoding="utf-8")
+            if "search" in sys.argv:
+                print(json.dumps([{{"id": 101, "source_message_id": "MSG-101"}}]))
+            elif "show-message" in sys.argv:
+                print(json.dumps({{"id": 101, "source_message_id": "msg-101"}}))
+            else:
+                sys.exit(2)
+            """
+        ).lstrip(),
+        encoding="utf-8",
+    )
+    script.chmod(0o755)
+    toolkit = MsgvaultToolkit(
+        enabled=True,
+        command=str(script),
+        home=None,
+        timeout_seconds=2.0,
+        max_results=10,
+        max_body_bytes=1024,
+        account_allowlist=["me@example.com"],
+    )
+
+    payload = toolkit.read_message(message_id="msg-101", account="me@example.com")
+
+    calls = json.loads(calls_log.read_text(encoding="utf-8"))
+    assert payload["ok"] is False
+    assert payload["error"] == "msgvault_message_not_in_account_scope"
+    assert len(calls) == 1
+    assert "show-message" not in calls[0]
+
+
 def test_msgvault_search_accepts_wrapped_results_shape(tmp_path: Path) -> None:
     script = tmp_path / "wrapped-msgvault.py"
     script.write_text(
