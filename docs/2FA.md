@@ -1,9 +1,10 @@
 # Multi-Factor Approval (2FA)
 
 > **Current 2FA feature status:** The approval protocol, credential store, and
-> currently available approval backends documented here shipped in `v0.6.4` and
-> remain implemented and tested in the latest published line. TOTP confirmation
-> works through trusted chat / command replies and through the CLI. Passkey
+> currently available approval backends documented here were introduced across
+> `v0.6.2` and `v0.6.3` and remain implemented and tested in the latest
+> published line. TOTP confirmation works through trusted chat / command replies
+> and through the CLI. Passkey
 > (WebAuthn) and signer approvals work via browser and remote KMS
 > respectively. QR code rendering for TOTP enrollment is also included.
 > Entering a TOTP code on the approval web page is not included yet; browser
