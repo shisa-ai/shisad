@@ -276,6 +276,13 @@ class MsgvaultToolkit:
                 reason="email_message_id_required",
                 message=None,
             )
+        preflight = self._preflight(operation="email.read")
+        if preflight is not None:
+            return self._read_error_payload(
+                reason=str(preflight["error"]),
+                message_id=normalized_id,
+                details=preflight,
+            )
         account_result = self._resolve_account(account)
         if isinstance(account_result, dict):
             return self._read_error_payload(

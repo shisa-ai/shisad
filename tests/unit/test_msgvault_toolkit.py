@@ -773,10 +773,14 @@ def test_msgvault_disabled_and_missing_binary_return_actionable_errors(tmp_path:
         account_allowlist=[],
     )
     disabled_payload = disabled.search(query="invoice")
+    disabled_read_payload = disabled.read_message(message_id="msg-101")
     assert disabled_payload["ok"] is False
     assert disabled_payload["error"] == "msgvault_disabled"
     assert "SHISAD_MSGVAULT_ENABLED" in disabled_payload["actionable"]
     assert disabled_payload["taint_labels"] == ["untrusted", "email"]
+    assert disabled_read_payload["ok"] is False
+    assert disabled_read_payload["error"] == "msgvault_disabled"
+    assert "SHISAD_MSGVAULT_ENABLED" in disabled_read_payload["actionable"]
 
     missing = MsgvaultToolkit(
         enabled=True,
