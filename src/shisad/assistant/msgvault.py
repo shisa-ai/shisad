@@ -518,14 +518,16 @@ class MsgvaultToolkit:
             return {"error": "msgvault_scope_lookup_unavailable"}
         try:
             conn.execute("PRAGMA query_only = ON")
+            email_clause = self._email_message_type_clause(conn)
             internal_id = _canonical_internal_message_id(message_id)
             if internal_id is not None:
                 row = conn.execute(
-                    """
+                    f"""
                     SELECT m.id
                     FROM messages m
                     JOIN sources s ON s.id = m.source_id
                     WHERE lower(COALESCE(s.identifier, '')) = ?
+                      {email_clause}
                       AND m.id = ?
                     LIMIT 1
                     """,
@@ -534,11 +536,12 @@ class MsgvaultToolkit:
                 if row is not None:
                     return str(row[0])
             source_rows = conn.execute(
-                """
+                f"""
                 SELECT m.id
                 FROM messages m
                 JOIN sources s ON s.id = m.source_id
                 WHERE lower(COALESCE(s.identifier, '')) = ?
+                  {email_clause}
                   AND m.source_message_id = ?
                 ORDER BY m.id
                 LIMIT 2
@@ -552,6 +555,16 @@ class MsgvaultToolkit:
         if len(source_rows) == 1:
             return str(source_rows[0][0])
         return {"error": "msgvault_message_not_in_account_scope"}
+
+    def _email_message_type_clause(self, conn: sqlite3.Connection) -> str:
+        columns = {
+            str(row[1])
+            for row in conn.execute("PRAGMA table_info(messages)").fetchall()
+            if len(row) > 1
+        }
+        if "message_type" not in columns:
+            return ""
+        return "AND (m.message_type = 'email' OR m.message_type IS NULL OR m.message_type = '')"
 
     def _search_rows(self, payload: Any) -> list[Any] | None:
         if isinstance(payload, list):

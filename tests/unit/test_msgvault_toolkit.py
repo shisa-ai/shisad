@@ -77,7 +77,7 @@ def _write_msgvault_scope_db(
     tmp_path: Path,
     *,
     sources: list[tuple[int, str]] | None = None,
-    messages: list[tuple[int, int, str]] | None = None,
+    messages: list[tuple[int, int, str, str]] | None = None,
 ) -> Path:
     home = tmp_path / "vault"
     home.mkdir(exist_ok=True)
@@ -93,7 +93,8 @@ def _write_msgvault_scope_db(
             CREATE TABLE messages (
                 id INTEGER PRIMARY KEY,
                 source_id INTEGER NOT NULL,
-                source_message_id TEXT
+                source_message_id TEXT,
+                message_type TEXT
             );
             """
         )
@@ -102,13 +103,15 @@ def _write_msgvault_scope_db(
                 "INSERT INTO sources (id, identifier) VALUES (?, ?)",
                 (source_id, identifier),
             )
-        for message_id, source_id, source_message_id in messages or [(101, 1, "msg-101")]:
+        for message_id, source_id, source_message_id, message_type in messages or [
+            (101, 1, "msg-101", "email")
+        ]:
             conn.execute(
                 """
-                INSERT INTO messages (id, source_id, source_message_id)
-                VALUES (?, ?, ?)
+                INSERT INTO messages (id, source_id, source_message_id, message_type)
+                VALUES (?, ?, ?, ?)
                 """,
-                (message_id, source_id, source_message_id),
+                (message_id, source_id, source_message_id, message_type),
             )
         conn.commit()
     finally:
@@ -320,7 +323,7 @@ def test_msgvault_read_rejects_missing_or_unmatched_account_scope(tmp_path: Path
     miss_home = _write_msgvault_scope_db(
         tmp_path,
         sources=[(1, "work@example.com")],
-        messages=[(101, 1, "msg-101")],
+        messages=[(101, 1, "msg-101", "email")],
     )
     scoped = MsgvaultToolkit(
         enabled=True,
@@ -365,7 +368,7 @@ def test_msgvault_read_scope_treats_message_ids_as_case_sensitive(tmp_path: Path
     script.chmod(0o755)
     home = _write_msgvault_scope_db(
         tmp_path,
-        messages=[(101, 1, "MSG-101")],
+        messages=[(101, 1, "MSG-101", "email")],
     )
     toolkit = MsgvaultToolkit(
         enabled=True,
@@ -436,6 +439,56 @@ def test_msgvault_read_scope_does_not_depend_on_id_search(tmp_path: Path) -> Non
     assert payload["message"]["subject"] == "Contract-shaped lookup"
 
 
+def test_msgvault_read_scope_rejects_non_email_message_type(tmp_path: Path) -> None:
+    calls_log = tmp_path / "text-calls.json"
+    script = tmp_path / "text-msgvault.py"
+    script.write_text(
+        textwrap.dedent(
+            f"""
+            #!{sys.executable}
+            import json
+            import sys
+            from pathlib import Path
+
+            path = Path({str(calls_log)!r})
+            calls = json.loads(path.read_text(encoding="utf-8")) if path.exists() else []
+            calls.append(sys.argv)
+            path.write_text(json.dumps(calls), encoding="utf-8")
+            if "show-message" in sys.argv:
+                print(json.dumps({{
+                    "id": 101,
+                    "source_message_id": "msg-101",
+                    "subject": "Not email",
+                    "body_text": "chat"
+                }}))
+            else:
+                sys.exit(2)
+            """
+        ).lstrip(),
+        encoding="utf-8",
+    )
+    script.chmod(0o755)
+    home = _write_msgvault_scope_db(
+        tmp_path,
+        messages=[(101, 1, "msg-101", "whatsapp")],
+    )
+    toolkit = MsgvaultToolkit(
+        enabled=True,
+        command=str(script),
+        home=home,
+        timeout_seconds=2.0,
+        max_results=10,
+        max_body_bytes=1024,
+        account_allowlist=["me@example.com"],
+    )
+
+    payload = toolkit.read_message(message_id="msg-101", account="me@example.com")
+
+    assert payload["ok"] is False
+    assert payload["error"] == "msgvault_message_not_in_account_scope"
+    assert not calls_log.exists()
+
+
 def test_msgvault_read_uses_scoped_internal_id_for_source_id_matches(tmp_path: Path) -> None:
     calls_log = tmp_path / "collide-calls.json"
     script = tmp_path / "collide-msgvault.py"
@@ -474,7 +527,7 @@ def test_msgvault_read_uses_scoped_internal_id_for_source_id_matches(tmp_path: P
     script.chmod(0o755)
     home = _write_msgvault_scope_db(
         tmp_path,
-        messages=[(101, 1, "msg-collide")],
+        messages=[(101, 1, "msg-collide", "email")],
     )
     toolkit = MsgvaultToolkit(
         enabled=True,
@@ -542,8 +595,8 @@ def test_msgvault_read_prefers_internal_id_over_source_id_matches(tmp_path: Path
     home = _write_msgvault_scope_db(
         tmp_path,
         messages=[
-            (999, 1, "123"),
-            (123, 1, "other-source"),
+            (999, 1, "123", "email"),
+            (123, 1, "other-source", "email"),
         ],
     )
     toolkit = MsgvaultToolkit(

@@ -109,14 +109,18 @@ def _write_msgvault_scope_db(
             CREATE TABLE messages (
                 id INTEGER PRIMARY KEY,
                 source_id INTEGER NOT NULL,
-                source_message_id TEXT
+                source_message_id TEXT,
+                message_type TEXT
             );
             """
         )
         conn.execute("INSERT INTO sources (id, identifier) VALUES (?, ?)", (1, account))
         conn.execute(
-            "INSERT INTO messages (id, source_id, source_message_id) VALUES (?, ?, ?)",
-            (message_id, 1, source_id),
+            """
+            INSERT INTO messages (id, source_id, source_message_id, message_type)
+            VALUES (?, ?, ?, ?)
+            """,
+            (message_id, 1, source_id, "email"),
         )
         conn.commit()
     finally:
