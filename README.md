@@ -50,13 +50,10 @@ Rather than ignoring the elephant in the room, our design targets the [lethal tr
 ## Status
 
 This repo is public and still pre-alpha. The latest published line is
-`v0.6.5` (GitHub Release and PyPI package).
-
-This checkout contains pre-tag `v0.6.6` release content under release-close
-validation. The candidate adds config-path `SOUL.md` persona preferences,
-Discord public-channel policy controls, local MsgVault email read/search,
-local image and voice attachment ingest, and same-session evidence
-carry-forward for follow-up turns. It has not been tagged or published yet.
+`v0.6.6` (GitHub Release and PyPI package). This release adds config-path
+`SOUL.md` persona preferences, Discord public-channel policy controls, local
+MsgVault email read/search, local image and voice attachment ingest, and
+same-session evidence carry-forward for follow-up turns.
 
 | Version | Focus |
 |---------|-------|
