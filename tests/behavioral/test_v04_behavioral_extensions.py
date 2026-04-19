@@ -574,7 +574,7 @@ async def test_behavioral_msgvault_email_read_executes_without_lockdown(
             "--account",
             "me@example.com",
         ]
-        assert calls[1] == [str(msgvault), "--local", "show-message", "msg-202", "--json"]
+        assert calls[1] == [str(msgvault), "--local", "show-message", "202", "--json"]
 
         tool_outputs = reply.get("tool_outputs")
         assert isinstance(tool_outputs, list)

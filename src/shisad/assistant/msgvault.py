@@ -264,20 +264,22 @@ class MsgvaultToolkit:
                 account=_string_value(account, max_bytes=_MAX_ACCOUNT_BYTES),
             )
         resolved_account = account_result
+        read_id = normalized_id
         if resolved_account:
             scope_result = self._validate_read_account_scope(
                 message_id=normalized_id,
                 account=resolved_account,
             )
-            if scope_result is not None:
+            if isinstance(scope_result, dict):
                 return self._read_error_payload(
                     reason=str(scope_result["error"]),
                     message_id=normalized_id,
                     account=resolved_account,
                     details=scope_result,
                 )
+            read_id = scope_result
         result = self._run(
-            ["show-message", normalized_id, "--json"],
+            ["show-message", read_id, "--json"],
             operation="email.read",
         )
         if isinstance(result, dict) and "error" in result:
@@ -435,7 +437,7 @@ class MsgvaultToolkit:
         *,
         message_id: str,
         account: str,
-    ) -> dict[str, Any] | None:
+    ) -> str | dict[str, Any]:
         result = self._run(
             [
                 "search",
@@ -455,21 +457,20 @@ class MsgvaultToolkit:
         rows = self._search_rows(result)
         if rows is None:
             return {"error": "msgvault_unexpected_json"}
-        if self._search_rows_include_message(rows, message_id=message_id):
-            return None
+        scoped_id = self._scoped_message_id_from_search_rows(rows, message_id=message_id)
+        if scoped_id:
+            return scoped_id
         return {"error": "msgvault_message_not_in_account_scope"}
 
-    def _search_rows_include_message(self, rows: list[Any], *, message_id: str) -> bool:
+    def _scoped_message_id_from_search_rows(self, rows: list[Any], *, message_id: str) -> str:
         normalized_id = message_id.strip()
         for item in rows:
             row = self._normalize_search_row(item)
-            candidates = {
-                row.get("id", "").strip(),
-                row.get("source_message_id", "").strip(),
-            }
-            if normalized_id in candidates:
-                return True
-        return False
+            internal_id = str(row.get("id", "")).strip()
+            source_message_id = str(row.get("source_message_id", "")).strip()
+            if normalized_id in {internal_id, source_message_id}:
+                return internal_id
+        return ""
 
     def _search_rows(self, payload: Any) -> list[Any] | None:
         if isinstance(payload, list):

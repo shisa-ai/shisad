@@ -155,7 +155,8 @@ msgvault notes:
   set, searches must target a listed account unless exactly one account is
   configured, in which case that account is selected automatically. Message
   reads use the same account resolution and verify the requested message id
-  through an account-scoped search before reading.
+  through an account-scoped search before reading the matched msgvault internal
+  id.
 - Search output is bounded to metadata and snippets. Message reads omit HTML
   bodies, omit BCC recipient details, include only BCC counts, and truncate
   text bodies to `SHISAD_MSGVAULT_MAX_BODY_BYTES`.

@@ -226,7 +226,7 @@ def test_msgvault_read_enforces_account_allowlist_scope(tmp_path: Path) -> None:
         "--account",
         "me@example.com",
     ]
-    assert calls[1] == [str(script), "--local", "show-message", "msg-101", "--json"]
+    assert calls[1] == [str(script), "--local", "show-message", "101", "--json"]
     assert payload["ok"] is True
     assert payload["account"] == "me@example.com"
     assert payload["message"]["subject"] == "Scoped"
@@ -340,6 +340,62 @@ def test_msgvault_read_scope_treats_message_ids_as_case_sensitive(tmp_path: Path
     assert payload["error"] == "msgvault_message_not_in_account_scope"
     assert len(calls) == 1
     assert "show-message" not in calls[0]
+
+
+def test_msgvault_read_uses_scoped_internal_id_for_source_id_matches(tmp_path: Path) -> None:
+    calls_log = tmp_path / "collide-calls.json"
+    script = tmp_path / "collide-msgvault.py"
+    script.write_text(
+        textwrap.dedent(
+            f"""
+            #!{sys.executable}
+            import json
+            import sys
+            from pathlib import Path
+
+            path = Path({str(calls_log)!r})
+            calls = json.loads(path.read_text(encoding="utf-8")) if path.exists() else []
+            calls.append(sys.argv)
+            path.write_text(json.dumps(calls), encoding="utf-8")
+            if "search" in sys.argv:
+                print(json.dumps([{{"id": 101, "source_message_id": "msg-collide"}}]))
+            elif "show-message" in sys.argv and "101" in sys.argv:
+                print(json.dumps({{
+                    "id": 101,
+                    "source_message_id": "msg-collide",
+                    "subject": "Allowed account",
+                    "body_text": "allowed"
+                }}))
+            elif "show-message" in sys.argv and "msg-collide" in sys.argv:
+                print(json.dumps({{
+                    "id": 999,
+                    "source_message_id": "msg-collide",
+                    "subject": "Forbidden account",
+                    "body_text": "forbidden"
+                }}))
+            else:
+                sys.exit(2)
+            """
+        ).lstrip(),
+        encoding="utf-8",
+    )
+    script.chmod(0o755)
+    toolkit = MsgvaultToolkit(
+        enabled=True,
+        command=str(script),
+        home=None,
+        timeout_seconds=2.0,
+        max_results=10,
+        max_body_bytes=1024,
+        account_allowlist=["me@example.com"],
+    )
+
+    payload = toolkit.read_message(message_id="msg-collide", account="me@example.com")
+
+    calls = json.loads(calls_log.read_text(encoding="utf-8"))
+    assert calls[1] == [str(script), "--local", "show-message", "101", "--json"]
+    assert payload["ok"] is True
+    assert payload["message"]["subject"] == "Allowed account"
 
 
 def test_msgvault_search_accepts_wrapped_results_shape(tmp_path: Path) -> None:
