@@ -284,20 +284,18 @@ class MsgvaultToolkit:
                 account=_string_value(account, max_bytes=_MAX_ACCOUNT_BYTES),
             )
         resolved_account = account_result
-        read_id = normalized_id
-        if resolved_account:
-            scope_result = self._validate_read_account_scope(
+        scope_result = self._resolve_read_message_id(
+            message_id=normalized_id,
+            account=resolved_account,
+        )
+        if isinstance(scope_result, dict):
+            return self._read_error_payload(
+                reason=str(scope_result["error"]),
                 message_id=normalized_id,
                 account=resolved_account,
+                details=scope_result,
             )
-            if isinstance(scope_result, dict):
-                return self._read_error_payload(
-                    reason=str(scope_result["error"]),
-                    message_id=normalized_id,
-                    account=resolved_account,
-                    details=scope_result,
-                )
-            read_id = scope_result
+        read_id = scope_result
         result = self._run(
             ["show-message", read_id, "--json"],
             operation="email.read",
@@ -452,7 +450,7 @@ class MsgvaultToolkit:
             return allowed[0]
         return {"error": "msgvault_account_required"}
 
-    def _validate_read_account_scope(
+    def _resolve_read_message_id(
         self,
         *,
         message_id: str,
@@ -519,6 +517,11 @@ class MsgvaultToolkit:
         try:
             conn.execute("PRAGMA query_only = ON")
             email_clause = self._email_message_type_clause(conn)
+            account_clause = ""
+            account_args: tuple[str, ...] = ()
+            if account:
+                account_clause = "AND lower(COALESCE(s.identifier, '')) = ?"
+                account_args = (account,)
             internal_id = _canonical_internal_message_id(message_id)
             if internal_id is not None:
                 row = conn.execute(
@@ -526,12 +529,13 @@ class MsgvaultToolkit:
                     SELECT m.id
                     FROM messages m
                     JOIN sources s ON s.id = m.source_id
-                    WHERE lower(COALESCE(s.identifier, '')) = ?
+                    WHERE 1 = 1
+                      {account_clause}
                       {email_clause}
                       AND m.id = ?
                     LIMIT 1
                     """,
-                    (account, internal_id),
+                    (*account_args, internal_id),
                 ).fetchone()
                 if row is not None:
                     return str(row[0])
@@ -540,13 +544,14 @@ class MsgvaultToolkit:
                 SELECT m.id
                 FROM messages m
                 JOIN sources s ON s.id = m.source_id
-                WHERE lower(COALESCE(s.identifier, '')) = ?
+                WHERE 1 = 1
+                  {account_clause}
                   {email_clause}
                   AND m.source_message_id = ?
                 ORDER BY m.id
                 LIMIT 2
                 """,
-                (account, message_id),
+                (*account_args, message_id),
             ).fetchall()
         except sqlite3.Error:
             return {"error": "msgvault_scope_lookup_unavailable"}
@@ -554,7 +559,11 @@ class MsgvaultToolkit:
             conn.close()
         if len(source_rows) == 1:
             return str(source_rows[0][0])
-        return {"error": "msgvault_message_not_in_account_scope"}
+        if len(source_rows) > 1:
+            return {"error": "msgvault_message_id_ambiguous"}
+        if account:
+            return {"error": "msgvault_message_not_in_account_scope"}
+        return {"error": "msgvault_message_not_email_scope"}
 
     def _email_message_type_clause(self, conn: sqlite3.Connection) -> str:
         columns = {
@@ -737,9 +746,19 @@ def _actionable_message(reason: str, *, operation: str) -> str:
             "The msgvault message id was not found in account-scoped archive metadata; "
             "use an id returned by email.search for the requested account."
         )
+    if reason == "msgvault_message_not_email_scope":
+        return (
+            "The msgvault message id was not found as an email row in local archive "
+            "metadata; use an id returned by email.search."
+        )
+    if reason == "msgvault_message_id_ambiguous":
+        return (
+            "The msgvault source message id matched more than one email row; specify "
+            "the account or use the msgvault internal id returned by email.search."
+        )
     if reason == "msgvault_scope_lookup_unavailable":
         return (
-            "Account-scoped email.read could not inspect the local msgvault archive; "
+            "email.read could not inspect the local msgvault archive; "
             "check SHISAD_MSGVAULT_HOME, msgvault config.toml, and msgvault.db."
         )
     if reason in {"email_search_query_required", "email_message_id_required"}:

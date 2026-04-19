@@ -191,10 +191,11 @@ def test_msgvault_search_bounds_echoed_query_and_account(tmp_path: Path) -> None
 
 def test_msgvault_read_truncates_body_and_omits_html_and_bcc(tmp_path: Path) -> None:
     command, _argv_log = _write_fake_msgvault(tmp_path, body_text="A" * 64)
+    home = _write_msgvault_scope_db(tmp_path)
     toolkit = MsgvaultToolkit(
         enabled=True,
         command=str(command),
-        home=None,
+        home=home,
         timeout_seconds=2.0,
         max_results=10,
         max_body_bytes=16,
@@ -214,6 +215,108 @@ def test_msgvault_read_truncates_body_and_omits_html_and_bcc(tmp_path: Path) -> 
     assert message["bcc_count"] == 1
     assert payload["taint_labels"] == ["untrusted", "email"]
     assert payload["evidence"]["operation"] == "email.read"
+
+
+def test_msgvault_read_without_account_still_requires_email_scope(tmp_path: Path) -> None:
+    calls_log = tmp_path / "unscoped-calls.json"
+    script = tmp_path / "unscoped-msgvault.py"
+    script.write_text(
+        textwrap.dedent(
+            f"""
+            #!{sys.executable}
+            import json
+            import sys
+            from pathlib import Path
+
+            path = Path({str(calls_log)!r})
+            calls = json.loads(path.read_text(encoding="utf-8")) if path.exists() else []
+            calls.append(sys.argv)
+            path.write_text(json.dumps(calls), encoding="utf-8")
+            if "show-message" in sys.argv and "101" in sys.argv:
+                print(json.dumps({{
+                    "id": 101,
+                    "source_message_id": "msg-101",
+                    "subject": "Unscoped email",
+                    "body_text": "email"
+                }}))
+            else:
+                sys.exit(2)
+            """
+        ).lstrip(),
+        encoding="utf-8",
+    )
+    script.chmod(0o755)
+    home = _write_msgvault_scope_db(tmp_path)
+    toolkit = MsgvaultToolkit(
+        enabled=True,
+        command=str(script),
+        home=home,
+        timeout_seconds=2.0,
+        max_results=10,
+        max_body_bytes=1024,
+        account_allowlist=[],
+    )
+
+    payload = toolkit.read_message(message_id="msg-101")
+
+    calls = json.loads(calls_log.read_text(encoding="utf-8"))
+    assert calls == [
+        [str(script), "--local", "--home", str(home), "show-message", "101", "--json"]
+    ]
+    assert payload["ok"] is True
+    assert payload["message"]["subject"] == "Unscoped email"
+
+
+def test_msgvault_read_without_account_rejects_non_email_message_type(
+    tmp_path: Path,
+) -> None:
+    calls_log = tmp_path / "unscoped-text-calls.json"
+    script = tmp_path / "unscoped-text-msgvault.py"
+    script.write_text(
+        textwrap.dedent(
+            f"""
+            #!{sys.executable}
+            import json
+            import sys
+            from pathlib import Path
+
+            path = Path({str(calls_log)!r})
+            calls = json.loads(path.read_text(encoding="utf-8")) if path.exists() else []
+            calls.append(sys.argv)
+            path.write_text(json.dumps(calls), encoding="utf-8")
+            if "show-message" in sys.argv:
+                print(json.dumps({{
+                    "id": 101,
+                    "source_message_id": "msg-101",
+                    "subject": "Not email",
+                    "body_text": "chat"
+                }}))
+            else:
+                sys.exit(2)
+            """
+        ).lstrip(),
+        encoding="utf-8",
+    )
+    script.chmod(0o755)
+    home = _write_msgvault_scope_db(
+        tmp_path,
+        messages=[(101, 1, "msg-101", "whatsapp")],
+    )
+    toolkit = MsgvaultToolkit(
+        enabled=True,
+        command=str(script),
+        home=home,
+        timeout_seconds=2.0,
+        max_results=10,
+        max_body_bytes=1024,
+        account_allowlist=[],
+    )
+
+    payload = toolkit.read_message(message_id="msg-101")
+
+    assert payload["ok"] is False
+    assert payload["error"] == "msgvault_message_not_email_scope"
+    assert not calls_log.exists()
 
 
 def test_msgvault_read_enforces_account_allowlist_scope(tmp_path: Path) -> None:

@@ -155,9 +155,9 @@ msgvault notes:
 - `SHISAD_MSGVAULT_ACCOUNT_ALLOWLIST` accepts CSV or JSON array syntax. When
   set, searches must target a listed account unless exactly one account is
   configured, in which case that account is selected automatically. Message
-  reads use the same account resolution and verify the requested message id
-  against local msgvault archive metadata before reading the matched msgvault
-  internal id.
+  reads verify the requested message id is an email row in local msgvault
+  archive metadata before reading the matched msgvault internal id; when the
+  allowlist is set, reads also use the same account resolution.
 - Search output is bounded to metadata and snippets. Message reads omit HTML
   bodies, omit BCC recipient details, include only BCC counts, and truncate
   text bodies to `SHISAD_MSGVAULT_MAX_BODY_BYTES`.
