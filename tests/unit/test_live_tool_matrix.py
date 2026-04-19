@@ -83,6 +83,11 @@ def test_email_read_template_requires_configured_or_search_derived_id(monkeypatc
     monkeypatch.setenv("SHISAD_LIVE_TOOL_MATRIX_EMAIL_ACCOUNT", "me@example.com")
     configured_templates = module._structured_rpc_templates()
 
+    assert configured_templates["email.search"] == {
+        "query": "shisad",
+        "limit": 2,
+        "account": "me@example.com",
+    }
     assert configured_templates["email.read"] == {
         "message_id": "msg-101",
         "account": "me@example.com",
@@ -97,3 +102,16 @@ def test_email_read_template_requires_configured_or_search_derived_id(monkeypatc
     )
 
     assert derived == {"message_id": "202", "account": "work@example.com"}
+
+
+def test_msgvault_account_required_is_disabled_probe_setup_reason() -> None:
+    module = _load_live_tool_matrix_module()
+
+    row = module._classify_structured_rpc_result(
+        method_name="tool.email.search",
+        result={"ok": False, "error": "msgvault_account_required"},
+        strict_disabled=False,
+    )
+
+    assert row.status == "pass_disabled"
+    assert row.detail == "msgvault_account_required"

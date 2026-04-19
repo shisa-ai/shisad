@@ -26,6 +26,7 @@ _DISABLED_REASONS: frozenset[str] = frozenset(
         "destination_not_allowlisted",
         "msgvault_disabled",
         "msgvault_command_not_found",
+        "msgvault_account_required",
         "email_read_probe_message_id_unconfigured",
         "realitycheck_disabled",
         "realitycheck_misconfigured",
@@ -174,10 +175,14 @@ def _tool_payload_templates(repo_root: Path) -> dict[str, dict[str, Any]]:
 
 
 def _structured_rpc_templates() -> dict[str, dict[str, Any]]:
+    email_search_template: dict[str, Any] = {"query": "shisad", "limit": 2}
+    email_account = os.environ.get("SHISAD_LIVE_TOOL_MATRIX_EMAIL_ACCOUNT", "").strip()
+    if email_account:
+        email_search_template["account"] = email_account
     templates: dict[str, dict[str, Any]] = {
         "web.search": {"query": "shisad", "limit": 2},
         "web.fetch": {"url": "https://example.com", "snapshot": False},
-        "email.search": {"query": "shisad", "limit": 2},
+        "email.search": email_search_template,
         "fs.list": {"path": ".", "recursive": False, "limit": 20},
         "fs.read": {"path": "README.md", "max_bytes": 4096},
         "fs.write": {
