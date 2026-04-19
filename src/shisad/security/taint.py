@@ -98,6 +98,8 @@ def label_tool_output(tool_name: str) -> set[TaintLabel]:
         return {TaintLabel.USER_REVIEWED}
     if canonical_name == "evidence.read":
         return {TaintLabel.UNTRUSTED}
+    if canonical_name in {"email.search", "email.read"}:
+        return {TaintLabel.UNTRUSTED, TaintLabel.SENSITIVE_EMAIL}
     if canonical_name.startswith("mcp."):
         return {TaintLabel.UNTRUSTED, TaintLabel.MCP_EXTERNAL}
     if canonical_name in _INTERNAL_TOOL_OUTPUTS:

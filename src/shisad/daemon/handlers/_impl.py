@@ -379,6 +379,43 @@ def _structured_realitycheck_read(
     )
 
 
+def _structured_email_search(
+    handler: Any,
+    arguments: Mapping[str, Any],
+    _context: StructuredToolContext | None = None,
+) -> Mapping[str, Any]:
+    query = _argument_string(arguments, "query")
+    if not query:
+        return {
+            "ok": False,
+            "error": "email_search_query_required",
+            "taint_labels": [TaintLabel.UNTRUSTED.value, TaintLabel.SENSITIVE_EMAIL.value],
+        }
+    return dict(
+        handler._msgvault_toolkit.search(
+            query=query,
+            limit=_argument_int(arguments, "limit", default=10, minimum=1),
+            offset=_argument_int(arguments, "offset", default=0, minimum=0),
+            account=_argument_string(arguments, "account"),
+        )
+    )
+
+
+def _structured_email_read(
+    handler: Any,
+    arguments: Mapping[str, Any],
+    _context: StructuredToolContext | None = None,
+) -> Mapping[str, Any]:
+    message_id = _argument_string(arguments, "message_id") or _argument_string(arguments, "id")
+    if not message_id:
+        return {
+            "ok": False,
+            "error": "email_message_id_required",
+            "taint_labels": [TaintLabel.UNTRUSTED.value, TaintLabel.SENSITIVE_EMAIL.value],
+        }
+    return dict(handler._msgvault_toolkit.read_message(message_id=message_id))
+
+
 def _structured_fs_list(
     handler: Any,
     arguments: Mapping[str, Any],
@@ -991,6 +1028,7 @@ class HandlerImplementation(
         self._coding_manager = services.coding_manager
         self._selfmod_manager = services.selfmod_manager
         self._mcp_manager = services.mcp_manager
+        self._msgvault_toolkit = services.msgvault_toolkit
         self._realitycheck_toolkit = services.realitycheck_toolkit
         self._sandbox = services.sandbox
         self._control_plane = services.control_plane
@@ -3248,6 +3286,8 @@ class HandlerImplementation(
                 "realitycheck_search_failed",
             ),
             "realitycheck.read": (_structured_realitycheck_read, "realitycheck_read_failed"),
+            "email.search": (_structured_email_search, "email_search_failed"),
+            "email.read": (_structured_email_read, "email_read_failed"),
             "fs.list": (_structured_fs_list, "fs_list_failed"),
             "fs.read": (_structured_fs_read, "fs_read_failed"),
             "fs.write": (_structured_fs_write, "fs_write_failed"),

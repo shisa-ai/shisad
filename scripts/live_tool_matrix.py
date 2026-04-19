@@ -23,6 +23,8 @@ _DISABLED_REASONS: frozenset[str] = frozenset(
         "web_allowlist_unconfigured",
         "web_fetch_disabled",
         "destination_not_allowlisted",
+        "msgvault_disabled",
+        "msgvault_command_not_found",
         "realitycheck_disabled",
         "realitycheck_misconfigured",
         "endpoint_mode_disabled",
@@ -173,6 +175,8 @@ def _structured_rpc_templates() -> dict[str, dict[str, Any]]:
     return {
         "web.search": {"query": "shisad", "limit": 2},
         "web.fetch": {"url": "https://example.com", "snapshot": False},
+        "email.search": {"query": "shisad", "limit": 2},
+        "email.read": {"message_id": "live-tool-matrix-message"},
         "fs.list": {"path": ".", "recursive": False, "limit": 20},
         "fs.read": {"path": "README.md", "max_bytes": 4096},
         "fs.write": {

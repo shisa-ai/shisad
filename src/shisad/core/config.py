@@ -14,7 +14,7 @@ from typing import Annotated, Literal, Self
 from urllib.parse import urlparse
 
 from pydantic import BaseModel, Field, field_validator, model_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 from shisad.channels.discord_policy import DiscordChannelRule
 from shisad.core.providers.capabilities import (
@@ -418,6 +418,40 @@ class DaemonConfig(BaseSettings):
         ge=1024,
         description="Maximum bytes fetched for web page content.",
     )
+    msgvault_enabled: bool = Field(
+        default=False,
+        description="Enable local msgvault email read/search connector.",
+    )
+    msgvault_command: str = Field(
+        default="msgvault",
+        description="msgvault executable path or command used for local email reads/searches.",
+    )
+    msgvault_home: Path | None = Field(
+        default=None,
+        description="Optional MSGVAULT_HOME override passed to msgvault as --home.",
+    )
+    msgvault_timeout_seconds: float = Field(
+        default=10.0,
+        ge=0.1,
+        description="Timeout for local msgvault CLI read/search operations.",
+    )
+    msgvault_max_results: int = Field(
+        default=20,
+        ge=1,
+        description="Maximum email search results returned through shisad.",
+    )
+    msgvault_max_body_bytes: int = Field(
+        default=65536,
+        ge=1024,
+        description="Maximum UTF-8 bytes returned from an email message body.",
+    )
+    msgvault_account_allowlist: Annotated[list[str], NoDecode] = Field(
+        default_factory=list,
+        description=(
+            "Optional lower-privilege account scope for msgvault searches. When set, "
+            "queries must target a listed account unless exactly one account is configured."
+        ),
+    )
     browser_enabled: bool = Field(
         default=False,
         description="Enable browser automation surface.",
@@ -764,6 +798,35 @@ class DaemonConfig(BaseSettings):
     @classmethod
     def _parse_browser_allowed_domains(cls, value: object) -> object:
         return cls._parse_list_field(value, field_name="SHISAD_BROWSER_ALLOWED_DOMAINS")
+
+    @field_validator("msgvault_home", mode="before")
+    @classmethod
+    def _parse_msgvault_home(cls, value: object) -> object:
+        if value in {None, ""}:
+            return None
+        if isinstance(value, str):
+            return Path(value.strip()).expanduser() if value.strip() else None
+        if isinstance(value, Path):
+            return value.expanduser()
+        return value
+
+    @field_validator("msgvault_account_allowlist", mode="before")
+    @classmethod
+    def _parse_msgvault_account_allowlist(cls, value: object) -> object:
+        return cls._parse_list_field(value, field_name="SHISAD_MSGVAULT_ACCOUNT_ALLOWLIST")
+
+    @field_validator("msgvault_account_allowlist")
+    @classmethod
+    def _normalize_msgvault_account_allowlist(cls, value: list[str]) -> list[str]:
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for raw in value:
+            candidate = str(raw).strip().lower()
+            if not candidate or candidate in seen:
+                continue
+            seen.add(candidate)
+            normalized.append(candidate)
+        return normalized
 
     @field_validator("assistant_fs_roots", mode="before")
     @classmethod

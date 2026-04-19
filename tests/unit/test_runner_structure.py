@@ -14,6 +14,8 @@ from shisad.core.api.schema import (
     DevRemediateParams,
     DevReviewParams,
     DoctorCheckParams,
+    EmailReadParams,
+    EmailSearchParams,
     RealityCheckReadParams,
     RealityCheckSearchParams,
     SessionSetModeParams,
@@ -74,6 +76,8 @@ def test_runner_registers_m4_dev_methods_and_m3_realitycheck_and_doctor_methods(
     assert mapping["channel.pairing_propose"] is ChannelPairingProposalParams
     assert mapping["realitycheck.search"] is RealityCheckSearchParams
     assert mapping["realitycheck.read"] is RealityCheckReadParams
+    assert mapping["email.search"] is EmailSearchParams
+    assert mapping["email.read"] is EmailReadParams
     assert admin_only["dev.implement"] is True
     assert admin_only["dev.review"] is True
     assert admin_only["dev.remediate"] is True

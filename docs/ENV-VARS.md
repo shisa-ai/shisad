@@ -130,6 +130,39 @@ Web notes:
 - The search backend host must also be present in `SHISAD_WEB_ALLOWED_DOMAINS`, alongside any fetch/search destinations you want auto-approved in the tested environment.
 - If `SHISAD_WEB_SEARCH_BACKEND_URL` is unset, `tool.web.search` stays available in the registry but reports `web_search_backend_unconfigured` in live tool-status checks instead of silently locking down the session.
 
+msgvault email:
+
+- `SHISAD_MSGVAULT_ENABLED`
+- `SHISAD_MSGVAULT_COMMAND`
+- `SHISAD_MSGVAULT_HOME`
+- `SHISAD_MSGVAULT_TIMEOUT_SECONDS`
+- `SHISAD_MSGVAULT_MAX_RESULTS`
+- `SHISAD_MSGVAULT_MAX_BODY_BYTES`
+- `SHISAD_MSGVAULT_ACCOUNT_ALLOWLIST`
+
+msgvault notes:
+
+- `email.search` and `email.read` are read-only structured tools requiring
+  `email.read` capability. They use the local msgvault CLI with `--local`;
+  shisad does not perform Gmail/IMAP sync and does not copy provider OAuth or
+  IMAP credentials into its own credential store in this slice.
+- `SHISAD_MSGVAULT_ENABLED=1` enables runtime calls. If it is unset, the tools
+  remain registered but return `msgvault_disabled` with setup guidance instead
+  of locking down the session.
+- `SHISAD_MSGVAULT_HOME` is passed to msgvault as `--home`. Leave it unset to
+  use msgvault's default archive location.
+- `SHISAD_MSGVAULT_ACCOUNT_ALLOWLIST` accepts CSV or JSON array syntax. When
+  set, searches must target a listed account unless exactly one account is
+  configured, in which case that account is selected automatically.
+- Search output is bounded to metadata and snippets. Message reads omit HTML
+  bodies, omit BCC recipient details, include only BCC counts, and truncate
+  text bodies to `SHISAD_MSGVAULT_MAX_BODY_BYTES`.
+- Email tool output is tainted as both untrusted and sensitive email content.
+  Email content can inform summaries, but it cannot authorize follow-on writes,
+  sends, tasks, reminders, or egress on its own.
+- Email send/reply, calendar read/write, Google Workspace write skills, remote
+  msgvault API/MCP transport, and msgvault sync/setup automation are deferred.
+
 Browser:
 
 - `SHISAD_BROWSER_ENABLED`

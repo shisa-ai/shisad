@@ -138,6 +138,8 @@ _TOOL_KIND_MAP: dict[str, ActionKind] = {
     "http.request": ActionKind.EGRESS,
     "web.search": ActionKind.EGRESS,
     "web.fetch": ActionKind.EGRESS,
+    "email.search": ActionKind.MESSAGE_READ,
+    "email.read": ActionKind.MESSAGE_READ,
     "browser.navigate": ActionKind.BROWSER_READ,
     "browser.read_page": ActionKind.BROWSER_READ,
     "browser.screenshot": ActionKind.BROWSER_READ,

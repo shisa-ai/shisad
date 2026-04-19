@@ -8,6 +8,7 @@ import json
 import socket
 import subprocess
 import sys
+import textwrap
 import urllib.error
 import urllib.request
 from collections.abc import Callable
@@ -311,6 +312,124 @@ async def test_behavioral_soul_config_path_loads_and_admin_update_refreshes_plan
         assert blocked_write["error"] == "protected_control_plane_path"
         assert "Prefer concise answers." not in captured_persona_text[-1]
         assert "prefer calm release-note wording" in captured_persona_text[-1]
+    finally:
+        await _shutdown_daemon(daemon_task, client)
+
+
+@pytest.mark.asyncio
+async def test_behavioral_msgvault_email_search_executes_without_lockdown(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    msgvault = tmp_path / "fake-msgvault.py"
+    argv_log = tmp_path / "msgvault-argv.json"
+    msgvault.write_text(
+        textwrap.dedent(
+            f"""
+            #!{sys.executable}
+            import json
+            import sys
+            from pathlib import Path
+
+            Path({str(argv_log)!r}).write_text(json.dumps(sys.argv), encoding="utf-8")
+            print(json.dumps([
+                {{
+                    "id": 202,
+                    "source_message_id": "msg-202",
+                    "conversation_id": 12,
+                    "subject": "Invoice follow-up",
+                    "snippet": "Here is the invoice context.",
+                    "from_email": "alice@example.com",
+                    "from_name": "Alice",
+                    "sent_at": "2026-04-19T00:00:00Z",
+                    "has_attachments": False,
+                    "attachment_count": 0,
+                    "labels": ["INBOX"]
+                }}
+            ]))
+            """
+        ).lstrip(),
+        encoding="utf-8",
+    )
+    msgvault.chmod(0o755)
+
+    async def _planner_email_search(
+        self: Planner,
+        user_content: str,
+        context: object,
+        *,
+        tools: list[dict[str, object]] | None = None,
+        persona_tone_override: str | None = None,
+    ) -> PlannerResult:
+        _ = user_content, tools, persona_tone_override
+        proposal = ActionProposal(
+            action_id="m73-email-search",
+            tool_name=ToolName("email.search"),
+            arguments={"query": "from:alice@example.com invoice", "limit": 2},
+            reasoning="behavioral msgvault email search",
+            data_sources=[],
+        )
+        decision = self._pep.evaluate(proposal.tool_name, proposal.arguments, context)
+        return PlannerResult(
+            output=PlannerOutput(actions=[proposal], assistant_response="searching email"),
+            evaluated=[EvaluatedProposal(proposal=proposal, decision=decision)],
+            attempts=1,
+            provider_response=None,
+            messages_sent=(),
+        )
+
+    monkeypatch.setattr(Planner, "propose", _planner_email_search)
+
+    daemon_task, client, _config = await _start_daemon(
+        tmp_path,
+        config_overrides={
+            "msgvault_enabled": True,
+            "msgvault_command": str(msgvault),
+        },
+    )
+    try:
+        created = await client.call("session.create", {"channel": "cli"})
+        sid = created["session_id"]
+
+        reply = await client.call(
+            "session.message",
+            {"session_id": sid, "content": "find Alice's invoice email"},
+        )
+
+        assert int(reply.get("executed_actions", 0)) == 1
+        assert json.loads(argv_log.read_text(encoding="utf-8"))[:3] == [
+            str(msgvault),
+            "--local",
+            "search",
+        ]
+        executed = await client.call(
+            "audit.query",
+            {"event_type": "ToolExecuted", "session_id": sid, "limit": 20},
+        )
+        assert any(
+            str(event.get("data", {}).get("tool_name", "")) == "email.search"
+            and bool(event.get("data", {}).get("success")) is True
+            for event in executed["events"]
+        )
+        actions = await client.call(
+            "audit.query",
+            {
+                "event_type": "ControlPlaneActionObserved",
+                "session_id": sid,
+                "limit": 20,
+            },
+        )
+        email_action = next(
+            event["data"]
+            for event in actions["events"]
+            if str(event.get("data", {}).get("tool_name", "")) == "email.search"
+        )
+        assert email_action["action_kind"] == "MESSAGE_READ"
+        lockdowns = await client.call(
+            "audit.query",
+            {"event_type": "LockdownChanged", "session_id": sid, "limit": 20},
+        )
+        assert lockdowns["events"] == []
     finally:
         await _shutdown_daemon(daemon_task, client)
 

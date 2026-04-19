@@ -49,6 +49,10 @@ from shisad.core.api.schema import (
     DevReviewResult,
     DoctorCheckParams,
     DoctorCheckResult,
+    EmailReadParams,
+    EmailReadResult,
+    EmailSearchParams,
+    EmailSearchResult,
     FsListParams,
     FsListResult,
     FsReadParams,
@@ -601,6 +605,16 @@ class DaemonControlHandlers:
         self, params: RealityCheckReadParams, ctx: RequestContext
     ) -> RealityCheckReadResult:
         return await self._assistant.handle_realitycheck_read(params, ctx)
+
+    async def handle_email_search(
+        self, params: EmailSearchParams, ctx: RequestContext
+    ) -> EmailSearchResult:
+        return await self._assistant.handle_email_search(params, ctx)
+
+    async def handle_email_read(
+        self, params: EmailReadParams, ctx: RequestContext
+    ) -> EmailReadResult:
+        return await self._assistant.handle_email_read(params, ctx)
 
     async def handle_fs_list(self, params: FsListParams, ctx: RequestContext) -> FsListResult:
         return await self._assistant.handle_fs_list(params, ctx)

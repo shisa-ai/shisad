@@ -3,6 +3,10 @@
 from __future__ import annotations
 
 from shisad.core.api.schema import (
+    EmailReadParams,
+    EmailReadResult,
+    EmailSearchParams,
+    EmailSearchResult,
     FsListParams,
     FsListResult,
     FsReadParams,
@@ -85,6 +89,30 @@ class AssistantHandlers:
             internal_ingress_marker=self._internal_ingress_marker,
         )
         return RealityCheckReadResult.model_validate(await self._impl.do_realitycheck_read(payload))
+
+    async def handle_email_search(
+        self,
+        params: EmailSearchParams,
+        ctx: RequestContext,
+    ) -> EmailSearchResult:
+        payload = build_params_payload(
+            params,
+            ctx,
+            internal_ingress_marker=self._internal_ingress_marker,
+        )
+        return EmailSearchResult.model_validate(await self._impl.do_email_search(payload))
+
+    async def handle_email_read(
+        self,
+        params: EmailReadParams,
+        ctx: RequestContext,
+    ) -> EmailReadResult:
+        payload = build_params_payload(
+            params,
+            ctx,
+            internal_ingress_marker=self._internal_ingress_marker,
+        )
+        return EmailReadResult.model_validate(await self._impl.do_email_read(payload))
 
     async def handle_fs_list(self, params: FsListParams, ctx: RequestContext) -> FsListResult:
         payload = build_params_payload(

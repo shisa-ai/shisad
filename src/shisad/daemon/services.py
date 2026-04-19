@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 from urllib.parse import urlparse
 
+from shisad.assistant.msgvault import MsgvaultToolkit
 from shisad.channels.base import Channel
 from shisad.channels.delivery import ChannelDeliveryService
 from shisad.channels.identity import ChannelIdentityMap
@@ -422,6 +423,7 @@ class DaemonServices:
     mcp_manager: McpClientManager | None
     a2a_registry: A2aRegistry | None
     a2a_runtime: A2aRuntime | None
+    msgvault_toolkit: MsgvaultToolkit
     realitycheck_toolkit: RealityCheckToolkit
     realitycheck_status: dict[str, Any]
     lockdown_manager: LockdownManager
@@ -697,6 +699,15 @@ class DaemonServices:
                 audit_hook=event_wiring.audit_memory_event,
             )
             scheduler = SchedulerManager(storage_dir=config.data_dir / "tasks")
+            msgvault_toolkit = MsgvaultToolkit(
+                enabled=config.msgvault_enabled,
+                command=config.msgvault_command,
+                home=config.msgvault_home,
+                timeout_seconds=config.msgvault_timeout_seconds,
+                max_results=config.msgvault_max_results,
+                max_body_bytes=config.msgvault_max_body_bytes,
+                account_allowlist=list(config.msgvault_account_allowlist),
+            )
             realitycheck_domains = [
                 item for item in config.realitycheck_allowed_domains if item.strip()
             ]
@@ -860,6 +871,7 @@ class DaemonServices:
                 mcp_manager=mcp_manager,
                 a2a_registry=None,
                 a2a_runtime=None,
+                msgvault_toolkit=msgvault_toolkit,
                 realitycheck_toolkit=realitycheck_toolkit,
                 realitycheck_status=realitycheck_status,
                 lockdown_manager=lockdown_manager,
@@ -1421,6 +1433,42 @@ def _build_tool_registry(
                 ToolParameter(name="max_bytes", type="integer", required=False),
             ],
             capabilities_required=[Capability.HTTP_REQUEST],
+            require_confirmation=False,
+        )
+    )
+    registry.register(
+        ToolDefinition(
+            name=ToolName("email.search"),
+            description=(
+                "Search the local msgvault email archive. Use only for user-requested "
+                "email lookup, triage, and summarization."
+            ),
+            parameters=[
+                ToolParameter(name="query", type="string", required=True),
+                ToolParameter(name="limit", type="integer", required=False),
+                ToolParameter(name="offset", type="integer", required=False),
+                ToolParameter(
+                    name="account",
+                    type="string",
+                    required=False,
+                    semantic_type="email_address",
+                ),
+            ],
+            capabilities_required=[Capability.EMAIL_READ],
+            require_confirmation=False,
+        )
+    )
+    registry.register(
+        ToolDefinition(
+            name=ToolName("email.read"),
+            description=(
+                "Read one message from the local msgvault email archive by msgvault "
+                "message id or source message id."
+            ),
+            parameters=[
+                ToolParameter(name="message_id", type="string", required=True),
+            ],
+            capabilities_required=[Capability.EMAIL_READ],
             require_confirmation=False,
         )
     )

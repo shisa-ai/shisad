@@ -586,6 +586,43 @@ class WebFetchResult(BaseModel):
     snapshot_path: str = ""
 
 
+class EmailSearchParams(_StrictParams):
+    query: str
+    limit: int = 10
+    offset: int = 0
+    account: str = ""
+
+
+class EmailSearchResult(BaseModel):
+    ok: bool
+    operation: str = "email.search"
+    query: str = ""
+    account: str = ""
+    limit: int = 0
+    offset: int = 0
+    count: int = 0
+    results: list[dict[str, Any]] = Field(default_factory=list)
+    taint_labels: list[str] = Field(default_factory=list)
+    evidence: dict[str, Any] = Field(default_factory=dict)
+    actionable: str = ""
+    error: str = ""
+
+
+class EmailReadParams(_StrictParams):
+    message_id: str
+
+
+class EmailReadResult(BaseModel):
+    ok: bool
+    operation: str = "email.read"
+    message_id: str = ""
+    message: dict[str, Any] | None = None
+    taint_labels: list[str] = Field(default_factory=list)
+    evidence: dict[str, Any] = Field(default_factory=dict)
+    actionable: str = ""
+    error: str = ""
+
+
 class RealityCheckSearchParams(_StrictParams):
     query: str
     limit: int = 5
