@@ -285,7 +285,7 @@ class DiscordChannel(InMemoryChannel):
                         metadata={
                             "discord_guild_id": guild_id,
                             "discord_channel_id": channel_id,
-                            "addressed": guild is not None,
+                            "addressed": True,
                             "interaction_type": "direct",
                             "engagement_mode": "mention-only",
                             "proactive_eligible": False,

@@ -980,13 +980,13 @@ class AdminImplMixin(HandlerMixinBase):
             }
 
         declared_trust = self._identity_map.trust_for_channel(message.channel)
-        if self._is_verified_channel_identity(
+        if public_policy_access:
+            declared_trust = discord_decision.trust_level
+        elif self._is_verified_channel_identity(
             channel=message.channel,
             external_user_id=message.external_user_id,
         ):
             declared_trust = "owner"
-        elif public_policy_access:
-            declared_trust = discord_decision.trust_level
         if not declared_trust:
             declared_trust = "untrusted"
 
@@ -1008,7 +1008,11 @@ class AdminImplMixin(HandlerMixinBase):
                 channel=message.channel,
                 external_user_id=message.external_user_id,
             )
-        elif identity is not None and declared_trust != identity.trust_level:
+        elif (
+            identity is not None
+            and not public_policy_access
+            and declared_trust != identity.trust_level
+        ):
             self._identity_map.bind(
                 channel=message.channel,
                 external_user_id=message.external_user_id,
@@ -1020,7 +1024,7 @@ class AdminImplMixin(HandlerMixinBase):
                 channel=message.channel,
                 external_user_id=message.external_user_id,
             )
-        if identity is None and public_policy_access:
+        if public_policy_access:
             identity_user_id = UserId(message.external_user_id)
             identity_workspace_id = WorkspaceId(message.workspace_hint or message.channel)
             identity_trust_level = declared_trust
@@ -1087,7 +1091,7 @@ class AdminImplMixin(HandlerMixinBase):
                 delivery_target=delivery_target,
                 channel_policy=channel_policy_payload,
                 reason=reason,
-                ephemeral_session=public_session,
+                ephemeral_session=True,
             )
         cooldown_key = self._proactive_cooldown_key(
             channel=message.channel,
@@ -1110,7 +1114,7 @@ class AdminImplMixin(HandlerMixinBase):
                 delivery_target=delivery_target,
                 channel_policy=channel_policy_payload,
                 reason="proactive_cooldown",
-                ephemeral_session=public_session,
+                ephemeral_session=True,
             )
         channel_policy_payload["proactive"] = proactive
 

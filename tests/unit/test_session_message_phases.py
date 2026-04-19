@@ -583,6 +583,7 @@ def _finalize_execution_result(
     assistant_response: str = "planner response",
     content: str = "hello",
     sanitized_text: str | None = None,
+    trust_level: str = "trusted",
     pending_confirmation: int = 0,
     pending_confirmation_ids: list[str] | None = None,
     provider_response_model: str | None = None,
@@ -592,6 +593,7 @@ def _finalize_execution_result(
         params={"session_id": "sess-g1", "content": content},
         sanitized_text=sanitized_text,
     )
+    validated.trust_level = trust_level
     planner_context = SessionMessagePlannerContextResult(
         validated=validated,
         conversation_context="",
@@ -849,6 +851,27 @@ async def test_finalize_response_synthesizes_after_tool_only_turn() -> None:
     assert any(
         "same turn's tool outputs" in message.content for message in trace_turn.messages_sent
     )
+
+
+@pytest.mark.asyncio
+async def test_m75_finalize_response_blocks_sensitive_tool_taint_for_public_channel() -> None:
+    harness = _FinalizeEvidenceHarness()
+    execution = _finalize_execution_result(
+        tool_outputs=[
+            SimpleNamespace(
+                tool_name="fs.read",
+                success=True,
+                content="Owner private file secret.",
+                taint_labels={TaintLabel.SENSITIVE_FILE},
+            )
+        ],
+        assistant_response="The private file says: Owner private file secret.",
+        trust_level="public",
+    )
+
+    response = await SessionImplMixin._finalize_response(harness, execution)
+
+    assert response["response"] == "Response blocked by public-channel output policy."
 
 
 @pytest.mark.asyncio

@@ -91,6 +91,11 @@ Discord public-channel rules:
   `read-along`, or `passive-observe`), `public_enabled`, `public_tools`,
   `trusted_guest_users`, `trusted_guest_tools`, `denied_users`,
   `relevance_keywords`, `cooldown_seconds`, and `proactive_marker`.
+- `guild_id` must match a concrete guild ID unless the operator intentionally
+  sets `guild_id` to `*`. Empty or omitted `channels` means every channel in the
+  matching guild except `exclude_channels`; use explicit `channels` for
+  include-only public grants. When multiple matching rules have equal
+  specificity, later rules override earlier rules.
 - Missing rules fail closed to normal allowlist/pairing behavior. Explicit
   channel/user denies win over broad public rules. Public/trusted-guest sessions
   are ephemeral, do not receive owner-private memory context, and only receive

@@ -305,6 +305,9 @@ SHISAD_CHANNEL_IDENTITY_ALLOWLIST='{"discord":["<your-discord-user-id>"]}'
 JSON when the bot should also serve a shared Discord channel. Rules are
 guild/channel scoped; missing config stays default-deny, and explicit
 `exclude_channels` / `denied_users` entries win over broad public grants.
+Set `guild_id: "*"` only when you intentionally want a cross-guild rule; empty
+or omitted `channels` means every channel in the matching guild except
+`exclude_channels`.
 
 ```bash
 SHISAD_DISCORD_CHANNEL_RULES='[

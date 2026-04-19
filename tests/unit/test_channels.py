@@ -127,6 +127,15 @@ def test_m75_discord_channel_policy_resolves_include_exclude_and_deny_precedence
     assert missing.engagement_mode == "mention-only"
 
     wildcard = DiscordChannelPolicy([DiscordChannelRule(guild_id="*", public_enabled=True)])
+    implicit_wildcard = DiscordChannelPolicy([DiscordChannelRule(public_enabled=True)])
+    assert (
+        implicit_wildcard.resolve(
+            guild_id="guild-1",
+            channel_id="general",
+            external_user_id="visitor",
+        ).public_access
+        is False
+    )
     missing_guild = wildcard.resolve(
         guild_id="",
         channel_id="general",
@@ -147,6 +156,29 @@ def test_m75_discord_channel_policy_resolves_include_exclude_and_deny_precedence
         ).public_access
         is True
     )
+
+    ordered = DiscordChannelPolicy(
+        [
+            DiscordChannelRule(
+                guild_id="guild-1",
+                channels=["general"],
+                public_enabled=True,
+                public_tools=["web.search"],
+            ),
+            DiscordChannelRule(
+                guild_id="guild-1",
+                channels=["general"],
+                public_enabled=True,
+                public_tools=["web.fetch"],
+            ),
+        ]
+    )
+    ordered_result = ordered.resolve(
+        guild_id="guild-1",
+        channel_id="general",
+        external_user_id="visitor",
+    )
+    assert ordered_result.allowed_tools == ("web.fetch",)
 
 
 def test_m75_daemon_config_parses_discord_channel_rules_json() -> None:
@@ -781,6 +813,7 @@ async def test_discord_channel_processes_dm_without_mention(
     assert received.channel == "discord"
     assert received.external_user_id == "u-2"
     assert received.content == "hey there"
+    assert received.metadata["addressed"] is True
     await channel.disconnect()
 
 

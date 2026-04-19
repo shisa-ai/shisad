@@ -44,12 +44,13 @@ def _normalize_tools(values: object) -> list[str]:
 class DiscordChannelRule(BaseModel):
     """Operator-configured Discord server/channel rule.
 
-    Empty ``channels`` means every channel in the guild except explicit
-    ``exclude_channels`` entries. Explicit channel/user denies win before
-    public/trusted-guest grants are considered.
+    Empty ``channels`` means every channel in a matching guild except explicit
+    ``exclude_channels`` entries. Use ``guild_id="*"`` explicitly for a
+    cross-guild rule. Explicit channel/user denies win before public/trusted-
+    guest grants are considered.
     """
 
-    guild_id: str = "*"
+    guild_id: str = ""
     channels: list[str] = Field(default_factory=list)
     exclude_channels: list[str] = Field(default_factory=list)
     mode: DiscordEngagementMode = "mention-only"
@@ -95,7 +96,7 @@ class DiscordChannelRule(BaseModel):
     @field_validator("guild_id")
     @classmethod
     def _default_guild(cls, value: str) -> str:
-        return value or "*"
+        return value
 
     @field_validator("proactive_marker")
     @classmethod
@@ -200,14 +201,10 @@ class DiscordChannelPolicy:
         if not matching:
             return DiscordChannelPolicyDecision()
 
-        selected = sorted(
+        selected = max(
             enumerate(matching),
-            key=lambda item: (
-                item[1].specificity(guild_id=guild, channel_id=channel),
-                -item[0],
-            ),
-            reverse=True,
-        )[0][1]
+            key=lambda item: (item[1].specificity(guild_id=guild, channel_id=channel), item[0]),
+        )[1]
 
         trusted_guests = {item.strip() for item in selected.trusted_guest_users if item.strip()}
         if user in trusted_guests:
