@@ -34,7 +34,7 @@ Note:
   unsupported, malformed, oversized, or transcript-risky media as quarantined
   manifests that are not readable through the default evidence read/promote
   path.
-- The attachment, note, todo, and reminder rows use direct `tool.execute` probe payloads and show the configured control-plane gate for synthetic control API calls. User-requested session flows for these tools are covered separately by behavioral tests.
+- The file.read, attachment, note, todo, and reminder rows use direct `tool.execute` probe payloads and show the configured control-plane gate for synthetic control API calls. User-requested session flows for these tools are covered separately by behavioral tests.
 - The generated snapshot below reflects the current `scripts/live_tool_matrix.py` probe surface. Browser rows are intentionally omitted from this point-in-time table even though the browser tool surface is live in `v0.6.0` M6 when `SHISAD_BROWSER_ENABLED=1` and `SHISAD_BROWSER_COMMAND` is configured.
 - MCP tool rows are intentionally omitted from this static snapshot because the surface is configuration-specific and discovered at runtime. In `v0.6.5` I2, discovered MCP tools are treated as external/untrusted runtime entries and require confirmation by default unless the server name appears in `SHISAD_MCP_TRUSTED_SERVERS`.
 - Browser read-mostly tools (`browser.navigate`, `browser.read_page`, `browser.screenshot`, `browser.end_session`) are designed to work without confirmation when the destination is authorized. Browser write tools (`browser.click`, `browser.type_text`) are confirmation-gated in the live runtime.
@@ -49,7 +49,7 @@ Note:
 | tool.retrieve_rag | WORKS | allowed |
 | tool.shell.exec | WORKS | allowed |
 | tool.http.request | WORKS | allowed |
-| tool.file.read | WORKS | allowed |
+| tool.file.read | GATED | consensus:veto:BehavioralSequenceAnalyzer |
 | tool.file.write | GATED | consensus:veto:BehavioralSequenceAnalyzer |
 | tool.web.search | DISABLED | web_search_backend_unconfigured |
 | tool.web.fetch | WORKS | ok |
@@ -77,8 +77,8 @@ Note:
 
 Summary:
 
-- `WORKS`: 14
-- `GATED`: 11
+- `WORKS`: 13
+- `GATED`: 12
 - `DISABLED`: 6
 - `FAIL`: 0
 - `TOTAL`: 31

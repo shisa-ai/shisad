@@ -33,12 +33,17 @@ Attachments are untrusted content. The risks are:
 - Read only files under `SHISAD_ASSISTANT_FS_ROOTS`, with PEP resource checks
   applying to the `path` argument.
 - Enforce byte limits before parsing.
+- Treat caller-supplied `max_bytes` as a downward-only override; it must not
+  raise configured operator byte limits.
 - Classify supported images and voice recordings by magic/header bytes, not by
   extension alone.
 - Parse only bounded headers for metadata such as image dimensions or WAV
   duration; it must not decode pixels or execute media codecs in this MVP.
 - Treat transcripts as untrusted text and screen them with the ContentFirewall
   before storing them.
+- Enforce a transcript character limit before firewall screening and manifest
+  storage; oversized transcripts are quarantined with no transcript body stored
+  in the manifest.
 - Store a tainted JSON manifest in ArtifactLedger, not raw attachment bytes.
 - Mark unsupported, malformed, oversized, or transcript-risky media as
   `quarantined` with a reason code.
@@ -51,4 +56,3 @@ OCR, STT provider calls, channel attachment downloads, email attachment export,
 PDFs/documents, and multimodal model input remain follow-on work. External STT
 or vision providers are egress surfaces and need separate credential, policy,
 and taint contracts before they can ship.
-

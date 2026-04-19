@@ -337,6 +337,7 @@ Attachment ingest:
 - `SHISAD_ATTACHMENT_MAX_AUDIO_BYTES`
 - `SHISAD_ATTACHMENT_MAX_IMAGE_PIXELS`
 - `SHISAD_ATTACHMENT_MAX_AUDIO_DURATION_SECONDS`
+- `SHISAD_ATTACHMENT_MAX_TRANSCRIPT_CHARS`
 
 Attachment ingest notes:
 
@@ -347,6 +348,10 @@ Attachment ingest notes:
 - Unsupported, malformed, oversized, or transcript-risky attachments are stored
   as quarantined manifests. Quarantined refs are not readable through the
   default `evidence.read` / `evidence.promote` path.
+- `SHISAD_ATTACHMENT_MAX_TRANSCRIPT_CHARS` caps caller-supplied transcript text
+  before firewall screening and manifest storage. Oversized transcripts are
+  quarantined with `transcript_too_large` and the transcript body is not stored
+  in the manifest.
 - OCR, provider speech-to-text, channel attachment downloads, email attachment
   export, document parsing, and multimodal model input are follow-on work.
 

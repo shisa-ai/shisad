@@ -25,6 +25,7 @@ class AttachmentIngestPolicy:
     max_audio_bytes: int = 25_000_000
     max_image_pixels: int = 25_000_000
     max_audio_duration_seconds: float = 15 * 60
+    max_transcript_chars: int = 200_000
     transcript_risk_threshold: float = 0.25
 
 
@@ -98,20 +99,28 @@ class AttachmentIngestor:
                 if mismatch_reason:
                     quarantine_reason = mismatch_reason
                 elif detected.kind == "image":
-                    pixels = int(detected.metadata.get("width", 0)) * int(
-                        detected.metadata.get("height", 0)
-                    )
-                    if pixels > max(1, int(self._policy.max_image_pixels)):
-                        quarantine_reason = "image_dimensions_too_large"
+                    if size_bytes > max(1, int(self._policy.max_image_bytes)):
+                        quarantine_reason = "attachment_too_large"
+                    else:
+                        pixels = int(detected.metadata.get("width", 0)) * int(
+                            detected.metadata.get("height", 0)
+                        )
+                        if pixels > max(1, int(self._policy.max_image_pixels)):
+                            quarantine_reason = "image_dimensions_too_large"
                 elif detected.kind == "voice":
-                    duration = float(detected.metadata.get("duration_seconds", 0.0) or 0.0)
-                    max_duration = max(0.1, float(self._policy.max_audio_duration_seconds))
-                    if duration > max_duration:
-                        quarantine_reason = "audio_duration_too_long"
+                    if size_bytes > max(1, int(self._policy.max_audio_bytes)):
+                        quarantine_reason = "attachment_too_large"
+                    else:
+                        duration = float(detected.metadata.get("duration_seconds", 0.0) or 0.0)
+                        max_duration = max(0.1, float(self._policy.max_audio_duration_seconds))
+                        if duration > max_duration:
+                            quarantine_reason = "audio_duration_too_long"
 
         transcript = self._screen_transcript(transcript_text)
         if transcript["status"] == "quarantined" and not quarantine_reason:
-            quarantine_reason = "transcript_firewall_risk"
+            quarantine_reason = str(
+                transcript.get("quarantine_reason") or "transcript_firewall_risk"
+            )
 
         status = "quarantined" if quarantine_reason else "active"
         lifecycle_state = (
@@ -177,8 +186,12 @@ class AttachmentIngestor:
         return resolved
 
     def _byte_limit(self, *, kind_hint: str, max_bytes: int | None) -> int:
+        policy_limit = self._policy_byte_limit(kind_hint=kind_hint)
         if max_bytes is not None:
-            return max(1, int(max_bytes))
+            return max(1, min(int(max_bytes), policy_limit))
+        return policy_limit
+
+    def _policy_byte_limit(self, *, kind_hint: str) -> int:
         if kind_hint == "image":
             return max(1, int(self._policy.max_image_bytes))
         if kind_hint == "voice":
@@ -270,9 +283,7 @@ class AttachmentIngestor:
             return _DetectedAttachment("voice", "audio/wav", metadata), ""
         if payload.startswith(b"OggS"):
             return _DetectedAttachment("voice", "audio/ogg", {"format": "ogg"}), ""
-        if payload.startswith(b"ID3") or (
-            len(payload) >= 2 and payload[0] == 0xFF and payload[1] & 0xE0 == 0xE0
-        ):
+        if payload.startswith(b"ID3") or self._looks_like_mp3_frame(payload):
             return _DetectedAttachment("voice", "audio/mpeg", {"format": "mp3"}), ""
         if len(payload) >= 12 and payload[4:8] == b"ftyp":
             major = payload[8:12].decode("ascii", errors="ignore").strip()
@@ -286,9 +297,22 @@ class AttachmentIngestor:
             return {
                 "status": "not_provided",
                 "text": "",
+                "quarantine_reason": "",
                 "risk_score": 0.0,
                 "risk_factors": [],
                 "taint_labels": [TaintLabel.UNTRUSTED.value],
+            }
+        max_chars = max(1, int(self._policy.max_transcript_chars))
+        if len(text) > max_chars:
+            return {
+                "status": "quarantined",
+                "text": "",
+                "quarantine_reason": "transcript_too_large",
+                "risk_score": 1.0,
+                "risk_factors": ["transcript_too_large"],
+                "taint_labels": [TaintLabel.UNTRUSTED.value],
+                "original_char_count": len(text),
+                "max_transcript_chars": max_chars,
             }
         result = self._firewall.inspect(text, trusted_input=False)
         risky = bool(result.risk_factors or result.secret_findings) or (
@@ -297,10 +321,28 @@ class AttachmentIngestor:
         return {
             "status": "quarantined" if risky else "provided",
             "text": result.sanitized_text,
+            "quarantine_reason": "transcript_firewall_risk" if risky else "",
             "risk_score": result.risk_score,
             "risk_factors": list(result.risk_factors),
             "taint_labels": [label.value for label in result.taint_labels],
         }
+
+    @staticmethod
+    def _looks_like_mp3_frame(payload: bytes) -> bool:
+        if len(payload) < 4:
+            return False
+        if payload[0] != 0xFF or (payload[1] & 0xE0) != 0xE0:
+            return False
+        version = (payload[1] >> 3) & 0x03
+        layer = (payload[1] >> 1) & 0x03
+        bitrate_index = (payload[2] >> 4) & 0x0F
+        sample_rate_index = (payload[2] >> 2) & 0x03
+        return (
+            version != 0x01
+            and layer != 0x00
+            and bitrate_index not in {0x00, 0x0F}
+            and sample_rate_index != 0x03
+        )
 
     @staticmethod
     def _declared_mismatch_reason(

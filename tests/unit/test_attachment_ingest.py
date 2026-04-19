@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import struct
 import wave
 from io import BytesIO
@@ -100,6 +101,51 @@ def test_attachment_ingest_quarantines_oversized_image_without_exposing_blob(
     assert ingestor.evidence_store.read(SessionId("s1"), ref_id) is None
 
 
+def test_attachment_ingest_max_bytes_cannot_raise_policy_limit(tmp_path: Path) -> None:
+    image = tmp_path / "bounded.png"
+    image.write_bytes(_png_bytes())
+
+    ingestor = _ingestor(
+        tmp_path,
+        policy=AttachmentIngestPolicy(max_image_bytes=8),
+    )
+    result = ingestor.ingest_path(
+        session_id=SessionId("s1"),
+        path=str(image),
+        declared_mime_type="image/png",
+        max_bytes=1_000_000,
+    )
+
+    assert result["ok"] is True
+    assert result["status"] == "quarantined"
+    assert result["quarantine_reason"] == "attachment_too_large"
+    assert result["sha256_scope"] == "first_bytes"
+    ref_id = str(result["evidence_ref_id"])
+    assert ingestor.evidence_store.validate_ref_metadata(SessionId("s1"), ref_id) is False
+
+
+def test_attachment_ingest_applies_detected_kind_byte_policy_without_hints(
+    tmp_path: Path,
+) -> None:
+    image = tmp_path / "blob.bin"
+    image.write_bytes(_png_bytes())
+
+    ingestor = _ingestor(
+        tmp_path,
+        policy=AttachmentIngestPolicy(max_image_bytes=20, max_audio_bytes=1_000),
+    )
+    result = ingestor.ingest_path(
+        session_id=SessionId("s1"),
+        path=str(image),
+        max_bytes=1_000,
+    )
+
+    assert result["ok"] is True
+    assert result["status"] == "quarantined"
+    assert result["kind"] == "image"
+    assert result["quarantine_reason"] == "attachment_too_large"
+
+
 def test_attachment_ingest_accepts_voice_wav_with_sanitized_transcript(
     tmp_path: Path,
 ) -> None:
@@ -144,3 +190,53 @@ def test_attachment_ingest_quarantines_hostile_transcript(tmp_path: Path) -> Non
     assert result["quarantine_reason"] == "transcript_firewall_risk"
     ref_id = str(result["evidence_ref_id"])
     assert ingestor.evidence_store.validate_ref_metadata(SessionId("s1"), ref_id) is False
+
+
+def test_attachment_ingest_quarantines_oversized_transcript_without_storing_body(
+    tmp_path: Path,
+) -> None:
+    audio = tmp_path / "long.wav"
+    audio.write_bytes(_wav_bytes())
+    oversized = "transcript-body-" * 20
+
+    ingestor = _ingestor(
+        tmp_path,
+        policy=AttachmentIngestPolicy(max_transcript_chars=16),
+    )
+    result = ingestor.ingest_path(
+        session_id=SessionId("s1"),
+        path=str(audio),
+        declared_mime_type="audio/wav",
+        transcript_text=oversized,
+    )
+
+    assert result["ok"] is True
+    assert result["status"] == "quarantined"
+    assert result["quarantine_reason"] == "transcript_too_large"
+    assert result["transcription_status"] == "quarantined"
+    ref = ingestor.evidence_store.get_ref_metadata(
+        SessionId("s1"),
+        str(result["evidence_ref_id"]),
+    )
+    assert ref is not None
+    blob = tmp_path / "evidence" / "blobs" / f"{ref.content_hash}.txt"
+    manifest = json.loads(blob.read_text(encoding="utf-8"))
+    assert manifest["transcript"]["quarantine_reason"] == "transcript_too_large"
+    assert manifest["transcript"]["text"] == ""
+    assert oversized not in blob.read_text(encoding="utf-8")
+
+
+def test_attachment_ingest_rejects_false_mp3_frame_sync(tmp_path: Path) -> None:
+    audio = tmp_path / "not-mp3.mp3"
+    audio.write_bytes(b"\xff\xe5\x00\x00not actually an mp3 frame")
+
+    ingestor = _ingestor(tmp_path)
+    result = ingestor.ingest_path(
+        session_id=SessionId("s1"),
+        path=str(audio),
+        declared_mime_type="audio/mpeg",
+    )
+
+    assert result["ok"] is True
+    assert result["status"] == "quarantined"
+    assert result["quarantine_reason"] == "unsupported_attachment_type"

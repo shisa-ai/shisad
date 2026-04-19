@@ -1189,6 +1189,7 @@ class HandlerImplementation(
                 max_audio_bytes=self._config.attachment_max_audio_bytes,
                 max_image_pixels=self._config.attachment_max_image_pixels,
                 max_audio_duration_seconds=self._config.attachment_max_audio_duration_seconds,
+                max_transcript_chars=self._config.attachment_max_transcript_chars,
             ),
         )
         self._load_pending_actions()

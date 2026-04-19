@@ -579,6 +579,11 @@ class DaemonConfig(BaseSettings):
         ge=0.1,
         description="Maximum voice/audio duration accepted when bounded metadata is available.",
     )
+    attachment_max_transcript_chars: int = Field(
+        default=200_000,
+        ge=1,
+        description="Maximum caller-supplied transcript characters stored with attachments.",
+    )
     realitycheck_enabled: bool = Field(
         default=False,
         description="Enable Reality Check integration surface.",
