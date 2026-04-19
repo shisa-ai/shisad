@@ -52,12 +52,11 @@ Rather than ignoring the elephant in the room, our design targets the [lethal tr
 This repo is public and still pre-alpha. The latest published line is
 `v0.6.5` (GitHub Release and PyPI package).
 
-`v0.6.5` adds client-only MCP tool discovery/execution with stable
-`mcp.<server>.<tool>` runtime ids, confirm-by-default trust handling for
-externally sourced tool metadata/results, and a signed A2A ingress baseline
-with static peer registry, fingerprint verification, grant enforcement,
-replay protection, and per-peer rate limiting. Exposing shisad as an MCP
-server remains deferred.
+This checkout contains pre-tag `v0.6.6` release content under release-close
+validation. The candidate adds config-path `SOUL.md` persona preferences,
+Discord public-channel policy controls, local MsgVault email read/search,
+local image and voice attachment ingest, and same-session evidence
+carry-forward for follow-up turns. It has not been tagged or published yet.
 
 | Version | Focus |
 |---------|-------|

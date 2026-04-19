@@ -115,6 +115,18 @@ Assistant/persona:
 - `SHISAD_SUMMARIZE_INTERVAL`
 - `SHISAD_PLANNER_MEMORY_TOP_K`
 
+SOUL.md notes:
+
+- `SHISAD_ASSISTANT_PERSONA_SOUL_PATH` points to the operator-owned persona
+  preference file. Its content is treated as trusted persona preference text
+  below safety/developer instructions, not as project memory or policy.
+- `shisad admin soul update --content ...` replaces that file through the
+  admin `SOUL.md` update path. The file may contain personal tone/persona
+  preferences and is readable by any operator or process with access to the
+  configured path. Store project-specific facts in the memory system instead.
+- `--expected-sha256` is an optional write precondition for concurrent-edit
+  protection; it is not a secret.
+
 Web:
 
 - `SHISAD_WEB_SEARCH_ENABLED`

@@ -9,6 +9,60 @@ left unlinked until the tag exists. There is no standing "Unreleased" section.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Versioning follows semver (see `docs/PUBLISH.md` for policy and style guide).
 
+## 0.6.6 Release Content - 2026-04-19
+
+### Added
+
+- **Image and voice recordings can be sent as attachments.** The daemon
+  ingests local attachment paths with size caps and format validation, so
+  large or malformed files are rejected cleanly before reaching the planner.
+
+- **Read and search local email through the assistant.** A new
+  MsgVault-backed email toolkit lets the assistant search configured local
+  mail archives and read individual messages. Each request is scoped to the
+  account the operator has granted, so tools cannot reach another inbox.
+
+- **Discord public channels now have per-channel policies.** Configure whether
+  shisad chats, reads along quietly, or stays passive in each public channel,
+  while public-channel sessions exclude owner-private conversation context.
+
+- **`SOUL.md` customizes the assistant's persona.** Put `SOUL.md` in the
+  operator config path and the planner layers it in as trusted persona
+  preferences below safety and developer instructions. Updates go through a
+  dedicated admin edit path from a clean session, so injected content cannot
+  rewrite persona mid-conversation.
+
+### Security
+
+- **Attachment ingest is bounded and validated.** Uploads hit size limits
+  before decoding, audio ID3 tags are validated, and malformed files are
+  quarantined rather than passed on.
+
+- **Email reads are scoped to the account that owns them.** MsgVault tools
+  resolve message IDs against account metadata and compare IDs exactly, so one
+  session cannot read another account's inbox through an ID collision. When
+  MsgVault is disabled, email reads are refused outright.
+
+- **Discord DMs stay fail-closed.** Direct messages require an explicit trust
+  grant; granting access to a public channel does not implicitly open DMs.
+
+- **`SOUL.md` edits run from a clean admin session.** Persona updates are
+  proposed from a fresh context rather than replaying the current conversation,
+  and they go through a narrow admin path rather than general filesystem
+  writes. Project-specific facts are steered toward the memory system instead
+  of being silently appended to persona text.
+
+### Fixed
+
+- **Tool-only turns no longer go silent.** When a turn runs tools but produces
+  no assistant text, shisad synthesizes a short summary of what ran so you can
+  see what happened instead of getting an empty reply.
+
+- **Follow-up turns keep same-session evidence.** Evidence refs from previous
+  tool-backed turns are carried forward in the same session, so a follow-up can
+  use the source envelope behind earlier results instead of relying only on a
+  prose recap.
+
 ## [0.6.5] - 2026-04-17
 
 ### Added

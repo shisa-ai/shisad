@@ -47,6 +47,10 @@ Reach a genuinely useful personal-assistant baseline while preserving the projec
   and a signed A2A ingress foundation with fingerprint verification, grant
   enforcement, replay protection, and per-peer rate limits. Exposing shisad
   as an MCP server remains deferred.
+- `v0.6.6` release content is in pre-tag release-close validation:
+  config-path `SOUL.md` persona preferences, Discord public-channel policy
+  controls, local MsgVault email read/search, local image and voice attachment
+  ingest, and same-session evidence carry-forward for follow-up turns.
 
 ## Milestones
 
@@ -96,8 +100,9 @@ confirmation-gated browser writes plus local skill tool-surface integrity
 checks, a hardened public release path using OIDC trusted publishing, SBOMs,
 and provenance attestations, the published `v0.6.3` critical UX
 stabilization lane, the shipped `v0.6.4` textguard migration, and the
-shipped `v0.6.5` MCP/A2A interop lane. The next active lane is `v0.6.6`
-(connector/skill expansion).
+shipped `v0.6.5` MCP/A2A interop lane. The `v0.6.6` connector/skill
+expansion candidate is in pre-tag release-close validation, with `v0.7`
+memory foundation next.
 
 #### v0.6.1 — Security hardening
 
@@ -214,11 +219,19 @@ TOTP entry remain deferred to `v0.8.0`.
 
 #### v0.6.6 — Connector + skill expansions
 
-- Email and calendar connectors
+- Status (2026-04-19): pre-tag release-close candidate. Config-path
+  `SOUL.md`, Discord public-channel policy controls, local MsgVault email
+  read/search, local image and voice attachment ingest, and same-session
+  evidence carry-forward are implemented and under release-close validation.
+- Local MsgVault email read/search baseline. Email send/reply, calendar
+  read/write, remote MsgVault transports, and attachment export remain
+  follow-on work.
 - Local attachment ingest baseline for images and voice recordings; OCR, STT,
   channel downloads, email attachment export, and multimodal model input remain
-  follow-on work
-- Additional skill integrations
+  follow-on work.
+- Additional skill integrations: config-path `SOUL.md` persona preferences.
+  Executable plugin installs and `outline-edit` remain deferred to the plugin
+  policy lane.
 
 ### v0.7 — Memory foundation
 
@@ -275,7 +288,7 @@ TOTP entry remain deferred to `v0.8.0`.
 | Critical UX stabilization | v0.6.3 |
 | textguard port | v0.6.4 |
 | MCP/A2A interop | v0.6.5 |
-| Email / calendar connectors | v0.6.6 |
+| Local email connector baseline | v0.6.6 |
 | Local attachment ingest baseline | v0.6.6 |
 | Full attachment processing pipeline | v0.7+ |
 | Long-term memory | v0.7 |
