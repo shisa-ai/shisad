@@ -398,6 +398,65 @@ def test_msgvault_read_uses_scoped_internal_id_for_source_id_matches(tmp_path: P
     assert payload["message"]["subject"] == "Allowed account"
 
 
+def test_msgvault_read_prefers_internal_id_over_source_id_matches(tmp_path: Path) -> None:
+    calls_log = tmp_path / "precedence-calls.json"
+    script = tmp_path / "precedence-msgvault.py"
+    script.write_text(
+        textwrap.dedent(
+            f"""
+            #!{sys.executable}
+            import json
+            import sys
+            from pathlib import Path
+
+            path = Path({str(calls_log)!r})
+            calls = json.loads(path.read_text(encoding="utf-8")) if path.exists() else []
+            calls.append(sys.argv)
+            path.write_text(json.dumps(calls), encoding="utf-8")
+            if "search" in sys.argv:
+                print(json.dumps([
+                    {{"id": 999, "source_message_id": "123", "subject": "Source match"}},
+                    {{"id": 123, "source_message_id": "other-source", "subject": "Internal match"}}
+                ]))
+            elif "show-message" in sys.argv and "123" in sys.argv:
+                print(json.dumps({{
+                    "id": 123,
+                    "source_message_id": "other-source",
+                    "subject": "Internal match",
+                    "body_text": "internal"
+                }}))
+            elif "show-message" in sys.argv and "999" in sys.argv:
+                print(json.dumps({{
+                    "id": 999,
+                    "source_message_id": "123",
+                    "subject": "Source match",
+                    "body_text": "source"
+                }}))
+            else:
+                sys.exit(2)
+            """
+        ).lstrip(),
+        encoding="utf-8",
+    )
+    script.chmod(0o755)
+    toolkit = MsgvaultToolkit(
+        enabled=True,
+        command=str(script),
+        home=None,
+        timeout_seconds=2.0,
+        max_results=10,
+        max_body_bytes=1024,
+        account_allowlist=["me@example.com"],
+    )
+
+    payload = toolkit.read_message(message_id="123", account="me@example.com")
+
+    calls = json.loads(calls_log.read_text(encoding="utf-8"))
+    assert calls[1] == [str(script), "--local", "show-message", "123", "--json"]
+    assert payload["ok"] is True
+    assert payload["message"]["subject"] == "Internal match"
+
+
 def test_msgvault_search_accepts_wrapped_results_shape(tmp_path: Path) -> None:
     script = tmp_path / "wrapped-msgvault.py"
     script.write_text(

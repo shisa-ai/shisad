@@ -464,12 +464,18 @@ class MsgvaultToolkit:
 
     def _scoped_message_id_from_search_rows(self, rows: list[Any], *, message_id: str) -> str:
         normalized_id = message_id.strip()
+        source_matches: list[str] = []
         for item in rows:
             row = self._normalize_search_row(item)
             internal_id = str(row.get("id", "")).strip()
             source_message_id = str(row.get("source_message_id", "")).strip()
-            if normalized_id in {internal_id, source_message_id}:
+            if normalized_id == internal_id:
                 return internal_id
+            if normalized_id == source_message_id and internal_id:
+                source_matches.append(internal_id)
+        unique_source_matches = sorted(set(source_matches))
+        if len(unique_source_matches) == 1:
+            return unique_source_matches[0]
         return ""
 
     def _search_rows(self, payload: Any) -> list[Any] | None:
