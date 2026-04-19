@@ -79,7 +79,10 @@ class AssistantImplMixin(HandlerMixinBase):
         self._log_operator_bypass(tool="email.read", handler="do_email_read")
         return cast(
             dict[str, Any],
-            self._msgvault_toolkit.read_message(message_id=str(params.get("message_id", ""))),
+            self._msgvault_toolkit.read_message(
+                message_id=str(params.get("message_id", "")),
+                account=str(params.get("account", "")),
+            ),
         )
 
     async def do_fs_list(self, params: Mapping[str, Any]) -> dict[str, Any]:

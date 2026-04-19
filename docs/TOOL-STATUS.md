@@ -18,6 +18,11 @@ Note:
 
 - `tool.web.search` is `DISABLED` in this recorded snapshot because the daemon was started without `SHISAD_WEB_SEARCH_BACKEND_URL`. In a configured environment, the backend host must also appear in `SHISAD_WEB_ALLOWED_DOMAINS` before the tool can show up as `WORKS`.
 - `tool.email.search` and `tool.email.read` are `DISABLED` in this recorded snapshot because the daemon was started without `SHISAD_MSGVAULT_ENABLED=1`. In a configured environment, shisad calls local `msgvault --local` read/search commands only; msgvault remains responsible for provider sync and provider credentials.
+- For live tool-status probes, `tool.email.read` uses the first id returned by
+  `tool.email.search`, or `SHISAD_LIVE_TOOL_MATRIX_EMAIL_MESSAGE_ID` with
+  optional `SHISAD_LIVE_TOOL_MATRIX_EMAIL_ACCOUNT`. If neither source provides
+  a message id, the read probe is skipped as
+  `email_read_probe_message_id_unconfigured`.
 - `tool.evidence.read` and `tool.evidence.promote` are `DISABLED` in this recorded snapshot because the probe does not seed a current-session evidence reference. They are covered by the evidence behavioral suite.
 - The note, todo, and reminder rows use direct `tool.execute` probe payloads and show the configured control-plane gate for synthetic control API calls. User-requested session flows for these tools are covered separately by behavioral tests.
 - The generated snapshot below reflects the current `scripts/live_tool_matrix.py` probe surface. Browser rows are intentionally omitted from this point-in-time table even though the browser tool surface is live in `v0.6.0` M6 when `SHISAD_BROWSER_ENABLED=1` and `SHISAD_BROWSER_COMMAND` is configured.

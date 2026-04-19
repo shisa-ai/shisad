@@ -4,8 +4,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import selectors
 import shlex
 import subprocess
+import time
+from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -13,9 +17,28 @@ from typing import Any
 
 _EMAIL_TAINT_LABELS = ["untrusted", "email"]
 _MAX_CLI_OUTPUT_BYTES = 4 * 1024 * 1024
+_MAX_CLI_STDERR_BYTES = 64 * 1024
+_CLI_READ_CHUNK_BYTES = 64 * 1024
 _MAX_TEXT_FIELD_BYTES = 8192
+_MAX_QUERY_BYTES = 2048
+_MAX_ACCOUNT_BYTES = 512
+_MAX_MESSAGE_ID_BYTES = 512
 _MAX_LABELS = 50
 _MAX_ATTACHMENTS = 50
+_READ_SCOPE_SEARCH_LIMIT = 50
+_CHILD_ENV_ALLOWLIST = frozenset(
+    {
+        "HOME",
+        "LANG",
+        "LC_ALL",
+        "LC_CTYPE",
+        "LOGNAME",
+        "PATH",
+        "TMPDIR",
+        "TZ",
+        "USER",
+    }
+)
 
 
 def _now_iso() -> str:
@@ -120,6 +143,16 @@ def _attachments(value: Any) -> list[dict[str, Any]]:
     return rows
 
 
+def _msgvault_child_env() -> dict[str, str]:
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if key in _CHILD_ENV_ALLOWLIST and value
+    }
+    env.setdefault("PATH", os.defpath)
+    return env
+
+
 @dataclass(slots=True)
 class MsgvaultToolkit:
     """Read-only local msgvault integration.
@@ -145,7 +178,7 @@ class MsgvaultToolkit:
         offset: int = 0,
         account: str = "",
     ) -> dict[str, Any]:
-        normalized_query = query.strip()
+        normalized_query = _string_value(query, max_bytes=_MAX_QUERY_BYTES)
         if not normalized_query:
             return self._error_payload(
                 operation="email.search",
@@ -160,7 +193,7 @@ class MsgvaultToolkit:
                 operation="email.search",
                 reason=str(account_result["error"]),
                 query=normalized_query,
-                account=account,
+                account=_string_value(account, max_bytes=_MAX_ACCOUNT_BYTES),
                 results=[],
                 count=0,
             )
@@ -215,14 +248,34 @@ class MsgvaultToolkit:
             "error": "",
         }
 
-    def read_message(self, *, message_id: str) -> dict[str, Any]:
-        normalized_id = message_id.strip()
+    def read_message(self, *, message_id: str, account: str = "") -> dict[str, Any]:
+        normalized_id = _string_value(message_id, max_bytes=_MAX_MESSAGE_ID_BYTES)
         if not normalized_id:
             return self._error_payload(
                 operation="email.read",
                 reason="email_message_id_required",
                 message=None,
             )
+        account_result = self._resolve_account(account)
+        if isinstance(account_result, dict):
+            return self._read_error_payload(
+                reason=str(account_result["error"]),
+                message_id=normalized_id,
+                account=_string_value(account, max_bytes=_MAX_ACCOUNT_BYTES),
+            )
+        resolved_account = account_result
+        if resolved_account:
+            scope_result = self._validate_read_account_scope(
+                message_id=normalized_id,
+                account=resolved_account,
+            )
+            if scope_result is not None:
+                return self._read_error_payload(
+                    reason=str(scope_result["error"]),
+                    message_id=normalized_id,
+                    account=resolved_account,
+                    details=scope_result,
+                )
         result = self._run(
             ["show-message", normalized_id, "--json"],
             operation="email.read",
@@ -231,23 +284,27 @@ class MsgvaultToolkit:
             return self._read_error_payload(
                 reason=str(result["error"]),
                 message_id=normalized_id,
+                account=resolved_account,
                 details=result,
             )
         if not isinstance(result, dict):
             return self._read_error_payload(
                 reason="msgvault_unexpected_json",
                 message_id=normalized_id,
+                account=resolved_account,
             )
         message = self._normalize_message(result)
         return {
             "ok": True,
             "operation": "email.read",
             "message_id": normalized_id,
+            "account": resolved_account,
             "message": message,
             "taint_labels": list(_EMAIL_TAINT_LABELS),
             "evidence": {
                 "operation": "email.read",
                 "message_id_hash": _sha256_text(normalized_id),
+                "account_hash": _sha256_text(resolved_account) if resolved_account else "",
                 "source_message_id_hash": _sha256_text(message.get("source_message_id", "")),
                 "fetched_at": _now_iso(),
                 "local_only": True,
@@ -274,29 +331,81 @@ class MsgvaultToolkit:
             full_args.extend(["--home", str(self.home)])
         full_args.extend(args)
         try:
-            completed = subprocess.run(
+            process = subprocess.Popen(
                 full_args,
-                check=False,
-                capture_output=True,
-                text=True,
-                timeout=max(0.1, float(self.timeout_seconds)),
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env=_msgvault_child_env(),
             )
         except FileNotFoundError:
             return {"error": "msgvault_command_not_found"}
-        except subprocess.TimeoutExpired:
-            return {"error": "msgvault_timeout"}
         except OSError:
             return {"error": "msgvault_command_failed"}
-        stdout = completed.stdout[:_MAX_CLI_OUTPUT_BYTES]
-        if completed.returncode != 0:
+        completed = self._communicate_bounded(process)
+        if isinstance(completed, dict):
+            return completed
+        returncode, stdout = completed
+        if returncode != 0:
             return {
                 "error": "msgvault_failed",
-                "exit_code": completed.returncode,
+                "exit_code": returncode,
             }
         try:
-            return json.loads(stdout)
+            return json.loads(stdout.decode("utf-8", errors="replace"))
         except json.JSONDecodeError:
             return {"error": "msgvault_invalid_json"}
+
+    def _communicate_bounded(
+        self,
+        process: subprocess.Popen[bytes],
+    ) -> tuple[int, bytes] | dict[str, Any]:
+        stdout = bytearray()
+        stderr = bytearray()
+        buffers = {"stdout": stdout, "stderr": stderr}
+        limits = {
+            "stdout": _MAX_CLI_OUTPUT_BYTES,
+            "stderr": _MAX_CLI_STDERR_BYTES,
+        }
+        deadline = time.monotonic() + max(0.1, float(self.timeout_seconds))
+        with selectors.DefaultSelector() as selector:
+            if process.stdout is not None:
+                selector.register(process.stdout.fileno(), selectors.EVENT_READ, "stdout")
+            if process.stderr is not None:
+                selector.register(process.stderr.fileno(), selectors.EVENT_READ, "stderr")
+            while selector.get_map():
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    self._kill_process(process)
+                    return {"error": "msgvault_timeout"}
+                events = selector.select(timeout=min(0.2, remaining))
+                if not events:
+                    continue
+                for key, _mask in events:
+                    stream_name = str(key.data)
+                    data = os.read(int(key.fd), _CLI_READ_CHUNK_BYTES)
+                    if not data:
+                        selector.unregister(key.fd)
+                        continue
+                    buffer = buffers[stream_name]
+                    if len(buffer) + len(data) > limits[stream_name]:
+                        self._kill_process(process)
+                        return {
+                            "error": "msgvault_output_too_large",
+                            "stream": stream_name,
+                        }
+                    buffer.extend(data)
+        try:
+            return process.wait(timeout=0.1), bytes(stdout)
+        except subprocess.TimeoutExpired:
+            self._kill_process(process)
+            return {"error": "msgvault_timeout"}
+
+    def _kill_process(self, process: subprocess.Popen[bytes]) -> None:
+        with suppress(ProcessLookupError):
+            process.kill()
+        with suppress(subprocess.TimeoutExpired):
+            process.wait(timeout=1.0)
 
     def _preflight(self, *, operation: str) -> dict[str, Any] | None:
         _ = operation
@@ -305,8 +414,12 @@ class MsgvaultToolkit:
         return None
 
     def _resolve_account(self, account: str) -> str | dict[str, str]:
-        normalized = account.strip().lower()
-        allowed = [item.strip().lower() for item in self.account_allowlist if item.strip()]
+        normalized = _string_value(account, max_bytes=_MAX_ACCOUNT_BYTES).lower()
+        allowed = [
+            _string_value(item, max_bytes=_MAX_ACCOUNT_BYTES).lower()
+            for item in self.account_allowlist
+            if _string_value(item, max_bytes=_MAX_ACCOUNT_BYTES)
+        ]
         if not allowed:
             return normalized
         if normalized:
@@ -316,6 +429,47 @@ class MsgvaultToolkit:
         if len(allowed) == 1:
             return allowed[0]
         return {"error": "msgvault_account_required"}
+
+    def _validate_read_account_scope(
+        self,
+        *,
+        message_id: str,
+        account: str,
+    ) -> dict[str, Any] | None:
+        result = self._run(
+            [
+                "search",
+                message_id,
+                "--json",
+                "--limit",
+                str(_READ_SCOPE_SEARCH_LIMIT),
+                "--offset",
+                "0",
+                "--account",
+                account,
+            ],
+            operation="email.search",
+        )
+        if isinstance(result, dict) and "error" in result:
+            return result
+        rows = self._search_rows(result)
+        if rows is None:
+            return {"error": "msgvault_unexpected_json"}
+        if self._search_rows_include_message(rows, message_id=message_id):
+            return None
+        return {"error": "msgvault_message_not_in_account_scope"}
+
+    def _search_rows_include_message(self, rows: list[Any], *, message_id: str) -> bool:
+        normalized_id = message_id.strip().lower()
+        for item in rows:
+            row = self._normalize_search_row(item)
+            candidates = {
+                row.get("id", "").strip().lower(),
+                row.get("source_message_id", "").strip().lower(),
+            }
+            if normalized_id in candidates:
+                return True
+        return False
 
     def _search_rows(self, payload: Any) -> list[Any] | None:
         if isinstance(payload, list):
@@ -405,12 +559,14 @@ class MsgvaultToolkit:
         *,
         reason: str,
         message_id: str,
+        account: str = "",
         details: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         return self._error_payload(
             operation="email.read",
             reason=reason,
             message_id=message_id,
+            account=account,
             message=None,
             details=details,
         )
@@ -440,7 +596,7 @@ class MsgvaultToolkit:
             safe_details = {
                 key: value
                 for key, value in details.items()
-                if key in {"error", "exit_code"}
+                if key in {"error", "exit_code", "stream"}
             }
             payload["details"] = safe_details
         return payload
@@ -470,12 +626,22 @@ def _actionable_message(reason: str, *, operation: str) -> str:
             else "msgvault show-message --json"
         )
         return f"Check that {command} returns valid JSON with the installed msgvault version."
+    if reason == "msgvault_output_too_large":
+        return (
+            "The local msgvault command returned more output than shisad will buffer; "
+            "narrow the query or lower message size before retrying."
+        )
     if reason == "msgvault_unexpected_json":
         return "The installed msgvault returned a JSON shape shisad does not understand."
     if reason == "msgvault_account_not_allowed":
         return "Use an account listed in SHISAD_MSGVAULT_ACCOUNT_ALLOWLIST."
     if reason == "msgvault_account_required":
-        return "Specify an account from SHISAD_MSGVAULT_ACCOUNT_ALLOWLIST for this query."
+        return "Specify an account from SHISAD_MSGVAULT_ACCOUNT_ALLOWLIST for this operation."
+    if reason == "msgvault_message_not_in_account_scope":
+        return (
+            "The msgvault message id was not found in an account-scoped search; "
+            "use an id returned by email.search for the requested account."
+        )
     if reason in {"email_search_query_required", "email_message_id_required"}:
         return "Provide the required email search query or msgvault message id."
     return "Check local msgvault setup and retry the email connector operation."

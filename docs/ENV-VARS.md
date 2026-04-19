@@ -153,13 +153,16 @@ msgvault notes:
   use msgvault's default archive location.
 - `SHISAD_MSGVAULT_ACCOUNT_ALLOWLIST` accepts CSV or JSON array syntax. When
   set, searches must target a listed account unless exactly one account is
-  configured, in which case that account is selected automatically.
+  configured, in which case that account is selected automatically. Message
+  reads use the same account resolution and verify the requested message id
+  through an account-scoped search before reading.
 - Search output is bounded to metadata and snippets. Message reads omit HTML
   bodies, omit BCC recipient details, include only BCC counts, and truncate
   text bodies to `SHISAD_MSGVAULT_MAX_BODY_BYTES`.
 - Email tool output is tainted as both untrusted and sensitive email content.
-  Email content can inform summaries, but it cannot authorize follow-on writes,
-  sends, tasks, reminders, or egress on its own.
+  Covered write, send, task, reminder, and egress paths still rely on the
+  existing taint/PEP confirmation or block behavior; operators should treat
+  email content as context, not as user authorization for follow-on actions.
 - Email send/reply, calendar read/write, Google Workspace write skills, remote
   msgvault API/MCP transport, and msgvault sync/setup automation are deferred.
 

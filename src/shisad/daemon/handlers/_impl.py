@@ -413,7 +413,12 @@ def _structured_email_read(
             "error": "email_message_id_required",
             "taint_labels": [TaintLabel.UNTRUSTED.value, TaintLabel.SENSITIVE_EMAIL.value],
         }
-    return dict(handler._msgvault_toolkit.read_message(message_id=message_id))
+    return dict(
+        handler._msgvault_toolkit.read_message(
+            message_id=message_id,
+            account=_argument_string(arguments, "account"),
+        )
+    )
 
 
 def _structured_fs_list(

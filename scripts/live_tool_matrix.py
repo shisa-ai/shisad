@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
 import sys
 import uuid
 from dataclasses import asdict, dataclass
@@ -25,6 +26,7 @@ _DISABLED_REASONS: frozenset[str] = frozenset(
         "destination_not_allowlisted",
         "msgvault_disabled",
         "msgvault_command_not_found",
+        "email_read_probe_message_id_unconfigured",
         "realitycheck_disabled",
         "realitycheck_misconfigured",
         "endpoint_mode_disabled",
@@ -172,11 +174,10 @@ def _tool_payload_templates(repo_root: Path) -> dict[str, dict[str, Any]]:
 
 
 def _structured_rpc_templates() -> dict[str, dict[str, Any]]:
-    return {
+    templates: dict[str, dict[str, Any]] = {
         "web.search": {"query": "shisad", "limit": 2},
         "web.fetch": {"url": "https://example.com", "snapshot": False},
         "email.search": {"query": "shisad", "limit": 2},
-        "email.read": {"message_id": "live-tool-matrix-message"},
         "fs.list": {"path": ".", "recursive": False, "limit": 20},
         "fs.read": {"path": "README.md", "max_bytes": 4096},
         "fs.write": {
@@ -190,6 +191,39 @@ def _structured_rpc_templates() -> dict[str, dict[str, Any]]:
         "realitycheck.search": {"query": "security", "limit": 2, "mode": "auto"},
         "realitycheck.read": {"path": "README.md", "max_bytes": 2048},
     }
+    configured_email_read = _configured_email_read_template()
+    if configured_email_read is not None:
+        templates["email.read"] = configured_email_read
+    return templates
+
+
+def _configured_email_read_template() -> dict[str, Any] | None:
+    message_id = os.environ.get("SHISAD_LIVE_TOOL_MATRIX_EMAIL_MESSAGE_ID", "").strip()
+    if not message_id:
+        return None
+    template: dict[str, Any] = {"message_id": message_id}
+    account = os.environ.get("SHISAD_LIVE_TOOL_MATRIX_EMAIL_ACCOUNT", "").strip()
+    if account:
+        template["account"] = account
+    return template
+
+
+def _email_read_template_from_search_result(result: dict[str, Any]) -> dict[str, Any] | None:
+    messages = result.get("results")
+    if not isinstance(messages, list):
+        return None
+    for message in messages:
+        if not isinstance(message, dict):
+            continue
+        message_id = str(message.get("id") or message.get("source_message_id") or "").strip()
+        if not message_id:
+            continue
+        template: dict[str, Any] = {"message_id": message_id}
+        account = str(result.get("account") or "").strip()
+        if account:
+            template["account"] = account
+        return template
+    return None
 
 
 def _message_send_template(
@@ -354,12 +388,17 @@ async def _run_tool_checks(
     strict_disabled: bool,
 ) -> list[MatrixRow]:
     rows: list[MatrixRow] = []
-    structured_methods = set(structured_templates)
+    structured_templates = dict(structured_templates)
+    email_read_disabled_reason = disabled_tools.get("email.read", "").strip()
     ordered = [name for name in tools if name != "report_anomaly"] + [
         name for name in tools if name == "report_anomaly"
     ]
     for tool_name in ordered:
-        if tool_name in structured_methods:
+        if tool_name == "email.read" and tool_name not in structured_templates:
+            disabled_tools["email.read"] = (
+                email_read_disabled_reason or "email_read_probe_message_id_unconfigured"
+            )
+        if tool_name in structured_templates:
             try:
                 structured_result = await client.call(
                     tool_name,
@@ -368,13 +407,25 @@ async def _run_tool_checks(
             except Exception as exc:  # pragma: no cover - live path
                 rows.append(MatrixRow(f"tool.{tool_name}", "fail", f"rpc_error:{exc}"))
                 continue
+            structured_payload = cast(dict[str, Any], structured_result)
             rows.append(
                 _classify_structured_rpc_result(
                     method_name=f"tool.{tool_name}",
-                    result=cast(dict[str, Any], structured_result),
+                    result=structured_payload,
                     strict_disabled=strict_disabled,
                 )
             )
+            if tool_name == "email.search":
+                if bool(structured_payload.get("ok")):
+                    email_read_template = _email_read_template_from_search_result(
+                        structured_payload
+                    )
+                    if email_read_template is not None:
+                        structured_templates.setdefault("email.read", email_read_template)
+                else:
+                    reason = str(structured_payload.get("error", "")).strip()
+                    if reason in _DISABLED_REASONS:
+                        email_read_disabled_reason = reason
             continue
 
         payload_template = execute_templates.get(tool_name)

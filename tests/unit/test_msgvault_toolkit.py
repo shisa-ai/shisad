@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 
+import shisad.assistant.msgvault as msgvault_module
 from shisad.assistant.msgvault import MsgvaultToolkit
 from shisad.core.config import DaemonConfig
 from shisad.core.types import TaintLabel
@@ -119,6 +120,28 @@ def test_msgvault_search_uses_local_mode_and_bounded_arguments(tmp_path: Path) -
     assert "from:alice" not in json.dumps(payload["evidence"])
 
 
+def test_msgvault_search_bounds_echoed_query_and_account(tmp_path: Path) -> None:
+    command, argv_log = _write_fake_msgvault(tmp_path)
+    toolkit = MsgvaultToolkit(
+        enabled=True,
+        command=str(command),
+        home=None,
+        timeout_seconds=2.0,
+        max_results=10,
+        max_body_bytes=1024,
+        account_allowlist=[],
+    )
+
+    payload = toolkit.search(query="Q" * 4096, account="A" * 1024)
+
+    argv = json.loads(argv_log.read_text(encoding="utf-8"))
+    assert payload["ok"] is True
+    assert payload["query"] == "Q" * 2048
+    assert payload["account"] == "a" * 512
+    assert argv[3] == "Q" * 2048
+    assert argv[-1] == "a" * 512
+
+
 def test_msgvault_read_truncates_body_and_omits_html_and_bcc(tmp_path: Path) -> None:
     command, _argv_log = _write_fake_msgvault(tmp_path, body_text="A" * 64)
     toolkit = MsgvaultToolkit(
@@ -144,6 +167,134 @@ def test_msgvault_read_truncates_body_and_omits_html_and_bcc(tmp_path: Path) -> 
     assert message["bcc_count"] == 1
     assert payload["taint_labels"] == ["untrusted", "email"]
     assert payload["evidence"]["operation"] == "email.read"
+
+
+def test_msgvault_read_enforces_account_allowlist_scope(tmp_path: Path) -> None:
+    calls_log = tmp_path / "calls.json"
+    script = tmp_path / "scoped-msgvault.py"
+    script.write_text(
+        textwrap.dedent(
+            f"""
+            #!{sys.executable}
+            import json
+            import sys
+            from pathlib import Path
+
+            path = Path({str(calls_log)!r})
+            calls = json.loads(path.read_text(encoding="utf-8")) if path.exists() else []
+            calls.append(sys.argv)
+            path.write_text(json.dumps(calls), encoding="utf-8")
+            if "search" in sys.argv:
+                print(json.dumps([{{"id": 101, "source_message_id": "msg-101"}}]))
+            elif "show-message" in sys.argv:
+                print(json.dumps({{
+                    "id": 101,
+                    "source_message_id": "msg-101",
+                    "subject": "Scoped",
+                    "body_text": "hello"
+                }}))
+            else:
+                sys.exit(2)
+            """
+        ).lstrip(),
+        encoding="utf-8",
+    )
+    script.chmod(0o755)
+    toolkit = MsgvaultToolkit(
+        enabled=True,
+        command=str(script),
+        home=None,
+        timeout_seconds=2.0,
+        max_results=10,
+        max_body_bytes=1024,
+        account_allowlist=["me@example.com"],
+    )
+
+    payload = toolkit.read_message(message_id="msg-101", account="me@example.com")
+
+    calls = json.loads(calls_log.read_text(encoding="utf-8"))
+    assert calls[0] == [
+        str(script),
+        "--local",
+        "search",
+        "msg-101",
+        "--json",
+        "--limit",
+        "50",
+        "--offset",
+        "0",
+        "--account",
+        "me@example.com",
+    ]
+    assert calls[1] == [str(script), "--local", "show-message", "msg-101", "--json"]
+    assert payload["ok"] is True
+    assert payload["account"] == "me@example.com"
+    assert payload["message"]["subject"] == "Scoped"
+
+
+def test_msgvault_read_rejects_missing_or_unmatched_account_scope(tmp_path: Path) -> None:
+    command, argv_log = _write_fake_msgvault(tmp_path)
+    toolkit = MsgvaultToolkit(
+        enabled=True,
+        command=str(command),
+        home=None,
+        timeout_seconds=2.0,
+        max_results=10,
+        max_body_bytes=1024,
+        account_allowlist=["me@example.com", "work@example.com"],
+    )
+
+    missing_account = toolkit.read_message(message_id="msg-101")
+    denied_account = toolkit.read_message(message_id="msg-101", account="other@example.com")
+
+    assert missing_account["ok"] is False
+    assert missing_account["error"] == "msgvault_account_required"
+    assert denied_account["ok"] is False
+    assert denied_account["error"] == "msgvault_account_not_allowed"
+    assert not argv_log.exists()
+
+    miss_log = tmp_path / "scope-miss-calls.json"
+    miss_script = tmp_path / "scope-miss-msgvault.py"
+    miss_script.write_text(
+        textwrap.dedent(
+            f"""
+            #!{sys.executable}
+            import json
+            import sys
+            from pathlib import Path
+
+            path = Path({str(miss_log)!r})
+            calls = json.loads(path.read_text(encoding="utf-8")) if path.exists() else []
+            calls.append(sys.argv)
+            path.write_text(json.dumps(calls), encoding="utf-8")
+            if "search" in sys.argv:
+                print(json.dumps([]))
+            elif "show-message" in sys.argv:
+                print(json.dumps({{"id": 101}}))
+            else:
+                sys.exit(2)
+            """
+        ).lstrip(),
+        encoding="utf-8",
+    )
+    miss_script.chmod(0o755)
+    scoped = MsgvaultToolkit(
+        enabled=True,
+        command=str(miss_script),
+        home=None,
+        timeout_seconds=2.0,
+        max_results=10,
+        max_body_bytes=1024,
+        account_allowlist=["me@example.com"],
+    )
+
+    scope_miss = scoped.read_message(message_id="msg-101", account="me@example.com")
+
+    calls = json.loads(miss_log.read_text(encoding="utf-8"))
+    assert scope_miss["ok"] is False
+    assert scope_miss["error"] == "msgvault_message_not_in_account_scope"
+    assert len(calls) == 1
+    assert "show-message" not in calls[0]
 
 
 def test_msgvault_search_accepts_wrapped_results_shape(tmp_path: Path) -> None:
@@ -248,6 +399,123 @@ def test_msgvault_malformed_json_is_actionable(tmp_path: Path) -> None:
     assert payload["ok"] is False
     assert payload["error"] == "msgvault_invalid_json"
     assert "msgvault search" in payload["actionable"]
+
+
+def test_msgvault_subprocess_environment_is_scrubbed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    env_log = tmp_path / "env.json"
+    script = tmp_path / "env-msgvault.py"
+    script.write_text(
+        textwrap.dedent(
+            f"""
+            #!{sys.executable}
+            import json
+            import os
+            from pathlib import Path
+
+            Path({str(env_log)!r}).write_text(json.dumps(dict(os.environ)), encoding="utf-8")
+            print(json.dumps([]))
+            """
+        ).lstrip(),
+        encoding="utf-8",
+    )
+    script.chmod(0o755)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "anthropic-test")
+    monkeypatch.setenv("SHISAD_SIGNER_KMS_BEARER_TOKEN", "kms-test")
+    monkeypatch.setenv("SHISAD_DISCORD_BOT_TOKEN", "discord-test")
+    toolkit = MsgvaultToolkit(
+        enabled=True,
+        command=str(script),
+        home=None,
+        timeout_seconds=2.0,
+        max_results=10,
+        max_body_bytes=1024,
+        account_allowlist=[],
+    )
+
+    payload = toolkit.search(query="invoice")
+
+    child_env = json.loads(env_log.read_text(encoding="utf-8"))
+    assert payload["ok"] is True
+    assert "PATH" in child_env
+    assert "OPENAI_API_KEY" not in child_env
+    assert "ANTHROPIC_API_KEY" not in child_env
+    assert "SHISAD_SIGNER_KMS_BEARER_TOKEN" not in child_env
+    assert "SHISAD_DISCORD_BOT_TOKEN" not in child_env
+
+
+def test_msgvault_output_overflow_is_actionable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stdout_script = tmp_path / "large-stdout-msgvault.py"
+    stdout_script.write_text(
+        textwrap.dedent(
+            f"""
+            #!{sys.executable}
+            import sys
+            sys.stdout.buffer.write(b"x" * 128)
+            """
+        ).lstrip(),
+        encoding="utf-8",
+    )
+    stdout_script.chmod(0o755)
+    monkeypatch.setattr(msgvault_module, "_MAX_CLI_OUTPUT_BYTES", 32)
+    toolkit = MsgvaultToolkit(
+        enabled=True,
+        command=str(stdout_script),
+        home=None,
+        timeout_seconds=2.0,
+        max_results=10,
+        max_body_bytes=1024,
+        account_allowlist=[],
+    )
+
+    stdout_payload = toolkit.search(query="invoice")
+
+    assert stdout_payload["ok"] is False
+    assert stdout_payload["error"] == "msgvault_output_too_large"
+    assert stdout_payload["details"] == {
+        "error": "msgvault_output_too_large",
+        "stream": "stdout",
+    }
+
+    stderr_script = tmp_path / "large-stderr-msgvault.py"
+    stderr_script.write_text(
+        textwrap.dedent(
+            f"""
+            #!{sys.executable}
+            import json
+            import sys
+            sys.stderr.buffer.write(b"x" * 128)
+            print(json.dumps([]))
+            """
+        ).lstrip(),
+        encoding="utf-8",
+    )
+    stderr_script.chmod(0o755)
+    monkeypatch.setattr(msgvault_module, "_MAX_CLI_STDERR_BYTES", 32)
+    toolkit = MsgvaultToolkit(
+        enabled=True,
+        command=str(stderr_script),
+        home=None,
+        timeout_seconds=2.0,
+        max_results=10,
+        max_body_bytes=1024,
+        account_allowlist=[],
+    )
+
+    stderr_payload = toolkit.search(query="invoice")
+
+    assert stderr_payload["ok"] is False
+    assert stderr_payload["error"] == "msgvault_output_too_large"
+    assert stderr_payload["details"] == {
+        "error": "msgvault_output_too_large",
+        "stream": "stderr",
+    }
 
 
 def test_msgvault_config_parses_home_and_account_allowlist(

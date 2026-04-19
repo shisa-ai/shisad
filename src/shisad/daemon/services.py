@@ -1467,6 +1467,12 @@ def _build_tool_registry(
             ),
             parameters=[
                 ToolParameter(name="message_id", type="string", required=True),
+                ToolParameter(
+                    name="account",
+                    type="string",
+                    required=False,
+                    semantic_type="email_address",
+                ),
             ],
             capabilities_required=[Capability.EMAIL_READ],
             require_confirmation=False,

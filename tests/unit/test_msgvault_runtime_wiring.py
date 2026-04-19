@@ -63,6 +63,7 @@ def test_tool_registry_registers_read_only_email_tools() -> None:
     assert read is not None
     assert set(search.capabilities_required) == {Capability.EMAIL_READ}
     assert set(read.capabilities_required) == {Capability.EMAIL_READ}
+    assert {param.name for param in read.parameters} == {"message_id", "account"}
     assert search.require_confirmation is False
     assert read.require_confirmation is False
     assert registry.get_tool(ToolName("email.send")) is None
@@ -130,7 +131,11 @@ def test_structured_email_read_requires_message_id() -> None:
     handler = type("_Handler", (), {"_msgvault_toolkit": toolkit})()
 
     missing = _structured_email_read(handler, {}, _context())
-    found = _structured_email_read(handler, {"message_id": "msg-101"}, _context())
+    found = _structured_email_read(
+        handler,
+        {"message_id": "msg-101", "account": "me@example.com"},
+        _context(),
+    )
 
     assert missing == {
         "ok": False,
@@ -138,4 +143,6 @@ def test_structured_email_read_requires_message_id() -> None:
         "taint_labels": ["untrusted", "email"],
     }
     assert found["ok"] is True
-    assert toolkit.calls == [("read_message", {"message_id": "msg-101"})]
+    assert toolkit.calls == [
+        ("read_message", {"message_id": "msg-101", "account": "me@example.com"})
+    ]

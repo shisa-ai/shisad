@@ -610,12 +610,14 @@ class EmailSearchResult(BaseModel):
 
 class EmailReadParams(_StrictParams):
     message_id: str
+    account: str = ""
 
 
 class EmailReadResult(BaseModel):
     ok: bool
     operation: str = "email.read"
     message_id: str = ""
+    account: str = ""
     message: dict[str, Any] | None = None
     taint_labels: list[str] = Field(default_factory=list)
     evidence: dict[str, Any] = Field(default_factory=dict)

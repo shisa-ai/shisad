@@ -68,3 +68,32 @@ def test_tool_payload_templates_cover_memory_and_reminder_tools() -> None:
     ):
         assert tool_name in templates
         assert templates[tool_name]["arguments"]
+
+
+def test_email_read_template_requires_configured_or_search_derived_id(monkeypatch) -> None:
+    module = _load_live_tool_matrix_module()
+
+    monkeypatch.delenv("SHISAD_LIVE_TOOL_MATRIX_EMAIL_MESSAGE_ID", raising=False)
+    templates = module._structured_rpc_templates()
+
+    assert "email.search" in templates
+    assert "email.read" not in templates
+
+    monkeypatch.setenv("SHISAD_LIVE_TOOL_MATRIX_EMAIL_MESSAGE_ID", "msg-101")
+    monkeypatch.setenv("SHISAD_LIVE_TOOL_MATRIX_EMAIL_ACCOUNT", "me@example.com")
+    configured_templates = module._structured_rpc_templates()
+
+    assert configured_templates["email.read"] == {
+        "message_id": "msg-101",
+        "account": "me@example.com",
+    }
+
+    derived = module._email_read_template_from_search_result(
+        {
+            "ok": True,
+            "account": "work@example.com",
+            "results": [{"id": 202, "source_message_id": "source-202"}],
+        }
+    )
+
+    assert derived == {"message_id": "202", "account": "work@example.com"}
