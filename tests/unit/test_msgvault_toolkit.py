@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 import sys
 import textwrap
 from pathlib import Path
@@ -70,6 +71,49 @@ def _write_fake_msgvault(tmp_path: Path, *, body_text: str = "hello") -> tuple[P
     )
     script.chmod(0o755)
     return script, argv_log
+
+
+def _write_msgvault_scope_db(
+    tmp_path: Path,
+    *,
+    sources: list[tuple[int, str]] | None = None,
+    messages: list[tuple[int, int, str]] | None = None,
+) -> Path:
+    home = tmp_path / "vault"
+    home.mkdir(exist_ok=True)
+    db_path = home / "msgvault.db"
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.executescript(
+            """
+            CREATE TABLE sources (
+                id INTEGER PRIMARY KEY,
+                identifier TEXT NOT NULL
+            );
+            CREATE TABLE messages (
+                id INTEGER PRIMARY KEY,
+                source_id INTEGER NOT NULL,
+                source_message_id TEXT
+            );
+            """
+        )
+        for source_id, identifier in sources or [(1, "me@example.com")]:
+            conn.execute(
+                "INSERT INTO sources (id, identifier) VALUES (?, ?)",
+                (source_id, identifier),
+            )
+        for message_id, source_id, source_message_id in messages or [(101, 1, "msg-101")]:
+            conn.execute(
+                """
+                INSERT INTO messages (id, source_id, source_message_id)
+                VALUES (?, ?, ?)
+                """,
+                (message_id, source_id, source_message_id),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+    return home
 
 
 def test_msgvault_search_uses_local_mode_and_bounded_arguments(tmp_path: Path) -> None:
@@ -185,7 +229,7 @@ def test_msgvault_read_enforces_account_allowlist_scope(tmp_path: Path) -> None:
             calls.append(sys.argv)
             path.write_text(json.dumps(calls), encoding="utf-8")
             if "search" in sys.argv:
-                print(json.dumps([{{"id": 101, "source_message_id": "msg-101"}}]))
+                print(json.dumps([]))
             elif "show-message" in sys.argv:
                 print(json.dumps({{
                     "id": 101,
@@ -200,10 +244,11 @@ def test_msgvault_read_enforces_account_allowlist_scope(tmp_path: Path) -> None:
         encoding="utf-8",
     )
     script.chmod(0o755)
+    home = _write_msgvault_scope_db(tmp_path)
     toolkit = MsgvaultToolkit(
         enabled=True,
         command=str(script),
-        home=None,
+        home=home,
         timeout_seconds=2.0,
         max_results=10,
         max_body_bytes=1024,
@@ -216,17 +261,13 @@ def test_msgvault_read_enforces_account_allowlist_scope(tmp_path: Path) -> None:
     assert calls[0] == [
         str(script),
         "--local",
-        "search",
-        "msg-101",
+        "--home",
+        str(home),
+        "show-message",
+        "101",
         "--json",
-        "--limit",
-        "50",
-        "--offset",
-        "0",
-        "--account",
-        "me@example.com",
     ]
-    assert calls[1] == [str(script), "--local", "show-message", "101", "--json"]
+    assert len(calls) == 1
     assert payload["ok"] is True
     assert payload["account"] == "me@example.com"
     assert payload["message"]["subject"] == "Scoped"
@@ -267,9 +308,7 @@ def test_msgvault_read_rejects_missing_or_unmatched_account_scope(tmp_path: Path
             calls = json.loads(path.read_text(encoding="utf-8")) if path.exists() else []
             calls.append(sys.argv)
             path.write_text(json.dumps(calls), encoding="utf-8")
-            if "search" in sys.argv:
-                print(json.dumps([]))
-            elif "show-message" in sys.argv:
+            if "show-message" in sys.argv:
                 print(json.dumps({{"id": 101}}))
             else:
                 sys.exit(2)
@@ -278,10 +317,15 @@ def test_msgvault_read_rejects_missing_or_unmatched_account_scope(tmp_path: Path
         encoding="utf-8",
     )
     miss_script.chmod(0o755)
+    miss_home = _write_msgvault_scope_db(
+        tmp_path,
+        sources=[(1, "work@example.com")],
+        messages=[(101, 1, "msg-101")],
+    )
     scoped = MsgvaultToolkit(
         enabled=True,
         command=str(miss_script),
-        home=None,
+        home=miss_home,
         timeout_seconds=2.0,
         max_results=10,
         max_body_bytes=1024,
@@ -290,11 +334,9 @@ def test_msgvault_read_rejects_missing_or_unmatched_account_scope(tmp_path: Path
 
     scope_miss = scoped.read_message(message_id="msg-101", account="me@example.com")
 
-    calls = json.loads(miss_log.read_text(encoding="utf-8"))
     assert scope_miss["ok"] is False
     assert scope_miss["error"] == "msgvault_message_not_in_account_scope"
-    assert len(calls) == 1
-    assert "show-message" not in calls[0]
+    assert not miss_log.exists()
 
 
 def test_msgvault_read_scope_treats_message_ids_as_case_sensitive(tmp_path: Path) -> None:
@@ -312,9 +354,7 @@ def test_msgvault_read_scope_treats_message_ids_as_case_sensitive(tmp_path: Path
             calls = json.loads(path.read_text(encoding="utf-8")) if path.exists() else []
             calls.append(sys.argv)
             path.write_text(json.dumps(calls), encoding="utf-8")
-            if "search" in sys.argv:
-                print(json.dumps([{{"id": 101, "source_message_id": "MSG-101"}}]))
-            elif "show-message" in sys.argv:
+            if "show-message" in sys.argv:
                 print(json.dumps({{"id": 101, "source_message_id": "msg-101"}}))
             else:
                 sys.exit(2)
@@ -323,10 +363,63 @@ def test_msgvault_read_scope_treats_message_ids_as_case_sensitive(tmp_path: Path
         encoding="utf-8",
     )
     script.chmod(0o755)
+    home = _write_msgvault_scope_db(
+        tmp_path,
+        messages=[(101, 1, "MSG-101")],
+    )
     toolkit = MsgvaultToolkit(
         enabled=True,
         command=str(script),
-        home=None,
+        home=home,
+        timeout_seconds=2.0,
+        max_results=10,
+        max_body_bytes=1024,
+        account_allowlist=["me@example.com"],
+    )
+
+    payload = toolkit.read_message(message_id="msg-101", account="me@example.com")
+
+    assert payload["ok"] is False
+    assert payload["error"] == "msgvault_message_not_in_account_scope"
+    assert not calls_log.exists()
+
+
+def test_msgvault_read_scope_does_not_depend_on_id_search(tmp_path: Path) -> None:
+    calls_log = tmp_path / "contract-calls.json"
+    script = tmp_path / "contract-msgvault.py"
+    script.write_text(
+        textwrap.dedent(
+            f"""
+            #!{sys.executable}
+            import json
+            import sys
+            from pathlib import Path
+
+            path = Path({str(calls_log)!r})
+            calls = json.loads(path.read_text(encoding="utf-8")) if path.exists() else []
+            calls.append(sys.argv)
+            path.write_text(json.dumps(calls), encoding="utf-8")
+            if "search" in sys.argv:
+                print(json.dumps([]))
+            elif "show-message" in sys.argv and "101" in sys.argv:
+                print(json.dumps({{
+                    "id": 101,
+                    "source_message_id": "msg-101",
+                    "subject": "Contract-shaped lookup",
+                    "body_text": "ok"
+                }}))
+            else:
+                sys.exit(2)
+            """
+        ).lstrip(),
+        encoding="utf-8",
+    )
+    script.chmod(0o755)
+    home = _write_msgvault_scope_db(tmp_path)
+    toolkit = MsgvaultToolkit(
+        enabled=True,
+        command=str(script),
+        home=home,
         timeout_seconds=2.0,
         max_results=10,
         max_body_bytes=1024,
@@ -336,10 +429,11 @@ def test_msgvault_read_scope_treats_message_ids_as_case_sensitive(tmp_path: Path
     payload = toolkit.read_message(message_id="msg-101", account="me@example.com")
 
     calls = json.loads(calls_log.read_text(encoding="utf-8"))
-    assert payload["ok"] is False
-    assert payload["error"] == "msgvault_message_not_in_account_scope"
-    assert len(calls) == 1
-    assert "show-message" not in calls[0]
+    assert calls == [
+        [str(script), "--local", "--home", str(home), "show-message", "101", "--json"]
+    ]
+    assert payload["ok"] is True
+    assert payload["message"]["subject"] == "Contract-shaped lookup"
 
 
 def test_msgvault_read_uses_scoped_internal_id_for_source_id_matches(tmp_path: Path) -> None:
@@ -357,9 +451,7 @@ def test_msgvault_read_uses_scoped_internal_id_for_source_id_matches(tmp_path: P
             calls = json.loads(path.read_text(encoding="utf-8")) if path.exists() else []
             calls.append(sys.argv)
             path.write_text(json.dumps(calls), encoding="utf-8")
-            if "search" in sys.argv:
-                print(json.dumps([{{"id": 101, "source_message_id": "msg-collide"}}]))
-            elif "show-message" in sys.argv and "101" in sys.argv:
+            if "show-message" in sys.argv and "101" in sys.argv:
                 print(json.dumps({{
                     "id": 101,
                     "source_message_id": "msg-collide",
@@ -380,10 +472,14 @@ def test_msgvault_read_uses_scoped_internal_id_for_source_id_matches(tmp_path: P
         encoding="utf-8",
     )
     script.chmod(0o755)
+    home = _write_msgvault_scope_db(
+        tmp_path,
+        messages=[(101, 1, "msg-collide")],
+    )
     toolkit = MsgvaultToolkit(
         enabled=True,
         command=str(script),
-        home=None,
+        home=home,
         timeout_seconds=2.0,
         max_results=10,
         max_body_bytes=1024,
@@ -393,7 +489,16 @@ def test_msgvault_read_uses_scoped_internal_id_for_source_id_matches(tmp_path: P
     payload = toolkit.read_message(message_id="msg-collide", account="me@example.com")
 
     calls = json.loads(calls_log.read_text(encoding="utf-8"))
-    assert calls[1] == [str(script), "--local", "show-message", "101", "--json"]
+    assert calls[0] == [
+        str(script),
+        "--local",
+        "--home",
+        str(home),
+        "show-message",
+        "101",
+        "--json",
+    ]
+    assert len(calls) == 1
     assert payload["ok"] is True
     assert payload["message"]["subject"] == "Allowed account"
 
@@ -413,12 +518,7 @@ def test_msgvault_read_prefers_internal_id_over_source_id_matches(tmp_path: Path
             calls = json.loads(path.read_text(encoding="utf-8")) if path.exists() else []
             calls.append(sys.argv)
             path.write_text(json.dumps(calls), encoding="utf-8")
-            if "search" in sys.argv:
-                print(json.dumps([
-                    {{"id": 999, "source_message_id": "123", "subject": "Source match"}},
-                    {{"id": 123, "source_message_id": "other-source", "subject": "Internal match"}}
-                ]))
-            elif "show-message" in sys.argv and "123" in sys.argv:
+            if "show-message" in sys.argv and "123" in sys.argv:
                 print(json.dumps({{
                     "id": 123,
                     "source_message_id": "other-source",
@@ -439,10 +539,17 @@ def test_msgvault_read_prefers_internal_id_over_source_id_matches(tmp_path: Path
         encoding="utf-8",
     )
     script.chmod(0o755)
+    home = _write_msgvault_scope_db(
+        tmp_path,
+        messages=[
+            (999, 1, "123"),
+            (123, 1, "other-source"),
+        ],
+    )
     toolkit = MsgvaultToolkit(
         enabled=True,
         command=str(script),
-        home=None,
+        home=home,
         timeout_seconds=2.0,
         max_results=10,
         max_body_bytes=1024,
@@ -452,7 +559,16 @@ def test_msgvault_read_prefers_internal_id_over_source_id_matches(tmp_path: Path
     payload = toolkit.read_message(message_id="123", account="me@example.com")
 
     calls = json.loads(calls_log.read_text(encoding="utf-8"))
-    assert calls[1] == [str(script), "--local", "show-message", "123", "--json"]
+    assert calls[0] == [
+        str(script),
+        "--local",
+        "--home",
+        str(home),
+        "show-message",
+        "123",
+        "--json",
+    ]
+    assert len(calls) == 1
     assert payload["ok"] is True
     assert payload["message"]["subject"] == "Internal match"
 

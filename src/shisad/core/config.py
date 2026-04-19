@@ -448,8 +448,9 @@ class DaemonConfig(BaseSettings):
     msgvault_account_allowlist: Annotated[list[str], NoDecode] = Field(
         default_factory=list,
         description=(
-            "Optional lower-privilege account scope for msgvault searches. When set, "
-            "queries must target a listed account unless exactly one account is configured."
+            "Optional lower-privilege account scope for msgvault search/read tools. "
+            "When set, operations must target a listed account unless exactly one "
+            "account is configured."
         ),
     )
     browser_enabled: bool = Field(

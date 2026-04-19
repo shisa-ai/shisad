@@ -7,8 +7,10 @@ import json
 import os
 import selectors
 import shlex
+import sqlite3
 import subprocess
 import time
+import tomllib
 from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -25,7 +27,6 @@ _MAX_ACCOUNT_BYTES = 512
 _MAX_MESSAGE_ID_BYTES = 512
 _MAX_LABELS = 50
 _MAX_ATTACHMENTS = 50
-_READ_SCOPE_SEARCH_LIMIT = 50
 _CHILD_ENV_ALLOWLIST = frozenset(
     {
         "HOME",
@@ -81,6 +82,25 @@ def _truncate_utf8(text: str, *, max_bytes: int) -> tuple[str, bool]:
         return text, False
     truncated = encoded[:limit].decode("utf-8", errors="ignore")
     return truncated, True
+
+
+def _canonical_internal_message_id(value: str) -> int | None:
+    text = value.strip()
+    if not text or not text.isascii() or not text.isdigit():
+        return None
+    if len(text) > 1 and text.startswith("0"):
+        return None
+    try:
+        return int(text)
+    except ValueError:
+        return None
+
+
+def _resolve_config_path(value: str, *, base: Path) -> Path:
+    path = Path(os.path.expanduser(value.strip()))
+    if path.is_absolute():
+        return path
+    return base / path
 
 
 def _labels(value: Any) -> list[str]:
@@ -438,45 +458,100 @@ class MsgvaultToolkit:
         message_id: str,
         account: str,
     ) -> str | dict[str, Any]:
-        result = self._run(
-            [
-                "search",
-                message_id,
-                "--json",
-                "--limit",
-                str(_READ_SCOPE_SEARCH_LIMIT),
-                "--offset",
-                "0",
-                "--account",
-                account,
-            ],
-            operation="email.search",
+        db_path = self._msgvault_database_path()
+        if isinstance(db_path, dict):
+            return db_path
+        return self._lookup_scoped_internal_message_id(
+            db_path=db_path,
+            message_id=message_id,
+            account=account,
         )
-        if isinstance(result, dict) and "error" in result:
-            return result
-        rows = self._search_rows(result)
-        if rows is None:
-            return {"error": "msgvault_unexpected_json"}
-        scoped_id = self._scoped_message_id_from_search_rows(rows, message_id=message_id)
-        if scoped_id:
-            return scoped_id
-        return {"error": "msgvault_message_not_in_account_scope"}
 
-    def _scoped_message_id_from_search_rows(self, rows: list[Any], *, message_id: str) -> str:
-        normalized_id = message_id.strip()
-        source_matches: list[str] = []
-        for item in rows:
-            row = self._normalize_search_row(item)
-            internal_id = str(row.get("id", "")).strip()
-            source_message_id = str(row.get("source_message_id", "")).strip()
-            if normalized_id == internal_id:
-                return internal_id
-            if normalized_id == source_message_id and internal_id:
-                source_matches.append(internal_id)
-        unique_source_matches = sorted(set(source_matches))
-        if len(unique_source_matches) == 1:
-            return unique_source_matches[0]
-        return ""
+    def _msgvault_home_dir(self) -> Path:
+        if self.home is not None:
+            return self.home.expanduser()
+        home = os.environ.get("HOME", "").strip()
+        if home:
+            return Path(home).expanduser() / ".msgvault"
+        return Path.home() / ".msgvault"
+
+    def _msgvault_database_path(self) -> Path | dict[str, str]:
+        home = self._msgvault_home_dir()
+        data_dir = home
+        database_url = ""
+        config_path = home / "config.toml"
+        if config_path.is_file():
+            try:
+                with config_path.open("rb") as handle:
+                    config = tomllib.load(handle)
+            except (OSError, tomllib.TOMLDecodeError):
+                return {"error": "msgvault_scope_lookup_unavailable"}
+            data = config.get("data")
+            if isinstance(data, dict):
+                raw_database_url = _string_value(data.get("database_url"), max_bytes=4096)
+                if raw_database_url:
+                    database_url = raw_database_url
+                raw_data_dir = _string_value(data.get("data_dir"), max_bytes=4096)
+                if raw_data_dir:
+                    data_dir = _resolve_config_path(raw_data_dir, base=home)
+        if database_url:
+            if "://" in database_url:
+                return {"error": "msgvault_scope_lookup_unavailable"}
+            db_path = _resolve_config_path(database_url, base=home)
+        else:
+            db_path = data_dir / "msgvault.db"
+        if not db_path.is_file():
+            return {"error": "msgvault_scope_lookup_unavailable"}
+        return db_path
+
+    def _lookup_scoped_internal_message_id(
+        self,
+        *,
+        db_path: Path,
+        message_id: str,
+        account: str,
+    ) -> str | dict[str, str]:
+        timeout = max(0.1, min(float(self.timeout_seconds), 5.0))
+        try:
+            conn = sqlite3.connect(str(db_path), timeout=timeout)
+        except (OSError, sqlite3.Error):
+            return {"error": "msgvault_scope_lookup_unavailable"}
+        try:
+            conn.execute("PRAGMA query_only = ON")
+            internal_id = _canonical_internal_message_id(message_id)
+            if internal_id is not None:
+                row = conn.execute(
+                    """
+                    SELECT m.id
+                    FROM messages m
+                    JOIN sources s ON s.id = m.source_id
+                    WHERE lower(COALESCE(s.identifier, '')) = ?
+                      AND m.id = ?
+                    LIMIT 1
+                    """,
+                    (account, internal_id),
+                ).fetchone()
+                if row is not None:
+                    return str(row[0])
+            source_rows = conn.execute(
+                """
+                SELECT m.id
+                FROM messages m
+                JOIN sources s ON s.id = m.source_id
+                WHERE lower(COALESCE(s.identifier, '')) = ?
+                  AND m.source_message_id = ?
+                ORDER BY m.id
+                LIMIT 2
+                """,
+                (account, message_id),
+            ).fetchall()
+        except sqlite3.Error:
+            return {"error": "msgvault_scope_lookup_unavailable"}
+        finally:
+            conn.close()
+        if len(source_rows) == 1:
+            return str(source_rows[0][0])
+        return {"error": "msgvault_message_not_in_account_scope"}
 
     def _search_rows(self, payload: Any) -> list[Any] | None:
         if isinstance(payload, list):
@@ -646,8 +721,13 @@ def _actionable_message(reason: str, *, operation: str) -> str:
         return "Specify an account from SHISAD_MSGVAULT_ACCOUNT_ALLOWLIST for this operation."
     if reason == "msgvault_message_not_in_account_scope":
         return (
-            "The msgvault message id was not found in an account-scoped search; "
+            "The msgvault message id was not found in account-scoped archive metadata; "
             "use an id returned by email.search for the requested account."
+        )
+    if reason == "msgvault_scope_lookup_unavailable":
+        return (
+            "Account-scoped email.read could not inspect the local msgvault archive; "
+            "check SHISAD_MSGVAULT_HOME, msgvault config.toml, and msgvault.db."
         )
     if reason in {"email_search_query_required", "email_message_id_required"}:
         return "Provide the required email search query or msgvault message id."

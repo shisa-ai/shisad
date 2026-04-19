@@ -143,9 +143,10 @@ msgvault email:
 msgvault notes:
 
 - `email.search` and `email.read` are read-only structured tools requiring
-  `email.read` capability. They use the local msgvault CLI with `--local`;
-  shisad does not perform Gmail/IMAP sync and does not copy provider OAuth or
-  IMAP credentials into its own credential store in this slice.
+  `email.read` capability. They use the local msgvault CLI with `--local` for
+  search/read output; account-scoped reads also inspect local msgvault archive
+  metadata. shisad does not perform Gmail/IMAP sync and does not copy provider
+  OAuth or IMAP credentials into its own credential store in this slice.
 - `SHISAD_MSGVAULT_ENABLED=1` enables runtime calls. If it is unset, the tools
   remain registered but return `msgvault_disabled` with setup guidance instead
   of locking down the session.
@@ -155,8 +156,8 @@ msgvault notes:
   set, searches must target a listed account unless exactly one account is
   configured, in which case that account is selected automatically. Message
   reads use the same account resolution and verify the requested message id
-  through an account-scoped search before reading the matched msgvault internal
-  id.
+  against local msgvault archive metadata before reading the matched msgvault
+  internal id.
 - Search output is bounded to metadata and snippets. Message reads omit HTML
   bodies, omit BCC recipient details, include only BCC counts, and truncate
   text bodies to `SHISAD_MSGVAULT_MAX_BODY_BYTES`.

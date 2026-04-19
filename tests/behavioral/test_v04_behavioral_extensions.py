@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 import json
 import socket
+import sqlite3
 import subprocess
 import sys
 import textwrap
@@ -86,6 +87,41 @@ def _runner_style_msgvault_policy() -> str:
           - shell.exec
         """
     ).lstrip()
+
+
+def _write_msgvault_scope_db(
+    tmp_path: Path,
+    *,
+    account: str,
+    message_id: int,
+    source_id: str,
+) -> Path:
+    home = tmp_path / "msgvault-home"
+    home.mkdir(exist_ok=True)
+    conn = sqlite3.connect(home / "msgvault.db")
+    try:
+        conn.executescript(
+            """
+            CREATE TABLE sources (
+                id INTEGER PRIMARY KEY,
+                identifier TEXT NOT NULL
+            );
+            CREATE TABLE messages (
+                id INTEGER PRIMARY KEY,
+                source_id INTEGER NOT NULL,
+                source_message_id TEXT
+            );
+            """
+        )
+        conn.execute("INSERT INTO sources (id, identifier) VALUES (?, ?)", (1, account))
+        conn.execute(
+            "INSERT INTO messages (id, source_id, source_message_id) VALUES (?, ?, ?)",
+            (message_id, 1, source_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    return home
 
 
 def _reserve_local_port() -> int:
@@ -512,6 +548,12 @@ async def test_behavioral_msgvault_email_read_executes_without_lockdown(
         encoding="utf-8",
     )
     msgvault.chmod(0o755)
+    msgvault_home = _write_msgvault_scope_db(
+        tmp_path,
+        account="me@example.com",
+        message_id=202,
+        source_id="msg-202",
+    )
 
     async def _planner_email_read(
         self: Planner,
@@ -546,6 +588,7 @@ async def test_behavioral_msgvault_email_read_executes_without_lockdown(
         config_overrides={
             "msgvault_enabled": True,
             "msgvault_command": str(msgvault),
+            "msgvault_home": msgvault_home,
             "msgvault_account_allowlist": ["me@example.com"],
             "msgvault_max_body_bytes": 1024,
         },
@@ -564,17 +607,13 @@ async def test_behavioral_msgvault_email_read_executes_without_lockdown(
         assert calls[0] == [
             str(msgvault),
             "--local",
-            "search",
-            "msg-202",
+            "--home",
+            str(msgvault_home),
+            "show-message",
+            "202",
             "--json",
-            "--limit",
-            "50",
-            "--offset",
-            "0",
-            "--account",
-            "me@example.com",
         ]
-        assert calls[1] == [str(msgvault), "--local", "show-message", "202", "--json"]
+        assert len(calls) == 1
 
         tool_outputs = reply.get("tool_outputs")
         assert isinstance(tool_outputs, list)
