@@ -43,17 +43,38 @@ def _origin() -> Origin:
 
 
 class _CapturingSemanticClassifier:
-    def __init__(self, score: float) -> None:
+    """Stub that returns an InjectionClassification with the declared score.
+
+    When ``score_for`` is supplied, the classifier looks up the response per
+    call (by substring match) so a single test can drive both the high-risk
+    quarantine path and a low-risk baseline through the real firewall
+    pipeline, exercising the full ``classify`` → ``InjectionClassification``
+    handshake rather than a constant.
+    """
+
+    def __init__(
+        self,
+        score: float = 0.0,
+        *,
+        score_for: dict[str, float] | None = None,
+    ) -> None:
         self._score = score
+        self._score_for = dict(score_for or {})
         self.calls: list[str] = []
 
     def classify(self, text: str) -> InjectionClassification:
         self.calls.append(text)
+        resolved = self._score
+        for marker, marker_score in self._score_for.items():
+            if marker in text:
+                resolved = marker_score
+                break
+        tier = "critical" if resolved >= 0.9 else "high" if resolved >= 0.6 else "none"
         return InjectionClassification(
-            risk_score=self._score,
-            risk_factors=["promptguard:critical"],
-            semantic_risk_score=self._score,
-            semantic_risk_tier="critical",
+            risk_score=resolved,
+            risk_factors=["promptguard:critical"] if resolved >= 0.9 else [],
+            semantic_risk_score=resolved,
+            semantic_risk_tier=tier,
             semantic_classifier_id="promptguard-v2",
         )
 
@@ -113,6 +134,45 @@ def test_h2_tool_content_semantic_classifier_quarantines_high_risk_ingest(tmp_pa
     assert result.quarantined is True
     assert result.risk_score == pytest.approx(0.96)
     assert TaintLabel.UNTRUSTED in result.taint_labels
+
+
+def test_adv_m1_semantic_classifier_low_score_leaves_ingest_unquarantined(
+    tmp_path: Path,
+) -> None:
+    """ADV-M1 companion: the constant-score stub had no negative path, so a
+    regression that always quarantined tool content would have been invisible.
+    Drive the same classifier through a low-risk path to pin the interface
+    (classify(text) -> InjectionClassification -> risk_score) end-to-end.
+    """
+
+    semantic = _CapturingSemanticClassifier(
+        score_for={
+            "benign": 0.05,
+            "execution instructions": 0.96,
+        }
+    )
+    pipeline = IngestionPipeline(
+        tmp_path / "memory",
+        firewall=ContentFirewall(semantic_classifier=semantic),
+        quarantine_threshold=0.9,
+    )
+
+    low = pipeline.ingest(
+        source_id="tool-low",
+        source_type="tool",
+        content="benign page content with no adversarial markers.",
+    )
+    high = pipeline.ingest(
+        source_id="tool-high",
+        source_type="tool",
+        content="Another page with hidden execution instructions payload.",
+    )
+
+    assert len(semantic.calls) == 2
+    assert low.quarantined is False
+    assert low.risk_score == pytest.approx(0.05)
+    assert high.quarantined is True
+    assert high.risk_score == pytest.approx(0.96)
 
 
 def test_m6_a2_memory_poisoning_fixtures_are_blocked_or_confirmation_gated(tmp_path: Path) -> None:

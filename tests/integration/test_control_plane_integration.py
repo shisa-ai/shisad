@@ -1060,15 +1060,29 @@ async def test_h3_trace_only_capability_elevation_confirmation_rechecks_pep_and_
         action = actions[0]
         assert dict(action.get("pep_elevation", {})).get("capability_grants") == ["http.request"]
 
-        await asyncio.sleep(3.1)
-        confirmed = await client.call(
-            "action.confirm",
-            {
-                "confirmation_id": str(pending_ids[0]),
-                "decision_nonce": str(action["decision_nonce"]),
-                "reason": "operator_approved",
-            },
-        )
+        # INT-L1: instead of sleeping a fixed 3.1s (production sets a 3s
+        # cooldown for high-risk confirmations; hard-coded literal drifts
+        # if the constant is tuned), drive the server's own
+        # `retry_after_seconds` feedback loop: try `action.confirm`,
+        # sleep the reported remaining cooldown + small buffer, retry.
+        # Avoids both test latency when the cooldown shrinks and
+        # flakiness when clock sync drifts.
+        confirm_params = {
+            "confirmation_id": str(pending_ids[0]),
+            "decision_nonce": str(action["decision_nonce"]),
+            "reason": "operator_approved",
+        }
+        max_retry_cycles = 3
+        confirmed = None
+        for _ in range(max_retry_cycles):
+            confirmed = await client.call("action.confirm", confirm_params)
+            if confirmed.get("confirmed") is True:
+                break
+            if str(confirmed.get("reason", "")) != "cooldown_active":
+                break
+            retry_after = float(confirmed.get("retry_after_seconds", 0) or 0)
+            await asyncio.sleep(max(retry_after, 0.0) + 0.1)
+        assert confirmed is not None
         assert confirmed["confirmed"] is True
         assert confirmed["status"] == "approved"
 

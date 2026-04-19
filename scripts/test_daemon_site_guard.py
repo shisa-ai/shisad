@@ -3,25 +3,54 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import json
-import re
 import sys
 from pathlib import Path
 from typing import Final
 
-_PATTERNS: Final[dict[str, re.Pattern[str]]] = {
-    "run_daemon": re.compile(r"\brun_daemon\("),
-    "DaemonServices.build": re.compile(r"\bDaemonServices\.build\("),
-}
+_CALL_LABELS: Final[tuple[str, ...]] = ("run_daemon", "DaemonServices.build")
+
+
+def _call_label(func: ast.expr) -> str | None:
+    if isinstance(func, ast.Name) and func.id == "run_daemon":
+        return "run_daemon"
+    if (
+        isinstance(func, ast.Attribute)
+        and func.attr == "build"
+        and isinstance(func.value, ast.Name)
+        and func.value.id == "DaemonServices"
+    ):
+        return "DaemonServices.build"
+    return None
+
+
+class _CallSiteCounter(ast.NodeVisitor):
+    def __init__(self) -> None:
+        self.counts: dict[str, int] = {label: 0 for label in _CALL_LABELS}
+
+    def visit_Call(self, node: ast.Call) -> None:
+        label = _call_label(node.func)
+        if label is not None:
+            self.counts[label] += 1
+        self.generic_visit(node)
+
+
+def _scan_test_file(path: Path) -> dict[str, int]:
+    source = path.read_text(encoding="utf-8")
+    tree = ast.parse(source, filename=str(path))
+    counter = _CallSiteCounter()
+    counter.visit(tree)
+    return counter.counts
 
 
 def _scan_tests(repo_root: Path, tests_root: Path) -> dict[str, object]:
-    counts: dict[str, dict[str, int]] = {label: {} for label in _PATTERNS}
+    counts: dict[str, dict[str, int]] = {label: {} for label in _CALL_LABELS}
     for path in sorted(tests_root.rglob("*.py")):
         relative = path.relative_to(repo_root).as_posix()
-        text = path.read_text(encoding="utf-8")
-        for label, pattern in _PATTERNS.items():
-            count = len(pattern.findall(text))
+        file_counts = _scan_test_file(path)
+        for label in _CALL_LABELS:
+            count = file_counts[label]
             if count > 0:
                 counts[label][relative] = count
 
@@ -49,7 +78,7 @@ def _compare_against_baseline(
     if not isinstance(baseline_counts, dict) or not isinstance(current_counts, dict):
         return ["baseline file is missing a top-level 'counts' mapping"]
 
-    for label in _PATTERNS:
+    for label in _CALL_LABELS:
         baseline_per_file = baseline_counts.get(label, {})
         current_per_file = current_counts.get(label, {})
         if not isinstance(baseline_per_file, dict) or not isinstance(current_per_file, dict):

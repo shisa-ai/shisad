@@ -116,12 +116,14 @@ Gap:
 
 Current state:
 - `src/shisad/coding/registry.py` pins:
-  - `@zed-industries/claude-agent-acp@0.21.0`
-  - `@zed-industries/codex-acp@0.9.5`
-- `opencode` currently uses `npx -y opencode-ai acp` without an exact version pin.
+  - `@agentclientprotocol/claude-agent-acp@0.29.2`
+  - `@zed-industries/codex-acp@0.11.1`
+  - `opencode-ai@1.3.10`
 
 Good:
-- Claude and Codex ACP adapters are exact-pinned.
+- Claude, Codex, and OpenCode ACP adapter commands are exact-pinned.
+- The deprecated `@zed-industries/claude-agent-acp` namespace has been replaced
+  with the active `@agentclientprotocol/claude-agent-acp` package.
 
 Gap:
 - The adapter code is still fetched via `npx` at runtime.
@@ -224,8 +226,9 @@ Assessment:
 2. **Runtime `npx` fetches.**
    Public-registry code is still being fetched at execution time for coding-agent adapters.
 
-3. **Unpinned `opencode` adapter path.**
-   `opencode-ai` currently lacks an exact adapter version pin.
+3. **No npm age gate for runtime adapter fetches.**
+   Python dependency resolution uses a CI cooldown, but runtime `npx` adapter
+   fetches do not yet have an equivalent in-repo age or mirror policy.
 
 4. **No visible trusted-publishing or release-attestation path yet.**
    Signed-release ideas exist, but enforcement is not yet in-repo.

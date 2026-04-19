@@ -19,11 +19,11 @@ def test_m3_default_agent_registry_contains_pinned_acp_commands() -> None:
     assert registry["claude"].command == (
         "npx",
         "-y",
-        "@zed-industries/claude-agent-acp@0.21.0",
+        "@agentclientprotocol/claude-agent-acp@0.29.2",
     )
     assert registry["codex"].command == (
         "npx",
-        "@zed-industries/codex-acp@0.9.5",
+        "@zed-industries/codex-acp@0.11.1",
     )
     assert registry["opencode"].command == (
         "npx",
@@ -31,6 +31,38 @@ def test_m3_default_agent_registry_contains_pinned_acp_commands() -> None:
         "opencode-ai@1.3.10",
         "acp",
     )
+
+
+def test_m3_default_agent_registry_pins_every_npx_package_to_an_explicit_version() -> None:
+    # PLN-L2: the previous pinning test was configuration identity
+    # (compare the tuple against itself). A regression that swapped the
+    # pinned version for `@latest` or dropped the `@X.Y.Z` suffix
+    # (silently tracking upstream) still matched the exact same tuple
+    # literal if the literal happened to get rewritten. This behavioral
+    # test pins the *class* of pin (explicit semver) so drift in either
+    # direction fails.
+    import re
+
+    semver_pin = re.compile(r"@\d+\.\d+\.\d+$")
+    forbidden = {"@latest", "@next", "@beta", "@canary"}
+
+    registry = build_default_agent_registry()
+    for agent_name, spec in registry.items():
+        npx_args = [part for part in spec.command if part.startswith("@") or "@" in part]
+        # Every command has at least one `@package@version` argument.
+        assert any("@" in part for part in spec.command), (
+            f"{agent_name}: command must include an `@` package reference"
+        )
+        for part in npx_args:
+            for banned in forbidden:
+                assert banned not in part, (
+                    f"{agent_name}: {part!r} uses forbidden mutable tag {banned!r}"
+                )
+            if part.startswith("@") or part.count("@") >= 1:
+                # Package spec is either bare `name@X.Y.Z` or `@scope/pkg@X.Y.Z`.
+                assert semver_pin.search(part), (
+                    f"{agent_name}: {part!r} is not pinned to an explicit semver"
+                )
 
 
 def test_m3_agent_selection_uses_fallback_chain_when_preferred_agent_unavailable() -> None:

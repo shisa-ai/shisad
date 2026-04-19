@@ -7,7 +7,13 @@ from typing import Any
 
 import pytest
 
-from shisad.core.planner import Planner, PlannerOutputError
+from shisad.core.planner import (
+    _CONTENT_TOOL_CALL_MAX_ARGUMENT_BYTES,
+    _CONTENT_TOOL_CALL_MAX_CALLS,
+    _CONTENT_TOOL_CALL_MAX_CONTENT_BYTES,
+    Planner,
+    PlannerOutputError,
+)
 from shisad.core.providers.base import Message, ProviderResponse
 from shisad.core.providers.capabilities import ProviderCapabilities
 from shisad.core.tools.names import canonical_tool_name
@@ -456,7 +462,13 @@ async def test_m1_rlc4_planner_skips_unknown_content_tool_calls_but_keeps_valid_
 async def test_m2_planner_enforces_content_tool_call_count_bound() -> None:
     registry = _make_registry()
     pep = PEP(PolicyBundle(default_require_confirmation=False), registry)
-    calls = ['<tool_call>{"name":"echo","arguments":{"text":"x"}}</tool_call>' for _ in range(11)]
+    # MCP-L4: derive from production constant so the test stays honest if the
+    # bound changes; previously `range(11)` could silently drift from the real
+    # threshold.
+    calls = [
+        '<tool_call>{"name":"echo","arguments":{"text":"x"}}</tool_call>'
+        for _ in range(_CONTENT_TOOL_CALL_MAX_CALLS + 1)
+    ]
     provider = _StaticProvider([Message(role="assistant", content=" ".join(calls))])
     planner = Planner(
         provider,
@@ -482,7 +494,12 @@ async def test_m2_planner_enforces_content_tool_call_count_bound() -> None:
 async def test_m2_planner_enforces_json_array_tool_call_count_bound() -> None:
     registry = _make_registry()
     pep = PEP(PolicyBundle(default_require_confirmation=False), registry)
-    payload = json.dumps([{"name": "echo", "arguments": {"text": f"x-{idx}"}} for idx in range(11)])
+    payload = json.dumps(
+        [
+            {"name": "echo", "arguments": {"text": f"x-{idx}"}}
+            for idx in range(_CONTENT_TOOL_CALL_MAX_CALLS + 1)
+        ]
+    )
     provider = _StaticProvider([Message(role="assistant", content=payload)])
     planner = Planner(
         provider,
@@ -508,7 +525,9 @@ async def test_m2_planner_enforces_json_array_tool_call_count_bound() -> None:
 async def test_m2_planner_enforces_content_tool_argument_size_bound() -> None:
     registry = _make_registry()
     pep = PEP(PolicyBundle(default_require_confirmation=False), registry)
-    oversized = "x" * 10_300
+    # MCP-L4: size the oversize value relative to the production bound so the
+    # test continues to exceed the limit if the constant is tuned upward.
+    oversized = "x" * (_CONTENT_TOOL_CALL_MAX_ARGUMENT_BYTES + 64)
     provider = _StaticProvider(
         [
             Message(
@@ -543,8 +562,10 @@ async def test_m2_planner_enforces_content_tool_argument_size_bound() -> None:
 async def test_m2_planner_enforces_content_tool_total_payload_size_bound() -> None:
     registry = _make_registry()
     pep = PEP(PolicyBundle(default_require_confirmation=False), registry)
+    # MCP-L4: overshoot the production content-byte bound by a comfortable
+    # margin that scales with the constant, not a magic literal.
     oversized_content = '<tool_call>{"name":"echo","arguments":{"text":"ok"}}</tool_call>' + (
-        "x" * 120_000
+        "x" * (_CONTENT_TOOL_CALL_MAX_CONTENT_BYTES + 1024)
     )
     provider = _StaticProvider([Message(role="assistant", content=oversized_content)])
     planner = Planner(

@@ -1205,41 +1205,49 @@ class HandlerImplementation(
         """Clear handler-owned mutable state in addition to service state."""
         if not self._config.test_mode:
             raise RuntimeError("daemon.reset is unavailable outside explicit test mode")
-        if self._services.active_rpc_calls > 1:
-            raise RuntimeError("Cannot reset daemon while another control RPC is in flight")
-        if len(getattr(self._services.embeddings_adapter, "_inflight", ())) > 0:
-            raise RuntimeError("Cannot reset daemon while embeddings requests are in flight")
+        async with self._services.rpc_state_lock:
+            if self._services.reset_in_progress:
+                raise RuntimeError("daemon.reset is already in progress")
+            if self._services.active_rpc_calls > 1:
+                raise RuntimeError("Cannot reset daemon while another control RPC is in flight")
+            if len(getattr(self._services.embeddings_adapter, "_inflight", ())) > 0:
+                raise RuntimeError("Cannot reset daemon while embeddings requests are in flight")
+            self._services.reset_in_progress = True
 
-        scheduler_pending = sum(
-            len(rows) for rows in self._scheduler._pending_confirmations.values()
-        )
-        quiescent = not any(
-            (
-                scheduler_pending,
-                len(self._pending_actions),
-                len(self._pending_by_session),
-                len(self._pending_two_factor_enrollments),
-                len(self._monitor_reject_counts),
-                len(self._plan_violation_counts),
-                len(self._confirmation_alerted_at),
-                len(self._identity_map._pairing_requests),
-                len(self._confirmation_failure_tracker._state),
+        try:
+            scheduler_pending = sum(
+                len(rows) for rows in self._scheduler._pending_confirmations.values()
             )
-        )
+            quiescent = not any(
+                (
+                    scheduler_pending,
+                    len(self._pending_actions),
+                    len(self._pending_by_session),
+                    len(self._pending_two_factor_enrollments),
+                    len(self._monitor_reject_counts),
+                    len(self._plan_violation_counts),
+                    len(self._confirmation_alerted_at),
+                    len(self._identity_map._pairing_requests),
+                    len(self._confirmation_failure_tracker._state),
+                )
+            )
 
-        service_result = await self._services.reset_test_state()
-        cleared = dict(service_result.get("cleared", {}))
-        if "identity_pairing_requests" in cleared:
-            cleared.setdefault("pairing_requests", int(cleared["identity_pairing_requests"]))
-        cleared.update(self._clear_handler_test_state())
-        invariants = self._reset_invariants()
-        status = "reset" if all(invariants.values()) else "reset_failed"
-        return {
-            "status": status,
-            "cleared": cleared,
-            "quiescent": quiescent,
-            "invariants": invariants,
-        }
+            service_result = await self._services.reset_test_state()
+            cleared = dict(service_result.get("cleared", {}))
+            if "identity_pairing_requests" in cleared:
+                cleared.setdefault("pairing_requests", int(cleared["identity_pairing_requests"]))
+            cleared.update(self._clear_handler_test_state())
+            invariants = self._reset_invariants()
+            status = "reset" if all(invariants.values()) else "reset_failed"
+            return {
+                "status": status,
+                "cleared": cleared,
+                "quiescent": quiescent,
+                "invariants": invariants,
+            }
+        finally:
+            async with self._services.rpc_state_lock:
+                self._services.reset_in_progress = False
 
     def _clear_handler_test_state(self) -> dict[str, int]:
         pairing_request_artifacts = int(self._pairing_requests_file.exists())

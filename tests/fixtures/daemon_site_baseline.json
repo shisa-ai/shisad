@@ -3,9 +3,10 @@
     "DaemonServices.build": {
       "tests/adversarial/test_adversarial_context_taint.py": 2,
       "tests/adversarial/test_adversarial_task_handoffs.py": 2,
+      "tests/integration/test_a2a_ingress.py": 1,
       "tests/integration/test_chat_confirmation_e2e.py": 6,
       "tests/integration/test_context_scaffold_degraded.py": 3,
-      "tests/unit/test_daemon_services.py": 21
+      "tests/unit/test_daemon_services.py": 24
     },
     "run_daemon": {
       "tests/adversarial/test_adversarial_cleanroom.py": 1,
@@ -26,7 +27,7 @@
       "tests/integration/test_daemon_runtime.py": 6,
       "tests/integration/test_dev_commands.py": 1,
       "tests/integration/test_m3_scope_enforcement.py": 1,
-      "tests/integration/test_runtime_completion.py": 16,
+      "tests/integration/test_runtime_completion.py": 17,
       "tests/integration/test_sandbox_loop.py": 1,
       "tests/integration/test_scheduler_execution_gate.py": 1,
       "tests/integration/test_security_hardening_integration.py": 1,
@@ -41,7 +42,7 @@
   },
   "tests_root": "tests",
   "totals": {
-    "DaemonServices.build": 34,
-    "run_daemon": 90
+    "DaemonServices.build": 38,
+    "run_daemon": 91
   }
 }

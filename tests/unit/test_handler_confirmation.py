@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -453,6 +454,27 @@ def _software_approval_envelope(*, tool_name: ToolName) -> ApprovalEnvelope:
     )
 
 
+# HDL-M1: these tests intentionally use ``object.__new__(HandlerImplementation)``
+# to exercise ``_load_pending_actions`` without paying the cost of building a
+# full daemon services container (sessions, channels, credential store, etc.).
+# Any regression that makes ``_load_pending_actions`` depend on a *new*
+# attribute that isn't set here will surface as an ``AttributeError`` during
+# the call below — the helper centralizes the bypass so that drift only needs
+# to be fixed in one place. If the set of required attributes keeps growing,
+# the next cleanup step is to split ``_load_pending_actions`` into a pure
+# function so tests can stop bypassing construction entirely.
+def _load_pending_actions_harness(
+    *,
+    pending_actions_file: Path,
+) -> HandlerImplementation:
+    harness = object.__new__(HandlerImplementation)
+    harness._pending_actions_file = pending_actions_file
+    harness._pending_actions = {}
+    harness._pending_by_session = {}
+    harness._confirmation_failure_tracker = ConfirmationMethodLockoutTracker()
+    return harness
+
+
 def test_lt3_load_pending_actions_fails_legacy_missing_approval_envelope(tmp_path) -> None:
     pending = _pending_action(nonce="expected")
     payload = HandlerImplementation._pending_to_dict(pending)
@@ -461,11 +483,7 @@ def test_lt3_load_pending_actions_fails_legacy_missing_approval_envelope(tmp_pat
     pending_actions_file = tmp_path / "data" / "pending_actions.json"
     pending_actions_file.parent.mkdir(parents=True)
     pending_actions_file.write_text(json.dumps([payload]), encoding="utf-8")
-    harness = object.__new__(HandlerImplementation)
-    harness._pending_actions_file = pending_actions_file
-    harness._pending_actions = {}
-    harness._pending_by_session = {}
-    harness._confirmation_failure_tracker = ConfirmationMethodLockoutTracker()
+    harness = _load_pending_actions_harness(pending_actions_file=pending_actions_file)
 
     HandlerImplementation._load_pending_actions(harness)
 
@@ -491,11 +509,7 @@ def test_lt3_load_pending_actions_fails_pending_rows_during_lockout_only(tmp_pat
         json.dumps([pending_payload, approved_payload]),
         encoding="utf-8",
     )
-    harness = object.__new__(HandlerImplementation)
-    harness._pending_actions_file = pending_actions_file
-    harness._pending_actions = {}
-    harness._pending_by_session = {}
-    harness._confirmation_failure_tracker = ConfirmationMethodLockoutTracker()
+    harness = _load_pending_actions_harness(pending_actions_file=pending_actions_file)
     for _ in range(5):
         harness._confirmation_failure_tracker.record_failure(user_id="alice", method="software")
 
@@ -535,11 +549,7 @@ def test_i1_load_pending_actions_migrates_legacy_direct_mcp_strip_intent(tmp_pat
     pending_actions_file = tmp_path / "data" / "pending_actions.json"
     pending_actions_file.parent.mkdir(parents=True)
     pending_actions_file.write_text(json.dumps([payload]), encoding="utf-8")
-    harness = object.__new__(HandlerImplementation)
-    harness._pending_actions_file = pending_actions_file
-    harness._pending_actions = {}
-    harness._pending_by_session = {}
-    harness._confirmation_failure_tracker = ConfirmationMethodLockoutTracker()
+    harness = _load_pending_actions_harness(pending_actions_file=pending_actions_file)
 
     HandlerImplementation._load_pending_actions(harness)
 

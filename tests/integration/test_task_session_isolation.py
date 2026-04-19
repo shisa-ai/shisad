@@ -54,7 +54,7 @@ async def _shutdown_daemon(daemon_task: asyncio.Task[None], client: ControlClien
     with suppress(Exception):
         await client.call("daemon.shutdown")
     await client.close()
-    await asyncio.wait_for(daemon_task, timeout=3)
+    await asyncio.wait_for(daemon_task, timeout=5)
 
 
 async def _wait_for_event(

@@ -268,3 +268,43 @@ def test_m6_pep_rejects_malformed_url_port_without_raising() -> None:
     )
     assert decision.kind == PEPDecisionKind.REJECT
     assert "malformed" in decision.reason.lower()
+
+
+def test_sec_m3_egress_allowlist_allows_correct_protocol_and_port_combo() -> None:
+    """SEC-M3 counterpart to the protocol/port reject tests.
+
+    Without this case a bug that rejected all egress regardless of
+    protocol/port would still pass the protocol/port reject tests.
+    We assert on ``egress_attempts`` rather than decision kind so the
+    test stays focused on egress evaluation independent of risk/
+    confirmation policy.
+    """
+
+    registry = ToolRegistry()
+    registry.register(
+        ToolDefinition(
+            name=ToolName("http_request"),
+            description="HTTP call",
+            parameters=[ToolParameter(name="url", type="string", required=True)],
+            capabilities_required=[Capability.HTTP_REQUEST],
+        )
+    )
+    policy = PolicyBundle(
+        default_require_confirmation=False,
+        egress=[EgressRule(host="api.good.com", protocols=["https"], ports=[443])],
+    )
+    pep = PEP(policy, registry)
+
+    decision = pep.evaluate(
+        ToolName("http_request"),
+        {"url": "https://api.good.com:443/path"},
+        PolicyContext(capabilities={Capability.HTTP_REQUEST}),
+    )
+
+    assert decision.kind != PEPDecisionKind.REJECT
+    assert pep.egress_attempts
+    latest = pep.egress_attempts[-1]
+    assert latest.allowed is True
+    assert latest.reason == "allowlisted"
+    assert latest.protocol == "https"
+    assert latest.port == 443

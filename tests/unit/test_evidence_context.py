@@ -595,7 +595,19 @@ def test_pep_rejects_temporarily_unreadable_encrypted_refs_until_recovered_kms_c
             time.sleep(0.01)
         assert len(service.requests) > request_count
 
-        time.sleep(5.2)
+        # P1-U4: previously `time.sleep(5.2)`. The 5-second literal was left
+        # over from `_TEMPORARILY_UNREADABLE_CACHE_SECONDS = 5.0` in
+        # `core/evidence.py`, which was removed in shisad@c3a5aad. The sleep
+        # now serves only to let the first probe thread finish before we
+        # trigger a second one. Poll the probe-in-flight set directly so
+        # the test stays deterministic and adds no fixed 5.2s latency.
+        probe_deadline = time.monotonic() + 5.0
+        while restarted._unreadable_probe_in_flight and time.monotonic() < probe_deadline:
+            time.sleep(0.01)
+        assert not restarted._unreadable_probe_in_flight, (
+            "first unreadable probe did not finish within 5s"
+        )
+
         wrong_key_requests = len(service.requests)
         read_after_delay = pep.evaluate(
             ToolName("evidence.read"),

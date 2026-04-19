@@ -154,9 +154,9 @@ CodingAgentAdapter (shisad-owned interface)
 
 ```python
 ACP_AGENTS = {
-    "claude": "npx -y @zed-industries/claude-agent-acp@^0.21.0",
-    "codex": "npx @zed-industries/codex-acp@^0.9.5",
-    "opencode": "npx -y opencode-ai acp",
+    "claude": "npx -y @agentclientprotocol/claude-agent-acp@0.29.2",
+    "codex": "npx @zed-industries/codex-acp@0.11.1",
+    "opencode": "npx -y opencode-ai@1.3.10 acp",
     # Future: gemini, cursor, copilot, etc.
 }
 ```
@@ -211,7 +211,7 @@ The features that distinguish acpx from the Python SDK — persistent named sess
 
 ### ACP adapter churn
 
-ACP adapter packages (`@zed-industries/claude-agent-acp`, `@zed-industries/codex-acp`, etc.) are maintained upstream and may break independently. M3 pins adapter versions in the agent command registry. Monitor:
+ACP adapter packages (`@agentclientprotocol/claude-agent-acp`, `@zed-industries/codex-acp`, etc.) are maintained upstream and may break independently. M3 pins adapter versions in the agent command registry. Monitor:
 
 - Adapter release cadence and breaking changes
 - New agents gaining ACP adapters (expand registry opportunistically)

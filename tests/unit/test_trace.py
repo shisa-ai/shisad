@@ -304,23 +304,62 @@ class TestTraceSchemaRoundtrip:
 
 
 class TestTraceToolCallDefaults:
-    def test_defaults(self) -> None:
-        tc = TraceToolCall(tool_name="test")
-        assert tc.arguments == {}
-        assert tc.pep_decision == ""
-        assert tc.executed is False
-        assert tc.execution_success is None
+    # PLN-L4: the prior test only verified Pydantic-library default values
+    # on a constructed model. These tests exercise the shisad-specific
+    # contract: the default-valued object round-trips through the recorder,
+    # and a default TraceTurn gets a fresh non-empty turn_id per
+    # instantiation (auto-generated id must be unique).
+
+    def test_default_trace_tool_call_round_trips_through_recorder(
+        self, recorder: TraceRecorder
+    ) -> None:
+        turn = TraceTurn(
+            session_id="sess-defaults",
+            user_content="hi",
+            llm_response="ok",
+            assistant_response="done",
+            tool_calls=[TraceToolCall(tool_name="test")],
+        )
+        recorder.record(turn)
+        loaded = recorder.read_turns("sess-defaults")
+        assert len(loaded) == 1
+        loaded_tc = loaded[0].tool_calls[0]
+        # Recorder must preserve the contract: empty args dict, empty
+        # PEP decision, executed=False, execution_success None.
+        assert loaded_tc.arguments == {}
+        assert loaded_tc.pep_decision == ""
+        assert loaded_tc.executed is False
+        assert loaded_tc.execution_success is None
 
 
 class TestTraceTurnDefaults:
-    def test_defaults(self) -> None:
-        turn = TraceTurn()
-        assert turn.session_id == ""
-        assert turn.messages_sent == []
-        assert turn.tool_calls == []
-        assert turn.risk_score == 0.0
-        assert turn.duration_ms == 0.0
-        assert turn.turn_id  # should be a non-empty uuid hex
+    def test_default_trace_turn_has_fresh_unique_turn_id_per_instance(self) -> None:
+        # The default_factory for `turn_id` must produce a new id every time;
+        # otherwise two default turns would collide in storage. Pin that
+        # shisad-specific invariant explicitly (not just that the id exists).
+        a = TraceTurn()
+        b = TraceTurn()
+        assert a.turn_id and b.turn_id
+        assert a.turn_id != b.turn_id
+
+    def test_default_trace_turn_round_trips_through_recorder(self, recorder: TraceRecorder) -> None:
+        # Re-read the default-constructed turn through the recorder to
+        # confirm the defaults (empty messages_sent, empty tool_calls,
+        # risk_score 0.0, duration 0.0) survive serialization. The prior
+        # test only verified in-memory Pydantic defaults.
+        turn = TraceTurn(
+            session_id="sess-default-turn",
+            user_content="",
+            llm_response="",
+            assistant_response="",
+        )
+        recorder.record(turn)
+        loaded = recorder.read_turns("sess-default-turn")
+        assert len(loaded) == 1
+        assert loaded[0].messages_sent == []
+        assert loaded[0].tool_calls == []
+        assert loaded[0].risk_score == 0.0
+        assert loaded[0].duration_ms == 0.0
 
 
 class TestTraceRecorderCreatesDir:

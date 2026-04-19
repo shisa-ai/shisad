@@ -598,6 +598,26 @@ async def test_daemon_services_reset_test_state_clears_documented_subsystems(
 
 
 @pytest.mark.asyncio
+async def test_daemon_services_reset_test_state_requires_explicit_test_mode(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clear_remote_provider_env(monkeypatch)
+    config = DaemonConfig(
+        data_dir=tmp_path / "data",
+        socket_path=tmp_path / "control.sock",
+        policy_path=tmp_path / "policy.yaml",
+        test_mode=False,
+    )
+    services = await DaemonServices.build(config)
+    try:
+        with pytest.raises(RuntimeError, match="outside explicit test mode"):
+            await services.reset_test_state()
+    finally:
+        await services.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_handler_daemon_reset_clears_handler_state_and_marks_non_quiescent_reset(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,
@@ -695,6 +715,29 @@ async def test_handler_daemon_reset_clears_handler_state_and_marks_non_quiescent
         assert not impl._pending_actions_file.exists()
         assert not impl._pairing_requests_file.exists()
     finally:
+        await services.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_handler_daemon_reset_rejects_concurrent_reset_attempts(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clear_remote_provider_env(monkeypatch)
+    config = DaemonConfig(
+        data_dir=tmp_path / "data",
+        socket_path=tmp_path / "control.sock",
+        policy_path=tmp_path / "policy.yaml",
+        test_mode=True,
+    )
+    services = await DaemonServices.build(config)
+    impl = HandlerImplementation(services=services)
+    try:
+        services.reset_in_progress = True
+        with pytest.raises(RuntimeError, match="already in progress"):
+            await impl.do_daemon_reset({})
+    finally:
+        services.reset_in_progress = False
         await services.shutdown()
 
 
@@ -1060,6 +1103,13 @@ async def test_daemon_services_shutdown_continues_after_disconnect_error() -> No
         async def stop(self) -> None:
             calls.append("server")
 
+    # HDL-M1: construct a minimal DaemonServices via object.__new__ so this
+    # test can pin the shutdown ordering (embeddings → matrix → server) and
+    # the continue-past-disconnect-error invariant without standing up the
+    # full services container. If DaemonServices.shutdown starts touching a
+    # new attribute this test will raise AttributeError inside the call below
+    # — that is the intended drift signal. A deeper cleanup would split
+    # shutdown logic into a pure function; tracked as a follow-up.
     services = object.__new__(DaemonServices)
     services.embeddings_adapter = _EmbeddingsAdapterStub()  # type: ignore[assignment]
     services.matrix_channel = _MatrixStub()  # type: ignore[assignment]
@@ -1069,6 +1119,84 @@ async def test_daemon_services_shutdown_continues_after_disconnect_error() -> No
     assert calls[0] == "embed:True"
     assert "matrix" in calls
     assert calls[-1] == "server"
+
+
+@pytest.mark.asyncio
+async def test_daemon_services_shutdown_reaches_all_registered_resources() -> None:
+    # HDL-L1: the prior test covered only embeddings → matrix → server.
+    # Real shutdown also runs a2a_runtime.close(), any-channel.disconnect()
+    # (through both the `channels` dict and per-platform attributes),
+    # `control_plane_sidecar.close()`, and `approval_web.stop()`. This
+    # companion exercises every documented shutdown branch and pins that
+    # a single resource erroring out (here: discord.disconnect) does not
+    # stop the remaining resources from being closed.
+    calls: list[str] = []
+
+    class _EmbeddingsAdapterStub:
+        def close(self, *, wait: bool = True) -> None:
+            calls.append(f"embed:{wait}")
+
+    class _A2ARuntimeStub:
+        async def close(self) -> None:
+            calls.append("a2a")
+
+    class _DictChannelStub:
+        async def disconnect(self) -> None:
+            calls.append("channels-dict:x")
+
+    class _MatrixStub:
+        async def disconnect(self) -> None:
+            calls.append("matrix")
+
+    class _DiscordStub:
+        async def disconnect(self) -> None:
+            calls.append("discord")
+            raise RuntimeError("discord closed unexpectedly")
+
+    class _TelegramStub:
+        async def disconnect(self) -> None:
+            calls.append("telegram")
+
+    class _SlackStub:
+        async def disconnect(self) -> None:
+            calls.append("slack")
+
+    class _SidecarStub:
+        async def close(self) -> None:
+            calls.append("sidecar")
+
+    class _ApprovalWebStub:
+        async def stop(self) -> None:
+            calls.append("approval-web")
+
+    class _ServerStub:
+        async def stop(self) -> None:
+            calls.append("server")
+
+    services = object.__new__(DaemonServices)
+    services.embeddings_adapter = _EmbeddingsAdapterStub()  # type: ignore[assignment]
+    services.a2a_runtime = _A2ARuntimeStub()  # type: ignore[assignment]
+    services.channels = {"x": _DictChannelStub()}  # type: ignore[assignment]
+    services.matrix_channel = _MatrixStub()  # type: ignore[assignment]
+    services.discord_channel = _DiscordStub()  # type: ignore[assignment]
+    services.telegram_channel = _TelegramStub()  # type: ignore[assignment]
+    services.slack_channel = _SlackStub()  # type: ignore[assignment]
+    services.control_plane_sidecar = _SidecarStub()  # type: ignore[assignment]
+    services.approval_web = _ApprovalWebStub()  # type: ignore[assignment]
+    services.server = _ServerStub()  # type: ignore[assignment]
+
+    await DaemonServices.shutdown(services)
+
+    assert calls[0] == "embed:True", "embeddings adapter must close first (sync path)"
+    assert "a2a" in calls
+    assert "channels-dict:x" in calls
+    # All four per-platform channels must be disconnected even though
+    # discord raised an exception.
+    for label in ("matrix", "discord", "telegram", "slack"):
+        assert label in calls, f"{label} channel must be disconnected"
+    assert "sidecar" in calls
+    assert "approval-web" in calls
+    assert calls[-1] == "server", "control server must be the last resource to stop"
 
 
 def test_m3_normalize_tool_destination_preserves_scheme_and_port() -> None:

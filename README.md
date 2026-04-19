@@ -50,16 +50,14 @@ Rather than ignoring the elephant in the room, our design targets the [lethal tr
 ## Status
 
 This repo is public and still pre-alpha. The latest published line is
-`v0.6.4` (GitHub Release and PyPI package). This tree contains pre-tag
-`v0.6.5` release content for MCP/A2A interop; published installability is
-still determined by the GitHub release tag and PyPI package.
+`v0.6.5` (GitHub Release and PyPI package).
 
 `v0.6.5` adds client-only MCP tool discovery/execution with stable
 `mcp.<server>.<tool>` runtime ids, confirm-by-default trust handling for
 externally sourced tool metadata/results, and a signed A2A ingress baseline
 with static peer registry, fingerprint verification, grant enforcement,
-replay protection, and per-peer rate limiting. ReleaseClose is the remaining
-gate before `v0.6.5` can be tagged and published.
+replay protection, and per-peer rate limiting. Exposing shisad as an MCP
+server remains deferred.
 
 | Version | Focus |
 |---------|-------|

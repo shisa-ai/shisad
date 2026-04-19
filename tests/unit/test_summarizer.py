@@ -32,7 +32,18 @@ async def test_m5_s5_summarizer_fallback_extracts_project_fact_and_preference() 
 
     serialized = {(item.entry_type, item.key, str(item.value).lower()) for item in proposals}
     assert ("fact", "project.codename", "nebula") in serialized
-    assert any(item[0] == "preference" for item in serialized)
+    # PLN-L3: pin the preference's key and value content, not just its
+    # existence. The prior `any(item[0] == "preference")` check would accept
+    # a proposal that lost the "concise" phrasing or overwrote the
+    # communication-preference key.
+    preferences = [item for item in proposals if item.entry_type == "preference"]
+    assert preferences, "expected at least one preference proposal"
+    preference_keys = {item.key for item in preferences}
+    assert "user.preference.communication" in preference_keys
+    communication = next(
+        item for item in preferences if item.key == "user.preference.communication"
+    )
+    assert "concise" in str(communication.value).lower()
 
 
 class _JsonSummaryProvider:

@@ -13,15 +13,12 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-import re
 import subprocess
 import threading
-from collections.abc import Mapping
 from contextlib import suppress
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 import pytest
@@ -29,6 +26,7 @@ import pytest
 from shisad.core.api.transport import ControlClient
 from shisad.core.config import DaemonConfig
 from shisad.daemon.runner import run_daemon
+from tests.helpers.behavioral import extract_tool_outputs
 from tests.helpers.daemon import wait_for_socket as _wait_for_socket
 
 _RUN_LIVE = os.environ.get("SHISAD_LIVE_MODEL_TESTS", "").strip() == "1"
@@ -80,55 +78,7 @@ def _start_stub_search_backend() -> tuple[ThreadingHTTPServer, threading.Thread,
     return server, thread, f"http://localhost:{port}", int(port)
 
 
-def _extract_tool_outputs(payload: Mapping[str, Any] | str) -> dict[str, list[dict[str, Any]]]:
-    """Parse structured `tool_outputs`, falling back to legacy response markers."""
-    if isinstance(payload, Mapping):
-        raw_records = payload.get("tool_outputs")
-        if isinstance(raw_records, list):
-            outputs: dict[str, list[dict[str, Any]]] = {}
-            for record in raw_records:
-                if not isinstance(record, dict):
-                    continue
-                tool_name = str(record.get("tool_name", "")).strip()
-                data = record.get("payload")
-                if tool_name and isinstance(data, dict):
-                    outputs.setdefault(tool_name, []).append(data)
-            if outputs:
-                return outputs
-        response_text = str(payload.get("response", ""))
-    else:
-        response_text = str(payload)
-
-    outputs: dict[str, list[dict[str, Any]]] = {}
-    begin = "[[TOOL_OUTPUT_BEGIN"
-    end = "[[TOOL_OUTPUT_END]]"
-    cursor = 0
-    while True:
-        start = response_text.find(begin, cursor)
-        if start < 0:
-            break
-        header_end = response_text.find("]]", start)
-        if header_end < 0:
-            raise AssertionError("Malformed tool boundary: missing closing brackets")
-        header = response_text[start : header_end + 2]
-        match = re.search(r"tool=([^\s]+)", header)
-        if match is None:
-            raise AssertionError(f"Malformed tool boundary: {header}")
-        tool_name = match.group(1).strip()
-        payload_start = header_end + 2
-        payload_end = response_text.find(end, payload_start)
-        if payload_end < 0:
-            raise AssertionError(f"Malformed tool boundary: missing end marker for {tool_name}")
-        raw_payload = response_text[payload_start:payload_end].strip()
-        try:
-            payload = json.loads(raw_payload)
-        except json.JSONDecodeError as exc:
-            raise AssertionError(
-                f"Tool payload is not JSON for {tool_name}: {raw_payload}"
-            ) from exc
-        outputs.setdefault(tool_name, []).append(payload)
-        cursor = payload_end + len(end)
-    return outputs
+_extract_tool_outputs = extract_tool_outputs
 
 
 @dataclass(frozen=True, slots=True)
