@@ -352,7 +352,13 @@ class AttachmentIngestor:
     def _looks_like_id3_mp3(cls, payload: bytes) -> bool:
         if len(payload) < 14 or not payload.startswith(b"ID3"):
             return False
-        if payload[3] == 0xFF or payload[4] == 0xFF:
+        major_version = payload[3]
+        flags = payload[5]
+        if major_version not in {3, 4} or payload[4] == 0xFF:
+            return False
+        if major_version == 3 and flags & 0x1F:
+            return False
+        if major_version == 4 and flags & 0x1F:
             return False
         size_bytes = payload[6:10]
         if any(byte & 0x80 for byte in size_bytes):
