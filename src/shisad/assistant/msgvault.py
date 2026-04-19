@@ -164,11 +164,7 @@ def _attachments(value: Any) -> list[dict[str, Any]]:
 
 
 def _msgvault_child_env() -> dict[str, str]:
-    env = {
-        key: value
-        for key, value in os.environ.items()
-        if key in _CHILD_ENV_ALLOWLIST and value
-    }
+    env = {key: value for key, value in os.environ.items() if key in _CHILD_ENV_ALLOWLIST and value}
     env.setdefault("PATH", os.defpath)
     return env
 

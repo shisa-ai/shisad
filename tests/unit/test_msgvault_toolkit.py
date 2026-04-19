@@ -260,9 +260,7 @@ def test_msgvault_read_without_account_still_requires_email_scope(tmp_path: Path
     payload = toolkit.read_message(message_id="msg-101")
 
     calls = json.loads(calls_log.read_text(encoding="utf-8"))
-    assert calls == [
-        [str(script), "--local", "--home", str(home), "show-message", "101", "--json"]
-    ]
+    assert calls == [[str(script), "--local", "--home", str(home), "show-message", "101", "--json"]]
     assert payload["ok"] is True
     assert payload["message"]["subject"] == "Unscoped email"
 
@@ -535,9 +533,7 @@ def test_msgvault_read_scope_does_not_depend_on_id_search(tmp_path: Path) -> Non
     payload = toolkit.read_message(message_id="msg-101", account="me@example.com")
 
     calls = json.loads(calls_log.read_text(encoding="utf-8"))
-    assert calls == [
-        [str(script), "--local", "--home", str(home), "show-message", "101", "--json"]
-    ]
+    assert calls == [[str(script), "--local", "--home", str(home), "show-message", "101", "--json"]]
     assert payload["ok"] is True
     assert payload["message"]["subject"] == "Contract-shaped lookup"
 

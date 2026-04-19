@@ -797,8 +797,9 @@ async def test_m4_s4_session_message_passes_transcript_context_to_planner_input(
         context: object,
         *,
         tools: list[dict[str, object]] | None = None,
+        persona_tone_override: str | None = None,
     ) -> PlannerResult:
-        _ = (self, context, tools)
+        _ = (self, context, tools, persona_tone_override)
         captured_inputs.append(user_content)
         return PlannerResult(
             output=PlannerOutput(actions=[], assistant_response="ok"),
@@ -868,7 +869,7 @@ async def test_m4_s4_session_message_passes_transcript_context_to_planner_input(
         )
         assert datamark_text("user: remember this detail: alpha history") in second_turn_input
         assert (
-            datamark_text("assistant: Tool results summary: - note.create: success=True, ok=True")
+            datamark_text("Tool results summary: - note.create: success=True, ok=True")
             in second_turn_input
         )
     finally:

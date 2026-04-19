@@ -39,4 +39,3 @@ def test_m74_malformed_png_attachment_is_quarantined_and_not_readable(
     assert ref is not None
     assert ref.lifecycle_state == ArtifactLifecycleState.QUARANTINED
     assert ingestor.evidence_store.read(SessionId("s1"), ref_id) is None
-

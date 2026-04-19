@@ -975,8 +975,7 @@ class ArtifactLedger:
     ) -> EvidenceRef:
         merged_lifecycle_state = (
             ArtifactLifecycleState.QUARANTINED
-            if ArtifactLifecycleState.QUARANTINED
-            in {existing.lifecycle_state, lifecycle_state}
+            if ArtifactLifecycleState.QUARANTINED in {existing.lifecycle_state, lifecycle_state}
             else ArtifactLifecycleState.ACTIVE
         )
         merged = existing.model_copy(

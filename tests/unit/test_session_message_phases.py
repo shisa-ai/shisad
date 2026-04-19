@@ -845,8 +845,7 @@ async def test_finalize_response_synthesizes_after_tool_only_turn() -> None:
     trace_turn = recorder.turns[0]
     assert trace_turn.llm_response == synthesis.response_text
     assert any(
-        message.content == "POST-TOOL SYNTHESIS TRACE PHASE"
-        for message in trace_turn.messages_sent
+        message.content == "POST-TOOL SYNTHESIS TRACE PHASE" for message in trace_turn.messages_sent
     )
     assert any(
         "same turn's tool outputs" in message.content for message in trace_turn.messages_sent

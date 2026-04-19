@@ -1054,9 +1054,7 @@ class AdminImplMixin(HandlerMixinBase):
         )
         public_session = _is_public_channel_trust(identity_trust_level)
         effective_channel_tools = (
-            self._effective_channel_tools(discord_decision.allowed_tools)
-            if public_session
-            else ()
+            self._effective_channel_tools(discord_decision.allowed_tools) if public_session else ()
         )
         effective_discord_decision = DiscordChannelPolicyDecision(
             engagement_mode=discord_decision.engagement_mode,
