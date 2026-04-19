@@ -70,6 +70,24 @@ def _base_policy() -> str:
     return 'version: "1"\ndefault_require_confirmation: false\n'
 
 
+def _runner_style_msgvault_policy() -> str:
+    return textwrap.dedent(
+        """
+        version: "1"
+        default_require_confirmation: false
+        default_capabilities:
+          - file.read
+          - file.write
+          - http.request
+          - email.read
+          - memory.read
+          - memory.write
+          - message.send
+          - shell.exec
+        """
+    ).lstrip()
+
+
 def _reserve_local_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         sock.bind(("127.0.0.1", 0))
@@ -382,6 +400,7 @@ async def test_behavioral_msgvault_email_search_executes_without_lockdown(
 
     daemon_task, client, _config = await _start_daemon(
         tmp_path,
+        policy_text=_runner_style_msgvault_policy(),
         config_overrides={
             "msgvault_enabled": True,
             "msgvault_command": str(msgvault),

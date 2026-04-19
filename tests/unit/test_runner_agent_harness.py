@@ -93,6 +93,7 @@ def test_policy_template_is_valid_yaml() -> None:
     assert "memory.read" in caps
     assert "memory.write" in caps
     assert "message.send" in caps
+    assert "email.read" in caps
 
 
 def test_policy_template_tools_use_dotted_names() -> None:

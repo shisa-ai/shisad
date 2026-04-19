@@ -21,6 +21,7 @@ default_capabilities:
   - file.read
   - file.write
   - http.request
+  - email.read
   - memory.read
   - memory.write
   - message.send
