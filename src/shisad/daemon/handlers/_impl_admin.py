@@ -851,10 +851,14 @@ class AdminImplMixin(HandlerMixinBase):
                 update={"workspace_hint": self._matrix_channel.workspace_for_room(room_hint)}
             )
         elif message.channel == "discord":
-            discord_guild_id = str(metadata.get("discord_guild_id") or raw_workspace_hint).strip()
-            discord_channel_id = str(
-                metadata.get("discord_channel_id") or message.reply_target
-            ).strip()
+            if "discord_guild_id" in metadata:
+                discord_guild_id = str(metadata.get("discord_guild_id") or "").strip()
+            else:
+                discord_guild_id = raw_workspace_hint.strip()
+            if "discord_channel_id" in metadata:
+                discord_channel_id = str(metadata.get("discord_channel_id") or "").strip()
+            else:
+                discord_channel_id = message.reply_target.strip()
             if self._discord_channel is not None:
                 discord_workspace = self._discord_channel.workspace_for_guild(discord_guild_id)
                 discord_decision = self._discord_channel.policy_decision_for(
@@ -1082,6 +1086,7 @@ class AdminImplMixin(HandlerMixinBase):
         if observed_message and not proactive:
             reason = str(metadata.get("passive_reason", "")).strip() or "passive_observe"
             channel_policy_payload["reason"] = reason
+            channel_policy_payload["ephemeral_session"] = True
             return await self._record_channel_observation(
                 message=message,
                 identity_user_id=identity_user_id,
@@ -1105,6 +1110,7 @@ class AdminImplMixin(HandlerMixinBase):
         ):
             channel_policy_payload["reason"] = "proactive_cooldown"
             channel_policy_payload["proactive"] = False
+            channel_policy_payload["ephemeral_session"] = True
             return await self._record_channel_observation(
                 message=message,
                 identity_user_id=identity_user_id,

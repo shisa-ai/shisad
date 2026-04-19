@@ -304,6 +304,67 @@ async def test_m75_discord_public_channel_policy_allows_guest_without_pairing(
 
 
 @pytest.mark.asyncio
+async def test_m75_discord_public_channel_policy_does_not_grant_dm_wildcard(
+    model_env: None,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _fake_connect(self: InMemoryChannel) -> None:
+        await InMemoryChannel.connect(self)
+
+    monkeypatch.setattr(DiscordChannel, "connect", _fake_connect)
+
+    config = DaemonConfig(
+        data_dir=tmp_path / "data",
+        socket_path=tmp_path / "control.sock",
+        policy_path=tmp_path / "policy.yaml",
+        log_level="INFO",
+        discord_enabled=True,
+        discord_bot_token="token",
+        discord_channel_rules=[
+            DiscordChannelRule(
+                guild_id="*",
+                mode="mention-only",
+                public_enabled=True,
+                public_tools=[],
+            )
+        ],
+    )
+    daemon_task = asyncio.create_task(run_daemon(config))
+    client = ControlClient(config.socket_path)
+    try:
+        await _wait_for_socket(config.socket_path)
+        await client.connect()
+        result = await client.call(
+            "channel.ingest",
+            {
+                "message": {
+                    "channel": "discord",
+                    "external_user_id": "dm-visitor",
+                    "workspace_hint": "discord",
+                    "content": "hello from a DM",
+                    "message_id": "m75-public-dm-wildcard",
+                    "reply_target": "dm-1",
+                    "metadata": {
+                        "discord_guild_id": "",
+                        "discord_channel_id": "dm-1",
+                        "interaction_type": "direct",
+                    },
+                }
+            },
+        )
+
+        assert "not allowlisted" in result["response"]
+        assert result["channel_policy"]["public_access"] is False
+        assert result["delivery"]["reason"] == "identity_not_allowlisted"
+    finally:
+        with suppress(Exception):
+            await client.call("daemon.shutdown")
+        await client.close()
+        await asyncio.wait_for(daemon_task, timeout=3)
+
+
+@pytest.mark.asyncio
 async def test_m75_discord_public_channel_tool_allowlist_grants_only_public_tools(
     model_env: None,
     tmp_path: Path,
@@ -580,6 +641,7 @@ async def test_m75_discord_owner_observation_session_is_not_reused(
             },
         )
         assert observed["delivery"]["attempted"] is False
+        assert observed["channel_policy"]["ephemeral_session"] is True
 
         sessions_after_observation = await client.call("session.list")
         assert all(
