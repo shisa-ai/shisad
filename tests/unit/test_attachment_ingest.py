@@ -240,3 +240,35 @@ def test_attachment_ingest_rejects_false_mp3_frame_sync(tmp_path: Path) -> None:
     assert result["ok"] is True
     assert result["status"] == "quarantined"
     assert result["quarantine_reason"] == "unsupported_attachment_type"
+
+
+def test_attachment_ingest_quarantines_malformed_id3_mp3(tmp_path: Path) -> None:
+    audio = tmp_path / "bad-id3.mp3"
+    audio.write_bytes(b"ID3not actually an mp3 frame")
+
+    ingestor = _ingestor(tmp_path)
+    result = ingestor.ingest_path(
+        session_id=SessionId("s1"),
+        path=str(audio),
+        declared_mime_type="audio/mpeg",
+    )
+
+    assert result["ok"] is True
+    assert result["status"] == "quarantined"
+    assert result["quarantine_reason"] == "malformed_audio_header"
+
+
+def test_attachment_ingest_accepts_id3_mp3_with_frame_header(tmp_path: Path) -> None:
+    audio = tmp_path / "ok-id3.mp3"
+    audio.write_bytes(b"ID3\x04\x00\x00\x00\x00\x00\x00" + b"\xff\xfb\x90\x64")
+
+    ingestor = _ingestor(tmp_path)
+    result = ingestor.ingest_path(
+        session_id=SessionId("s1"),
+        path=str(audio),
+        declared_mime_type="audio/mpeg",
+    )
+
+    assert result["ok"] is True
+    assert result["status"] == "active"
+    assert result["detected_mime_type"] == "audio/mpeg"

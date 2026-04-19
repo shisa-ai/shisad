@@ -283,7 +283,11 @@ class AttachmentIngestor:
             return _DetectedAttachment("voice", "audio/wav", metadata), ""
         if payload.startswith(b"OggS"):
             return _DetectedAttachment("voice", "audio/ogg", {"format": "ogg"}), ""
-        if payload.startswith(b"ID3") or self._looks_like_mp3_frame(payload):
+        if payload.startswith(b"ID3"):
+            if self._looks_like_id3_mp3(payload):
+                return _DetectedAttachment("voice", "audio/mpeg", {"format": "mp3"}), ""
+            return None, "malformed_audio_header"
+        if self._looks_like_mp3_frame(payload):
             return _DetectedAttachment("voice", "audio/mpeg", {"format": "mp3"}), ""
         if len(payload) >= 12 and payload[4:8] == b"ftyp":
             major = payload[8:12].decode("ascii", errors="ignore").strip()
@@ -343,6 +347,23 @@ class AttachmentIngestor:
             and bitrate_index not in {0x00, 0x0F}
             and sample_rate_index != 0x03
         )
+
+    @classmethod
+    def _looks_like_id3_mp3(cls, payload: bytes) -> bool:
+        if len(payload) < 14 or not payload.startswith(b"ID3"):
+            return False
+        if payload[3] == 0xFF or payload[4] == 0xFF:
+            return False
+        size_bytes = payload[6:10]
+        if any(byte & 0x80 for byte in size_bytes):
+            return False
+        tag_payload_size = 0
+        for byte in size_bytes:
+            tag_payload_size = (tag_payload_size << 7) | byte
+        tag_size = 10 + tag_payload_size
+        if tag_size >= len(payload):
+            return False
+        return cls._looks_like_mp3_frame(payload[tag_size:])
 
     @staticmethod
     def _declared_mismatch_reason(
