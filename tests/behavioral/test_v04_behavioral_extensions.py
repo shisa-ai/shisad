@@ -400,7 +400,6 @@ async def test_behavioral_msgvault_email_search_executes_without_lockdown(
 
     daemon_task, client, _config = await _start_daemon(
         tmp_path,
-        policy_text=_runner_style_msgvault_policy(),
         config_overrides={
             "msgvault_enabled": True,
             "msgvault_command": str(msgvault),
@@ -543,6 +542,7 @@ async def test_behavioral_msgvault_email_read_executes_without_lockdown(
 
     daemon_task, client, _config = await _start_daemon(
         tmp_path,
+        policy_text=_runner_style_msgvault_policy(),
         config_overrides={
             "msgvault_enabled": True,
             "msgvault_command": str(msgvault),
