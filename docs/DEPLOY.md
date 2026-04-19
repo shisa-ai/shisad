@@ -301,6 +301,32 @@ SHISAD_CHANNEL_IDENTITY_ALLOWLIST='{"discord":["<your-discord-user-id>"]}'
 
 **Verify:** Start the daemon, then `@mention` the bot in a guild channel (e.g., `@shisad hello`). The bot only responds to `@mentions` in guild channels; DMs are always processed without a mention.
 
+**Optional public-channel policy:** Configure `SHISAD_DISCORD_CHANNEL_RULES` as
+JSON when the bot should also serve a shared Discord channel. Rules are
+guild/channel scoped; missing config stays default-deny, and explicit
+`exclude_channels` / `denied_users` entries win over broad public grants.
+
+```bash
+SHISAD_DISCORD_CHANNEL_RULES='[
+  {
+    "guild_id": "<guild-id>",
+    "channels": ["<public-channel-id>"],
+    "mode": "read-along",
+    "public_enabled": true,
+    "public_tools": ["web.search"],
+    "relevance_keywords": ["docs", "release"],
+    "cooldown_seconds": 300,
+    "proactive_marker": "[proactive]"
+  }
+]'
+```
+
+`mention-only` responds only when addressed, `read-along` observes all messages
+but only replies proactively on configured keyword matches and cooldown, and
+`passive-observe` records observed channel context without replying. Public and
+trusted-guest sessions are ephemeral and do not receive owner-private memory or
+the owner session's full tool surface.
+
 ### Telegram
 
 **Setup:**

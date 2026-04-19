@@ -12,6 +12,11 @@ from dataclasses import dataclass
 from typing import Any
 
 from shisad.channels.base import ChannelMessage, DeliveryTarget, InMemoryChannel
+from shisad.channels.discord_policy import (
+    DiscordChannelPolicy,
+    DiscordChannelPolicyDecision,
+    DiscordChannelRule,
+)
 
 # Resolve optional runtime dependency dynamically so type-checking does not
 # require the external discord package to be installed.
@@ -31,6 +36,7 @@ class DiscordConfig:
     default_channel_id: str = ""
     guild_workspace_map: dict[str, str] | None = None
     trusted_users: set[str] | None = None
+    channel_rules: list[DiscordChannelRule] | None = None
 
 
 class DiscordChannel(InMemoryChannel):
@@ -39,6 +45,7 @@ class DiscordChannel(InMemoryChannel):
     def __init__(self, config: DiscordConfig) -> None:
         super().__init__(name="discord")
         self._config = config
+        self._channel_policy = DiscordChannelPolicy(tuple(config.channel_rules or ()))
         self._client: Any | None = None
         self._client_task: asyncio.Task[None] | None = None
 
@@ -126,12 +133,77 @@ class DiscordChannel(InMemoryChannel):
                         addressed_by_role_mention = bool(
                             role_mention_ids.intersection(bot_role_ids)
                         )
+                        addressed = (
+                            addressed_by_resolved
+                            or addressed_by_content_tag
+                            or addressed_by_name_prefix
+                            or addressed_by_role_mention
+                        )
+                        policy_decision = self.policy_decision_for(
+                            guild_id=guild_id,
+                            channel_id=channel_id,
+                            external_user_id=author_id,
+                        )
                         if (
                             not addressed_by_resolved
                             and not addressed_by_content_tag
                             and not addressed_by_name_prefix
                             and not addressed_by_role_mention
                         ):
+                            if policy_decision.engagement_mode in {
+                                "read-along",
+                                "passive-observe",
+                            }:
+                                relevance = policy_decision.relevance_for(content)
+                                proactive_eligible = (
+                                    policy_decision.engagement_mode == "read-along"
+                                    and relevance.relevant
+                                )
+                                passive_reason = (
+                                    ""
+                                    if proactive_eligible
+                                    else (
+                                        relevance.reason
+                                        if policy_decision.engagement_mode == "read-along"
+                                        else "passive_observe"
+                                    )
+                                )
+                                workspace_hint = self.workspace_for_guild(guild_id)
+                                await self._incoming.put(
+                                    ChannelMessage(
+                                        channel="discord",
+                                        external_user_id=author_id,
+                                        workspace_hint=workspace_hint,
+                                        content=content,
+                                        message_id=message_id,
+                                        reply_target=channel_id,
+                                        metadata={
+                                            "discord_guild_id": guild_id,
+                                            "discord_channel_id": channel_id,
+                                            "addressed": addressed,
+                                            "interaction_type": "observed",
+                                            "engagement_mode": policy_decision.engagement_mode,
+                                            "proactive_eligible": proactive_eligible,
+                                            "matched_relevance_keywords": list(
+                                                relevance.matched_keywords
+                                            ),
+                                            "passive_reason": passive_reason,
+                                        },
+                                    )
+                                )
+                                logger.debug(
+                                    "Discord ingress accepted observed message "
+                                    "(message_id=%s guild_id=%s channel_id=%s author_id=%s "
+                                    "mode=%s proactive_eligible=%s relevance_reason=%s)",
+                                    message_id,
+                                    guild_id,
+                                    channel_id,
+                                    author_id,
+                                    policy_decision.engagement_mode,
+                                    proactive_eligible,
+                                    relevance.reason,
+                                )
+                                return
                             raw_mentions = tuple(
                                 mention_id
                                 for mention_id in (
@@ -210,6 +282,14 @@ class DiscordChannel(InMemoryChannel):
                         content=content,
                         message_id=message_id,
                         reply_target=channel_id,
+                        metadata={
+                            "discord_guild_id": guild_id,
+                            "discord_channel_id": channel_id,
+                            "addressed": guild is not None,
+                            "interaction_type": "direct",
+                            "engagement_mode": "mention-only",
+                            "proactive_eligible": False,
+                        },
                     )
                 )
 
@@ -266,6 +346,19 @@ class DiscordChannel(InMemoryChannel):
         if guild_id:
             return mapping.get(guild_id, guild_id)
         return "discord"
+
+    def policy_decision_for(
+        self,
+        *,
+        guild_id: str,
+        channel_id: str,
+        external_user_id: str,
+    ) -> DiscordChannelPolicyDecision:
+        return self._channel_policy.resolve(
+            guild_id=guild_id,
+            channel_id=channel_id,
+            external_user_id=external_user_id,
+        )
 
     @staticmethod
     def _message_mention_ids(message: Any) -> set[str]:

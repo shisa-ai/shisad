@@ -61,6 +61,7 @@ Discord:
 - `SHISAD_DISCORD_DEFAULT_CHANNEL_ID`
 - `SHISAD_DISCORD_TRUSTED_USERS`
 - `SHISAD_DISCORD_GUILD_WORKSPACE_MAP`
+- `SHISAD_DISCORD_CHANNEL_RULES`
 
 Telegram:
 
@@ -82,6 +83,20 @@ Slack:
 Identity gating:
 
 - `SHISAD_CHANNEL_IDENTITY_ALLOWLIST`
+
+Discord public-channel rules:
+
+- `SHISAD_DISCORD_CHANNEL_RULES` accepts a JSON list of rules. Each rule may set
+  `guild_id`, `channels`, `exclude_channels`, `mode` (`mention-only`,
+  `read-along`, or `passive-observe`), `public_enabled`, `public_tools`,
+  `trusted_guest_users`, `trusted_guest_tools`, `denied_users`,
+  `relevance_keywords`, `cooldown_seconds`, and `proactive_marker`.
+- Missing rules fail closed to normal allowlist/pairing behavior. Explicit
+  channel/user denies win over broad public rules. Public/trusted-guest sessions
+  are ephemeral, do not receive owner-private memory context, and only receive
+  the small built-in public-tool surface currently accepted by the runtime
+  (`web.search`, `web.fetch`, `realitycheck.search`, `realitycheck.read`) when
+  those tools are configured and available.
 
 ## Assistant, Web, Filesystem, Reality Check, and Coding-Agent Settings
 

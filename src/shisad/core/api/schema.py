@@ -788,6 +788,7 @@ class ChannelMessageParams(_StrictParams):
     message_id: str = ""
     reply_target: str = ""
     thread_id: str = ""
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class ChannelIngestParams(_StrictParams):
@@ -797,6 +798,7 @@ class ChannelIngestParams(_StrictParams):
 
 class ChannelIngestResult(SessionMessageResult):
     ingress_risk: float
+    channel_policy: dict[str, Any] = Field(default_factory=dict)
 
 
 class ChannelPairingProposalParams(_StrictParams):

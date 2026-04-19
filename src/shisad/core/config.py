@@ -16,6 +16,7 @@ from urllib.parse import urlparse
 from pydantic import BaseModel, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from shisad.channels.discord_policy import DiscordChannelRule
 from shisad.core.providers.capabilities import (
     AuthMode,
     EndpointFamily,
@@ -298,6 +299,12 @@ class DaemonConfig(BaseSettings):
     discord_guild_workspace_map: dict[str, str] = Field(
         default_factory=dict,
         description="Map Discord guild ids to workspace ids.",
+    )
+    discord_channel_rules: list[DiscordChannelRule] = Field(
+        default_factory=list,
+        description=(
+            "Discord guild/channel rules for public/trusted-guest access and engagement modes."
+        ),
     )
 
     # Optional Telegram runtime channel
@@ -658,6 +665,19 @@ class DaemonConfig(BaseSettings):
     @classmethod
     def _parse_discord_guild_workspace_map(cls, value: object) -> object:
         return cls._parse_map_field(value, field_name="SHISAD_DISCORD_GUILD_WORKSPACE_MAP")
+
+    @field_validator("discord_channel_rules", mode="before")
+    @classmethod
+    def _parse_discord_channel_rules(cls, value: object) -> object:
+        if isinstance(value, str):
+            stripped = value.strip()
+            if not stripped:
+                return []
+            parsed = json.loads(stripped)
+            if not isinstance(parsed, list):
+                raise ValueError("SHISAD_DISCORD_CHANNEL_RULES JSON must be a list")
+            return parsed
+        return value
 
     @field_validator("telegram_trusted_users", mode="before")
     @classmethod

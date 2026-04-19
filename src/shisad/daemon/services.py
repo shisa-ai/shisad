@@ -1250,6 +1250,7 @@ async def _build_discord_channel(config: DaemonConfig) -> DiscordChannel | None:
             default_channel_id=config.discord_default_channel_id,
             guild_workspace_map=dict(config.discord_guild_workspace_map),
             trusted_users=set(config.discord_trusted_users),
+            channel_rules=list(config.discord_channel_rules),
         )
     )
     await channel.connect()

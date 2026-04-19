@@ -328,6 +328,7 @@ async def channel_receive_pump(
                         "message_id": message_id,
                         "reply_target": str(getattr(message, "reply_target", "")),
                         "thread_id": str(getattr(message, "thread_id", "")),
+                        "metadata": dict(getattr(message, "metadata", {}) or {}),
                     }
                 ),
                 RequestContext(is_internal_ingress=True),

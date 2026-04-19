@@ -1122,6 +1122,7 @@ class PEP:
         # Channel trust can soften risk for verified identities.
         trust = context.trust_level.lower().strip()
         trust_discount = {
+            "owner": 0.15,
             "trusted": 0.15,
             "verified": 0.15,
             "internal": 0.1,

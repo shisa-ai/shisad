@@ -1009,6 +1009,7 @@ class HandlerImplementation(
         self._pending_by_session: dict[SessionId, list[str]] = {}
         self._monitor_reject_counts: dict[SessionId, int] = {}
         self._plan_violation_counts: dict[SessionId, int] = {}
+        self._channel_proactive_last_sent_at: dict[str, datetime] = {}
         self._confirmation_warning_generator = ConfirmationWarningGenerator()
         self._confirmation_analytics = ConfirmationAnalytics()
         self._confirmation_alerted_at: dict[str, datetime] = {}

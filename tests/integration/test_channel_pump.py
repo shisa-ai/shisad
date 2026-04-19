@@ -12,6 +12,7 @@ import pytest
 
 from shisad.channels.base import InMemoryChannel
 from shisad.channels.discord import DiscordChannel
+from shisad.channels.discord_policy import DiscordChannelRule
 from shisad.channels.matrix import MatrixChannel
 from shisad.channels.slack import SlackChannel
 from shisad.channels.telegram import TelegramChannel
@@ -208,6 +209,172 @@ async def test_m3_channel_pump_enforces_allowlist_routes_session_and_emits_audit
         assert received_total >= 1
         assert pairing_matches
         assert delivery_matches
+    finally:
+        with suppress(Exception):
+            await client.call("daemon.shutdown")
+        await client.close()
+        await asyncio.wait_for(daemon_task, timeout=3)
+
+
+@pytest.mark.asyncio
+async def test_m75_discord_public_channel_policy_allows_guest_without_pairing(
+    model_env: None,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _fake_connect(self: InMemoryChannel) -> None:
+        await InMemoryChannel.connect(self)
+
+    monkeypatch.setattr(DiscordChannel, "connect", _fake_connect)
+
+    config = DaemonConfig(
+        data_dir=tmp_path / "data",
+        socket_path=tmp_path / "control.sock",
+        policy_path=tmp_path / "policy.yaml",
+        log_level="INFO",
+        discord_enabled=True,
+        discord_bot_token="token",
+        discord_channel_rules=[
+            DiscordChannelRule(
+                guild_id="guild-1",
+                channels=["public"],
+                mode="mention-only",
+                public_enabled=True,
+                public_tools=["web.search"],
+            )
+        ],
+    )
+    daemon_task = asyncio.create_task(run_daemon(config))
+    client = ControlClient(config.socket_path)
+    try:
+        await _wait_for_socket(config.socket_path)
+        await client.connect()
+        result = await client.call(
+            "channel.ingest",
+            {
+                "message": {
+                    "channel": "discord",
+                    "external_user_id": "visitor",
+                    "workspace_hint": "guild-1",
+                    "content": "hello from the public channel",
+                    "message_id": "m75-public-1",
+                    "reply_target": "public",
+                }
+            },
+        )
+
+        assert "not allowlisted" not in result["response"]
+        assert result["trust_level"] == "public"
+        assert result["channel_policy"]["trust_level"] == "public"
+        assert result["channel_policy"]["allowed_tools"] == ["web.search"]
+        assert result["channel_policy"]["ephemeral_session"] is True
+
+        pairing = await client.call(
+            "audit.query",
+            {
+                "event_type": "ChannelPairingRequested",
+                "actor": "channel_ingest",
+                "limit": 20,
+            },
+        )
+        assert int(pairing.get("total", 0)) == 0
+
+        sessions = await client.call("session.list")
+        assert all(
+            not (
+                isinstance(item, dict)
+                and item.get("channel") == "discord"
+                and item.get("user_id") == "visitor"
+            )
+            for item in sessions.get("sessions", [])
+        )
+    finally:
+        with suppress(Exception):
+            await client.call("daemon.shutdown")
+        await client.close()
+        await asyncio.wait_for(daemon_task, timeout=3)
+
+
+@pytest.mark.asyncio
+async def test_m75_discord_read_along_marks_proactive_and_enforces_cooldown(
+    model_env: None,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _fake_connect(self: InMemoryChannel) -> None:
+        await InMemoryChannel.connect(self)
+
+    monkeypatch.setattr(DiscordChannel, "connect", _fake_connect)
+
+    config = DaemonConfig(
+        data_dir=tmp_path / "data",
+        socket_path=tmp_path / "control.sock",
+        policy_path=tmp_path / "policy.yaml",
+        log_level="INFO",
+        discord_enabled=True,
+        discord_bot_token="token",
+        discord_channel_rules=[
+            DiscordChannelRule(
+                guild_id="guild-1",
+                channels=["public"],
+                mode="read-along",
+                public_enabled=True,
+                relevance_keywords=["release"],
+                cooldown_seconds=300,
+                proactive_marker="[proactive]",
+            )
+        ],
+    )
+    daemon_task = asyncio.create_task(run_daemon(config))
+    client = ControlClient(config.socket_path)
+    try:
+        await _wait_for_socket(config.socket_path)
+        await client.connect()
+        first = await client.call(
+            "channel.ingest",
+            {
+                "message": {
+                    "channel": "discord",
+                    "external_user_id": "visitor",
+                    "workspace_hint": "guild-1",
+                    "content": "release checklist question",
+                    "message_id": "m75-readalong-1",
+                    "reply_target": "public",
+                    "metadata": {
+                        "interaction_type": "observed",
+                        "engagement_mode": "read-along",
+                        "proactive_eligible": True,
+                        "matched_relevance_keywords": ["release"],
+                    },
+                }
+            },
+        )
+        assert first["delivery"]["attempted"] is True
+        assert first["response"].startswith("[proactive] ")
+        assert first["channel_policy"]["proactive"] is True
+
+        second = await client.call(
+            "channel.ingest",
+            {
+                "message": {
+                    "channel": "discord",
+                    "external_user_id": "visitor-2",
+                    "workspace_hint": "guild-1",
+                    "content": "another release checklist question",
+                    "message_id": "m75-readalong-2",
+                    "reply_target": "public",
+                    "metadata": {
+                        "interaction_type": "observed",
+                        "engagement_mode": "read-along",
+                        "proactive_eligible": True,
+                        "matched_relevance_keywords": ["release"],
+                    },
+                }
+            },
+        )
+        assert second["delivery"]["attempted"] is False
+        assert second["delivery"]["reason"] == "proactive_cooldown"
+        assert second["channel_policy"]["proactive"] is False
     finally:
         with suppress(Exception):
             await client.call("daemon.shutdown")
