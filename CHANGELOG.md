@@ -19,8 +19,9 @@ Versioning follows semver (see `docs/PUBLISH.md` for policy and style guide).
 
 - **Read and search local email through the assistant.** A new
   MsgVault-backed email toolkit lets the assistant search configured local
-  mail archives and read individual messages. Each request is scoped to the
-  account the operator has granted, so tools cannot reach another inbox.
+  mail archives and read individual messages. When an operator configures
+  `SHISAD_MSGVAULT_ACCOUNT_ALLOWLIST`, requests are scoped to granted accounts
+  before reaching the archive.
 
 - **Discord public channels now have per-channel policies.** Configure whether
   shisad chats, reads along quietly, or stays passive in each public channel,
@@ -38,10 +39,11 @@ Versioning follows semver (see `docs/PUBLISH.md` for policy and style guide).
   before decoding, audio ID3 tags are validated, and malformed files are
   quarantined rather than passed on.
 
-- **Email reads are scoped to the account that owns them.** MsgVault tools
-  resolve message IDs against account metadata and compare IDs exactly, so one
-  session cannot read another account's inbox through an ID collision. When
-  MsgVault is disabled, email reads are refused outright.
+- **Email reads validate local message IDs before reading.** MsgVault tools
+  resolve message IDs against email metadata and compare IDs exactly before
+  reading the matched archive record. When
+  `SHISAD_MSGVAULT_ACCOUNT_ALLOWLIST` is set, reads also use that account
+  resolution; when MsgVault is disabled, email reads are refused outright.
 
 - **Discord DMs stay fail-closed.** Direct messages require an explicit trust
   grant; granting access to a public channel does not implicitly open DMs.
