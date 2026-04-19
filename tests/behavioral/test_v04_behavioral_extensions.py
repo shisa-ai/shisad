@@ -434,6 +434,180 @@ async def test_behavioral_msgvault_email_search_executes_without_lockdown(
         await _shutdown_daemon(daemon_task, client)
 
 
+@pytest.mark.asyncio
+async def test_behavioral_msgvault_email_read_executes_without_lockdown(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    msgvault = tmp_path / "fake-msgvault-read.py"
+    calls_log = tmp_path / "msgvault-read-calls.json"
+    msgvault.write_text(
+        textwrap.dedent(
+            f"""
+            #!{sys.executable}
+            import json
+            import sys
+            from pathlib import Path
+
+            path = Path({str(calls_log)!r})
+            calls = json.loads(path.read_text(encoding="utf-8")) if path.exists() else []
+            calls.append(sys.argv)
+            path.write_text(json.dumps(calls), encoding="utf-8")
+            if "search" in sys.argv:
+                print(json.dumps([
+                    {{
+                        "id": 202,
+                        "source_message_id": "msg-202",
+                        "conversation_id": 12,
+                        "subject": "Invoice follow-up",
+                        "snippet": "Here is the invoice context.",
+                        "from_email": "alice@example.com",
+                        "from_name": "Alice",
+                        "sent_at": "2026-04-19T00:00:00Z",
+                        "has_attachments": False,
+                        "attachment_count": 0,
+                        "labels": ["INBOX"]
+                    }}
+                ]))
+            elif "show-message" in sys.argv:
+                print(json.dumps({{
+                    "id": 202,
+                    "source_message_id": "msg-202",
+                    "conversation_id": 12,
+                    "subject": "Invoice follow-up",
+                    "snippet": "Here is the invoice context.",
+                    "sent_at": "2026-04-19T00:00:00Z",
+                    "from": {{"email": "alice@example.com", "name": "Alice"}},
+                    "to": [{{"email": "me@example.com", "name": "Me"}}],
+                    "cc": [],
+                    "bcc": [{{"email": "hidden@example.com", "name": "Hidden"}}],
+                    "labels": ["INBOX"],
+                    "attachments": [],
+                    "body_text": {"A" * 2048!r},
+                    "body_html": "<p>html body</p>"
+                }}))
+            else:
+                print(json.dumps({{"error": "unexpected args", "argv": sys.argv}}))
+                sys.exit(2)
+            """
+        ).lstrip(),
+        encoding="utf-8",
+    )
+    msgvault.chmod(0o755)
+
+    async def _planner_email_read(
+        self: Planner,
+        user_content: str,
+        context: object,
+        *,
+        tools: list[dict[str, object]] | None = None,
+        persona_tone_override: str | None = None,
+    ) -> PlannerResult:
+        _ = user_content, tools, persona_tone_override
+        proposal = ActionProposal(
+            action_id="m73-email-read",
+            tool_name=ToolName("email.read"),
+            arguments={"message_id": "msg-202", "account": "me@example.com"},
+            reasoning="behavioral msgvault email read",
+            data_sources=[],
+        )
+        decision = self._pep.evaluate(proposal.tool_name, proposal.arguments, context)
+        return PlannerResult(
+            output=PlannerOutput(actions=[proposal], assistant_response="reading email"),
+            evaluated=[EvaluatedProposal(proposal=proposal, decision=decision)],
+            attempts=1,
+            provider_response=None,
+            messages_sent=(),
+        )
+
+    monkeypatch.setattr(Planner, "propose", _planner_email_read)
+
+    daemon_task, client, _config = await _start_daemon(
+        tmp_path,
+        config_overrides={
+            "msgvault_enabled": True,
+            "msgvault_command": str(msgvault),
+            "msgvault_account_allowlist": ["me@example.com"],
+            "msgvault_max_body_bytes": 1024,
+        },
+    )
+    try:
+        created = await client.call("session.create", {"channel": "cli"})
+        sid = created["session_id"]
+
+        reply = await client.call(
+            "session.message",
+            {"session_id": sid, "content": "read Alice's invoice email"},
+        )
+
+        assert int(reply.get("executed_actions", 0)) == 1
+        calls = json.loads(calls_log.read_text(encoding="utf-8"))
+        assert calls[0] == [
+            str(msgvault),
+            "--local",
+            "search",
+            "msg-202",
+            "--json",
+            "--limit",
+            "50",
+            "--offset",
+            "0",
+            "--account",
+            "me@example.com",
+        ]
+        assert calls[1] == [str(msgvault), "--local", "show-message", "msg-202", "--json"]
+
+        tool_outputs = reply.get("tool_outputs")
+        assert isinstance(tool_outputs, list)
+        email_output = next(
+            record for record in tool_outputs if record.get("tool_name") == "email.read"
+        )
+        payload = email_output["payload"]
+        assert email_output["success"] is True
+        assert email_output["taint_labels"] == ["email", "untrusted"]
+        assert payload["taint_labels"] == ["untrusted", "email"]
+        assert payload["ok"] is True
+        assert payload["account"] == "[REDACTED:email]"
+        message = payload["message"]
+        assert message["body_text"] == "A" * 1024
+        assert message["body_text_truncated"] is True
+        assert "body_html" not in message
+        assert message["body_html_omitted"] is True
+        assert "bcc" not in message
+        assert message["bcc_count"] == 1
+
+        executed = await client.call(
+            "audit.query",
+            {"event_type": "ToolExecuted", "session_id": sid, "limit": 20},
+        )
+        assert any(
+            str(event.get("data", {}).get("tool_name", "")) == "email.read"
+            and bool(event.get("data", {}).get("success")) is True
+            for event in executed["events"]
+        )
+        actions = await client.call(
+            "audit.query",
+            {
+                "event_type": "ControlPlaneActionObserved",
+                "session_id": sid,
+                "limit": 20,
+            },
+        )
+        email_action = next(
+            event["data"]
+            for event in actions["events"]
+            if str(event.get("data", {}).get("tool_name", "")) == "email.read"
+        )
+        assert email_action["action_kind"] == "MESSAGE_READ"
+        lockdowns = await client.call(
+            "audit.query",
+            {"event_type": "LockdownChanged", "session_id": sid, "limit": 20},
+        )
+        assert lockdowns["events"] == []
+    finally:
+        await _shutdown_daemon(daemon_task, client)
+
+
 def _write_allowed_signers(path: Path, *, principal: str, public_key: Path) -> None:
     key_type, key_value, *_rest = public_key.read_text(encoding="utf-8").strip().split()
     path.parent.mkdir(parents=True, exist_ok=True)
