@@ -1478,6 +1478,29 @@ def _build_tool_registry(
             require_confirmation=False,
         )
     )
+    registry.register(
+        ToolDefinition(
+            name=ToolName("attachment.ingest"),
+            description=(
+                "Ingest a local image or voice recording by allowlisted path. "
+                "Returns a tainted manifest evidence ref; unsafe media is quarantined."
+            ),
+            parameters=[
+                ToolParameter(
+                    name="path",
+                    type="string",
+                    required=True,
+                    semantic_type="workspace_path",
+                ),
+                ToolParameter(name="mime_type", type="string", required=False),
+                ToolParameter(name="filename", type="string", required=False),
+                ToolParameter(name="transcript_text", type="string", required=False),
+                ToolParameter(name="max_bytes", type="integer", required=False),
+            ],
+            capabilities_required=[Capability.FILE_READ, Capability.MEMORY_WRITE],
+            require_confirmation=False,
+        )
+    )
     if browser_surface_enabled:
         browser_scope = [item for item in (browser_destinations or []) if item.strip()]
         registry.register(

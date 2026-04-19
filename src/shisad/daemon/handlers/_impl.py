@@ -52,6 +52,7 @@ from shisad.core.approval import (
     new_approval_nonce,
     resolve_confirmation_destinations,
 )
+from shisad.core.attachments import AttachmentIngestor, AttachmentIngestPolicy
 from shisad.core.events import (
     AnomalyReported,
     BaseEvent,
@@ -445,6 +446,39 @@ def _structured_fs_read(
     return dict(
         toolkit.read_file(
             path=_argument_string(arguments, "path"),
+            max_bytes=_optional_int(arguments.get("max_bytes")),
+        )
+    )
+
+
+def _structured_attachment_ingest(
+    handler: Any,
+    arguments: Mapping[str, Any],
+    context: StructuredToolContext | None = None,
+) -> Mapping[str, Any]:
+    if context is None:
+        return {
+            "ok": False,
+            "error": "attachment_context_required",
+            "taint_labels": [TaintLabel.UNTRUSTED.value],
+        }
+    ingestor = getattr(handler, "_attachment_ingestor", None)
+    if ingestor is None:
+        return {
+            "ok": False,
+            "error": "attachment_ingest_unavailable",
+            "taint_labels": [TaintLabel.UNTRUSTED.value],
+        }
+    return dict(
+        ingestor.ingest_path(
+            session_id=context.session_id,
+            path=_argument_string(arguments, "path"),
+            declared_mime_type=(
+                _argument_string(arguments, "mime_type")
+                or _argument_string(arguments, "declared_mime_type")
+            ),
+            filename=_argument_string(arguments, "filename"),
+            transcript_text=_argument_string(arguments, "transcript_text"),
             max_bytes=_optional_int(arguments.get("max_bytes")),
         )
     )
@@ -1144,6 +1178,17 @@ class HandlerImplementation(
                 (self._config.assistant_persona_soul_path,)
                 if self._config.assistant_persona_soul_path is not None
                 else ()
+            ),
+        )
+        self._attachment_ingestor = AttachmentIngestor(
+            roots=list(self._config.assistant_fs_roots),
+            evidence_store=self._evidence_store,
+            firewall=self._firewall,
+            policy=AttachmentIngestPolicy(
+                max_image_bytes=self._config.attachment_max_image_bytes,
+                max_audio_bytes=self._config.attachment_max_audio_bytes,
+                max_image_pixels=self._config.attachment_max_image_pixels,
+                max_audio_duration_seconds=self._config.attachment_max_audio_duration_seconds,
             ),
         )
         self._load_pending_actions()
@@ -3291,6 +3336,7 @@ class HandlerImplementation(
                 "realitycheck_search_failed",
             ),
             "realitycheck.read": (_structured_realitycheck_read, "realitycheck_read_failed"),
+            "attachment.ingest": (_structured_attachment_ingest, "attachment_ingest_failed"),
             "email.search": (_structured_email_search, "email_search_failed"),
             "email.read": (_structured_email_read, "email_read_failed"),
             "fs.list": (_structured_fs_list, "fs_list_failed"),

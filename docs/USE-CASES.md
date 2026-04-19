@@ -17,9 +17,9 @@ This document catalogs concrete personal AI assistant use cases drawn from real-
 | Status | Count | Description |
 |--------|-------|-------------|
 | **Supported (v0.3)** | 7 | Works today: chat, reminders, lists, web research, shell/fs/git ops, identity routing |
-| **Partial** | 25 | Foundation exists (scheduler, channels, PEP, memory) — needs thin skill wrappers or config |
+| **Partial** | 26 | Foundation exists (scheduler, channels, PEP, memory) — needs thin skill wrappers or config |
 | **Planned** | 2 | Architecture designed, not runtime-wired (memory hierarchy, personal knowledge base) |
-| **Missing** | 28 | Needs new connectors, skills, or architectural work |
+| **Missing** | 27 | Needs new connectors, skills, or architectural work |
 
 ### Top 10 Most-Wanted Use Cases (by community frequency)
 
@@ -30,7 +30,7 @@ These are the most commonly cited use cases across all source articles, rank-ord
 | **1** | **Email triage / read / send** | Missing | Orchestration foundation + email/calendar connector lane | **v0.7** |
 | **2** | **Calendar read / write** | Missing | Orchestration foundation + email/calendar connector lane | **v0.7** |
 | **3** | **Morning briefing (full)** | Partial | Needs email + calendar to be useful | **v0.7** |
-| **4** | **Attachment pipeline (voice + image)** | Missing | Attachment pipeline on top of the orchestration model | **v0.7** |
+| **4** | **Attachment pipeline (voice + image)** | Partial | Local bounded manifest ingest in `v0.6.6`; STT/OCR/channel download plumbing still needed | **v0.7** |
 | **5** | **Code generation / dev workflows** | Missing | Sandbox + proposal/apply workflow | **v0.4** |
 | **6** | **Memory / preference learning** | Planned | Memory foundation + write-gating/runtime integration | **v0.7** |
 | **7** | **Smart home control** | Missing | HomeAssistant / Hue skill | v0.6+ |
@@ -41,9 +41,12 @@ These are the most commonly cited use cases across all source articles, rank-ord
 ### Key Insight: Two Blockers Unlock Most Value
 
 1. **Orchestration foundation** (`v0.6`) — unlocks safe delegated execution, typed boundaries, provenance-aware handoff, and credential scoping for the high-risk assistant surfaces that follow.
-2. **Email/calendar + attachment tool-surface track** (`v0.7`) — unlocks #1, #2, #3, #4 plus package tracking, morning briefings, weekly reports, job search, transcription, OCR, and other downstream assistant workflows.
+2. **Email/calendar + attachment tool-surface track** (`v0.7`) — builds on the
+   `v0.6.6` local attachment manifest baseline to unlock #1, #2, #3, #4 plus
+   package tracking, morning briefings, weekly reports, job search,
+   transcription, OCR, and other downstream assistant workflows.
 
-Some of the 25 partial use cases are thin-skill follow-ons on top of existing infrastructure. The higher-risk ones now explicitly wait on the `v0.6` orchestration boundary and the `v0.7` connector/tool-surface lane rather than the locked `v0.4` scope. Browser automation moved into the `v0.6` baseline once the sandboxed tool surface and confirmation boundaries landed; authenticated/admin-heavy follow-ons remain future work.
+Some of the 26 partial use cases are thin-skill follow-ons on top of existing infrastructure. The higher-risk ones now explicitly wait on the `v0.6` orchestration boundary and the `v0.7` connector/tool-surface lane rather than the locked `v0.4` scope. Browser automation moved into the `v0.6` baseline once the sandboxed tool surface and confirmation boundaries landed; authenticated/admin-heavy follow-ons remain future work.
 
 ---
 
@@ -446,9 +449,9 @@ Key design choices: phone-number-based routing, Docker sandboxing for restricted
 
 | Aspect | Status |
 |--------|--------|
-| **shisad support** | Missing (deferred to the attachment pipeline lane) |
+| **shisad support** | Partial (`v0.6.6` local voice/audio manifest ingest only) |
 | **Gap** | No speech-to-text pipeline. No voice message handling in channel adapters. |
-| **Needed** | STT skill (Whisper API or local Whisper). Channel adapter support for voice message attachments. Transcription → text pipeline that feeds into normal message processing. |
+| **Needed** | STT skill (Whisper API or local Whisper). Channel adapter support for voice message attachments. Transcription pipeline that feeds tainted text into normal message processing. |
 | **Security notes** | Voice transcription is untrusted input (adversarial audio injection is a known attack vector). Transcribed text must go through ContentFirewall. STT API call is egress. |
 
 #### 13.2 Voice Telephony (Outbound Calls)
@@ -468,9 +471,9 @@ Key design choices: phone-number-based routing, Docker sandboxing for restricted
 
 | Aspect | Status |
 |--------|--------|
-| **shisad support** | Missing (requires attachment pipeline + STT) |
-| **Gap** | No audio file upload handling. No long-form transcription. No structured action item extraction. |
-| **Needed** | Attachment pipeline for audio files. Long-form STT (Whisper). LLM-driven action item extraction with structured output. |
+| **shisad support** | Partial (`v0.6.6` local voice/audio manifest ingest only; requires STT follow-on) |
+| **Gap** | No channel upload handling. No long-form transcription. No structured action item extraction. |
+| **Needed** | Channel attachment plumbing. Long-form STT (Whisper). LLM-driven action item extraction with structured output. |
 | **Security notes** | Meeting recordings contain sensitive business content. Transcription via external API is egress of sensitive data. Local transcription (Whisper) preferred. Extracted action items may contain PII. |
 
 #### 13.4 Image Recognition & Processing
@@ -479,9 +482,9 @@ Key design choices: phone-number-based routing, Docker sandboxing for restricted
 
 | Aspect | Status |
 |--------|--------|
-| **shisad support** | Missing (deferred to the attachment pipeline lane) |
-| **Gap** | No image attachment handling. No vision model integration. No OCR pipeline. |
-| **Needed** | Attachment pipeline (receive, store, process). Vision model integration (multimodal LLM or dedicated vision API). Structured extraction from images. |
+| **shisad support** | Partial (`v0.6.6` local image manifest ingest only) |
+| **Gap** | No channel image download handling. No vision model integration. No OCR pipeline. |
+| **Needed** | Channel attachment plumbing. Vision model integration (multimodal LLM or dedicated vision API). Structured extraction from images. |
 | **Security notes** | Images are untrusted input (adversarial images with embedded text/instructions are a known injection vector). Vision model output must be treated as tainted. Image processing is egress if using external API. Local processing preferred for sensitive images. |
 
 ---
@@ -689,7 +692,7 @@ Key design choices: phone-number-based routing, Docker sandboxing for restricted
 | Aspect | Status |
 |--------|--------|
 | **shisad support** | Missing (requires image processing, see 13.4) |
-| **Gap** | No image attachment handling. No OCR/vision for receipts. No spreadsheet integration. |
+| **Gap** | No channel photo handling. No OCR/vision for receipts. No spreadsheet integration. |
 | **Needed** | Vision model for receipt parsing. Structured extraction (merchant, line items, total, date). Export to spreadsheet/CSV. |
 | **Security notes** | Receipts contain PII (card numbers, addresses). Vision API call is egress of sensitive data — prefer local processing. Extracted data stored locally with PII controls. |
 
@@ -929,8 +932,8 @@ Key design choices: phone-number-based routing, Docker sandboxing for restricted
 | Memory / preference learning | Memory hierarchy implementation | v0.7+ | Core architecture designed but not runtime-wired |
 | Automatic fact extraction | LLM-driven extraction pipeline | v0.7+ | Effectively part of the memory/extraction lane because the writes need the gated memory stack, not locked `v0.4` |
 | Streaming/chunked replies | TUI/Web UI progress + status streaming over the daemon event stream | v0.8 | Reframed as operator UX for TUI/Web UI, not token streaming for Discord/Telegram-style messaging channels |
-| Voice/speech input (STT) | Attachment pipeline + Whisper | v0.7 | Adversarial audio is injection vector |
-| Image/vision input | Attachment pipeline + vision model | v0.7 | Adversarial images are injection vector |
+| Voice/speech input (STT) | Local manifest ingest exists; STT + channel plumbing still needed | v0.7 | Adversarial audio is injection vector |
+| Image/vision input | Local manifest ingest exists; OCR/vision + channel plumbing still needed | v0.7 | Adversarial images are injection vector |
 | Code generation / dev workflows | Sandboxed execution + proposal/apply | v0.4 | Highest-risk capability; needs full review |
 | Autonomous task execution | Multi-step execution loop + kill switch | v0.5 | Extremely high-risk; commit-before-contamination |
 | Content/newsletter drafting | Style profile in memory + proactive gen | v0.6+ | Needs memory hierarchy + scheduled tasks |
@@ -1049,7 +1052,8 @@ Based on the article and OpenClaw's architecture:
 | **v0.6.3** | Critical UX stabilization: actionable pending confirmations, chat TOTP approval, terminal QR enrollment, clearer no-model/startup diagnostics, more truthful configured-tool advertising, and LT5 live retesting for trusted-CLI confirmation behavior, stale pending-action cleanup, and low-friction internal bookkeeping |
 | **v0.6.4** | Port prompt-injection detection to `textguard` library |
 | **v0.6.5** | MCP/A2A interop and remote-tool trust work |
-| **v0.7** | Email (read/send/triage), calendar (read/write), morning briefings (full), attachment pipeline, weekly reports, content drafting, TTS, meeting transcription, voice-to-journal, health/fitness dashboards, financial alerts/queries, receipt processing, document filing/OCR, personal CRM, job search, package tracking, flight tracking, Google Workspace, media server management |
+| **v0.6.6** | Local attachment ingest baseline for images and voice/audio recordings; connector and skill expansion groundwork |
+| **v0.7** | Email (read/send/triage), calendar (read/write), morning briefings (full), full attachment processing, weekly reports, content drafting, TTS, meeting transcription, voice-to-journal, health/fitness dashboards, financial alerts/queries, receipt processing, document filing/OCR, personal CRM, job search, package tracking, flight tracking, Google Workspace, media server management |
 | **v0.6+** | Music control, smart home, grocery/shopping, bulk data ingestion, news monitoring (structured), content repurposing, customer support agent, social media management, voice telephony |
 | **v0.7+** | Memory hierarchy, preference learning, personal knowledge base / RAG, bookmark/link search, family calendar aggregation, household coordination, location-aware recall, group chat @mention gating, memory-driven extraction workflows |
 | **v0.8** | Operator Web UI, TUI/web progress-status streaming, multitenant deployments |
@@ -1125,10 +1129,10 @@ Complete per-use-case breakdown across all 62 cataloged use cases.
 | 11.2 | Audio/TTS generation | v0.6+ | TTS API skill |
 | 12.1 | Code generation / dev workflows | v0.4 | Proposal-first coding workflow + sandbox/apply contract |
 | 12.3 | Autonomous task execution (Kanban) | v0.6+ | Multi-step execution loop |
-| 13.1 | Voice/speech input (STT) | v0.7 | Attachment pipeline |
+| 13.1 | Voice/speech input (STT) | v0.7 | Local manifest ingest exists in `v0.6.6`; STT/channel plumbing remains |
 | 13.2 | Voice telephony (outbound calls) | v0.6+ | Twilio + TTS |
 | 13.3 | Meeting transcription | v0.7+ | Long-form STT |
-| 13.4 | Image recognition/processing | v0.7 | Attachment pipeline |
+| 13.4 | Image recognition/processing | v0.7 | Local manifest ingest exists in `v0.6.6`; OCR/vision/channel plumbing remains |
 | 14.1 | Bulk data ingestion | v0.6+ | Ingestion pipeline |
 | 15.1 | Grocery/shopping automation | v0.6+ | Vision + commerce APIs |
 | 16.1 | Health/fitness dashboard | v0.6+ | Wearable API skills |

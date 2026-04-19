@@ -14,6 +14,7 @@ import asyncio
 import json
 import os
 import re
+import struct
 import subprocess
 import sys
 import threading
@@ -261,6 +262,32 @@ async def _stub_complete(
                 role="assistant",
                 content="Closing the browser session.",
                 tool_calls=[_tool_call("browser.end_session", {}, call_id="t-browser-end")],
+            ),
+            model="behavioral-stub",
+            finish_reason="tool_calls",
+            usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+        )
+
+    attachment_match = re.search(
+        r"ingest attachment (?P<path>.+)$",
+        goal,
+        flags=re.IGNORECASE,
+    )
+    if attachment_match is not None:
+        return ProviderResponse(
+            message=Message(
+                role="assistant",
+                content="Ingesting the attachment.",
+                tool_calls=[
+                    _tool_call(
+                        "attachment.ingest",
+                        {
+                            "path": attachment_match.group("path").strip(),
+                            "mime_type": "image/png",
+                        },
+                        call_id="t-attachment-ingest",
+                    )
+                ],
             ),
             model="behavioral-stub",
             finish_reason="tool_calls",
@@ -965,6 +992,36 @@ async def test_contract_file_read_executes_and_returns_content(
     assert payload.get("ok") is True
     assert "behavioral-readme" in str(payload.get("content", ""))
     assert "behavioral-readme" in str(reply.get("response", ""))
+
+
+@pytest.mark.asyncio
+async def test_contract_attachment_ingest_executes_and_returns_manifest_ref(
+    contract_harness: ContractHarness,
+) -> None:
+    image = contract_harness.workspace_root / "receipt.png"
+    ihdr = b"IHDR" + struct.pack(">IIBBBBB", 3, 4, 8, 2, 0, 0, 0)
+    image.write_bytes(b"\x89PNG\r\n\x1a\n" + struct.pack(">I", 13) + ihdr + b"\x00\x00\x00\x00")
+
+    sid = await _create_session(contract_harness.client)
+    reply = await contract_harness.client.call(
+        "session.message",
+        {
+            "session_id": sid,
+            "content": f"ingest attachment {image}",
+        },
+    )
+
+    assert reply.get("lockdown_level") == "normal"
+    assert int(reply.get("blocked_actions", 0)) == 0
+    assert int(reply.get("confirmation_required_actions", 0)) == 0
+    assert int(reply.get("executed_actions", 0)) == 1
+    outputs = _extract_tool_outputs(reply)
+    assert "attachment.ingest" in outputs
+    payload = outputs["attachment.ingest"][0]
+    assert payload.get("ok") is True
+    assert payload.get("status") == "active"
+    assert payload.get("kind") == "image"
+    assert str(payload.get("evidence_ref_id", "")).startswith("ev-")
 
 
 @pytest.mark.asyncio

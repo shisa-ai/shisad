@@ -13,6 +13,7 @@ from shisad.core.evidence import (
     ArtifactBlobCodecError,
     ArtifactEndorsementState,
     ArtifactLedger,
+    ArtifactLifecycleState,
     EvidenceRef,
     EvidenceStore,
     KmsArtifactBlobCodec,
@@ -895,6 +896,26 @@ def test_evidence_store_quarantines_orphan_blobs_on_startup(tmp_path) -> None:
     assert quarantined.read_text(encoding="utf-8") == "orphaned evidence"
     assert store._refs == {}
     assert S_IMODE(quarantined.stat().st_mode) == 0o600
+
+
+def test_artifact_ledger_quarantined_refs_are_not_readable_by_default(tmp_path) -> None:
+    ledger = ArtifactLedger(tmp_path / "evidence", salt=b"a" * 32)
+    ref = ledger.store(
+        SessionId("s1"),
+        '{"kind":"image","status":"quarantined"}',
+        taint_labels={TaintLabel.UNTRUSTED},
+        source="attachment:bad.png",
+        summary="Quarantined attachment manifest",
+        artifact_kind="attachment",
+        lifecycle_state=ArtifactLifecycleState.QUARANTINED,
+    )
+
+    metadata = ledger.get_ref_metadata(SessionId("s1"), ref.ref_id)
+    assert metadata is not None
+    assert metadata.lifecycle_state == ArtifactLifecycleState.QUARANTINED
+    assert ledger.validate_ref_metadata(SessionId("s1"), ref.ref_id) is False
+    assert ledger.get_ref(SessionId("s1"), ref.ref_id) is None
+    assert ledger.read(SessionId("s1"), ref.ref_id) is None
 
 
 def test_evidence_store_quarantine_retention_starts_at_quarantine_time(tmp_path) -> None:

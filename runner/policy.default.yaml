@@ -35,6 +35,10 @@ tools:
   web.fetch:
     capabilities_required:
       - http.request
+  attachment.ingest:
+    capabilities_required:
+      - file.read
+      - memory.write
   fs.list:
     capabilities_required:
       - file.read

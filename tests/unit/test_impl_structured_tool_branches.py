@@ -196,6 +196,7 @@ def test_m1_rf014_structured_tool_registry_lists_expected_handlers() -> None:
         "browser.end_session",
         "realitycheck.search",
         "realitycheck.read",
+        "attachment.ingest",
         "fs.list",
         "fs.read",
         "fs.write",

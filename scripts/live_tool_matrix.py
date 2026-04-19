@@ -7,6 +7,7 @@ import argparse
 import asyncio
 import json
 import os
+import struct
 import sys
 import uuid
 from dataclasses import asdict, dataclass
@@ -32,6 +33,7 @@ _DISABLED_REASONS: frozenset[str] = frozenset(
         "realitycheck_misconfigured",
         "endpoint_mode_disabled",
         "no_evidence_ref_available",
+        "attachment_fs_roots_unconfigured",
     }
 )
 
@@ -46,6 +48,12 @@ class MatrixRow:
 def _tool_payload_templates(repo_root: Path) -> dict[str, dict[str, Any]]:
     safe_command = [sys.executable, "-c", "print('live-tool-matrix-ok')"]
     write_target = repo_root / ".local" / "live-tool-matrix-tool-write.txt"
+    attachment_target = repo_root / ".local" / "live-tool-matrix-attachment.png"
+    attachment_target.parent.mkdir(parents=True, exist_ok=True)
+    ihdr = b"IHDR" + struct.pack(">IIBBBBB", 1, 1, 8, 2, 0, 0, 0)
+    attachment_target.write_bytes(
+        b"\x89PNG\r\n\x1a\n" + struct.pack(">I", 13) + ihdr + b"\x00\x00\x00\x00"
+    )
     probe_suffix = uuid.uuid4().hex[:8]
     note_content = f"live tool matrix note {probe_suffix}"
     todo_title = f"live tool matrix todo {probe_suffix}"
@@ -83,6 +91,10 @@ def _tool_payload_templates(repo_root: Path) -> dict[str, dict[str, Any]]:
         "web.fetch": {
             "command": safe_command,
             "arguments": {"url": "https://example.com", "snapshot": False, "max_bytes": 4096},
+        },
+        "attachment.ingest": {
+            "command": safe_command,
+            "arguments": {"path": str(attachment_target), "mime_type": "image/png"},
         },
         "fs.list": {
             "command": safe_command,

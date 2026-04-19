@@ -65,9 +65,11 @@ def test_tool_payload_templates_cover_memory_and_reminder_tools() -> None:
         "todo.complete",
         "reminder.create",
         "reminder.list",
+        "attachment.ingest",
     ):
         assert tool_name in templates
         assert templates[tool_name]["arguments"]
+    assert Path(templates["attachment.ingest"]["arguments"]["path"]).exists()
 
 
 def test_email_read_template_requires_configured_or_search_derived_id(monkeypatch) -> None:

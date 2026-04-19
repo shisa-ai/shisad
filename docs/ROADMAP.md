@@ -214,7 +214,9 @@ TOTP entry remain deferred to `v0.8.0`.
 #### v0.6.6 — Connector + skill expansions
 
 - Email and calendar connectors
-- Attachment pipeline (voice + image)
+- Local attachment ingest baseline for images and voice recordings; OCR, STT,
+  channel downloads, email attachment export, and multimodal model input remain
+  follow-on work
 - Additional skill integrations
 
 ### v0.7 — Memory foundation
@@ -273,7 +275,8 @@ TOTP entry remain deferred to `v0.8.0`.
 | textguard port | v0.6.4 |
 | MCP/A2A interop | v0.6.5 |
 | Email / calendar connectors | v0.6.6 |
-| Attachment pipeline | v0.6.6 |
+| Local attachment ingest baseline | v0.6.6 |
+| Full attachment processing pipeline | v0.7+ |
 | Long-term memory | v0.7 |
 | UX overhaul + operator web UI | v0.8 |
 | Security infrastructure consolidation | v0.9 |

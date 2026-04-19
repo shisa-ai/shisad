@@ -559,6 +559,26 @@ class DaemonConfig(BaseSettings):
         ge=0.1,
         description="Timeout in seconds for git.* helper subprocess calls.",
     )
+    attachment_max_image_bytes: int = Field(
+        default=10_000_000,
+        ge=1,
+        description="Maximum bytes read when ingesting one image attachment.",
+    )
+    attachment_max_audio_bytes: int = Field(
+        default=25_000_000,
+        ge=1,
+        description="Maximum bytes read when ingesting one voice/audio attachment.",
+    )
+    attachment_max_image_pixels: int = Field(
+        default=25_000_000,
+        ge=1,
+        description="Maximum image pixels accepted from bounded header metadata.",
+    )
+    attachment_max_audio_duration_seconds: float = Field(
+        default=900.0,
+        ge=0.1,
+        description="Maximum voice/audio duration accepted when bounded metadata is available.",
+    )
     realitycheck_enabled: bool = Field(
         default=False,
         description="Enable Reality Check integration surface.",

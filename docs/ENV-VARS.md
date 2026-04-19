@@ -103,7 +103,7 @@ Discord public-channel rules:
   (`web.search`, `web.fetch`, `realitycheck.search`, `realitycheck.read`) when
   those tools are configured and available.
 
-## Assistant, Web, Filesystem, Reality Check, and Coding-Agent Settings
+## Assistant, Web, Filesystem, Attachment, Reality Check, and Coding-Agent Settings
 
 Assistant/persona:
 
@@ -330,6 +330,25 @@ Filesystem/git:
 - `SHISAD_ASSISTANT_FS_ROOTS`
 - `SHISAD_ASSISTANT_MAX_READ_BYTES`
 - `SHISAD_ASSISTANT_GIT_TIMEOUT_SECONDS`
+
+Attachment ingest:
+
+- `SHISAD_ATTACHMENT_MAX_IMAGE_BYTES`
+- `SHISAD_ATTACHMENT_MAX_AUDIO_BYTES`
+- `SHISAD_ATTACHMENT_MAX_IMAGE_PIXELS`
+- `SHISAD_ATTACHMENT_MAX_AUDIO_DURATION_SECONDS`
+
+Attachment ingest notes:
+
+- `attachment.ingest` reads local files only from `SHISAD_ASSISTANT_FS_ROOTS`.
+- The first shipped slice accepts images and voice/audio recordings by bounded
+  local path. It stores tainted ArtifactLedger manifests, not raw attachment
+  bytes.
+- Unsupported, malformed, oversized, or transcript-risky attachments are stored
+  as quarantined manifests. Quarantined refs are not readable through the
+  default `evidence.read` / `evidence.promote` path.
+- OCR, provider speech-to-text, channel attachment downloads, email attachment
+  export, document parsing, and multimodal model input are follow-on work.
 
 Reality Check:
 
