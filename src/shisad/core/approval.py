@@ -1145,6 +1145,7 @@ class _HttpSignerBackend:
         status = str(body.get("status", "")).strip()
         if status not in {"approved", "rejected", "expired", "error"}:
             return SignatureResult(status="error", reason="signer_backend_invalid_status")
+        ledger_approved = self.method == "ledger" and status == "approved"
         reported_review_surface: ReviewSurface | None = None
         if "review_surface" in body:
             review_surface_raw = str(body.get("review_surface", "")).strip()
@@ -1156,6 +1157,10 @@ class _HttpSignerBackend:
                         status="error",
                         reason="signer_backend_invalid_response",
                     )
+            elif ledger_approved:
+                reported_review_surface = ReviewSurface.OPAQUE_DEVICE
+        elif ledger_approved:
+            reported_review_surface = ReviewSurface.OPAQUE_DEVICE
         clamped_review_surface = _clamp_signer_review_surface(
             default=self.review_surface,
             reported=reported_review_surface,
@@ -1172,7 +1177,11 @@ class _HttpSignerBackend:
                     status="error",
                     reason="signer_backend_invalid_response",
                 )
-        blind_sign_raw = body.get("blind_sign_detected", False)
+        blind_sign_raw = (
+            body.get("blind_sign_detected")
+            if "blind_sign_detected" in body
+            else ledger_approved
+        )
         if not isinstance(blind_sign_raw, bool):
             return SignatureResult(status="error", reason="signer_backend_invalid_response")
         return SignatureResult(

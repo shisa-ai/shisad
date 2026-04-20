@@ -104,6 +104,8 @@ class StubSignerService:
         status: str = "approved",
         review_surface: str = "provider_ui",
         blind_sign_detected: bool = False,
+        include_review_surface: bool = True,
+        include_blind_sign_detected: bool = True,
         tamper_intent: bool = False,
         signer_key_id_override: str = "",
         signed_at_override: str = "",
@@ -113,6 +115,8 @@ class StubSignerService:
         self._status = status
         self._review_surface = review_surface
         self._blind_sign_detected = blind_sign_detected
+        self._include_review_surface = include_review_surface
+        self._include_blind_sign_detected = include_blind_sign_detected
         self._tamper_intent = tamper_intent
         self._signer_key_id_override = signer_key_id_override
         self._signed_at_override = signed_at_override
@@ -136,11 +140,13 @@ class StubSignerService:
                     "status": owner._status,
                     "signer_key_id": owner._signer_key_id_override
                     or str(payload.get("signer_key_id", "")),
-                    "review_surface": owner._review_surface,
-                    "blind_sign_detected": owner._blind_sign_detected,
                     "signed_at": owner._signed_at_override
                     or datetime.now(UTC).isoformat().replace("+00:00", "Z"),
                 }
+                if owner._include_review_surface:
+                    response["review_surface"] = owner._review_surface
+                if owner._include_blind_sign_detected:
+                    response["blind_sign_detected"] = owner._blind_sign_detected
                 if owner._status == "approved":
                     if owner._algorithm == "eip712":
                         assert isinstance(owner._private_key, ec.EllipticCurvePrivateKey)

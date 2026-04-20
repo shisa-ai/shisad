@@ -855,7 +855,7 @@ action*, not the device's general capabilities.
 |---|---|---|
 | No device display | YubiKey PIV, cloud KMS API-only | `opaque_device` or `provider_ui` |
 | Raw hex / opaque digest | Ledger with unsupported contract | `opaque_device`, `blind_sign_detected: true` |
-| Decoded fields on small screen | Ledger Nano S+ clear-signing | `trusted_device_display` (but note scroll-through UX) |
+| Decoded fields on small screen | Ledger Nano S+ clear-signing | `opaque_device` for this bridge; does not satisfy L4 |
 | Full summary on large screen | Ledger Stax/Flex, GridPlus Lattice1 | `trusted_device_display` |
 | Provider web UI | Enterprise KMS approval dashboard | `provider_ui` (not L4 — runs in a browser) |
 

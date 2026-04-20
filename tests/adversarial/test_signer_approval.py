@@ -462,6 +462,56 @@ def test_ledger_blind_sign_drops_to_bound_approval(tmp_path) -> None:
         )
 
 
+def test_ledger_missing_review_metadata_drops_to_blind_bound_approval(tmp_path) -> None:
+    private_key = generate_secp256k1_private_key()
+    store = InMemoryCredentialStore()
+    store.set_approval_store_path(tmp_path / "approval-factors.json")
+    store.register_signer_key(
+        SignerKeyRecord(
+            credential_id="ledger:stax-1",
+            user_id="alice",
+            backend="ledger",
+            principal_id="ops-owner",
+            algorithm="ecdsa-secp256k1",
+            device_type="ledger-consumer",
+            public_key_pem=public_key_pem(private_key),
+            signing_scheme="eip712",
+        )
+    )
+    pending, params = _ledger_pending_action(key_id="ledger:stax-1")
+    with StubSignerService(
+        private_key=private_key,
+        algorithm="eip712",
+        include_review_surface=False,
+        include_blind_sign_detected=False,
+    ).run() as signer_url:
+        backend = SignerConfirmationAdapter(
+            LedgerSignerBackend(
+                credential_store=store,
+                endpoint_url=signer_url,
+            )
+        )
+        evidence = backend.verify(pending_action=pending, params=params)
+        assert evidence.level == ConfirmationLevel.BOUND_APPROVAL
+        assert evidence.review_surface.value == "opaque_device"
+        assert evidence.blind_sign_detected is True
+        assert not confirmation_evidence_satisfies_requirement(
+            requirement=ConfirmationRequirement(
+                level=ConfirmationLevel.TRUSTED_DISPLAY_AUTHORIZATION,
+                methods=["ledger"],
+                allowed_principals=["ops-owner"],
+                allowed_credentials=["ledger:stax-1"],
+                require_capabilities=ConfirmationCapabilities(
+                    principal_binding=True,
+                    full_intent_signature=True,
+                    trusted_display=True,
+                ),
+            ),
+            evidence=evidence,
+            backend=backend,
+        )
+
+
 def test_ledger_tampered_intent_rejected(tmp_path) -> None:
     private_key = generate_secp256k1_private_key()
     store = InMemoryCredentialStore()
