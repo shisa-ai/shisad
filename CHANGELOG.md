@@ -9,6 +9,18 @@ left unlinked until the tag exists. There is no standing "Unreleased" section.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Versioning follows semver (see `docs/PUBLISH.md` for policy and style guide).
 
+## [0.6.7] - 2026-04-20 (release-prepared)
+
+### Added
+
+- **Ledger hardware signer approvals are prepared for v0.6.7.** Operators can
+  register Ledger-backed ECDSA signer keys, use the local Ledger bridge for
+  EIP-712 `IntentEnvelope` signing, and have shisad downgrade approvals when
+  the device reports blind signing or an opaque review surface.
+
+Thanks @GuitareCiel (Ledger) for contributing shisad's first external pull
+request.
+
 ## [0.6.6] - 2026-04-19
 
 ### Added

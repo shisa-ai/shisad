@@ -1,7 +1,7 @@
 # shisad Roadmap
 
 *Created: 2026-02-26*
-*Updated: 2026-04-19*
+*Updated: 2026-04-20*
 *Status: Active*
 
 ## Goal
@@ -51,6 +51,10 @@ Reach a genuinely useful personal-assistant baseline while preserving the projec
   public-channel policy controls, local MsgVault email read/search, local image
   and voice attachment ingest, and same-session evidence carry-forward for
   follow-up turns.
+- `v0.6.7` is release-prepared: Ledger hardware signer approvals from shisad's
+  first external pull request add EIP-712 `IntentEnvelope` signing through the
+  local Ledger bridge, with conservative downgrade behavior when a device reports
+  blind signing or an opaque review surface.
 
 ## Milestones
 
@@ -99,9 +103,10 @@ crosses back into COMMAND context, a browser tool surface with
 confirmation-gated browser writes plus local skill tool-surface integrity
 checks, a hardened public release path using OIDC trusted publishing, SBOMs,
 and provenance attestations, the published `v0.6.3` critical UX
-stabilization lane, the shipped `v0.6.4` textguard migration, and the
-shipped `v0.6.5` MCP/A2A interop lane, and the shipped `v0.6.6`
-connector/skill expansion lane. The `v0.7` memory foundation is next.
+stabilization lane, the shipped `v0.6.4` textguard migration, the shipped
+`v0.6.5` MCP/A2A interop lane, the shipped `v0.6.6` connector/skill expansion
+lane, and the release-prepared `v0.6.7` Ledger signer line from the first
+external pull request. The `v0.7` memory foundation is next after publish.
 
 #### v0.6.1 — Security hardening
 
@@ -231,6 +236,18 @@ TOTP entry remain deferred to `v0.8.0`.
 - Additional skill integrations: config-path `SOUL.md` persona preferences.
   Executable plugin installs and `outline-edit` remain deferred to the plugin
   policy lane.
+
+#### v0.6.7 — Ledger hardware signer approvals
+
+- Status (2026-04-20): release-prepared. The line is prepared from the first
+  external pull request, from @GuitareCiel (Ledger), for Ledger-backed ECDSA
+  signer keys and a local Ledger bridge that signs EIP-712 `IntentEnvelope`
+  approvals.
+- Ledger Stax/Flex clear-signing can satisfy trusted-display authorization when
+  the bridge reports a trusted device display for that request. Nano and unknown
+  models are treated conservatively as opaque review surfaces for this bridge.
+- Hardware-signer support beyond the current Ethereum EIP-712 path remains
+  follow-on work.
 
 ### v0.7 — Memory foundation
 
