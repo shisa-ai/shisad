@@ -2,172 +2,163 @@
 
 from __future__ import annotations
 
-import asyncio
-from contextlib import suppress
-from pathlib import Path
+from collections.abc import AsyncIterator
 
 import pytest
+import pytest_asyncio
 
-from shisad.core.api.transport import ControlClient
-from shisad.core.config import DaemonConfig
-from shisad.daemon.runner import run_daemon
+from tests.helpers.daemon import (
+    SharedDaemonController,
+    clear_remote_provider_env,
+    daemon_harness,
+    shared_daemon_controller,
+)
+
+pytestmark = pytest.mark.asyncio(loop_scope="module")
+
+_REMOTE_PROVIDER_ENV = {
+    "SHISAD_MODEL_BASE_URL": "https://api.example.com/v1",
+    "SHISAD_MODEL_PLANNER_BASE_URL": "https://planner.example.com/v1",
+    "SHISAD_MODEL_EMBEDDINGS_BASE_URL": "https://embed.example.com/v1",
+    "SHISAD_MODEL_MONITOR_BASE_URL": "https://monitor.example.com/v1",
+}
+
+_DEFAULT_POLICY_TEXT = "{}\n"
+_PERMISSIVE_POLICY_TEXT = (
+    "\n".join(
+        [
+            'version: "1"',
+            "default_deny: false",
+            "default_require_confirmation: false",
+        ]
+    )
+    + "\n"
+)
 
 
-async def _wait_for_socket(path: Path, timeout: float = 5.0) -> None:
-    end = asyncio.get_running_loop().time() + timeout
-    while asyncio.get_running_loop().time() < end:
-        if path.exists():
-            return
-        await asyncio.sleep(0.01)
-    raise TimeoutError(f"Timed out waiting for socket {path}")
+def _set_example_model_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    clear_remote_provider_env(monkeypatch)
+    for key, value in _REMOTE_PROVIDER_ENV.items():
+        monkeypatch.setenv(key, value)
 
 
-@pytest.mark.asyncio
+@pytest_asyncio.fixture(scope="module", loop_scope="module")
+async def shared_handler_daemon(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> AsyncIterator[SharedDaemonController]:
+    env_patch = pytest.MonkeyPatch()
+    _set_example_model_env(env_patch)
+    tmp_dir = tmp_path_factory.mktemp("handler-integration-daemon")
+    try:
+        async with shared_daemon_controller(
+            tmp_dir,
+            policy_text=_DEFAULT_POLICY_TEXT,
+            config_kwargs={"log_level": "INFO"},
+        ) as controller:
+            yield controller
+    finally:
+        env_patch.undo()
+
+
+@pytest_asyncio.fixture(loop_scope="module")
+async def recycled_handler_daemon(
+    shared_handler_daemon: SharedDaemonController,
+) -> AsyncIterator[SharedDaemonController]:
+    yield shared_handler_daemon
+    await shared_handler_daemon.recycle()
+
+
 async def test_facade_routes_across_handler_groups(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
+    recycled_handler_daemon: SharedDaemonController,
 ) -> None:
-    monkeypatch.setenv("SHISAD_MODEL_BASE_URL", "https://api.example.com/v1")
-    monkeypatch.setenv("SHISAD_MODEL_PLANNER_BASE_URL", "https://planner.example.com/v1")
-    monkeypatch.setenv("SHISAD_MODEL_EMBEDDINGS_BASE_URL", "https://embed.example.com/v1")
-    monkeypatch.setenv("SHISAD_MODEL_MONITOR_BASE_URL", "https://monitor.example.com/v1")
-
-    config = DaemonConfig(
-        data_dir=tmp_path / "data",
-        socket_path=tmp_path / "control.sock",
-        policy_path=tmp_path / "policy.yaml",
-        log_level="INFO",
+    created = await recycled_handler_daemon.call(
+        "session.create",
+        {"channel": "cli", "user_id": "alice", "workspace_id": "ws1"},
     )
+    assert created["session_id"]
 
-    daemon_task = asyncio.create_task(run_daemon(config))
-    client = ControlClient(config.socket_path)
+    status = await recycled_handler_daemon.call("daemon.status")
+    assert status["status"] == "running"
+    doctor_all = await recycled_handler_daemon.call("doctor.check", {"component": "all"})
+    assert doctor_all["status"] in {"ok", "degraded"}
+    checks = doctor_all.get("checks", {})
+    assert "dependencies" in checks
+    assert "provider" in checks
+    assert "policy" in checks
+    assert "channels" in checks
+    assert "sandbox" in checks
+    assert "realitycheck" in checks
+    assert checks["dependencies"]["status"] in {"ok", "misconfigured"}
+    assert checks["provider"]["status"] in {"ok", "misconfigured"}
+    assert checks["policy"]["status"] in {"ok", "degraded", "misconfigured"}
+    assert checks["channels"]["status"] in {"ok", "degraded", "misconfigured", "disabled"}
+    assert checks["sandbox"]["status"] in {"ok", "degraded", "misconfigured"}
 
-    try:
-        await _wait_for_socket(config.socket_path)
-        await client.connect()
+    unsupported = await recycled_handler_daemon.call(
+        "doctor.check",
+        {"component": "not-a-component"},
+    )
+    assert unsupported["status"] == "error"
+    assert unsupported["error"] == "unsupported_component"
 
-        created = await client.call(
-            "session.create",
-            {"channel": "cli", "user_id": "alice", "workspace_id": "ws1"},
-        )
-        assert created["session_id"]
+    memory = await recycled_handler_daemon.call("memory.list", {"limit": 10})
+    assert "entries" in memory
 
-        status = await client.call("daemon.status")
-        assert status["status"] == "running"
-        doctor_all = await client.call("doctor.check", {"component": "all"})
-        assert doctor_all["status"] in {"ok", "degraded"}
-        checks = doctor_all.get("checks", {})
-        assert "dependencies" in checks
-        assert "provider" in checks
-        assert "policy" in checks
-        assert "channels" in checks
-        assert "sandbox" in checks
-        assert "realitycheck" in checks
-        assert checks["dependencies"]["status"] in {"ok", "misconfigured"}
-        assert checks["provider"]["status"] in {"ok", "misconfigured"}
-        assert checks["policy"]["status"] in {"ok", "degraded", "misconfigured"}
-        assert checks["channels"]["status"] in {"ok", "degraded", "misconfigured", "disabled"}
-        assert checks["sandbox"]["status"] in {"ok", "degraded", "misconfigured"}
+    skills = await recycled_handler_daemon.call("skill.list")
+    assert "skills" in skills
 
-        unsupported = await client.call("doctor.check", {"component": "not-a-component"})
-        assert unsupported["status"] == "error"
-        assert unsupported["error"] == "unsupported_component"
+    tasks = await recycled_handler_daemon.call("task.list")
+    assert "tasks" in tasks
 
-        memory = await client.call("memory.list", {"limit": 10})
-        assert "entries" in memory
+    pending = await recycled_handler_daemon.call("action.pending", {"limit": 10})
+    assert "actions" in pending
 
-        skills = await client.call("skill.list")
-        assert "skills" in skills
-
-        tasks = await client.call("task.list")
-        assert "tasks" in tasks
-
-        pending = await client.call("action.pending", {"limit": 10})
-        assert "actions" in pending
-
-        dashboard = await client.call("dashboard.alerts", {"limit": 10})
-        assert "alerts" in dashboard
-        assert "total" in dashboard
-    finally:
-        with suppress(Exception):
-            await client.call("daemon.shutdown")
-        await client.close()
-        await asyncio.wait_for(daemon_task, timeout=3)
+    dashboard = await recycled_handler_daemon.call("dashboard.alerts", {"limit": 10})
+    assert "alerts" in dashboard
+    assert "total" in dashboard
 
 
-@pytest.mark.asyncio
 async def test_note_and_todo_list_limits_are_type_aware(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
+    recycled_handler_daemon: SharedDaemonController,
 ) -> None:
-    monkeypatch.setenv("SHISAD_MODEL_BASE_URL", "https://api.example.com/v1")
-    monkeypatch.setenv("SHISAD_MODEL_PLANNER_BASE_URL", "https://planner.example.com/v1")
-    monkeypatch.setenv("SHISAD_MODEL_EMBEDDINGS_BASE_URL", "https://embed.example.com/v1")
-    monkeypatch.setenv("SHISAD_MODEL_MONITOR_BASE_URL", "https://monitor.example.com/v1")
+    created = await recycled_handler_daemon.call(
+        "session.create",
+        {"channel": "cli", "user_id": "alice", "workspace_id": "ws1"},
+    )
+    sid = created["session_id"]
 
-    config = DaemonConfig(
-        data_dir=tmp_path / "data",
-        socket_path=tmp_path / "control.sock",
-        policy_path=tmp_path / "policy.yaml",
-        log_level="INFO",
+    await recycled_handler_daemon.call(
+        "note.create",
+        {"key": "n1", "content": "note-one", "source_id": sid, "user_confirmed": True},
+    )
+    await recycled_handler_daemon.call(
+        "todo.create",
+        {"title": "todo-one", "source_id": sid, "user_confirmed": True},
+    )
+    await recycled_handler_daemon.call(
+        "note.create",
+        {"key": "n2", "content": "note-two", "source_id": sid, "user_confirmed": True},
+    )
+    await recycled_handler_daemon.call(
+        "todo.create",
+        {"title": "todo-two", "source_id": sid, "user_confirmed": True},
     )
 
-    daemon_task = asyncio.create_task(run_daemon(config))
-    client = ControlClient(config.socket_path)
+    notes = await recycled_handler_daemon.call("note.list", {"limit": 2})
+    todos = await recycled_handler_daemon.call("todo.list", {"limit": 2})
 
-    try:
-        await _wait_for_socket(config.socket_path)
-        await client.connect()
-
-        created = await client.call(
-            "session.create",
-            {"channel": "cli", "user_id": "alice", "workspace_id": "ws1"},
-        )
-        sid = created["session_id"]
-
-        await client.call(
-            "note.create",
-            {"key": "n1", "content": "note-one", "source_id": sid, "user_confirmed": True},
-        )
-        await client.call(
-            "todo.create",
-            {"title": "todo-one", "source_id": sid, "user_confirmed": True},
-        )
-        await client.call(
-            "note.create",
-            {"key": "n2", "content": "note-two", "source_id": sid, "user_confirmed": True},
-        )
-        await client.call(
-            "todo.create",
-            {"title": "todo-two", "source_id": sid, "user_confirmed": True},
-        )
-
-        notes = await client.call("note.list", {"limit": 2})
-        todos = await client.call("todo.list", {"limit": 2})
-
-        assert notes["count"] == 2
-        assert len(notes["entries"]) == 2
-        assert all(item.get("entry_type") == "note" for item in notes["entries"])
-        assert todos["count"] == 2
-        assert len(todos["entries"]) == 2
-        assert all(item.get("entry_type") == "todo" for item in todos["entries"])
-    finally:
-        with suppress(Exception):
-            await client.call("daemon.shutdown")
-        await client.close()
-        await asyncio.wait_for(daemon_task, timeout=3)
+    assert notes["count"] == 2
+    assert len(notes["entries"]) == 2
+    assert all(item.get("entry_type") == "note" for item in notes["entries"])
+    assert todos["count"] == 2
+    assert len(todos["entries"]) == 2
+    assert all(item.get("entry_type") == "todo" for item in todos["entries"])
 
 
-@pytest.mark.asyncio
 async def test_doctor_component_requests_are_isolated_from_other_component_failures(
-    tmp_path: Path,
+    recycled_handler_daemon: SharedDaemonController,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("SHISAD_MODEL_BASE_URL", "https://api.example.com/v1")
-    monkeypatch.setenv("SHISAD_MODEL_PLANNER_BASE_URL", "https://planner.example.com/v1")
-    monkeypatch.setenv("SHISAD_MODEL_EMBEDDINGS_BASE_URL", "https://embed.example.com/v1")
-    monkeypatch.setenv("SHISAD_MODEL_MONITOR_BASE_URL", "https://monitor.example.com/v1")
-
     from shisad.daemon.handlers import _impl as impl_module
 
     def _raise_policy_check(_self: object) -> dict[str, object]:
@@ -179,80 +170,30 @@ async def test_doctor_component_requests_are_isolated_from_other_component_failu
         _raise_policy_check,
     )
 
-    config = DaemonConfig(
-        data_dir=tmp_path / "data",
-        socket_path=tmp_path / "control.sock",
-        policy_path=tmp_path / "policy.yaml",
-        log_level="INFO",
-    )
+    reality_only = await recycled_handler_daemon.call("doctor.check", {"component": "realitycheck"})
+    assert reality_only["status"] in {"ok", "degraded"}
+    assert set(reality_only["checks"].keys()) == {"realitycheck"}
 
-    daemon_task = asyncio.create_task(run_daemon(config))
-    client = ControlClient(config.socket_path)
-
-    try:
-        await _wait_for_socket(config.socket_path)
-        await client.connect()
-
-        reality_only = await client.call("doctor.check", {"component": "realitycheck"})
-        assert reality_only["status"] in {"ok", "degraded"}
-        assert set(reality_only["checks"].keys()) == {"realitycheck"}
-
-        policy_only = await client.call("doctor.check", {"component": "policy"})
-        assert policy_only["status"] == "degraded"
-        assert policy_only["checks"]["policy"]["status"] == "error"
-        assert "component_failed:RuntimeError" in policy_only["checks"]["policy"]["problems"]
-    finally:
-        with suppress(Exception):
-            await client.call("daemon.shutdown")
-        await client.close()
-        await asyncio.wait_for(daemon_task, timeout=3)
+    policy_only = await recycled_handler_daemon.call("doctor.check", {"component": "policy"})
+    assert policy_only["status"] == "degraded"
+    assert policy_only["checks"]["policy"]["status"] == "error"
+    assert "component_failed:RuntimeError" in policy_only["checks"]["policy"]["problems"]
 
 
-@pytest.mark.asyncio
 async def test_doctor_policy_reports_permissive_posture_without_false_degraded_status(
-    tmp_path: Path,
+    tmp_path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("SHISAD_MODEL_BASE_URL", "https://api.example.com/v1")
-    monkeypatch.setenv("SHISAD_MODEL_PLANNER_BASE_URL", "https://planner.example.com/v1")
-    monkeypatch.setenv("SHISAD_MODEL_EMBEDDINGS_BASE_URL", "https://embed.example.com/v1")
-    monkeypatch.setenv("SHISAD_MODEL_MONITOR_BASE_URL", "https://monitor.example.com/v1")
+    _set_example_model_env(monkeypatch)
 
-    policy_path = tmp_path / "policy.yaml"
-    policy_path.write_text(
-        "\n".join(
-            [
-                'version: "1"',
-                "default_deny: false",
-                "default_require_confirmation: false",
-            ]
-        )
-        + "\n",
-        encoding="utf-8",
-    )
-
-    config = DaemonConfig(
-        data_dir=tmp_path / "data",
-        socket_path=tmp_path / "control.sock",
-        policy_path=policy_path,
-        log_level="INFO",
-    )
-
-    daemon_task = asyncio.create_task(run_daemon(config))
-    client = ControlClient(config.socket_path)
-
-    try:
-        await _wait_for_socket(config.socket_path)
-        await client.connect()
-
-        policy_only = await client.call("doctor.check", {"component": "policy"})
+    async with daemon_harness(
+        tmp_path,
+        policy_text=_PERMISSIVE_POLICY_TEXT,
+        config_kwargs={"log_level": "INFO"},
+    ) as harness:
+        policy_only = await harness.call("doctor.check", {"component": "policy"})
         payload = policy_only["checks"]["policy"]
         assert payload["status"] == "ok"
         assert "default_deny_disabled" not in payload.get("problems", [])
         assert payload.get("posture") == "permissive"
         assert "default_deny_disabled" in payload.get("posture_notes", [])
-    finally:
-        with suppress(Exception):
-            await client.call("daemon.shutdown")
-        await client.close()
-        await asyncio.wait_for(daemon_task, timeout=3)

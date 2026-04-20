@@ -8,13 +8,15 @@ from __future__ import annotations
 
 import ipaddress
 import json
+import re
 from pathlib import Path
-from typing import Literal, Self
+from typing import Annotated, Literal, Self
 from urllib.parse import urlparse
 
-from pydantic import Field, field_validator, model_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
+from shisad.channels.discord_policy import DiscordChannelRule
 from shisad.core.providers.capabilities import (
     AuthMode,
     EndpointFamily,
@@ -23,6 +25,10 @@ from shisad.core.providers.capabilities import (
     RequestParameters,
 )
 from shisad.core.providers.http_headers import validate_auth_header_name, validate_extra_headers
+from shisad.core.soul import DEFAULT_SOUL_MAX_BYTES, SoulFileError, validate_soul_path
+from shisad.interop.a2a_registry import (
+    A2aConfig,
+)
 
 
 def _default_selfmod_allowed_signers_path() -> Path:
@@ -30,6 +36,7 @@ def _default_selfmod_allowed_signers_path() -> Path:
 
 
 _WILDCARD_HOST_TOKENS = {"*", "?", "[", "]"}
+_MCP_SERVER_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
 
 
 def _destination_host_pattern(destination: str) -> str:
@@ -85,6 +92,134 @@ def _canonical_origin(scheme: str, host: str, port: int | None) -> str:
     return f"{normalized_scheme}://{host_component}:{port}"
 
 
+def _normalize_mcp_server_name(value: object) -> str:
+    candidate = str(value).strip().lower()
+    if not candidate or not _MCP_SERVER_NAME_RE.fullmatch(candidate):
+        raise ValueError(
+            "MCP server names must match ^[a-z0-9][a-z0-9._-]{0,63}$ after normalization"
+        )
+    return candidate
+
+
+class _McpBaseServerConfig(BaseModel):
+    """Common MCP server configuration."""
+
+    name: str
+    timeout_seconds: float = Field(
+        default=30.0,
+        ge=0.1,
+        description="Timeout applied to MCP initialize/list/call operations.",
+    )
+
+    model_config = {"frozen": True}
+
+    @field_validator("name", mode="before")
+    @classmethod
+    def _validate_name(cls, value: object) -> str:
+        return _normalize_mcp_server_name(value)
+
+
+class McpStdioServerConfig(_McpBaseServerConfig):
+    """MCP server launched as a subprocess over stdio."""
+
+    transport: Literal["stdio"] = "stdio"
+    command: list[str] = Field(
+        min_length=1,
+        description="Executable and arguments used to launch the MCP server.",
+    )
+    env: dict[str, str] = Field(
+        default_factory=dict,
+        description="Optional environment overrides for the stdio MCP server.",
+    )
+    cwd: Path | None = Field(
+        default=None,
+        description="Optional working directory for the stdio MCP server process.",
+    )
+
+    @field_validator("command", mode="before")
+    @classmethod
+    def _parse_command(cls, value: object) -> object:
+        if isinstance(value, str):
+            stripped = value.strip()
+            if not stripped:
+                raise ValueError("MCP stdio server command cannot be empty")
+            if stripped.startswith("["):
+                parsed = json.loads(stripped)
+                if not isinstance(parsed, list):
+                    raise ValueError("MCP stdio server command JSON must be a list")
+                return [str(item).strip() for item in parsed if str(item).strip()]
+            return [piece.strip() for piece in stripped.split() if piece.strip()]
+        if isinstance(value, list):
+            return [str(item).strip() for item in value if str(item).strip()]
+        return value
+
+    @field_validator("env", mode="before")
+    @classmethod
+    def _parse_env(cls, value: object) -> object:
+        if isinstance(value, str):
+            stripped = value.strip()
+            if not stripped:
+                return {}
+            parsed = json.loads(stripped)
+            if not isinstance(parsed, dict):
+                raise ValueError("MCP stdio server env JSON must be an object")
+            return {str(key): str(item) for key, item in parsed.items()}
+        if isinstance(value, dict):
+            return {str(key): str(item) for key, item in value.items()}
+        return value
+
+    @field_validator("cwd", mode="before")
+    @classmethod
+    def _parse_cwd(cls, value: object) -> object:
+        if value in {None, ""}:
+            return None
+        if isinstance(value, str):
+            return Path(value).expanduser()
+        if isinstance(value, Path):
+            return value.expanduser()
+        return value
+
+
+class McpHttpServerConfig(_McpBaseServerConfig):
+    """MCP server reached over streamable HTTP."""
+
+    transport: Literal["http"] = "http"
+    url: str = Field(description="Base streamable HTTP MCP endpoint URL.")
+    headers: dict[str, str] = Field(
+        default_factory=dict,
+        description="Optional HTTP headers sent to the MCP server.",
+    )
+
+    @field_validator("url", mode="before")
+    @classmethod
+    def _validate_url(cls, value: object) -> str:
+        candidate = str(value).strip()
+        parsed = urlparse(candidate)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            raise ValueError("MCP HTTP server url must be a full http(s) URL")
+        return candidate
+
+    @field_validator("headers", mode="before")
+    @classmethod
+    def _parse_headers(cls, value: object) -> object:
+        if isinstance(value, str):
+            stripped = value.strip()
+            if not stripped:
+                return {}
+            parsed = json.loads(stripped)
+            if not isinstance(parsed, dict):
+                raise ValueError("MCP HTTP server headers JSON must be an object")
+            return {str(key): str(item) for key, item in parsed.items()}
+        if isinstance(value, dict):
+            return {str(key): str(item) for key, item in value.items()}
+        return value
+
+
+McpServerConfig = Annotated[
+    McpStdioServerConfig | McpHttpServerConfig, Field(discriminator="transport")
+]
+
+
 class DaemonConfig(BaseSettings):
     """Daemon process configuration."""
 
@@ -110,6 +245,15 @@ class DaemonConfig(BaseSettings):
 
     # Runtime
     log_level: str = Field(default="INFO", description="Logging level")
+    test_mode: bool = Field(
+        default=False,
+        description="Enable test-only daemon helpers such as reset RPC registration.",
+    )
+    control_plane_startup_timeout_seconds: float = Field(
+        default=15.0,
+        ge=0.1,
+        description="Startup timeout for the control-plane sidecar readiness probe.",
+    )
     checkpoint_trigger: Literal[
         "before_side_effects",
         "before_any_tool",
@@ -155,6 +299,12 @@ class DaemonConfig(BaseSettings):
     discord_guild_workspace_map: dict[str, str] = Field(
         default_factory=dict,
         description="Map Discord guild ids to workspace ids.",
+    )
+    discord_channel_rules: list[DiscordChannelRule] = Field(
+        default_factory=list,
+        description=(
+            "Discord guild/channel rules for public/trusted-guest access and engagement modes."
+        ),
     )
 
     # Optional Telegram runtime channel
@@ -207,6 +357,18 @@ class DaemonConfig(BaseSettings):
         default="",
         description="Trusted custom persona guidance appended as style-only instructions.",
     )
+    assistant_persona_soul_path: Path | None = Field(
+        default=None,
+        description=(
+            "Optional absolute operator config path to SOUL.md persona preferences. "
+            "Workspace-local SOUL.md discovery is intentionally not supported."
+        ),
+    )
+    assistant_persona_soul_max_bytes: int = Field(
+        default=DEFAULT_SOUL_MAX_BYTES,
+        ge=1,
+        description="Maximum UTF-8 bytes loaded from the configured SOUL.md persona file.",
+    )
     context_window: int = Field(
         default=20,
         ge=1,
@@ -255,6 +417,41 @@ class DaemonConfig(BaseSettings):
         default=262144,
         ge=1024,
         description="Maximum bytes fetched for web page content.",
+    )
+    msgvault_enabled: bool = Field(
+        default=False,
+        description="Enable local msgvault email read/search connector.",
+    )
+    msgvault_command: str = Field(
+        default="msgvault",
+        description="msgvault executable path or command used for local email reads/searches.",
+    )
+    msgvault_home: Path | None = Field(
+        default=None,
+        description="Optional MSGVAULT_HOME override passed to msgvault as --home.",
+    )
+    msgvault_timeout_seconds: float = Field(
+        default=10.0,
+        ge=0.1,
+        description="Timeout for local msgvault CLI read/search operations.",
+    )
+    msgvault_max_results: int = Field(
+        default=20,
+        ge=1,
+        description="Maximum email search results returned through shisad.",
+    )
+    msgvault_max_body_bytes: int = Field(
+        default=65536,
+        ge=1024,
+        description="Maximum UTF-8 bytes returned from an email message body.",
+    )
+    msgvault_account_allowlist: Annotated[list[str], NoDecode] = Field(
+        default_factory=list,
+        description=(
+            "Optional lower-privilege account scope for msgvault search/read tools. "
+            "When set, operations must target a listed account unless exactly one "
+            "account is configured."
+        ),
     )
     browser_enabled: bool = Field(
         default=False,
@@ -373,6 +570,31 @@ class DaemonConfig(BaseSettings):
         ge=0.1,
         description="Timeout in seconds for git.* helper subprocess calls.",
     )
+    attachment_max_image_bytes: int = Field(
+        default=10_000_000,
+        ge=1,
+        description="Maximum bytes read when ingesting one image attachment.",
+    )
+    attachment_max_audio_bytes: int = Field(
+        default=25_000_000,
+        ge=1,
+        description="Maximum bytes read when ingesting one voice/audio attachment.",
+    )
+    attachment_max_image_pixels: int = Field(
+        default=25_000_000,
+        ge=1,
+        description="Maximum image pixels accepted from bounded header metadata.",
+    )
+    attachment_max_audio_duration_seconds: float = Field(
+        default=900.0,
+        ge=0.1,
+        description="Maximum voice/audio duration accepted when bounded metadata is available.",
+    )
+    attachment_max_transcript_chars: int = Field(
+        default=200_000,
+        ge=1,
+        description="Maximum caller-supplied transcript characters stored with attachments.",
+    )
     realitycheck_enabled: bool = Field(
         default=False,
         description="Enable Reality Check integration surface.",
@@ -435,6 +657,20 @@ class DaemonConfig(BaseSettings):
         default=900.0,
         ge=0.1,
         description="Default timeout for coding-agent TASK invocations.",
+    )
+    mcp_servers: list[McpServerConfig] = Field(
+        default_factory=list,
+        description="Configured external MCP servers to connect during daemon startup.",
+    )
+    mcp_trusted_servers: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Configured MCP server ids that bypass the confirm-by-default external-tool gate."
+        ),
+    )
+    a2a: A2aConfig = Field(
+        default_factory=A2aConfig,
+        description="Optional A2A identity, registry, and listener configuration.",
     )
 
     @staticmethod
@@ -501,6 +737,19 @@ class DaemonConfig(BaseSettings):
     def _parse_discord_guild_workspace_map(cls, value: object) -> object:
         return cls._parse_map_field(value, field_name="SHISAD_DISCORD_GUILD_WORKSPACE_MAP")
 
+    @field_validator("discord_channel_rules", mode="before")
+    @classmethod
+    def _parse_discord_channel_rules(cls, value: object) -> object:
+        if isinstance(value, str):
+            stripped = value.strip()
+            if not stripped:
+                return []
+            parsed = json.loads(stripped)
+            if not isinstance(parsed, list):
+                raise ValueError("SHISAD_DISCORD_CHANNEL_RULES JSON must be a list")
+            return parsed
+        return value
+
     @field_validator("telegram_trusted_users", mode="before")
     @classmethod
     def _parse_telegram_trusted_users(cls, value: object) -> object:
@@ -553,6 +802,30 @@ class DaemonConfig(BaseSettings):
             raise ValueError("SHISAD_CHANNEL_IDENTITY_ALLOWLIST JSON must be an object")
         return value
 
+    @field_validator("assistant_persona_soul_path", mode="before")
+    @classmethod
+    def _parse_assistant_persona_soul_path(cls, value: object) -> object:
+        if value is None:
+            return None
+        if isinstance(value, str):
+            stripped = value.strip()
+            if not stripped:
+                return None
+            return Path(stripped).expanduser()
+        if isinstance(value, Path):
+            return value.expanduser()
+        return value
+
+    @field_validator("assistant_persona_soul_path")
+    @classmethod
+    def _validate_assistant_persona_soul_path(cls, value: Path | None) -> Path | None:
+        if value is None:
+            return None
+        try:
+            return validate_soul_path(value)
+        except SoulFileError as exc:
+            raise ValueError(str(exc)) from exc
+
     @field_validator("web_allowed_domains", mode="before")
     @classmethod
     def _parse_web_allowed_domains(cls, value: object) -> object:
@@ -562,6 +835,35 @@ class DaemonConfig(BaseSettings):
     @classmethod
     def _parse_browser_allowed_domains(cls, value: object) -> object:
         return cls._parse_list_field(value, field_name="SHISAD_BROWSER_ALLOWED_DOMAINS")
+
+    @field_validator("msgvault_home", mode="before")
+    @classmethod
+    def _parse_msgvault_home(cls, value: object) -> object:
+        if value in {None, ""}:
+            return None
+        if isinstance(value, str):
+            return Path(value.strip()).expanduser() if value.strip() else None
+        if isinstance(value, Path):
+            return value.expanduser()
+        return value
+
+    @field_validator("msgvault_account_allowlist", mode="before")
+    @classmethod
+    def _parse_msgvault_account_allowlist(cls, value: object) -> object:
+        return cls._parse_list_field(value, field_name="SHISAD_MSGVAULT_ACCOUNT_ALLOWLIST")
+
+    @field_validator("msgvault_account_allowlist")
+    @classmethod
+    def _normalize_msgvault_account_allowlist(cls, value: list[str]) -> list[str]:
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for raw in value:
+            candidate = str(raw).strip().lower()
+            if not candidate or candidate in seen:
+                continue
+            seen.add(candidate)
+            normalized.append(candidate)
+        return normalized
 
     @field_validator("assistant_fs_roots", mode="before")
     @classmethod
@@ -625,6 +927,50 @@ class DaemonConfig(BaseSettings):
     @classmethod
     def _parse_realitycheck_allowed_domains(cls, value: object) -> object:
         return cls._parse_list_field(value, field_name="SHISAD_REALITYCHECK_ALLOWED_DOMAINS")
+
+    @field_validator("mcp_servers", mode="before")
+    @classmethod
+    def _parse_mcp_servers(cls, value: object) -> object:
+        if isinstance(value, str):
+            stripped = value.strip()
+            if not stripped:
+                return []
+            parsed = json.loads(stripped)
+            if not isinstance(parsed, list):
+                raise ValueError("SHISAD_MCP_SERVERS JSON must be a list")
+            return parsed
+        return value
+
+    @field_validator("mcp_trusted_servers", mode="before")
+    @classmethod
+    def _parse_mcp_trusted_servers(cls, value: object) -> object:
+        return cls._parse_list_field(value, field_name="SHISAD_MCP_TRUSTED_SERVERS")
+
+    @field_validator("a2a", mode="before")
+    @classmethod
+    def _parse_a2a_config(cls, value: object) -> object:
+        if isinstance(value, str):
+            stripped = value.strip()
+            if not stripped:
+                return {}
+            parsed = json.loads(stripped)
+            if not isinstance(parsed, dict):
+                raise ValueError("SHISAD_A2A JSON must be an object")
+            return parsed
+        return value
+
+    @field_validator("mcp_trusted_servers")
+    @classmethod
+    def _normalize_mcp_trusted_servers(cls, value: list[str]) -> list[str]:
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for raw in value:
+            candidate = _normalize_mcp_server_name(raw)
+            if candidate in seen:
+                raise ValueError("MCP trusted server names must be unique after normalization")
+            seen.add(candidate)
+            normalized.append(candidate)
+        return normalized
 
     @model_validator(mode="after")
     def _ensure_data_dir(self) -> Self:
@@ -693,6 +1039,15 @@ class DaemonConfig(BaseSettings):
                 self.approval_bind_port = int(_default_origin_port(scheme) or 8787)
             else:
                 self.approval_bind_port = 8787
+        return self
+
+    @model_validator(mode="after")
+    def _validate_mcp_server_names(self) -> Self:
+        seen: set[str] = set()
+        for server in self.mcp_servers:
+            if server.name in seen:
+                raise ValueError("MCP server names must be unique after normalization")
+            seen.add(server.name)
         return self
 
 

@@ -25,6 +25,8 @@ _TASK_CLOSE_GATE_SECTION_HEADERS = (
     "TASK TOOL OUTPUTS JSON:",
     "TASK PROPOSAL JSON:",
 )
+_PLANNER_FALLBACK_CONFIGURATION_PREFIX = "[PLANNER FALLBACK: CONFIGURATION]"
+_PLANNER_FALLBACK_ROUTE_ERROR_PREFIX = "[PLANNER FALLBACK: ROUTE ERROR]"
 
 
 def _extract_marked_untrusted_payload(planner_input: str) -> str:
@@ -205,6 +207,40 @@ def _is_structured_task_close_gate_prompt(text: str) -> bool:
     )
 
 
+def _planner_fallback_message(
+    *,
+    fallback_mode: str,
+    deterministic_tools_available: bool,
+) -> str:
+    if fallback_mode == "route_error":
+        prefix = _PLANNER_FALLBACK_ROUTE_ERROR_PREFIX
+        intro = "Configured planner route failed."
+        detail = (
+            " Continuing with deterministic local fallback tools only."
+            if deterministic_tools_available
+            else " Conversational planning is unavailable until the planner route recovers."
+        )
+        guidance = (
+            " Check provider connectivity or credentials, then run "
+            "`shisad doctor check --component provider`."
+        )
+        return f"{prefix} {intro}{detail}{guidance}"
+
+    prefix = _PLANNER_FALLBACK_CONFIGURATION_PREFIX
+    intro = "No language model configured."
+    detail = (
+        " Continuing with deterministic local fallback tools only."
+        if deterministic_tools_available
+        else " Conversational planning is unavailable."
+    )
+    guidance = (
+        " Configure a planner route or local planner preset (for example Shisa, "
+        "OpenAI, OpenRouter, Gemini, or local vLLM), then run "
+        "`shisad doctor check --component provider`."
+    )
+    return f"{prefix} {intro}{detail}{guidance}"
+
+
 class LocalPlannerProvider:
     """Local fallback planner provider for daemon operation."""
 
@@ -212,6 +248,8 @@ class LocalPlannerProvider:
         self,
         messages: list[Message],
         tools: list[dict[str, Any]] | None = None,
+        *,
+        fallback_mode: str = "configuration",
     ) -> ProviderResponse:
         _ = tools
         user_content = messages[-1].content if messages else ""
@@ -225,6 +263,7 @@ class LocalPlannerProvider:
                 model="local-fallback",
                 finish_reason="stop",
                 usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+                trusted_origin="local-fallback",
             )
         goal_text = normalized_content
         goal_match = re.search(
@@ -325,15 +364,20 @@ class LocalPlannerProvider:
                     },
                 }
             )
+        assistant_content = _planner_fallback_message(
+            fallback_mode=fallback_mode,
+            deterministic_tools_available=bool(tool_calls),
+        )
         return ProviderResponse(
             message=Message(
                 role="assistant",
-                content=f"Safe summary: {goal_text[:300]}",
+                content=assistant_content,
                 tool_calls=tool_calls,
             ),
             model="local-fallback",
-            finish_reason="stop",
+            finish_reason="tool_calls" if tool_calls else "error",
             usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+            trusted_origin="local-fallback",
         )
 
     async def embeddings(

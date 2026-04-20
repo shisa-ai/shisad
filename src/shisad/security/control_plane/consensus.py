@@ -394,6 +394,10 @@ class ActionMonitorVoter:
             data.metadata_payload.get("trusted_input"),
             default=False,
         )
+        operator_owned_cli_input = _strict_metadata_bool(
+            data.metadata_payload.get("operator_owned_cli_input"),
+            default=False,
+        )
         if trusted_input and not session_tainted:
             return VoterDecision(
                 voter="ActionMonitorVoter",
@@ -410,6 +414,18 @@ class ActionMonitorVoter:
             )
 
         action = data.action
+
+        if (
+            operator_owned_cli_input
+            and not session_tainted
+            and action.action_kind in self._SIDE_EFFECT_KINDS
+        ):
+            return VoterDecision(
+                voter="ActionMonitorVoter",
+                decision=VoteKind.ALLOW,
+                risk_tier=RiskTier.LOW,
+                reason_codes=["action_monitor:clean_operator_cli_intent"],
+            )
 
         if action.action_kind in self._SIDE_EFFECT_KINDS and session_tainted:
             user_text = str(data.metadata_payload.get("raw_user_text", "")).strip()

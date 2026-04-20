@@ -7,6 +7,7 @@ import json
 import textwrap
 from collections.abc import Callable
 from contextlib import suppress
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -15,15 +16,7 @@ import pytest
 from shisad.core.api.transport import ControlClient
 from shisad.core.config import DaemonConfig
 from shisad.daemon.runner import run_daemon
-
-
-async def _wait_for_socket(path: Path, timeout: float = 5.0) -> None:
-    end = asyncio.get_running_loop().time() + timeout
-    while asyncio.get_running_loop().time() < end:
-        if path.exists():
-            return
-        await asyncio.sleep(0.01)
-    raise TimeoutError(f"Timed out waiting for socket {path}")
+from tests.helpers.daemon import wait_for_socket as _wait_for_socket
 
 
 async def _wait_for_task_pending_confirmation(
@@ -559,6 +552,96 @@ async def test_g3_task_confirmation_replay_updates_scheduler_state_and_outcome(
         )
         assert str(matching.get("status", "")) == "failed"
         assert str(matching.get("status_reason", "")) == "approve for regression test"
+    finally:
+        await _shutdown_daemon(daemon_task, client)
+
+
+@pytest.mark.asyncio
+async def test_lt5_action_purge_resolves_scheduler_task_confirmation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    daemon_task, client = await _start_daemon(tmp_path, monkeypatch)
+    try:
+        created = await client.call(
+            "task.create",
+            {
+                "name": "purge-stale-confirmation",
+                "goal": "Reminder: investigate the reported issue",
+                "schedule": {
+                    "kind": "event",
+                    "expression": "message.received",
+                    "event_type": "message.received",
+                },
+                "capability_snapshot": ["message.send"],
+                "policy_snapshot_ref": "p1",
+                "created_by": "alice",
+                "workspace_id": "ws1",
+                "delivery_target": {"channel": "discord", "recipient": "ops-room"},
+            },
+        )
+        runs = await client.call(
+            "task.trigger_event",
+            {"event_type": "message.received", "payload": "forward this raw user message"},
+        )
+        assert runs["queued_confirmations"] == 1
+        pending = await _wait_for_task_pending_confirmation(
+            client,
+            task_id=str(created["id"]),
+        )
+        confirmation_id = str(pending["pending"][0].get("confirmation_id", ""))
+        assert confirmation_id
+    finally:
+        await _shutdown_daemon(daemon_task, client)
+
+    pending_actions_file = tmp_path / "data" / "pending_actions.json"
+    pending_actions = json.loads(pending_actions_file.read_text(encoding="utf-8"))
+    for row in pending_actions:
+        if str(row.get("confirmation_id", "")) == confirmation_id:
+            row["created_at"] = (datetime.now(UTC) - timedelta(days=10)).isoformat()
+            break
+    else:
+        raise AssertionError(f"Pending action not found: {confirmation_id}")
+    pending_actions_file.write_text(json.dumps(pending_actions, indent=2), encoding="utf-8")
+
+    daemon_task, client = await _start_daemon(tmp_path, monkeypatch)
+    try:
+        purged = await client.call(
+            "action.purge",
+            {"status": "pending", "older_than_days": 7, "limit": 20},
+        )
+        assert confirmation_id in purged["confirmation_ids"]
+
+        remaining = await _wait_for_confirmation_to_leave_pending(
+            client,
+            task_id=str(created["id"]),
+            confirmation_id=confirmation_id,
+        )
+        assert not any(
+            str(item.get("confirmation_id", "")) == confirmation_id for item in remaining["pending"]
+        )
+
+        action_pending = await client.call(
+            "action.pending",
+            {"confirmation_id": confirmation_id},
+        )
+        assert action_pending["count"] == 0
+
+        pending_payload = json.loads(
+            (tmp_path / "data" / "tasks" / "pending_confirmations.json").read_text(encoding="utf-8")
+        )
+        rows = list(pending_payload.get(str(created["id"]), []))
+        matching = next(
+            item for item in rows if str(item.get("confirmation_id", "")) == confirmation_id
+        )
+        assert str(matching.get("status", "")) == "failed"
+        assert str(matching.get("status_reason", "")) == "purged_stale_pending_action"
+
+        tasks_payload = json.loads(
+            (tmp_path / "data" / "tasks" / "tasks.json").read_text(encoding="utf-8")
+        )
+        task_row = next(item for item in tasks_payload if str(item.get("id", "")) == created["id"])
+        assert int(task_row.get("failure_count", 0)) >= 1
     finally:
         await _shutdown_daemon(daemon_task, client)
 

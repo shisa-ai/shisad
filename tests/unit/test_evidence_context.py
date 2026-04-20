@@ -135,6 +135,46 @@ def test_wrap_serialized_tool_outputs_wraps_nested_body_fields(tmp_path) -> None
     assert store.read(SessionId("sess-a"), ref_ids[0]) == "Nested content that should be wrapped."
 
 
+def test_wrap_serialized_tool_outputs_wraps_search_result_snippets(tmp_path) -> None:
+    store = EvidenceStore(tmp_path / "evidence", salt=b"a" * 32)
+    records = [
+        {
+            "tool_name": "web.search",
+            "success": True,
+            "payload": {
+                "ok": True,
+                "query": "Hokkaido venues",
+                "backend": "https://search.example.test/search",
+                "results": [
+                    {
+                        "title": "Yoichi distillery",
+                        "url": "https://example.test/yoichi",
+                        "snippet": "Yoichi distillery tours require advance booking.",
+                    }
+                ],
+            },
+            "taint_labels": ["untrusted"],
+        }
+    ]
+
+    ref_ids = _wrap_serialized_tool_outputs_with_evidence(
+        session_id=SessionId("sess-a"),
+        records=records,
+        evidence_store=store,
+        firewall=ContentFirewall(),
+    )
+    summary = _summarize_tool_outputs_for_chat(records)
+
+    assert len(ref_ids) == 1
+    snippet = records[0]["payload"]["results"][0]["snippet"]
+    assert snippet.startswith("[EVIDENCE ref=ev-")
+    assert store.read(SessionId("sess-a"), ref_ids[0]) == (
+        "Yoichi distillery tours require advance booking."
+    )
+    assert ref_ids[0] in summary
+    assert 'Use evidence.read("' in summary
+
+
 def test_wrap_serialized_tool_outputs_wraps_large_unknown_string_fields(tmp_path) -> None:
     store = EvidenceStore(tmp_path / "evidence", salt=b"a" * 32)
     records = [
@@ -297,6 +337,48 @@ def test_build_planner_conversation_context_reads_promoted_blob_content(tmp_path
 
     assert "tail-marker" in rendered
     assert TaintLabel.USER_REVIEWED in taints
+
+
+def test_build_planner_conversation_context_carries_recent_evidence_refs(
+    tmp_path,
+) -> None:
+    transcript_store = TranscriptStore(tmp_path / "sessions", blob_threshold_bytes=80)
+    evidence_store = EvidenceStore(tmp_path / "evidence", salt=b"a" * 32)
+    sid = SessionId("sess-a")
+    ref = evidence_store.store(
+        sid,
+        "Yoichi distillery tours require advance booking.",
+        taint_labels={TaintLabel.UNTRUSTED},
+        source="web.search:search.example.test",
+        summary="Yoichi distillery tours require advance booking.",
+    )
+    transcript_store.append(
+        sid,
+        role="user",
+        content="research Hokkaido venues",
+    )
+    transcript_store.append(
+        sid,
+        role="assistant",
+        content="I found a few options and can draft from them. " * 20,
+        taint_labels={TaintLabel.UNTRUSTED},
+        metadata={"evidence_ref_ids": [ref.ref_id]},
+        evidence_ref_id=ref.ref_id,
+    )
+
+    rendered, taints = _build_planner_conversation_context(
+        transcript_store=transcript_store,
+        session_id=sid,
+        context_window=10,
+        exclude_latest_turn=False,
+        evidence_store=evidence_store,
+    )
+
+    assert "WORKING EVIDENCE PACKET" in rendered
+    assert ref.ref_id in rendered
+    assert "Yoichi distillery tours require advance booking." in rendered
+    assert 'Use evidence.read("' in rendered
+    assert TaintLabel.UNTRUSTED in taints
 
 
 def test_build_evidence_supplemental_entries_marks_read_ephemeral_and_promote_persistent() -> None:
@@ -513,7 +595,19 @@ def test_pep_rejects_temporarily_unreadable_encrypted_refs_until_recovered_kms_c
             time.sleep(0.01)
         assert len(service.requests) > request_count
 
-        time.sleep(5.2)
+        # P1-U4: previously `time.sleep(5.2)`. The 5-second literal was left
+        # over from `_TEMPORARILY_UNREADABLE_CACHE_SECONDS = 5.0` in
+        # `core/evidence.py`, which was removed in shisad@c3a5aad. The sleep
+        # now serves only to let the first probe thread finish before we
+        # trigger a second one. Poll the probe-in-flight set directly so
+        # the test stays deterministic and adds no fixed 5.2s latency.
+        probe_deadline = time.monotonic() + 5.0
+        while restarted._unreadable_probe_in_flight and time.monotonic() < probe_deadline:
+            time.sleep(0.01)
+        assert not restarted._unreadable_probe_in_flight, (
+            "first unreadable probe did not finish within 5s"
+        )
+
         wrong_key_requests = len(service.requests)
         read_after_delay = pep.evaluate(
             ToolName("evidence.read"),

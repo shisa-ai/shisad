@@ -13,9 +13,12 @@ from pydantic import BaseModel
 from shisad.core.api.schema import (
     ActionDecisionParams,
     ActionPendingParams,
+    ActionPurgeParams,
     AdminSelfModApplyParams,
     AdminSelfModProposeParams,
     AdminSelfModRollbackParams,
+    AdminSoulReadParams,
+    AdminSoulUpdateParams,
     AuditQueryParams,
     BrowserPasteParams,
     BrowserScreenshotParams,
@@ -29,6 +32,8 @@ from shisad.core.api.schema import (
     DevRemediateParams,
     DevReviewParams,
     DoctorCheckParams,
+    EmailReadParams,
+    EmailSearchParams,
     FsListParams,
     FsReadParams,
     FsWriteParams,
@@ -103,10 +108,21 @@ def _validate_model_endpoints(model_config: ModelConfig, router: ModelRouter) ->
     _validate(model_config, router)
 
 
+def _warn_on_startup_config_gaps(config: DaemonConfig) -> None:
+    if config.assistant_fs_roots:
+        return
+    logger.warning(
+        "No filesystem roots configured - fs.read, fs.list, fs.write, and git "
+        "tools will not work. Set SHISAD_ASSISTANT_FS_ROOTS to enable."
+    )
+
+
 def _method_specs(
     handlers: DaemonControlHandlers,
+    *,
+    test_mode: bool = False,
 ) -> list[tuple[str, Any, bool, type[BaseModel]]]:
-    return [
+    specs: list[tuple[str, Any, bool, type[BaseModel]]] = [
         ("session.create", handlers.handle_session_create, False, SessionCreateParams),
         ("session.message", handlers.handle_session_message, False, SessionMessageParams),
         ("session.list", handlers.handle_session_list, False, NoParams),
@@ -141,6 +157,13 @@ def _method_specs(
             handlers.handle_admin_selfmod_rollback,
             True,
             AdminSelfModRollbackParams,
+        ),
+        ("admin.soul.read", handlers.handle_admin_soul_read, True, AdminSoulReadParams),
+        (
+            "admin.soul.update",
+            handlers.handle_admin_soul_update,
+            True,
+            AdminSoulUpdateParams,
         ),
         ("dev.implement", handlers.handle_dev_implement, True, DevImplementParams),
         ("dev.review", handlers.handle_dev_review, True, DevReviewParams),
@@ -227,6 +250,8 @@ def _method_specs(
             RealityCheckSearchParams,
         ),
         ("realitycheck.read", handlers.handle_realitycheck_read, False, RealityCheckReadParams),
+        ("email.search", handlers.handle_email_search, False, EmailSearchParams),
+        ("email.read", handlers.handle_email_read, False, EmailReadParams),
         ("fs.list", handlers.handle_fs_list, False, FsListParams),
         ("fs.read", handlers.handle_fs_read, False, FsReadParams),
         ("fs.write", handlers.handle_fs_write, True, FsWriteParams),
@@ -234,6 +259,7 @@ def _method_specs(
         ("git.diff", handlers.handle_git_diff, False, GitDiffParams),
         ("git.log", handlers.handle_git_log, False, GitLogParams),
         ("action.pending", handlers.handle_action_pending, True, ActionPendingParams),
+        ("action.purge", handlers.handle_action_purge, True, ActionPurgeParams),
         ("action.confirm", handlers.handle_action_confirm, True, ActionDecisionParams),
         ("action.reject", handlers.handle_action_reject, True, ActionDecisionParams),
         (
@@ -266,6 +292,55 @@ def _method_specs(
         ("browser.paste", handlers.handle_browser_paste, True, BrowserPasteParams),
         ("browser.screenshot", handlers.handle_browser_screenshot, True, BrowserScreenshotParams),
     ]
+    if test_mode:
+        shutdown_index = next(
+            (
+                index
+                for index, (method_name, *_rest) in enumerate(specs)
+                if method_name == "daemon.shutdown"
+            ),
+            None,
+        )
+        if shutdown_index is None:
+            raise ValueError("runner method registry is missing required daemon.shutdown entry")
+        specs.insert(
+            shutdown_index + 1,
+            ("daemon.reset", handlers.handle_daemon_reset, True, NoParams),
+        )
+    return specs
+
+
+def _wrap_tracked_handler(
+    *,
+    services: DaemonServices,
+    method_name: str,
+    method_handler: TypedHandler,
+) -> TypedHandler:
+    async def _tracked_handler(params: BaseModel, ctx: Any) -> Any:
+        async with services.rpc_state_lock:
+            if services.reset_in_progress and method_name not in {
+                "daemon.reset",
+                "daemon.shutdown",
+            }:
+                raise RuntimeError("Cannot execute control RPC while daemon.reset is in progress")
+            services.active_rpc_calls += 1
+        try:
+            return await method_handler(params, ctx)
+        finally:
+            async with services.rpc_state_lock:
+                if services.active_rpc_calls <= 0:
+                    logger.warning(
+                        (
+                            "RPC activity counter underflow while finishing "
+                            "method %s; resetting to zero"
+                        ),
+                        method_name,
+                    )
+                    services.active_rpc_calls = 0
+                else:
+                    services.active_rpc_calls -= 1
+
+    return cast(TypedHandler, _tracked_handler)
 
 
 async def _reminder_delivery_pump(
@@ -304,10 +379,17 @@ async def run_daemon(config: DaemonConfig) -> None:
     handlers = DaemonControlHandlers(services=services)
     await services.approval_web.start()
 
-    for method_name, method_handler, admin_only, params_model in _method_specs(handlers):
+    for method_name, method_handler, admin_only, params_model in _method_specs(
+        handlers,
+        test_mode=config.test_mode,
+    ):
         services.server.register_method(
             method_name,
-            cast(TypedHandler, method_handler),
+            _wrap_tracked_handler(
+                services=services,
+                method_name=method_name,
+                method_handler=cast(TypedHandler, method_handler),
+            ),
             admin_only=admin_only,
             params_model=params_model,
         )
@@ -328,6 +410,7 @@ async def run_daemon(config: DaemonConfig) -> None:
         _n_domains,
         config.assistant_fs_roots,
     )
+    _warn_on_startup_config_gaps(config)
     channel_pump_tasks: list[asyncio.Task[None]] = []
     reminder_pump_task = asyncio.create_task(
         _reminder_delivery_pump(services=services, handlers=handlers)

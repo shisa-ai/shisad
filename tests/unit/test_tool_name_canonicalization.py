@@ -33,6 +33,7 @@ def test_s9_canonical_tool_name_maps_legacy_aliases() -> None:
     assert canonical_tool_name("git_log") == "git.log"
     assert canonical_tool_name("realitycheck_search") == "realitycheck.search"
     assert canonical_tool_name("realitycheck_read") == "realitycheck.read"
+    assert canonical_tool_name("attachment_ingest") == "attachment.ingest"
     assert canonical_tool_name("note_create") == "note.create"
     assert canonical_tool_name("note_list") == "note.list"
     assert canonical_tool_name("note_search") == "note.search"

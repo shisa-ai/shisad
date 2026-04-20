@@ -16,15 +16,7 @@ from shisad.core.types import CredentialRef
 from shisad.daemon.runner import run_daemon
 from shisad.executors.proxy import EgressProxy, NetworkPolicy
 from shisad.security.credentials import CredentialConfig, InMemoryCredentialStore
-
-
-async def _wait_for_socket(path: Path, timeout: float = 5.0) -> None:
-    end = asyncio.get_running_loop().time() + timeout
-    while asyncio.get_running_loop().time() < end:
-        if path.exists():
-            return
-        await asyncio.sleep(0.01)
-    raise TimeoutError(f"Timed out waiting for socket {path}")
+from tests.helpers.daemon import wait_for_socket as _wait_for_socket
 
 
 @pytest.fixture
@@ -333,7 +325,7 @@ async def test_m3_t4_timeout_and_t5_output_truncation(model_env: None, tmp_path:
             {
                 "session_id": sid,
                 "tool_name": "shell.exec",
-                "command": [sys.executable, "-c", "import time; time.sleep(2)"],
+                "command": [sys.executable, "-c", "__import__('time').sleep(2)"],
                 "limits": {"timeout_seconds": 1, "output_bytes": 2048},
                 "degraded_mode": "fail_open",
                 "security_critical": False,
@@ -348,7 +340,7 @@ async def test_m3_t4_timeout_and_t5_output_truncation(model_env: None, tmp_path:
             {
                 "session_id": sid,
                 "tool_name": "shell.exec",
-                "command": [sys.executable, "-c", "print('x' * 7000)"],
+                "command": [sys.executable, "-c", "print('x'*7000)"],
                 "limits": {"timeout_seconds": 5, "output_bytes": 128},
                 "degraded_mode": "fail_open",
                 "security_critical": False,

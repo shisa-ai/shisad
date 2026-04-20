@@ -47,6 +47,7 @@ class ProviderResponse(BaseModel):
     model: str = ""
     finish_reason: str = ""
     usage: dict[str, int] = Field(default_factory=dict)
+    trusted_origin: str = Field(default="", exclude=True)
 
 
 class EmbeddingResponse(BaseModel):

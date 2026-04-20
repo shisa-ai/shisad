@@ -37,6 +37,7 @@ class ChannelMessage(BaseModel):
     message_id: str = ""
     reply_target: str = ""
     thread_id: str = ""
+    metadata: dict[str, Any] = Field(default_factory=dict)
     received_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
@@ -171,6 +172,7 @@ class InMemoryChannel:
         message_id: str = "",
         reply_target: str = "",
         thread_id: str = "",
+        metadata: dict[str, Any] | None = None,
     ) -> None:
         resolved_message_id = message_id.strip() or uuid.uuid4().hex
         await self._incoming.put(
@@ -182,5 +184,6 @@ class InMemoryChannel:
                 message_id=resolved_message_id,
                 reply_target=reply_target,
                 thread_id=thread_id,
+                metadata=dict(metadata or {}),
             )
         )

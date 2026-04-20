@@ -5,18 +5,29 @@ from __future__ import annotations
 import hashlib
 import re
 from enum import StrEnum
-from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel, Field
+from textguard import TextGuard
 
 from shisad.core.types import TaintLabel
 from shisad.security.firewall.classifier import (
-    PatternInjectionClassifier,
+    TEXTGUARD_MODE as _TEXTGUARD_MODE,
+)
+from shisad.security.firewall.classifier import (
+    InjectionClassification,
     PromptGuardRuntimeStatus,
     SemanticClassifier,
 )
-from shisad.security.firewall.normalize import decode_text_layers, normalize_text
+from shisad.security.firewall.classifier import (
+    classify_textguard_findings as _classify_textguard_findings,
+)
+from shisad.security.firewall.classifier import (
+    detect_split_base64_payload_finding as _detect_split_base64_payload_finding,
+)
+from shisad.security.firewall.classifier import (
+    legacy_skill_review_findings as _legacy_skill_review_findings,
+)
 from shisad.security.firewall.secrets import SecretFinding, redact_ingress_secrets
 
 
@@ -52,10 +63,13 @@ class ContentFirewall:
         semantic_classifier_status: PromptGuardRuntimeStatus | None = None,
     ) -> None:
         self._semantic_classifier = semantic_classifier
-        rules_dir = Path(__file__).resolve().parent.parent / "rules" / "yara"
-        self._classifier = PatternInjectionClassifier(
-            semantic_classifier=semantic_classifier,
-            yara_rules_dir=rules_dir,
+        self._guard = TextGuard(
+            confusables="trimmed",
+            preset="default",
+            promptguard_model_path="",
+            split_tokens=False,
+            yara_bundled=True,
+            yara_rules_dir="",
         )
         self._semantic_classifier_status = semantic_classifier_status or PromptGuardRuntimeStatus(
             posture="best_effort" if semantic_classifier is not None else "off",
@@ -64,7 +78,10 @@ class ContentFirewall:
 
     @property
     def classifier_mode(self) -> str:
-        return self._classifier.mode
+        return _TEXTGUARD_MODE
+
+    def validate_yara_backend(self) -> None:
+        self._guard.match_yara("")
 
     def status_snapshot(self) -> dict[str, Any]:
         semantic_status = self._semantic_classifier_status
@@ -90,12 +107,26 @@ class ContentFirewall:
     ) -> FirewallResult:
         """Process untrusted input and return sanitized content + metadata."""
         original_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()
-        normalized = normalize_text(text)
-        decoded = decode_text_layers(normalized)
-        redacted, secret_findings = redact_ingress_secrets(decoded.text)
-        classification = self._classifier.classify(
+        scan_result = self._guard.scan(text)
+        findings = list(scan_result.findings)
+        split_base64_finding = _detect_split_base64_payload_finding(
+            text,
+            scan_result.decoded_text,
+        )
+        if split_base64_finding is not None:
+            findings.append(split_base64_finding)
+        for candidate_text in {text, scan_result.decoded_text}:
+            findings.extend(_legacy_skill_review_findings(candidate_text))
+        redacted, secret_findings = redact_ingress_secrets(scan_result.decoded_text)
+        classification = _classify_textguard_findings(
+            findings,
+            decode_reason_codes=scan_result.decode_reason_codes,
+        )
+        classification = self._classify_semantic(
+            classification,
             redacted,
-            context_factors=decoded.reason_codes,
+            skip_semantic=trusted_input,
+            decode_reason_codes=scan_result.decode_reason_codes,
         )
 
         sanitized = redacted
@@ -118,11 +149,35 @@ class ContentFirewall:
             original_hash=original_hash,
             taint_labels=sorted(taints),
             secret_findings=[f.kind for f in secret_findings],
-            decode_depth=decoded.decode_depth,
-            decode_reason_codes=list(decoded.reason_codes),
+            decode_depth=scan_result.decode_depth,
+            decode_reason_codes=list(scan_result.decode_reason_codes),
             semantic_risk_score=classification.semantic_risk_score,
             semantic_risk_tier=classification.semantic_risk_tier,
             semantic_classifier_id=classification.semantic_classifier_id,
+        )
+
+    def _classify_semantic(
+        self,
+        classification: InjectionClassification,
+        text: str,
+        *,
+        skip_semantic: bool,
+        decode_reason_codes: list[str],
+    ) -> InjectionClassification:
+        if self._semantic_classifier is None or skip_semantic:
+            return classification
+
+        semantic = self._semantic_classifier.classify(text)
+        risk_factors = {*classification.risk_factors, *semantic.risk_factors}
+        if risk_factors:
+            risk_factors.update(str(item) for item in decode_reason_codes)
+        return InjectionClassification(
+            risk_score=min(max(classification.risk_score, semantic.risk_score), 1.0),
+            risk_factors=sorted(risk_factors),
+            matched_patterns=sorted({*classification.matched_patterns, *semantic.matched_patterns}),
+            semantic_risk_score=min(max(semantic.semantic_risk_score, 0.0), 1.0),
+            semantic_risk_tier=semantic.semantic_risk_tier,
+            semantic_classifier_id=semantic.semantic_classifier_id,
         )
 
     @staticmethod

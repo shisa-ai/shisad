@@ -13,16 +13,8 @@ import pytest
 from shisad.core.api.transport import ControlClient
 from shisad.core.config import DaemonConfig
 from shisad.daemon.runner import run_daemon
+from tests.helpers.daemon import wait_for_socket as _wait_for_socket
 from tests.helpers.signer import StubSignerService, generate_ed25519_private_key, public_key_pem
-
-
-async def _wait_for_socket(path: Path, timeout: float = 5.0) -> None:
-    end = asyncio.get_running_loop().time() + timeout
-    while asyncio.get_running_loop().time() < end:
-        if path.exists():
-            return
-        await asyncio.sleep(0.01)
-    raise TimeoutError(f"Timed out waiting for socket {path}")
 
 
 def _configure_model_env(monkeypatch: pytest.MonkeyPatch) -> None:

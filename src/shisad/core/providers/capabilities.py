@@ -30,6 +30,7 @@ class ProviderPreset(StrEnum):
     OPENAI_DEFAULT = "openai_default"
     OPENROUTER_DEFAULT = "openrouter_default"
     GOOGLE_OPENAI_DEFAULT = "google_openai_default"
+    ANTHROPIC_DEFAULT = "anthropic_default"
     VLLM_LOCAL_DEFAULT = "vllm_local_default"
 
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 import json
 import logging
 from typing import Any
@@ -68,6 +69,26 @@ class RoutedOpenAIProvider:
 
     def monitor_remote_enabled(self) -> bool:
         return self._monitor_remote_enabled
+
+    async def _fallback_complete(
+        self,
+        messages: list[Message],
+        tools: list[dict[str, Any]] | None,
+        *,
+        fallback_mode: str,
+    ) -> ProviderResponse:
+        if self._fallback is None:
+            raise RuntimeError("planner fallback unavailable")
+        supports_fallback_mode = (
+            "fallback_mode" in inspect.signature(self._fallback.complete).parameters
+        )
+        if supports_fallback_mode:
+            return await self._fallback.complete(
+                messages,
+                tools,
+                fallback_mode=fallback_mode,
+            )
+        return await self._fallback.complete(messages, tools)
 
     @staticmethod
     def _build_route_provider(
@@ -136,7 +157,11 @@ class RoutedOpenAIProvider:
                 raise RuntimeError(
                     "planner route remote provider unavailable and no fallback configured"
                 )
-            return await self._fallback.complete(messages, tools)
+            return await self._fallback_complete(
+                messages,
+                tools,
+                fallback_mode="configuration",
+            )
 
         try:
             return await self._planner_provider.complete(messages, tools)
@@ -151,7 +176,11 @@ class RoutedOpenAIProvider:
                 "Planner route fallback exception details",
                 exc_info=exc,
             )
-            return await self._fallback.complete(messages, tools)
+            return await self._fallback_complete(
+                messages,
+                tools,
+                fallback_mode="route_error",
+            )
 
     async def embeddings(
         self,
@@ -223,4 +252,5 @@ class RoutedOpenAIProvider:
                 "completion_tokens": 0,
                 "total_tokens": 0,
             },
+            trusted_origin="local-fallback",
         )

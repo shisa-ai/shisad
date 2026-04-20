@@ -21,6 +21,7 @@ default_capabilities:
   - file.read
   - file.write
   - http.request
+  - email.read
   - memory.read
   - memory.write
   - message.send
@@ -34,6 +35,10 @@ tools:
   web.fetch:
     capabilities_required:
       - http.request
+  attachment.ingest:
+    capabilities_required:
+      - file.read
+      - memory.write
   fs.list:
     capabilities_required:
       - file.read

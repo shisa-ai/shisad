@@ -2,11 +2,218 @@
 
 All notable changes to shisad are documented in this file.
 
-This changelog is release-oriented: a new section is added when cutting a
-release tag. There is no standing "Unreleased" section.
+This changelog is release-oriented: a new section is added when preparing or
+cutting a release tag. Pre-publish release content is marked explicitly and is
+left unlinked until the tag exists. There is no standing "Unreleased" section.
 
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Versioning follows semver (see `docs/PUBLISH.md` for policy and style guide).
+
+## [0.6.6] - 2026-04-19
+
+### Added
+
+- **Image and voice recordings can be sent as attachments.** The daemon
+  ingests local attachment paths with size caps and format validation, so
+  large or malformed files are rejected cleanly before reaching the planner.
+
+- **Read and search local email through the assistant.** A new
+  MsgVault-backed email toolkit lets the assistant search configured local
+  mail archives and read individual messages. When an operator configures
+  `SHISAD_MSGVAULT_ACCOUNT_ALLOWLIST`, requests are scoped to granted accounts
+  before reaching the archive.
+
+- **Discord public channels now have per-channel policies.** Configure whether
+  shisad chats, reads along quietly, or stays passive in each public channel,
+  while public-channel sessions exclude owner-private conversation context.
+
+- **`SOUL.md` customizes the assistant's persona.** Put `SOUL.md` in the
+  operator config path and the planner layers it in as trusted persona
+  preferences below safety and developer instructions. Updates go through a
+  dedicated admin edit path from a clean session, so injected content cannot
+  rewrite persona mid-conversation.
+
+### Security
+
+- **Attachment ingest is bounded and validated.** Uploads hit size limits
+  before decoding, audio ID3 tags are validated, and malformed files are
+  quarantined rather than passed on.
+
+- **Email reads validate local message IDs before reading.** MsgVault tools
+  resolve message IDs against email metadata and compare IDs exactly before
+  reading the matched archive record. When
+  `SHISAD_MSGVAULT_ACCOUNT_ALLOWLIST` is set, reads also use that account
+  resolution; when MsgVault is disabled, email reads are refused outright.
+
+- **Discord DMs stay fail-closed.** Direct messages require an explicit trust
+  grant; granting access to a public channel does not implicitly open DMs.
+
+- **`SOUL.md` edits run from a clean admin session.** Persona updates are
+  proposed from a fresh context rather than replaying the current conversation,
+  and they go through a narrow admin path rather than general filesystem
+  writes. Project-specific facts are steered toward the memory system instead
+  of being silently appended to persona text.
+
+### Fixed
+
+- **Tool-only turns no longer go silent.** When a turn runs tools but produces
+  no assistant text, shisad synthesizes a short summary of what ran so you can
+  see what happened instead of getting an empty reply.
+
+- **Follow-up turns keep same-session evidence.** Evidence refs from previous
+  tool-backed turns are carried forward in the same session, so a follow-up can
+  use the source envelope behind earlier results instead of relying only on a
+  prose recap.
+
+## [0.6.5] - 2026-04-17
+
+### Added
+
+- **External tool servers can connect via the Model Context Protocol (MCP).**
+  Configure one or more MCP servers — stdio subprocesses or HTTP endpoints —
+  through `SHISAD_MCP_SERVERS`, and the daemon discovers their tools at
+  startup. Discovered tools appear in sessions as `mcp.<server>.<tool>` and
+  work like built-in tools. If a configured server is unreachable, the daemon
+  continues without it.
+
+- **External agents can send signed requests over socket or HTTP.** A new A2A
+  listener accepts Ed25519-signed requests from registered remote agents,
+  verifies identity and intent, and routes accepted work into a session.
+  Operators define which agents can connect and what they can ask for.
+  Configure via `SHISAD_A2A`.
+
+- **`shisad a2a keygen` generates an identity keypair.** Run it once to
+  create the Ed25519 keys the daemon needs for A2A signing and verification.
+  The command prints the public-key fingerprint for out-of-band exchange with
+  remote operators.
+
+- **`shisad restart --fresh-config` reloads environment on restart.** Changed
+  environment variables take effect immediately instead of requiring a manual
+  stop-then-start cycle. The prior configuration is saved as an owner-only
+  snapshot before the reload; that backup can contain secrets and should be
+  handled accordingly.
+
+### Security
+
+- **MCP tools require confirmation by default.** Unless a server appears in
+  `SHISAD_MCP_TRUSTED_SERVERS`, every tool call from that server asks for
+  operator approval before executing. Trusted servers skip the prompt, but
+  their outputs are still treated as external input for screening purposes.
+
+- **MCP tool definitions are validated before registration.** Parameter names,
+  types, enum values, and descriptions are screened for injection patterns at
+  startup. Tools that fail validation are rejected. Subprocess-based MCP
+  servers launch with a sanitized environment allowlist instead of inheriting
+  the daemon's full environment by default, but they are not sandboxed and
+  still run with the daemon's OS privileges.
+
+- **A2A requests are cryptographically verified.** Every inbound request must
+  carry a valid Ed25519 signature matching the agent's registered public-key
+  fingerprint. Unsigned envelopes, signature mismatches, and replayed messages
+  are rejected.
+
+- **A2A access is fail-closed.** Each remote agent can only send requests for
+  intents the operator has explicitly allowed. Omitting the allowlist means
+  zero access until the operator adds grants. Per-agent rate limits (default
+  60/min, 600/hour) are enforced on the verified cryptographic identity to
+  prevent abuse.
+
+- **Every A2A ingress decision is audited.** Accepted requests, rejections,
+  and rate-limit violations emit structured audit events with sender identity,
+  intent, outcome, and reason.
+
+### Changed
+
+- **Startup logs show resolved configuration.** The daemon now logs which
+  capabilities are active at startup — web search, web fetch, filesystem
+  roots, backend URL — so misconfigurations surface immediately instead of at
+  first tool call.
+
+- **Operator docs cover MCP and A2A setup.** `docs/DEPLOY.md` and
+  `docs/ENV-VARS.md` include configuration examples and trust-model
+  explanations for both new interoperability features.
+
+## [0.6.4] - 2026-04-13
+
+### Security
+
+- **Prompt-injection screening now runs through one scanner.** The daemon
+  firewall and the analyzer path now share `textguard` for structural
+  detection, so the same prompt-injection checks apply across both surfaces
+  instead of drifting between separate implementations.
+- **Hidden-text and encoded-input detection is broader.** The new scanner
+  brings deeper decode coverage and stronger unicode normalization while
+  shisad keeps the split-base64 and legacy analyzer compatibility shims it
+  still needs for existing workflows.
+- **Runtime rule sourcing is simpler and harder to drift.** The daemon
+  validates textguard's bundled YARA backend at startup and no longer ships a
+  second copied local rule set.
+
+### Changed
+
+- **PromptGuard stays optional.** Base installs now include `textguard[yara]`,
+  while local PromptGuard runtime checks remain opt-in through the
+  `security-runtime` dependency group.
+- **Operator status reflects bundled-rule provenance explicitly.**
+  `daemon.status` now reports that the old local security-asset copy is gone
+  and that the runtime is using bundled rules.
+
+## [0.6.3] - 2026-04-12
+
+### Added
+
+- **Pending approvals now show what to do next.** When an action needs your
+  approval, you see a preview of what it wants to do and the exact commands to
+  approve or reject it.
+- **TOTP approvals work from chat.** You can enter a TOTP code in the same
+  conversation instead of switching to the SSH CLI.
+- **TOTP enrollment shows a scannable QR code.** The CLI renders a QR code
+  when possible and still prints the raw `otpauth://` URI as a fallback.
+- **Anthropic provider preset.** Setting `ANTHROPIC_API_KEY` now configures
+  planner and monitor routes without accidentally enabling an incompatible
+  embeddings route.
+
+### Fixed
+
+- **Creating todos, notes, and reminders from the CLI no longer asks for
+  unnecessary confirmation.** When PromptGuard content safety was enabled, its
+  injection-detection score (always slightly above zero for any input) caused
+  the system to treat even simple operator commands like "create a todo" as
+  needing approval. The content safety classifier now skips the neural-net
+  check on direct operator input — the operator is the trust root, not an
+  attack surface. Pattern-based detection still runs for telemetry.
+- **Confirmation replies no longer create new actions.** Typing `confirm 1`,
+  `y`, `yes`, a bare number, or `reject` is now recognized as a command
+  instead of being sent to the planner as a new request.
+- **Stale pending actions are cleaned up on restart.** Old pending rows that
+  lost their approval envelope or were locked out of their confirmation method
+  no longer keep appearing in the pending list.
+- **Terminal replies keep readable line breaks.** Markdown-style responses no
+  longer collapse into a single hard-to-read line.
+- **Missing model configuration gives useful guidance.** When no language
+  model is configured, the error message tells you what to set up instead of
+  echoing a fake response.
+
+### Changed
+
+- **Startup and doctor output are more helpful.** `shisad doctor` works
+  without a subcommand, missing filesystem roots or embeddings routes are
+  easier to spot, overridden presets are labeled as custom, and missing chat
+  dependencies point to the `shisad[chat]` install extra.
+- **Tools shown to the planner match what's actually available.** When
+  filesystem or git roots are not configured, those tools are no longer
+  advertised to the planner as usable.
+
+### Security
+
+- **Delegated task scopes are fenced more tightly.** File paths, git refs,
+  extensionless filenames, semantic IDs, and numeric chat-thread IDs now stay
+  in their correct resource scope instead of accidentally authorizing a
+  different kind of resource.
+- **CLI convenience skips only low-risk internal bookkeeping.** Creating notes,
+  todos, and reminders from a clean CLI session skips the confirmation prompt,
+  but suspicious content, untrusted session history, external side effects, and
+  stronger policy requirements still go through normal approval.
 
 ## [0.6.2] - 2026-04-09
 
@@ -117,7 +324,8 @@ Versioning follows semver (see `docs/PUBLISH.md` for policy and style guide).
 - **Evidence references persist across restarts and sessions**, keeping large
   untrusted content isolated from the main conversation by default.
 - **Skill authorization rejects modified or revoked artifacts** at runtime;
-  dynamic remote tool discovery is not yet supported (planned for v0.6.3).
+  dynamic remote tool discovery is not yet supported and remains planned for a
+  future remote-tool interop lane.
 
 ### Changed
 
@@ -170,6 +378,10 @@ Initial public release.
   recording.
 - **End-to-end demo** script and runner harness for live verification.
 
+[0.6.6]: https://github.com/shisa-ai/shisad/compare/v0.6.5...v0.6.6
+[0.6.5]: https://github.com/shisa-ai/shisad/compare/v0.6.4...v0.6.5
+[0.6.4]: https://github.com/shisa-ai/shisad/compare/v0.6.3...v0.6.4
+[0.6.3]: https://github.com/shisa-ai/shisad/compare/v0.6.2...v0.6.3
 [0.6.2]: https://github.com/shisa-ai/shisad/compare/v0.6.1...v0.6.2
 [0.6.1]: https://github.com/shisa-ai/shisad/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/shisa-ai/shisad/compare/v0.5.2...v0.6.0

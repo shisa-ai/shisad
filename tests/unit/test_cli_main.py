@@ -683,6 +683,7 @@ def test_cli_commands_route_through_rpc_wrapper(
     ) in calls
     assert ("memory.rotate_key", {"reencrypt_existing": True}) in calls
     assert ("doctor.check", {"component": "realitycheck"}) in calls
+
     assert ("realitycheck.read", {"path": "sources/a.md", "max_bytes": 64}) in calls
     assert ("dashboard.alerts", {"limit": 1}) in calls
     assert ("admin.selfmod.propose", {"artifact_path": str(skill_path)}) in calls
@@ -737,6 +738,37 @@ def test_cli_commands_route_through_rpc_wrapper(
     ) in calls
 
 
+def test_doctor_bare_invocation_defaults_to_all(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _config(tmp_path)
+    monkeypatch.setattr(cli_main, "_get_config", lambda: config)
+    calls: list[tuple[str, dict[str, object] | None]] = []
+
+    def _fake_rpc_call(
+        _config: DaemonConfig,
+        method: str,
+        params: dict[str, object] | None = None,
+        *,
+        response_model: type[object] | None = None,
+    ) -> object:
+        calls.append((method, params))
+        payload = {"status": "ok", "component": "all", "checks": {}, "error": ""}
+        if response_model is None:
+            return payload
+        return response_model.model_validate(payload)  # type: ignore[attr-defined]
+
+    monkeypatch.setattr(cli_main, "rpc_call", _fake_rpc_call)
+    runner = CliRunner()
+
+    result = runner.invoke(cli_main.cli, ["doctor"])
+
+    assert result.exit_code == 0, result.output
+    assert calls == [("doctor.check", {"component": "all"})]
+    assert '"component": "all"' in result.output
+
+
 def test_session_message_command_renders_evidence_stub_block(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -770,6 +802,39 @@ def test_session_message_command_renders_evidence_stub_block(
     assert "[EVIDENCE ref=" not in result.output
     assert "[Evidence ev-61f3d4c48f54ff92]" in result.output
     assert 'inspect: evidence.read("ev-61f3d4c48f54ff92")' in result.output
+
+
+def test_session_message_command_preserves_pending_preview_linebreak_markers(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _config(tmp_path)
+    monkeypatch.setattr(cli_main, "_get_config", lambda: config)
+    monkeypatch.setattr(
+        cli_main,
+        "rpc_call",
+        lambda *_args, **_kwargs: cli_main.SessionMessageResult.model_validate(
+            {
+                "session_id": "s-1",
+                "response": (
+                    "[PENDING CONFIRMATIONS]\n"
+                    "Queued for your approval:\n"
+                    "1. c-1\n"
+                    "   Preview:\n"
+                    "     body: line1\\nline2\n\n"
+                    "Review all pending: shisad action pending"
+                ),
+                "pending_confirmation_ids": ["c-1"],
+            }
+        ),
+    )
+    runner = CliRunner()
+
+    result = runner.invoke(cli_main.cli, ["session", "message", "s-1", "show pending"])
+
+    assert result.exit_code == 0, result.output
+    assert "body: line1\\nline2" in result.output
+    assert "body: line1\nline2" not in result.output
 
 
 def test_events_subscribe_uses_rpc_run_wrapper(
@@ -1567,6 +1632,8 @@ def test_chat_command_reports_missing_textual_dependency(
     result = runner.invoke(cli_main.cli, ["chat"])
     assert result.exit_code == 1
     assert "textual is required for chat TUI" in result.output
+    assert "shisad[chat]" in result.output
+    assert "uv sync --dev" not in result.output
 
 
 def test_chat_command_surfaces_non_textual_import_failures(
@@ -1829,6 +1896,205 @@ def test_two_factor_register_prompts_for_verification_and_confirms(
     assert "RCODE-1" in result.output
 
 
+def test_two_factor_register_renders_totp_qr_when_terminal_supports_it(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _config(tmp_path)
+    monkeypatch.setattr(cli_main, "_get_config", lambda: config)
+
+    def _fake_rpc_call(
+        effective_config: DaemonConfig,
+        method: str,
+        params: dict[str, object] | None = None,
+        *,
+        response_model: type[object] | None = None,
+    ) -> object:
+        assert effective_config is config
+        if method == "2fa.register_begin":
+            payload = {
+                "started": True,
+                "enrollment_id": "enroll-1",
+                "user_id": "alice",
+                "method": "totp",
+                "principal_id": "ops-laptop",
+                "credential_id": "totp-1",
+                "secret": "SECRETBASE32",
+                "otpauth_uri": "otpauth://totp/shisad:alice?secret=SECRETBASE32",
+                "expires_at": "2026-04-06T12:10:00Z",
+            }
+        else:
+            payload = {
+                "registered": True,
+                "user_id": "alice",
+                "method": "totp",
+                "principal_id": "ops-laptop",
+                "credential_id": "totp-1",
+                "recovery_codes": [],
+            }
+        if response_model is None:
+            return payload
+        return response_model.model_validate(payload)  # type: ignore[attr-defined]
+
+    monkeypatch.setattr(cli_main, "rpc_call", _fake_rpc_call)
+    monkeypatch.setattr(
+        cli_main,
+        "_render_terminal_qr",
+        lambda url: "██\n██" if "otpauth://" in url else "",
+    )
+    runner = CliRunner()
+
+    result = runner.invoke(
+        cli_main.cli,
+        ["2fa", "register", "--method", "totp", "--user", "alice", "--name", "ops-laptop"],
+        input="123456\n",
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "otpauth URI: otpauth://totp/shisad:alice?secret=SECRETBASE32" in result.output
+    assert "Scan this QR in your authenticator app:" in result.output
+    assert "██" in result.output
+
+
+def test_render_terminal_qr_uses_real_qrcode_when_unicode_supported(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(cli_main, "_terminal_supports_unicode_output", lambda: True)
+
+    qr_ascii = cli_main._render_terminal_qr("otpauth://totp/shisad:alice?secret=SECRETBASE32")
+
+    assert "██" in qr_ascii
+    assert "\n" in qr_ascii
+
+
+def test_two_factor_register_falls_back_to_uri_when_qr_rendering_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _config(tmp_path)
+    monkeypatch.setattr(cli_main, "_get_config", lambda: config)
+    calls: list[tuple[str, dict[str, object] | None]] = []
+
+    def _fake_rpc_call(
+        effective_config: DaemonConfig,
+        method: str,
+        params: dict[str, object] | None = None,
+        *,
+        response_model: type[object] | None = None,
+    ) -> object:
+        assert effective_config is config
+        calls.append((method, params))
+        if method == "2fa.register_begin":
+            payload = {
+                "started": True,
+                "enrollment_id": "enroll-1",
+                "user_id": "alice",
+                "method": "totp",
+                "principal_id": "ops-laptop",
+                "credential_id": "totp-1",
+                "secret": "SECRETBASE32",
+                "otpauth_uri": "otpauth://totp/shisad:alice?secret=SECRETBASE32",
+                "expires_at": "2026-04-06T12:10:00Z",
+            }
+        else:
+            payload = {
+                "registered": True,
+                "user_id": "alice",
+                "method": "totp",
+                "principal_id": "ops-laptop",
+                "credential_id": "totp-1",
+                "recovery_codes": ["RCODE-1"],
+            }
+        if response_model is None:
+            return payload
+        return response_model.model_validate(payload)  # type: ignore[attr-defined]
+
+    def _raise_qr_overflow(self: object, *, fit: bool = True) -> None:
+        raise ValueError("Invalid version (was 41, expected 1 to 40)")
+
+    monkeypatch.setattr(cli_main, "rpc_call", _fake_rpc_call)
+    monkeypatch.setattr(cli_main, "_terminal_supports_unicode_output", lambda: True)
+    monkeypatch.setattr(cli_main.qrcode.QRCode, "make", _raise_qr_overflow)
+    runner = CliRunner()
+
+    result = runner.invoke(
+        cli_main.cli,
+        ["2fa", "register", "--method", "totp", "--user", "alice", "--name", "ops-laptop"],
+        input="123456\n",
+    )
+
+    assert result.exit_code == 0, result.output
+    assert calls == [
+        (
+            "2fa.register_begin",
+            {"method": "totp", "user_id": "alice", "name": "ops-laptop"},
+        ),
+        (
+            "2fa.register_confirm",
+            {"enrollment_id": "enroll-1", "verify_code": "123456"},
+        ),
+    ]
+    assert "otpauth URI: otpauth://totp/shisad:alice?secret=SECRETBASE32" in result.output
+    assert "Scan this QR in your authenticator app:" not in result.output
+    assert "RCODE-1" in result.output
+
+
+def test_two_factor_register_skips_qr_on_non_unicode_terminal(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _config(tmp_path)
+    monkeypatch.setattr(cli_main, "_get_config", lambda: config)
+
+    def _fake_rpc_call(
+        effective_config: DaemonConfig,
+        method: str,
+        params: dict[str, object] | None = None,
+        *,
+        response_model: type[object] | None = None,
+    ) -> object:
+        assert effective_config is config
+        if method == "2fa.register_begin":
+            payload = {
+                "started": True,
+                "enrollment_id": "enroll-1",
+                "user_id": "alice",
+                "method": "totp",
+                "principal_id": "ops-laptop",
+                "credential_id": "totp-1",
+                "secret": "SECRETBASE32",
+                "otpauth_uri": "otpauth://totp/shisad:alice?secret=SECRETBASE32",
+                "expires_at": "2026-04-06T12:10:00Z",
+            }
+        else:
+            payload = {
+                "registered": True,
+                "user_id": "alice",
+                "method": "totp",
+                "principal_id": "ops-laptop",
+                "credential_id": "totp-1",
+                "recovery_codes": [],
+            }
+        if response_model is None:
+            return payload
+        return response_model.model_validate(payload)  # type: ignore[attr-defined]
+
+    monkeypatch.setattr(cli_main, "rpc_call", _fake_rpc_call)
+    monkeypatch.setattr(cli_main, "_terminal_supports_unicode_output", lambda: False)
+    runner = CliRunner()
+
+    result = runner.invoke(
+        cli_main.cli,
+        ["2fa", "register", "--method", "totp", "--user", "alice", "--name", "ops-laptop"],
+        input="123456\n",
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "otpauth URI: otpauth://totp/shisad:alice?secret=SECRETBASE32" in result.output
+    assert "Scan this QR in your authenticator app:" not in result.output
+    assert "██" not in result.output
+
+
 def test_action_pending_renders_webauthn_link_and_qr(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1847,7 +2113,7 @@ def test_action_pending_renders_webauthn_link_and_qr(
         assert method == "action.pending"
         assert params == {
             "session_id": None,
-            "status": None,
+            "status": "pending",
             "limit": 50,
             "include_ui": True,
         }
@@ -1922,6 +2188,194 @@ def test_action_pending_sanitizes_terminal_preview_output(
     assert "c-1 nonce=n-" in result.output
     assert "tool=shell.exec" in result.output
     assert "preview line\nsecond line" in result.output
+
+
+def test_action_pending_keeps_escaped_preview_newlines_literal(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _config(tmp_path)
+    monkeypatch.setattr(cli_main, "_get_config", lambda: config)
+
+    def _fake_rpc_call(
+        effective_config: DaemonConfig,
+        method: str,
+        params: dict[str, object] | None = None,
+        *,
+        response_model: type[object] | None = None,
+    ) -> object:
+        assert effective_config is config
+        assert method == "action.pending"
+        payload = {
+            "actions": [
+                {
+                    "confirmation_id": "c-1",
+                    "decision_nonce": "n-1",
+                    "status": "pending",
+                    "tool_name": "shell.exec",
+                    "reason": "manual_review",
+                    "safe_preview": "ACTION CONFIRMATION\n  body: line1\\nline2",
+                }
+            ],
+            "count": 1,
+        }
+        if response_model is None:
+            return payload
+        return response_model.model_validate(payload)  # type: ignore[attr-defined]
+
+    monkeypatch.setattr(cli_main, "rpc_call", _fake_rpc_call)
+    runner = CliRunner()
+
+    result = runner.invoke(cli_main.cli, ["action", "pending"])
+
+    assert result.exit_code == 0, result.output
+    assert "ACTION CONFIRMATION\nbody: line1\\nline2" in result.output
+    assert "line1\nline2" not in result.output
+
+
+def test_lt5_action_pending_defaults_to_live_pending_status(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _config(tmp_path)
+    monkeypatch.setattr(cli_main, "_get_config", lambda: config)
+    calls: list[tuple[str, dict[str, object] | None]] = []
+
+    def _fake_rpc_call(
+        effective_config: DaemonConfig,
+        method: str,
+        params: dict[str, object] | None = None,
+        *,
+        response_model: type[object] | None = None,
+    ) -> object:
+        assert effective_config is config
+        calls.append((method, params))
+        payload = {"actions": [], "count": 0}
+        if response_model is None:
+            return payload
+        return response_model.model_validate(payload)  # type: ignore[attr-defined]
+
+    monkeypatch.setattr(cli_main, "rpc_call", _fake_rpc_call)
+    runner = CliRunner()
+
+    result = runner.invoke(cli_main.cli, ["action", "pending"])
+
+    assert result.exit_code == 0, result.output
+    assert calls == [
+        (
+            "action.pending",
+            {
+                "session_id": None,
+                "status": "pending",
+                "limit": 50,
+                "include_ui": True,
+            },
+        )
+    ]
+
+
+def test_lt5_action_pending_status_all_clears_status_filter(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _config(tmp_path)
+    monkeypatch.setattr(cli_main, "_get_config", lambda: config)
+    captured: dict[str, object] = {}
+
+    def _fake_rpc_call(
+        _effective_config: DaemonConfig,
+        method: str,
+        params: dict[str, object] | None = None,
+        *,
+        response_model: type[object] | None = None,
+    ) -> object:
+        assert method == "action.pending"
+        captured.update(params or {})
+        payload = {"actions": [], "count": 0}
+        if response_model is None:
+            return payload
+        return response_model.model_validate(payload)  # type: ignore[attr-defined]
+
+    monkeypatch.setattr(cli_main, "rpc_call", _fake_rpc_call)
+    runner = CliRunner()
+
+    result = runner.invoke(cli_main.cli, ["action", "pending", "--status", "all"])
+
+    assert result.exit_code == 0, result.output
+    assert captured["status"] is None
+
+
+def test_lt5_action_purge_routes_rpc(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _config(tmp_path)
+    monkeypatch.setattr(cli_main, "_get_config", lambda: config)
+    calls: list[tuple[str, dict[str, object] | None]] = []
+
+    def _fake_rpc_call(
+        effective_config: DaemonConfig,
+        method: str,
+        params: dict[str, object] | None = None,
+        *,
+        response_model: type[object] | None = None,
+    ) -> object:
+        assert effective_config is config
+        calls.append((method, params))
+        payload = {
+            "purged": 1,
+            "confirmation_ids": ["c-old"],
+            "remaining": 0,
+            "dry_run": False,
+        }
+        if response_model is None:
+            return payload
+        return response_model.model_validate(payload)  # type: ignore[attr-defined]
+
+    monkeypatch.setattr(cli_main, "rpc_call", _fake_rpc_call)
+    runner = CliRunner()
+
+    result = runner.invoke(
+        cli_main.cli,
+        ["action", "purge", "--status", "failed", "--session", "s-1", "--limit", "5"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert calls == [
+        (
+            "action.purge",
+            {
+                "session_id": "s-1",
+                "status": "failed",
+                "older_than_days": None,
+                "limit": 5,
+                "dry_run": False,
+            },
+        )
+    ]
+    assert "Purged 1 pending action row(s); remaining=0" in result.output
+    assert "confirmation_ids=c-old" in result.output
+
+
+def test_lt5_action_purge_requires_age_for_pending_status() -> None:
+    runner = CliRunner()
+
+    result = runner.invoke(cli_main.cli, ["action", "purge", "--status", "pending"])
+
+    assert result.exit_code == 1
+    assert "--older-than-days must be positive" in result.output
+
+
+def test_lt5_action_purge_requires_positive_age_for_pending_status() -> None:
+    runner = CliRunner()
+
+    result = runner.invoke(
+        cli_main.cli,
+        ["action", "purge", "--status", "pending", "--older-than-days", "0"],
+    )
+
+    assert result.exit_code == 1
+    assert "--older-than-days must be positive" in result.output
 
 
 def test_action_confirm_webauthn_opens_browser_and_waits_for_resolution(

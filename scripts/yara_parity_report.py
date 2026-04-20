@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate YARA vs fallback parity metrics for classifier fixtures."""
+"""Generate TextGuard-backed structural classifier metrics for fixtures."""
 
 from __future__ import annotations
 
@@ -90,35 +90,20 @@ def main() -> int:
     parser.add_argument("--threshold", type=float, default=0.3, help="Malicious threshold")
     args = parser.parse_args()
 
-    rules_dir = Path("src/shisad/security/rules/yara")
-    yara_classifier = PatternInjectionClassifier(yara_rules_dir=rules_dir)
-
-    original_compile = PatternInjectionClassifier._compile_yara_rules
-    PatternInjectionClassifier._compile_yara_rules = staticmethod(lambda _rules_dir: None)
-    try:
-        fallback_classifier = PatternInjectionClassifier(yara_rules_dir=rules_dir)
-    finally:
-        PatternInjectionClassifier._compile_yara_rules = original_compile
-
-    yara_metrics = _metrics(yara_classifier, args.threshold)
-    fallback_metrics = _metrics(fallback_classifier, args.threshold)
+    classifier = PatternInjectionClassifier()
+    metrics = _metrics(classifier, args.threshold)
 
     payload = {
         "threshold": args.threshold,
-        "yara_mode": yara_classifier.mode,
-        "fallback_mode": fallback_classifier.mode,
+        "classifier_mode": classifier.mode,
         "modes": {
-            "yara": yara_metrics,
-            "fallback": fallback_metrics,
+            classifier.mode: metrics,
         },
         "delta": {
-            "fp_delta": yara_metrics["fp"] - fallback_metrics["fp"],
-            "fn_delta": yara_metrics["fn"] - fallback_metrics["fn"],
-            "precision_delta": round(
-                yara_metrics["precision"] - fallback_metrics["precision"],
-                3,
-            ),
-            "recall_delta": round(yara_metrics["recall"] - fallback_metrics["recall"], 3),
+            "fp_delta": 0,
+            "fn_delta": 0,
+            "precision_delta": 0.0,
+            "recall_delta": 0.0,
         },
     }
 

@@ -1,11 +1,14 @@
 # Multi-Factor Approval (2FA)
 
-> **v0.6.2 status:** The approval protocol, credential store, and all backends
-> described here are implemented and tested. However, TOTP confirmation
-> currently requires CLI access to the daemon host (SSH or local socket).
-> Chat-channel and web-page TOTP delivery are shipping in v0.6.3. Passkey
-> (WebAuthn) and signer approvals already work via browser and remote KMS
-> respectively. QR code rendering for TOTP enrollment is also coming in v0.6.3.
+> **Current 2FA feature status:** The approval protocol, credential store, and
+> currently available approval backends documented here were introduced across
+> `v0.6.2` and `v0.6.3` and remain implemented and tested in the latest
+> published line. TOTP confirmation works through trusted chat / command replies
+> and through the CLI. Passkey
+> (WebAuthn) and signer approvals work via browser and remote KMS
+> respectively. QR code rendering for TOTP enrollment is also included.
+> Entering a TOTP code on the approval web page is not included yet; browser
+> approval today is WebAuthn only.
 
 ---
 
@@ -128,8 +131,10 @@ shisad 2fa register --method totp --user alice --name "phone-authenticator"
 The CLI prints:
 
 - The raw TOTP secret (base32-encoded)
-- An `otpauth://...` URI (paste this into your authenticator app, or scan as
-  QR once terminal QR rendering ships in v0.6.3)
+- An `otpauth://...` URI on every run. The CLI also prints a terminal QR code
+  when the terminal supports Unicode block rendering and QR generation
+  succeeds; otherwise the URI still prints so enrollment can continue
+  manually.
 - A prompt for a verification code — enter a code from your app to confirm
   enrollment
 
@@ -139,16 +144,33 @@ cannot be retrieved later.
 
 ### Confirm an action
 
-> **v0.6.2 limitation:** TOTP confirmation currently requires CLI access to the
-> daemon (SSH or local socket forwarding). In practice, this means SSHing to
-> the daemon host or forwarding the control socket. Chat-channel and web-page
-> TOTP delivery are shipping in v0.6.3.
+Preferred path: when the daemon posts a TOTP approval prompt to a trusted
+chat / command channel, reply with your current 6-digit code.
+Confirmation-style replies are handled as control commands before planner
+flow, so approving, rejecting, or asking for pending action status does not
+create a fresh agent task.
+
+If exactly one TOTP action is pending in that session, a bare code is enough:
+
+```text
+123456
+```
+
+If multiple TOTP actions are pending, target the specific confirmation ID:
+
+```text
+confirm <CONFIRMATION_ID> 123456
+```
+
+The pending-confirmation summary lists the active TOTP confirmation IDs.
+
+CLI remains available as a secondary path:
 
 ```bash
 shisad action confirm <CONFIRMATION_ID> --totp-code 123456
 ```
 
-Or with a recovery code (if you have lost your TOTP device):
+Recovery-code approval is still a CLI flow:
 
 ```bash
 shisad action confirm <CONFIRMATION_ID> --recovery-code XXXX-XXXX
@@ -542,7 +564,8 @@ See [ENV-VARS.md](ENV-VARS.md) for the complete reference.
   signer public keys are stored in a daemon-owned JSON file.
 - Default location: `SHISAD_DATA_DIR/approval-factors.json`
 - Override with: `SHISAD_SECURITY_APPROVAL_FACTOR_STORE_PATH`
-- **Not encrypted at rest** in v0.6.2. Protect with filesystem permissions.
+- **Not encrypted at rest** in the current shipped line. Protect with
+  filesystem permissions.
 
 ### What the audit trail records
 
@@ -579,7 +602,7 @@ For L3+ signed approvals, the audit trail also includes:
 | `local_helper_unavailable` | Local-helper backend not active in current daemon mode | Check daemon config; the helper backend activates when no approval origin is set |
 | `missing_decision_nonce` | CLI could not auto-resolve the nonce from pending state | Run `shisad action pending` and pass `--nonce` explicitly |
 | `confirmation_method_mismatch` | The proof you submitted does not match the pending action's required backend | Check `shisad action pending` for the required method |
-| `confirmation_method_locked_out` | Too many failed attempts | Wait for the `retry_after_seconds` period to expire |
+| `confirmation_method_locked_out` | Too many failed attempts | Wait for the `retry_after_seconds` period to expire, then re-queue the action and approve the new pending confirmation |
 | `signer_backend_invalid_response` | The KMS endpoint returned a malformed or invalid response | Check KMS endpoint logs; the daemon fails closed on invalid responses |
 
 ---
@@ -597,8 +620,13 @@ For L3+ signed approvals, the audit trail also includes:
   side — shisad sees one L3 signature.
 - **At-rest encryption for credential store:** The approval-factor store is
   currently plaintext JSON. At-rest encryption is follow-on.
-- **TOTP via chat / web page:** v0.6.3 (see note at top).
-- **QR code for TOTP enrollment:** v0.6.3.
+- **TOTP via approval web page:** planned follow-on.
+
+## Included Since v0.6.3
+
+- **TOTP via chat reply:** included for trusted chat / command replies.
+- **QR code for TOTP enrollment:** included as a best-effort terminal rendering
+  path with the raw `otpauth://` URI preserved as fallback.
 
 ---
 
@@ -731,7 +759,7 @@ A signer backend implements four methods:
 
 ### KMS HTTP signing contract
 
-The shipped `EnterpriseKmsSignerBackend` uses a simple HTTP POST contract. If
+The built-in `EnterpriseKmsSignerBackend` uses a simple HTTP POST contract. If
 you are building a KMS-compatible endpoint, implement this:
 
 **Request** (POST to your endpoint):

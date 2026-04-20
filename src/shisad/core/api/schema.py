@@ -586,6 +586,45 @@ class WebFetchResult(BaseModel):
     snapshot_path: str = ""
 
 
+class EmailSearchParams(_StrictParams):
+    query: str
+    limit: int = 10
+    offset: int = 0
+    account: str = ""
+
+
+class EmailSearchResult(BaseModel):
+    ok: bool
+    operation: str = "email.search"
+    query: str = ""
+    account: str = ""
+    limit: int = 0
+    offset: int = 0
+    count: int = 0
+    results: list[dict[str, Any]] = Field(default_factory=list)
+    taint_labels: list[str] = Field(default_factory=list)
+    evidence: dict[str, Any] = Field(default_factory=dict)
+    actionable: str = ""
+    error: str = ""
+
+
+class EmailReadParams(_StrictParams):
+    message_id: str
+    account: str = ""
+
+
+class EmailReadResult(BaseModel):
+    ok: bool
+    operation: str = "email.read"
+    message_id: str = ""
+    account: str = ""
+    message: dict[str, Any] | None = None
+    taint_labels: list[str] = Field(default_factory=list)
+    evidence: dict[str, Any] = Field(default_factory=dict)
+    actionable: str = ""
+    error: str = ""
+
+
 class RealityCheckSearchParams(_StrictParams):
     query: str
     limit: int = 5
@@ -788,6 +827,7 @@ class ChannelMessageParams(_StrictParams):
     message_id: str = ""
     reply_target: str = ""
     thread_id: str = ""
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class ChannelIngestParams(_StrictParams):
@@ -797,6 +837,7 @@ class ChannelIngestParams(_StrictParams):
 
 class ChannelIngestResult(SessionMessageResult):
     ingress_risk: float
+    channel_policy: dict[str, Any] = Field(default_factory=dict)
 
 
 class ChannelPairingProposalParams(_StrictParams):
@@ -822,6 +863,14 @@ class ActionPendingParams(_StrictParams):
     status: str | None = None
     limit: int = 100
     include_ui: bool = True
+
+
+class ActionPurgeParams(_StrictParams):
+    session_id: str | None = None
+    status: str = "terminal"
+    older_than_days: int | None = None
+    limit: int = 1000
+    dry_run: bool = False
 
 
 class ActionDecisionParams(_StrictParams):
@@ -879,6 +928,13 @@ class ActionPendingEntry(BaseModel):
 class ActionPendingResult(BaseModel):
     actions: list[ActionPendingEntry] = Field(default_factory=list)
     count: int = 0
+
+
+class ActionPurgeResult(BaseModel):
+    purged: int = 0
+    confirmation_ids: list[str] = Field(default_factory=list)
+    remaining: int = 0
+    dry_run: bool = False
 
 
 class ActionConfirmResult(BaseModel):
@@ -1059,6 +1115,17 @@ class AdminSelfModRollbackParams(_StrictParams):
     change_id: str
 
 
+class AdminSoulReadParams(_StrictParams):
+    """Parameters for admin.soul.read."""
+
+
+class AdminSoulUpdateParams(_StrictParams):
+    """Parameters for admin.soul.update."""
+
+    content: str = ""
+    expected_sha256: str | None = None
+
+
 class DevImplementParams(_StrictParams):
     task: str = Field(min_length=1)
     agent: str | None = None
@@ -1139,6 +1206,25 @@ class AdminSelfModRollbackResult(BaseModel):
     reason: str = ""
 
 
+class AdminSoulReadResult(BaseModel):
+    configured: bool = False
+    path: str = ""
+    content: str = ""
+    sha256: str = ""
+    bytes: int = 0
+    warnings: list[str] = Field(default_factory=list)
+    reason: str = ""
+
+
+class AdminSoulUpdateResult(BaseModel):
+    updated: bool = False
+    path: str = ""
+    sha256: str = ""
+    bytes: int = 0
+    warnings: list[str] = Field(default_factory=list)
+    reason: str = ""
+
+
 class DevImplementResult(SessionTaskResult):
     operation: Literal["implement"] = "implement"
 
@@ -1179,6 +1265,7 @@ class DaemonStatusResult(BaseModel):
     classifier_mode: str = ""
     content_firewall: dict[str, Any] = Field(default_factory=dict)
     yara_required: bool = False
+    yara_policy_required: bool = False
     risk_policy_version: str = ""
     risk_thresholds: dict[str, float] = Field(default_factory=dict)
     channels: dict[str, Any] = Field(default_factory=dict)
@@ -1187,6 +1274,7 @@ class DaemonStatusResult(BaseModel):
     selfmod: dict[str, Any] = Field(default_factory=dict)
     realitycheck: dict[str, Any] = Field(default_factory=dict)
     provenance: dict[str, Any] = Field(default_factory=dict)
+    a2a: dict[str, Any] = Field(default_factory=dict)
 
 
 class DoctorCheckParams(_StrictParams):
@@ -1202,6 +1290,13 @@ class DoctorCheckResult(BaseModel):
 
 class DaemonShutdownResult(BaseModel):
     status: str
+
+
+class DaemonResetResult(BaseModel):
+    status: str
+    cleared: dict[str, int] = Field(default_factory=dict)
+    quiescent: bool = True
+    invariants: dict[str, bool] = Field(default_factory=dict)
 
 
 class LockdownSetResult(BaseModel):

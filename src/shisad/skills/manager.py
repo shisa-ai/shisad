@@ -74,12 +74,8 @@ class SkillManager:
         self._keyring = keyring or KeyRing()
         self._llm_analyzer = llm_analyzer
         self._tool_registry = tool_registry
-        self._dangerous = DangerousPatternAnalyzer(
-            yara_rules_dir=Path(__file__).resolve().parents[1] / "security" / "rules" / "yara"
-        )
-        self._tool_surface = ToolSurfaceAnalyzer(
-            yara_rules_dir=Path(__file__).resolve().parents[1] / "security" / "rules" / "yara"
-        )
+        self._dangerous = DangerousPatternAnalyzer()
+        self._tool_surface = ToolSurfaceAnalyzer()
         self._capability = CapabilityInferenceAnalyzer()
         self._obfuscation = ObfuscationAnalyzer()
         self._meta = MetaAnalyzer()

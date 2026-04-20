@@ -14,7 +14,10 @@ This file is the "how to operate shisad locally" playbook intended for agentic c
 ## Preconditions
 
 - You are in the `shisad` repo root.
-- Python deps are installed (example: `uv sync --dev`).
+- Python deps are installed (example: `uv sync --group dev --extra chat`).
+  For local PromptGuard/YARA runtime checks, use
+  `uv sync --group security-runtime --group dev --extra chat`.
+  `security-runtime` is a dependency group, not an extra; `chat` is the extra.
 - If you want *live* remote planner calls, you have the right API key set for your preset (examples below).
 - If you want to run `shisad dev implement/review/remediate`, at least one coding-agent CLI is installed and already authenticated in the *daemon's* environment (the daemon inherits your shell env when started).
 

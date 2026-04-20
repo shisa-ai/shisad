@@ -99,6 +99,70 @@ def test_render_evidence_refs_for_terminal_strips_terminal_control_sequences() -
     assert "summary: click link RED next done" in rendered
 
 
+def test_render_evidence_refs_normalizes_linebreaks_before_escapes() -> None:
+    raw = "First line\\n\x1b[31mSecond line\x1b[0m"
+
+    rendered = render_evidence_refs_for_terminal(raw)
+
+    assert rendered == "First line\nSecond line"
+    assert "\\n" not in rendered
+    assert "\x1b" not in rendered
+
+
+def test_render_evidence_refs_for_terminal_preserves_double_escaped_linebreak_text() -> None:
+    raw = r"Regex token \\n should stay literal"
+
+    rendered = render_evidence_refs_for_terminal(raw)
+
+    assert rendered == r"Regex token \n should stay literal"
+    assert "\n" not in rendered
+
+
+def test_render_evidence_refs_for_terminal_keeps_summary_single_line_after_normalization() -> None:
+    ref = EvidenceRef(
+        ref_id="ev-1234567890abcdef",
+        content_hash="hash",
+        taint_labels=[TaintLabel.UNTRUSTED],
+        source="web.fetch:example.com",
+        summary="line one\nsource: spoofed",
+        byte_size=42,
+    )
+
+    rendered = render_evidence_refs_for_terminal(format_evidence_stub(ref))
+
+    assert "summary: line one source: spoofed" in rendered
+    assert rendered.count("\nsource:") == 1
+
+
+def test_render_evidence_refs_for_terminal_still_normalizes_non_pending_preview_text() -> None:
+    raw = "Assistant note:\n   Preview:\n     line1\\nline2"
+
+    rendered = render_evidence_refs_for_terminal(raw)
+
+    assert rendered == "Assistant note:\nPreview:\nline1\nline2"
+
+
+def test_render_evidence_refs_for_terminal_limits_pending_preview_bypass_to_pending_block() -> None:
+    raw = (
+        "[PENDING CONFIRMATIONS]\n"
+        "Queued for your approval:\n"
+        "1. c-1\n"
+        "   Preview:\n"
+        "     body: line1\\nline2\n\n"
+        "Review all pending: shisad action pending\n\n"
+        "Completed actions:\n"
+        "tool.run: ok=True\n"
+        "   Preview:\n"
+        "     line3\\nline4"
+    )
+
+    rendered = render_evidence_refs_for_terminal(raw, preserve_pending_preview_escapes=True)
+
+    assert "body: line1\\nline2" in rendered
+    assert "line3\nline4" in rendered
+    assert "line3\\nline4" not in rendered
+
+
 def test_render_evidence_refs_for_terminal_round_trips_escaped_summary_from_stub_formatter() -> (
     None
 ):

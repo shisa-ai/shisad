@@ -1,0 +1,48 @@
+{
+  "counts": {
+    "DaemonServices.build": {
+      "tests/adversarial/test_adversarial_context_taint.py": 2,
+      "tests/adversarial/test_adversarial_task_handoffs.py": 2,
+      "tests/integration/test_a2a_ingress.py": 1,
+      "tests/integration/test_chat_confirmation_e2e.py": 6,
+      "tests/integration/test_context_scaffold_degraded.py": 3,
+      "tests/unit/test_daemon_services.py": 24
+    },
+    "run_daemon": {
+      "tests/adversarial/test_adversarial_cleanroom.py": 1,
+      "tests/adversarial/test_pairing_artifact_parser.py": 3,
+      "tests/behavioral/test_behavioral_contract.py": 3,
+      "tests/behavioral/test_behavioral_contract_live_model.py": 1,
+      "tests/behavioral/test_evidence_behavioral.py": 1,
+      "tests/behavioral/test_no_model_configured_behavioral.py": 1,
+      "tests/behavioral/test_v04_behavioral_extensions.py": 1,
+      "tests/helpers/daemon.py": 1,
+      "tests/integration/test_admin_selfmod.py": 1,
+      "tests/integration/test_channel_pump.py": 1,
+      "tests/integration/test_chat_confirmation_e2e.py": 7,
+      "tests/integration/test_cleanroom_nonadmin.py": 1,
+      "tests/integration/test_cleanroom_workflow.py": 1,
+      "tests/integration/test_coding_agent_tasks.py": 1,
+      "tests/integration/test_control_plane_integration.py": 1,
+      "tests/integration/test_daemon_runtime.py": 6,
+      "tests/integration/test_dev_commands.py": 1,
+      "tests/integration/test_m3_scope_enforcement.py": 1,
+      "tests/integration/test_runtime_completion.py": 17,
+      "tests/integration/test_sandbox_loop.py": 1,
+      "tests/integration/test_scheduler_execution_gate.py": 1,
+      "tests/integration/test_security_hardening_integration.py": 1,
+      "tests/integration/test_security_loop_defense.py": 31,
+      "tests/integration/test_session_archive_workflows.py": 2,
+      "tests/integration/test_session_replay.py": 1,
+      "tests/integration/test_signer_control.py": 1,
+      "tests/integration/test_skill_runtime_governance.py": 1,
+      "tests/integration/test_task_session_isolation.py": 1,
+      "tests/integration/test_two_factor_control.py": 1
+    }
+  },
+  "tests_root": "tests",
+  "totals": {
+    "DaemonServices.build": 38,
+    "run_daemon": 91
+  }
+}

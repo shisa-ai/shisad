@@ -50,11 +50,11 @@ jobs:
       - name: Type check with mypy
         run: uv run mypy src/shisad/
 
-      - name: Verify security asset provenance
-        run: uv run python scripts/security_assets.py verify
-
       - name: Audit test files contain test functions
         run: uv run python scripts/test_function_audit.py --tests-root tests
+
+      - name: Guard daemon test startup/build site baseline
+        run: uv run python scripts/test_daemon_site_guard.py --baseline tests/fixtures/daemon_site_baseline.json --tests-root tests
 
       - name: Run tests
         run: uv run pytest -v -m "not requires_cap_net_admin"
@@ -77,9 +77,6 @@ jobs:
       - name: Install dependencies (security-runtime + coverage + channels-runtime)
         run: uv sync --exclude-newer P7D --frozen --dev --group security-runtime --group coverage --group channels-runtime
 
-      - name: Verify security asset provenance
-        run: uv run python scripts/security_assets.py verify
-
       - name: Run tests with coverage
         run: uv run pytest -m "not requires_cap_net_admin" --cov=src --cov-report=term-missing --cov-report=xml -q
 
@@ -92,7 +89,7 @@ jobs:
       - name: Generate per-package coverage trend artifact
         run: uv run python scripts/coverage_trend.py --xml coverage.xml --output artifacts/coverage-trend.json
 
-      - name: Generate YARA parity metrics artifact
+      - name: Generate TextGuard classifier metrics artifact
         run: uv run python scripts/yara_parity_report.py --output artifacts/yara-parity.json
 
       - name: Upload security runtime artifacts

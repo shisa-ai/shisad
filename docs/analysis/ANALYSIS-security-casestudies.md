@@ -693,7 +693,7 @@ Supply-chain risk is moving upstream too: not just skills and installer flows, b
   - **Output Firewall for harassment/reputation sabotage**:
     - Extend beyond DLP: detect targeted personal attacks, threats, and “hit piece” patterns; block or force confirmation with a structured preview and clear provenance.
   - **Clean-room control-plane changes**:
-    - Prohibit self-editable “soul” files in the data plane; any self-modification of behavior/instructions must go through the privileged clean-room workflow with deterministic validation + explicit operator approval (an early v0.4 prototype direction).
+    - Prohibit self-editable “soul” files in the data plane; the optional `SOUL.md` persona file is loaded only from an explicit operator config path and updates go through the privileged admin/clean-command path with deterministic validation rather than normal filesystem writes.
   - **Attribution + audit**:
     - Log the exact inputs and tool proposals that lead to outbound publishing attempts; surface “why this was proposed” to the operator at confirmation time.
 - **Open questions / gaps**:
@@ -1172,8 +1172,8 @@ Supply-chain risk is moving upstream too: not just skills and installer flows, b
   - **Identity hijacking**: Modified `SOUL.md` changes the agent's behavior, personality, and instructions. The agent may start behaving in ways that serve the attacker while appearing normal to the user.
   - **Propagation potential**: A persistently compromised agent that processes more documents or interacts with other agents can spread the implant further (see Moltbook/Church of Molt case study).
 - **Shisad defenses (expected)**:
-  - **Injection-proof control plane (invariant C1)**: The agent runtime cannot write to control-plane artifacts (policies, tool grants, skill code, system instructions, identity files) from tainted inputs. There is no `SOUL.md` equivalent that the agent can modify through normal tool use. (`docs/SECURITY.md`)
-  - **No agent-writable instruction files**: shisad deliberately avoids the pattern where identity/persona files are writable by the agent. Identity is a control-plane artifact, not a data-plane file. This is a deliberate divergence from OpenClaw documented in earlier internal gap-analysis work.
+  - **Injection-proof control plane (invariant C1)**: The agent runtime cannot write to control-plane artifacts (policies, tool grants, skill code, system instructions, identity files) from tainted inputs. The optional `SOUL.md` persona file is not discovered from workspaces and is not writable through normal tool use. (`docs/SECURITY.md`)
+  - **No data-plane-writable instruction files**: shisad deliberately avoids the pattern where identity/persona files are writable by the agent. Persona preferences are an explicit operator config surface and clean-command admin workflow, not a general data-plane file. This is a deliberate divergence from OpenClaw documented in earlier internal gap-analysis work.
   - **Integration creation requires privileged workflow**: Adding a new messaging channel/integration (equivalent to creating a Telegram bot connection) is not a normal agent action — it requires an explicit admin workflow with human confirmation and is not reachable from the data plane.
   - **Plan commitment + Action Monitor**: If the user's goal is "summarize this document", actions like "create Telegram integration" and "write to identity file" are flagged as unrelated to the stated goal and blocked by the Action Monitor. (`docs/SECURITY.md`)
   - **Memory is data, not instructions**: Even if the agent writes information from the document into memory, memory content is stored in the data plane and cannot mutate tool policy, identity, or configuration.

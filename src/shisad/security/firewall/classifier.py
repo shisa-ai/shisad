@@ -11,14 +11,101 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
-from typing import Any, ClassVar, Protocol, cast
+from typing import Any, Protocol
 
 from pydantic import BaseModel, Field
-
-from shisad.security.firewall.promptguard_pack import inspect_promptguard_model_pack
+from textguard import Finding as TextGuardFinding
+from textguard import TextGuard
+from textguard.backends.promptguard import load_promptguard_backend
 
 logger = logging.getLogger(__name__)
 _REMOTE_PATH_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*://")
+TEXTGUARD_MODE = "textguard_yara"
+_SEVERITY_WEIGHTS = {
+    "info": 0.0,
+    "warn": 0.15,
+    "error": 0.35,
+}
+_FACTOR_WEIGHTS = {
+    "instruction_override": 0.35,
+    "prompt_leak_request": 0.35,
+    "credential_harvest": 0.45,
+    "tool_spoofing_tag": 0.35,
+    "role_impersonation": 0.25,
+    "command_chain": 0.2,
+    "egress_lure": 0.2,
+    "encoded_payload": 0.25,
+}
+_TEXTGUARD_FACTOR_MAP = {
+    "yara:prompt_injection_direct": ("instruction_override",),
+    "yara:prompt_injection_indirect": ("instruction_override",),
+    "yara:credential_harvesting": ("credential_harvest",),
+    "yara:tool_spoofing": ("tool_spoofing_tag",),
+    "yara:masquerading_authority": ("role_impersonation",),
+    "yara:command_injection": ("command_chain",),
+    "yara:code_execution": ("command_chain",),
+    "yara:data_exfiltration": ("egress_lure",),
+    "yara:system_manipulation": ("prompt_leak_request",),
+    "encoded_payload": ("encoded_payload",),
+}
+_DECODE_FINDING_PREFIX = "encoding:"
+_BASE64_SPLIT_RE = re.compile(r"(?:[A-Za-z0-9+/]{8,}={0,2}(?:[\s\"'`:,;|\\/-]+|$)){3,}")
+_BASE64_SPLIT_SEPARATOR_RE = re.compile(r"[\s\"'`:,;|\\/-]+")
+_ENCODED_SIGNAL_TOKENS = (
+    "ignore previous",
+    "disregard instructions",
+    "system prompt",
+    "curl ",
+    "wget ",
+    "http://",
+    "https://",
+    "exfiltrate",
+    "token",
+    "secret",
+)
+_LEGACY_SKILL_REVIEW_PATTERNS = (
+    (
+        "instruction_override",
+        re.compile(
+            r"\b(ignore|disregard|bypass)\b.{0,40}\b(instruction|policy|rule)s?\b",
+            re.IGNORECASE,
+        ),
+        "Legacy instruction-override pattern",
+    ),
+    (
+        "prompt_leak_request",
+        re.compile(r"\b(system prompt|developer message|hidden prompt)\b", re.IGNORECASE),
+        "Legacy prompt-leak request pattern",
+    ),
+    (
+        "credential_harvest",
+        re.compile(
+            r"\b(api key|token|password|secret)\b.{0,24}\b(send|exfiltrate|share)\b",
+            re.IGNORECASE,
+        ),
+        "Legacy credential-harvest pattern",
+    ),
+    (
+        "tool_spoofing_tag",
+        re.compile(r"<\s*(use_tool|tool_call|function_call)[^>]*>", re.IGNORECASE),
+        "Legacy tool-spoofing tag pattern",
+    ),
+    (
+        "role_impersonation",
+        re.compile(r"\b(as system|i am the system|as developer)\b", re.IGNORECASE),
+        "Legacy role-impersonation pattern",
+    ),
+    (
+        "command_chain",
+        re.compile(r"\b(curl|wget|bash -c|python -c|powershell)\b", re.IGNORECASE),
+        "Legacy command-chain pattern",
+    ),
+    (
+        "egress_lure",
+        re.compile(r"\b(send email|post to webhook|upload to)\b", re.IGNORECASE),
+        "Legacy egress-lure pattern",
+    ),
+)
 
 
 class InjectionClassification(BaseModel):
@@ -150,184 +237,6 @@ class PromptGuardLoadError(RuntimeError):
         self.reason = reason
 
 
-class OnnxPromptGuardBackend:
-    """Local-only PromptGuard 2 backend using Transformers tokenizer + ONNX Runtime."""
-
-    def __init__(
-        self,
-        *,
-        model_source: str,
-        tokenizer: Any,
-        config: Any,
-        session: Any,
-        numpy_module: Any,
-        max_length: int = 512,
-        stride: int = 64,
-        max_segments: int = 8,
-    ) -> None:
-        self.model_source = model_source
-        self._tokenizer = tokenizer
-        self._config = config
-        self._session = session
-        self._np = numpy_module
-        self._max_length = max_length
-        self._stride = stride
-        self._max_segments = max_segments
-        self._input_names = tuple(item.name for item in self._session.get_inputs())
-        outputs = self._session.get_outputs()
-        self._output_name = outputs[0].name if outputs else "logits"
-
-    @classmethod
-    def from_local_path(cls, model_path: Path) -> OnnxPromptGuardBackend:
-        onnx_path = _resolve_promptguard_onnx_path(model_path)
-        if onnx_path is None:
-            raise PromptGuardLoadError("promptguard_onnx_model_missing")
-
-        try:
-            import numpy as np
-            import onnxruntime as ort  # type: ignore[import-untyped]
-            from transformers import AutoConfig, AutoTokenizer
-        except ImportError as exc:  # pragma: no cover - exercised via loader surface
-            raise PromptGuardLoadError("promptguard_runtime_missing") from exc
-
-        if "CPUExecutionProvider" not in ort.get_available_providers():
-            raise PromptGuardLoadError("promptguard_cpu_provider_unavailable")
-
-        try:
-            tokenizer_loader = cast(Any, AutoTokenizer)
-            config_loader = cast(Any, AutoConfig)
-            tokenizer = tokenizer_loader.from_pretrained(
-                str(model_path),
-                local_files_only=True,
-                trust_remote_code=False,
-            )
-            config = config_loader.from_pretrained(
-                str(model_path),
-                local_files_only=True,
-                trust_remote_code=False,
-            )
-            session = ort.InferenceSession(
-                str(onnx_path),
-                providers=["CPUExecutionProvider"],
-            )
-        except Exception as exc:  # pragma: no cover - exercised via loader surface
-            raise PromptGuardLoadError("promptguard_model_load_failed") from exc
-
-        return cls(
-            model_source=str(model_path),
-            tokenizer=tokenizer,
-            config=config,
-            session=session,
-            numpy_module=np,
-        )
-
-    def score_text(self, text: str) -> list[float]:
-        try:
-            batch = self._tokenizer(
-                text,
-                return_tensors="np",
-                truncation=True,
-                padding=True,
-                max_length=self._max_length,
-                stride=self._stride,
-                return_overflowing_tokens=True,
-            )
-        except Exception as exc:
-            raise PromptGuardLoadError("promptguard_tokenization_failed") from exc
-
-        payload = dict(batch)
-        payload.pop("overflow_to_sample_mapping", None)
-        segment_count = self._segment_count(payload)
-        if segment_count > self._max_segments:
-            logger.debug(
-                "PromptGuard scoring long input in %s batches (%s segments total)",
-                ((segment_count - 1) // self._max_segments) + 1,
-                segment_count,
-            )
-
-        all_scores: list[float] = []
-        for model_inputs in self._iter_model_batches(payload):
-            input_feed = {
-                key: value for key, value in model_inputs.items() if key in self._input_names
-            }
-
-            try:
-                logits = self._session.run([self._output_name], input_feed)[0]
-                probabilities = self._softmax(logits)
-            except Exception as exc:
-                raise PromptGuardLoadError("promptguard_inference_failed") from exc
-
-            label_count = int(getattr(probabilities, "shape", [0, 0])[-1])
-            malicious_index = self._malicious_index(label_count)
-            score_tensor = probabilities[:, malicious_index]
-            raw_scores = (
-                score_tensor.tolist() if hasattr(score_tensor, "tolist") else [score_tensor]
-            )
-            all_scores.extend(min(max(float(item), 0.0), 1.0) for item in raw_scores)
-        return all_scores
-
-    def _iter_model_batches(self, payload: dict[str, Any]) -> list[dict[str, Any]]:
-        segment_count = self._segment_count(payload)
-        if segment_count <= 0 or segment_count <= self._max_segments:
-            return [payload]
-        return [
-            self._slice_batch(payload, start, start + self._max_segments)
-            for start in range(0, segment_count, self._max_segments)
-        ]
-
-    def _segment_count(self, payload: dict[str, Any]) -> int:
-        for value in payload.values():
-            shape = getattr(value, "shape", None)
-            if shape:
-                try:
-                    return int(shape[0])
-                except (TypeError, ValueError):
-                    pass
-            if hasattr(value, "__len__") and hasattr(value, "__getitem__"):
-                try:
-                    return len(value)
-                except (TypeError, ValueError):
-                    pass
-        return 0
-
-    def _slice_batch(self, payload: dict[str, Any], start: int, stop: int) -> dict[str, Any]:
-        truncated: dict[str, Any] = {}
-        for key, value in payload.items():
-            if hasattr(value, "__getitem__"):
-                try:
-                    truncated[key] = value[start:stop]
-                    continue
-                except Exception:
-                    pass
-            truncated[key] = value
-        return truncated
-
-    def _malicious_index(self, label_count: int) -> int:
-        id2label = getattr(self._config, "id2label", {}) if self._config is not None else {}
-        if isinstance(id2label, dict):
-            benign_indices: set[int] = set()
-            for raw_index, raw_label in id2label.items():
-                index = _coerce_promptguard_label_index(raw_index)
-                if index is None:
-                    continue
-                label = str(raw_label).strip().lower()
-                if label == "malicious":
-                    return index
-                if label == "benign":
-                    benign_indices.add(index)
-            if label_count == 2 and benign_indices == {0}:
-                return 1
-        if label_count <= 1:
-            return 0
-        return 1
-
-    def _softmax(self, logits: Any) -> Any:
-        array = self._np.asarray(logits, dtype="float32")
-        shifted = array - array.max(axis=-1, keepdims=True)
-        exponents = self._np.exp(shifted)
-        return exponents / exponents.sum(axis=-1, keepdims=True)
-
-
 class PromptGuardSemanticClassifier:
     """PromptGuard 2 wrapper behind the semantic-classifier protocol."""
 
@@ -367,6 +276,22 @@ class PromptGuardSemanticClassifier:
             logger.warning(
                 "PromptGuard degraded; reason_code=%s",
                 exc.reason,
+                exc_info=True,
+            )
+            return InjectionClassification(semantic_classifier_id=self.classifier_id)
+        except RuntimeError as exc:
+            reason = _promptguard_runtime_reason(exc)
+            self._status = PromptGuardRuntimeStatus(
+                posture=self._posture,
+                status="degraded",
+                reason=reason,
+                thresholds=self._thresholds.as_dict(),
+            )
+            if self._posture == "required":
+                raise PromptGuardLoadError(reason) from exc
+            logger.warning(
+                "PromptGuard degraded; reason_code=%s",
+                reason,
                 exc_info=True,
             )
             return InjectionClassification(semantic_classifier_id=self.classifier_id)
@@ -437,30 +362,21 @@ def build_promptguard_classifier(
         reason = "model_path_not_directory"
         return _promptguard_unavailable(settings=settings, reason=reason)
 
-    runtime_model_path = model_path
-    if (model_path / "manifest.json").is_file():
-        allowed_signers_path = None
-        raw_allowed_signers_path = settings.allowed_signers_path.strip()
-        if raw_allowed_signers_path:
-            try:
-                allowed_signers_path = _expand_local_path(
-                    raw_allowed_signers_path,
-                    reason="promptguard_pack_trust_store_path_invalid",
-                )
-            except PromptGuardLoadError as exc:
-                return _promptguard_unavailable(settings=settings, reason=exc.reason)
-        inspection = inspect_promptguard_model_pack(
-            model_path,
-            allowed_signers_path=allowed_signers_path,
-        )
-        if not inspection.valid or inspection.payload_dir is None:
-            return _promptguard_unavailable(settings=settings, reason=inspection.reason)
-        runtime_model_path = inspection.payload_dir
+    allowed_signers_path = None
+    raw_allowed_signers_path = settings.allowed_signers_path.strip()
+    if raw_allowed_signers_path:
+        try:
+            allowed_signers_path = _expand_local_path(
+                raw_allowed_signers_path,
+                reason="promptguard_pack_trust_store_path_invalid",
+            )
+        except PromptGuardLoadError as exc:
+            return _promptguard_unavailable(settings=settings, reason=exc.reason)
 
     try:
-        backend = OnnxPromptGuardBackend.from_local_path(runtime_model_path)
-    except PromptGuardLoadError as exc:
-        return _promptguard_unavailable(settings=settings, reason=exc.reason)
+        backend = load_promptguard_backend(model_path, allowed_signers_path=allowed_signers_path)
+    except RuntimeError as exc:
+        return _promptguard_unavailable(settings=settings, reason=_promptguard_load_reason(exc))
     classifier = PromptGuardSemanticClassifier(
         backend=backend,
         thresholds=settings.thresholds,
@@ -484,33 +400,31 @@ def _expand_local_path(raw_path: str, *, reason: str) -> Path:
         raise PromptGuardLoadError(reason) from exc
 
 
-def _coerce_promptguard_label_index(raw_index: object) -> int | None:
-    if isinstance(raw_index, int):
-        return raw_index
-    if isinstance(raw_index, str):
-        try:
-            return int(raw_index)
-        except ValueError:
-            return None
-    return None
+def _promptguard_load_reason(exc: RuntimeError) -> str:
+    return _promptguard_reason_from_message(str(exc), default="promptguard_model_load_failed")
 
 
-def _resolve_promptguard_onnx_path(model_path: Path) -> Path | None:
-    candidates = (
-        model_path / "model.onnx",
-        model_path / "onnx" / "model.onnx",
-    )
-    for candidate in candidates:
-        if candidate.is_file():
-            return candidate
-    root_matches = sorted(model_path.glob("*.onnx"))
-    if len(root_matches) == 1:
-        return root_matches[0]
-    nested_dir = model_path / "onnx"
-    nested_matches = sorted(nested_dir.glob("*.onnx")) if nested_dir.is_dir() else []
-    if len(nested_matches) == 1:
-        return nested_matches[0]
-    return None
+def _promptguard_runtime_reason(exc: RuntimeError) -> str:
+    return _promptguard_reason_from_message(str(exc), default="promptguard_unexpected_error")
+
+
+def _promptguard_reason_from_message(message: str, *, default: str) -> str:
+    lowered = message.lower()
+    if "model pack verification failed:" in lowered:
+        return message.rsplit(":", 1)[-1].strip() or default
+    if "onnx model is missing" in lowered:
+        return "promptguard_onnx_model_missing"
+    if "optional dependencies" in lowered or "install hint: textguard[promptguard]" in lowered:
+        return "promptguard_runtime_missing"
+    if "cpuexecutionprovider" in lowered:
+        return "promptguard_cpu_provider_unavailable"
+    if "model load failed" in lowered:
+        return "promptguard_model_load_failed"
+    if "tokenization failed" in lowered:
+        return "promptguard_tokenization_failed"
+    if "inference failed" in lowered:
+        return "promptguard_inference_failed"
+    return default
 
 
 def _promptguard_unavailable(
@@ -575,68 +489,92 @@ def compare_promptguard_artifacts(
     return reports
 
 
-class PatternInjectionClassifier:
-    """Deterministic prompt-injection detector."""
+def classify_textguard_findings(
+    findings: list[TextGuardFinding],
+    *,
+    decode_reason_codes: list[str],
+) -> InjectionClassification:
+    factor_weights: dict[str, float] = {}
+    factors: list[str] = []
+    matches: list[str] = []
 
-    _BASE_PATTERNS: ClassVar[list[tuple[str, re.Pattern[str], float]]] = [
-        (
-            "instruction_override",
-            re.compile(
-                r"\b(ignore|disregard|bypass)\b.{0,40}\b(instruction|policy|rule)s?\b",
-                re.IGNORECASE,
-            ),
-            0.35,
-        ),
-        (
-            "prompt_leak_request",
-            re.compile(r"\b(system prompt|developer message|hidden prompt)\b", re.IGNORECASE),
-            0.35,
-        ),
-        (
-            "credential_harvest",
-            re.compile(
-                r"\b(api key|token|password|secret)\b.{0,24}\b(send|exfiltrate|share)\b",
-                re.IGNORECASE,
-            ),
-            0.45,
-        ),
-        (
-            "tool_spoofing_tag",
-            re.compile(r"<\s*(use_tool|tool_call|function_call)[^>]*>", re.IGNORECASE),
-            0.35,
-        ),
-        (
-            "role_impersonation",
-            re.compile(r"\b(as system|i am the system|as developer)\b", re.IGNORECASE),
-            0.25,
-        ),
-        (
-            "command_chain",
-            re.compile(r"\b(curl|wget|bash -c|python -c|powershell)\b", re.IGNORECASE),
-            0.2,
-        ),
-        (
-            "egress_lure",
-            re.compile(r"\b(send email|post to webhook|upload to)\b", re.IGNORECASE),
-            0.2,
-        ),
-    ]
-    _BASE64_DIRECT_RE: ClassVar[re.Pattern[str]] = re.compile(r"\b[A-Za-z0-9+/]{40,}={0,2}\b")
-    _BASE64_SPLIT_RE: ClassVar[re.Pattern[str]] = re.compile(
-        r"(?:[A-Za-z0-9+/]{8,}={0,2}(?:[\s\"'`:,;|\\/-]+|$)){3,}"
+    for finding in findings:
+        if finding.kind.startswith(_DECODE_FINDING_PREFIX):
+            continue
+        mapped_factors = _TEXTGUARD_FACTOR_MAP.get(finding.kind)
+        severity_weight = _SEVERITY_WEIGHTS.get(finding.severity, 0.0)
+        if mapped_factors is None:
+            mapped_factors = (finding.kind,)
+        for factor in mapped_factors:
+            weight = _FACTOR_WEIGHTS.get(factor, severity_weight)
+            factor_weights[factor] = max(factor_weights.get(factor, 0.0), weight)
+        factors.extend(mapped_factors)
+        matches.append(finding.detail or finding.kind)
+
+    if factors:
+        factors.extend(str(item) for item in decode_reason_codes)
+
+    return InjectionClassification(
+        risk_score=min(sum(factor_weights.values()), 1.0),
+        risk_factors=sorted(set(factors)),
+        matched_patterns=sorted(set(matches)),
     )
-    _ENCODED_SIGNAL_TOKENS: ClassVar[tuple[str, ...]] = (
-        "ignore previous",
-        "disregard instructions",
-        "system prompt",
-        "curl ",
-        "wget ",
-        "http://",
-        "https://",
-        "exfiltrate",
-        "token",
-        "secret",
-    )
+
+
+def detect_split_base64_payload_finding(
+    text: str,
+    decoded_text: str,
+) -> TextGuardFinding | None:
+    for candidate_text in {text, decoded_text}:
+        if _contains_split_base64_signal(candidate_text):
+            return TextGuardFinding(
+                "encoded_payload",
+                "error",
+                "Split base64 payload decodes to instruction-like text",
+            )
+    return None
+
+
+def legacy_skill_review_findings(text: str) -> list[TextGuardFinding]:
+    findings: list[TextGuardFinding] = []
+    for factor, pattern, detail in _LEGACY_SKILL_REVIEW_PATTERNS:
+        if pattern.search(text):
+            findings.append(TextGuardFinding(factor, "error", detail))
+    return findings
+
+
+def _contains_split_base64_signal(text: str) -> bool:
+    for blob in _BASE64_SPLIT_RE.findall(text):
+        collapsed = _BASE64_SPLIT_SEPARATOR_RE.sub("", blob)
+        if len(collapsed) < 40:
+            continue
+        if _contains_base64_encoded_signal(collapsed):
+            return True
+    return False
+
+
+def _contains_base64_encoded_signal(chunk: str) -> bool:
+    current = chunk.strip()
+    for _ in range(2):
+        padding = "=" * ((4 - (len(current) % 4)) % 4)
+        try:
+            decoded = base64.b64decode(current + padding, validate=True)
+            decoded_text = decoded.decode("utf-8", errors="ignore")
+        except (ValueError, binascii.Error):
+            return False
+        lowered = decoded_text.lower()
+        if any(token in lowered for token in _ENCODED_SIGNAL_TOKENS):
+            return True
+
+        next_candidate = re.sub(r"\s+", "", decoded_text)
+        if next_candidate == current:
+            return False
+        current = next_candidate
+    return False
+
+
+class PatternInjectionClassifier:
+    """Compatibility adapter over TextGuard structural detections."""
 
     def __init__(
         self,
@@ -644,48 +582,58 @@ class PatternInjectionClassifier:
         semantic_classifier: SemanticClassifier | None = None,
         yara_rules_dir: Path | None = None,
     ) -> None:
+        _ = yara_rules_dir
         self._semantic_classifier = semantic_classifier
-        self._yara_rules = self._compile_yara_rules(yara_rules_dir)
-        self._extra_patterns = self._load_fallback_patterns(yara_rules_dir)
+        self._guard = TextGuard(
+            confusables="trimmed",
+            preset="default",
+            promptguard_model_path="",
+            split_tokens=False,
+            yara_bundled=True,
+            yara_rules_dir="",
+        )
 
     @property
     def mode(self) -> str:
-        if self._yara_rules is not None:
-            return "yara"
-        if self._extra_patterns:
-            return "fallback_regex"
-        return "base_patterns"
+        return TEXTGUARD_MODE
 
     def classify(
         self,
         text: str,
         *,
         context_factors: list[str] | tuple[str, ...] | None = None,
+        skip_semantic: bool = False,
     ) -> InjectionClassification:
-        """Classify text for likely injection indicators."""
-        score = 0.0
-        factors: list[str] = []
-        matches: list[str] = []
+        """Classify text for likely injection indicators.
+
+        When *skip_semantic* is True the PromptGuard neural-net classifier is
+        not invoked.  Pattern/YARA scoring still runs (cheap, deterministic).
+        This is the correct mode for trusted operator input — the operator is
+        the trust root, so asking a neural net "did they inject themselves?"
+        only adds latency and false-positive risk scores.
+        """
+        scan_result = self._guard.scan(text)
+        findings = list(scan_result.findings)
+        split_base64_finding = detect_split_base64_payload_finding(
+            text,
+            scan_result.decoded_text,
+        )
+        if split_base64_finding is not None:
+            findings.append(split_base64_finding)
+        for candidate_text in {text, scan_result.decoded_text}:
+            findings.extend(legacy_skill_review_findings(candidate_text))
+        classification = classify_textguard_findings(
+            findings,
+            decode_reason_codes=list(scan_result.decode_reason_codes),
+        )
+        score = classification.risk_score
+        factors = list(classification.risk_factors)
+        matches = list(classification.matched_patterns)
         semantic_risk_score = 0.0
         semantic_risk_tier = SemanticRiskTier.NONE.value
         semantic_classifier_id = ""
 
-        for name, pattern, weight in [*self._BASE_PATTERNS, *self._extra_patterns]:
-            if pattern.search(text):
-                factors.append(name)
-                matches.append(pattern.pattern)
-                score += weight
-
-        if self._yara_rules is not None:
-            for match in self._yara_rules.match(data=text):
-                factors.append(f"yara:{match.rule}")
-                score += 0.15
-
-        if self._looks_like_encoded_payload(text):
-            factors.append("encoded_payload")
-            score += 0.25
-
-        if self._semantic_classifier is not None:
+        if self._semantic_classifier is not None and not skip_semantic:
             semantic = self._semantic_classifier.classify(text)
             factors.extend(semantic.risk_factors)
             matches.extend(semantic.matched_patterns)
@@ -705,91 +653,3 @@ class PatternInjectionClassifier:
             semantic_risk_tier=semantic_risk_tier,
             semantic_classifier_id=semantic_classifier_id,
         )
-
-    @classmethod
-    def _looks_like_encoded_payload(cls, text: str) -> bool:
-        candidates = set(cls._BASE64_DIRECT_RE.findall(text))
-        for blob in cls._BASE64_SPLIT_RE.findall(text):
-            collapsed = re.sub(r"[\s\"'`:,;|\\/-]+", "", blob)
-            if len(collapsed) >= 40:
-                candidates.add(collapsed)
-
-        for chunk in sorted(candidates, key=len, reverse=True):
-            if cls._contains_encoded_signal(chunk):
-                return True
-        return False
-
-    @classmethod
-    def _contains_encoded_signal(cls, chunk: str) -> bool:
-        current = chunk.strip()
-        for _ in range(2):
-            padding = "=" * ((4 - (len(current) % 4)) % 4)
-            try:
-                decoded = base64.b64decode(current + padding, validate=True)
-            except (ValueError, binascii.Error):
-                return False
-            decoded_text = decoded.decode("utf-8", errors="ignore")
-            lowered = decoded_text.lower()
-            if any(token in lowered for token in cls._ENCODED_SIGNAL_TOKENS):
-                return True
-
-            next_candidate = re.sub(r"\s+", "", decoded_text)
-            if not re.fullmatch(r"[A-Za-z0-9+/=]{24,}", next_candidate or ""):
-                return False
-            current = next_candidate
-        return False
-
-    @staticmethod
-    def _compile_yara_rules(rules_dir: Path | None) -> Any:
-        """Compile YARA rules if yara-python is available."""
-        if rules_dir is None or not rules_dir.exists():
-            return None
-        try:
-            import yara  # type: ignore
-        except ImportError:
-            return None
-
-        filepaths = {path.stem: str(path) for path in sorted(rules_dir.glob("*.yara"))}
-        if not filepaths:
-            return None
-        try:
-            return yara.compile(filepaths=filepaths)
-        except Exception:
-            logger.warning(
-                "YARA compile failed; reason_code=firewall.yara_compile_failed",
-                exc_info=True,
-            )
-            return None
-
-    @staticmethod
-    def _load_fallback_patterns(
-        rules_dir: Path | None,
-    ) -> list[tuple[str, re.Pattern[str], float]]:
-        """Load fallback regex markers from YARA files when yara-python is unavailable."""
-        if rules_dir is None or not rules_dir.exists():
-            return []
-
-        patterns: list[tuple[str, re.Pattern[str], float]] = []
-        for path in sorted(rules_dir.glob("*.yara")):
-            for line in path.read_text(encoding="utf-8").splitlines():
-                marker = "="
-                if marker not in line or "/" not in line:
-                    continue
-                lhs, rhs = line.split(marker, 1)
-                if "$" not in lhs:
-                    continue
-                rhs = rhs.strip()
-                if not rhs.startswith("/"):
-                    continue
-                raw = rhs.strip().removeprefix("/")
-                if raw.endswith("/i"):
-                    raw = raw[:-2]
-                elif raw.endswith("/"):
-                    raw = raw[:-1]
-                if not raw:
-                    continue
-                try:
-                    patterns.append((path.stem, re.compile(raw, re.IGNORECASE), 0.15))
-                except re.error:
-                    continue
-        return patterns

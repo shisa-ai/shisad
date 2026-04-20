@@ -37,6 +37,7 @@ class ModelRoute(BaseModel):
     component: ModelComponent
     model_id: str
     base_url: str
+    base_url_source: str = "global:SHISAD_MODEL_BASE_URL"
     capabilities: ProviderCapabilities = Field(default_factory=ProviderCapabilities)
     request_parameters: RequestParameters = Field(default_factory=RequestParameters)
 
@@ -66,6 +67,7 @@ _PRESET_BASE_URLS: dict[ProviderPreset, str] = {
     ProviderPreset.OPENAI_DEFAULT: "https://api.openai.com/v1",
     ProviderPreset.OPENROUTER_DEFAULT: "https://openrouter.ai/api/v1",
     ProviderPreset.GOOGLE_OPENAI_DEFAULT: "https://generativelanguage.googleapis.com/v1beta/openai",
+    ProviderPreset.ANTHROPIC_DEFAULT: "https://api.anthropic.com/v1",
     ProviderPreset.VLLM_LOCAL_DEFAULT: "http://127.0.0.1:8000/v1",
 }
 
@@ -74,6 +76,7 @@ _PRESET_AUTH_MODES: dict[ProviderPreset, AuthMode] = {
     ProviderPreset.OPENAI_DEFAULT: AuthMode.BEARER,
     ProviderPreset.OPENROUTER_DEFAULT: AuthMode.BEARER,
     ProviderPreset.GOOGLE_OPENAI_DEFAULT: AuthMode.BEARER,
+    ProviderPreset.ANTHROPIC_DEFAULT: AuthMode.BEARER,
     ProviderPreset.VLLM_LOCAL_DEFAULT: AuthMode.NONE,
 }
 
@@ -82,6 +85,7 @@ _PRESET_DEFAULT_PROFILES: dict[ProviderPreset, str] = {
     ProviderPreset.OPENAI_DEFAULT: PROFILE_OPENAI_CHAT_GENERAL,
     ProviderPreset.OPENROUTER_DEFAULT: PROFILE_OPENROUTER_CHAT,
     ProviderPreset.GOOGLE_OPENAI_DEFAULT: PROFILE_GOOGLE_OPENAI_CHAT,
+    ProviderPreset.ANTHROPIC_DEFAULT: PROFILE_OPENAI_CHAT_GENERAL,
     ProviderPreset.VLLM_LOCAL_DEFAULT: PROFILE_VLLM_CHAT,
 }
 
@@ -101,12 +105,17 @@ _PRESET_DEFAULT_MODEL_IDS: dict[ProviderPreset, dict[ModelComponent, str]] = {
         ModelComponent.EMBEDDINGS: "text-embedding-004",
         ModelComponent.MONITOR: "gemini-3.1-pro-preview",
     },
+    ProviderPreset.ANTHROPIC_DEFAULT: {
+        ModelComponent.PLANNER: "claude-sonnet-4-6",
+        ModelComponent.MONITOR: "claude-sonnet-4-6",
+    },
 }
 
 _API_KEY_ENV_TO_PRESET: list[tuple[str, ProviderPreset]] = [
     ("OPENAI_API_KEY", ProviderPreset.OPENAI_DEFAULT),
     ("GEMINI_API_KEY", ProviderPreset.GOOGLE_OPENAI_DEFAULT),
     ("OPENROUTER_API_KEY", ProviderPreset.OPENROUTER_DEFAULT),
+    ("ANTHROPIC_API_KEY", ProviderPreset.ANTHROPIC_DEFAULT),
 ]
 
 _PRESET_PROVIDER_KEY_ENV: dict[ProviderPreset, str | None] = {
@@ -114,6 +123,7 @@ _PRESET_PROVIDER_KEY_ENV: dict[ProviderPreset, str | None] = {
     ProviderPreset.OPENAI_DEFAULT: "OPENAI_API_KEY",
     ProviderPreset.OPENROUTER_DEFAULT: "OPENROUTER_API_KEY",
     ProviderPreset.GOOGLE_OPENAI_DEFAULT: "GEMINI_API_KEY",
+    ProviderPreset.ANTHROPIC_DEFAULT: "ANTHROPIC_API_KEY",
     ProviderPreset.VLLM_LOCAL_DEFAULT: None,
 }
 
@@ -123,11 +133,25 @@ _DEFAULT_PRESET_BY_COMPONENT: dict[ModelComponent, ProviderPreset] = {
     ModelComponent.MONITOR: ProviderPreset.SHISA_DEFAULT,
 }
 
+_AUTO_DETECT_UNSUPPORTED_COMPONENTS: dict[ProviderPreset, set[ModelComponent]] = {
+    ProviderPreset.ANTHROPIC_DEFAULT: {ModelComponent.EMBEDDINGS},
+}
+
 _DEFAULT_ENDPOINT_BY_COMPONENT: dict[ModelComponent, EndpointFamily] = {
     ModelComponent.PLANNER: EndpointFamily.CHAT_COMPLETIONS,
     ModelComponent.EMBEDDINGS: EndpointFamily.EMBEDDINGS,
     ModelComponent.MONITOR: EndpointFamily.CHAT_COMPLETIONS,
 }
+
+
+def provider_preset_label(route: ModelRoute) -> str:
+    default_base_url = _PRESET_BASE_URLS.get(route.provider_preset, "").rstrip("/")
+    effective_base_url = route.base_url.rstrip("/")
+    if not default_base_url or effective_base_url == default_base_url:
+        return route.provider_preset.value
+    if route.base_url_source.startswith("route:"):
+        return f"{route.provider_preset.value} (overridden)"
+    return "custom"
 
 
 class ModelRouter:
@@ -150,7 +174,7 @@ class ModelRouter:
 
         preset_override = getattr(self._config, f"{prefix}_provider_preset")
         if preset_override is None:
-            detected = self._auto_detect_preset_from_api_key()
+            detected = self._auto_detect_preset_from_api_key(component=component)
             if detected is not None:
                 preset = detected
                 preset_source = "auto_detected"
@@ -162,7 +186,7 @@ class ModelRouter:
             preset_source = "route_override"
 
         route_base_url_override = getattr(self._config, f"{prefix}_base_url")
-        base_url = self._resolve_route_base_url(
+        base_url, base_url_source = self._resolve_route_base_url(
             component=component,
             preset=preset,
             preset_source=preset_source,
@@ -245,6 +269,7 @@ class ModelRouter:
             component=component,
             model_id=model_id,
             base_url=base_url,
+            base_url_source=base_url_source,
             capabilities=capabilities,
             request_parameters=request_parameters,
             provider_preset=preset,
@@ -271,16 +296,16 @@ class ModelRouter:
         component: ModelComponent,
         preset: ProviderPreset,
         preset_source: str,
-    ) -> str:
+    ) -> tuple[str, str]:
         prefix = component.value
         route_override: str | None = getattr(self._config, f"{prefix}_base_url")
         if route_override:
-            return str(route_override)
+            return str(route_override), f"route:{prefix}_base_url"
         if preset_source in {"route_override", "auto_detected"}:
             preset_url = _PRESET_BASE_URLS.get(preset, "")
             if preset_url:
-                return preset_url
-        return self._config.base_url
+                return preset_url, f"preset:{preset.value}"
+        return self._config.base_url, "global:SHISAD_MODEL_BASE_URL"
 
     def _resolve_route_api_key(
         self,
@@ -363,8 +388,13 @@ class ModelRouter:
         return False, "global"
 
     @staticmethod
-    def _auto_detect_preset_from_api_key() -> ProviderPreset | None:
+    def _auto_detect_preset_from_api_key(
+        *,
+        component: ModelComponent,
+    ) -> ProviderPreset | None:
         for env_var, preset in _API_KEY_ENV_TO_PRESET:
+            if component in _AUTO_DETECT_UNSUPPORTED_COMPONENTS.get(preset, set()):
+                continue
             if os.getenv(env_var, "").strip():
                 return preset
         return None

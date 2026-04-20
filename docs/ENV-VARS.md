@@ -7,6 +7,7 @@ Source of truth:
 - `src/shisad/core/config.py`
 - `src/shisad/core/providers/routing.py`
 - `src/shisad/daemon/services.py`
+- `src/shisad/interop/a2a_registry.py`
 - `src/shisad/memory/ingestion.py`
 
 ## Scope
@@ -60,6 +61,7 @@ Discord:
 - `SHISAD_DISCORD_DEFAULT_CHANNEL_ID`
 - `SHISAD_DISCORD_TRUSTED_USERS`
 - `SHISAD_DISCORD_GUILD_WORKSPACE_MAP`
+- `SHISAD_DISCORD_CHANNEL_RULES`
 
 Telegram:
 
@@ -82,15 +84,48 @@ Identity gating:
 
 - `SHISAD_CHANNEL_IDENTITY_ALLOWLIST`
 
-## Assistant, Web, Filesystem, Reality Check, and Coding-Agent Settings
+Discord public-channel rules:
+
+- `SHISAD_DISCORD_CHANNEL_RULES` accepts a JSON list of rules. Each rule may set
+  `guild_id`, `channels`, `exclude_channels`, `mode` (`mention-only`,
+  `read-along`, or `passive-observe`), `public_enabled`, `public_tools`,
+  `trusted_guest_users`, `trusted_guest_tools`, `denied_users`,
+  `relevance_keywords`, `cooldown_seconds`, and `proactive_marker`.
+- `guild_id` must match a concrete guild ID unless the operator intentionally
+  sets `guild_id` to `*`. Empty or omitted `channels` means every channel in the
+  matching guild except `exclude_channels`; use explicit `channels` for
+  include-only public grants. When multiple matching rules have equal
+  specificity, later rules override earlier rules.
+- Missing rules fail closed to normal allowlist/pairing behavior. Explicit
+  channel/user denies win over broad public rules. Public/trusted-guest sessions
+  are ephemeral, do not receive owner-private memory context, and only receive
+  the small built-in public-tool surface currently accepted by the runtime
+  (`web.search`, `web.fetch`, `realitycheck.search`, `realitycheck.read`) when
+  those tools are configured and available.
+
+## Assistant, Web, Filesystem, Attachment, Reality Check, and Coding-Agent Settings
 
 Assistant/persona:
 
 - `SHISAD_ASSISTANT_PERSONA_TONE`
 - `SHISAD_ASSISTANT_PERSONA_CUSTOM_TEXT`
+- `SHISAD_ASSISTANT_PERSONA_SOUL_PATH`
+- `SHISAD_ASSISTANT_PERSONA_SOUL_MAX_BYTES`
 - `SHISAD_CONTEXT_WINDOW`
 - `SHISAD_SUMMARIZE_INTERVAL`
 - `SHISAD_PLANNER_MEMORY_TOP_K`
+
+SOUL.md notes:
+
+- `SHISAD_ASSISTANT_PERSONA_SOUL_PATH` points to the operator-owned persona
+  preference file. Its content is treated as trusted persona preference text
+  below safety/developer instructions, not as project memory or policy.
+- `shisad admin soul update --content ...` replaces that file through the
+  admin `SOUL.md` update path. The file may contain personal tone/persona
+  preferences and is readable by any operator or process with access to the
+  configured path. Store project-specific facts in the memory system instead.
+- `--expected-sha256` is an optional write precondition for concurrent-edit
+  protection; it is not a secret.
 
 Web:
 
@@ -106,6 +141,44 @@ Web notes:
 - `SHISAD_WEB_SEARCH_BACKEND_URL` must point at a compatible search backend that serves JSON search results over HTTP(S). The current runtime expects a SearxNG-style `/search` endpoint.
 - The search backend host must also be present in `SHISAD_WEB_ALLOWED_DOMAINS`, alongside any fetch/search destinations you want auto-approved in the tested environment.
 - If `SHISAD_WEB_SEARCH_BACKEND_URL` is unset, `tool.web.search` stays available in the registry but reports `web_search_backend_unconfigured` in live tool-status checks instead of silently locking down the session.
+
+msgvault email:
+
+- `SHISAD_MSGVAULT_ENABLED`
+- `SHISAD_MSGVAULT_COMMAND`
+- `SHISAD_MSGVAULT_HOME`
+- `SHISAD_MSGVAULT_TIMEOUT_SECONDS`
+- `SHISAD_MSGVAULT_MAX_RESULTS`
+- `SHISAD_MSGVAULT_MAX_BODY_BYTES`
+- `SHISAD_MSGVAULT_ACCOUNT_ALLOWLIST`
+
+msgvault notes:
+
+- `email.search` and `email.read` are read-only structured tools requiring
+  `email.read` capability. They use the local msgvault CLI with `--local` for
+  search/read output; reads also inspect local msgvault archive email metadata.
+  shisad does not perform Gmail/IMAP sync and does not copy provider
+  OAuth or IMAP credentials into its own credential store in this slice.
+- `SHISAD_MSGVAULT_ENABLED=1` enables runtime calls. If it is unset, the tools
+  remain registered but return `msgvault_disabled` with setup guidance instead
+  of locking down the session.
+- `SHISAD_MSGVAULT_HOME` is passed to msgvault as `--home`. Leave it unset to
+  use msgvault's default archive location.
+- `SHISAD_MSGVAULT_ACCOUNT_ALLOWLIST` accepts CSV or JSON array syntax. When
+  set, searches must target a listed account unless exactly one account is
+  configured, in which case that account is selected automatically. Message
+  reads verify the requested message id is an email row in local msgvault
+  archive metadata before reading the matched msgvault internal id; when the
+  allowlist is set, reads also use the same account resolution.
+- Search output is bounded to metadata and snippets. Message reads omit HTML
+  bodies, omit BCC recipient details, include only BCC counts, and truncate
+  text bodies to `SHISAD_MSGVAULT_MAX_BODY_BYTES`.
+- Email tool output is tainted as both untrusted and sensitive email content.
+  Covered write, send, task, reminder, and egress paths still rely on the
+  existing taint/PEP confirmation or block behavior; operators should treat
+  email content as context, not as user authorization for follow-on actions.
+- Email send/reply, calendar read/write, Google Workspace write skills, remote
+  msgvault API/MCP transport, and msgvault sync/setup automation are deferred.
 
 Browser:
 
@@ -126,6 +199,59 @@ Browser notes:
 - Read-mostly browser actions (`browser.navigate`, `browser.read_page`, `browser.screenshot`, `browser.end_session`) are intended to proceed without confirmation when the destination is authorized. Browser write actions (`browser.click`, `browser.type_text`) are confirmation-gated.
 - Loopback/private browser targets remain blocked by the sandbox unless the target host is explicitly allowlisted for the browser surface in the current configuration.
 - `SHISAD_BROWSER_REQUIRE_HARDENED_ISOLATION` defaults to `1`. Keep it enabled unless you are deliberately running a non-production browser integration and understand that disabling it weakens the browser isolation boundary.
+
+MCP interop:
+
+- `SHISAD_MCP_SERVERS`
+- `SHISAD_MCP_TRUSTED_SERVERS`
+
+MCP notes:
+
+- `SHISAD_MCP_SERVERS` accepts a JSON array of server configs. `transport:
+  "stdio"` entries require `command: ["executable", "arg1", ...]`; `transport:
+  "http"` entries require `url: "http(s)://.../mcp"`.
+- `transport: "stdio"` entries can also set `env: {"NAME":"value"}` for
+  explicit subprocess environment variables. MCP stdio launches do not inherit
+  the daemon's full environment by default.
+- MCP server names are normalized to lowercase and must remain unique after
+  normalization.
+- `SHISAD_MCP_TRUSTED_SERVERS` accepts either a CSV string or JSON array of
+  normalized MCP server names. Servers in that allowlist bypass the default
+  confirmation gate for external MCP tools, but the tools still remain
+  externally sourced and untrusted for planner/runtime tainting purposes.
+- Discovered tools register under runtime ids like `mcp.<server>.<tool>`. The
+  upstream MCP tool name is preserved separately for transport calls, and MCP
+  tools require confirmation by default unless the server name appears in
+  `SHISAD_MCP_TRUSTED_SERVERS`.
+
+A2A interop:
+
+- `SHISAD_A2A`
+
+A2A notes:
+
+- `SHISAD_A2A` accepts a JSON object for signed A2A listener, identity, and
+  static remote-agent registry configuration. The current `v0.6.5` surface is
+  inbound signed external-ingress over direct socket or HTTP transports.
+- A minimal config object includes `enabled`, `identity.agent_id`,
+  `identity.private_key_path`, `identity.public_key_path`, `listen`, and
+  `agents`. Each configured remote agent must provide a fingerprint plus either
+  inline `public_key` PEM or `public_key_path`.
+- Socket agents use `address: "host:port"` with `transport: "socket"`. HTTP
+  agents use full `http(s)://...` URLs with `transport: "http"`.
+- `shisad a2a keygen` generates an Ed25519 keypair, writes the private key
+  owner-only, and prints the public-key fingerprint for out-of-band exchange.
+- `allowed_intents` is enforced fail-closed at A2A ingress. Missing
+  `allowed_intents` rejects all requests from that configured remote agent
+  until the operator adds explicit grants.
+- Configured remote-agent fingerprints must be unique. Shared-key aliases are
+  rejected so grants and rate limits remain anchored to one authenticated
+  remote principal.
+- `rate_limits` enforces per-source budgets keyed on the verified remote
+  public-key fingerprint. Defaults: `60/minute`, `600/hour`.
+- Each accepted or rejected inbound A2A request emits an
+  `A2aIngressEvaluated` audit event with sender identity, intent, outcome, and
+  rejection reason when applicable.
 
 Approval / WebAuthn / signer:
 
@@ -222,6 +348,30 @@ Filesystem/git:
 - `SHISAD_ASSISTANT_FS_ROOTS`
 - `SHISAD_ASSISTANT_MAX_READ_BYTES`
 - `SHISAD_ASSISTANT_GIT_TIMEOUT_SECONDS`
+
+Attachment ingest:
+
+- `SHISAD_ATTACHMENT_MAX_IMAGE_BYTES`
+- `SHISAD_ATTACHMENT_MAX_AUDIO_BYTES`
+- `SHISAD_ATTACHMENT_MAX_IMAGE_PIXELS`
+- `SHISAD_ATTACHMENT_MAX_AUDIO_DURATION_SECONDS`
+- `SHISAD_ATTACHMENT_MAX_TRANSCRIPT_CHARS`
+
+Attachment ingest notes:
+
+- `attachment.ingest` reads local files only from `SHISAD_ASSISTANT_FS_ROOTS`.
+- The first shipped slice accepts images and voice/audio recordings by bounded
+  local path. It stores tainted ArtifactLedger manifests, not raw attachment
+  bytes.
+- Unsupported, malformed, oversized, or transcript-risky attachments are stored
+  as quarantined manifests. Quarantined refs are not readable through the
+  default `evidence.read` / `evidence.promote` path.
+- `SHISAD_ATTACHMENT_MAX_TRANSCRIPT_CHARS` caps caller-supplied transcript text
+  before firewall screening and manifest storage. Oversized transcripts are
+  quarantined with `transcript_too_large` and the transcript body is not stored
+  in the manifest.
+- OCR, provider speech-to-text, channel attachment downloads, email attachment
+  export, document parsing, and multimodal model input are follow-on work.
 
 Reality Check:
 
@@ -333,6 +483,7 @@ These are still part of the live surface:
 | `SHISA_API_KEY` | SHISA preset credential discovery |
 | `OPENROUTER_API_KEY` | OpenRouter preset credential discovery |
 | `GEMINI_API_KEY` | Google OpenAI-compatible preset credential discovery |
+| `ANTHROPIC_API_KEY` | Anthropic preset credential discovery for planner/monitor routes |
 | `_SHISAD_COMPLETE` | shell-completion internal env, not operator config |
 
 ## Opt-In Test / Dev Knobs

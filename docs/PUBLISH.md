@@ -8,6 +8,11 @@ Scope:
 - `CHANGELOG.md` is release-oriented, not an in-progress ledger. Add a new
   topmost version section when cutting a release; do not keep an `Unreleased`
   section.
+- If a release-close review needs changelog content before the tag/publish
+  step is authorized, keep that temporary section unlinked as
+  `## X.Y.Z Release Content - YYYY-MM-DD`. During the explicit release action,
+  convert it to the standard linked release section in the commit that will be
+  tagged.
 
 ## Versioning
 
@@ -37,14 +42,35 @@ Version must be updated in both places:
 - [ ] Update version in `src/shisad/__init__.py`
 - [ ] Sync the lockfile: `uv lock`
 - [ ] Update `CHANGELOG.md`:
-      add a new topmost `## [X.Y.Z] - YYYY-MM-DD` section and update the
-      version comparison links at the bottom (see **CHANGELOG Style** below)
-- [ ] Review `README.md` and top-level operator docs for release parity:
+      add a new topmost release section and update it for the current phase
+      (see **CHANGELOG Style** below). Pre-tag release-close candidates use
+      `## X.Y.Z Release Content - YYYY-MM-DD` (content-prep date) without a
+      compare link; the explicit tag/publish action converts that heading to
+      `## [X.Y.Z] - YYYY-MM-DD` (actual tag date — may be later than the
+      content-prep date if release-close took multiple days) and adds the
+      bottom `[X.Y.Z]` comparison link in the commit that will be tagged.
+- [ ] Review `README.md` thoroughly for release parity. The `README.md`
+      tends to drift during long release lanes because contributors update
+      other docs first. Verify:
+      - The `## Status` section names the correct "latest published line"
+        for the release you are cutting.
+      - Pre-tag / "ReleaseClose in progress" / "about to be tagged" /
+        "pre-tag release content" wording is removed.
+      - The feature bullets in `## What makes shisad different`, the
+        version/focus table, and any claims about current capabilities
+        match what actually ships at the tag (no overclaiming future work
+        as shipped).
+      - Any version-string references in install or quick-start examples
+        reflect the release being cut.
+- [ ] Review top-level operator docs for release parity:
       `docs/ROADMAP.md`, `docs/ENV-VARS.md`, `docs/TOOL-STATUS.md`,
       `docs/USE-CASES.md`
 - [ ] If release-close changes dependency resolutions or workflow/action pins,
       update `docs/AUDIT-supply-chain.md` in the same lane so the recorded
-      package inventory and CI/release trust notes stay current
+      package inventory and CI/release trust notes stay current. When any
+      edit to this file happens during release-close, also update the
+      `*Updated:*` header and the `*Snapshot basis:*` line so the doc's own
+      metadata reflects the current release rather than a stale date.
 - [ ] Update release-version/status tables while doing the docs parity pass:
       make sure the current release line is presented as current, prior
       releases are de-emphasized, and any version/focus tables stay in sync.
@@ -92,10 +118,11 @@ Version must be updated in both places:
 - [ ] Push the release commit and tag:
       `git push origin main`, `git push origin vX.Y.Z`
 - [ ] Publish via trusted publishing workflow (primary path):
-      Go to Actions > "Publish to PyPI" > Run workflow, enter `vX.Y.Z`.
-      The workflow builds, runs tests, generates SBOM, creates attestations,
-      and publishes via OIDC. Requires approval in the `pypi-publish`
-      environment.
+      `gh -R shisa-ai/shisad workflow run "Publish to PyPI" -f tag=vX.Y.Z`
+      (or: Actions > "Publish to PyPI" > Run workflow, enter `vX.Y.Z`).
+      The build phase takes ~7 minutes (builds, runs tests, audits
+      dependencies, verifies metadata, generates SBOM, creates attestations).
+      The publish step requires confirmation before uploading to PyPI via OIDC.
 - [ ] Create a GitHub Release from the tag:
       `gh release create vX.Y.Z --title "vX.Y.Z" --notes-file -` (pipe the
       matching `CHANGELOG.md` section, or use `--notes "..."` inline)
@@ -122,6 +149,37 @@ Version must be updated in both places:
 
 The CHANGELOG is a user-facing document. Write it so someone who uses shisad
 (but doesn't develop it) can understand what changed and why they should care.
+
+### Pre-Tag Release Content
+
+When release-close review happens before the human lead has authorized tagging
+and publishing, use an unlinked topmost heading:
+
+```markdown
+## X.Y.Z Release Content - YYYY-MM-DD
+```
+
+Do not add a bottom `[X.Y.Z]` comparison link while the `vX.Y.Z` tag does not
+exist. When the explicit release action starts, convert that heading to the
+normal release form and add the compare link in the release commit that will
+be tagged:
+
+```markdown
+## [X.Y.Z] - YYYY-MM-DD
+
+[X.Y.Z]: https://github.com/shisa-ai/shisad/compare/vA.B.C...vX.Y.Z
+```
+
+### Post-Tag Stability
+
+Once a `## [X.Y.Z]` section has been tagged and the GitHub Release is
+created, treat that section as frozen. The `CHANGELOG.md [X.Y.Z]` section is
+the notes for tag `vX.Y.Z`, and the GitHub Release text is a snapshot of
+that section at release-create time. Editing `[X.Y.Z]` on `main` after the
+tag makes `HEAD` and the shipped GitHub Release notes drift, which confuses
+readers and breaks the invariant that the section describes the tagged
+release. Fix-follow corrections belong in the next patch release, not in
+the already-tagged section.
 
 ### Principles
 
@@ -195,9 +253,44 @@ setup required on PyPI:
    - Workflow name: `publish.yml`
    - Environment name: `pypi-publish`
 3. Create a GitHub Environment named `pypi-publish` in the repo settings
-   (Settings > Environments) with required reviewers enabled.
+   (Settings > Environments) with a required-reviewers gate so the publish
+   step requires confirmation.
 
 After setup, the workflow can publish without any stored API tokens.
+
+## Recovery from Workflow Failure
+
+If the publish workflow fails before the package has been uploaded to
+PyPI — for example, the `Run release validation` step catches a lint,
+format, or test issue that `scripts/ci_preflight.sh` missed, or the build
+step itself fails — the tag has been pushed but nothing has shipped. The
+GitHub Release has not been created, no SBOM or attestation exists, and
+PyPI does not have a package at that version. Recover by moving the tag
+to a fix commit:
+
+1. Fix the issue locally and run the relevant validation to confirm
+   (for example `uv run ruff format --check .`, `uv run ruff check .`,
+   and the targeted test lane that failed).
+2. Commit as `fix: <what you changed> for vX.Y.Z release` so the release
+   intent is clear in history.
+3. Delete the remote tag: `git push origin :refs/tags/vX.Y.Z`.
+4. Delete the local tag: `git tag -d vX.Y.Z`.
+5. Re-tag at the fix commit: `git tag -a vX.Y.Z -m "vX.Y.Z" <sha>`.
+6. Push the fix commit and the new tag:
+   `git push origin main`, then `git push origin vX.Y.Z`.
+7. Re-dispatch the publish workflow:
+   `gh -R shisa-ai/shisad workflow run "Publish to PyPI" -f tag=vX.Y.Z`.
+
+Tag moves are only safe before the package has been uploaded to PyPI. PyPI
+filenames are immutable — once `shisad-X.Y.Z-py3-none-any.whl` has been
+accepted, you cannot re-upload different contents at the same version. If
+the package has already shipped to PyPI, cut `X.Y.(Z+1)` instead of moving
+the tag.
+
+Record the failure and the recovery in the active milestone/implementation
+worklog so the next release's preflight can be tightened if the gap is
+reproducible (for example, adding the missing check to
+`scripts/ci_preflight.sh`).
 
 ## Emergency Manual Publish
 

@@ -13,15 +13,26 @@ from shisad.core.config import DaemonConfig
 from shisad.core.session import Session
 from shisad.core.types import Capability, SessionId, UserId, WorkspaceId
 from shisad.daemon.runner import run_daemon
+from tests.helpers.daemon import wait_for_socket as _wait_for_socket
 
 
-async def _wait_for_socket(path: Path, timeout: float = 5.0) -> None:
-    end = asyncio.get_running_loop().time() + timeout
-    while asyncio.get_running_loop().time() < end:
-        if path.exists():
-            return
-        await asyncio.sleep(0.01)
-    raise TimeoutError(f"Timed out waiting for socket {path}")
+def _clear_remote_provider_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    for key in (
+        "SHISA_API_KEY",
+        "SHISAD_MODEL_API_KEY",
+        "SHISAD_MODEL_PLANNER_API_KEY",
+        "OPENAI_API_KEY",
+        "OPENROUTER_API_KEY",
+        "GEMINI_API_KEY",
+    ):
+        monkeypatch.delenv(key, raising=False)
+    for var in (
+        "SHISAD_MODEL_REMOTE_ENABLED",
+        "SHISAD_MODEL_PLANNER_REMOTE_ENABLED",
+        "SHISAD_MODEL_EMBEDDINGS_REMOTE_ENABLED",
+        "SHISAD_MODEL_MONITOR_REMOTE_ENABLED",
+    ):
+        monkeypatch.setenv(var, "false")
 
 
 @pytest.mark.asyncio
@@ -29,10 +40,7 @@ async def test_daemon_registers_alarm_tool_and_derives_capability_grant_actor(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("SHISAD_MODEL_BASE_URL", "https://api.example.com/v1")
-    monkeypatch.setenv("SHISAD_MODEL_PLANNER_BASE_URL", "https://planner.example.com/v1")
-    monkeypatch.setenv("SHISAD_MODEL_EMBEDDINGS_BASE_URL", "https://embed.example.com/v1")
-    monkeypatch.setenv("SHISAD_MODEL_MONITOR_BASE_URL", "https://monitor.example.com/v1")
+    _clear_remote_provider_env(monkeypatch)
     (tmp_path / "policy.yaml").write_text(
         "\n".join(
             [
@@ -82,8 +90,14 @@ async def test_daemon_registers_alarm_tool_and_derives_capability_grant_actor(
                 "content": "summarize this text",
             },
         )
-        assert "Safe summary:" in reply["response"]
-        assert "summarize this text" in reply["response"].lower()
+        assert str(reply["response"]).startswith(
+            "[PLANNER FALLBACK: CONFIGURATION] No language model configured."
+        )
+        assert "Safe summary:" not in str(reply["response"])
+        assert "summarize this text" not in str(reply["response"]).lower()
+        assert "Configure a planner route or local planner preset" in str(reply["response"])
+        assert "shisad doctor check --component provider" in str(reply["response"])
+        assert "SHISAD_MODEL_REMOTE_ENABLED" not in str(reply["response"])
 
         grant = await client.call(
             "session.grant_capabilities",
@@ -116,10 +130,7 @@ async def test_m3_session_persists_across_daemon_restart(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("SHISAD_MODEL_BASE_URL", "https://api.example.com/v1")
-    monkeypatch.setenv("SHISAD_MODEL_PLANNER_BASE_URL", "https://planner.example.com/v1")
-    monkeypatch.setenv("SHISAD_MODEL_EMBEDDINGS_BASE_URL", "https://embed.example.com/v1")
-    monkeypatch.setenv("SHISAD_MODEL_MONITOR_BASE_URL", "https://monitor.example.com/v1")
+    _clear_remote_provider_env(monkeypatch)
 
     config = DaemonConfig(
         data_dir=tmp_path / "data",
@@ -174,7 +185,10 @@ async def test_m3_session_persists_across_daemon_restart(
                 "content": "second turn",
             },
         )
-        assert "safe summary:" in str(response["response"]).lower()
+        assert str(response["response"]).startswith(
+            "[PLANNER FALLBACK: CONFIGURATION] No language model configured."
+        )
+        assert "SHISAD_MODEL_REMOTE_ENABLED" not in str(response["response"])
     finally:
         with suppress(Exception):
             await client_2.call("daemon.shutdown")

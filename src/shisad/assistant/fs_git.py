@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import subprocess
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -18,6 +18,7 @@ class FsGitToolkit:
     roots: list[Path]
     max_read_bytes: int
     git_timeout_seconds: float = 10.0
+    protected_write_paths: tuple[Path, ...] = field(default_factory=tuple)
 
     def list_dir(self, *, path: str, recursive: bool = False, limit: int = 200) -> dict[str, Any]:
         resolved = self._resolve_path(path)
@@ -83,6 +84,8 @@ class FsGitToolkit:
         resolved = self._resolve_path(path)
         if isinstance(resolved, dict):
             return resolved
+        if self._is_protected_write_path(resolved):
+            return self._error("protected_control_plane_path", path=str(resolved))
         if not confirm:
             return {
                 "ok": False,
@@ -187,6 +190,22 @@ class FsGitToolkit:
         if not any(_is_within(resolved, root) for root in roots):
             return self._error("path_not_allowlisted", path=str(resolved))
         return resolved
+
+    def _is_protected_write_path(self, resolved: Path) -> bool:
+        for raw_path in self.protected_write_paths:
+            protected = Path(raw_path).expanduser().resolve(strict=False)
+            if resolved == protected or self._same_existing_file(resolved, protected):
+                return True
+        return False
+
+    @staticmethod
+    def _same_existing_file(left: Path, right: Path) -> bool:
+        try:
+            left_stat = left.stat()
+            right_stat = right.stat()
+        except OSError:
+            return False
+        return (left_stat.st_dev, left_stat.st_ino) == (right_stat.st_dev, right_stat.st_ino)
 
     @staticmethod
     def _error(reason: str, *, path: str) -> dict[str, Any]:

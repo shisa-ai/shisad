@@ -27,6 +27,7 @@ from shisad.daemon.runner import run_daemon
 from shisad.executors.connect_path import IptablesConnectPathProxy
 from shisad.security.control_plane.engine import ControlPlaneEngine
 from shisad.security.control_plane.schema import ControlDecision, Origin, RiskTier, build_action
+from tests.helpers.daemon import wait_for_socket as _wait_for_socket
 
 
 @pytest.fixture
@@ -35,15 +36,6 @@ def model_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("SHISAD_MODEL_PLANNER_BASE_URL", "https://planner.example.com/v1")
     monkeypatch.setenv("SHISAD_MODEL_EMBEDDINGS_BASE_URL", "https://embed.example.com/v1")
     monkeypatch.setenv("SHISAD_MODEL_MONITOR_BASE_URL", "https://monitor.example.com/v1")
-
-
-async def _wait_for_socket(path: Path, timeout: float = 5.0) -> None:
-    end = asyncio.get_running_loop().time() + timeout
-    while asyncio.get_running_loop().time() < end:
-        if path.exists():
-            return
-        await asyncio.sleep(0.01)
-    raise TimeoutError(f"Timed out waiting for socket {path}")
 
 
 async def _start_daemon_with_policy(
@@ -760,7 +752,7 @@ async def test_g2_t1_direct_structured_tool_execute_matches_session_execution_ev
             {
                 "session_id": direct_sid,
                 "tool_name": "fs.read",
-                "command": [sys.executable, "-c", "print('sandbox fallback')"],
+                "command": [sys.executable, "-c", "print('sandbox_fallback')"],
                 "arguments": {"path": str(target)},
                 "security_critical": False,
                 "degraded_mode": "fail_open",
@@ -1068,15 +1060,29 @@ async def test_h3_trace_only_capability_elevation_confirmation_rechecks_pep_and_
         action = actions[0]
         assert dict(action.get("pep_elevation", {})).get("capability_grants") == ["http.request"]
 
-        await asyncio.sleep(3.1)
-        confirmed = await client.call(
-            "action.confirm",
-            {
-                "confirmation_id": str(pending_ids[0]),
-                "decision_nonce": str(action["decision_nonce"]),
-                "reason": "operator_approved",
-            },
-        )
+        # INT-L1: instead of sleeping a fixed 3.1s (production sets a 3s
+        # cooldown for high-risk confirmations; hard-coded literal drifts
+        # if the constant is tuned), drive the server's own
+        # `retry_after_seconds` feedback loop: try `action.confirm`,
+        # sleep the reported remaining cooldown + small buffer, retry.
+        # Avoids both test latency when the cooldown shrinks and
+        # flakiness when clock sync drifts.
+        confirm_params = {
+            "confirmation_id": str(pending_ids[0]),
+            "decision_nonce": str(action["decision_nonce"]),
+            "reason": "operator_approved",
+        }
+        max_retry_cycles = 3
+        confirmed = None
+        for _ in range(max_retry_cycles):
+            confirmed = await client.call("action.confirm", confirm_params)
+            if confirmed.get("confirmed") is True:
+                break
+            if str(confirmed.get("reason", "")) != "cooldown_active":
+                break
+            retry_after = float(confirmed.get("retry_after_seconds", 0) or 0)
+            await asyncio.sleep(max(retry_after, 0.0) + 0.1)
+        assert confirmed is not None
         assert confirmed["confirmed"] is True
         assert confirmed["status"] == "approved"
 
@@ -1175,7 +1181,7 @@ async def test_g2_t2_direct_structured_tool_failure_preserves_policy_allow_seman
             {
                 "session_id": sid,
                 "tool_name": "fs.read",
-                "command": [sys.executable, "-c", "print('sandbox fallback')"],
+                "command": [sys.executable, "-c", "print('sandbox_fallback')"],
                 "arguments": {"path": str(missing_path)},
                 "security_critical": False,
                 "degraded_mode": "fail_open",

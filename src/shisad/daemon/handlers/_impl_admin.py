@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
+import os
 import uuid
 from collections.abc import Mapping
 from datetime import UTC, datetime
@@ -11,15 +13,24 @@ from pathlib import Path
 from typing import Any, cast
 
 from shisad.channels.base import ChannelMessage, DeliveryTarget
+from shisad.channels.discord_policy import DiscordChannelPolicy, DiscordChannelPolicyDecision
 from shisad.core.events import (
     AnomalyReported,
     ChannelDeliveryAttempted,
     ChannelPairingProposalGenerated,
     ChannelPairingRequested,
     LockdownChanged,
+    SessionMessageReceived,
+)
+from shisad.core.soul import (
+    load_effective_persona_text,
+    load_soul_text,
+    soul_content_warnings,
+    soul_text_sha256,
+    write_soul_text,
 )
 from shisad.core.tools.names import canonical_tool_name_typed
-from shisad.core.types import SessionId, UserId, WorkspaceId
+from shisad.core.types import Capability, SessionId, TaintLabel, UserId, WorkspaceId
 from shisad.daemon.handlers._mixin_typing import HandlerMixinBase
 from shisad.devloop import assess_milestone_readiness
 from shisad.executors.sandbox import SandboxType
@@ -36,6 +47,15 @@ _DOCTOR_COMPONENTS: tuple[str, ...] = (
     "realitycheck",
 )
 
+_PUBLIC_DISCORD_TOOL_ALLOWLIST: frozenset[str] = frozenset(
+    {
+        "web.search",
+        "web.fetch",
+        "realitycheck.search",
+        "realitycheck.read",
+    }
+)
+
 
 def _normalized_text_sequence(raw_values: Any) -> tuple[str, ...]:
     if not isinstance(raw_values, list):
@@ -48,6 +68,44 @@ def _normalized_text_sequence(raw_values: Any) -> tuple[str, ...]:
     return tuple(values)
 
 
+def _short_hash(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()[:16]
+
+
+def _is_public_channel_trust(trust_level: str) -> bool:
+    return trust_level.strip().lower() in {"public", "trusted_guest"}
+
+
+def _discord_policy_from_config(config: Any) -> DiscordChannelPolicy:
+    return DiscordChannelPolicy(tuple(getattr(config, "discord_channel_rules", []) or ()))
+
+
+def _channel_policy_payload(
+    *,
+    decision: DiscordChannelPolicyDecision,
+    guild_id: str,
+    channel_id: str,
+    proactive: bool = False,
+    ephemeral_session: bool = False,
+    owner_private_context_excluded: bool = False,
+    reason: str = "",
+) -> dict[str, Any]:
+    return {
+        "guild_id": guild_id,
+        "channel_id": channel_id,
+        "engagement_mode": decision.engagement_mode,
+        "trust_level": decision.trust_level,
+        "allowed_tools": list(decision.allowed_tools),
+        "public_access": bool(decision.public_access),
+        "denied": bool(decision.denied),
+        "reason": reason or decision.reason,
+        "proactive": proactive,
+        "cooldown_seconds": float(decision.cooldown_seconds),
+        "ephemeral_session": ephemeral_session,
+        "owner_private_context_excluded": owner_private_context_excluded,
+    }
+
+
 def _review_findings_from_summary(summary: str) -> list[str]:
     findings: list[str] = []
     for raw_line in summary.splitlines():
@@ -58,6 +116,143 @@ def _review_findings_from_summary(summary: str) -> list[str]:
 
 
 class AdminImplMixin(HandlerMixinBase):
+    def _effective_channel_tools(self, allowed_tools: tuple[str, ...]) -> tuple[str, ...]:
+        effective: list[str] = []
+        seen: set[str] = set()
+        for raw_tool in allowed_tools:
+            canonical = canonical_tool_name_typed(raw_tool)
+            if str(canonical) not in _PUBLIC_DISCORD_TOOL_ALLOWLIST:
+                continue
+            resolved = self._registry.resolve_name(canonical)
+            if resolved is None:
+                continue
+            tool_name = str(resolved)
+            if tool_name in seen:
+                continue
+            seen.add(tool_name)
+            effective.append(tool_name)
+        return tuple(sorted(effective))
+
+    def _channel_capabilities_for_tools(self, allowed_tools: tuple[str, ...]) -> list[str]:
+        capabilities: set[Capability] = set()
+        for tool_name in allowed_tools:
+            resolved = self._registry.resolve_name(canonical_tool_name_typed(tool_name))
+            if resolved is None:
+                continue
+            definition = self._registry.get_tool(resolved)
+            if definition is not None:
+                capabilities.update(definition.capabilities_required)
+        return sorted(cap.value for cap in capabilities)
+
+    def _proactive_cooldown_key(
+        self,
+        *,
+        channel: str,
+        guild_id: str,
+        channel_id: str,
+    ) -> str:
+        return f"{channel}:{guild_id}:{channel_id}"
+
+    def _proactive_cooldown_active(
+        self,
+        *,
+        key: str,
+        cooldown_seconds: float,
+        now: datetime,
+    ) -> bool:
+        if cooldown_seconds <= 0:
+            return False
+        last = cast(datetime | None, self._channel_proactive_last_sent_at.get(key))
+        if last is None:
+            return False
+        elapsed_seconds = (now - last).total_seconds()
+        return elapsed_seconds < cooldown_seconds
+
+    async def _record_channel_observation(
+        self,
+        *,
+        message: ChannelMessage,
+        identity_user_id: UserId,
+        identity_workspace_id: WorkspaceId,
+        trust_level: str,
+        firewall_result: Any,
+        delivery_target: DeliveryTarget,
+        channel_policy: dict[str, Any],
+        reason: str,
+        ephemeral_session: bool,
+    ) -> dict[str, Any]:
+        created = await self.do_session_create(
+            {
+                "channel": message.channel,
+                "user_id": identity_user_id,
+                "workspace_id": identity_workspace_id,
+                "trust_level": trust_level,
+                "_internal_ingress_marker": self._internal_ingress_marker,
+                "_delivery_target": delivery_target.model_dump(mode="json"),
+                "_capabilities": [],
+                "_tool_allowlist": [],
+                "_channel_policy": channel_policy,
+            }
+        )
+        sid = SessionId(str(created["session_id"]))
+        taint_labels = set(firewall_result.taint_labels)
+        if _is_public_channel_trust(trust_level):
+            taint_labels.add(TaintLabel.UNTRUSTED)
+        self._transcript_store.append(
+            sid,
+            role="user",
+            content=firewall_result.sanitized_text,
+            taint_labels=taint_labels,
+            metadata={
+                "channel": message.channel,
+                "session_mode": "default",
+                "channel_message_id": message.message_id,
+                "delivery_target": delivery_target.model_dump(mode="json"),
+                "interaction_type": "observed",
+                "passive_reason": reason,
+                "channel_policy": channel_policy,
+            },
+        )
+        await self._event_bus.publish(
+            SessionMessageReceived(
+                session_id=sid,
+                actor=str(identity_user_id) or "user",
+                content_hash=_short_hash(message.content),
+                channel=message.channel,
+                user_id=str(identity_user_id),
+                workspace_id=str(identity_workspace_id),
+                trust_level=trust_level,
+                taint_labels=sorted(label.value for label in taint_labels),
+                risk_score=firewall_result.risk_score,
+            )
+        )
+        if ephemeral_session:
+            self._session_manager.terminate(sid, reason=f"channel_observation:{reason}")
+        return {
+            "session_id": sid,
+            "response": "",
+            "plan_hash": None,
+            "risk_score": firewall_result.risk_score,
+            "blocked_actions": 0,
+            "confirmation_required_actions": 0,
+            "executed_actions": 0,
+            "checkpoint_ids": [],
+            "checkpoints_created": 0,
+            "transcript_root": str(self._transcript_root),
+            "lockdown_level": "normal",
+            "trust_level": trust_level,
+            "pending_confirmation_ids": [],
+            "output_policy": {},
+            "ingress_risk": firewall_result.risk_score,
+            "delivery": {
+                "attempted": False,
+                "sent": False,
+                "reason": reason,
+                "target": delivery_target.model_dump(mode="json"),
+            },
+            "channel_policy": channel_policy,
+        }
+
     async def _run_dev_coding_task(
         self,
         *,
@@ -158,6 +353,7 @@ class AdminImplMixin(HandlerMixinBase):
 
     async def do_daemon_status(self, params: Mapping[str, Any]) -> dict[str, Any]:
         _ = params
+        a2a_runtime = getattr(self._services, "a2a_runtime", None)
         return {
             "status": "running",
             "sessions_active": len(self._session_manager.list_active()),
@@ -169,7 +365,8 @@ class AdminImplMixin(HandlerMixinBase):
             "model_routes": dict(self._model_routes),
             "classifier_mode": self._classifier_mode,
             "content_firewall": self._firewall.status_snapshot(),
-            "yara_required": self._policy_loader.policy.yara_required,
+            "yara_required": True,
+            "yara_policy_required": self._policy_loader.policy.yara_required,
             "risk_policy_version": self._policy_loader.policy.risk_policy.version,
             "risk_thresholds": {
                 "auto_approve": self._policy_loader.policy.risk_policy.auto_approve_threshold,
@@ -217,6 +414,7 @@ class AdminImplMixin(HandlerMixinBase):
             "selfmod": self._selfmod_manager.status(),
             "realitycheck": self._realitycheck_toolkit.doctor_status(),
             "provenance": self._provenance_status,
+            "a2a": a2a_runtime.status() if a2a_runtime is not None else {"enabled": False},
         }
 
     async def do_policy_explain(self, params: Mapping[str, Any]) -> dict[str, Any]:
@@ -254,6 +452,10 @@ class AdminImplMixin(HandlerMixinBase):
         self._shutdown_event.set()
         return {"status": "shutting_down"}
 
+    async def do_daemon_reset(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        _ = params
+        return cast(dict[str, Any], await self.reset_test_state())
+
     async def do_admin_selfmod_propose(self, params: Mapping[str, Any]) -> dict[str, Any]:
         artifact_path_raw = str(params.get("artifact_path", "")).strip()
         if not artifact_path_raw:
@@ -278,6 +480,110 @@ class AdminImplMixin(HandlerMixinBase):
             raise ValueError("change_id is required")
         result = self._selfmod_manager.rollback(change_id)
         return cast(dict[str, Any], result.model_dump(mode="json"))
+
+    def _soul_config_path(self) -> Path | None:
+        return cast(Path | None, getattr(self._config, "assistant_persona_soul_path", None))
+
+    def _soul_max_bytes(self) -> int:
+        return int(getattr(self._config, "assistant_persona_soul_max_bytes", 64 * 1024))
+
+    def _require_trusted_admin_command(self, params: Mapping[str, Any]) -> None:
+        internal_marker = getattr(self, "_internal_ingress_marker", None)
+        internal_ingress = params.get("_internal_ingress_marker")
+        if internal_marker is not None and internal_ingress is internal_marker:
+            raise ValueError("SOUL.md access requires trusted admin command ingress")
+        checker = getattr(self, "_is_admin_rpc_peer", None)
+        if callable(checker) and bool(checker(params)):
+            return
+        peer = params.get("_rpc_peer", {})
+        if isinstance(peer, Mapping):
+            uid = peer.get("uid")
+            if isinstance(uid, int) and uid in {0, os.getuid()}:
+                return
+        raise ValueError("SOUL.md access requires trusted admin command ingress")
+
+    def _refresh_soul_persona_defaults(self) -> str:
+        effective_text = load_effective_persona_text(self._config)
+        tone = str(getattr(self._config, "assistant_persona_tone", "neutral"))
+        selfmod_manager = getattr(self, "_selfmod_manager", None)
+        overlay_refreshed = False
+        if selfmod_manager is not None:
+            if hasattr(selfmod_manager, "_default_persona_tone"):
+                selfmod_manager._default_persona_tone = tone
+            if hasattr(selfmod_manager, "_default_persona_text"):
+                selfmod_manager._default_persona_text = effective_text
+            apply_overlay = getattr(selfmod_manager, "_apply_behavior_overlay", None)
+            if callable(apply_overlay):
+                apply_overlay()
+                overlay_refreshed = True
+        if not overlay_refreshed:
+            setter = getattr(self._planner, "set_persona_defaults", None)
+            if callable(setter):
+                setter(tone=tone, custom_text=effective_text)
+        return effective_text
+
+    async def do_admin_soul_read(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        self._require_trusted_admin_command(params)
+        soul_path = self._soul_config_path()
+        if soul_path is None:
+            return {
+                "configured": False,
+                "path": "",
+                "content": "",
+                "sha256": "",
+                "bytes": 0,
+                "warnings": [],
+                "reason": "soul_path_unconfigured",
+            }
+        soul_exists = soul_path.exists()
+        content = load_soul_text(soul_path, max_bytes=self._soul_max_bytes())
+        return {
+            "configured": True,
+            "path": str(soul_path),
+            "content": content,
+            "sha256": soul_text_sha256(content) if soul_exists else "",
+            "bytes": len(content.encode("utf-8")),
+            "warnings": list(soul_content_warnings(content)),
+            "reason": "ok",
+        }
+
+    async def do_admin_soul_update(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        self._require_trusted_admin_command(params)
+        soul_path = self._soul_config_path()
+        if soul_path is None:
+            return {
+                "updated": False,
+                "path": "",
+                "sha256": "",
+                "bytes": 0,
+                "warnings": [],
+                "reason": "soul_path_unconfigured",
+            }
+        content = str(params.get("content", ""))
+        expected_sha256 = str(params.get("expected_sha256", "") or "").strip()
+        if expected_sha256:
+            soul_exists = soul_path.exists()
+            current = load_soul_text(soul_path, max_bytes=self._soul_max_bytes())
+            current_sha256 = soul_text_sha256(current) if soul_exists else ""
+            if current_sha256 != expected_sha256:
+                return {
+                    "updated": False,
+                    "path": str(soul_path),
+                    "sha256": current_sha256,
+                    "bytes": len(current.encode("utf-8")),
+                    "warnings": list(soul_content_warnings(current)),
+                    "reason": "sha256_mismatch",
+                }
+        result = write_soul_text(soul_path, content, max_bytes=self._soul_max_bytes())
+        self._refresh_soul_persona_defaults()
+        return {
+            "updated": True,
+            "path": str(result.path),
+            "sha256": result.sha256,
+            "bytes": result.bytes_written,
+            "warnings": list(result.warnings),
+            "reason": "ok",
+        }
 
     async def do_dev_implement(self, params: Mapping[str, Any]) -> dict[str, Any]:
         task = str(params.get("task", "")).strip()
@@ -534,14 +840,44 @@ class AdminImplMixin(HandlerMixinBase):
 
     async def do_channel_ingest(self, params: Mapping[str, Any]) -> dict[str, Any]:
         message = ChannelMessage.model_validate(params.get("message", {}))
+        metadata = dict(message.metadata or {})
+        raw_workspace_hint = message.workspace_hint
+        discord_decision = DiscordChannelPolicyDecision()
+        discord_guild_id = ""
+        discord_channel_id = ""
         if self._matrix_channel is not None and message.channel == "matrix":
             room_hint = message.workspace_hint or self._config.matrix_room_id
             message = message.model_copy(
                 update={"workspace_hint": self._matrix_channel.workspace_for_room(room_hint)}
             )
-        elif self._discord_channel is not None and message.channel == "discord":
-            discord_workspace = self._discord_channel.workspace_for_guild(message.workspace_hint)
-            message = message.model_copy(update={"workspace_hint": discord_workspace})
+        elif message.channel == "discord":
+            if "discord_guild_id" in metadata:
+                discord_guild_id = str(metadata.get("discord_guild_id") or "").strip()
+            else:
+                discord_guild_id = raw_workspace_hint.strip()
+            if "discord_channel_id" in metadata:
+                discord_channel_id = str(metadata.get("discord_channel_id") or "").strip()
+            else:
+                discord_channel_id = message.reply_target.strip()
+            if self._discord_channel is not None:
+                discord_workspace = self._discord_channel.workspace_for_guild(discord_guild_id)
+                discord_decision = self._discord_channel.policy_decision_for(
+                    guild_id=discord_guild_id,
+                    channel_id=discord_channel_id,
+                    external_user_id=message.external_user_id,
+                )
+            else:
+                discord_workspace = discord_guild_id or message.workspace_hint
+                discord_decision = _discord_policy_from_config(self._config).resolve(
+                    guild_id=discord_guild_id,
+                    channel_id=discord_channel_id,
+                    external_user_id=message.external_user_id,
+                )
+            metadata.setdefault("discord_guild_id", discord_guild_id)
+            metadata.setdefault("discord_channel_id", discord_channel_id)
+            message = message.model_copy(
+                update={"workspace_hint": discord_workspace, "metadata": metadata}
+            )
         elif self._telegram_channel is not None and message.channel == "telegram":
             telegram_workspace = self._telegram_channel.workspace_for_chat(message.workspace_hint)
             message = message.model_copy(update={"workspace_hint": telegram_workspace})
@@ -549,10 +885,47 @@ class AdminImplMixin(HandlerMixinBase):
             slack_workspace = self._slack_channel.workspace_for_team(message.workspace_hint)
             message = message.model_copy(update={"workspace_hint": slack_workspace})
 
-        if not self._identity_map.is_allowed(
+        allowed_by_identity = self._identity_map.is_allowed(
             channel=message.channel,
             external_user_id=message.external_user_id,
-        ):
+        )
+        if message.channel == "discord" and discord_decision.denied:
+            return {
+                "session_id": "",
+                "response": "Discord channel policy denies this channel or user.",
+                "plan_hash": None,
+                "risk_score": 0.0,
+                "blocked_actions": 0,
+                "confirmation_required_actions": 0,
+                "executed_actions": 0,
+                "checkpoint_ids": [],
+                "checkpoints_created": 0,
+                "transcript_root": str(self._transcript_root),
+                "lockdown_level": "normal",
+                "trust_level": "untrusted",
+                "pending_confirmation_ids": [],
+                "output_policy": {},
+                "ingress_risk": 0.0,
+                "delivery": {
+                    "attempted": False,
+                    "sent": False,
+                    "reason": "channel_policy_denied",
+                    "target": {},
+                },
+                "channel_policy": _channel_policy_payload(
+                    decision=discord_decision,
+                    guild_id=discord_guild_id,
+                    channel_id=discord_channel_id,
+                    reason="channel_policy_denied",
+                ),
+            }
+
+        public_policy_access = (
+            message.channel == "discord"
+            and discord_decision.public_access
+            and discord_decision.reason in {"public_grant", "trusted_guest_grant"}
+        )
+        if not allowed_by_identity and not public_policy_access:
             pairing, is_new = self._identity_map.record_pairing_request(
                 channel=message.channel,
                 external_user_id=message.external_user_id,
@@ -600,22 +973,34 @@ class AdminImplMixin(HandlerMixinBase):
                     "reason": "identity_not_allowlisted",
                     "target": {},
                 },
+                "channel_policy": _channel_policy_payload(
+                    decision=discord_decision,
+                    guild_id=discord_guild_id,
+                    channel_id=discord_channel_id,
+                    reason="identity_not_allowlisted",
+                )
+                if message.channel == "discord"
+                else {},
             }
 
         declared_trust = self._identity_map.trust_for_channel(message.channel)
-        if self._is_verified_channel_identity(
+        if public_policy_access:
+            declared_trust = discord_decision.trust_level
+        elif self._is_verified_channel_identity(
             channel=message.channel,
             external_user_id=message.external_user_id,
         ):
-            declared_trust = "trusted"
+            declared_trust = "owner"
         if not declared_trust:
             declared_trust = "untrusted"
 
-        identity = self._identity_map.resolve(
-            channel=message.channel,
-            external_user_id=message.external_user_id,
-        )
-        if identity is None:
+        identity = None
+        if allowed_by_identity:
+            identity = self._identity_map.resolve(
+                channel=message.channel,
+                external_user_id=message.external_user_id,
+            )
+        if identity is None and not public_policy_access:
             self._identity_map.bind(
                 channel=message.channel,
                 external_user_id=message.external_user_id,
@@ -627,7 +1012,11 @@ class AdminImplMixin(HandlerMixinBase):
                 channel=message.channel,
                 external_user_id=message.external_user_id,
             )
-        elif declared_trust != identity.trust_level:
+        elif (
+            identity is not None
+            and not public_policy_access
+            and declared_trust != identity.trust_level
+        ):
             self._identity_map.bind(
                 channel=message.channel,
                 external_user_id=message.external_user_id,
@@ -639,10 +1028,23 @@ class AdminImplMixin(HandlerMixinBase):
                 channel=message.channel,
                 external_user_id=message.external_user_id,
             )
-        if identity is None:
+        if public_policy_access:
+            identity_user_id = UserId(message.external_user_id)
+            identity_workspace_id = WorkspaceId(message.workspace_hint or message.channel)
+            identity_trust_level = declared_trust
+        elif identity is not None:
+            identity_user_id = identity.user_id
+            identity_workspace_id = identity.workspace_id
+            identity_trust_level = identity.trust_level
+        else:
             raise ValueError("failed to resolve channel identity")
 
-        trusted_input = identity.trust_level.strip().lower() in {"trusted", "verified", "internal"}
+        trusted_input = identity_trust_level.strip().lower() in {
+            "trusted",
+            "verified",
+            "internal",
+            "owner",
+        }
         _sanitized, result = self._channel_ingress.process(message, trusted_input=trusted_input)
         delivery_target = DeliveryTarget(
             channel=message.channel,
@@ -650,46 +1052,131 @@ class AdminImplMixin(HandlerMixinBase):
             workspace_hint=message.workspace_hint,
             thread_id=message.thread_id,
         )
+        public_session = _is_public_channel_trust(identity_trust_level)
+        effective_channel_tools = (
+            self._effective_channel_tools(discord_decision.allowed_tools) if public_session else ()
+        )
+        effective_discord_decision = DiscordChannelPolicyDecision(
+            engagement_mode=discord_decision.engagement_mode,
+            public_access=discord_decision.public_access,
+            trust_level=discord_decision.trust_level,
+            allowed_tools=effective_channel_tools,
+            denied=discord_decision.denied,
+            reason=discord_decision.reason,
+            cooldown_seconds=discord_decision.cooldown_seconds,
+            relevance_keywords=discord_decision.relevance_keywords,
+            proactive_marker=discord_decision.proactive_marker,
+        )
+        channel_policy_payload = (
+            _channel_policy_payload(
+                decision=effective_discord_decision,
+                guild_id=discord_guild_id,
+                channel_id=discord_channel_id,
+                ephemeral_session=public_session,
+                owner_private_context_excluded=public_session,
+            )
+            if message.channel == "discord"
+            else {}
+        )
+        observed_message = str(metadata.get("interaction_type", "")).strip() == "observed"
+        proactive_eligible = bool(metadata.get("proactive_eligible", False))
+        proactive = bool(observed_message and proactive_eligible)
+        if observed_message and not proactive:
+            reason = str(metadata.get("passive_reason", "")).strip() or "passive_observe"
+            channel_policy_payload["reason"] = reason
+            channel_policy_payload["ephemeral_session"] = True
+            return await self._record_channel_observation(
+                message=message,
+                identity_user_id=identity_user_id,
+                identity_workspace_id=identity_workspace_id,
+                trust_level=identity_trust_level,
+                firewall_result=result,
+                delivery_target=delivery_target,
+                channel_policy=channel_policy_payload,
+                reason=reason,
+                ephemeral_session=True,
+            )
+        cooldown_key = self._proactive_cooldown_key(
+            channel=message.channel,
+            guild_id=discord_guild_id,
+            channel_id=discord_channel_id,
+        )
+        if proactive and self._proactive_cooldown_active(
+            key=cooldown_key,
+            cooldown_seconds=float(discord_decision.cooldown_seconds),
+            now=datetime.now(UTC),
+        ):
+            channel_policy_payload["reason"] = "proactive_cooldown"
+            channel_policy_payload["proactive"] = False
+            channel_policy_payload["ephemeral_session"] = True
+            return await self._record_channel_observation(
+                message=message,
+                identity_user_id=identity_user_id,
+                identity_workspace_id=identity_workspace_id,
+                trust_level=identity_trust_level,
+                firewall_result=result,
+                delivery_target=delivery_target,
+                channel_policy=channel_policy_payload,
+                reason="proactive_cooldown",
+                ephemeral_session=True,
+            )
+        channel_policy_payload["proactive"] = proactive
+
         sid = SessionId(str(params.get("session_id", "")))
+        if public_session:
+            sid = SessionId("")
         if not sid or self._session_manager.get(sid) is None:
             existing = self._session_manager.find_by_binding(
                 channel=message.channel,
-                user_id=identity.user_id,
-                workspace_id=identity.workspace_id,
+                user_id=identity_user_id,
+                workspace_id=identity_workspace_id,
             )
-            if existing is not None:
+            if existing is not None and not public_session:
                 sid = existing.id
         if not sid or self._session_manager.get(sid) is None:
-            created = await self.do_session_create(
-                {
-                    "channel": message.channel,
-                    "user_id": identity.user_id,
-                    "workspace_id": identity.workspace_id,
-                    "trust_level": identity.trust_level,
-                    "_internal_ingress_marker": self._internal_ingress_marker,
-                    "_delivery_target": delivery_target.model_dump(mode="json"),
-                }
-            )
+            session_payload: dict[str, Any] = {
+                "channel": message.channel,
+                "user_id": identity_user_id,
+                "workspace_id": identity_workspace_id,
+                "trust_level": identity_trust_level,
+                "_internal_ingress_marker": self._internal_ingress_marker,
+                "_delivery_target": delivery_target.model_dump(mode="json"),
+            }
+            if public_session:
+                session_payload["_capabilities"] = self._channel_capabilities_for_tools(
+                    effective_channel_tools
+                )
+                session_payload["_tool_allowlist"] = list(effective_channel_tools)
+                session_payload["_channel_policy"] = channel_policy_payload
+            created = await self.do_session_create(session_payload)
             sid = SessionId(created["session_id"])
         response = await self.do_session_message(
             {
                 "session_id": sid,
                 "channel": message.channel,
-                "user_id": identity.user_id,
-                "workspace_id": identity.workspace_id,
+                "user_id": identity_user_id,
+                "workspace_id": identity_workspace_id,
                 "content": message.content,
-                "trust_level": identity.trust_level,
+                "trust_level": identity_trust_level,
                 "_internal_ingress_marker": self._internal_ingress_marker,
                 "_firewall_result": result.model_dump(mode="json"),
                 "_delivery_target": delivery_target.model_dump(mode="json"),
                 "_channel_message_id": message.message_id,
             }
         )
+        if proactive:
+            marker = discord_decision.proactive_marker.strip() or "[proactive]"
+            response_text = str(response.get("response", "")).strip()
+            if response_text and not response_text.startswith(marker):
+                response["response"] = f"{marker} {response_text}"
         delivery_result = await self._delivery.send(
             target=delivery_target,
             message=str(response.get("response", "")),
         )
+        if proactive:
+            self._channel_proactive_last_sent_at[cooldown_key] = datetime.now(UTC)
         response["delivery"] = delivery_result.as_dict()
+        response["channel_policy"] = channel_policy_payload
         await self._event_bus.publish(
             ChannelDeliveryAttempted(
                 session_id=sid,
@@ -716,4 +1203,6 @@ class AdminImplMixin(HandlerMixinBase):
                 )
             )
         response["ingress_risk"] = result.risk_score
+        if public_session:
+            self._session_manager.terminate(sid, reason="public_channel_ephemeral")
         return cast(dict[str, Any], response)

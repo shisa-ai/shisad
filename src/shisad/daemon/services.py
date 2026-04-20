@@ -7,21 +7,17 @@ import contextlib
 import hashlib
 import logging
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 from urllib.parse import urlparse
 
-from shisad.assistant.realitycheck import RealityCheckToolkit
+from shisad.assistant.msgvault import MsgvaultToolkit
 from shisad.channels.base import Channel
 from shisad.channels.delivery import ChannelDeliveryService
-from shisad.channels.discord import DiscordChannel, DiscordConfig
 from shisad.channels.identity import ChannelIdentityMap
 from shisad.channels.ingress import ChannelIngressProcessor
-from shisad.channels.matrix import MatrixChannel, MatrixConfig
-from shisad.channels.slack import SlackChannel, SlackConfig
 from shisad.channels.state import ChannelStateStore
-from shisad.channels.telegram import TelegramChannel, TelegramConfig
 from shisad.coding.manager import CodingAgentManager
 from shisad.core.api.transport import ControlServer
 from shisad.core.audit import AuditLog
@@ -32,6 +28,7 @@ from shisad.core.config import (
 )
 from shisad.core.events import EventBus
 from shisad.core.evidence import ArtifactBlobCodec, ArtifactLedger, KmsArtifactBlobCodec
+from shisad.core.host_matching import host_matches
 from shisad.core.planner import Planner
 from shisad.core.providers.base import validate_endpoint
 from shisad.core.providers.capabilities import AuthMode
@@ -39,21 +36,25 @@ from shisad.core.providers.embeddings_adapter import SyncEmbeddingsAdapter
 from shisad.core.providers.local_planner import LocalPlannerProvider
 from shisad.core.providers.monitor_adapter import MonitorProviderAdapter
 from shisad.core.providers.routed_openai import RoutedOpenAIProvider
-from shisad.core.providers.routing import ModelComponent, ModelRouter
+from shisad.core.providers.routing import ModelComponent, ModelRouter, provider_preset_label
 from shisad.core.session import CheckpointStore, Session, SessionManager
+from shisad.core.soul import load_effective_persona_text
 from shisad.core.tools.builtin.alarm import AlarmTool
 from shisad.core.tools.builtin.shell_exec import ShellExecTool
 from shisad.core.tools.registry import ToolRegistry
 from shisad.core.tools.schema import ToolDefinition, ToolParameter
 from shisad.core.trace import TraceRecorder
 from shisad.core.transcript import TranscriptStore
-from shisad.core.types import Capability, CredentialRef, SessionId, ToolName
+from shisad.core.types import Capability, CredentialRef, SessionId, TaintLabel, ToolName
 from shisad.daemon.approval_web import ApprovalWebService
 from shisad.daemon.event_wiring import DaemonEventWiring
-from shisad.executors.browser import BrowserSandbox, BrowserSandboxPolicy
 from shisad.executors.connect_path import IptablesConnectPathProxy
 from shisad.executors.proxy import EgressProxy
 from shisad.executors.sandbox import SandboxOrchestrator
+from shisad.interop.a2a_ingress import A2aRuntime
+from shisad.interop.a2a_ratelimit import A2aRateLimiter
+from shisad.interop.a2a_registry import A2aRegistry, load_local_identity
+from shisad.interop.mcp_client import McpClientManager
 from shisad.memory.ingestion import EmbeddingFingerprint, IngestionPipeline, RetrieveRagTool
 from shisad.memory.manager import MemoryManager
 from shisad.scheduler.manager import SchedulerManager
@@ -74,13 +75,57 @@ from shisad.security.lockdown import LockdownManager
 from shisad.security.monitor import ActionMonitor
 from shisad.security.pep import PEP
 from shisad.security.policy import PolicyLoader
-from shisad.security.provenance import SecurityAssetManifest, load_manifest, verify_assets
 from shisad.security.ratelimit import RateLimitConfig, RateLimiter
-from shisad.security.risk import RiskCalibrator
+from shisad.security.risk import RiskCalibrator, RiskPolicyVersion
 from shisad.selfmod import SelfModificationManager
 from shisad.skills.manager import SkillManager
 
+if TYPE_CHECKING:
+    from shisad.assistant.realitycheck import RealityCheckToolkit
+    from shisad.channels.discord import DiscordChannel
+    from shisad.channels.matrix import MatrixChannel
+    from shisad.channels.slack import SlackChannel
+    from shisad.channels.telegram import TelegramChannel
+    from shisad.executors.browser import BrowserSandbox
+
 logger = logging.getLogger(__name__)
+
+
+def _wipe_dir_contents(directory: Path) -> None:
+    """Remove all files and subdirectories inside *directory* without removing it."""
+    import shutil
+
+    if not directory.is_dir():
+        return
+    for child in directory.iterdir():
+        if child.is_dir():
+            shutil.rmtree(child, ignore_errors=True)
+        else:
+            child.unlink(missing_ok=True)
+
+
+def _count_files(directory: Path) -> int:
+    """Count files inside *directory* (non-recursive)."""
+    if not directory.is_dir():
+        return 0
+    return sum(1 for child in directory.iterdir() if child.is_file())
+
+
+def _count_files_recursive(directory: Path) -> int:
+    """Count files inside *directory* recursively."""
+    if not directory.is_dir():
+        return 0
+    return sum(1 for child in directory.rglob("*") if child.is_file())
+
+
+def _unlink_if_exists(path: Path) -> bool:
+    """Remove a file if present and report whether it was removed."""
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        return False
+    return True
+
 
 _CHANNEL_TRUST_DEFAULTS: dict[str, str] = {
     "cli": "trusted",
@@ -149,6 +194,188 @@ def _warn_on_evidence_kms_endpoint_config(config: DaemonConfig) -> None:
         )
 
 
+def _warn_on_provider_route_gaps(router: ModelRouter) -> None:
+    embeddings_route = router.route_for(ModelComponent.EMBEDDINGS)
+    if not embeddings_route.remote_enabled:
+        logger.warning(
+            "Embeddings route not configured - semantic retrieval will degrade to "
+            "deterministic local fallback embeddings."
+        )
+
+
+class _LazyBrowserSandbox:
+    def __init__(
+        self,
+        *,
+        output_firewall: OutputFirewall,
+        screenshots_dir: Path,
+    ) -> None:
+        self._output_firewall = output_firewall
+        self._screenshots_dir = screenshots_dir
+        self._impl: Any | None = None
+
+    def _load(self) -> Any:
+        if self._impl is None:
+            from shisad.executors.browser import BrowserSandbox, BrowserSandboxPolicy
+
+            self._impl = BrowserSandbox(
+                output_firewall=self._output_firewall,
+                screenshots_dir=self._screenshots_dir,
+                policy=BrowserSandboxPolicy(clipboard="enabled"),
+            )
+        return self._impl
+
+    @property
+    def policy(self) -> Any:
+        return self._load().policy
+
+    def paste(self, text: str, *, taint_labels: set[TaintLabel] | None = None) -> Any:
+        return self._load().paste(text, taint_labels=taint_labels)
+
+    def store_screenshot(self, **kwargs: Any) -> Any:
+        return self._load().store_screenshot(**kwargs)
+
+
+def _build_browser_sandbox(
+    *,
+    config: DaemonConfig,
+    output_firewall: OutputFirewall,
+) -> Any:
+    screenshots_dir = config.data_dir / "screenshots"
+    if config.browser_enabled:
+        from shisad.executors.browser import BrowserSandbox, BrowserSandboxPolicy
+
+        return BrowserSandbox(
+            output_firewall=output_firewall,
+            screenshots_dir=screenshots_dir,
+            policy=BrowserSandboxPolicy(clipboard="enabled"),
+        )
+    return _LazyBrowserSandbox(
+        output_firewall=output_firewall,
+        screenshots_dir=screenshots_dir,
+    )
+
+
+def _realitycheck_disabled_status(
+    *,
+    config: DaemonConfig,
+    allowed_domains: list[str],
+) -> dict[str, Any]:
+    resolved_repo: Path | None = None
+    try:
+        resolved_repo = config.realitycheck_repo_root.expanduser().resolve(strict=False)
+    except (OSError, RuntimeError, ValueError):
+        resolved_repo = None
+
+    configured_roots: list[Path] = []
+    for item in config.realitycheck_data_roots:
+        if not str(item).strip():
+            continue
+        try:
+            configured_roots.append(item.expanduser().resolve(strict=False))
+        except (OSError, RuntimeError, ValueError):
+            continue
+
+    existing_roots: list[Path] = []
+    for item in configured_roots:
+        try:
+            if item.exists() and item.is_dir():
+                existing_roots.append(item)
+        except (OSError, ValueError):
+            continue
+
+    endpoint = config.realitycheck_endpoint_url.strip()
+    parsed_endpoint = urlparse(endpoint) if endpoint else None
+    endpoint_host = (parsed_endpoint.hostname or "").lower() if parsed_endpoint else ""
+    endpoint_allowlisted = (not config.realitycheck_endpoint_enabled) or (
+        bool(endpoint_host) and any(host_matches(endpoint_host, rule) for rule in allowed_domains)
+    )
+    return {
+        "status": "disabled",
+        "enabled": False,
+        "surface_enabled": False,
+        "repo_root": str(resolved_repo) if resolved_repo is not None else "",
+        "repo_exists": bool(
+            resolved_repo is not None and resolved_repo.exists() and resolved_repo.is_dir()
+        ),
+        "data_roots": [str(item) for item in configured_roots],
+        "data_roots_existing": [str(item) for item in existing_roots],
+        "endpoint_enabled": config.realitycheck_endpoint_enabled,
+        "endpoint_url": endpoint,
+        "endpoint_host": endpoint_host,
+        "endpoint_allowlisted": endpoint_allowlisted,
+        "problems": [],
+    }
+
+
+class _LazyRealityCheckToolkit:
+    def __init__(
+        self,
+        *,
+        config: DaemonConfig,
+        allowed_domains: list[str],
+    ) -> None:
+        self._config = config
+        self._allowed_domains = list(allowed_domains)
+        self._impl: Any | None = None
+        self._disabled_status: dict[str, Any] | None = None
+
+    def _load(self) -> Any:
+        if self._impl is None:
+            from shisad.assistant.realitycheck import RealityCheckToolkit
+
+            self._impl = RealityCheckToolkit(
+                enabled=self._config.realitycheck_enabled,
+                repo_root=self._config.realitycheck_repo_root,
+                data_roots=list(self._config.realitycheck_data_roots),
+                endpoint_enabled=self._config.realitycheck_endpoint_enabled,
+                endpoint_url=self._config.realitycheck_endpoint_url,
+                allowed_domains=self._allowed_domains,
+                timeout_seconds=self._config.realitycheck_timeout_seconds,
+                max_read_bytes=self._config.realitycheck_max_read_bytes,
+                max_search_files=self._config.realitycheck_search_max_files,
+            )
+        return self._impl
+
+    def doctor_status(self) -> dict[str, Any]:
+        if not self._config.realitycheck_enabled:
+            if self._disabled_status is None:
+                self._disabled_status = _realitycheck_disabled_status(
+                    config=self._config,
+                    allowed_domains=self._allowed_domains,
+                )
+            return dict(self._disabled_status)
+        return dict(self._load().doctor_status())
+
+    def search(self, **kwargs: Any) -> dict[str, Any]:
+        return dict(self._load().search(**kwargs))
+
+    def read_source(self, **kwargs: Any) -> dict[str, Any]:
+        return dict(self._load().read_source(**kwargs))
+
+
+def _build_realitycheck_toolkit(
+    *,
+    config: DaemonConfig,
+    allowed_domains: list[str],
+) -> Any:
+    if config.realitycheck_enabled:
+        from shisad.assistant.realitycheck import RealityCheckToolkit
+
+        return RealityCheckToolkit(
+            enabled=config.realitycheck_enabled,
+            repo_root=config.realitycheck_repo_root,
+            data_roots=list(config.realitycheck_data_roots),
+            endpoint_enabled=config.realitycheck_endpoint_enabled,
+            endpoint_url=config.realitycheck_endpoint_url,
+            allowed_domains=allowed_domains,
+            timeout_seconds=config.realitycheck_timeout_seconds,
+            max_read_bytes=config.realitycheck_max_read_bytes,
+            max_search_files=config.realitycheck_search_max_files,
+        )
+    return _LazyRealityCheckToolkit(config=config, allowed_domains=allowed_domains)
+
+
 @dataclass(slots=True)
 class DaemonServices:
     """Container for initialized daemon subsystems."""
@@ -194,6 +421,10 @@ class DaemonServices:
     skill_manager: SkillManager
     coding_manager: CodingAgentManager
     selfmod_manager: SelfModificationManager
+    mcp_manager: McpClientManager | None
+    a2a_registry: A2aRegistry | None
+    a2a_runtime: A2aRuntime | None
+    msgvault_toolkit: MsgvaultToolkit
     realitycheck_toolkit: RealityCheckToolkit
     realitycheck_status: dict[str, Any]
     lockdown_manager: LockdownManager
@@ -211,6 +442,11 @@ class DaemonServices:
     model_routes: dict[str, str]
     provider_diagnostics: dict[str, Any]
     internal_ingress_marker: object
+    identity_default_trust_baseline: dict[str, str]
+    identity_allowlists_baseline: dict[str, frozenset[str]]
+    active_rpc_calls: int = field(default=0)
+    rpc_state_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    reset_in_progress: bool = field(default=False)
 
     @classmethod
     async def build(cls, config: DaemonConfig) -> DaemonServices:
@@ -280,6 +516,8 @@ class DaemonServices:
         slack_channel: SlackChannel | None = None
         embeddings_adapter: SyncEmbeddingsAdapter | None = None
         control_plane_sidecar: ControlPlaneSidecarHandle | None = None
+        mcp_manager: McpClientManager | None = None
+        a2a_runtime: A2aRuntime | None = None
         startup_complete = False
 
         try:
@@ -341,19 +579,21 @@ class DaemonServices:
                 semantic_classifier=semantic_classifier,
                 semantic_classifier_status=semantic_status,
             )
-            if policy_loader.policy.yara_required and firewall.classifier_mode != "yara":
+            try:
+                firewall.validate_yara_backend()
+            except RuntimeError as exc:
                 raise ValueError(
-                    "Policy requires yara mode, but classifier is not running with yara-python"
-                )
+                    "Content firewall requires textguard YARA mode, but the bundled "
+                    "YARA backend is unavailable"
+                ) from exc
             output_firewall = OutputFirewall(
                 safe_domains=policy_loader.policy.safe_output_domains
                 or ["api.example.com", "example.com"],
                 alert_hook=event_wiring.audit_output_event,
             )
-            browser_sandbox = BrowserSandbox(
+            browser_sandbox = _build_browser_sandbox(
+                config=config,
                 output_firewall=output_firewall,
-                screenshots_dir=config.data_dir / "screenshots",
-                policy=BrowserSandboxPolicy(clipboard="enabled"),
             )
             channel_ingress = ChannelIngressProcessor(firewall)
             identity_map = ChannelIdentityMap(default_trust=_CHANNEL_TRUST_DEFAULTS)
@@ -411,6 +651,7 @@ class DaemonServices:
             monitor_provider: MonitorProviderAdapter | None = None
             provider_diagnostics = _build_provider_diagnostics(router)
             _log_provider_route_summary(router)
+            _warn_on_provider_route_gaps(router)
             if any(route.remote_enabled for route in router.all_routes().values()):
                 provider = RoutedOpenAIProvider(
                     router=router,
@@ -461,6 +702,15 @@ class DaemonServices:
                 audit_hook=event_wiring.audit_memory_event,
             )
             scheduler = SchedulerManager(storage_dir=config.data_dir / "tasks")
+            msgvault_toolkit = MsgvaultToolkit(
+                enabled=config.msgvault_enabled,
+                command=config.msgvault_command,
+                home=config.msgvault_home,
+                timeout_seconds=config.msgvault_timeout_seconds,
+                max_results=config.msgvault_max_results,
+                max_body_bytes=config.msgvault_max_body_bytes,
+                account_allowlist=list(config.msgvault_account_allowlist),
+            )
             realitycheck_domains = [
                 item for item in config.realitycheck_allowed_domains if item.strip()
             ]
@@ -468,16 +718,9 @@ class DaemonServices:
                 realitycheck_domains = [
                     rule.host.strip() for rule in policy_loader.policy.egress if rule.host.strip()
                 ]
-            realitycheck_toolkit = RealityCheckToolkit(
-                enabled=config.realitycheck_enabled,
-                repo_root=config.realitycheck_repo_root,
-                data_roots=list(config.realitycheck_data_roots),
-                endpoint_enabled=config.realitycheck_endpoint_enabled,
-                endpoint_url=config.realitycheck_endpoint_url,
+            realitycheck_toolkit = _build_realitycheck_toolkit(
+                config=config,
                 allowed_domains=realitycheck_domains,
-                timeout_seconds=config.realitycheck_timeout_seconds,
-                max_read_bytes=config.realitycheck_max_read_bytes,
-                max_search_files=config.realitycheck_search_max_files,
             )
             realitycheck_status = realitycheck_toolkit.doctor_status()
             rate_limiter = RateLimiter(
@@ -496,14 +739,18 @@ class DaemonServices:
                 data_dir=config.data_dir,
                 policy_path=config.policy_path,
                 assistant_fs_roots=list(config.assistant_fs_roots),
+                startup_timeout_seconds=config.control_plane_startup_timeout_seconds,
             )
             control_plane = control_plane_sidecar.client
 
-            provenance_manifest_path = (
-                Path(__file__).resolve().parents[1] / "security" / "rules" / "provenance.json"
-            )
-            provenance_root = Path(__file__).resolve().parents[1] / "security" / "rules"
-            provenance_status, _ = _load_provenance(provenance_manifest_path, provenance_root)
+            provenance_status = {
+                "available": False,
+                "version": "",
+                "source_commit": "",
+                "manifest_hash": "",
+                "drift": [],
+                "reason": "local_security_assets_removed_textguard_bundled_rules",
+            }
 
             search_backend_destination = _normalize_tool_destination(config.web_search_backend_url)
             browser_destinations = [
@@ -528,19 +775,27 @@ class DaemonServices:
                     realitycheck_status.get("endpoint_host", "")
                 ).strip(),
             )
+            if config.mcp_servers:
+                mcp_manager = McpClientManager(
+                    server_configs=list(config.mcp_servers),
+                    tool_registry=registry,
+                )
+                await mcp_manager.connect_all()
             pep = PEP(
                 policy_loader.policy,
                 registry,
                 evidence_store=evidence_store,
                 credential_store=credential_store,
                 credential_audit_hook=event_wiring.audit_credential_use,
+                mcp_trusted_servers=set(config.mcp_trusted_servers),
             )
             planner_route = router.route_for(ModelComponent.PLANNER)
+            effective_persona_text = load_effective_persona_text(config)
             planner = Planner(
                 provider,
                 pep,
                 persona_tone=config.assistant_persona_tone,
-                custom_persona_text=config.assistant_persona_custom_text,
+                custom_persona_text=effective_persona_text,
                 capabilities=planner_route.capabilities,
                 tool_registry=registry,
                 schema_strict_mode=bool(model_config.planner_schema_strict_mode),
@@ -562,13 +817,17 @@ class DaemonServices:
                 skill_manager=skill_manager,
                 planner=planner,
                 default_persona_tone=config.assistant_persona_tone,
-                default_persona_text=config.assistant_persona_custom_text,
+                default_persona_text=effective_persona_text,
             )
             shutdown_event = asyncio.Event()
             planner_model_id = planner_route.model_id
             model_routes = {
                 component.value: router.route_for(component).base_url
                 for component in ModelComponent
+            }
+            identity_default_trust_baseline = dict(identity_map._default_trust)
+            identity_allowlists_baseline = {
+                channel: frozenset(values) for channel, values in identity_map._allowlists.items()
             }
             services = cls(
                 config=config,
@@ -612,6 +871,10 @@ class DaemonServices:
                 skill_manager=skill_manager,
                 coding_manager=coding_manager,
                 selfmod_manager=selfmod_manager,
+                mcp_manager=mcp_manager,
+                a2a_registry=None,
+                a2a_runtime=None,
+                msgvault_toolkit=msgvault_toolkit,
                 realitycheck_toolkit=realitycheck_toolkit,
                 realitycheck_status=realitycheck_status,
                 lockdown_manager=lockdown_manager,
@@ -629,14 +892,42 @@ class DaemonServices:
                 model_routes=model_routes,
                 provider_diagnostics=provider_diagnostics,
                 internal_ingress_marker=internal_ingress_marker,
+                identity_default_trust_baseline=identity_default_trust_baseline,
+                identity_allowlists_baseline=identity_allowlists_baseline,
             )
+            if config.a2a.enabled:
+                if config.a2a.identity is None:
+                    raise ValueError("A2A is enabled but no local identity is configured")
+                local_identity = load_local_identity(config.a2a.identity)
+                services.a2a_registry = A2aRegistry.from_config(config.a2a)
+                from shisad.daemon.control_handlers import DaemonControlHandlers
+
+                handlers = DaemonControlHandlers(services=services)
+                a2a_runtime = A2aRuntime(
+                    local_identity=local_identity,
+                    registry=services.a2a_registry,
+                    firewall=firewall,
+                    session_create=handlers.handle_session_create,
+                    session_message=handlers.handle_session_message,
+                    listen_config=config.a2a.listen,
+                    rate_limiter=A2aRateLimiter(config.a2a.rate_limits),
+                    event_bus=event_bus,
+                )
+                await a2a_runtime.start()
+                services.a2a_runtime = a2a_runtime
             startup_complete = True
             return services
         finally:
             if not startup_complete:
+                if a2a_runtime is not None:
+                    with contextlib.suppress(OSError, RuntimeError):
+                        await a2a_runtime.close()
                 if embeddings_adapter is not None:
                     with contextlib.suppress(OSError, RuntimeError):
                         embeddings_adapter.close(wait=False)
+                if mcp_manager is not None:
+                    with contextlib.suppress(OSError, RuntimeError):
+                        await mcp_manager.shutdown()
                 for channel in channels.values():
                     with contextlib.suppress(OSError, RuntimeError):
                         await channel.disconnect()
@@ -646,61 +937,286 @@ class DaemonServices:
                 with contextlib.suppress(OSError, RuntimeError):
                     await server.stop()
 
+    async def reset_test_state(self) -> dict[str, Any]:
+        """Clear mutable runtime state for test isolation.
+
+        Wipes mutable runtime state while preserving the daemon process,
+        control-plane sidecar, tool registry, firewall, and other static
+        runtime wiring.
+
+        Returns a summary dict with counts of cleared items.
+
+        **Not for production use.**
+        """
+        if not self.config.test_mode:
+            raise RuntimeError("daemon.reset is unavailable outside explicit test mode")
+        inflight_embeddings = len(getattr(self.embeddings_adapter, "_inflight", ()))
+        if inflight_embeddings > 0:
+            raise RuntimeError("Cannot reset test state while embeddings requests are in flight")
+
+        cleared: dict[str, int] = {}
+
+        # -- Sessions --
+        cleared["sessions"] = len(self.session_manager._sessions)
+        self.session_manager._sessions.clear()
+        if self.session_manager._state_dir is not None:
+            _wipe_dir_contents(self.session_manager._state_dir)
+
+        # -- Scheduler --
+        cleared["scheduler_tasks"] = len(self.scheduler._tasks)
+        cleared["scheduler_pending_confirmations"] = sum(
+            len(rows) for rows in self.scheduler._pending_confirmations.values()
+        )
+        self.scheduler._tasks.clear()
+        self.scheduler._pending_confirmations.clear()
+        if self.scheduler._tasks_file is not None:
+            _unlink_if_exists(self.scheduler._tasks_file)
+        if self.scheduler._pending_file is not None:
+            _unlink_if_exists(self.scheduler._pending_file)
+
+        # -- Memory --
+        cleared["memory_entries"] = len(self.memory_manager._entries)
+        self.memory_manager._entries.clear()
+        _wipe_dir_contents(self.memory_manager._storage_dir)
+
+        # -- Lockdown --
+        cleared["lockdown_states"] = len(self.lockdown_manager._states)
+        self.lockdown_manager._states.clear()
+
+        # -- Rate limiter --
+        cleared["rate_limiter_windows"] = (
+            len(self.rate_limiter._by_tool)
+            + len(self.rate_limiter._by_user)
+            + len(self.rate_limiter._by_session)
+            + len(self.rate_limiter._by_tool_burst)
+        )
+        self.rate_limiter._by_tool.clear()
+        self.rate_limiter._by_user.clear()
+        self.rate_limiter._by_session.clear()
+        self.rate_limiter._by_tool_burst.clear()
+
+        # -- Audit log --
+        cleared["audit_entries"] = self.audit_log.entry_count
+        from shisad.core.audit import _GENESIS_HASH
+
+        self.audit_log._previous_hash = _GENESIS_HASH
+        self.audit_log._entry_count = 0
+        if self.audit_log._log_path.exists():
+            self.audit_log._log_path.write_text("", encoding="utf-8")
+
+        # -- Checkpoints --
+        cleared["checkpoints"] = _count_files_recursive(self.checkpoint_store._dir)
+        _wipe_dir_contents(self.checkpoint_store._dir)
+
+        # -- Channel state --
+        cleared["channel_state_channels"] = len(self.channel_state_store._seen_ids)
+        channel_state_root = self.channel_state_store._root_dir
+        cleared["channel_state_files"] = _count_files_recursive(channel_state_root)
+        self.channel_state_store._seen_ids.clear()
+        self.channel_state_store._seen_id_sets.clear()
+        self.channel_state_store._journal_appends_since_compaction.clear()
+        self.channel_state_store._loaded_channels.clear()
+        self.channel_state_store._compaction_warning_logged.clear()
+        _wipe_dir_contents(channel_state_root)
+
+        # -- Transcripts --
+        cleared["transcripts"] = _count_files_recursive(
+            self.transcript_store._transcript_dir
+        ) + _count_files_recursive(self.transcript_store._blob_dir)
+        _wipe_dir_contents(self.transcript_store._transcript_dir)
+        _wipe_dir_contents(self.transcript_store._blob_dir)
+
+        # -- Evidence --
+        cleared["evidence_refs"] = len(self.evidence_store._refs)
+        cleared["evidence_files"] = _count_files_recursive(self.evidence_store._blob_dir) + int(
+            self.evidence_store._metadata_path.exists()
+        )
+        self.evidence_store._refs.clear()
+        self.evidence_store._temporarily_unreadable_refs.clear()
+        _wipe_dir_contents(self.evidence_store._blob_dir)
+        _wipe_dir_contents(self.evidence_store._quarantine_dir)
+        _unlink_if_exists(self.evidence_store._metadata_path)
+
+        # -- Ingestion --
+        cleared["ingestion_records"] = len(self.ingestion._records)
+        cleared["ingestion_vectors"] = len(self.ingestion._vectors)
+        cleared["ingestion_keys"] = len(self.ingestion._key_metadata_by_id)
+        cleared["ingestion_artifacts"] = _count_files_recursive(
+            self.ingestion._sanitized_dir
+        ) + _count_files_recursive(self.ingestion._original_dir)
+        self.ingestion._records.clear()
+        self.ingestion._vectors.clear()
+        self.ingestion._key_material_by_id.clear()
+        self.ingestion._key_metadata_by_id.clear()
+        self.ingestion._active_key_id = ""
+        _wipe_dir_contents(self.ingestion._sanitized_dir)
+        _wipe_dir_contents(self.ingestion._original_dir)
+        self.ingestion._load_or_create_keys()
+
+        # -- Self-modification --
+        cleared["selfmod_entries"] = len(self.selfmod_manager._inventory.skills) + len(
+            self.selfmod_manager._inventory.behavior_packs
+        )
+        cleared["selfmod_artifacts"] = (
+            _count_files_recursive(self.selfmod_manager._proposal_dir)
+            + _count_files_recursive(self.selfmod_manager._change_dir)
+            + _count_files_recursive(self.selfmod_manager._artifact_root)
+            + int(self.selfmod_manager._inventory_path.exists())
+            + int(self.selfmod_manager._incident_path.exists())
+        )
+        self.selfmod_manager._inventory = self.selfmod_manager._inventory.__class__()
+        _wipe_dir_contents(self.selfmod_manager._proposal_dir)
+        _wipe_dir_contents(self.selfmod_manager._change_dir)
+        _wipe_dir_contents(self.selfmod_manager._artifact_root)
+        _unlink_if_exists(self.selfmod_manager._inventory_path)
+        _unlink_if_exists(self.selfmod_manager._incident_path)
+        self.selfmod_manager._proposal_dir.mkdir(parents=True, exist_ok=True)
+        self.selfmod_manager._change_dir.mkdir(parents=True, exist_ok=True)
+        self.selfmod_manager._artifact_root.mkdir(parents=True, exist_ok=True)
+        self.selfmod_manager._apply_behavior_overlay()
+
+        # -- Skills --
+        cleared["skill_entries"] = len(self.skill_manager._inventory)
+        cleared["skill_tool_registrations"] = sum(
+            len(items) for items in self.skill_manager._skill_tool_map.values()
+        )
+        cleared["skill_pending_events"] = len(self.skill_manager._pending_registration_events)
+        for skill_name in list(self.skill_manager._skill_tool_map):
+            self.skill_manager._unregister_skill_tools(skill_name)
+        self.skill_manager._inventory.clear()
+        self.skill_manager._pending_registration_events.clear()
+        _wipe_dir_contents(self.skill_manager._storage_dir)
+
+        # -- Credentials / approvals --
+        approval_store_path = self.credential_store._approval_store_path
+        approval_store_artifacts = 0
+        if approval_store_path is not None:
+            approval_store_artifacts += int(approval_store_path.exists())
+            approval_store_artifacts += len(
+                list(approval_store_path.parent.glob(f"{approval_store_path.name}.corrupt.*"))
+            )
+        cleared["approval_factors"] = len(self.credential_store._approval_factors)
+        cleared["signer_keys"] = len(self.credential_store._signer_keys)
+        cleared["approval_store_artifacts"] = approval_store_artifacts
+        self.credential_store._approval_factors.clear()
+        self.credential_store._signer_keys.clear()
+        self.credential_store._local_fido2_realm_id = None
+        if approval_store_path is not None:
+            _unlink_if_exists(approval_store_path)
+            corrupt_glob = f"{approval_store_path.name}.corrupt.*"
+            for artifact in approval_store_path.parent.glob(corrupt_glob):
+                artifact.unlink(missing_ok=True)
+
+        # -- Channel identity map --
+        cleared["identity_bindings"] = len(self.identity_map._map)
+        cleared["identity_pairing_requests"] = len(self.identity_map._pairing_requests)
+        self.identity_map._map.clear()
+        self.identity_map._pairing_requests.clear()
+        self.identity_map._default_trust = dict(self.identity_default_trust_baseline)
+        self.identity_map._allowlists = {
+            channel: set(values) for channel, values in self.identity_allowlists_baseline.items()
+        }
+
+        # -- Trace capture --
+        trace_dir = (
+            self.trace_recorder._traces_dir
+            if self.trace_recorder is not None
+            else self.config.data_dir / "traces"
+        )
+        cleared["trace_files"] = _count_files_recursive(trace_dir)
+        _wipe_dir_contents(trace_dir)
+
+        # -- Session archives --
+        session_archive_dir = self.config.data_dir / "session_archives"
+        cleared["session_archives"] = _count_files_recursive(session_archive_dir)
+        _wipe_dir_contents(session_archive_dir)
+
+        # -- Risk calibrator --
+        cleared["risk_observations"] = int(self.risk_calibrator.observations_path.exists())
+        cleared["risk_policies"] = int(self.risk_calibrator.policy_path.exists())
+        _unlink_if_exists(self.risk_calibrator.observations_path)
+        _unlink_if_exists(self.risk_calibrator.policy_path)
+        default_risk_policy = RiskPolicyVersion()
+        self.policy_loader.policy.risk_policy.version = default_risk_policy.version
+        self.policy_loader.policy.risk_policy.auto_approve_threshold = (
+            default_risk_policy.thresholds.auto_approve_threshold
+        )
+        self.policy_loader.policy.risk_policy.block_threshold = (
+            default_risk_policy.thresholds.block_threshold
+        )
+
+        logger.info("Test state reset: %s", cleared)
+        return {"status": "reset", "cleared": cleared}
+
     async def shutdown(self) -> None:
         """Close async/sync resources in reverse runtime order."""
-        try:
-            self.embeddings_adapter.close(wait=True)
-        except (OSError, RuntimeError):
-            logger.exception("Error closing embeddings adapter")
+        shutdown_ops: list[tuple[str, Any]] = []
+
+        embeddings_adapter = getattr(self, "embeddings_adapter", None)
+        if embeddings_adapter is not None:
+            shutdown_ops.append(
+                (
+                    "embeddings_adapter",
+                    asyncio.to_thread(embeddings_adapter.close, wait=True),
+                )
+            )
+
+        mcp_manager = getattr(self, "mcp_manager", None)
+        a2a_runtime = getattr(self, "a2a_runtime", None)
+        if a2a_runtime is not None:
+            shutdown_ops.append(("a2a_runtime", a2a_runtime.close()))
+
         disconnected_ids: set[int] = set()
         channels = getattr(self, "channels", {})
         if isinstance(channels, dict):
-            for channel in channels.values():
-                try:
-                    await channel.disconnect()
-                    disconnected_ids.add(id(channel))
-                except (OSError, RuntimeError):
-                    logger.exception("Error disconnecting channel")
+            for channel_name, channel in channels.items():
+                if id(channel) in disconnected_ids:
+                    continue
+                disconnected_ids.add(id(channel))
+                shutdown_ops.append((f"channel:{channel_name}", channel.disconnect()))
 
-        matrix_channel = getattr(self, "matrix_channel", None)
-        if matrix_channel is not None and id(matrix_channel) not in disconnected_ids:
-            try:
-                await matrix_channel.disconnect()
-            except (OSError, RuntimeError):
-                logger.exception("Error disconnecting matrix channel")
-        discord_channel = getattr(self, "discord_channel", None)
-        if discord_channel is not None and id(discord_channel) not in disconnected_ids:
-            try:
-                await discord_channel.disconnect()
-            except (OSError, RuntimeError):
-                logger.exception("Error disconnecting discord channel")
-        telegram_channel = getattr(self, "telegram_channel", None)
-        if telegram_channel is not None and id(telegram_channel) not in disconnected_ids:
-            try:
-                await telegram_channel.disconnect()
-            except (OSError, RuntimeError):
-                logger.exception("Error disconnecting telegram channel")
-        slack_channel = getattr(self, "slack_channel", None)
-        if slack_channel is not None and id(slack_channel) not in disconnected_ids:
-            try:
-                await slack_channel.disconnect()
-            except (OSError, RuntimeError):
-                logger.exception("Error disconnecting slack channel")
-        shutdown_tasks: list[asyncio.Task[None]] = []
+        for label in ("matrix", "discord", "telegram", "slack"):
+            channel = getattr(self, f"{label}_channel", None)
+            if channel is None or id(channel) in disconnected_ids:
+                continue
+            disconnected_ids.add(id(channel))
+            shutdown_ops.append((f"channel:{label}", channel.disconnect()))
+
         sidecar = getattr(self, "control_plane_sidecar", None)
         if sidecar is not None:
-            shutdown_tasks.append(asyncio.create_task(sidecar.close()))
+            shutdown_ops.append(("control_plane_sidecar", sidecar.close()))
+
         approval_web = getattr(self, "approval_web", None)
         if approval_web is not None:
-            shutdown_tasks.append(asyncio.create_task(approval_web.stop()))
-        shutdown_tasks.append(asyncio.create_task(self.server.stop()))
-        results = await asyncio.gather(*shutdown_tasks, return_exceptions=True)
-        for result in results:
+            shutdown_ops.append(("approval_web", approval_web.stop()))
+
+        server = getattr(self, "server", None)
+        if server is not None:
+            shutdown_ops.append(("control_server", server.stop()))
+
+        results = await asyncio.gather(
+            *(operation for _, operation in shutdown_ops),
+            return_exceptions=True,
+        )
+        for (label, _operation), result in zip(shutdown_ops, results, strict=True):
             if isinstance(result, BaseException):
                 if result.__class__.__name__ == "CancelledError":
                     continue
                 logger.error(
-                    "Error stopping daemon service",
+                    "Error stopping daemon service %s",
+                    label,
+                    exc_info=(type(result), result, result.__traceback__),
+                )
+
+        if mcp_manager is not None:
+            try:
+                await mcp_manager.shutdown()
+            except BaseException as result:
+                if result.__class__.__name__ == "CancelledError":
+                    return
+                logger.error(
+                    "Error stopping daemon service %s",
+                    "mcp_manager",
                     exc_info=(type(result), result, result.__traceback__),
                 )
 
@@ -708,6 +1224,8 @@ class DaemonServices:
 async def _build_matrix_channel(config: DaemonConfig) -> MatrixChannel | None:
     if not config.matrix_enabled:
         return None
+    from shisad.channels.matrix import MatrixChannel, MatrixConfig
+
     required = {
         "matrix_homeserver": config.matrix_homeserver,
         "matrix_user_id": config.matrix_user_id,
@@ -737,6 +1255,8 @@ async def _build_matrix_channel(config: DaemonConfig) -> MatrixChannel | None:
 async def _build_discord_channel(config: DaemonConfig) -> DiscordChannel | None:
     if not config.discord_enabled:
         return None
+    from shisad.channels.discord import DiscordChannel, DiscordConfig
+
     if not config.discord_bot_token:
         raise ValueError(
             "Discord channel is enabled but missing required config field: discord_bot_token"
@@ -747,6 +1267,7 @@ async def _build_discord_channel(config: DaemonConfig) -> DiscordChannel | None:
             default_channel_id=config.discord_default_channel_id,
             guild_workspace_map=dict(config.discord_guild_workspace_map),
             trusted_users=set(config.discord_trusted_users),
+            channel_rules=list(config.discord_channel_rules),
         )
     )
     await channel.connect()
@@ -756,6 +1277,8 @@ async def _build_discord_channel(config: DaemonConfig) -> DiscordChannel | None:
 async def _build_telegram_channel(config: DaemonConfig) -> TelegramChannel | None:
     if not config.telegram_enabled:
         return None
+    from shisad.channels.telegram import TelegramChannel, TelegramConfig
+
     if not config.telegram_bot_token:
         raise ValueError(
             "Telegram channel is enabled but missing required config field: telegram_bot_token"
@@ -775,6 +1298,8 @@ async def _build_telegram_channel(config: DaemonConfig) -> TelegramChannel | Non
 async def _build_slack_channel(config: DaemonConfig) -> SlackChannel | None:
     if not config.slack_enabled:
         return None
+    from shisad.channels.slack import SlackChannel, SlackConfig
+
     missing: list[str] = []
     if not config.slack_bot_token:
         missing.append("slack_bot_token")
@@ -913,6 +1438,71 @@ def _build_tool_registry(
                 ToolParameter(name="max_bytes", type="integer", required=False),
             ],
             capabilities_required=[Capability.HTTP_REQUEST],
+            require_confirmation=False,
+        )
+    )
+    registry.register(
+        ToolDefinition(
+            name=ToolName("email.search"),
+            description=(
+                "Search the local msgvault email archive. Use only for user-requested "
+                "email lookup, triage, and summarization."
+            ),
+            parameters=[
+                ToolParameter(name="query", type="string", required=True),
+                ToolParameter(name="limit", type="integer", required=False),
+                ToolParameter(name="offset", type="integer", required=False),
+                ToolParameter(
+                    name="account",
+                    type="string",
+                    required=False,
+                    semantic_type="email_address",
+                ),
+            ],
+            capabilities_required=[Capability.EMAIL_READ],
+            require_confirmation=False,
+        )
+    )
+    registry.register(
+        ToolDefinition(
+            name=ToolName("email.read"),
+            description=(
+                "Read one message from the local msgvault email archive by msgvault "
+                "message id or source message id."
+            ),
+            parameters=[
+                ToolParameter(name="message_id", type="string", required=True),
+                ToolParameter(
+                    name="account",
+                    type="string",
+                    required=False,
+                    semantic_type="email_address",
+                ),
+            ],
+            capabilities_required=[Capability.EMAIL_READ],
+            require_confirmation=False,
+        )
+    )
+    registry.register(
+        ToolDefinition(
+            name=ToolName("attachment.ingest"),
+            description=(
+                "Ingest a local image or voice recording by allowlisted path. "
+                "Returns a tainted manifest evidence ref; unsafe media is quarantined."
+            ),
+            parameters=[
+                ToolParameter(
+                    name="path",
+                    type="string",
+                    required=True,
+                    semantic_type="workspace_path",
+                ),
+                ToolParameter(name="mime_type", type="string", required=False),
+                ToolParameter(name="filename", type="string", required=False),
+                ToolParameter(name="transcript_text", type="string", required=False),
+                ToolParameter(name="max_bytes", type="integer", required=False),
+            ],
+            capabilities_required=[Capability.FILE_READ, Capability.MEMORY_WRITE],
             require_confirmation=False,
         )
     )
@@ -1365,6 +1955,7 @@ def _build_provider_diagnostics(router: ModelRouter) -> dict[str, Any]:
             problems.append(f"{component.value}_missing_api_key")
         routes[component.value] = {
             "preset": route.provider_preset.value,
+            "preset_label": provider_preset_label(route),
             "preset_source": route.provider_preset_source,
             "base_url": route.base_url,
             "endpoint_family": route.endpoint_family.value,
@@ -1483,13 +2074,15 @@ def _register_route_credentials(
 def _log_provider_route_summary(router: ModelRouter) -> None:
     for component in ModelComponent:
         route = router.route_for(component)
+        preset_label = provider_preset_label(route)
         logger.info(
             (
-                "Model route resolved: component=%s preset=%s preset_source=%s "
+                "Model route resolved: component=%s preset=%s raw_preset=%s preset_source=%s "
                 "base_url=%s endpoint_family=%s remote_enabled=%s remote_source=%s "
                 "auth_mode=%s key_source=%s request_profile=%s profile_source=%s"
             ),
             component.value,
+            preset_label,
             route.provider_preset.value,
             route.provider_preset_source,
             route.base_url,
@@ -1553,32 +2146,3 @@ def _validate_security_route_pins(model_config: ModelConfig, router: ModelRouter
             "Security planner route model id mismatch: "
             f"expected {model_config.pinned_planner_model_id}, got {planner_route.model_id}"
         )
-
-
-def _load_provenance(
-    manifest_path: Path,
-    root: Path,
-) -> tuple[dict[str, Any], SecurityAssetManifest | None]:
-    if not manifest_path.exists():
-        return (
-            {
-                "available": False,
-                "version": "",
-                "source_commit": "",
-                "manifest_hash": "",
-                "drift": [],
-            },
-            None,
-        )
-    manifest = load_manifest(manifest_path)
-    drift = verify_assets(root, manifest)
-    return (
-        {
-            "available": True,
-            "version": manifest.version,
-            "source_commit": manifest.source_commit,
-            "manifest_hash": manifest.digest()[:16],
-            "drift": drift,
-        },
-        manifest,
-    )

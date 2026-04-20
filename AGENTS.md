@@ -309,7 +309,6 @@ uv run pytest --cov=src --cov-report=term-missing --cov-report=xml -q
 uv run python scripts/coverage_baseline.py --xml coverage.xml
 uv run python scripts/coverage_trend.py --xml coverage.xml --output /tmp/coverage-trend.json
 
-uv run python scripts/security_assets.py verify
 uv run python scripts/yara_parity_report.py --output /tmp/yara-parity.json
 ```
 

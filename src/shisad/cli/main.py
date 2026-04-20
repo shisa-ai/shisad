@@ -18,6 +18,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 import click
+import qrcode  # type: ignore[import-untyped]
 import yaml
 from click.shell_completion import get_completion_class
 from pydantic import BaseModel
@@ -27,10 +28,13 @@ from shisad.core.api.schema import (
     ActionConfirmResult,
     ActionPendingEntry,
     ActionPendingResult,
+    ActionPurgeResult,
     ActionRejectResult,
     AdminSelfModApplyResult,
     AdminSelfModProposeResult,
     AdminSelfModRollbackResult,
+    AdminSoulReadResult,
+    AdminSoulUpdateResult,
     ChannelPairingProposalResult,
     ConfirmationMetricsResult,
     DaemonShutdownResult,
@@ -92,6 +96,12 @@ from shisad.core.api.schema import (
     WebSearchResult,
 )
 from shisad.core.config import DaemonConfig
+from shisad.interop.a2a_envelope import (
+    fingerprint_for_public_key,
+    load_private_key_from_path,
+    load_public_key_from_path,
+    write_ed25519_keypair,
+)
 from shisad.ui.evidence import (
     render_evidence_refs_for_terminal,
     sanitize_terminal_field,
@@ -115,6 +125,27 @@ def _echo(message: str, *, fg: str | None = None, bold: bool = False, err: bool 
         click.secho(message, fg=fg, bold=bold, err=err)
         return
     click.echo(message, err=err)
+
+
+def _terminal_supports_unicode_output() -> bool:
+    if os.environ.get("TERM", "").strip().lower() == "dumb":
+        return False
+    stream = click.get_text_stream("stdout")
+    encoding = str(getattr(stream, "encoding", "") or sys.stdout.encoding or "").lower()
+    return "utf" in encoding
+
+
+def _render_terminal_qr(url: str) -> str:
+    if not url or not _terminal_supports_unicode_output():
+        return ""
+    try:
+        qr = qrcode.QRCode(border=1)
+        qr.add_data(url)
+        qr.make(fit=True)
+        matrix = qr.get_matrix()
+    except Exception:
+        return ""
+    return "\n".join("".join("██" if cell else "  " for cell in row) for row in matrix)
 
 
 def _dump_model(model: BaseModel) -> str:
@@ -268,7 +299,8 @@ def chat(session_id: str, user: str, workspace: str, new_session: bool) -> None:
         missing = (exc.name or "").split(".", maxsplit=1)[0]
         if missing == "textual":
             raise click.ClickException(
-                "textual is required for chat TUI. Install with: uv sync --dev"
+                "textual is required for chat TUI. Install with: "
+                "pip install 'shisad[chat]' or uv pip install 'shisad[chat]'"
             ) from exc
         raise click.ClickException(f"chat TUI import failed: missing module '{exc.name}'") from exc
     except ImportError as exc:
@@ -299,6 +331,60 @@ def web_ui(output: Path) -> None:
     config = _get_config()
     out_path = run_async(write_web_snapshot(socket_path=config.socket_path, output_path=output))
     _echo(f"Wrote dashboard snapshot: {out_path}", fg="green")
+
+
+@cli.group("a2a")
+def a2a() -> None:
+    """Manage local A2A identity material."""
+
+
+@a2a.command("keygen")
+@click.option(
+    "--private-key",
+    "private_key_path",
+    type=click.Path(path_type=Path, dir_okay=False),
+    default=None,
+    help="Override the private key output path.",
+)
+@click.option(
+    "--public-key",
+    "public_key_path",
+    type=click.Path(path_type=Path, dir_okay=False),
+    default=None,
+    help="Override the public key output path.",
+)
+def a2a_keygen(
+    private_key_path: Path | None,
+    public_key_path: Path | None,
+) -> None:
+    """Generate an Ed25519 A2A keypair and print its fingerprint."""
+
+    config = _get_config()
+    identity = config.a2a.identity
+    private_path = private_key_path or (
+        identity.private_key_path
+        if identity is not None
+        else config.data_dir / "a2a" / "private.key"
+    )
+    public_path = public_key_path or (
+        identity.public_key_path if identity is not None else config.data_dir / "a2a" / "public.key"
+    )
+    if private_path == public_path:
+        raise click.ClickException("A2A key paths must point to different files.")
+    with _progress("Generating A2A keypair"):
+        try:
+            fingerprint = write_ed25519_keypair(private_path, public_path)
+        except FileExistsError as exc:
+            raise click.ClickException(str(exc)) from exc
+        load_private_key_from_path(private_path)
+        verified_public_key = load_public_key_from_path(public_path)
+        verified_fingerprint = fingerprint_for_public_key(verified_public_key)
+    if verified_fingerprint != fingerprint:
+        raise click.ClickException("A2A public key fingerprint mismatch after write.")
+    click.echo(f"Fingerprint: {fingerprint}")
+    click.echo(f"Private key: {private_path}")
+    click.echo(f"Public key: {public_path}")
+    click.echo(f"Verified public fingerprint: {verified_fingerprint}")
 
 
 # --- Daemon lifecycle ---
@@ -539,9 +625,12 @@ def status() -> None:
     click.echo(_dump_model(result))
 
 
-@cli.group()
-def doctor() -> None:
+@cli.group(invoke_without_command=True)
+@click.pass_context
+def doctor(ctx: click.Context) -> None:
     """Runtime diagnostic checks."""
+    if ctx.invoked_subcommand is None:
+        ctx.invoke(doctor_check, component="all")
 
 
 @doctor.command("check")
@@ -645,6 +734,42 @@ def admin_selfmod_rollback(change_id: str) -> None:
             ]
         )
     )
+
+
+@admin.group("soul")
+def admin_soul() -> None:
+    """Trusted SOUL.md persona preference controls."""
+
+
+@admin_soul.command("read")
+def admin_soul_read() -> None:
+    """Read the configured SOUL.md persona preference file."""
+    config = _get_config()
+    result = rpc_call(
+        config,
+        "admin.soul.read",
+        {},
+        response_model=AdminSoulReadResult,
+    )
+    click.echo(_dump_model(result))
+
+
+@admin_soul.command("update")
+@click.option("--content", required=True, help="Complete replacement SOUL.md content.")
+@click.option("--expected-sha256", default=None, help="Optional current sha256 precondition.")
+def admin_soul_update(content: str, expected_sha256: str | None) -> None:
+    """Replace the configured SOUL.md persona preference file."""
+    config = _get_config()
+    payload: dict[str, Any] = {"content": content}
+    if expected_sha256:
+        payload["expected_sha256"] = expected_sha256
+    result = rpc_call(
+        config,
+        "admin.soul.update",
+        payload,
+        response_model=AdminSoulUpdateResult,
+    )
+    click.echo(_dump_model(result))
 
 
 @cli.group()
@@ -860,7 +985,12 @@ def session_message(session_id: str, content: str) -> None:
         {"session_id": session_id, "content": content},
         response_model=SessionMessageResult,
     )
-    click.echo(render_evidence_refs_for_terminal(result.response))
+    click.echo(
+        render_evidence_refs_for_terminal(
+            result.response,
+            preserve_pending_preview_escapes=bool(result.pending_confirmation_ids),
+        )
+    )
 
 
 @session.command("list")
@@ -1263,7 +1393,7 @@ def action_pending(session_id: str, status: str, limit: int, raw: bool) -> None:
         "action.pending",
         {
             "session_id": session_id or None,
-            "status": status or None,
+            "status": None if status.strip().lower() == "all" else (status or "pending"),
             "limit": limit,
             "include_ui": not raw,
         },
@@ -1295,6 +1425,60 @@ def action_pending(session_id: str, status: str, limit: int, raw: bool) -> None:
             click.echo(approval_qr_ascii)
         if preview or approval_url or approval_qr_ascii:
             click.echo("")
+
+
+@action.command("purge")
+@click.option("--session", "session_id", default="", help="Filter by session id")
+@click.option(
+    "--status",
+    default="terminal",
+    type=click.Choice(["terminal", "pending", "approved", "failed", "rejected", "all"]),
+    help="Rows to purge. pending/all require --older-than-days.",
+)
+@click.option(
+    "--older-than-days",
+    type=int,
+    default=None,
+    help="Only purge rows older than N days",
+)
+@click.option("--limit", type=int, default=1000, help="Maximum rows to purge")
+@click.option("--dry-run", is_flag=True, help="Show rows that would be purged without deleting")
+def action_purge(
+    session_id: str,
+    status: str,
+    older_than_days: int | None,
+    limit: int,
+    dry_run: bool,
+) -> None:
+    """Purge terminal or aged pending confirmation rows."""
+    if limit < 0:
+        raise click.ClickException("--limit must be non-negative")
+    if older_than_days is not None and older_than_days < 0:
+        raise click.ClickException("--older-than-days must be non-negative")
+    if status in {"pending", "all"} and (older_than_days is None or older_than_days <= 0):
+        raise click.ClickException(
+            "--older-than-days must be positive with --status pending or --status all"
+        )
+    config = _get_config()
+    result = rpc_call(
+        config,
+        "action.purge",
+        {
+            "session_id": session_id or None,
+            "status": status,
+            "older_than_days": older_than_days,
+            "limit": limit,
+            "dry_run": dry_run,
+        },
+        response_model=ActionPurgeResult,
+    )
+    action_word = "Would purge" if result.dry_run else "Purged"
+    _echo(f"{action_word} {result.purged} pending action row(s); remaining={result.remaining}")
+    if result.confirmation_ids:
+        click.echo(
+            "confirmation_ids="
+            + ",".join(sanitize_terminal_field(item) for item in result.confirmation_ids)
+        )
 
 
 def _pending_action_row(
@@ -1652,6 +1836,10 @@ def two_factor_register(
         return
     click.echo(f"Secret: {begin.secret}")
     click.echo(f"otpauth URI: {begin.otpauth_uri}")
+    qr_ascii = _render_terminal_qr(begin.otpauth_uri)
+    if qr_ascii:
+        click.echo("Scan this QR in your authenticator app:")
+        click.echo(qr_ascii)
     verify_code = click.prompt("Verification code").strip()
     confirm = rpc_call(
         config,

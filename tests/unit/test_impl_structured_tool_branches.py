@@ -11,10 +11,11 @@ import pytest
 
 from shisad.core.events import ToolApproved, ToolExecuted, ToolRejected
 from shisad.core.session import Session, SessionManager
-from shisad.core.types import SessionId, TaintLabel, ToolName, UserId, WorkspaceId
+from shisad.core.types import SessionId, SessionMode, TaintLabel, ToolName, UserId, WorkspaceId
 from shisad.daemon.handlers._impl import (
     HandlerImplementation,
     StructuredToolContext,
+    _structured_fs_write,
     _structured_note_create,
     _structured_reminder_create,
     _structured_reminder_list,
@@ -65,6 +66,16 @@ class _FsGitToolkitStub:
     def git_status(self, *, repo_path: str) -> dict[str, Any]:
         self.calls.append(repo_path)
         return dict(self._payload)
+
+
+class _FsWriteToolkitStub:
+    def __init__(self) -> None:
+        self.confirm_values: list[bool] = []
+
+    def write_file(self, *, path: str, content: str, confirm: bool) -> dict[str, Any]:
+        _ = (path, content)
+        self.confirm_values.append(confirm)
+        return {"ok": confirm}
 
 
 class _DeliveryStub:
@@ -185,6 +196,7 @@ def test_m1_rf014_structured_tool_registry_lists_expected_handlers() -> None:
         "browser.end_session",
         "realitycheck.search",
         "realitycheck.read",
+        "attachment.ingest",
         "fs.list",
         "fs.read",
         "fs.write",
@@ -293,6 +305,62 @@ async def test_m1_structured_todo_create_propagates_confirmation_origin(
 
     assert payload["ok"] is True
     assert captured["user_confirmed"] is user_confirmed
+
+
+def test_u5_structured_fs_write_treats_trusted_cli_policy_approval_as_confirmed() -> None:
+    toolkit = _FsWriteToolkitStub()
+    handler = SimpleNamespace(_fs_git_toolkit=toolkit)
+    context = StructuredToolContext(
+        session_id=SessionId("s-fs-write"),
+        user_id=UserId("user-1"),
+        workspace_id=WorkspaceId("ws-1"),
+        session=Session(
+            id=SessionId("s-fs-write"),
+            channel="cli",
+            user_id=UserId("user-1"),
+            workspace_id=WorkspaceId("ws-1"),
+            mode=SessionMode.DEFAULT,
+            metadata={"trust_level": "trusted_cli"},
+        ),
+        user_confirmed=False,
+    )
+
+    payload = _structured_fs_write(
+        handler,
+        {"path": "test-output.txt", "content": "hello"},
+        context,
+    )
+
+    assert payload["ok"] is True
+    assert toolkit.confirm_values == [True]
+
+
+def test_lt3_structured_fs_write_treats_operator_owned_cli_as_confirmed() -> None:
+    toolkit = _FsWriteToolkitStub()
+    handler = SimpleNamespace(_fs_git_toolkit=toolkit)
+    context = StructuredToolContext(
+        session_id=SessionId("s-fs-write"),
+        user_id=UserId("user-1"),
+        workspace_id=WorkspaceId("ws-1"),
+        session=Session(
+            id=SessionId("s-fs-write"),
+            channel="cli",
+            user_id=UserId("user-1"),
+            workspace_id=WorkspaceId("ws-1"),
+            mode=SessionMode.DEFAULT,
+            metadata={"trust_level": "trusted", "operator_owned_cli": True},
+        ),
+        user_confirmed=False,
+    )
+
+    payload = _structured_fs_write(
+        handler,
+        {"path": "test-output.txt", "content": "hello"},
+        context,
+    )
+
+    assert payload["ok"] is True
+    assert toolkit.confirm_values == [True]
 
 
 @pytest.mark.asyncio

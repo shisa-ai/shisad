@@ -21,6 +21,7 @@ from shisad.channels.telegram import TelegramChannel
 from shisad.cli.main import cli
 from shisad.core.api.transport import ControlClient
 from shisad.core.config import DaemonConfig
+from shisad.core.planner import Planner, PlannerOutput, PlannerResult
 from shisad.core.tools.registry import ToolRegistry
 from shisad.core.tools.schema import ToolDefinition, ToolParameter
 from shisad.core.types import Capability, PEPDecisionKind, TaintLabel, ToolName, UserId
@@ -33,15 +34,7 @@ from shisad.scheduler.schema import Schedule
 from shisad.security.firewall import ContentFirewall
 from shisad.security.pep import PEP, PolicyContext
 from shisad.security.policy import EgressRule, PolicyBundle
-
-
-async def _wait_for_socket(path: Path, timeout: float = 5.0) -> None:
-    end = asyncio.get_running_loop().time() + timeout
-    while asyncio.get_running_loop().time() < end:
-        if path.exists():
-            return
-        await asyncio.sleep(0.01)
-    raise TimeoutError(f"Timed out waiting for socket {path}")
+from tests.helpers.daemon import wait_for_socket as _wait_for_socket
 
 
 def _decision_nonce_for_confirmation(
@@ -387,6 +380,27 @@ async def test_m2_t18_output_firewall_alert_is_audited(
     monkeypatch.setenv("SHISAD_MODEL_EMBEDDINGS_BASE_URL", "https://embed.example.com/v1")
     monkeypatch.setenv("SHISAD_MODEL_MONITOR_BASE_URL", "https://monitor.example.com/v1")
 
+    async def _evil_output_propose(
+        self: Planner,
+        user_content: str,
+        context: object,
+        *,
+        tools: list[dict[str, object]] | None = None,
+    ) -> PlannerResult:
+        _ = (self, user_content, context, tools)
+        return PlannerResult(
+            output=PlannerOutput(
+                actions=[],
+                assistant_response="Here is the suspicious link: https://evil.com/exfil",
+            ),
+            evaluated=[],
+            attempts=1,
+            provider_response=None,
+            messages_sent=(),
+        )
+
+    monkeypatch.setattr(Planner, "propose", _evil_output_propose)
+
     config = DaemonConfig(
         data_dir=tmp_path / "data",
         socket_path=tmp_path / "control.sock",
@@ -680,18 +694,32 @@ async def test_m2_t16_session_message_trust_override_rejected_by_schema(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("policy_required", [False, True])
 async def test_m2_t22_daemon_status_exposes_classifier_mode(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    policy_required: bool,
 ) -> None:
     monkeypatch.setenv("SHISAD_MODEL_BASE_URL", "https://api.example.com/v1")
     monkeypatch.setenv("SHISAD_MODEL_PLANNER_BASE_URL", "https://planner.example.com/v1")
     monkeypatch.setenv("SHISAD_MODEL_EMBEDDINGS_BASE_URL", "https://embed.example.com/v1")
     monkeypatch.setenv("SHISAD_MODEL_MONITOR_BASE_URL", "https://monitor.example.com/v1")
+    policy_path = tmp_path / "policy.yaml"
+    if policy_required:
+        policy_path.write_text(
+            textwrap.dedent(
+                """
+                version: "1"
+                yara_required: true
+                default_require_confirmation: false
+                """
+            ).strip()
+            + "\n"
+        )
     config = DaemonConfig(
         data_dir=tmp_path / "data",
         socket_path=tmp_path / "control.sock",
-        policy_path=tmp_path / "policy.yaml",
+        policy_path=policy_path,
         log_level="INFO",
     )
     daemon_task = asyncio.create_task(run_daemon(config))
@@ -700,11 +728,21 @@ async def test_m2_t22_daemon_status_exposes_classifier_mode(
         await _wait_for_socket(config.socket_path)
         await client.connect()
         status = await client.call("daemon.status")
-        assert status["classifier_mode"] in {"yara", "fallback_regex", "base_patterns"}
+        assert status["classifier_mode"] == "textguard_yara"
+        assert status["yara_required"] is True
+        assert status["yara_policy_required"] is policy_required
         assert "content_firewall" in status
         assert "semantic_classifier" in status["content_firewall"]
         assert "risk_policy_version" in status
         assert "delivery" in status
+        assert status["provenance"] == {
+            "available": False,
+            "version": "",
+            "source_commit": "",
+            "manifest_hash": "",
+            "drift": [],
+            "reason": "local_security_assets_removed_textguard_bundled_rules",
+        }
     finally:
         with suppress(Exception):
             await client.call("daemon.shutdown")
@@ -757,7 +795,7 @@ async def test_m2_t22_daemon_honors_yara_required_policy(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from shisad.security.firewall.classifier import PatternInjectionClassifier
+    from textguard import TextGuard
 
     monkeypatch.setenv("SHISAD_MODEL_BASE_URL", "https://api.example.com/v1")
     monkeypatch.setenv("SHISAD_MODEL_PLANNER_BASE_URL", "https://planner.example.com/v1")
@@ -782,12 +820,37 @@ async def test_m2_t22_daemon_honors_yara_required_policy(
         log_level="INFO",
     )
 
-    monkeypatch.setattr(
-        PatternInjectionClassifier,
-        "_compile_yara_rules",
-        staticmethod(lambda _rules_dir: None),
+    def _raise_yara_unavailable(*_args: object, **_kwargs: object) -> list[object]:
+        raise RuntimeError("YARA backend requires the optional dependency")
+
+    monkeypatch.setattr(TextGuard, "match_yara", _raise_yara_unavailable)
+    with pytest.raises(ValueError, match=r"textguard YARA.*unavailable"):
+        await run_daemon(config)
+
+
+@pytest.mark.asyncio
+async def test_t1_daemon_validates_yara_backend_under_default_policy(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from textguard import TextGuard
+
+    monkeypatch.setenv("SHISAD_MODEL_BASE_URL", "https://api.example.com/v1")
+    monkeypatch.setenv("SHISAD_MODEL_PLANNER_BASE_URL", "https://planner.example.com/v1")
+    monkeypatch.setenv("SHISAD_MODEL_EMBEDDINGS_BASE_URL", "https://embed.example.com/v1")
+    monkeypatch.setenv("SHISAD_MODEL_MONITOR_BASE_URL", "https://monitor.example.com/v1")
+    config = DaemonConfig(
+        data_dir=tmp_path / "data",
+        socket_path=tmp_path / "control.sock",
+        policy_path=tmp_path / "policy.yaml",
+        log_level="INFO",
     )
-    with pytest.raises(ValueError):
+
+    def _raise_yara_unavailable(*_args: object, **_kwargs: object) -> list[object]:
+        raise RuntimeError("YARA backend requires the optional dependency")
+
+    monkeypatch.setattr(TextGuard, "match_yara", _raise_yara_unavailable)
+    with pytest.raises(ValueError, match=r"textguard YARA.*unavailable"):
         await run_daemon(config)
 
 
@@ -1048,6 +1111,12 @@ async def test_m2_confirmation_queue_and_action_confirm_flow(
             default_require_confirmation: true
             default_capabilities:
               - memory.read
+            tools:
+              retrieve_rag:
+                capabilities_required:
+                  - memory.read
+                confirmation:
+                  level: software
             """
         ).strip()
         + "\n"
@@ -1127,6 +1196,12 @@ async def test_m2_confirmation_queue_persists_pending_actions_after_restart(
             default_require_confirmation: true
             default_capabilities:
               - memory.read
+            tools:
+              retrieve_rag:
+                capabilities_required:
+                  - memory.read
+                confirmation:
+                  level: software
             """
         ).strip()
         + "\n"
@@ -1205,6 +1280,12 @@ async def test_m2_action_confirm_in_lockdown_emits_human_rejection_event(
             default_require_confirmation: true
             default_capabilities:
               - memory.read
+            tools:
+              retrieve_rag:
+                capabilities_required:
+                  - memory.read
+                confirmation:
+                  level: software
             """
         ).strip()
         + "\n"

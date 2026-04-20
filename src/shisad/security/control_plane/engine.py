@@ -255,6 +255,7 @@ class ControlPlaneEngine:
         declared_domains: list[str],
         session_tainted: bool,
         trusted_input: bool,
+        operator_owned_cli_input: bool = False,
         raw_user_text: str = "",
     ) -> ControlPlaneEvaluation:
         normalized_payload = _normalize_voter_payload(sanitize_metadata_payload(arguments))
@@ -296,6 +297,7 @@ class ControlPlaneEngine:
                 metadata_payload={
                     "session_tainted": session_tainted,
                     "trusted_input": trusted_input,
+                    "operator_owned_cli_input": operator_owned_cli_input,
                     "raw_user_text": raw_user_text_for_voter,
                     "action_arguments": metadata_arguments,
                     "action_kind": action.action_kind.value,

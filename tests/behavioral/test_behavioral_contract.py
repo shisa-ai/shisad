@@ -14,10 +14,11 @@ import asyncio
 import json
 import os
 import re
+import struct
 import subprocess
 import sys
 import threading
-from collections.abc import Callable, Mapping
+from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -32,6 +33,9 @@ from shisad.core.config import DaemonConfig
 from shisad.core.providers.base import Message, ProviderResponse
 from shisad.core.providers.local_planner import LocalPlannerProvider
 from shisad.daemon.runner import run_daemon
+from shisad.memory.summarizer import _SUMMARY_SYSTEM_PROMPT
+from tests.helpers.behavioral import extract_tool_outputs
+from tests.helpers.daemon import wait_for_socket as _wait_for_socket
 
 _USER_GOAL_RE = re.compile(
     (
@@ -42,7 +46,9 @@ _USER_GOAL_RE = re.compile(
     ),
     flags=re.DOTALL,
 )
-_SUMMARIZER_SYSTEM_MARKER = "You extract durable memory candidates from conversation history."
+# ADV-M3: derive the summarizer marker from production so it stays in sync if
+# the summarizer system prompt is reworded.
+_SUMMARIZER_SYSTEM_MARKER = _SUMMARY_SYSTEM_PROMPT.split(". ")[0] + "."
 
 
 def _extract_user_goal(planner_input: str) -> str:
@@ -260,6 +266,32 @@ async def _stub_complete(
                 role="assistant",
                 content="Closing the browser session.",
                 tool_calls=[_tool_call("browser.end_session", {}, call_id="t-browser-end")],
+            ),
+            model="behavioral-stub",
+            finish_reason="tool_calls",
+            usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+        )
+
+    attachment_match = re.search(
+        r"ingest attachment (?P<path>.+)$",
+        goal,
+        flags=re.IGNORECASE,
+    )
+    if attachment_match is not None:
+        return ProviderResponse(
+            message=Message(
+                role="assistant",
+                content="Ingesting the attachment.",
+                tool_calls=[
+                    _tool_call(
+                        "attachment.ingest",
+                        {
+                            "path": attachment_match.group("path").strip(),
+                            "mime_type": "image/png",
+                        },
+                        call_id="t-attachment-ingest",
+                    )
+                ],
             ),
             model="behavioral-stub",
             finish_reason="tool_calls",
@@ -595,63 +627,7 @@ def _start_stub_search_backend() -> tuple[ThreadingHTTPServer, threading.Thread,
     return server, thread, f"http://localhost:{port}", int(port)
 
 
-async def _wait_for_socket(path: Path, timeout: float = 5.0) -> None:
-    end = asyncio.get_running_loop().time() + timeout
-    while asyncio.get_running_loop().time() < end:
-        if path.exists():
-            return
-        await asyncio.sleep(0.01)
-    raise TimeoutError(f"Timed out waiting for socket {path}")
-
-
-def _extract_tool_outputs(payload: Mapping[str, Any] | str) -> dict[str, list[dict[str, Any]]]:
-    if isinstance(payload, Mapping):
-        raw_records = payload.get("tool_outputs")
-        if isinstance(raw_records, list):
-            outputs: dict[str, list[dict[str, Any]]] = {}
-            for record in raw_records:
-                if not isinstance(record, dict):
-                    continue
-                tool_name = str(record.get("tool_name", "")).strip()
-                data = record.get("payload")
-                if tool_name and isinstance(data, dict):
-                    outputs.setdefault(tool_name, []).append(data)
-            if outputs:
-                return outputs
-        response_text = str(payload.get("response", ""))
-    else:
-        response_text = str(payload)
-
-    outputs: dict[str, list[dict[str, Any]]] = {}
-    begin = "[[TOOL_OUTPUT_BEGIN"
-    end = "[[TOOL_OUTPUT_END]]"
-    cursor = 0
-    while True:
-        start = response_text.find(begin, cursor)
-        if start < 0:
-            break
-        header_end = response_text.find("]]", start)
-        if header_end < 0:
-            raise AssertionError("Malformed tool boundary: missing closing brackets")
-        header = response_text[start : header_end + 2]
-        match = re.search(r"tool=([^\s]+)", header)
-        if match is None:
-            raise AssertionError(f"Malformed tool boundary: {header}")
-        tool_name = match.group(1).strip()
-        payload_start = header_end + 2
-        payload_end = response_text.find(end, payload_start)
-        if payload_end < 0:
-            raise AssertionError(f"Malformed tool boundary: missing end marker for {tool_name}")
-        raw_payload = response_text[payload_start:payload_end].strip()
-        try:
-            payload = json.loads(raw_payload)
-        except json.JSONDecodeError as exc:
-            raise AssertionError(
-                f"Tool payload is not JSON for {tool_name}: {raw_payload}"
-            ) from exc
-        outputs.setdefault(tool_name, []).append(payload)
-        cursor = payload_end + len(end)
-    return outputs
+_extract_tool_outputs = extract_tool_outputs
 
 
 @dataclass(frozen=True, slots=True)
@@ -734,10 +710,10 @@ async def contract_harness(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> C
             thread.join(timeout=1.0)
 
 
-async def _create_session(client: ControlClient) -> str:
+async def _create_session(client: ControlClient, *, channel: str = "cli") -> str:
     created = await client.call(
         "session.create",
-        {"channel": "cli", "user_id": "alice", "workspace_id": "ws1"},
+        {"channel": channel, "user_id": "alice", "workspace_id": "ws1"},
     )
     return str(created["session_id"])
 
@@ -795,6 +771,39 @@ async def _reject_pending_action(
         {"confirmation_id": confirmation_id, "decision_nonce": nonce},
     )
     return dict(result)
+
+
+async def _run_contract_cli(config: DaemonConfig, *args: str) -> subprocess.CompletedProcess[str]:
+    repo_root = Path(__file__).resolve().parents[2]
+    env = os.environ.copy()
+    env.update(
+        {
+            "SHISAD_DATA_DIR": str(config.data_dir),
+            "SHISAD_SOCKET_PATH": str(config.socket_path),
+            "SHISAD_POLICY_PATH": str(config.policy_path),
+            "SHISAD_ENV_FILE": "",
+        }
+    )
+    command = [sys.executable, "-m", "shisad.cli.main", "--no-color", *args]
+    process = await asyncio.create_subprocess_exec(
+        *command,
+        cwd=repo_root,
+        env=env,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=10)
+    except TimeoutError:
+        process.kill()
+        await process.wait()
+        raise
+    return subprocess.CompletedProcess(
+        args=command,
+        returncode=int(process.returncode or 0),
+        stdout=stdout.decode(errors="replace"),
+        stderr=stderr.decode(errors="replace"),
+    )
 
 
 async def _wait_for_audit_event(
@@ -940,6 +949,36 @@ async def test_contract_file_read_executes_and_returns_content(
     assert payload.get("ok") is True
     assert "behavioral-readme" in str(payload.get("content", ""))
     assert "behavioral-readme" in str(reply.get("response", ""))
+
+
+@pytest.mark.asyncio
+async def test_contract_attachment_ingest_executes_and_returns_manifest_ref(
+    contract_harness: ContractHarness,
+) -> None:
+    image = contract_harness.workspace_root / "receipt.png"
+    ihdr = b"IHDR" + struct.pack(">IIBBBBB", 3, 4, 8, 2, 0, 0, 0)
+    image.write_bytes(b"\x89PNG\r\n\x1a\n" + struct.pack(">I", 13) + ihdr + b"\x00\x00\x00\x00")
+
+    sid = await _create_session(contract_harness.client)
+    reply = await contract_harness.client.call(
+        "session.message",
+        {
+            "session_id": sid,
+            "content": f"ingest attachment {image}",
+        },
+    )
+
+    assert reply.get("lockdown_level") == "normal"
+    assert int(reply.get("blocked_actions", 0)) == 0
+    assert int(reply.get("confirmation_required_actions", 0)) == 0
+    assert int(reply.get("executed_actions", 0)) == 1
+    outputs = _extract_tool_outputs(reply)
+    assert "attachment.ingest" in outputs
+    payload = outputs["attachment.ingest"][0]
+    assert payload.get("ok") is True
+    assert payload.get("status") == "active"
+    assert payload.get("kind") == "image"
+    assert str(payload.get("evidence_ref_id", "")).startswith("ev-")
 
 
 @pytest.mark.asyncio
@@ -1336,6 +1375,83 @@ async def test_contract_browser_click_confirmation_approve_executes_after_confir
 
 
 @pytest.mark.asyncio
+async def test_contract_action_pending_cli_defaults_and_purge_terminal_rows(
+    contract_harness: ContractHarness,
+) -> None:
+    sid = await _create_session(contract_harness.client)
+    await contract_harness.client.call(
+        "session.message",
+        {
+            "session_id": sid,
+            "content": f"browser navigate {contract_harness.browser_base_url}/browser",
+        },
+    )
+    first = await contract_harness.client.call(
+        "session.message",
+        {"session_id": sid, "content": "browser click the continue button in the browser"},
+    )
+    first_ids = first.get("pending_confirmation_ids")
+    assert isinstance(first_ids, list)
+    assert first_ids
+    rejected_id = str(first_ids[0])
+    rejected = await _reject_pending_action(contract_harness.client, rejected_id)
+    assert rejected.get("rejected") is True
+
+    second = await contract_harness.client.call(
+        "session.message",
+        {"session_id": sid, "content": "browser click the continue button in the browser"},
+    )
+    second_ids = second.get("pending_confirmation_ids")
+    assert isinstance(second_ids, list)
+    assert second_ids
+    pending_id = str(second_ids[0])
+    assert pending_id != rejected_id
+
+    default_pending = await _run_contract_cli(contract_harness.config, "action", "pending")
+    assert default_pending.returncode == 0, default_pending.stderr or default_pending.stdout
+    assert pending_id in default_pending.stdout
+    assert rejected_id not in default_pending.stdout
+
+    all_pending = await _run_contract_cli(
+        contract_harness.config,
+        "action",
+        "pending",
+        "--status",
+        "all",
+    )
+    assert all_pending.returncode == 0, all_pending.stderr or all_pending.stdout
+    assert pending_id in all_pending.stdout
+    assert rejected_id in all_pending.stdout
+
+    dry_run = await _run_contract_cli(contract_harness.config, "action", "purge", "--dry-run")
+    assert dry_run.returncode == 0, dry_run.stderr or dry_run.stdout
+    assert "Would purge 1 pending action row(s)" in dry_run.stdout
+    assert rejected_id in dry_run.stdout
+
+    after_dry_run = await contract_harness.client.call(
+        "action.pending",
+        {"confirmation_id": rejected_id},
+    )
+    assert after_dry_run["count"] == 1
+
+    purged = await _run_contract_cli(contract_harness.config, "action", "purge")
+    assert purged.returncode == 0, purged.stderr or purged.stdout
+    assert "Purged 1 pending action row(s)" in purged.stdout
+    assert rejected_id in purged.stdout
+
+    after_purge = await _run_contract_cli(
+        contract_harness.config,
+        "action",
+        "pending",
+        "--status",
+        "all",
+    )
+    assert after_purge.returncode == 0, after_purge.stderr or after_purge.stdout
+    assert pending_id in after_purge.stdout
+    assert rejected_id not in after_purge.stdout
+
+
+@pytest.mark.asyncio
 async def test_contract_browser_read_page_executes_and_returns_page(
     contract_harness: ContractHarness,
 ) -> None:
@@ -1647,10 +1763,10 @@ async def test_contract_bare_git_commands_execute_without_confirmation(
 
 
 @pytest.mark.asyncio
-async def test_contract_fs_write_routes_to_confirmation_not_lockdown(
+async def test_contract_cli_fs_write_executes_without_confirmation_or_lockdown(
     contract_harness: ContractHarness,
 ) -> None:
-    """fs.write is a side-effect action that requires confirmation, not lockdown."""
+    """Trusted CLI keeps clean local writes frictionless."""
     sid = await _create_session(contract_harness.client)
     reply = await contract_harness.client.call(
         "session.message",
@@ -1658,8 +1774,45 @@ async def test_contract_fs_write_routes_to_confirmation_not_lockdown(
     )
     assert reply.get("lockdown_level") == "normal"
     assert int(reply.get("blocked_actions", 0)) == 0
-    # fs.write is confirmation-gated (side_effect_action), not blocked
+    assert int(reply.get("confirmation_required_actions", 0)) == 0
+    assert int(reply.get("executed_actions", 0)) == 1
+    outputs = _extract_tool_outputs(reply)
+    assert "fs.write" in outputs
+    payload = outputs["fs.write"][0]
+    assert payload.get("ok") is True
+    target = contract_harness.workspace_root / "test-output.txt"
+    assert target.read_text(encoding="utf-8") == "hello from behavioral test"
+
+
+@pytest.mark.asyncio
+async def test_contract_non_cli_fs_write_routes_to_confirmation_not_lockdown(
+    contract_harness: ContractHarness,
+) -> None:
+    """Non-CLI writes still route to confirmation instead of lockdown."""
+    sid = await _create_session(contract_harness.client, channel="matrix")
+    reply = await contract_harness.client.call(
+        "session.message",
+        {
+            "session_id": sid,
+            "channel": "matrix",
+            "user_id": "alice",
+            "workspace_id": "ws1",
+            "content": "write a file called test-output.txt",
+        },
+    )
+    assert reply.get("lockdown_level") == "normal"
+    assert int(reply.get("blocked_actions", 0)) == 0
+    assert int(reply.get("executed_actions", 0)) == 0
     assert int(reply.get("confirmation_required_actions", 0)) >= 1
+    pending_ids = reply.get("pending_confirmation_ids")
+    assert isinstance(pending_ids, list)
+    assert pending_ids
+    response = str(reply.get("response", ""))
+    assert "[PENDING CONFIRMATIONS]" in response
+    assert f"shisad action confirm {pending_ids[0]}" in response
+    assert "shisad action pending" in response
+    assert "ACTION CONFIRMATION" in response
+    assert "I can proceed after confirmation" not in response
 
 
 @pytest.mark.asyncio
@@ -1678,6 +1831,10 @@ async def test_contract_web_fetch_confirmation_approve_executes_after_confirmati
     pending_ids = proposed.get("pending_confirmation_ids")
     assert isinstance(pending_ids, list)
     assert pending_ids
+    response = str(proposed.get("response", ""))
+    assert "[PENDING CONFIRMATIONS]" in response
+    assert f"shisad action confirm {pending_ids[0]}" in response
+    assert "shisad action pending" in response
 
     confirmed = await _confirm_pending_action(contract_harness.client, str(pending_ids[0]))
     assert confirmed.get("confirmed") is True
@@ -1696,10 +1853,16 @@ async def test_contract_web_fetch_confirmation_approve_executes_after_confirmati
 async def test_contract_fs_write_confirmation_reject_does_not_write_file(
     contract_harness: ContractHarness,
 ) -> None:
-    sid = await _create_session(contract_harness.client)
+    sid = await _create_session(contract_harness.client, channel="matrix")
     proposed = await contract_harness.client.call(
         "session.message",
-        {"session_id": sid, "content": "write a file called test-output.txt"},
+        {
+            "session_id": sid,
+            "channel": "matrix",
+            "user_id": "alice",
+            "workspace_id": "ws1",
+            "content": "write a file called test-output.txt",
+        },
     )
     assert proposed.get("lockdown_level") == "normal"
     assert int(proposed.get("blocked_actions", 0)) == 0

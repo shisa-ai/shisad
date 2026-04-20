@@ -63,6 +63,28 @@ class AssistantImplMixin(HandlerMixinBase):
             self._realitycheck_toolkit.read_source(path=path, max_bytes=max_bytes),
         )
 
+    async def do_email_search(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        self._log_operator_bypass(tool="email.search", handler="do_email_search")
+        return cast(
+            dict[str, Any],
+            self._msgvault_toolkit.search(
+                query=str(params.get("query", "")),
+                limit=int(params.get("limit", 10)),
+                offset=int(params.get("offset", 0)),
+                account=str(params.get("account", "")),
+            ),
+        )
+
+    async def do_email_read(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        self._log_operator_bypass(tool="email.read", handler="do_email_read")
+        return cast(
+            dict[str, Any],
+            self._msgvault_toolkit.read_message(
+                message_id=str(params.get("message_id", "")),
+                account=str(params.get("account", "")),
+            ),
+        )
+
     async def do_fs_list(self, params: Mapping[str, Any]) -> dict[str, Any]:
         self._log_operator_bypass(tool="fs.list", handler="do_fs_list")
         return cast(

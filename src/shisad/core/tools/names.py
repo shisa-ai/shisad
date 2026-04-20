@@ -57,6 +57,8 @@ LEGACY_TOOL_NAME_ALIASES: dict[str, str] = {
     "realitycheck-search": "realitycheck.search",
     "realitycheck_read": "realitycheck.read",
     "realitycheck-read": "realitycheck.read",
+    "attachment_ingest": "attachment.ingest",
+    "attachment-ingest": "attachment.ingest",
     "evidence_read": "evidence.read",
     "evidence-read": "evidence.read",
     "evidence_promote": "evidence.promote",

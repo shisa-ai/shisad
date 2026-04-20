@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import os
 import subprocess
 from pathlib import Path
 from urllib.error import HTTPError
@@ -170,6 +171,57 @@ def test_fs_git_toolkit_read_first_and_write_confirmation(tmp_path: Path) -> Non
     allowed_write = toolkit.write_file(path="notes.txt", content="updated", confirm=True)
     assert allowed_write["ok"] is True
     assert (root / "notes.txt").read_text(encoding="utf-8") == "updated"
+
+
+def test_s9_fs_git_toolkit_blocks_configured_soul_write_path(tmp_path: Path) -> None:
+    root = tmp_path / "workspace"
+    root.mkdir(parents=True)
+    soul_path = root / "SOUL.md"
+    soul_path.write_text("trusted persona", encoding="utf-8")
+    toolkit = FsGitToolkit(
+        roots=[root],
+        max_read_bytes=1024,
+        protected_write_paths=(soul_path,),
+    )
+
+    unconfirmed = toolkit.write_file(path="SOUL.md", content="attacker persona", confirm=False)
+    assert unconfirmed["ok"] is False
+    assert unconfirmed["confirmation_required"] is False
+    assert unconfirmed["error"] == "protected_control_plane_path"
+
+    blocked = toolkit.write_file(path="SOUL.md", content="attacker persona", confirm=True)
+
+    assert blocked["ok"] is False
+    assert blocked["written"] is False
+    assert blocked["confirmation_required"] is False
+    assert blocked["error"] == "protected_control_plane_path"
+    assert soul_path.read_text(encoding="utf-8") == "trusted persona"
+
+    allowed = toolkit.write_file(path="notes.txt", content="normal write", confirm=True)
+    assert allowed["ok"] is True
+    assert (root / "notes.txt").read_text(encoding="utf-8") == "normal write"
+
+
+def test_s9_fs_git_toolkit_blocks_hard_link_to_configured_soul_path(tmp_path: Path) -> None:
+    root = tmp_path / "workspace"
+    root.mkdir(parents=True)
+    soul_path = root / "SOUL.md"
+    soul_path.write_text("trusted persona", encoding="utf-8")
+    alias_path = root / "alias.md"
+    os.link(soul_path, alias_path)
+    toolkit = FsGitToolkit(
+        roots=[root],
+        max_read_bytes=1024,
+        protected_write_paths=(soul_path,),
+    )
+
+    blocked = toolkit.write_file(path="alias.md", content="attacker persona", confirm=True)
+
+    assert blocked["ok"] is False
+    assert blocked["written"] is False
+    assert blocked["error"] == "protected_control_plane_path"
+    assert soul_path.read_text(encoding="utf-8") == "trusted persona"
+    assert alias_path.read_text(encoding="utf-8") == "trusted persona"
 
 
 def test_fs_git_toolkit_git_status_and_log(tmp_path: Path) -> None:

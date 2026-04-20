@@ -2,25 +2,33 @@
 
 from __future__ import annotations
 
+import os
+
 import pytest
 from pydantic import ValidationError
 
 from shisad.core.config import ModelConfig
-from shisad.core.providers.routing import ModelComponent, ModelRouter
+from shisad.core.providers.routing import ModelComponent, ModelRouter, provider_preset_label
 
 
 def _clean_api_key_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Remove all API key env vars that could trigger auto-detection."""
+    """Remove env vars that could perturb isolated routing defaults."""
     for var in (
         "OPENAI_API_KEY",
         "GEMINI_API_KEY",
         "OPENROUTER_API_KEY",
         "SHISA_API_KEY",
-        "SHISAD_MODEL_API_KEY",
-        "SHISAD_MODEL_PLANNER_API_KEY",
-        "SHISAD_MODEL_REMOTE_ENABLED",
+        "ANTHROPIC_API_KEY",
     ):
         monkeypatch.delenv(var, raising=False)
+    for var in list(os.environ):
+        if var.startswith("SHISAD_MODEL_"):
+            monkeypatch.delenv(var, raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _isolate_model_route_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    _clean_api_key_env(monkeypatch)
 
 
 def test_s0_openai_preset_resolves_route_defaults_and_global_remote(
@@ -192,6 +200,18 @@ def test_s0_implicit_shisa_remote_enable_only_applies_to_default_base_route(
     assert route.remote_enabled_source == "global"
 
 
+def test_s0_route_local_base_url_override_is_labeled_as_overridden(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clean_api_key_env(monkeypatch)
+    route = ModelRouter(ModelConfig(planner_base_url="https://planner.example.com/v1")).route_for(
+        ModelComponent.PLANNER
+    )
+
+    assert route.base_url_source == "route:planner_base_url"
+    assert provider_preset_label(route) == "shisa_default (overridden)"
+
+
 def test_s0_model_config_parses_reasoning_request_parameters_from_env(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -309,3 +329,35 @@ def test_s0_gemini_key_auto_detects_google_preset(
     assert route.base_url == "https://generativelanguage.googleapis.com/v1beta/openai"
     assert route.model_id == "gemini-3.1-pro-preview"
     assert route.remote_enabled is True
+
+
+def test_u5_anthropic_key_auto_detects_anthropic_preset(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clean_api_key_env(monkeypatch)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "anthropic-key")
+
+    route = ModelRouter(ModelConfig()).route_for(ModelComponent.PLANNER)
+
+    assert route.provider_preset == "anthropic_default"
+    assert route.provider_preset_source == "auto_detected"
+    assert route.base_url == "https://api.anthropic.com/v1"
+    assert route.model_id == "claude-sonnet-4-6"
+    assert route.remote_enabled is True
+    assert route.api_key == "anthropic-key"
+    assert route.api_key_source == "preset_provider:ANTHROPIC_API_KEY"
+
+
+def test_u5_anthropic_key_auto_detect_does_not_remote_enable_embeddings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clean_api_key_env(monkeypatch)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "anthropic-key")
+
+    route = ModelRouter(ModelConfig()).route_for(ModelComponent.EMBEDDINGS)
+
+    assert route.provider_preset == "shisa_default"
+    assert route.provider_preset_source == "default"
+    assert route.remote_enabled is False
+    assert route.remote_enabled_source == "global"
+    assert route.api_key is None

@@ -34,8 +34,10 @@ class ChannelIdentityMap:
         allowlists: dict[str, set[str]] | None = None,
     ) -> None:
         self._map: dict[tuple[str, str], ChannelIdentity] = {}
-        self._default_trust = default_trust or {}
-        self._allowlists = allowlists or {}
+        self._default_trust = dict(default_trust) if default_trust else {}
+        self._allowlists = (
+            {key: set(value) for key, value in allowlists.items()} if allowlists else {}
+        )
         self._pairing_requests: dict[tuple[str, str], ChannelPairingRequest] = {}
 
     def bind(

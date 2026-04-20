@@ -8,12 +8,14 @@ from __future__ import annotations
 import ipaddress
 import logging
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, ClassVar
 from urllib.parse import urlparse
 
 from shisad.core.approval import (
+    ConfirmationLevel,
     ConfirmationRequirement,
     confirmation_requirement_payload,
     legacy_software_confirmation_requirement,
@@ -39,6 +41,10 @@ from shisad.security.policy import PolicyBundle
 from shisad.security.taint import sink_decision_for_tool
 
 logger = logging.getLogger(__name__)
+
+
+def _normalize_mcp_server_ids(values: Iterable[str] | None) -> set[str]:
+    return {str(item).strip().lower() for item in values or [] if str(item).strip()}
 
 
 @dataclass(frozen=True)
@@ -90,8 +96,10 @@ class PolicyContext:
         resource_authorizer: Callable[[str, WorkspaceId, UserId], bool] | None = None,
         tool_allowlist: set[ToolName] | None = None,
         trust_level: str = "untrusted",
+        trusted_cli_confirmation_bypass: bool = False,
         credential_refs: set[CredentialRef] | None = None,
         enforce_explicit_credential_refs: bool = False,
+        filesystem_roots: tuple[Path, ...] | None = None,
     ) -> None:
         self.capabilities: set[Capability] = capabilities or set()
         self.taint_labels: set[TaintLabel] = taint_labels or set()
@@ -104,8 +112,10 @@ class PolicyContext:
         self.resource_authorizer = resource_authorizer
         self.tool_allowlist = tool_allowlist
         self.trust_level = trust_level
+        self.trusted_cli_confirmation_bypass = trusted_cli_confirmation_bypass
         self.credential_refs: set[CredentialRef] = credential_refs or set()
         self.enforce_explicit_credential_refs = enforce_explicit_credential_refs
+        self.filesystem_roots: tuple[Path, ...] = filesystem_roots or ()
 
 
 class PEP:
@@ -122,7 +132,14 @@ class PEP:
     ]
     _CREDENTIAL_REF_KEYS: ClassVar[set[str]] = {"credential_ref"}
     _RESOURCE_ARG_SUFFIX: ClassVar[str] = "_id"
+    _RESOURCE_ARG_NAMES: ClassVar[set[str]] = {"path", "repo_path"}
     _RESOURCE_ARG_ALLOWLIST: ClassVar[set[str]] = {"session_id", "ref_id"}
+    _RESOURCE_ARG_DEFAULTS: ClassVar[dict[str, dict[str, str]]] = {
+        "fs.list": {"path": "."},
+        "git.status": {"repo_path": "."},
+        "git.diff": {"repo_path": "."},
+        "git.log": {"repo_path": "."},
+    }
 
     def __init__(
         self,
@@ -132,12 +149,14 @@ class PEP:
         evidence_store: ArtifactLedger | None = None,
         credential_store: CredentialStore | None = None,
         credential_audit_hook: Callable[[CredentialUseAttempt], None] | None = None,
+        mcp_trusted_servers: Iterable[str] | None = None,
     ) -> None:
         self._policy = policy
         self._tool_registry = tool_registry
         self._evidence_store = evidence_store
         self._credential_store = credential_store
         self._credential_audit_hook = credential_audit_hook
+        self._mcp_trusted_servers = _normalize_mcp_server_ids(mcp_trusted_servers)
         self.egress_attempts: list[EgressAttempt] = []
         self.credential_attempts: list[CredentialUseAttempt] = []
 
@@ -148,7 +167,11 @@ class PEP:
         context: PolicyContext,
     ) -> PEPDecision:
         """Evaluate a tool call proposal."""
-        tool_name = canonical_tool_name_typed(tool_name)
+        resolved_tool_name = self._tool_registry.resolve_name(tool_name)
+        if resolved_tool_name is None:
+            tool_name = canonical_tool_name_typed(tool_name)
+        else:
+            tool_name = resolved_tool_name
         # 1. Tool allowlist check (default-deny)
         if not self._tool_registry.has_tool(tool_name):
             return self._reject(
@@ -211,7 +234,7 @@ class PEP:
             )
 
         # 5. Object-level resource authorization checks
-        auth_issues = self._check_resource_authorization(arguments, context)
+        auth_issues = self._check_resource_authorization(tool_name, arguments, context)
         if auth_issues:
             return self._reject(
                 tool_name,
@@ -441,6 +464,8 @@ class PEP:
             tool=tool,
             tool_policy=tool_policy,
             risk_score=risk_score,
+            trust_level=context.trust_level,
+            trusted_cli_confirmation_bypass=context.trusted_cli_confirmation_bypass,
             egress_requires_confirmation=egress_requires_confirmation,
             taint_requires_confirmation=taint_decision.require_confirmation,
         )
@@ -490,24 +515,40 @@ class PEP:
         tool: Any,
         tool_policy: Any | None,
         risk_score: float,
+        trust_level: str,
+        trusted_cli_confirmation_bypass: bool,
         egress_requires_confirmation: bool,
         taint_requires_confirmation: bool,
     ) -> ConfirmationRequirement | None:
-        requirements: list[ConfirmationRequirement] = []
+        registration_source = str(getattr(tool, "registration_source", "")).strip().lower()
+        mcp_requires_confirmation = self._mcp_server_requires_confirmation(tool)
+        trusted_cli_clean = (
+            (trust_level.strip().lower() == "trusted_cli" or trusted_cli_confirmation_bypass)
+            and not egress_requires_confirmation
+            and not taint_requires_confirmation
+            and registration_source != "mcp"
+        )
+        requirements: list[tuple[str, ConfirmationRequirement]] = []
 
         if egress_requires_confirmation or taint_requires_confirmation:
-            requirements.append(legacy_software_confirmation_requirement())
+            requirements.append(("taint_or_egress", legacy_software_confirmation_requirement()))
+
+        if mcp_requires_confirmation:
+            requirements.append(("mcp_external", legacy_software_confirmation_requirement()))
 
         if (
-            bool(getattr(tool, "require_confirmation", False))
+            (registration_source != "mcp" and bool(getattr(tool, "require_confirmation", False)))
             or bool(getattr(tool_policy, "require_confirmation", False))
             or bool(self._policy.default_require_confirmation)
         ):
-            requirements.append(legacy_software_confirmation_requirement())
+            requirements.append(("implicit_legacy", legacy_software_confirmation_requirement()))
 
         explicit_policy = getattr(tool_policy, "confirmation", None)
-        if explicit_policy is not None:
-            requirements.append(explicit_policy)
+        if explicit_policy is not None and not self._is_migrated_legacy_policy_confirmation(
+            tool_policy=tool_policy,
+            requirement=explicit_policy,
+        ):
+            requirements.append(("explicit_policy", explicit_policy))
 
         matched_levels = [
             item
@@ -516,11 +557,39 @@ class PEP:
         ]
         if matched_levels:
             highest = max(matched_levels, key=lambda item: item.level.priority)
-            requirements.append(ConfirmationRequirement(level=highest.level))
+            requirements.append(("risk_policy", ConfirmationRequirement(level=highest.level)))
         elif risk_score >= self._policy.risk_policy.auto_approve_threshold:
-            requirements.append(legacy_software_confirmation_requirement())
+            requirements.append(("risk_policy", legacy_software_confirmation_requirement()))
 
-        return merge_confirmation_requirements(requirements)
+        if trusted_cli_clean:
+            requirements = [
+                (source, requirement)
+                for source, requirement in requirements
+                if source == "explicit_policy"
+                or requirement.level.priority > ConfirmationLevel.SOFTWARE.priority
+            ]
+
+        return merge_confirmation_requirements([requirement for _, requirement in requirements])
+
+    def _mcp_server_requires_confirmation(self, tool: Any) -> bool:
+        if str(getattr(tool, "registration_source", "")).strip().lower() != "mcp":
+            return False
+        server_name = str(getattr(tool, "registration_source_id", "")).strip().lower()
+        return not server_name or server_name not in self._mcp_trusted_servers
+
+    @staticmethod
+    def _is_migrated_legacy_policy_confirmation(
+        *,
+        tool_policy: Any | None,
+        requirement: ConfirmationRequirement,
+    ) -> bool:
+        return (
+            bool(getattr(tool_policy, "_confirmation_migrated_from_require_confirmation", False))
+            and requirement.level == ConfirmationLevel.SOFTWARE
+            and not requirement.methods
+            and not requirement.allowed_principals
+            and not requirement.allowed_credentials
+        )
 
     def _check_evidence_ref(
         self,
@@ -672,21 +741,47 @@ class PEP:
 
     def _check_resource_authorization(
         self,
+        tool_name: ToolName,
         arguments: dict[str, Any],
         context: PolicyContext,
     ) -> list[str]:
         if context.resource_authorizer is None:
             return []
 
+        resource_arguments = dict(arguments)
+        for key, value in self._RESOURCE_ARG_DEFAULTS.get(str(tool_name), {}).items():
+            if key not in resource_arguments or resource_arguments[key] is None:
+                resource_arguments[key] = value
+
         failures: list[str] = []
-        for key, value in arguments.items():
+        for key, value in resource_arguments.items():
             if not isinstance(value, str):
                 continue
-            if not key.endswith(self._RESOURCE_ARG_SUFFIX):
+            if not (key.endswith(self._RESOURCE_ARG_SUFFIX) or key in self._RESOURCE_ARG_NAMES):
                 continue
             if key in self._RESOURCE_ARG_ALLOWLIST:
                 continue
-            if not context.resource_authorizer(value, context.workspace_id, context.user_id):
+            authorize_argument = getattr(
+                context.resource_authorizer,
+                "authorize_argument",
+                None,
+            )
+            if callable(authorize_argument):
+                allowed = bool(
+                    authorize_argument(
+                        key,
+                        value,
+                        context.workspace_id,
+                        context.user_id,
+                    )
+                )
+            else:
+                allowed = context.resource_authorizer(
+                    value,
+                    context.workspace_id,
+                    context.user_id,
+                )
+            if not allowed:
                 failures.append(f"'{key}' not authorized in current workspace/user scope")
         return failures
 
@@ -1027,6 +1122,7 @@ class PEP:
         # Channel trust can soften risk for verified identities.
         trust = context.trust_level.lower().strip()
         trust_discount = {
+            "owner": 0.15,
             "trusted": 0.15,
             "verified": 0.15,
             "internal": 0.1,

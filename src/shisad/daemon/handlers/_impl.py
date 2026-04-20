@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from functools import lru_cache
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from pydantic import ValidationError
 
@@ -53,6 +53,7 @@ from shisad.core.approval import (
     new_approval_nonce,
     resolve_confirmation_destinations,
 )
+from shisad.core.attachments import AttachmentIngestor, AttachmentIngestPolicy
 from shisad.core.events import (
     AnomalyReported,
     BaseEvent,
@@ -95,7 +96,10 @@ from shisad.daemon.handlers._impl_memory import MemoryImplMixin
 from shisad.daemon.handlers._impl_session import SessionImplMixin
 from shisad.daemon.handlers._impl_skills import SkillsImplMixin
 from shisad.daemon.handlers._impl_tasks import TasksImplMixin
-from shisad.daemon.handlers._impl_tool_execution import ToolExecutionImplMixin
+from shisad.daemon.handlers._impl_tool_execution import (
+    ToolExecutionImplMixin,
+    _tool_execute_runtime_arguments,
+)
 from shisad.daemon.handlers._mixin_typing import call_control_plane as _call_control_plane
 from shisad.daemon.handlers._pending_approval import (
     PendingPepContextSnapshot,
@@ -110,7 +114,6 @@ from shisad.daemon.handlers._pending_approval import (
 from shisad.daemon.handlers._side_effects import is_side_effect_tool
 from shisad.daemon.handlers._string_utils import optional_string
 from shisad.daemon.handlers._tool_exec_helpers import execute_structured_tool
-from shisad.executors.browser import BrowserToolkit
 from shisad.executors.mounts import FilesystemPolicy
 from shisad.executors.proxy import NetworkPolicy
 from shisad.executors.sandbox import (
@@ -171,6 +174,40 @@ class _EventPublisher:
 
     async def publish(self, event: BaseEvent) -> None:
         await publish_event(self._event_bus, event)
+
+
+class _LazyBrowserToolkit:
+    def __init__(self, **kwargs: Any) -> None:
+        self._kwargs = dict(kwargs)
+        self._impl: Any | None = None
+
+    def _load(self) -> Any:
+        if self._impl is None:
+            from shisad.executors.browser import BrowserToolkit
+
+            self._impl = BrowserToolkit(**self._kwargs)
+        return self._impl
+
+    async def prepare_action_arguments(self, **kwargs: Any) -> dict[str, Any]:
+        return dict(await self._load().prepare_action_arguments(**kwargs))
+
+    async def navigate(self, **kwargs: Any) -> dict[str, Any]:
+        return dict(await self._load().navigate(**kwargs))
+
+    async def read_page(self, **kwargs: Any) -> dict[str, Any]:
+        return dict(await self._load().read_page(**kwargs))
+
+    async def screenshot(self, **kwargs: Any) -> dict[str, Any]:
+        return dict(await self._load().screenshot(**kwargs))
+
+    async def click(self, **kwargs: Any) -> dict[str, Any]:
+        return dict(await self._load().click(**kwargs))
+
+    async def type_text(self, **kwargs: Any) -> dict[str, Any]:
+        return dict(await self._load().type_text(**kwargs))
+
+    async def end_session(self, **kwargs: Any) -> dict[str, Any]:
+        return dict(await self._load().end_session(**kwargs))
 
 
 def _should_checkpoint(trigger: str, tool: ToolDefinition | None) -> bool:
@@ -344,13 +381,56 @@ def _structured_realitycheck_read(
     )
 
 
-def _structured_fs_list(
+def _structured_email_search(
     handler: Any,
     arguments: Mapping[str, Any],
     _context: StructuredToolContext | None = None,
 ) -> Mapping[str, Any]:
+    query = _argument_string(arguments, "query")
+    if not query:
+        return {
+            "ok": False,
+            "error": "email_search_query_required",
+            "taint_labels": [TaintLabel.UNTRUSTED.value, TaintLabel.SENSITIVE_EMAIL.value],
+        }
     return dict(
-        handler._fs_git_toolkit.list_dir(
+        handler._msgvault_toolkit.search(
+            query=query,
+            limit=_argument_int(arguments, "limit", default=10, minimum=1),
+            offset=_argument_int(arguments, "offset", default=0, minimum=0),
+            account=_argument_string(arguments, "account"),
+        )
+    )
+
+
+def _structured_email_read(
+    handler: Any,
+    arguments: Mapping[str, Any],
+    _context: StructuredToolContext | None = None,
+) -> Mapping[str, Any]:
+    message_id = _argument_string(arguments, "message_id") or _argument_string(arguments, "id")
+    if not message_id:
+        return {
+            "ok": False,
+            "error": "email_message_id_required",
+            "taint_labels": [TaintLabel.UNTRUSTED.value, TaintLabel.SENSITIVE_EMAIL.value],
+        }
+    return dict(
+        handler._msgvault_toolkit.read_message(
+            message_id=message_id,
+            account=_argument_string(arguments, "account"),
+        )
+    )
+
+
+def _structured_fs_list(
+    handler: Any,
+    arguments: Mapping[str, Any],
+    context: StructuredToolContext | None = None,
+) -> Mapping[str, Any]:
+    toolkit = _fs_git_toolkit_for_context(handler, context)
+    return dict(
+        toolkit.list_dir(
             path=_argument_string(arguments, "path", default=".") or ".",
             recursive=bool(arguments.get("recursive", False)),
             limit=_argument_int(arguments, "limit", default=200, minimum=1),
@@ -361,11 +441,45 @@ def _structured_fs_list(
 def _structured_fs_read(
     handler: Any,
     arguments: Mapping[str, Any],
-    _context: StructuredToolContext | None = None,
+    context: StructuredToolContext | None = None,
 ) -> Mapping[str, Any]:
+    toolkit = _fs_git_toolkit_for_context(handler, context)
     return dict(
-        handler._fs_git_toolkit.read_file(
+        toolkit.read_file(
             path=_argument_string(arguments, "path"),
+            max_bytes=_optional_int(arguments.get("max_bytes")),
+        )
+    )
+
+
+def _structured_attachment_ingest(
+    handler: Any,
+    arguments: Mapping[str, Any],
+    context: StructuredToolContext | None = None,
+) -> Mapping[str, Any]:
+    if context is None:
+        return {
+            "ok": False,
+            "error": "attachment_context_required",
+            "taint_labels": [TaintLabel.UNTRUSTED.value],
+        }
+    ingestor = getattr(handler, "_attachment_ingestor", None)
+    if ingestor is None:
+        return {
+            "ok": False,
+            "error": "attachment_ingest_unavailable",
+            "taint_labels": [TaintLabel.UNTRUSTED.value],
+        }
+    return dict(
+        ingestor.ingest_path(
+            session_id=context.session_id,
+            path=_argument_string(arguments, "path"),
+            declared_mime_type=(
+                _argument_string(arguments, "mime_type")
+                or _argument_string(arguments, "declared_mime_type")
+            ),
+            filename=_argument_string(arguments, "filename"),
+            transcript_text=_argument_string(arguments, "transcript_text"),
             max_bytes=_optional_int(arguments.get("max_bytes")),
         )
     )
@@ -374,13 +488,32 @@ def _structured_fs_read(
 def _structured_fs_write(
     handler: Any,
     arguments: Mapping[str, Any],
-    _context: StructuredToolContext | None = None,
+    context: StructuredToolContext | None = None,
 ) -> Mapping[str, Any]:
+    trust_level = (
+        str(context.session.metadata.get("trust_level", "")).strip().lower()
+        if context is not None
+        else ""
+    )
+    trusted_cli_policy_approved = (
+        context is not None
+        and context.session.channel == "cli"
+        and context.session.mode == SessionMode.DEFAULT
+        and (
+            trust_level == "trusted_cli"
+            or (
+                trust_level == "trusted"
+                and bool(context.session.metadata.get("operator_owned_cli", False))
+            )
+        )
+    )
     return dict(
-        handler._fs_git_toolkit.write_file(
+        _fs_git_toolkit_for_context(handler, context).write_file(
             path=_argument_string(arguments, "path"),
             content=_argument_string(arguments, "content"),
-            confirm=bool(arguments.get("confirm", False)),
+            confirm=bool(arguments.get("confirm", False))
+            or bool(context and context.user_confirmed)
+            or trusted_cli_policy_approved,
         )
     )
 
@@ -388,10 +521,11 @@ def _structured_fs_write(
 def _structured_git_status(
     handler: Any,
     arguments: Mapping[str, Any],
-    _context: StructuredToolContext | None = None,
+    context: StructuredToolContext | None = None,
 ) -> Mapping[str, Any]:
+    toolkit = _fs_git_toolkit_for_context(handler, context)
     return dict(
-        handler._fs_git_toolkit.git_status(
+        toolkit.git_status(
             repo_path=_argument_string(arguments, "repo_path", default=".") or ".",
         )
     )
@@ -400,10 +534,11 @@ def _structured_git_status(
 def _structured_git_diff(
     handler: Any,
     arguments: Mapping[str, Any],
-    _context: StructuredToolContext | None = None,
+    context: StructuredToolContext | None = None,
 ) -> Mapping[str, Any]:
+    toolkit = _fs_git_toolkit_for_context(handler, context)
     return dict(
-        handler._fs_git_toolkit.git_diff(
+        toolkit.git_diff(
             repo_path=_argument_string(arguments, "repo_path", default=".") or ".",
             ref=_argument_string(arguments, "ref"),
             max_lines=_argument_int(arguments, "max_lines", default=400, minimum=1),
@@ -414,10 +549,11 @@ def _structured_git_diff(
 def _structured_git_log(
     handler: Any,
     arguments: Mapping[str, Any],
-    _context: StructuredToolContext | None = None,
+    context: StructuredToolContext | None = None,
 ) -> Mapping[str, Any]:
+    toolkit = _fs_git_toolkit_for_context(handler, context)
     return dict(
-        handler._fs_git_toolkit.git_log(
+        toolkit.git_log(
             repo_path=_argument_string(arguments, "repo_path", default=".") or ".",
             limit=_argument_int(arguments, "limit", default=20, minimum=1),
         )
@@ -441,6 +577,49 @@ class StructuredToolContext:
     workspace_id: WorkspaceId
     session: Session
     user_confirmed: bool = False
+
+
+def _task_declared_fs_runtime_roots(session: Session) -> list[Path]:
+    if session.mode != SessionMode.TASK:
+        return []
+    raw_envelope = session.metadata.get("task_envelope")
+    if not isinstance(raw_envelope, Mapping):
+        return []
+    authority = str(raw_envelope.get("resource_scope_authority", "")).strip().lower()
+    if authority != "command_clean":
+        return []
+    resource_scope_ids = raw_envelope.get("resource_scope_ids", [])
+    resource_scope_prefixes = raw_envelope.get("resource_scope_prefixes", [])
+    declared_scope = [
+        str(item).strip()
+        for items in (resource_scope_ids, resource_scope_prefixes)
+        if isinstance(items, list)
+        for item in items
+        if str(item).strip()
+    ]
+    if not declared_scope:
+        return []
+    return [Path.cwd().expanduser().resolve(strict=False)]
+
+
+def _fs_git_toolkit_for_context(
+    handler: Any,
+    context: StructuredToolContext | None,
+) -> FsGitToolkit:
+    toolkit = cast(FsGitToolkit, handler._fs_git_toolkit)
+    if getattr(toolkit, "roots", None):
+        return toolkit
+    if context is None:
+        return toolkit
+    scoped_roots = _task_declared_fs_runtime_roots(context.session)
+    if not scoped_roots:
+        return toolkit
+    return FsGitToolkit(
+        roots=scoped_roots,
+        max_read_bytes=handler._config.assistant_max_read_bytes,
+        git_timeout_seconds=handler._config.assistant_git_timeout_seconds,
+        protected_write_paths=tuple(getattr(toolkit, "protected_write_paths", ())),
+    )
 
 
 StructuredPayloadBuilder = Callable[
@@ -753,6 +932,7 @@ class PendingAction:
     reason: str
     capabilities: set[Capability]
     created_at: datetime
+    delivery_target: DeliveryTarget | None = None
     task_id: str = ""
     preflight_action: ControlPlaneAction | None = None
     execute_after: datetime | None = None
@@ -779,8 +959,38 @@ class PendingAction:
     selected_backend_id: str = ""
     selected_backend_method: str = ""
     fallback_used: bool = False
+    strip_direct_tool_execute_envelope_keys: bool = False
     status: str = "pending"
     status_reason: str = ""
+
+    @staticmethod
+    def _is_legacy_direct_mcp_tool_execute_shape(
+        *,
+        tool_name: ToolName | str,
+        arguments: Mapping[str, Any],
+        preflight_action: ControlPlaneAction | Mapping[str, Any] | None,
+    ) -> bool:
+        if not str(tool_name).strip().startswith("mcp."):
+            return False
+        if not all(key in arguments for key in ("session_id", "tool_name", "command")):
+            return False
+        if isinstance(preflight_action, Mapping):
+            origin = preflight_action.get("origin")
+            if isinstance(origin, Mapping):
+                return str(origin.get("actor", "")).strip() == "control_api"
+            return False
+        return str(getattr(getattr(preflight_action, "origin", None), "actor", "")).strip() == (
+            "control_api"
+        )
+
+    def should_strip_direct_tool_execute_envelope_keys(self) -> bool:
+        return bool(self.strip_direct_tool_execute_envelope_keys) or (
+            PendingAction._is_legacy_direct_mcp_tool_execute_shape(
+                tool_name=self.tool_name,
+                arguments=self.arguments,
+                preflight_action=self.preflight_action,
+            )
+        )
 
 
 @dataclass(slots=True)
@@ -813,6 +1023,7 @@ class HandlerImplementation(
     """Owns JSON-RPC control handlers for the daemon."""
 
     def __init__(self, *, services: DaemonServices) -> None:
+        self._services = services
         self._config = services.config
         self._audit_log = services.audit_log
         self._event_bus = _EventPublisher(services.event_bus)
@@ -856,6 +1067,8 @@ class HandlerImplementation(
         self._skill_manager = services.skill_manager
         self._coding_manager = services.coding_manager
         self._selfmod_manager = services.selfmod_manager
+        self._mcp_manager = services.mcp_manager
+        self._msgvault_toolkit = services.msgvault_toolkit
         self._realitycheck_toolkit = services.realitycheck_toolkit
         self._sandbox = services.sandbox
         self._control_plane = services.control_plane
@@ -874,6 +1087,7 @@ class HandlerImplementation(
         self._pending_by_session: dict[SessionId, list[str]] = {}
         self._monitor_reject_counts: dict[SessionId, int] = {}
         self._plan_violation_counts: dict[SessionId, int] = {}
+        self._channel_proactive_last_sent_at: dict[str, datetime] = {}
         self._confirmation_warning_generator = ConfirmationWarningGenerator()
         self._confirmation_analytics = ConfirmationAnalytics()
         self._confirmation_alerted_at: dict[str, datetime] = {}
@@ -949,21 +1163,45 @@ class HandlerImplementation(
         ]
         if not browser_allowed_domains:
             browser_allowed_domains = list(web_allowed_domains)
-        self._browser_toolkit = BrowserToolkit(
-            enabled=bool(self._config.browser_enabled),
-            command=self._config.browser_command,
-            session_root=self._config.data_dir / "browser",
-            allowed_domains=browser_allowed_domains,
-            timeout_seconds=self._config.browser_timeout_seconds,
-            require_hardened_isolation=bool(self._config.browser_require_hardened_isolation),
-            max_read_bytes=self._config.browser_max_read_bytes,
-            sandbox_runner=self._sandbox,
-            browser_sandbox=self._browser_sandbox,
-        )
+        browser_toolkit_kwargs: dict[str, Any] = {
+            "enabled": bool(self._config.browser_enabled),
+            "command": self._config.browser_command,
+            "session_root": self._config.data_dir / "browser",
+            "allowed_domains": browser_allowed_domains,
+            "timeout_seconds": self._config.browser_timeout_seconds,
+            "require_hardened_isolation": bool(self._config.browser_require_hardened_isolation),
+            "max_read_bytes": self._config.browser_max_read_bytes,
+            "sandbox_runner": self._sandbox,
+            "browser_sandbox": self._browser_sandbox,
+        }
+        self._browser_toolkit: Any
+        if self._config.browser_enabled:
+            from shisad.executors.browser import BrowserToolkit
+
+            self._browser_toolkit = BrowserToolkit(**browser_toolkit_kwargs)
+        else:
+            self._browser_toolkit = _LazyBrowserToolkit(**browser_toolkit_kwargs)
         self._fs_git_toolkit = FsGitToolkit(
             roots=list(self._config.assistant_fs_roots),
             max_read_bytes=self._config.assistant_max_read_bytes,
             git_timeout_seconds=self._config.assistant_git_timeout_seconds,
+            protected_write_paths=(
+                (self._config.assistant_persona_soul_path,)
+                if self._config.assistant_persona_soul_path is not None
+                else ()
+            ),
+        )
+        self._attachment_ingestor = AttachmentIngestor(
+            roots=list(self._config.assistant_fs_roots),
+            evidence_store=self._evidence_store,
+            firewall=self._firewall,
+            policy=AttachmentIngestPolicy(
+                max_image_bytes=self._config.attachment_max_image_bytes,
+                max_audio_bytes=self._config.attachment_max_audio_bytes,
+                max_image_pixels=self._config.attachment_max_image_pixels,
+                max_audio_duration_seconds=self._config.attachment_max_audio_duration_seconds,
+                max_transcript_chars=self._config.attachment_max_transcript_chars,
+            ),
         )
         self._load_pending_actions()
         self._approval_web.bind_callbacks(
@@ -973,6 +1211,177 @@ class HandlerImplementation(
             approval_context=self._webauthn_approval_ceremony_context,
             approval_complete=self._complete_webauthn_approval_ceremony,
         )
+
+    async def reset_test_state(self) -> dict[str, Any]:
+        """Clear handler-owned mutable state in addition to service state."""
+        if not self._config.test_mode:
+            raise RuntimeError("daemon.reset is unavailable outside explicit test mode")
+        async with self._services.rpc_state_lock:
+            if self._services.reset_in_progress:
+                raise RuntimeError("daemon.reset is already in progress")
+            if self._services.active_rpc_calls > 1:
+                raise RuntimeError("Cannot reset daemon while another control RPC is in flight")
+            if len(getattr(self._services.embeddings_adapter, "_inflight", ())) > 0:
+                raise RuntimeError("Cannot reset daemon while embeddings requests are in flight")
+            self._services.reset_in_progress = True
+
+        try:
+            scheduler_pending = sum(
+                len(rows) for rows in self._scheduler._pending_confirmations.values()
+            )
+            quiescent = not any(
+                (
+                    scheduler_pending,
+                    len(self._pending_actions),
+                    len(self._pending_by_session),
+                    len(self._pending_two_factor_enrollments),
+                    len(self._monitor_reject_counts),
+                    len(self._plan_violation_counts),
+                    len(self._confirmation_alerted_at),
+                    len(self._identity_map._pairing_requests),
+                    len(self._confirmation_failure_tracker._state),
+                )
+            )
+
+            service_result = await self._services.reset_test_state()
+            cleared = dict(service_result.get("cleared", {}))
+            if "identity_pairing_requests" in cleared:
+                cleared.setdefault("pairing_requests", int(cleared["identity_pairing_requests"]))
+            cleared.update(self._clear_handler_test_state())
+            invariants = self._reset_invariants()
+            status = "reset" if all(invariants.values()) else "reset_failed"
+            return {
+                "status": status,
+                "cleared": cleared,
+                "quiescent": quiescent,
+                "invariants": invariants,
+            }
+        finally:
+            async with self._services.rpc_state_lock:
+                self._services.reset_in_progress = False
+
+    def _clear_handler_test_state(self) -> dict[str, int]:
+        pairing_request_artifacts = int(self._pairing_requests_file.exists())
+        cleared = {
+            "pending_actions": len(self._pending_actions),
+            "pending_action_sessions": len(self._pending_by_session),
+            "monitor_reject_counts": len(self._monitor_reject_counts),
+            "plan_violation_counts": len(self._plan_violation_counts),
+            "confirmation_alerts": len(self._confirmation_alerted_at),
+            "pending_two_factor_enrollments": len(self._pending_two_factor_enrollments),
+            "confirmation_lockouts": len(self._confirmation_failure_tracker._state),
+            "pairing_request_artifacts": pairing_request_artifacts,
+        }
+        self._pending_actions.clear()
+        self._pending_by_session.clear()
+        self._monitor_reject_counts.clear()
+        self._plan_violation_counts.clear()
+        self._confirmation_alerted_at.clear()
+        self._pending_two_factor_enrollments.clear()
+        self._confirmation_failure_tracker._state.clear()
+        self._pending_actions_file.unlink(missing_ok=True)
+        self._pairing_requests_file.unlink(missing_ok=True)
+        lockout_state_path = self._confirmation_failure_tracker._state_path
+        if lockout_state_path is not None:
+            lockout_state_path.unlink(missing_ok=True)
+        return cleared
+
+    def _reset_invariants(self) -> dict[str, bool]:
+        def _dir_empty(path: Path) -> bool:
+            return (not path.exists()) or (not any(path.iterdir()))
+
+        archive_dir = self._config.data_dir / "session_archives"
+        trace_dir = self._config.data_dir / "traces"
+        channel_state_root = self._services.channel_state_store._root_dir
+        approval_store_path = self._credential_store._approval_store_path
+        identity_allowlists_match = {
+            channel: set(values) for channel, values in self._identity_map._allowlists.items()
+        } == {
+            channel: set(values)
+            for channel, values in self._services.identity_allowlists_baseline.items()
+        }
+        return {
+            "sessions_empty": not self._session_manager._sessions,
+            "scheduler_empty": (
+                not self._scheduler._tasks
+                and not any(self._scheduler._pending_confirmations.values())
+            ),
+            "memory_empty": not self._memory_manager._entries,
+            "lockdown_empty": not self._lockdown_manager._states,
+            "rate_limiter_empty": not (
+                self._rate_limiter._by_tool
+                or self._rate_limiter._by_user
+                or self._rate_limiter._by_session
+                or self._rate_limiter._by_tool_burst
+            ),
+            "audit_empty": self._audit_log.entry_count == 0,
+            "checkpoints_empty": not any(self._checkpoint_store._dir.iterdir()),
+            "channel_state_empty": not (
+                self._services.channel_state_store._seen_ids
+                or self._services.channel_state_store._seen_id_sets
+            ),
+            "channel_state_disk_empty": _dir_empty(channel_state_root),
+            "transcripts_empty": _dir_empty(self._transcript_store._transcript_dir),
+            "transcript_blobs_empty": _dir_empty(self._transcript_store._blob_dir),
+            "evidence_empty": not self._evidence_store._refs,
+            "evidence_disk_empty": _dir_empty(self._evidence_store._blob_dir)
+            and not self._evidence_store._metadata_path.exists()
+            and _dir_empty(self._evidence_store._quarantine_dir),
+            "ingestion_empty": not self._ingestion._records and not self._ingestion._vectors,
+            "ingestion_artifacts_empty": _dir_empty(self._ingestion._sanitized_dir)
+            and _dir_empty(self._ingestion._original_dir),
+            "selfmod_empty": not self._selfmod_manager._inventory.skills
+            and not self._selfmod_manager._inventory.behavior_packs,
+            "selfmod_artifacts_empty": _dir_empty(self._selfmod_manager._proposal_dir)
+            and _dir_empty(self._selfmod_manager._change_dir)
+            and _dir_empty(self._selfmod_manager._artifact_root)
+            and not self._selfmod_manager._inventory_path.exists()
+            and not self._selfmod_manager._incident_path.exists(),
+            "skills_empty": not self._skill_manager._inventory
+            and not self._skill_manager._skill_tool_map
+            and not self._skill_manager._pending_registration_events,
+            "skill_storage_empty": _dir_empty(self._skill_manager._storage_dir),
+            "trace_empty": not trace_dir.exists() or not any(trace_dir.iterdir()),
+            "archives_empty": not archive_dir.exists() or not any(archive_dir.iterdir()),
+            "approval_state_empty": not (
+                self._credential_store._approval_factors or self._credential_store._signer_keys
+            )
+            and (
+                approval_store_path is None
+                or (
+                    not approval_store_path.exists()
+                    and not any(
+                        approval_store_path.parent.glob(f"{approval_store_path.name}.corrupt.*")
+                    )
+                )
+            ),
+            "identity_runtime_empty": (
+                not self._identity_map._map
+                and not self._identity_map._pairing_requests
+                and dict(self._identity_map._default_trust)
+                == dict(self._services.identity_default_trust_baseline)
+                and identity_allowlists_match
+            ),
+            "risk_files_empty": (
+                not self._risk_calibrator.observations_path.exists()
+                and not self._risk_calibrator.policy_path.exists()
+            ),
+            "handler_pending_empty": not (
+                self._pending_actions
+                or self._pending_by_session
+                or self._pending_two_factor_enrollments
+                or self._monitor_reject_counts
+                or self._plan_violation_counts
+                or self._confirmation_alerted_at
+                or self._confirmation_failure_tracker._state
+            )
+            and not self._pending_actions_file.exists()
+            and not self._pairing_requests_file.exists()
+            and (
+                self._confirmation_failure_tracker._state_path is None
+                or not self._confirmation_failure_tracker._state_path.exists()
+            ),
+        }
 
     async def _prepare_browser_tool_arguments(
         self,
@@ -984,10 +1393,12 @@ class HandlerImplementation(
         tool_name_value = str(tool_name)
         if tool_name_value not in {"browser.navigate", "browser.click", "browser.type_text"}:
             return dict(arguments)
-        return await self._browser_toolkit.prepare_action_arguments(
-            session=session,
-            tool_name=tool_name_value,
-            arguments=arguments,
+        return dict(
+            await self._browser_toolkit.prepare_action_arguments(
+                session=session,
+                tool_name=tool_name_value,
+                arguments=arguments,
+            )
         )
 
     @staticmethod
@@ -1454,12 +1865,30 @@ class HandlerImplementation(
                 return SessionMode.DEFAULT
         return session.mode
 
+    @staticmethod
+    def _transcript_entry_has_firewall_risk(entry: Any) -> bool:
+        metadata = getattr(entry, "metadata", {})
+        if not isinstance(metadata, Mapping):
+            return False
+        for key in (
+            "firewall_risk_factors",
+            "firewall_secret_findings",
+            "firewall_decode_reason_codes",
+        ):
+            value = metadata.get(key)
+            if isinstance(value, list) and value:
+                return True
+        return False
+
     def _session_has_tainted_history(self, session_id: SessionId) -> bool:
-        return any(entry.taint_labels for entry in self._transcript_store.list_entries(session_id))
+        return any(
+            entry.taint_labels or HandlerImplementation._transcript_entry_has_firewall_risk(entry)
+            for entry in self._transcript_store.list_entries(session_id)
+        )
 
     def _session_has_tainted_user_history(self, session_id: SessionId) -> bool:
         return any(
-            entry.taint_labels
+            entry.taint_labels or HandlerImplementation._transcript_entry_has_firewall_risk(entry)
             for entry in self._transcript_store.list_entries(session_id)
             if str(entry.role).strip().lower() == "user"
         )
@@ -1779,6 +2208,11 @@ class HandlerImplementation(
             "reason": pending.reason,
             "capabilities": sorted(cap.value for cap in pending.capabilities),
             "created_at": pending.created_at.isoformat(),
+            "delivery_target": (
+                pending.delivery_target.model_dump(mode="json")
+                if pending.delivery_target is not None
+                else None
+            ),
             "execute_after": pending.execute_after.isoformat() if pending.execute_after else "",
             "safe_preview": pending.safe_preview,
             "warnings": list(pending.warnings),
@@ -1795,6 +2229,9 @@ class HandlerImplementation(
             "selected_backend_id": pending.selected_backend_id,
             "selected_backend_method": pending.selected_backend_method,
             "fallback_used": bool(pending.fallback_used),
+            "strip_direct_tool_execute_envelope_keys": bool(
+                pending.strip_direct_tool_execute_envelope_keys
+            ),
             "status": pending.status,
             "status_reason": pending.status_reason,
         }
@@ -1856,6 +2293,7 @@ class HandlerImplementation(
         arguments: dict[str, Any],
         reason: str,
         capabilities: set[Capability],
+        delivery_target: DeliveryTarget | None = None,
         task_id: str = "",
         preflight_action: ControlPlaneAction | None = None,
         merged_policy: ToolExecutionPolicy | None = None,
@@ -1864,6 +2302,7 @@ class HandlerImplementation(
         pep_context: PendingPepContextSnapshot | None = None,
         pep_elevation: PendingPepElevationRequest | None = None,
         confirmation_requirement: ConfirmationRequirement | None = None,
+        strip_direct_tool_execute_envelope_keys: bool = False,
     ) -> PendingAction:
         created_at = datetime.now(UTC)
         decision_nonce = uuid.uuid4().hex
@@ -2028,6 +2467,9 @@ class HandlerImplementation(
             reason=reason,
             capabilities=set(capabilities),
             created_at=created_at,
+            delivery_target=delivery_target.model_copy(deep=True)
+            if delivery_target is not None
+            else None,
             preflight_action=preflight_action,
             execute_after=execute_after,
             safe_preview=render_structured_confirmation(summary, warnings=sorted(set(warnings))),
@@ -2055,6 +2497,7 @@ class HandlerImplementation(
                     enforce_explicit_credential_refs=bool(
                         pep_context.enforce_explicit_credential_refs
                     ),
+                    filesystem_roots=tuple(str(root) for root in pep_context.filesystem_roots),
                 )
                 if pep_context is not None
                 else None
@@ -2081,6 +2524,7 @@ class HandlerImplementation(
             selected_backend_id=str(backend_resolution.backend.backend_id),
             selected_backend_method=str(backend_resolution.backend.method),
             fallback_used=bool(backend_resolution.fallback_used),
+            strip_direct_tool_execute_envelope_keys=bool(strip_direct_tool_execute_envelope_keys),
         )
         self._pending_actions[confirmation_id] = pending
         self._pending_by_session.setdefault(session_id, []).append(confirmation_id)
@@ -2105,6 +2549,8 @@ class HandlerImplementation(
             return
         if not isinstance(raw, list):
             return
+        pruned_stale = False
+        migrated_legacy_strip_intent = False
         for item in raw:
             if not isinstance(item, dict):
                 continue
@@ -2114,6 +2560,12 @@ class HandlerImplementation(
                     continue
                 created_at = datetime.fromisoformat(str(item.get("created_at", "")).strip())
                 session_id = SessionId(str(item.get("session_id", "")))
+                delivery_target_payload = item.get("delivery_target")
+                delivery_target = (
+                    DeliveryTarget.model_validate(delivery_target_payload)
+                    if isinstance(delivery_target_payload, Mapping)
+                    else None
+                )
                 preflight_action_payload = item.get("preflight_action")
                 preflight_action = (
                     ControlPlaneAction.model_validate(preflight_action_payload)
@@ -2176,6 +2628,7 @@ class HandlerImplementation(
                         Capability(str(cap)) for cap in item.get("capabilities", []) if str(cap)
                     },
                     created_at=created_at,
+                    delivery_target=delivery_target,
                     preflight_action=preflight_action,
                     execute_after=execute_after,
                     safe_preview=str(item.get("safe_preview", "")),
@@ -2221,16 +2674,35 @@ class HandlerImplementation(
                         str(item.get("selected_backend_method", "")).strip() or "software"
                     ),
                     fallback_used=bool(item.get("fallback_used", False)),
+                    strip_direct_tool_execute_envelope_keys=bool(
+                        item.get("strip_direct_tool_execute_envelope_keys", False)
+                    ),
                     status=str(item.get("status", "pending")),
                     status_reason=str(item.get("status_reason", "")),
                 )
             except (TypeError, ValueError, ValidationError):
                 continue
+            if (
+                not pending.strip_direct_tool_execute_envelope_keys
+                and pending.should_strip_direct_tool_execute_envelope_keys()
+            ):
+                pending.strip_direct_tool_execute_envelope_keys = True
+                migrated_legacy_strip_intent = True
             self._pending_actions[pending.confirmation_id] = pending
             self._pending_by_session.setdefault(
                 pending.session_id,
                 [],
             ).append(pending.confirmation_id)
+            stale_reason = self._stale_pending_action_reason(pending)
+            if stale_reason:
+                self._mark_stale_pending_action(
+                    pending,
+                    reason=stale_reason,
+                    persist=False,
+                )
+                pruned_stale = True
+        if pruned_stale or migrated_legacy_strip_intent:
+            self._persist_pending_actions()
 
     def _is_verified_channel_identity(self, *, channel: str, external_user_id: str) -> bool:
         if channel == "matrix" and self._matrix_channel is not None:
@@ -2320,6 +2792,7 @@ class HandlerImplementation(
         approval_task_envelope_id: str = "",
         approval_timestamp: str = "",
         approval_evidence: ConfirmationEvidence | None = None,
+        strip_direct_tool_execute_envelope_keys: bool = False,
     ) -> ApprovedToolExecutionResult:
         session = self._session_manager.get(sid)
         if session is None:
@@ -2668,6 +3141,10 @@ class HandlerImplementation(
             *,
             default_error: str,
         ) -> ApprovedToolExecutionResult:
+            execution_taints = label_tool_output(str(tool_name))
+            sanitize_output = self._sanitize_tool_output_text
+            if TaintLabel.MCP_EXTERNAL in execution_taints:
+                sanitize_output = self._sanitize_untrusted_tool_output_text
             result = await execute_structured_tool(
                 session_id=sid,
                 tool_name=tool_name,
@@ -2676,8 +3153,8 @@ class HandlerImplementation(
                 actor="tool_runtime",
                 emit_event=self._event_bus.publish,
                 record_execution=_record_execution,
-                sanitize_output=self._sanitize_tool_output_text,
-                taint_labels=label_tool_output(str(tool_name)),
+                sanitize_output=sanitize_output,
+                taint_labels=execution_taints,
                 approval_event_fields=approval_event_fields,
             )
             return ApprovedToolExecutionResult(
@@ -2726,6 +3203,50 @@ class HandlerImplementation(
             return await _execute_structured_payload_tool(
                 structured_payload,
                 default_error=default_error,
+            )
+
+        if tool is not None and str(getattr(tool, "registration_source", "")).strip() == "mcp":
+            server_name = str(getattr(tool, "registration_source_id", "")).strip()
+            upstream_tool_name = str(getattr(tool, "upstream_tool_name", "")).strip()
+            mcp_arguments = _tool_execute_runtime_arguments(
+                tool,
+                arguments,
+                strip_direct_tool_execute_envelope_keys=strip_direct_tool_execute_envelope_keys,
+            )
+            validation_errors = self._registry.validate_call(tool_name, mcp_arguments)
+            if validation_errors:
+                return await _execute_structured_payload_tool(
+                    {
+                        "ok": False,
+                        "error": (
+                            "invalid_tool_arguments:schema validation failed: "
+                            + "; ".join(validation_errors)
+                        ),
+                    },
+                    default_error="invalid_tool_arguments",
+                )
+            mcp_payload: Mapping[str, Any]
+            mcp_manager = getattr(self, "_mcp_manager", None)
+            if mcp_manager is None or not server_name or not upstream_tool_name:
+                mcp_payload = {"ok": False, "error": "mcp_tool_unavailable"}
+            else:
+                try:
+                    mcp_payload = await mcp_manager.call_tool(
+                        server_name=server_name,
+                        tool_name=upstream_tool_name,
+                        arguments=mcp_arguments,
+                    )
+                except Exception as exc:
+                    logger.exception(
+                        "MCP tool execution failed: server=%s upstream_tool=%s error=%s",
+                        server_name,
+                        upstream_tool_name,
+                        exc,
+                    )
+                    mcp_payload = {"ok": False, "error": str(exc).strip() or "mcp_tool_failed"}
+            return await _execute_structured_payload_tool(
+                mcp_payload,
+                default_error="mcp_tool_failed",
             )
 
         if tool is None:
@@ -2835,6 +3356,9 @@ class HandlerImplementation(
                 "realitycheck_search_failed",
             ),
             "realitycheck.read": (_structured_realitycheck_read, "realitycheck_read_failed"),
+            "attachment.ingest": (_structured_attachment_ingest, "attachment_ingest_failed"),
+            "email.search": (_structured_email_search, "email_search_failed"),
+            "email.read": (_structured_email_read, "email_read_failed"),
             "fs.list": (_structured_fs_list, "fs_list_failed"),
             "fs.read": (_structured_fs_read, "fs_read_failed"),
             "fs.write": (_structured_fs_write, "fs_write_failed"),
@@ -2866,6 +3390,16 @@ class HandlerImplementation(
             .replace("TOOL_OUTPUT_END", "TOOL_OUTPUT_MARKER")
             .strip()
         )
+
+    def _sanitize_untrusted_tool_output_text(self, raw: str) -> str:
+        if not raw:
+            return ""
+        firewall = getattr(self, "_firewall", None)
+        if firewall is not None:
+            inspect = getattr(firewall, "inspect", None)
+            if callable(inspect):
+                raw = str(inspect(raw).sanitized_text)
+        return self._sanitize_tool_output_text(raw)
 
     async def _execute_via_sandbox(
         self,

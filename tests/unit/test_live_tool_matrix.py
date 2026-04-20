@@ -49,3 +49,71 @@ def test_message_send_template_uses_first_enabled_channel() -> None:
     assert template["arguments"]["channel"] == "discord"
     assert template["arguments"]["recipient"] == "live-matrix"
     assert template["arguments"]["message"] == "live tool matrix probe"
+
+
+def test_tool_payload_templates_cover_memory_and_reminder_tools() -> None:
+    module = _load_live_tool_matrix_module()
+
+    templates = module._tool_payload_templates(Path("/tmp/shisad-live-tool-matrix"))
+
+    for tool_name in (
+        "note.create",
+        "note.list",
+        "note.search",
+        "todo.create",
+        "todo.list",
+        "todo.complete",
+        "reminder.create",
+        "reminder.list",
+        "attachment.ingest",
+    ):
+        assert tool_name in templates
+        assert templates[tool_name]["arguments"]
+    assert Path(templates["attachment.ingest"]["arguments"]["path"]).exists()
+
+
+def test_email_read_template_requires_configured_or_search_derived_id(monkeypatch) -> None:
+    module = _load_live_tool_matrix_module()
+
+    monkeypatch.delenv("SHISAD_LIVE_TOOL_MATRIX_EMAIL_MESSAGE_ID", raising=False)
+    templates = module._structured_rpc_templates()
+
+    assert "email.search" in templates
+    assert "email.read" not in templates
+
+    monkeypatch.setenv("SHISAD_LIVE_TOOL_MATRIX_EMAIL_MESSAGE_ID", "msg-101")
+    monkeypatch.setenv("SHISAD_LIVE_TOOL_MATRIX_EMAIL_ACCOUNT", "me@example.com")
+    configured_templates = module._structured_rpc_templates()
+
+    assert configured_templates["email.search"] == {
+        "query": "shisad",
+        "limit": 2,
+        "account": "me@example.com",
+    }
+    assert configured_templates["email.read"] == {
+        "message_id": "msg-101",
+        "account": "me@example.com",
+    }
+
+    derived = module._email_read_template_from_search_result(
+        {
+            "ok": True,
+            "account": "work@example.com",
+            "results": [{"id": 202, "source_message_id": "source-202"}],
+        }
+    )
+
+    assert derived == {"message_id": "202", "account": "work@example.com"}
+
+
+def test_msgvault_account_required_is_disabled_probe_setup_reason() -> None:
+    module = _load_live_tool_matrix_module()
+
+    row = module._classify_structured_rpc_result(
+        method_name="tool.email.search",
+        result={"ok": False, "error": "msgvault_account_required"},
+        strict_disabled=False,
+    )
+
+    assert row.status == "pass_disabled"
+    assert row.detail == "msgvault_account_required"

@@ -14,7 +14,10 @@ For current public operator guidance, see:
 ## Preconditions
 
 - You are in the `shisad` repo root.
-- Python deps are installed (`uv sync --dev`).
+- Python deps are installed (`uv sync --group dev --extra chat`).
+  For local PromptGuard/YARA runtime checks, use
+  `uv sync --group security-runtime --group dev --extra chat`.
+  `security-runtime` is a dependency group, not an extra; `chat` is the extra.
 - If you want live remote planner calls, the right API key is set for your
   preset (see *Credentials* below).
 - If using coding-agent workflows (`shisad dev ...`), at least one agent CLI
@@ -101,6 +104,24 @@ SHISAD_POLICY_PATH=/tmp/shisad-feature-policy.yaml \
 
 The `RUNNER_INHERIT_SHISAD_ENV=1` flag tells the harness to keep your
 shell's `SHISAD_*` values instead of clearing them.
+
+## Web Search Backend
+
+`tool.web.search` needs an external JSON search backend (SearxNG-style
+`/search?q=...&format=json`). If `SHISAD_WEB_SEARCH_BACKEND_URL` is unset,
+the tool reports `web_search_backend_unconfigured` in doctor output and
+returns no results — research-shaped prompts will degrade accordingly.
+
+Minimum config (local SearxNG example):
+
+```bash
+SHISAD_WEB_SEARCH_BACKEND_URL=http://127.0.0.1:8888
+SHISAD_WEB_ALLOWED_DOMAINS='["127.0.0.1:8888"]'
+```
+
+The backend host also needs to be in `SHISAD_WEB_ALLOWED_DOMAINS`. See
+`docs/DEPLOY.md` for the operator-level overview and `docs/ENV-VARS.md`
+for the full variable reference.
 
 ## Default Policy
 

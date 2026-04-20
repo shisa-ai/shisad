@@ -1,7 +1,7 @@
 # shisad Roadmap
 
 *Created: 2026-02-26*
-*Updated: 2026-04-09*
+*Updated: 2026-04-19*
 *Status: Active*
 
 ## Goal
@@ -30,6 +30,27 @@ Reach a genuinely useful personal-assistant baseline while preserving the projec
 - `v0.6.2` is release-closed: multi-factor approvals, signer-backed
   authorization, local-helper approvals, and optional evidence encryption at
   rest are now on the shipped line.
+- `v0.6.3` is published: critical UX fixes from first-user testing, including
+  actionable pending confirmations, chat TOTP approvals, terminal QR
+  enrollment, session-message newline rendering, no-model/startup diagnostics,
+  and more truthful planner tool advertising for unconfigured resources. The
+  LT follow-up also closed trusted-CLI confirmation handling, stale
+  pending-action cleanup, and low-friction internal bookkeeping confirmation
+  paths. Textual chat TUI newline rendering remains deferred to the TUI
+  overhaul.
+- `v0.6.4` is published: firewall scanning now routes through `textguard`,
+  bundled YARA rules are validated at startup, analyzer compatibility shims
+  preserve the required legacy split-base64 and phrase coverage, and the
+  duplicated local shisad YARA asset copy has been removed.
+- `v0.6.5` is published: MCP client discovery and execution with stable
+  `mcp.<server>.<tool>` runtime ids, explicit remote tool trust semantics,
+  and a signed A2A ingress foundation with fingerprint verification, grant
+  enforcement, replay protection, and per-peer rate limits. Exposing shisad
+  as an MCP server remains deferred.
+- `v0.6.6` is published: config-path `SOUL.md` persona preferences, Discord
+  public-channel policy controls, local MsgVault email read/search, local image
+  and voice attachment ingest, and same-session evidence carry-forward for
+  follow-up turns.
 
 ## Milestones
 
@@ -76,10 +97,11 @@ semantics, approval provenance attached to approval/reject/execute audit
 events, a mandatory TASK summary-firewall checkpoint before delegated output
 crosses back into COMMAND context, a browser tool surface with
 confirmation-gated browser writes plus local skill tool-surface integrity
-checks, and a hardened public release path using OIDC trusted publishing,
-SBOMs, and provenance attestations. The active follow-on lanes are `v0.6.3`
-(critical UX fixes) and `v0.6.4` (MCP/A2A interop), while the deferred M7
-connector/skill expansion lane lives in `v0.6.5`.
+checks, a hardened public release path using OIDC trusted publishing, SBOMs,
+and provenance attestations, the published `v0.6.3` critical UX
+stabilization lane, the shipped `v0.6.4` textguard migration, and the
+shipped `v0.6.5` MCP/A2A interop lane, and the shipped `v0.6.6`
+connector/skill expansion lane. The `v0.7` memory foundation is next.
 
 #### v0.6.1 — Security hardening
 
@@ -158,21 +180,57 @@ tools:
 
 #### v0.6.3 — Critical UX fixes
 
-- Confirmation gate pending-status plumbing
-- Chat rendering and response formatting fixes
-- No-model / missing-config diagnostics and operator usability fixes
+Current execution note (2026-04-13): `v0.6.3` is published on GitHub and PyPI.
+The shipped line includes first-user UX stabilization work: confirmation-gated
+actions surface actionable daemon-owned pending status, TOTP approvals can be
+completed from trusted chat / command replies, TOTP enrollment renders a
+terminal QR code when possible, session-message output preserves line breaks,
+no-model and startup diagnostics are actionable, `shisad doctor` works as a
+bare command, Anthropic default routing and chat optional install guidance are
+documented, and planner-visible tool manifests truthfully hide unconfigured
+filesystem/git surfaces while preserving delegated task scope enforcement. The
+LT follow-up also parses confirmation replies before planner flow and closes
+the CLI-trust, stale pending-action, and low-risk internal bookkeeping fixes
+found during live testing. Textual chat TUI newline rendering and web-page
+TOTP entry remain deferred to `v0.8.0`.
 
-#### v0.6.4 — MCP/A2A interop
+#### v0.6.4 — textguard port
 
-- MCP/A2A compatibility
+- Status (2026-04-14): `v0.6.4` is published. textguard-backed screening is on
+  the shipped line; PromptGuard remains opt-in through the
+  `security-runtime` dependency group.
+- Port PromptGuard-backed screening to the `textguard` library while keeping
+  PromptGuard opt-in through the existing `security-runtime` dependency group
+- Unify prompt-injection detection behind the textguard API surface
+- Preserve existing PEP screening semantics and threshold tuning while
+  removing the copied local YARA asset set
+
+#### v0.6.5 — MCP/A2A interop
+
+- Status (2026-04-17): `v0.6.5` is published. MCP client-only interop,
+  remote tool trust policy, and the signed A2A socket/HTTP ingress baseline
+  shipped with the release. Exposing shisad as an MCP server remains
+  deferred.
+- MCP client-only interop with external servers
 - Remote tool/server trust policy
-- Interop layer for consuming or exposing remote tools without weakening local enforcement
+- Signed A2A external-ingress foundation
+- Exposing shisad as an MCP server remains deferred
 
-#### v0.6.5 — Connector + skill expansions
+#### v0.6.6 — Connector + skill expansions
 
-- Email and calendar connectors
-- Attachment pipeline (voice + image)
-- Additional skill integrations
+- Status (2026-04-19): published. Config-path `SOUL.md`, Discord
+  public-channel policy controls, local MsgVault email read/search, local image
+  and voice attachment ingest, and same-session evidence carry-forward are on
+  the shipped line.
+- Local MsgVault email read/search baseline. Email send/reply, calendar
+  read/write, remote MsgVault transports, and attachment export remain
+  follow-on work.
+- Local attachment ingest baseline for images and voice recordings; OCR, STT,
+  channel downloads, email attachment export, and multimodal model input remain
+  follow-on work.
+- Additional skill integrations: config-path `SOUL.md` persona preferences.
+  Executable plugin installs and `outline-edit` remain deferred to the plugin
+  policy lane.
 
 ### v0.7 — Memory foundation
 
@@ -227,9 +285,11 @@ tools:
 | Control-plane isolation | v0.6.1 |
 | Hardware-backed approvals | v0.6.2 |
 | Critical UX stabilization | v0.6.3 |
-| MCP/A2A interop | v0.6.4 |
-| Email / calendar connectors | v0.6.5 |
-| Attachment pipeline | v0.6.5 |
+| textguard port | v0.6.4 |
+| MCP/A2A interop | v0.6.5 |
+| Local email connector baseline | v0.6.6 |
+| Local attachment ingest baseline | v0.6.6 |
+| Full attachment processing pipeline | v0.7+ |
 | Long-term memory | v0.7 |
 | UX overhaul + operator web UI | v0.8 |
 | Security infrastructure consolidation | v0.9 |
@@ -242,12 +302,13 @@ tools:
 3. Security hardening + control-plane isolation (`v0.6.1`)
 4. Hardware-backed high-risk approvals (`v0.6.2`)
 5. Critical UX stabilization from first-user testing (`v0.6.3`)
-6. Remote-tool trust and interop (`v0.6.4`)
-7. High-value connectors on top of stable orchestration + interop (`v0.6.5`)
-8. Durable memory with gated writes (`v0.7`)
-9. UX overhaul and operator web UI (`v0.8`)
-10. Security infrastructure consolidation (`v0.9`)
-11. Multi-tenant support (`v0.10`)
+6. Port prompt-injection detection to textguard (`v0.6.4`)
+7. Remote-tool trust and interop (`v0.6.5`)
+8. High-value connectors on top of stable orchestration + interop (`v0.6.6`)
+9. Durable memory with gated writes (`v0.7`)
+10. UX overhaul and operator web UI (`v0.8`)
+11. Security infrastructure consolidation (`v0.9`)
+12. Multi-tenant support (`v0.10`)
 
 ## Public Announcement Criteria
 

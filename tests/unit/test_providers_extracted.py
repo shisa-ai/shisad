@@ -150,6 +150,51 @@ async def test_local_planner_provider_ignores_user_triggerable_close_gate_shape(
 
 
 @pytest.mark.asyncio
+async def test_u3_local_planner_provider_returns_explicit_no_model_error_for_plain_chat() -> None:
+    provider = LocalPlannerProvider()
+
+    response = await provider.complete([Message(role="user", content="hello there")])
+
+    assert response.message.content.startswith(
+        "[PLANNER FALLBACK: CONFIGURATION] No language model configured."
+    )
+    assert "Configure a planner route or local planner preset" in response.message.content
+    assert "local vLLM" in response.message.content
+    assert "shisad doctor check --component provider" in response.message.content
+    assert "SHISAD_MODEL_REMOTE_ENABLED" not in response.message.content
+    assert "SHISAD_MODEL_PLANNER_API_KEY" not in response.message.content
+    assert "SHISAD_MODEL_API_KEY" not in response.message.content
+    assert "Safe summary:" not in response.message.content
+    assert "hello there" not in response.message.content
+    assert response.message.tool_calls == []
+    assert response.finish_reason == "error"
+    assert response.trusted_origin == "local-fallback"
+    assert "trusted_origin" not in response.model_dump()
+
+
+@pytest.mark.asyncio
+async def test_u3_local_planner_tool_calls_report_missing_model() -> None:
+    provider = LocalPlannerProvider()
+
+    response = await provider.complete([Message(role="user", content="run: echo hello")])
+
+    assert response.message.content.startswith(
+        "[PLANNER FALLBACK: CONFIGURATION] No language model configured."
+    )
+    assert "deterministic local fallback tools only" in response.message.content
+    assert "Configure a planner route or local planner preset" in response.message.content
+    assert "SHISAD_MODEL_REMOTE_ENABLED" not in response.message.content
+    tool_names = [
+        str(item.get("function", {}).get("name", ""))
+        for item in response.message.tool_calls
+        if isinstance(item, dict)
+    ]
+    assert tool_names == ["shell.exec"]
+    assert response.finish_reason == "tool_calls"
+    assert response.trusted_origin == "local-fallback"
+
+
+@pytest.mark.asyncio
 async def test_routed_openai_provider_uses_component_routes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -235,6 +280,7 @@ async def test_s0_routed_provider_does_not_bypass_route_toggles_with_constructor
     monkeypatch.delenv("SHISAD_MODEL_REMOTE_ENABLED", raising=False)
     monkeypatch.delenv("SHISA_API_KEY", raising=False)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     monkeypatch.delenv("SHISAD_MODEL_API_KEY", raising=False)
@@ -613,3 +659,73 @@ async def test_routed_openai_provider_fallbacks(monkeypatch: pytest.MonkeyPatch)
     monitor = await provider.monitor_complete([Message(role="user", content="x")])
     parsed = json.loads(monitor.message.content)
     assert parsed["decision"] == "FLAG"
+
+
+@pytest.mark.asyncio
+async def test_u3_routed_openai_provider_distinguishes_route_failure_from_unconfigured_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SHISAD_MODEL_REMOTE_ENABLED", "true")
+    monkeypatch.setenv("SHISAD_MODEL_BASE_URL", "https://api.example.com/v1")
+    monkeypatch.setenv("SHISAD_MODEL_PLANNER_BASE_URL", "https://planner.example.com/v1")
+    monkeypatch.setenv("SHISAD_MODEL_API_KEY", "token")
+
+    class _ExplodingOpenAIProvider:
+        def __init__(
+            self,
+            *,
+            base_url: str,
+            model_id: str,
+            headers: dict[str, str],
+            force_json_response: bool = False,
+            request_parameters: Any | None = None,
+            allow_http_localhost: bool = True,
+            block_private_ranges: bool = True,
+            endpoint_allowlist: list[str] | None = None,
+        ) -> None:
+            _ = (
+                base_url,
+                model_id,
+                headers,
+                force_json_response,
+                request_parameters,
+                allow_http_localhost,
+                block_private_ranges,
+                endpoint_allowlist,
+            )
+
+        async def complete(
+            self,
+            messages: list[Message],
+            tools: list[dict[str, Any]] | None = None,
+        ) -> ProviderResponse:
+            _ = (messages, tools)
+            raise RuntimeError("boom")
+
+        async def embeddings(
+            self,
+            input_texts: list[str],
+            *,
+            model_id: str | None = None,
+        ) -> EmbeddingResponse:
+            _ = (input_texts, model_id)
+            raise RuntimeError("boom")
+
+    monkeypatch.setattr(
+        "shisad.core.providers.routed_openai.OpenAICompatibleProvider",
+        _ExplodingOpenAIProvider,
+    )
+
+    provider = RoutedOpenAIProvider(
+        router=ModelRouter(ModelConfig()),
+        api_key="token",
+        fallback=LocalPlannerProvider(),
+    )
+
+    response = await provider.complete([Message(role="user", content="hello")])
+
+    assert response.message.content.startswith(
+        "[PLANNER FALLBACK: ROUTE ERROR] Configured planner route failed."
+    )
+    assert "shisad doctor check --component provider" in response.message.content
+    assert "No language model configured." not in response.message.content

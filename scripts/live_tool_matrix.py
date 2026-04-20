@@ -6,7 +6,10 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
+import struct
 import sys
+import uuid
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, cast
@@ -22,9 +25,15 @@ _DISABLED_REASONS: frozenset[str] = frozenset(
         "web_allowlist_unconfigured",
         "web_fetch_disabled",
         "destination_not_allowlisted",
+        "msgvault_disabled",
+        "msgvault_command_not_found",
+        "msgvault_account_required",
+        "email_read_probe_message_id_unconfigured",
         "realitycheck_disabled",
         "realitycheck_misconfigured",
         "endpoint_mode_disabled",
+        "no_evidence_ref_available",
+        "attachment_fs_roots_unconfigured",
     }
 )
 
@@ -39,6 +48,16 @@ class MatrixRow:
 def _tool_payload_templates(repo_root: Path) -> dict[str, dict[str, Any]]:
     safe_command = [sys.executable, "-c", "print('live-tool-matrix-ok')"]
     write_target = repo_root / ".local" / "live-tool-matrix-tool-write.txt"
+    attachment_target = repo_root / ".local" / "live-tool-matrix-attachment.png"
+    attachment_target.parent.mkdir(parents=True, exist_ok=True)
+    ihdr = b"IHDR" + struct.pack(">IIBBBBB", 1, 1, 8, 2, 0, 0, 0)
+    attachment_target.write_bytes(
+        b"\x89PNG\r\n\x1a\n" + struct.pack(">I", 13) + ihdr + b"\x00\x00\x00\x00"
+    )
+    probe_suffix = uuid.uuid4().hex[:8]
+    note_content = f"live tool matrix note {probe_suffix}"
+    todo_title = f"live tool matrix todo {probe_suffix}"
+    reminder_message = f"live tool matrix reminder {probe_suffix}"
     return {
         "retrieve_rag": {
             "command": safe_command,
@@ -73,6 +92,10 @@ def _tool_payload_templates(repo_root: Path) -> dict[str, dict[str, Any]]:
             "command": safe_command,
             "arguments": {"url": "https://example.com", "snapshot": False, "max_bytes": 4096},
         },
+        "attachment.ingest": {
+            "command": safe_command,
+            "arguments": {"path": str(attachment_target), "mime_type": "image/png"},
+        },
         "fs.list": {
             "command": safe_command,
             "arguments": {"path": ".", "recursive": False, "limit": 20},
@@ -101,6 +124,48 @@ def _tool_payload_templates(repo_root: Path) -> dict[str, dict[str, Any]]:
             "command": safe_command,
             "arguments": {"repo_path": ".", "limit": 5},
         },
+        "note.create": {
+            "command": safe_command,
+            "arguments": {
+                "content": note_content,
+                "key": f"live-tool-matrix-note-{probe_suffix}",
+            },
+        },
+        "note.list": {
+            "command": safe_command,
+            "arguments": {"limit": 5},
+        },
+        "note.search": {
+            "command": safe_command,
+            "arguments": {"query": note_content, "limit": 5},
+        },
+        "todo.create": {
+            "command": safe_command,
+            "arguments": {
+                "title": todo_title,
+                "details": "created by live tool matrix probe",
+            },
+        },
+        "todo.list": {
+            "command": safe_command,
+            "arguments": {"limit": 5},
+        },
+        "todo.complete": {
+            "command": safe_command,
+            "arguments": {"selector": todo_title},
+        },
+        "reminder.create": {
+            "command": safe_command,
+            "arguments": {
+                "message": reminder_message,
+                "when": "in 1 hour",
+                "name": f"live-tool-matrix-reminder-{probe_suffix}",
+            },
+        },
+        "reminder.list": {
+            "command": safe_command,
+            "arguments": {"limit": 5},
+        },
         "report_anomaly": {
             "command": safe_command,
             "arguments": {
@@ -122,9 +187,14 @@ def _tool_payload_templates(repo_root: Path) -> dict[str, dict[str, Any]]:
 
 
 def _structured_rpc_templates() -> dict[str, dict[str, Any]]:
-    return {
+    email_search_template: dict[str, Any] = {"query": "shisad", "limit": 2}
+    email_account = os.environ.get("SHISAD_LIVE_TOOL_MATRIX_EMAIL_ACCOUNT", "").strip()
+    if email_account:
+        email_search_template["account"] = email_account
+    templates: dict[str, dict[str, Any]] = {
         "web.search": {"query": "shisad", "limit": 2},
         "web.fetch": {"url": "https://example.com", "snapshot": False},
+        "email.search": email_search_template,
         "fs.list": {"path": ".", "recursive": False, "limit": 20},
         "fs.read": {"path": "README.md", "max_bytes": 4096},
         "fs.write": {
@@ -138,6 +208,39 @@ def _structured_rpc_templates() -> dict[str, dict[str, Any]]:
         "realitycheck.search": {"query": "security", "limit": 2, "mode": "auto"},
         "realitycheck.read": {"path": "README.md", "max_bytes": 2048},
     }
+    configured_email_read = _configured_email_read_template()
+    if configured_email_read is not None:
+        templates["email.read"] = configured_email_read
+    return templates
+
+
+def _configured_email_read_template() -> dict[str, Any] | None:
+    message_id = os.environ.get("SHISAD_LIVE_TOOL_MATRIX_EMAIL_MESSAGE_ID", "").strip()
+    if not message_id:
+        return None
+    template: dict[str, Any] = {"message_id": message_id}
+    account = os.environ.get("SHISAD_LIVE_TOOL_MATRIX_EMAIL_ACCOUNT", "").strip()
+    if account:
+        template["account"] = account
+    return template
+
+
+def _email_read_template_from_search_result(result: dict[str, Any]) -> dict[str, Any] | None:
+    messages = result.get("results")
+    if not isinstance(messages, list):
+        return None
+    for message in messages:
+        if not isinstance(message, dict):
+            continue
+        message_id = str(message.get("id") or message.get("source_message_id") or "").strip()
+        if not message_id:
+            continue
+        template: dict[str, Any] = {"message_id": message_id}
+        account = str(result.get("account") or "").strip()
+        if account:
+            template["account"] = account
+        return template
+    return None
 
 
 def _message_send_template(
@@ -280,7 +383,7 @@ async def _run_prompt_checks(
         if "Response blocked by output policy." in text:
             rows.append(MatrixRow(name, "fail", "output_policy_block"))
             continue
-        if text.startswith("Safe summary:"):
+        if text.startswith("Safe summary:") or text.startswith("[PLANNER FALLBACK:"):
             rows.append(MatrixRow(name, "fail", "local_fallback_response"))
             continue
         lockdown = str(response.get("lockdown_level", "")).strip().lower()
@@ -302,12 +405,17 @@ async def _run_tool_checks(
     strict_disabled: bool,
 ) -> list[MatrixRow]:
     rows: list[MatrixRow] = []
-    structured_methods = set(structured_templates)
+    structured_templates = dict(structured_templates)
+    email_read_disabled_reason = disabled_tools.get("email.read", "").strip()
     ordered = [name for name in tools if name != "report_anomaly"] + [
         name for name in tools if name == "report_anomaly"
     ]
     for tool_name in ordered:
-        if tool_name in structured_methods:
+        if tool_name == "email.read" and tool_name not in structured_templates:
+            disabled_tools["email.read"] = (
+                email_read_disabled_reason or "email_read_probe_message_id_unconfigured"
+            )
+        if tool_name in structured_templates:
             try:
                 structured_result = await client.call(
                     tool_name,
@@ -316,13 +424,25 @@ async def _run_tool_checks(
             except Exception as exc:  # pragma: no cover - live path
                 rows.append(MatrixRow(f"tool.{tool_name}", "fail", f"rpc_error:{exc}"))
                 continue
+            structured_payload = cast(dict[str, Any], structured_result)
             rows.append(
                 _classify_structured_rpc_result(
                     method_name=f"tool.{tool_name}",
-                    result=cast(dict[str, Any], structured_result),
+                    result=structured_payload,
                     strict_disabled=strict_disabled,
                 )
             )
+            if tool_name == "email.search":
+                if bool(structured_payload.get("ok")):
+                    email_read_template = _email_read_template_from_search_result(
+                        structured_payload
+                    )
+                    if email_read_template is not None:
+                        structured_templates.setdefault("email.read", email_read_template)
+                else:
+                    reason = str(structured_payload.get("error", "")).strip()
+                    if reason in _DISABLED_REASONS:
+                        email_read_disabled_reason = reason
             continue
 
         payload_template = execute_templates.get(tool_name)
@@ -409,6 +529,8 @@ async def _run_matrix(*, strict_disabled: bool, tool_status: bool = False) -> in
             execute_templates["message.send"] = message_send_template
         elif message_send_disabled_reason:
             disabled_tools["message.send"] = message_send_disabled_reason
+        disabled_tools["evidence.read"] = "no_evidence_ref_available"
+        disabled_tools["evidence.promote"] = "no_evidence_ref_available"
         structured_templates = _structured_rpc_templates()
         prompt_rows = await _run_prompt_checks(client=client, session_id=session_id)
         tool_rows = await _run_tool_checks(

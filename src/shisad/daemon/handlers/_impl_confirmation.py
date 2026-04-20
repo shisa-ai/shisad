@@ -55,6 +55,14 @@ from shisad.security.control_plane.sidecar import ControlPlaneRpcError
 from shisad.security.credentials import ApprovalFactorRecord, RecoveryCodeRecord, SignerKeyRecord
 
 logger = logging.getLogger(__name__)
+_STALE_PENDING_APPROVAL_REASONS = frozenset(
+    {
+        "approval_envelope_missing",
+        "action_digest_missing",
+    }
+)
+_TERMINAL_PENDING_ACTION_STATUSES = frozenset({"approved", "failed", "rejected"})
+_PURGED_STALE_PENDING_ACTION_REASON = "purged_stale_pending_action"
 
 
 def _confirmation_control_plane_reason(exc: ControlPlaneRpcError) -> str:
@@ -83,6 +91,52 @@ class PendingTwoFactorEnrollment:
 
 
 class ConfirmationImplMixin(HandlerMixinBase):
+    @staticmethod
+    def _pending_confirmation_method_for_lockout(pending: Any) -> str:
+        method = str(getattr(pending, "selected_backend_method", "") or "software").strip()
+        return method or "software"
+
+    @staticmethod
+    def _pending_approval_stale_reason(pending: Any) -> str:
+        if str(getattr(pending, "status", "")).strip().lower() != "pending":
+            return ""
+        approval_envelope = getattr(pending, "approval_envelope", None)
+        if approval_envelope is None:
+            return "approval_envelope_missing"
+        if not str(getattr(approval_envelope, "action_digest", "")).strip():
+            return "action_digest_missing"
+        return ""
+
+    def _stale_pending_action_reason(self, pending: Any) -> str:
+        if str(getattr(pending, "status", "")).strip().lower() != "pending":
+            return ""
+        reason = self._pending_approval_stale_reason(pending)
+        if reason:
+            return reason
+        tracker = getattr(self, "_confirmation_failure_tracker", None)
+        status = getattr(tracker, "status", None)
+        if not callable(status):
+            return ""
+        retry_after = status(
+            user_id=str(getattr(pending, "user_id", "")),
+            method=self._pending_confirmation_method_for_lockout(pending),
+        )
+        return "confirmation_method_locked_out" if retry_after is not None else ""
+
+    def _mark_stale_pending_action(
+        self,
+        pending: Any,
+        *,
+        reason: str,
+        persist: bool = True,
+    ) -> None:
+        pending.status = "failed"
+        pending.status_reason = reason
+        self._sync_task_confirmation_status(pending)
+        self._record_task_confirmation_outcome(pending, success=False)
+        if persist:
+            self._persist_pending_actions()
+
     @staticmethod
     def _requested_confirmation_method(*, params: Mapping[str, Any], pending: Any) -> str:
         requested = str(
@@ -835,6 +889,100 @@ class ConfirmationImplMixin(HandlerMixinBase):
                 break
         return {"actions": rows, "count": len(rows)}
 
+    async def do_action_purge(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        session_filter = str(params.get("session_id") or "").strip()
+        status_filter = str(params.get("status") or "terminal").strip().lower() or "terminal"
+        older_than_days_raw = params.get("older_than_days")
+        dry_run = bool(params.get("dry_run", False))
+        limit = int(params.get("limit", 1000))
+        if limit < 0:
+            raise ValueError("limit must be non-negative")
+        older_than_days: int | None = None
+        if older_than_days_raw is not None:
+            older_than_days = int(older_than_days_raw)
+            if older_than_days < 0:
+                raise ValueError("older_than_days must be non-negative")
+        if status_filter not in {
+            "terminal",
+            "all",
+            "pending",
+            "approved",
+            "failed",
+            "rejected",
+        }:
+            raise ValueError(
+                "status must be one of terminal, pending, approved, failed, rejected, all"
+            )
+        if status_filter in {"pending", "all"} and (
+            older_than_days is None or older_than_days <= 0
+        ):
+            raise ValueError("older_than_days must be positive when purging pending or all actions")
+
+        cutoff = (
+            datetime.now(UTC) - timedelta(days=older_than_days)
+            if older_than_days is not None
+            else None
+        )
+        candidates = sorted(
+            self._pending_actions.values(),
+            key=lambda item: item.created_at,
+        )
+        purge_ids: list[str] = []
+        for item in candidates:
+            if len(purge_ids) >= limit:
+                break
+            if session_filter and str(item.session_id) != session_filter:
+                continue
+            item_status = str(item.status).strip().lower()
+            if status_filter == "terminal":
+                if item_status not in _TERMINAL_PENDING_ACTION_STATUSES:
+                    continue
+            elif status_filter != "all" and item_status != status_filter:
+                continue
+            if cutoff is not None and item.created_at > cutoff:
+                continue
+            purge_ids.append(item.confirmation_id)
+
+        if not dry_run and purge_ids:
+            purge_id_set = set(purge_ids)
+            purge_items = [
+                self._pending_actions[confirmation_id]
+                for confirmation_id in purge_ids
+                if confirmation_id in self._pending_actions
+            ]
+            for item in purge_items:
+                item_status = str(getattr(item, "status", "")).strip().lower()
+                if item_status == "pending":
+                    self._mark_stale_pending_action(
+                        item,
+                        reason=_PURGED_STALE_PENDING_ACTION_REASON,
+                        persist=False,
+                    )
+                else:
+                    self._sync_task_confirmation_status(item)
+            for confirmation_id in purge_ids:
+                self._pending_actions.pop(confirmation_id, None)
+            pending_by_session = getattr(self, "_pending_by_session", {})
+            if isinstance(pending_by_session, dict):
+                for session_id, confirmation_ids in list(pending_by_session.items()):
+                    remaining = [
+                        confirmation_id
+                        for confirmation_id in confirmation_ids
+                        if confirmation_id not in purge_id_set
+                    ]
+                    if remaining:
+                        pending_by_session[session_id] = remaining
+                    else:
+                        pending_by_session.pop(session_id, None)
+            self._persist_pending_actions()
+
+        return {
+            "purged": len(purge_ids),
+            "confirmation_ids": purge_ids,
+            "remaining": len(self._pending_actions),
+            "dry_run": dry_run,
+        }
+
     async def do_action_confirm(self, params: Mapping[str, Any]) -> dict[str, Any]:
         batch_ids = params.get("confirmation_ids")
         if isinstance(batch_ids, list) and len(batch_ids) > 1:
@@ -874,11 +1022,17 @@ class ConfirmationImplMixin(HandlerMixinBase):
             method=confirmation_method,
         )
         if retry_after is not None:
+            self._mark_stale_pending_action(
+                pending,
+                reason="confirmation_method_locked_out",
+            )
             return {
                 "confirmed": False,
                 "confirmation_id": confirmation_id,
                 "reason": "confirmation_method_locked_out",
                 "retry_after_seconds": round(retry_after, 3),
+                "status": pending.status,
+                "status_reason": pending.status_reason,
             }
         raw_nonce = params.get("decision_nonce", "")
         provided_nonce = raw_nonce.strip() if isinstance(raw_nonce, str) else ""
@@ -1032,6 +1186,16 @@ class ConfirmationImplMixin(HandlerMixinBase):
                     params=dict(params),
                 )
         except ConfirmationVerificationError as exc:
+            reason = str(exc.reason)
+            if reason in _STALE_PENDING_APPROVAL_REASONS:
+                self._mark_stale_pending_action(pending, reason=reason)
+                return {
+                    "confirmed": False,
+                    "confirmation_id": confirmation_id,
+                    "reason": reason,
+                    "status": pending.status,
+                    "status_reason": pending.status_reason,
+                }
             self._confirmation_failure_tracker.record_failure(
                 user_id=str(pending.user_id),
                 method=confirmation_method,
@@ -1043,7 +1207,7 @@ class ConfirmationImplMixin(HandlerMixinBase):
             response: dict[str, Any] = {
                 "confirmed": False,
                 "confirmation_id": confirmation_id,
-                "reason": str(exc.reason),
+                "reason": reason,
             }
             if retry_after is not None:
                 response["retry_after_seconds"] = round(retry_after, 3)
@@ -1357,6 +1521,9 @@ class ConfirmationImplMixin(HandlerMixinBase):
             ).strip(),
             approval_timestamp=decision_timestamp,
             approval_evidence=pending.confirmation_evidence,
+            strip_direct_tool_execute_envelope_keys=bool(
+                pending.should_strip_direct_tool_execute_envelope_keys()
+            ),
         )
         success = execution_result.success
         checkpoint_id = execution_result.checkpoint_id

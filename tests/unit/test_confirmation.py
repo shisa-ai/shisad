@@ -70,3 +70,126 @@ def test_m6_t4_confirmation_analytics_detects_rubber_stamping() -> None:
     assert metrics["decisions"] == 12
     assert metrics["rubber_stamping"] is True
     assert metrics["fatigue_detected"] is True
+
+
+# SEC-LM3: boundary cases for the rubber-stamping thresholds.
+#
+# Production thresholds (shisad/ui/confirmation.py):
+#   rubber_stamping: len(records) >= 10 and approve_rate >= 0.9
+#   fatigue_detected: len(records) >= 6 and response-time slope <= -0.25
+#
+# The prior test pushed well past both thresholds, so threshold drift would
+# have stayed invisible. These tests pin the exact boundary behavior in both
+# directions so bumping either threshold breaks the test and forces a review.
+
+
+def _record_decisions(
+    analytics: ConfirmationAnalytics,
+    *,
+    user_id: str,
+    decisions: list[str],
+    base: datetime,
+    response_seconds: float = 10.0,
+) -> None:
+    for index, decision in enumerate(decisions):
+        created = base + timedelta(seconds=index * 30)
+        decided = created + timedelta(seconds=response_seconds)
+        analytics.record(
+            user_id=user_id,
+            decision=decision,
+            created_at=created,
+            decided_at=decided,
+        )
+
+
+def test_sec_lm3_rubber_stamping_fires_at_10_records_and_approve_rate_0_9() -> None:
+    analytics = ConfirmationAnalytics()
+    base = datetime.now(UTC) - timedelta(minutes=10)
+    # Exactly 10 records, approve_rate = 0.9 (9 approve + 1 reject).
+    _record_decisions(
+        analytics,
+        user_id="u-boundary",
+        decisions=["approve"] * 9 + ["reject"],
+        base=base,
+    )
+
+    metrics = analytics.metrics(user_id="u-boundary", window_seconds=3600)
+
+    assert metrics["decisions"] == 10
+    assert metrics["approve_rate"] == 0.9
+    assert metrics["rubber_stamping"] is True
+
+
+def test_sec_lm3_rubber_stamping_silent_at_9_records_even_when_all_approve() -> None:
+    analytics = ConfirmationAnalytics()
+    base = datetime.now(UTC) - timedelta(minutes=10)
+    _record_decisions(
+        analytics,
+        user_id="u-too-few",
+        decisions=["approve"] * 9,
+        base=base,
+    )
+
+    metrics = analytics.metrics(user_id="u-too-few", window_seconds=3600)
+
+    assert metrics["decisions"] == 9
+    assert metrics["approve_rate"] == 1.0
+    assert metrics["rubber_stamping"] is False
+
+
+def test_sec_lm3_rubber_stamping_silent_at_10_records_with_approve_rate_just_below() -> None:
+    analytics = ConfirmationAnalytics()
+    base = datetime.now(UTC) - timedelta(minutes=10)
+    # 10 records, approve_rate = 0.8 (8 approve + 2 reject) -> just below 0.9.
+    _record_decisions(
+        analytics,
+        user_id="u-just-below",
+        decisions=["approve"] * 8 + ["reject"] * 2,
+        base=base,
+    )
+
+    metrics = analytics.metrics(user_id="u-just-below", window_seconds=3600)
+
+    assert metrics["decisions"] == 10
+    assert metrics["approve_rate"] == 0.8
+    assert metrics["rubber_stamping"] is False
+
+
+def test_sec_lm3_fatigue_silent_when_slope_is_flat() -> None:
+    analytics = ConfirmationAnalytics()
+    base = datetime.now(UTC) - timedelta(minutes=10)
+    # 8 records with a flat response-time profile -> no slope -> no fatigue.
+    for index in range(8):
+        created = base + timedelta(seconds=index * 30)
+        decided = created + timedelta(seconds=10)
+        analytics.record(
+            user_id="u-flat",
+            decision="approve",
+            created_at=created,
+            decided_at=decided,
+        )
+
+    metrics = analytics.metrics(user_id="u-flat", window_seconds=3600)
+
+    assert metrics["decisions"] == 8
+    assert metrics["fatigue_detected"] is False
+
+
+def test_sec_lm3_fatigue_silent_when_fewer_than_six_records() -> None:
+    analytics = ConfirmationAnalytics()
+    base = datetime.now(UTC) - timedelta(minutes=10)
+    # 5 records with a steep negative slope still below the sample threshold.
+    for index in range(5):
+        created = base + timedelta(seconds=index * 30)
+        decided = created + timedelta(seconds=max(1, 15 - index * 3))
+        analytics.record(
+            user_id="u-too-few-fatigue",
+            decision="approve",
+            created_at=created,
+            decided_at=decided,
+        )
+
+    metrics = analytics.metrics(user_id="u-too-few-fatigue", window_seconds=3600)
+
+    assert metrics["decisions"] == 5
+    assert metrics["fatigue_detected"] is False

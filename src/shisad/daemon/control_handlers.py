@@ -9,6 +9,8 @@ from shisad.core.api.schema import (
     ActionDecisionParams,
     ActionPendingParams,
     ActionPendingResult,
+    ActionPurgeParams,
+    ActionPurgeResult,
     ActionRejectResult,
     AdminSelfModApplyParams,
     AdminSelfModApplyResult,
@@ -16,6 +18,10 @@ from shisad.core.api.schema import (
     AdminSelfModProposeResult,
     AdminSelfModRollbackParams,
     AdminSelfModRollbackResult,
+    AdminSoulReadParams,
+    AdminSoulReadResult,
+    AdminSoulUpdateParams,
+    AdminSoulUpdateResult,
     AuditQueryParams,
     AuditQueryResult,
     BrowserPasteParams,
@@ -26,6 +32,7 @@ from shisad.core.api.schema import (
     ChannelPairingProposalResult,
     ConfirmationMetricsParams,
     ConfirmationMetricsResult,
+    DaemonResetResult,
     DaemonShutdownResult,
     DaemonStatusResult,
     DashboardMarkFalsePositiveParams,
@@ -42,6 +49,10 @@ from shisad.core.api.schema import (
     DevReviewResult,
     DoctorCheckParams,
     DoctorCheckResult,
+    EmailReadParams,
+    EmailReadResult,
+    EmailSearchParams,
+    EmailSearchResult,
     FsListParams,
     FsListResult,
     FsReadParams,
@@ -173,10 +184,10 @@ from shisad.daemon.handlers import (
     ToolExecutionHandlers,
 )
 from shisad.daemon.handlers._impl import HandlerImplementation
-from shisad.executors.browser import BrowserPasteResult, BrowserScreenshotResult
 
 if TYPE_CHECKING:
     from shisad.daemon.services import DaemonServices
+    from shisad.executors.browser import BrowserPasteResult, BrowserScreenshotResult
 
 
 class DaemonControlHandlers:
@@ -283,6 +294,9 @@ class DaemonControlHandlers:
     ) -> DaemonShutdownResult:
         return await self._admin.handle_daemon_shutdown(params, ctx)
 
+    async def handle_daemon_reset(self, params: NoParams, ctx: RequestContext) -> DaemonResetResult:
+        return await self._admin.handle_daemon_reset(params, ctx)
+
     async def handle_doctor_check(
         self, params: DoctorCheckParams, ctx: RequestContext
     ) -> DoctorCheckResult:
@@ -302,6 +316,16 @@ class DaemonControlHandlers:
         self, params: AdminSelfModRollbackParams, ctx: RequestContext
     ) -> AdminSelfModRollbackResult:
         return await self._admin.handle_admin_selfmod_rollback(params, ctx)
+
+    async def handle_admin_soul_read(
+        self, params: AdminSoulReadParams, ctx: RequestContext
+    ) -> AdminSoulReadResult:
+        return await self._admin.handle_admin_soul_read(params, ctx)
+
+    async def handle_admin_soul_update(
+        self, params: AdminSoulUpdateParams, ctx: RequestContext
+    ) -> AdminSoulUpdateResult:
+        return await self._admin.handle_admin_soul_update(params, ctx)
 
     async def handle_dev_implement(
         self, params: DevImplementParams, ctx: RequestContext
@@ -580,6 +604,16 @@ class DaemonControlHandlers:
     ) -> RealityCheckReadResult:
         return await self._assistant.handle_realitycheck_read(params, ctx)
 
+    async def handle_email_search(
+        self, params: EmailSearchParams, ctx: RequestContext
+    ) -> EmailSearchResult:
+        return await self._assistant.handle_email_search(params, ctx)
+
+    async def handle_email_read(
+        self, params: EmailReadParams, ctx: RequestContext
+    ) -> EmailReadResult:
+        return await self._assistant.handle_email_read(params, ctx)
+
     async def handle_fs_list(self, params: FsListParams, ctx: RequestContext) -> FsListResult:
         return await self._assistant.handle_fs_list(params, ctx)
 
@@ -604,6 +638,11 @@ class DaemonControlHandlers:
         self, params: ActionPendingParams, ctx: RequestContext
     ) -> ActionPendingResult:
         return await self._confirmation.handle_action_pending(params, ctx)
+
+    async def handle_action_purge(
+        self, params: ActionPurgeParams, ctx: RequestContext
+    ) -> ActionPurgeResult:
+        return await self._confirmation.handle_action_purge(params, ctx)
 
     async def handle_action_confirm(
         self, params: ActionDecisionParams, ctx: RequestContext

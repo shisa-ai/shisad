@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -11,6 +12,7 @@ import pytest
 from shisad.core.api.schema import (
     ActionDecisionParams,
     ActionPendingParams,
+    ActionPurgeParams,
     ConfirmationMetricsParams,
 )
 from shisad.core.approval import (
@@ -42,14 +44,14 @@ from shisad.core.types import (
     WorkspaceId,
 )
 from shisad.daemon.context import RequestContext
-from shisad.daemon.handlers._impl import PendingAction
+from shisad.daemon.handlers._impl import HandlerImplementation, PendingAction
 from shisad.daemon.handlers._impl_confirmation import ConfirmationImplMixin
 from shisad.daemon.handlers._pending_approval import (
     PendingPepContextSnapshot,
     PendingPepElevationRequest,
 )
 from shisad.daemon.handlers.confirmation import ConfirmationHandlers
-from shisad.security.control_plane.schema import Origin, RiskTier
+from shisad.security.control_plane.schema import ActionKind, ControlPlaneAction, Origin, RiskTier
 from shisad.security.control_plane.sidecar import ControlPlaneRpcError
 from shisad.security.credentials import (
     ApprovalFactorRecord,
@@ -67,6 +69,15 @@ class _StubImpl:
     async def do_action_pending(self, payload: dict[str, object]) -> dict[str, object]:
         self.calls.append("pending")
         return {"actions": [payload], "count": 1}
+
+    async def do_action_purge(self, payload: dict[str, object]) -> dict[str, object]:
+        self.calls.append("purge")
+        return {
+            "purged": 1,
+            "confirmation_ids": [str(payload.get("status", "terminal"))],
+            "remaining": 0,
+            "dry_run": bool(payload.get("dry_run", False)),
+        }
 
     async def do_action_confirm(self, payload: dict[str, object]) -> dict[str, object]:
         self.calls.append("confirm")
@@ -89,6 +100,12 @@ async def test_confirmation_wrappers_validate_shapes() -> None:
     )
     result = await handlers.handle_action_pending(ActionPendingParams(limit=5), RequestContext())
     assert result.count == 1
+
+    purged = await handlers.handle_action_purge(
+        ActionPurgeParams(status="terminal"),
+        RequestContext(),
+    )
+    assert purged.purged == 1
 
 
 @pytest.mark.asyncio
@@ -171,6 +188,34 @@ class _ControlPlaneRecorder:
         return "plan-after"
 
 
+class _SchedulerRecorder:
+    def __init__(self) -> None:
+        self.resolved_confirmations: list[dict[str, object]] = []
+        self.run_outcomes: list[dict[str, object]] = []
+
+    def resolve_confirmation(
+        self,
+        task_id: str,
+        *,
+        confirmation_id: str,
+        status: str,
+        status_reason: str = "",
+    ) -> bool:
+        self.resolved_confirmations.append(
+            {
+                "task_id": task_id,
+                "confirmation_id": confirmation_id,
+                "status": status,
+                "status_reason": status_reason,
+            }
+        )
+        return True
+
+    def record_run_outcome(self, task_id: str, *, success: bool) -> bool:
+        self.run_outcomes.append({"task_id": task_id, "success": success})
+        return True
+
+
 class _ConfirmationImplHarness(ConfirmationImplMixin):
     def __init__(
         self,
@@ -180,6 +225,7 @@ class _ConfirmationImplHarness(ConfirmationImplMixin):
         execute_success: bool = True,
     ) -> None:
         self._pending_actions: dict[str, PendingAction] = {}
+        self._pending_by_session: dict[SessionId, list[str]] = {}
         self._lockdown_manager = SimpleNamespace(should_block_all_actions=lambda _sid: False)
         self.published_events: list[object] = []
         self._event_bus = SimpleNamespace(publish=self._noop_publish)
@@ -212,6 +258,7 @@ class _ConfirmationImplHarness(ConfirmationImplMixin):
         self._transcript_store = TranscriptStore(tmp_path / "sessions")
         self._evidence_store = EvidenceStore(tmp_path / "evidence", salt=b"a" * 32)
         self._execute_success = execute_success
+        self.persist_calls = 0
         self._pep = PEP(
             PolicyBundle(default_require_confirmation=False),
             _registry_for_confirmation(),
@@ -225,7 +272,7 @@ class _ConfirmationImplHarness(ConfirmationImplMixin):
         return None
 
     def _persist_pending_actions(self) -> None:
-        return None
+        self.persist_calls += 1
 
     @staticmethod
     def _origin_for(*, session: object, actor: str, skill_name: str = "") -> Origin:
@@ -254,6 +301,7 @@ class _ConfirmationImplHarness(ConfirmationImplMixin):
         approval_task_envelope_id: str = "",
         approval_timestamp: str = "",
         approval_evidence: object | None = None,
+        strip_direct_tool_execute_envelope_keys: bool = False,
     ) -> object:
         _ = (
             sid,
@@ -275,6 +323,9 @@ class _ConfirmationImplHarness(ConfirmationImplMixin):
                 "approval_task_envelope_id": approval_task_envelope_id,
                 "approval_timestamp": approval_timestamp,
                 "approval_evidence": approval_evidence,
+                "strip_direct_tool_execute_envelope_keys": (
+                    strip_direct_tool_execute_envelope_keys
+                ),
             }
         )
         tool_output = None
@@ -312,6 +363,9 @@ class _ConfirmationImplHarness(ConfirmationImplMixin):
             "warnings": list(pending.warnings),
             "leak_check": dict(pending.leak_check),
             "approval_task_envelope_id": pending.approval_task_envelope_id,
+            "strip_direct_tool_execute_envelope_keys": bool(
+                pending.strip_direct_tool_execute_envelope_keys
+            ),
             "status": pending.status,
             "status_reason": pending.status_reason,
         }
@@ -400,6 +454,111 @@ def _software_approval_envelope(*, tool_name: ToolName) -> ApprovalEnvelope:
     )
 
 
+# HDL-M1: these tests intentionally use ``object.__new__(HandlerImplementation)``
+# to exercise ``_load_pending_actions`` without paying the cost of building a
+# full daemon services container (sessions, channels, credential store, etc.).
+# Any regression that makes ``_load_pending_actions`` depend on a *new*
+# attribute that isn't set here will surface as an ``AttributeError`` during
+# the call below — the helper centralizes the bypass so that drift only needs
+# to be fixed in one place. If the set of required attributes keeps growing,
+# the next cleanup step is to split ``_load_pending_actions`` into a pure
+# function so tests can stop bypassing construction entirely.
+def _load_pending_actions_harness(
+    *,
+    pending_actions_file: Path,
+) -> HandlerImplementation:
+    harness = object.__new__(HandlerImplementation)
+    harness._pending_actions_file = pending_actions_file
+    harness._pending_actions = {}
+    harness._pending_by_session = {}
+    harness._confirmation_failure_tracker = ConfirmationMethodLockoutTracker()
+    return harness
+
+
+def test_lt3_load_pending_actions_fails_legacy_missing_approval_envelope(tmp_path) -> None:
+    pending = _pending_action(nonce="expected")
+    payload = HandlerImplementation._pending_to_dict(pending)
+    payload.pop("approval_envelope", None)
+    payload["approval_envelope_hash"] = ""
+    pending_actions_file = tmp_path / "data" / "pending_actions.json"
+    pending_actions_file.parent.mkdir(parents=True)
+    pending_actions_file.write_text(json.dumps([payload]), encoding="utf-8")
+    harness = _load_pending_actions_harness(pending_actions_file=pending_actions_file)
+
+    HandlerImplementation._load_pending_actions(harness)
+
+    loaded = harness._pending_actions["c-1"]
+    assert loaded.status == "failed"
+    assert loaded.status_reason == "approval_envelope_missing"
+    persisted = json.loads(pending_actions_file.read_text(encoding="utf-8"))
+    assert persisted[0]["status"] == "failed"
+    assert persisted[0]["status_reason"] == "approval_envelope_missing"
+
+
+def test_lt3_load_pending_actions_fails_pending_rows_during_lockout_only(tmp_path) -> None:
+    pending = _pending_action(nonce="expected")
+    pending_payload = HandlerImplementation._pending_to_dict(pending)
+    approved_payload = dict(pending_payload)
+    approved_payload["confirmation_id"] = "c-2"
+    approved_payload["decision_nonce"] = "nonce-2"
+    approved_payload["status"] = "approved"
+    approved_payload["status_reason"] = "approved"
+    pending_actions_file = tmp_path / "data" / "pending_actions.json"
+    pending_actions_file.parent.mkdir(parents=True)
+    pending_actions_file.write_text(
+        json.dumps([pending_payload, approved_payload]),
+        encoding="utf-8",
+    )
+    harness = _load_pending_actions_harness(pending_actions_file=pending_actions_file)
+    for _ in range(5):
+        harness._confirmation_failure_tracker.record_failure(user_id="alice", method="software")
+
+    HandlerImplementation._load_pending_actions(harness)
+
+    assert harness._pending_actions["c-1"].status == "failed"
+    assert harness._pending_actions["c-1"].status_reason == "confirmation_method_locked_out"
+    assert harness._pending_actions["c-2"].status == "approved"
+    assert harness._pending_actions["c-2"].status_reason == "approved"
+    persisted = {
+        item["confirmation_id"]: item
+        for item in json.loads(pending_actions_file.read_text(encoding="utf-8"))
+    }
+    assert persisted["c-1"]["status"] == "failed"
+    assert persisted["c-1"]["status_reason"] == "confirmation_method_locked_out"
+    assert persisted["c-2"]["status"] == "approved"
+    assert persisted["c-2"]["status_reason"] == "approved"
+
+
+def test_i1_load_pending_actions_migrates_legacy_direct_mcp_strip_intent(tmp_path) -> None:
+    pending = _pending_action(nonce="expected")
+    pending.tool_name = ToolName("mcp.docs.lookup-doc")
+    pending.arguments = {
+        "session_id": "s-1",
+        "tool_name": "mcp.docs.lookup-doc",
+        "command": ["mcp"],
+        "query": "roadmap",
+    }
+    pending.preflight_action = ControlPlaneAction(
+        tool_name="mcp.docs.lookup-doc",
+        action_kind=ActionKind.SHELL_EXEC,
+        origin=Origin(actor="control_api"),
+        resource_id="mcp.docs.lookup-doc",
+    )
+    payload = HandlerImplementation._pending_to_dict(pending)
+    payload.pop("strip_direct_tool_execute_envelope_keys", None)
+    pending_actions_file = tmp_path / "data" / "pending_actions.json"
+    pending_actions_file.parent.mkdir(parents=True)
+    pending_actions_file.write_text(json.dumps([payload]), encoding="utf-8")
+    harness = _load_pending_actions_harness(pending_actions_file=pending_actions_file)
+
+    HandlerImplementation._load_pending_actions(harness)
+
+    loaded = harness._pending_actions["c-1"]
+    assert loaded.strip_direct_tool_execute_envelope_keys is True
+    persisted = json.loads(pending_actions_file.read_text(encoding="utf-8"))
+    assert persisted[0]["strip_direct_tool_execute_envelope_keys"] is True
+
+
 def _pep_context_snapshot(
     *,
     capabilities: set[Capability],
@@ -428,6 +587,124 @@ async def test_m1_rr3_action_pending_filters_by_confirmation_id(tmp_path) -> Non
     filtered = await harness.do_action_pending({"confirmation_id": "c-2", "limit": 10})
     assert filtered["count"] == 1
     assert filtered["actions"][0]["confirmation_id"] == "c-2"
+
+
+@pytest.mark.asyncio
+async def test_lt5_action_purge_defaults_to_terminal_rows(tmp_path) -> None:
+    harness = _ConfirmationImplHarness(tmp_path)
+    pending = _pending_action(nonce="pending")
+    failed = _pending_action(nonce="failed")
+    failed.confirmation_id = "c-failed"
+    failed.status = "failed"
+    failed.status_reason = "approval_envelope_missing"
+    harness._pending_actions[pending.confirmation_id] = pending
+    harness._pending_actions[failed.confirmation_id] = failed
+
+    result = await harness.do_action_purge({"status": "terminal", "limit": 10})
+
+    assert result == {
+        "purged": 1,
+        "confirmation_ids": ["c-failed"],
+        "remaining": 1,
+        "dry_run": False,
+    }
+    assert pending.confirmation_id in harness._pending_actions
+    assert "c-failed" not in harness._pending_actions
+
+
+@pytest.mark.asyncio
+async def test_lt5_action_purge_dry_run_leaves_rows_and_session_index(tmp_path) -> None:
+    harness = _ConfirmationImplHarness(tmp_path)
+    failed = _pending_action(nonce="failed")
+    failed.confirmation_id = "c-failed"
+    failed.status = "failed"
+    failed.status_reason = "approval_envelope_missing"
+    harness._pending_actions[failed.confirmation_id] = failed
+    harness._pending_by_session[failed.session_id] = [failed.confirmation_id]
+
+    result = await harness.do_action_purge({"status": "terminal", "limit": 10, "dry_run": True})
+
+    assert result == {
+        "purged": 1,
+        "confirmation_ids": ["c-failed"],
+        "remaining": 1,
+        "dry_run": True,
+    }
+    assert "c-failed" in harness._pending_actions
+    assert harness._pending_by_session[failed.session_id] == ["c-failed"]
+    assert harness.persist_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_lt5_action_purge_can_clear_aged_pending_rows(tmp_path) -> None:
+    harness = _ConfirmationImplHarness(tmp_path)
+    scheduler = _SchedulerRecorder()
+    harness._scheduler = scheduler
+    recent = _pending_action(nonce="recent")
+    old = _pending_action(nonce="old")
+    old.confirmation_id = "c-old"
+    old.task_id = "task-old"
+    old.created_at = datetime.now(UTC) - timedelta(days=10)
+    harness._pending_actions[recent.confirmation_id] = recent
+    harness._pending_actions[old.confirmation_id] = old
+    harness._pending_by_session[recent.session_id] = [
+        recent.confirmation_id,
+        old.confirmation_id,
+    ]
+
+    result = await harness.do_action_purge({"status": "pending", "older_than_days": 7, "limit": 10})
+
+    assert result["confirmation_ids"] == ["c-old"]
+    assert recent.confirmation_id in harness._pending_actions
+    assert "c-old" not in harness._pending_actions
+    assert harness._pending_by_session[recent.session_id] == [recent.confirmation_id]
+    assert scheduler.resolved_confirmations == [
+        {
+            "task_id": "task-old",
+            "confirmation_id": "c-old",
+            "status": "failed",
+            "status_reason": "purged_stale_pending_action",
+        }
+    ]
+    assert scheduler.run_outcomes == [{"task_id": "task-old", "success": False}]
+
+
+@pytest.mark.asyncio
+async def test_lt5_action_purge_limit_zero_purges_no_rows(tmp_path) -> None:
+    harness = _ConfirmationImplHarness(tmp_path)
+    failed = _pending_action(nonce="failed")
+    failed.confirmation_id = "c-failed"
+    failed.status = "failed"
+    failed.status_reason = "approval_envelope_missing"
+    harness._pending_actions[failed.confirmation_id] = failed
+
+    result = await harness.do_action_purge({"status": "terminal", "limit": 0})
+
+    assert result == {
+        "purged": 0,
+        "confirmation_ids": [],
+        "remaining": 1,
+        "dry_run": False,
+    }
+    assert "c-failed" in harness._pending_actions
+
+
+@pytest.mark.asyncio
+async def test_lt5_action_purge_requires_age_for_pending_rows(tmp_path) -> None:
+    harness = _ConfirmationImplHarness(tmp_path)
+
+    with pytest.raises(ValueError, match="older_than_days must be positive"):
+        await harness.do_action_purge({"status": "pending", "limit": 10})
+
+
+@pytest.mark.asyncio
+async def test_lt5_action_purge_rejects_nonpositive_age_for_pending_rows(
+    tmp_path,
+) -> None:
+    harness = _ConfirmationImplHarness(tmp_path)
+
+    with pytest.raises(ValueError, match="older_than_days must be positive"):
+        await harness.do_action_purge({"status": "pending", "older_than_days": 0, "limit": 10})
 
 
 @pytest.mark.asyncio
@@ -597,6 +874,49 @@ async def test_a0_confirmation_lockout_triggers_after_repeated_invalid_nonce(tmp
     assert locked["confirmed"] is False
     assert locked["reason"] == "confirmation_method_locked_out"
     assert float(locked["retry_after_seconds"]) > 0
+    assert harness._pending_actions["c-1"].status == "failed"
+    assert harness._pending_actions["c-1"].status_reason == "confirmation_method_locked_out"
+
+
+@pytest.mark.asyncio
+async def test_lt3_action_confirm_fails_missing_approval_envelope_terminally(tmp_path) -> None:
+    harness = _ConfirmationImplHarness(tmp_path)
+    pending = _pending_action(nonce="expected")
+    pending.approval_envelope = None
+    pending.approval_envelope_hash = ""
+    harness._pending_actions["c-1"] = pending
+
+    result = await harness.do_action_confirm(
+        {"confirmation_id": "c-1", "decision_nonce": "expected"}
+    )
+
+    assert result["confirmed"] is False
+    assert result["reason"] == "approval_envelope_missing"
+    assert result["status"] == "failed"
+    assert pending.status == "failed"
+    assert pending.status_reason == "approval_envelope_missing"
+    assert harness.execution_kwargs == []
+
+
+@pytest.mark.asyncio
+async def test_lt3_action_confirm_fails_missing_action_digest_terminally(tmp_path) -> None:
+    harness = _ConfirmationImplHarness(tmp_path)
+    pending = _pending_action(nonce="expected")
+    assert pending.approval_envelope is not None
+    pending.approval_envelope = pending.approval_envelope.model_copy(update={"action_digest": ""})
+    pending.approval_envelope_hash = approval_envelope_hash(pending.approval_envelope)
+    harness._pending_actions["c-1"] = pending
+
+    result = await harness.do_action_confirm(
+        {"confirmation_id": "c-1", "decision_nonce": "expected"}
+    )
+
+    assert result["confirmed"] is False
+    assert result["reason"] == "action_digest_missing"
+    assert result["status"] == "failed"
+    assert pending.status == "failed"
+    assert pending.status_reason == "action_digest_missing"
+    assert harness.execution_kwargs == []
 
 
 @pytest.mark.asyncio
@@ -670,6 +990,28 @@ async def test_m1_d11_confirmation_reuses_pending_merged_policy_snapshot(tmp_pat
 
     assert result["confirmed"] is True
     assert harness.execution_merged_policies == [pending.merged_policy]
+
+
+@pytest.mark.asyncio
+async def test_i1_confirmation_replays_direct_mcp_strip_intent(tmp_path) -> None:
+    harness = _ConfirmationImplHarness(tmp_path)
+    pending = _pending_action(nonce="expected")
+    pending.tool_name = ToolName("mcp.docs.lookup-doc")
+    pending.arguments = {
+        "session_id": "s-1",
+        "tool_name": "mcp.docs.lookup-doc",
+        "command": ["mcp"],
+        "query": "roadmap",
+    }
+    pending.strip_direct_tool_execute_envelope_keys = True
+    harness._pending_actions["c-1"] = pending
+
+    result = await harness.do_action_confirm(
+        {"confirmation_id": "c-1", "decision_nonce": "expected"}
+    )
+
+    assert result["confirmed"] is True
+    assert harness.execution_kwargs[0]["strip_direct_tool_execute_envelope_keys"] is True
 
 
 @pytest.mark.asyncio

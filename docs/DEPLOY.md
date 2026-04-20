@@ -33,17 +33,109 @@ Install dependencies:
 ```bash
 git clone https://github.com/shisa-ai/shisad.git
 cd shisad
-uv sync --dev
+uv sync --group dev --extra chat
 ```
+
+YARA-backed content scanning is included in the base install through
+`textguard[yara]`. If you want local PromptGuard runtime checks in the daemon,
+include the security runtime dependency group:
+
+```bash
+uv sync --group security-runtime --group dev --extra chat
+```
+
+`security-runtime`, `security-build`, `interop`, `channels-runtime`, and
+`coverage` are uv dependency groups from `[dependency-groups]`; install them
+with `--group`. The chat UI dependencies are a project optional extra; install
+them with `--extra chat`.
 
 Optional groups:
 
 ```bash
-uv sync --group security-runtime    # YARA + local ONNX PromptGuard runtime checks
+uv sync --group security-runtime    # Local ONNX PromptGuard runtime checks
 uv sync --group security-build      # PromptGuard download/export/model-pack build tooling
+uv sync --group interop             # MCP client runtime
 uv sync --group channels-runtime    # Matrix, Discord, Telegram, Slack
 uv sync --group coverage            # pytest-cov
 ```
+
+`security-build` is only needed for PromptGuard model export/download/build
+workflows. It is heavier than `security-runtime` and includes PyTorch. Daemon
+operation with `security-runtime` alone should have PromptGuard's
+`onnxruntime` and `transformers` dependencies available through
+`textguard[promptguard]`, but not `torch`; if Transformers logs "PyTorch was
+not found" during startup in that profile, that warning is expected and does
+not mean the daemon runtime group was installed incorrectly.
+
+`interop` installs the MCP client dependency. Configure MCP servers via
+`SHISAD_MCP_SERVERS` (JSON) or `DaemonConfig.mcp_servers`; discovered tools
+register under runtime ids like `mcp.<server>.<tool>`. MCP tools require
+confirmation by default unless the server name appears in
+`SHISAD_MCP_TRUSTED_SERVERS`, and stdio servers receive a sanitized
+subprocess environment plus any explicit `env` overrides you configure per
+server.
+
+A2A ingress is included in the base install; no extra dependency group is
+required. Configure it via `SHISAD_A2A` (JSON) or `DaemonConfig.a2a`. The
+current `v0.6.5` A2A surface is signed inbound ingress over direct socket or
+HTTP transports, with fail-closed `allowed_intents` grants, per-fingerprint
+sliding-window rate limits, and `A2aIngressEvaluated` audit events for
+success and rejection outcomes.
+
+Generate the local daemon identity first:
+
+```bash
+uv run shisad a2a keygen \
+  --private-key "$HOME/.config/shisad/a2a/private.key" \
+  --public-key "$HOME/.config/shisad/a2a/public.key"
+```
+
+Example `SHISAD_A2A` payload:
+
+```bash
+export SHISAD_A2A='{
+  "enabled": true,
+  "identity": {
+    "agent_id": "local-agent",
+    "private_key_path": "/home/ubuntu/.config/shisad/a2a/private.key",
+    "public_key_path": "/home/ubuntu/.config/shisad/a2a/public.key"
+  },
+  "listen": {
+    "transport": "socket",
+    "host": "127.0.0.1",
+    "port": 9820
+  },
+  "agents": [
+    {
+      "agent_id": "remote-agent",
+      "fingerprint": "sha256:<remote-public-key-fingerprint>",
+      "public_key_path": "/home/ubuntu/.config/shisad/a2a/remote-agent.pub",
+      "address": "127.0.0.1:9820",
+      "transport": "socket",
+      "trust_level": "untrusted",
+      "allowed_intents": ["query"]
+    }
+  ],
+  "rate_limits": {
+    "max_per_minute": 60,
+    "max_per_hour": 600
+  }
+}'
+```
+
+Operator notes:
+
+- `allowed_intents` is fail-closed. If you omit it for a configured remote
+  agent, that agent's inbound A2A requests are rejected until you add explicit
+  grants.
+- Each configured remote agent must have a unique verified public-key
+  fingerprint. Shared-key aliases are rejected at config load so grants and
+  rate limits stay anchored to one authenticated remote principal.
+- Socket peers use `address: "host:port"` with `transport: "socket"`. HTTP
+  peers use full `http(s)://...` URLs with `transport: "http"`.
+- Each accepted or rejected inbound request emits an `A2aIngressEvaluated`
+  audit event with sender identity, intent, outcome, and rejection reason when
+  applicable.
 
 ## Preflight Checklist
 
@@ -209,6 +301,35 @@ SHISAD_CHANNEL_IDENTITY_ALLOWLIST='{"discord":["<your-discord-user-id>"]}'
 
 **Verify:** Start the daemon, then `@mention` the bot in a guild channel (e.g., `@shisad hello`). The bot only responds to `@mentions` in guild channels; DMs are always processed without a mention.
 
+**Optional public-channel policy:** Configure `SHISAD_DISCORD_CHANNEL_RULES` as
+JSON when the bot should also serve a shared Discord channel. Rules are
+guild/channel scoped; missing config stays default-deny, and explicit
+`exclude_channels` / `denied_users` entries win over broad public grants.
+Set `guild_id: "*"` only when you intentionally want a cross-guild rule; empty
+or omitted `channels` means every channel in the matching guild except
+`exclude_channels`.
+
+```bash
+SHISAD_DISCORD_CHANNEL_RULES='[
+  {
+    "guild_id": "<guild-id>",
+    "channels": ["<public-channel-id>"],
+    "mode": "read-along",
+    "public_enabled": true,
+    "public_tools": ["web.search"],
+    "relevance_keywords": ["docs", "release"],
+    "cooldown_seconds": 300,
+    "proactive_marker": "[proactive]"
+  }
+]'
+```
+
+`mention-only` responds only when addressed, `read-along` observes all messages
+but only replies proactively on configured keyword matches and cooldown, and
+`passive-observe` records observed channel context without replying. Public and
+trusted-guest sessions are ephemeral and do not receive owner-private memory or
+the owner session's full tool surface.
+
 ### Telegram
 
 **Setup:**
@@ -252,6 +373,32 @@ SHISAD_CHANNEL_IDENTITY_ALLOWLIST='{"slack":["<your-slack-user-id>"]}'
 
 ---
 
+## Web Search Backend (Recommended)
+
+`tool.web.search` calls a JSON search backend you supply — shisad does not
+ship an embedded search index. Without a backend configured, the tool stays
+registered but reports `web_search_backend_unconfigured` in live tool-status
+checks and returns no results at runtime. For research-style workflows
+(targeted lookups, multi-site comparisons) this materially affects output
+quality, so standing up a backend is the intended setup.
+
+The runtime expects a SearxNG-style `/search?q=...&format=json` endpoint. A
+local [SearxNG](https://docs.searxng.org/) instance is the typical dev setup;
+any SearxNG-compatible endpoint works.
+
+Minimum config:
+
+```bash
+export SHISAD_WEB_SEARCH_BACKEND_URL="http://127.0.0.1:8888"
+export SHISAD_WEB_ALLOWED_DOMAINS='["127.0.0.1:8888"]'
+```
+
+The backend host must also appear in `SHISAD_WEB_ALLOWED_DOMAINS` alongside
+any other destinations you want reachable for `web.fetch` / `web.search`. See
+`docs/ENV-VARS.md` for the full web-tooling variable reference.
+
+---
+
 ## Host Hardening (Optional)
 
 For production or internet-facing deployments:
@@ -281,6 +428,17 @@ Create a policy file (copy `runner/policy.default.yaml` as a starting point) and
 **`doctor.check` reports `<channel>_dependency_missing`:**
 Install channel runtime dependencies: `uv sync --group channels-runtime`.
 
+**`uv sync --extra security-runtime` fails:**
+`security-runtime` is a dependency group, not an optional extra. Use
+`uv sync --group security-runtime` or the combined source-checkout command
+`uv sync --group security-runtime --group dev --extra chat`.
+
+**Startup logs say PyTorch was not found:**
+This is expected when only `security-runtime` is installed. The daemon runtime
+uses PromptGuard's `onnxruntime`/`transformers` path through
+`textguard[promptguard]`; PyTorch is only in `security-build` for model
+build/export workflows.
+
 **`doctor.check` reports `<channel>_not_connected`:**
 Verify bot/app tokens and channel auth configuration.
 
@@ -294,7 +452,7 @@ Install or update the CA trust bundle: `sudo apt install ca-certificates`.
 This is the expected confirmation gate. Rerun with `--confirm`.
 
 **`session.message` fails with planner parse errors:**
-Ensure you are on the latest code (`uv sync --dev`), restart the daemon, and verify `SHISAD_MODEL_*` settings point at an OpenAI-compatible endpoint that supports JSON response formatting.
+Ensure you are on the latest code (`uv sync --group dev --extra chat`), restart the daemon, and verify `SHISAD_MODEL_*` settings point at an OpenAI-compatible endpoint that supports JSON response formatting.
 
 **Env values with JSON lists cause `SettingsError`:**
 Wrap JSON values in single quotes in env files: `SHISAD_WEB_ALLOWED_DOMAINS='["a.com","b.com"]'`.

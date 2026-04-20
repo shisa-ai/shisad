@@ -62,6 +62,34 @@ _RESERVED_TOOL_EXECUTION_ARGUMENT_KEYS: frozenset[str] = frozenset(
 )
 
 
+def _tool_execute_runtime_arguments(
+    tool_definition: Any,
+    arguments: Mapping[str, Any],
+    *,
+    strip_direct_tool_execute_envelope_keys: bool = False,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {}
+    for parameter in getattr(tool_definition, "parameters", []):
+        name = str(getattr(parameter, "name", "")).strip()
+        if not name or name not in arguments:
+            continue
+        if (
+            strip_direct_tool_execute_envelope_keys
+            and name in _RESERVED_TOOL_EXECUTION_ARGUMENT_KEYS
+        ):
+            continue
+        payload[name] = arguments[name]
+    return payload
+
+
+def _mcp_server_requires_confirmation(tool_definition: Any, trusted_servers: Any) -> bool:
+    if str(getattr(tool_definition, "registration_source", "")).strip().lower() != "mcp":
+        return False
+    server_name = str(getattr(tool_definition, "registration_source_id", "")).strip().lower()
+    allowlist = {str(item).strip().lower() for item in trusted_servers or [] if str(item).strip()}
+    return not server_name or server_name not in allowlist
+
+
 class ToolExecutionImplMixin(HandlerMixinBase):
     def _operator_confirmation_requirement(
         self,
@@ -71,8 +99,17 @@ class ToolExecutionImplMixin(HandlerMixinBase):
     ) -> ConfirmationRequirement | None:
         tool_policy = self._policy_loader.policy.tools.get(str(tool_name))
         requirements: list[ConfirmationRequirement] = []
+        mcp_requires_confirmation = _mcp_server_requires_confirmation(
+            tool_definition,
+            getattr(self._config, "mcp_trusted_servers", []),
+        )
+        if mcp_requires_confirmation:
+            requirements.append(legacy_software_confirmation_requirement())
         if (
-            bool(getattr(tool_definition, "require_confirmation", False))
+            (
+                str(getattr(tool_definition, "registration_source", "")).strip().lower() != "mcp"
+                and bool(getattr(tool_definition, "require_confirmation", False))
+            )
             or bool(getattr(tool_policy, "require_confirmation", False))
             or bool(self._policy_loader.policy.default_require_confirmation)
         ):
@@ -95,9 +132,28 @@ class ToolExecutionImplMixin(HandlerMixinBase):
         tool_name_value = canonical_tool_name(str(params.get("tool_name", "")))
         if not tool_name_value:
             raise ValueError("tool_name is required")
-        tool_name = ToolName(tool_name_value)
+        tool_name = self._registry.resolve_name(tool_name_value) or ToolName(tool_name_value)
         tool_def = self._registry.get_tool(tool_name)
         if tool_def is None:
+            mcp_manager = getattr(self, "_mcp_manager", None)
+            if mcp_manager is not None:
+                startup_error_lookup = getattr(mcp_manager, "startup_error_for_tool", None)
+                if callable(startup_error_lookup):
+                    startup_error = startup_error_lookup(tool_name)
+                    if startup_error is not None:
+                        server_name, error = startup_error
+                        await self._event_bus.publish(
+                            ToolRejected(
+                                session_id=sid,
+                                actor="control_api",
+                                tool_name=tool_name,
+                                reason=f"mcp_startup_error:{server_name}",
+                            )
+                        )
+                        raise ValueError(
+                            f"MCP tool '{tool_name}' unavailable because server '{server_name}' "
+                            f"failed during startup: {error}"
+                        )
             await self._event_bus.publish(
                 ToolRejected(
                     session_id=sid,
@@ -107,6 +163,9 @@ class ToolExecutionImplMixin(HandlerMixinBase):
                 )
             )
             raise ValueError(f"unknown tool: {tool_name}")
+        strip_direct_tool_execute_envelope_keys = (
+            str(getattr(tool_def, "registration_source", "")).strip() == "mcp"
+        )
         try:
             params = self._merge_tool_arguments(params)
         except ValueError as exc:
@@ -124,6 +183,23 @@ class ToolExecutionImplMixin(HandlerMixinBase):
             tool_name=tool_name,
             arguments=params,
         )
+        validation_arguments = _tool_execute_runtime_arguments(
+            tool_def,
+            params,
+            strip_direct_tool_execute_envelope_keys=strip_direct_tool_execute_envelope_keys,
+        )
+        validation_errors = self._registry.validate_call(tool_name, validation_arguments)
+        if validation_errors:
+            validation_error = f"schema validation failed: {'; '.join(validation_errors)}"
+            await self._event_bus.publish(
+                ToolRejected(
+                    session_id=sid,
+                    actor="control_api",
+                    tool_name=tool_name,
+                    reason=f"invalid_tool_arguments:{validation_error}",
+                )
+            )
+            raise ValueError(validation_error)
         skill_name = str(params.get("skill_name") or "").strip()
         if skill_name:
             network_hosts: list[str] = []
@@ -390,6 +466,9 @@ class ToolExecutionImplMixin(HandlerMixinBase):
                     merged_policy=merged_policy,
                     taint_labels=[],
                     confirmation_requirement=confirmation_requirement,
+                    strip_direct_tool_execute_envelope_keys=(
+                        strip_direct_tool_execute_envelope_keys
+                    ),
                 )
             except ApprovalRoutingError as exc:
                 await self._event_bus.publish(
@@ -461,6 +540,7 @@ class ToolExecutionImplMixin(HandlerMixinBase):
             execution_action=cp_eval.action,
             merged_policy=merged_policy,
             user_confirmed=True,
+            strip_direct_tool_execute_envelope_keys=strip_direct_tool_execute_envelope_keys,
         )
         return cast(
             dict[str, Any],

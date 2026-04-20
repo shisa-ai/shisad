@@ -355,7 +355,7 @@ class Planner:
             tool = self._tool_registry.get_tool(ToolName(name))
             if tool is None:
                 continue
-            lines.append(f"- {tool.name}: {tool.description}")
+            lines.append(f"- {tool.name}: {tool.planner_description()}")
             if tool.parameters:
                 params = ", ".join(
                     f"{param.name}:{param.type}{'' if param.required else '?'}"
@@ -364,8 +364,8 @@ class Planner:
                 lines.append(f"  params: {params}")
         return "\n".join(lines)
 
-    @staticmethod
     def _strip_extracted_content_tool_calls(
+        self,
         content: str,
         *,
         extracted_actions: list[ActionProposal] | None = None,
@@ -382,13 +382,22 @@ class Planner:
         if (
             stripped.startswith("[")
             and extracted_actions
-            and Planner._is_exact_json_tool_call_payload(stripped, extracted_actions)
+            and self._is_exact_json_tool_call_payload(stripped, extracted_actions)
         ):
             return ""
         return stripped
 
-    @staticmethod
+    def _resolve_runtime_tool_name(self, raw_name: str) -> str:
+        canonical_name = canonical_tool_name(raw_name, warn_on_alias=False)
+        if not canonical_name:
+            return ""
+        if self._tool_registry is None:
+            return canonical_name
+        resolved_name = self._tool_registry.resolve_name(canonical_name, warn_on_alias=False)
+        return str(resolved_name or canonical_name)
+
     def _is_exact_json_tool_call_payload(
+        self,
         content: str,
         extracted_actions: list[ActionProposal],
     ) -> bool:
@@ -408,7 +417,7 @@ class Planner:
             name_raw = item.get("name")
             if not isinstance(name_raw, str):
                 return False
-            canonical_name = canonical_tool_name(name_raw, warn_on_alias=False)
+            canonical_name = self._resolve_runtime_tool_name(name_raw)
             if canonical_name != str(action.tool_name):
                 return False
             arguments_raw = item.get("arguments")
@@ -455,7 +464,7 @@ class Planner:
             if not isinstance(name_raw, str) or not name_raw.strip():
                 invalid_count += 1
                 continue
-            canonical_name = canonical_tool_name(name_raw, warn_on_alias=False)
+            canonical_name = self._resolve_runtime_tool_name(name_raw)
             if not canonical_name:
                 invalid_count += 1
                 continue
@@ -592,7 +601,7 @@ class Planner:
             name_raw = function.get("name")
             if not isinstance(name_raw, str):
                 continue
-            canonical_name = canonical_tool_name(name_raw, warn_on_alias=False)
+            canonical_name = self._resolve_runtime_tool_name(name_raw)
             if canonical_name:
                 payload_names.add(canonical_name)
         if not payload_names:
@@ -621,9 +630,8 @@ class Planner:
             return None
         return dict(parsed) if isinstance(parsed, dict) else None
 
-    @classmethod
     def _extract_tool_calls(
-        cls,
+        self,
         raw_tool_calls: list[dict[str, Any]],
     ) -> tuple[list[ActionProposal], int]:
         actions: list[ActionProposal] = []
@@ -643,11 +651,11 @@ class Planner:
             if not isinstance(name_raw, str) or not name_raw.strip():
                 invalid_count += 1
                 continue
-            canonical_name = canonical_tool_name(name_raw, warn_on_alias=False)
+            canonical_name = self._resolve_runtime_tool_name(name_raw)
             if not canonical_name:
                 invalid_count += 1
                 continue
-            parsed_arguments = cls._parse_tool_arguments(function.get("arguments"))
+            parsed_arguments = self._parse_tool_arguments(function.get("arguments"))
             if parsed_arguments is None:
                 logger.debug("Dropping native tool call with invalid arguments payload")
                 invalid_count += 1

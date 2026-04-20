@@ -49,13 +49,11 @@ Rather than ignoring the elephant in the room, our design targets the [lethal tr
 
 ## Status
 
-This repo is public and still pre-alpha. `v0.6.2` is the current release line.
-
-`v0.6.2` is the approval and key-boundary follow-up to `v0.6.1`: stronger
-confirmation options for sensitive actions (TOTP, passkeys, local helper, and
-signer-backed approvals), richer approval audit/provenance, and optional
-evidence encryption at rest when a real external artifact-KMS boundary is
-configured. The next planned lane is `v0.6.3` for critical UX fixes.
+This repo is public and still pre-alpha. The latest published line is
+`v0.6.6` (GitHub Release and PyPI package). This release adds config-path
+`SOUL.md` persona preferences, Discord public-channel policy controls, local
+MsgVault email read/search, local image and voice attachment ingest, and
+same-session evidence carry-forward for follow-up turns.
 
 | Version | Focus |
 |---------|-------|
@@ -82,8 +80,20 @@ Users and agents looking to set up ShisaD on their own system should see [`docs/
 ```bash
 git clone https://github.com/shisa-ai/shisad.git
 cd shisad
-uv sync --dev
+uv sync --group dev --extra chat
 ```
+
+YARA-backed content scanning is included in the base install through
+`textguard[yara]`. For local PromptGuard runtime checks, add the security
+runtime dependency group:
+
+```bash
+uv sync --group security-runtime --group dev --extra chat
+```
+
+`security-runtime` is a uv dependency group, not a pip extra; use `--group
+security-runtime`, not `--extra security-runtime`. The `chat` package set is
+the optional extra and uses `--extra chat`.
 
 ### Configuration
 

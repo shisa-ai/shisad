@@ -23,7 +23,9 @@ from shisad.core.approval import (
     confirmation_evidence_satisfies_requirement,
     intent_envelope_hash,
 )
+from shisad.daemon.handlers._impl import PendingAction
 from shisad.security.credentials import InMemoryCredentialStore, SignerKeyRecord
+from tests.helpers.approval import make_pending_action
 from tests.helpers.signer import (
     StubSignerService,
     generate_ed25519_private_key,
@@ -45,7 +47,7 @@ def _signer_record(*, key_id: str = "kms:finance-primary") -> SignerKeyRecord:
     )
 
 
-def _pending_action(*, key_id: str) -> tuple[SimpleNamespace, dict[str, str]]:
+def _pending_action(*, key_id: str) -> tuple[PendingAction, dict[str, str]]:
     intent = IntentEnvelope(
         intent_id="intent-1",
         agent_id="daemon-1",
@@ -83,15 +85,20 @@ def _pending_action(*, key_id: str) -> tuple[SimpleNamespace, dict[str, str]]:
         intent_envelope_hash=intent_envelope_hash(intent),
         action_summary="Run shell.exec for release verification",
     )
-    pending = SimpleNamespace(
+    # ADV-L4: real ``PendingAction`` so new required dataclass fields fail
+    # here rather than silently defaulting through ``getattr``.
+    pending = make_pending_action(
         confirmation_id="c-1",
         user_id="alice",
+        tool_name="shell.exec",
         allowed_principals=["finance-owner"],
         allowed_credentials=[key_id],
         approval_envelope=envelope,
         approval_envelope_hash=approval_envelope_hash(envelope),
         intent_envelope=intent,
-        fallback_used=False,
+        required_level=ConfirmationLevel.SIGNED_AUTHORIZATION,
+        selected_backend_id="kms.enterprise",
+        selected_backend_method="kms",
     )
     return pending, {"decision_nonce": "nonce", "approval_method": "kms"}
 

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from shisad.core.api.schema import (
     BrowserPasteParams,
     BrowserScreenshotParams,
@@ -11,7 +13,9 @@ from shisad.core.api.schema import (
 from shisad.daemon.context import RequestContext
 from shisad.daemon.handlers._helpers import build_params_payload
 from shisad.daemon.handlers._impl import HandlerImplementation
-from shisad.executors.browser import BrowserPasteResult, BrowserScreenshotResult
+
+if TYPE_CHECKING:
+    from shisad.executors.browser import BrowserPasteResult, BrowserScreenshotResult
 
 
 class ToolExecutionHandlers:
@@ -43,6 +47,8 @@ class ToolExecutionHandlers:
             ctx,
             internal_ingress_marker=self._internal_ingress_marker,
         )
+        from shisad.executors.browser import BrowserPasteResult
+
         return BrowserPasteResult.model_validate(await self._impl.do_browser_paste(payload))
 
     async def handle_browser_screenshot(
@@ -55,6 +61,8 @@ class ToolExecutionHandlers:
             ctx,
             internal_ingress_marker=self._internal_ingress_marker,
         )
+        from shisad.executors.browser import BrowserScreenshotResult
+
         return BrowserScreenshotResult.model_validate(
             await self._impl.do_browser_screenshot(payload)
         )

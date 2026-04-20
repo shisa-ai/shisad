@@ -400,6 +400,8 @@ class ArtifactLedger:
         source: str,
         summary: str,
         ttl_seconds: int | None = None,
+        artifact_kind: str = "evidence",
+        lifecycle_state: ArtifactLifecycleState = ArtifactLifecycleState.ACTIVE,
     ) -> EvidenceRef:
         self._evict_for_session(session_id)
         raw = content.encode("utf-8")
@@ -422,6 +424,8 @@ class ArtifactLedger:
                 source=source,
                 summary=summary,
                 ttl_seconds=ttl_seconds,
+                artifact_kind=artifact_kind,
+                lifecycle_state=lifecycle_state,
                 storage_codec=self._blob_codec.name if rewrote_blob else None,
             )
             self._persist_metadata_index()
@@ -438,8 +442,8 @@ class ArtifactLedger:
             summary=summary,
             byte_size=len(raw),
             ttl_seconds=ttl_seconds,
-            artifact_kind="evidence",
-            lifecycle_state=ArtifactLifecycleState.ACTIVE,
+            artifact_kind=artifact_kind,
+            lifecycle_state=lifecycle_state,
             endorsement_state=ArtifactEndorsementState.UNENDORSED,
             storage_codec=self._blob_codec.name,
         )
@@ -480,6 +484,8 @@ class ArtifactLedger:
         ref = self._refs.get(session_key, {}).get(ref_id)
         if ref is None:
             self._clear_temporarily_unreadable(session_key, ref_id)
+            return None, None
+        if ref.lifecycle_state != ArtifactLifecycleState.ACTIVE:
             return None, None
         blob_load = self._load_validated_blob_content(ref)
         if blob_load.content is None:
@@ -522,6 +528,8 @@ class ArtifactLedger:
         if ref is None:
             return False
         session_key = self._session_key(session_id)
+        if ref.lifecycle_state != ArtifactLifecycleState.ACTIVE:
+            return False
         if self._is_temporarily_unreadable(session_key, ref_id):
             self._maybe_probe_temporarily_unreadable(session_id, ref_id)
             return False
@@ -961,14 +969,23 @@ class ArtifactLedger:
         source: str,
         summary: str,
         ttl_seconds: int | None,
+        artifact_kind: str,
+        lifecycle_state: ArtifactLifecycleState,
         storage_codec: str | None = None,
     ) -> EvidenceRef:
+        merged_lifecycle_state = (
+            ArtifactLifecycleState.QUARANTINED
+            if ArtifactLifecycleState.QUARANTINED in {existing.lifecycle_state, lifecycle_state}
+            else ArtifactLifecycleState.ACTIVE
+        )
         merged = existing.model_copy(
             update={
                 "taint_labels": sorted({*existing.taint_labels, *taint_labels}),
                 "source": source or existing.source,
                 "summary": summary or existing.summary,
                 "ttl_seconds": self._merge_ttl_seconds(existing.ttl_seconds, ttl_seconds),
+                "artifact_kind": artifact_kind or existing.artifact_kind,
+                "lifecycle_state": merged_lifecycle_state,
                 "storage_codec": storage_codec or existing.storage_codec or self._blob_codec.name,
             }
         )

@@ -20,7 +20,9 @@ from shisad.core.providers.local_planner import LocalPlannerProvider
 from shisad.core.transcript import TranscriptStore
 from shisad.core.types import SessionId
 from shisad.daemon.runner import run_daemon
+from shisad.memory.summarizer import _SUMMARY_SYSTEM_PROMPT
 from tests.helpers.artifact_kms import StubArtifactKmsService
+from tests.helpers.daemon import wait_for_socket as _wait_for_socket
 
 _USER_GOAL_RE = re.compile(
     (
@@ -31,7 +33,11 @@ _USER_GOAL_RE = re.compile(
     ),
     flags=re.DOTALL,
 )
-_SUMMARIZER_SYSTEM_MARKER = "You extract durable memory candidates from conversation history."
+# ADV-M3: take the first sentence of the live summarizer system prompt as the
+# stub's routing marker. Before this, the test embedded a hardcoded string
+# that could silently drift from production and leave the stub's summarizer
+# branch forever unreachable.
+_SUMMARIZER_SYSTEM_MARKER = _SUMMARY_SYSTEM_PROMPT.split(". ")[0] + "."
 _UNIQUE_MARKER = "EVIDENCE_BEHAVIORAL_MARKER"
 _REF_RE = re.compile(r"\bev-[0-9a-f]{16}\b")
 
@@ -85,7 +91,11 @@ async def _evidence_stub_complete(
     goal = _extract_user_goal(planner_input)
     goal_lower = goal.lower()
 
-    if goal_lower.startswith("fetch https://example.com"):
+    # ADV-M3: the `startswith("fetch https://...")` literal is still the
+    # simplest test-input match, but we also tolerate additional leading
+    # verbs like "please fetch https://..." so minor phrasing tweaks in
+    # the harness test text don't silently skip this stub branch.
+    if "fetch https://example.com" in goal_lower and "fetch" in goal_lower.split():
         return ProviderResponse(
             message=Message(
                 role="assistant",
@@ -98,6 +108,38 @@ async def _evidence_stub_complete(
                     )
                 ],
             ),
+            model="behavioral-evidence-stub",
+            finish_reason="stop",
+            usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+        )
+
+    if goal_lower.startswith("search hokkaido venues"):
+        return ProviderResponse(
+            message=Message(
+                role="assistant",
+                content="Searching Hokkaido venues.",
+                tool_calls=[
+                    _tool_call(
+                        "web.search",
+                        {"query": "Hokkaido venues", "limit": 1},
+                        call_id="t-search",
+                    )
+                ],
+            ),
+            model="behavioral-evidence-stub",
+            finish_reason="stop",
+            usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+        )
+
+    if "itinerary using what you found" in goal_lower:
+        has_working_packet = "WORKING EVIDENCE PACKET" in normalized_planner_input
+        has_evidence_ref = "[EVIDENCE ref=" in normalized_planner_input
+        if has_working_packet and has_evidence_ref:
+            response = "grounded-itinerary"
+        else:
+            response = "generic-itinerary"
+        return ProviderResponse(
+            message=Message(role="assistant", content=response),
             model="behavioral-evidence-stub",
             finish_reason="stop",
             usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
@@ -186,13 +228,35 @@ def _stub_fetch(
     }
 
 
-async def _wait_for_socket(path: Path, timeout: float = 5.0) -> None:
-    end = asyncio.get_running_loop().time() + timeout
-    while asyncio.get_running_loop().time() < end:
-        if path.exists():
-            return
-        await asyncio.sleep(0.01)
-    raise TimeoutError(f"Timed out waiting for socket {path}")
+def _stub_search(self: WebToolkit, *, query: str, limit: int = 5) -> dict[str, Any]:
+    _ = (self, limit)
+    return {
+        "ok": True,
+        "query": query,
+        "backend": "https://search.example.test/search",
+        "results": [
+            {
+                "title": "Yoichi distillery",
+                "url": "https://example.test/yoichi",
+                "snippet": "Yoichi distillery tours require advance booking.",
+                "host": "example.test",
+                "allowlisted_host": False,
+                "engine": "stub",
+            }
+        ],
+        "taint_labels": ["untrusted"],
+        "evidence": {
+            "operation": "web_search",
+            "backend_url": "https://search.example.test/search",
+            "query_hash": "stub",
+            "response_hash": "stub",
+            "fetched_at": "2026-04-18T00:00:00+00:00",
+            "status_code": 200,
+            "truncated": False,
+            "result_count": 1,
+            "final_url": "https://search.example.test/search",
+        },
+    }
 
 
 async def _create_session(client: ControlClient) -> str:
@@ -228,6 +292,7 @@ async def _run_evidence_harness(
 ):
     monkeypatch.setattr(LocalPlannerProvider, "complete", _evidence_stub_complete, raising=True)
     monkeypatch.setattr(WebToolkit, "fetch", _stub_fetch, raising=True)
+    monkeypatch.setattr(WebToolkit, "search", _stub_search, raising=True)
     for var in (
         "SHISAD_MODEL_REMOTE_ENABLED",
         "SHISAD_MODEL_PLANNER_REMOTE_ENABLED",
@@ -257,6 +322,7 @@ async def _run_evidence_harness(
         log_level="WARNING",
         context_window=6,
         web_fetch_enabled=True,
+        web_search_enabled=True,
         web_allowed_domains=["example.com"],
         evidence_kms_url=evidence_kms_url,
         evidence_kms_bearer_token=evidence_kms_bearer_token,
@@ -356,6 +422,28 @@ async def test_behavioral_fetch_stub_read_strip_promote_flow(evidence_harness) -
         {"session_id": sid, "content": "what was in that evidence again?"},
     )
     assert promoted["response"] == "promoted-context-visible"
+
+
+@pytest.mark.asyncio
+async def test_behavioral_search_followup_receives_working_evidence_packet(
+    evidence_harness,
+) -> None:
+    client: ControlClient = evidence_harness["client"]
+    sid = await _create_session(client)
+
+    searched = await client.call(
+        "session.message",
+        {"session_id": sid, "content": "search Hokkaido venues"},
+    )
+    assert int(searched.get("executed_actions", 0)) == 1
+    assert "[EVIDENCE ref=" in str(searched.get("response", ""))
+
+    followup = await client.call(
+        "session.message",
+        {"session_id": sid, "content": "now write the itinerary using what you found"},
+    )
+
+    assert followup["response"] == "grounded-itinerary"
 
 
 @pytest.mark.asyncio
