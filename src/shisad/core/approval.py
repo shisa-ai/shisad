@@ -975,7 +975,8 @@ def _eip712_hash_struct(primary: str, data: dict[str, object]) -> bytes:
         if field_type == "string":
             encoded += keccak_256(str(value or "").encode())
         elif field_type == "uint256":
-            encoded += int(value or 0).to_bytes(32, "big")
+            numeric = value if isinstance(value, (int, str, bytes)) else 0
+            encoded += int(numeric or 0).to_bytes(32, "big")
         elif field_type in _EIP712_TYPES:
             encoded += _eip712_hash_struct(field_type, value if isinstance(value, dict) else {})
         else:
