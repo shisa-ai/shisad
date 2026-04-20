@@ -15,15 +15,30 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { DeviceActionStatus, UserInteractionRequired } from "@ledgerhq/device-management-kit";
 import { firstValueFrom, filter, map } from "rxjs";
 
-import { getDmk, getOrConnectDevice, invalidateSession, connectDevice, waitForUnlock, buildEthSigner, reviewSurfaceForModel } from "./device";
+import {
+  blindSignDetectedForModel,
+  buildEthSigner,
+  connectDevice,
+  getDmk,
+  getOrConnectDevice,
+  invalidateSession,
+  reviewSurfaceForModel,
+  waitForUnlock,
+} from "./device";
 import { buildTypedData, formatForDevice, type IntentEnvelope } from "./format";
 import { hexToBytes, uncompressedSecp256k1ToPem } from "./crypto-utils";
+import { isAuthorized } from "./auth";
 
 // ---------------------------------------------------------------------------
 // CLI args
 // ---------------------------------------------------------------------------
 const PORT = parseInt(process.argv.find((_, i, a) => a[i - 1] === "--port") ?? "9090", 10);
 const DERIVATION_PATH = process.argv.find((_, i, a) => a[i - 1] === "--derivation-path") ?? "44'/60'/0'/0/0";
+const BRIDGE_BEARER_TOKEN = (
+  process.argv.find((_, i, a) => a[i - 1] === "--bearer-token") ??
+  process.env.SHISAD_LEDGER_BRIDGE_BEARER_TOKEN ??
+  ""
+).trim();
 
 // ---------------------------------------------------------------------------
 // Sign request handler
@@ -66,9 +81,11 @@ async function handleSignRequest(req: SignRequest): Promise<SignResponse> {
   const session = await getOrConnectDevice(dmk);
 
   // Build EIP-712 typed data for structured device display.
-  const typedData = buildTypedData(req.intent_envelope);
-  const displayMessage = formatForDevice(req.intent_envelope);
+  const typedData = buildTypedData(req.intent_envelope, req.intent_envelope_hash);
+  const displayMessage = formatForDevice(req.intent_envelope, req.intent_envelope_hash);
   process.stderr.write(`\nSigning (EIP-712):\n${displayMessage}\n\n`);
+  const reviewSurface = reviewSurfaceForModel(session.model);
+  const blindSignDetected = blindSignDetectedForModel(session.model);
 
   try {
     // Sign via EIP-712 signTypedData — device renders structured labeled
@@ -112,8 +129,8 @@ async function handleSignRequest(req: SignRequest): Promise<SignResponse> {
       signer_key_id: req.signer_key_id,
       signature: signatureB64,
       signed_at: new Date().toISOString().replace(/\.\d{3}Z$/, "Z"),
-      review_surface: reviewSurfaceForModel(session.model),
-      blind_sign_detected: false,
+      review_surface: reviewSurface,
+      blind_sign_detected: blindSignDetected,
       reason: "",
     };
   } catch (err: unknown) {
@@ -124,8 +141,8 @@ async function handleSignRequest(req: SignRequest): Promise<SignResponse> {
         signer_key_id: req.signer_key_id,
         signature: "",
         signed_at: "",
-        review_surface: reviewSurfaceForModel(session.model),
-        blind_sign_detected: false,
+        review_surface: reviewSurface,
+        blind_sign_detected: blindSignDetected,
         reason: "user_rejected_on_device",
       };
     }
@@ -261,6 +278,11 @@ function sendJson(res: ServerResponse, status: number, payload: object): void {
 }
 
 const server = createServer(async (req: IncomingMessage, res: ServerResponse) => {
+  if (!isAuthorized(req.headers, BRIDGE_BEARER_TOKEN)) {
+    sendJson(res, 401, { error: "unauthorized" });
+    return;
+  }
+
   // GET /extract-key — extract public key from connected Ledger
   if (req.url?.startsWith("/extract-key")) {
     try {

@@ -4,13 +4,14 @@
   "description": "Ledger DMK bridge service for shisad L4 trusted-display approval",
   "scripts": {
     "start": "tsx src/server.ts",
-    "extract-key": "tsx src/extract-key.ts"
+    "extract-key": "tsx src/extract-key.ts",
+    "test": "node --import tsx --test tests/*.test.ts"
   },
   "dependencies": {
+    "@ledgerhq/context-module": "1.16.0",
     "@ledgerhq/device-management-kit": "1.2.0",
+    "@ledgerhq/device-signer-kit-ethereum": "1.14.0",
     "@ledgerhq/device-transport-kit-node-hid": "1.0.1",
-    "@ledgerhq/device-signer-kit-ethereum": "1.11.1",
-    "@ledgerhq/context-module": "1.14.1",
     "rxjs": "^7.8.0"
   },
   "devDependencies": {

@@ -39,7 +39,7 @@ export interface IntentEnvelope {
  * Keep type definitions in sync with the daemon-side EIP-712 digest
  * computation in src/shisad/core/approval.py::_EIP712_TYPES.
  */
-export function buildTypedData(envelope: IntentEnvelope) {
+export function buildTypedData(envelope: IntentEnvelope, fullIntentHash: string) {
   return {
     domain: {
       name: "shisad",
@@ -65,6 +65,7 @@ export function buildTypedData(envelope: IntentEnvelope) {
         { name: "intentId", type: "string" },
         { name: "action", type: "IntentAction" },
         { name: "policy", type: "PolicyContext" },
+        { name: "fullIntentHash", type: "string" },
         { name: "nonce", type: "string" },
       ],
     },
@@ -80,6 +81,7 @@ export function buildTypedData(envelope: IntentEnvelope) {
         level: envelope.policy_context.required_level,
         digest: envelope.policy_context.action_digest,
       },
+      fullIntentHash,
       nonce: envelope.nonce,
     },
   };
@@ -88,7 +90,7 @@ export function buildTypedData(envelope: IntentEnvelope) {
 /**
  * Plain-text summary for logging / debug. Not used for signing.
  */
-export function formatForDevice(envelope: IntentEnvelope): string {
+export function formatForDevice(envelope: IntentEnvelope, fullIntentHash = ""): string {
   const { action, policy_context, intent_id } = envelope;
   const destinations =
     action.destinations.length > 0
@@ -102,5 +104,6 @@ export function formatForDevice(envelope: IntentEnvelope): string {
     `Risk: ${policy_context.required_level}`,
     `Dest: ${destinations}`,
     `Intent: ${intent_id}`,
+    ...(fullIntentHash ? [`Intent Hash: ${fullIntentHash}`] : []),
   ].join("\n");
 }

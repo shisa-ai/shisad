@@ -911,6 +911,7 @@ _EIP712_TYPES: dict[str, list[tuple[str, str]]] = {
         ("intentId", "string"),
         ("action", "IntentAction"),
         ("policy", "PolicyContext"),
+        ("fullIntentHash", "string"),
         ("nonce", "string"),
     ],
 }
@@ -969,18 +970,33 @@ def _eip712_hash_struct(primary: str, data: dict[str, object]) -> bytes:
     """Compute ``hashStruct(primaryType, data)`` per EIP-712."""
     from shisad.core._keccak import keccak_256
 
+    if primary not in _EIP712_TYPES:
+        raise ValueError(f"unsupported EIP-712 primary type: {primary}")
+
     encoded = _get_type_hash(primary)
     for field_name, field_type in _EIP712_TYPES[primary]:
+        label = f"{primary}.{field_name}"
         value = data.get(field_name)
         if field_type == "string":
+            if not isinstance(value, str):
+                raise ValueError(f"EIP-712 field {label} must be a string")
             encoded += keccak_256(str(value or "").encode())
         elif field_type == "uint256":
-            numeric = value if isinstance(value, (int, str, bytes)) else 0
-            encoded += int(numeric or 0).to_bytes(32, "big")
+            if isinstance(value, bool) or not isinstance(value, (int, str, bytes)):
+                raise ValueError(f"EIP-712 field {label} must be uint256-compatible")
+            try:
+                numeric = int(value or 0)
+            except ValueError as exc:
+                raise ValueError(f"EIP-712 field {label} must be uint256-compatible") from exc
+            if numeric < 0 or numeric >= 2**256:
+                raise ValueError(f"EIP-712 field {label} is outside uint256 range")
+            encoded += numeric.to_bytes(32, "big")
         elif field_type in _EIP712_TYPES:
-            encoded += _eip712_hash_struct(field_type, value if isinstance(value, dict) else {})
+            if not isinstance(value, dict):
+                raise ValueError(f"EIP-712 field {label} must be a struct")
+            encoded += _eip712_hash_struct(field_type, value)
         else:
-            encoded += keccak_256(str(value or "").encode())
+            raise ValueError(f"unsupported EIP-712 field type for {label}: {field_type}")
     return keccak_256(encoded)
 
 
@@ -1009,6 +1025,7 @@ def _eip712_digest(envelope: IntentEnvelope) -> bytes:
             else str(envelope.policy_context.required_level),
             "digest": envelope.policy_context.action_digest,
         },
+        "fullIntentHash": intent_envelope_hash(envelope),
         "nonce": envelope.nonce,
     }
     struct_hash = _eip712_hash_struct("IntentEnvelope", message_data)

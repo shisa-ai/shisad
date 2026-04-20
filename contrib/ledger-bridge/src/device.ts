@@ -166,6 +166,20 @@ export function buildEthSigner(
 /**
  * Map device model to a shisad review_surface value.
  */
-export function reviewSurfaceForModel(_model: string): string {
-  return "trusted_device_display";
+export function reviewSurfaceForModel(model: string): string {
+  const normalized = model.trim().toLowerCase();
+  if (
+    normalized === "stax" ||
+    normalized === "ledger stax" ||
+    normalized === "europa" ||
+    normalized === "flex" ||
+    normalized === "ledger flex"
+  ) {
+    return "trusted_device_display";
+  }
+  return "opaque_device";
+}
+
+export function blindSignDetectedForModel(model: string): boolean {
+  return reviewSurfaceForModel(model) !== "trusted_device_display";
 }

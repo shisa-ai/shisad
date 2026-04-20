@@ -529,10 +529,10 @@ class ControlServer:
                 xucred_fmt = "IiH16i"
                 xucred = sock.getsockopt(SOL_LOCAL, LOCAL_PEERCRED,
                                          struct.calcsize(xucred_fmt))
-                _cr_version, cr_uid, _cr_ngroups = struct.unpack_from(
-                    "IiH", xucred,
+                _cr_version, cr_uid, _cr_ngroups, cr_gid, *_groups = struct.unpack_from(
+                    xucred_fmt,
+                    xucred,
                 )
-                cr_gid = struct.unpack_from("i", xucred, struct.calcsize("IiH"))[0]
                 pid_data = sock.getsockopt(
                     SOL_LOCAL, LOCAL_PEEREPID, struct.calcsize("i"),
                 )

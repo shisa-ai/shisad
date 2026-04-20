@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
-from types import SimpleNamespace
 
 import pytest
 
@@ -324,7 +323,7 @@ def test_malformed_signer_timestamp_fails_closed(tmp_path) -> None:
 
 def _ledger_pending_action(
     *, key_id: str
-) -> tuple[SimpleNamespace, dict[str, str]]:
+) -> tuple[PendingAction, dict[str, str]]:
     intent = IntentEnvelope(
         intent_id="intent-ledger-1",
         agent_id="daemon-1",
@@ -362,14 +361,19 @@ def _ledger_pending_action(
         intent_envelope_hash=intent_envelope_hash(intent),
         action_summary="Deploy v2.1.0 to production cluster",
     )
-    pending = SimpleNamespace(
+    pending = make_pending_action(
         confirmation_id="c-ledger-1",
         user_id="alice",
+        tool_name="deploy.production",
+        arguments={"version": "2.1.0", "target": "prod"},
         allowed_principals=["ops-owner"],
         allowed_credentials=[key_id],
         approval_envelope=envelope,
         approval_envelope_hash=approval_envelope_hash(envelope),
         intent_envelope=intent,
+        required_level=ConfirmationLevel.TRUSTED_DISPLAY_AUTHORIZATION,
+        selected_backend_id="ledger.default",
+        selected_backend_method="ledger",
         fallback_used=False,
     )
     return pending, {"decision_nonce": "nonce", "approval_method": "ledger"}
