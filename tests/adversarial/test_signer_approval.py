@@ -321,9 +321,7 @@ def test_malformed_signer_timestamp_fails_closed(tmp_path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _ledger_pending_action(
-    *, key_id: str
-) -> tuple[PendingAction, dict[str, str]]:
+def _ledger_pending_action(*, key_id: str) -> tuple[PendingAction, dict[str, str]]:
     intent = IntentEnvelope(
         intent_id="intent-ledger-1",
         agent_id="daemon-1",
@@ -541,9 +539,7 @@ def test_ledger_tampered_intent_rejected(tmp_path) -> None:
                 endpoint_url=signer_url,
             )
         )
-        with pytest.raises(
-            ConfirmationVerificationError, match="invalid_signer_signature"
-        ):
+        with pytest.raises(ConfirmationVerificationError, match="invalid_signer_signature"):
             backend.verify(pending_action=pending, params=params)
 
 

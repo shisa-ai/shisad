@@ -18,7 +18,7 @@
       "tests/behavioral/test_v04_behavioral_extensions.py": 1,
       "tests/helpers/daemon.py": 1,
       "tests/integration/test_admin_selfmod.py": 1,
-      "tests/integration/test_channel_pump.py": 1,
+      "tests/integration/test_channel_pump.py": 6,
       "tests/integration/test_chat_confirmation_e2e.py": 7,
       "tests/integration/test_cleanroom_nonadmin.py": 1,
       "tests/integration/test_cleanroom_workflow.py": 1,
@@ -43,6 +43,6 @@
   "tests_root": "tests",
   "totals": {
     "DaemonServices.build": 38,
-    "run_daemon": 91
+    "run_daemon": 96
   }
 }

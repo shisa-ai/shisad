@@ -718,15 +718,13 @@ class ConfirmationImplMixin(HandlerMixinBase):
         principal_id = str(params.get("name") or "").strip() or getpass.getuser().strip() or user_id
         default_algorithm = "ecdsa-secp256k1" if backend == "ledger" else "ed25519"
         algorithm = (
-            str(params.get("algorithm") or default_algorithm).strip().lower()
-            or default_algorithm
+            str(params.get("algorithm") or default_algorithm).strip().lower() or default_algorithm
         )
         if algorithm not in {"ed25519", "ecdsa-secp256k1"}:
             return {"registered": False, "reason": "unsupported_signer_algorithm"}
         default_device_type = "ledger-consumer" if backend == "ledger" else "ledger-enterprise"
         device_type = (
-            str(params.get("device_type") or default_device_type).strip()
-            or default_device_type
+            str(params.get("device_type") or default_device_type).strip() or default_device_type
         )
         default_signing_scheme = "eip712" if backend == "ledger" else "raw"
         signing_scheme = (

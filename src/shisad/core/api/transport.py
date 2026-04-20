@@ -527,14 +527,15 @@ class ControlServer:
                 # xucred: uint32 cr_version, uid_t cr_uid, short cr_ngroups,
                 #         gid_t cr_groups[16]
                 xucred_fmt = "IiH16i"
-                xucred = sock.getsockopt(SOL_LOCAL, LOCAL_PEERCRED,
-                                         struct.calcsize(xucred_fmt))
+                xucred = sock.getsockopt(SOL_LOCAL, LOCAL_PEERCRED, struct.calcsize(xucred_fmt))
                 _cr_version, cr_uid, _cr_ngroups, cr_gid, *_groups = struct.unpack_from(
                     xucred_fmt,
                     xucred,
                 )
                 pid_data = sock.getsockopt(
-                    SOL_LOCAL, LOCAL_PEEREPID, struct.calcsize("i"),
+                    SOL_LOCAL,
+                    LOCAL_PEEREPID,
+                    struct.calcsize("i"),
                 )
                 pid = struct.unpack("i", pid_data)[0]
                 return PeerCredentials(pid=pid, uid=cr_uid, gid=cr_gid)

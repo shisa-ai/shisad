@@ -1178,9 +1178,7 @@ class _HttpSignerBackend:
                     reason="signer_backend_invalid_response",
                 )
         blind_sign_raw = (
-            body.get("blind_sign_detected")
-            if "blind_sign_detected" in body
-            else ledger_approved
+            body.get("blind_sign_detected") if "blind_sign_detected" in body else ledger_approved
         )
         if not isinstance(blind_sign_raw, bool):
             return SignatureResult(status="error", reason="signer_backend_invalid_response")
@@ -1221,14 +1219,10 @@ class _HttpSignerBackend:
                 scheme = signer_key.signing_scheme.strip().lower()
                 if scheme == "eip712":
                     digest = _eip712_digest(envelope)
-                    public_key.verify(
-                        signed_bytes, digest, ec.ECDSA(_Prehashed(hashes.SHA256()))
-                    )
+                    public_key.verify(signed_bytes, digest, ec.ECDSA(_Prehashed(hashes.SHA256())))
                 elif scheme == "eth_personal_sign":
                     digest = _eth_personal_sign_digest(message)
-                    public_key.verify(
-                        signed_bytes, digest, ec.ECDSA(_Prehashed(hashes.SHA256()))
-                    )
+                    public_key.verify(signed_bytes, digest, ec.ECDSA(_Prehashed(hashes.SHA256())))
                 else:
                     public_key.verify(signed_bytes, message, ec.ECDSA(hashes.SHA256()))
                 return True
