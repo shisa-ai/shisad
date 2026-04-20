@@ -1921,7 +1921,7 @@ def signer() -> None:
 @click.option(
     "--backend",
     default="kms",
-    type=click.Choice(["kms"]),
+    type=click.Choice(["kms", "ledger"]),
     show_default=True,
     help="Signer backend type.",
 )
@@ -1930,15 +1930,13 @@ def signer() -> None:
 @click.option("--name", default="", help="Audit principal label (defaults to local username).")
 @click.option(
     "--algorithm",
-    default="ed25519",
+    default=None,
     type=click.Choice(["ed25519", "ecdsa-secp256k1"]),
-    show_default=True,
-    help="Signature algorithm for the registered public key.",
+    help="Signature algorithm (default: ecdsa-secp256k1 for ledger, ed25519 for kms).",
 )
 @click.option(
     "--device-type",
-    default="ledger-enterprise",
-    show_default=True,
+    default="",
     help="Signer device or provider type label.",
 )
 @click.option(
@@ -1953,11 +1951,15 @@ def signer_register(
     user_id: str,
     key_id: str,
     name: str,
-    algorithm: str,
+    algorithm: str | None,
     device_type: str,
     public_key_path: Path,
 ) -> None:
     """Register a signer key for approval policies."""
+    if algorithm is None:
+        algorithm = "ecdsa-secp256k1" if backend == "ledger" else "ed25519"
+    if not device_type.strip():
+        device_type = "ledger-consumer" if backend == "ledger" else "ledger-enterprise"
     config = _get_config()
     result = rpc_call(
         config,
@@ -1968,7 +1970,7 @@ def signer_register(
             "key_id": key_id,
             "name": name.strip() or None,
             "algorithm": algorithm,
-            "device_type": device_type.strip() or "ledger-enterprise",
+            "device_type": device_type.strip(),
             "public_key_pem": public_key_path.read_text(encoding="utf-8"),
         },
         response_model=SignerRegisterResult,
@@ -1986,7 +1988,7 @@ def signer_register(
 @click.option(
     "--backend",
     default="",
-    type=click.Choice(["kms"], case_sensitive=False),
+    type=click.Choice(["kms", "ledger"], case_sensitive=False),
     help="Optional backend filter.",
 )
 @click.option("--include-revoked", is_flag=True, help="Include revoked signer keys.")

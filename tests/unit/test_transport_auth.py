@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import os
+import struct
+import sys
 from pathlib import Path
 
 import pytest
@@ -26,6 +28,38 @@ def test_admin_peer_rejects_other_uid() -> None:
     other_uid = os.getuid() + 1
     peer = PeerCredentials(pid=1, uid=other_uid, gid=os.getgid())
     assert not ControlServer._is_admin_peer(peer)
+
+
+def test_darwin_peer_credentials_extract_uid_gid_and_pid(monkeypatch: pytest.MonkeyPatch) -> None:
+    class FakeSocket:
+        def getsockopt(self, level: int, option: int, size: int) -> bytes:
+            assert level == 0
+            if option == 1:
+                xucred_fmt = "IiH16i"
+                return struct.pack(
+                    xucred_fmt,
+                    0,
+                    501,
+                    1,
+                    20,
+                    *([0] * 15),
+                )[:size]
+            if option == 3:
+                return struct.pack("i", 4242)[:size]
+            raise AssertionError(f"unexpected getsockopt option: {option}")
+
+    class FakeWriter:
+        def get_extra_info(self, name: str) -> object:
+            assert name == "socket"
+            return FakeSocket()
+
+    monkeypatch.setattr(sys, "platform", "darwin")
+
+    peer = ControlServer._get_peer_credentials(FakeWriter())  # type: ignore[arg-type]
+
+    assert peer.pid == 4242
+    assert peer.uid == 501
+    assert peer.gid == 20
 
 
 @pytest.mark.asyncio

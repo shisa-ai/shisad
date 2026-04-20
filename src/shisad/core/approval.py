@@ -25,6 +25,7 @@ from urllib.request import Request, urlopen
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec, ed25519
+from cryptography.hazmat.primitives.asymmetric.utils import Prehashed as _Prehashed
 from fido2.server import Fido2Server
 from fido2.webauthn import (
     AttestedCredentialData,
@@ -765,6 +766,7 @@ class SignerKeyInfo(BaseModel):
     algorithm: str
     device_type: str
     public_key_pem: str
+    signing_scheme: str = "raw"
     created_at: datetime
     last_verified_at: datetime | None = None
     last_used_at: datetime | None = None
@@ -876,6 +878,160 @@ def _clamp_signer_review_surface(
     return default
 
 
+def _eth_personal_sign_digest(message: bytes) -> bytes:
+    """Compute the Ethereum personal-sign digest for ECDSA verification.
+
+    Ethereum's ``eth_sign`` / ``personal_sign`` hashes the message as::
+
+        keccak256("\\x19Ethereum Signed Message:\\n" + len(message) + message)
+
+    The result is a 32-byte digest suitable for ``Prehashed(SHA256())``
+    verification (both keccak-256 and SHA-256 produce 32-byte digests).
+    """
+    from shisad.core._keccak import keccak_256
+
+    prefix = b"\x19Ethereum Signed Message:\n" + str(len(message)).encode()
+    return keccak_256(prefix + message)
+
+
+# ---------------------------------------------------------------------------
+# EIP-712 typed-data digest (used by the Ledger signer backend)
+# ---------------------------------------------------------------------------
+
+# Fixed EIP-712 domain for shisad intent signing.
+_EIP712_DOMAIN = {"name": "shisad", "version": "1", "chainId": 0}
+
+# EIP-712 type definitions for the shisad IntentEnvelope.
+# Keep in sync with contrib/ledger-bridge/src/format.ts::buildTypedData().
+_EIP712_TYPES: dict[str, list[tuple[str, str]]] = {
+    "EIP712Domain": [("name", "string"), ("version", "string"), ("chainId", "uint256")],
+    "IntentAction": [("tool", "string"), ("summary", "string"), ("destinations", "string")],
+    "PolicyContext": [("level", "string"), ("digest", "string")],
+    "IntentEnvelope": [
+        ("intentId", "string"),
+        ("action", "IntentAction"),
+        ("policy", "PolicyContext"),
+        ("fullIntentHash", "string"),
+        ("nonce", "string"),
+    ],
+}
+
+
+def _eip712_encode_type(primary: str) -> str:
+    """Encode the type string for ``hashType`` per EIP-712.
+
+    For a struct with referenced sub-structs, the encoding is::
+
+        PrimaryType(field1Type field1Name, ...) ++ ReferencedType1(...) ++ ...
+
+    Referenced types are sorted alphabetically and deduplicated.
+    """
+    deps: set[str] = set()
+
+    def _collect(name: str) -> None:
+        for _, field_type in _EIP712_TYPES.get(name, []):
+            if field_type in _EIP712_TYPES and field_type != name and field_type not in deps:
+                deps.add(field_type)
+                _collect(field_type)
+
+    _collect(primary)
+
+    def _fmt(name: str) -> str:
+        fields = ",".join(f"{ft} {fn}" for fn, ft in _EIP712_TYPES[name])
+        return f"{name}({fields})"
+
+    return _fmt(primary) + "".join(_fmt(d) for d in sorted(deps))
+
+
+def _eip712_type_hash(primary: str) -> bytes:
+    """Compute the keccak-256 type hash for a named EIP-712 struct.
+
+    Since ``_EIP712_TYPES`` is static, the result is cached.
+    """
+    from shisad.core._keccak import keccak_256
+
+    return keccak_256(_eip712_encode_type(primary).encode())
+
+
+# Precomputed type hashes for static EIP-712 types.
+_EIP712_TYPE_HASHES: dict[str, bytes] = {}
+
+
+def _get_type_hash(primary: str) -> bytes:
+    cached = _EIP712_TYPE_HASHES.get(primary)
+    if cached is not None:
+        return cached
+    h = _eip712_type_hash(primary)
+    _EIP712_TYPE_HASHES[primary] = h
+    return h
+
+
+def _eip712_hash_struct(primary: str, data: dict[str, object]) -> bytes:
+    """Compute ``hashStruct(primaryType, data)`` per EIP-712."""
+    from shisad.core._keccak import keccak_256
+
+    if primary not in _EIP712_TYPES:
+        raise ValueError(f"unsupported EIP-712 primary type: {primary}")
+
+    encoded = _get_type_hash(primary)
+    for field_name, field_type in _EIP712_TYPES[primary]:
+        label = f"{primary}.{field_name}"
+        value = data.get(field_name)
+        if field_type == "string":
+            if not isinstance(value, str):
+                raise ValueError(f"EIP-712 field {label} must be a string")
+            encoded += keccak_256(str(value or "").encode())
+        elif field_type == "uint256":
+            if isinstance(value, bool) or not isinstance(value, (int, str, bytes)):
+                raise ValueError(f"EIP-712 field {label} must be uint256-compatible")
+            try:
+                numeric = int(value or 0)
+            except ValueError as exc:
+                raise ValueError(f"EIP-712 field {label} must be uint256-compatible") from exc
+            if numeric < 0 or numeric >= 2**256:
+                raise ValueError(f"EIP-712 field {label} is outside uint256 range")
+            encoded += numeric.to_bytes(32, "big")
+        elif field_type in _EIP712_TYPES:
+            if not isinstance(value, dict):
+                raise ValueError(f"EIP-712 field {label} must be a struct")
+            encoded += _eip712_hash_struct(field_type, value)
+        else:
+            raise ValueError(f"unsupported EIP-712 field type for {label}: {field_type}")
+    return keccak_256(encoded)
+
+
+def _eip712_digest(envelope: IntentEnvelope) -> bytes:
+    """Compute the EIP-712 signing digest for a shisad IntentEnvelope.
+
+    Returns the 32-byte keccak-256 digest::
+
+        keccak256("\\x19\\x01" + domainSeparator + hashStruct(primaryType, message))
+
+    Compatible with ``Prehashed(SHA256())`` ECDSA verification (32-byte digest).
+    """
+    from shisad.core._keccak import keccak_256
+
+    domain_sep = _eip712_hash_struct("EIP712Domain", _EIP712_DOMAIN)
+    message_data: dict[str, object] = {
+        "intentId": envelope.intent_id,
+        "action": {
+            "tool": envelope.action.tool,
+            "summary": envelope.action.display_summary,
+            "destinations": ", ".join(envelope.action.destinations) or "[none]",
+        },
+        "policy": {
+            "level": envelope.policy_context.required_level.value
+            if hasattr(envelope.policy_context.required_level, "value")
+            else str(envelope.policy_context.required_level),
+            "digest": envelope.policy_context.action_digest,
+        },
+        "fullIntentHash": intent_envelope_hash(envelope),
+        "nonce": envelope.nonce,
+    }
+    struct_hash = _eip712_hash_struct("IntentEnvelope", message_data)
+    return keccak_256(b"\x19\x01" + domain_sep + struct_hash)
+
+
 def _signer_key_info_from_record(record: SignerKeyRecord) -> SignerKeyInfo:
     return SignerKeyInfo(
         key_id=record.credential_id,
@@ -884,6 +1040,7 @@ def _signer_key_info_from_record(record: SignerKeyRecord) -> SignerKeyInfo:
         algorithm=record.algorithm,
         device_type=record.device_type,
         public_key_pem=record.public_key_pem,
+        signing_scheme=record.signing_scheme,
         created_at=record.created_at,
         last_verified_at=record.last_verified_at,
         last_used_at=record.last_used_at,
@@ -891,8 +1048,8 @@ def _signer_key_info_from_record(record: SignerKeyRecord) -> SignerKeyInfo:
     )
 
 
-class EnterpriseKmsSignerBackend:
-    """Enterprise-style HTTPS signer backend for provider-UI approvals."""
+class _HttpSignerBackend:
+    """Base class for HTTP-based signer backends (KMS, Ledger bridge, etc.)."""
 
     def __init__(
         self,
@@ -901,17 +1058,19 @@ class EnterpriseKmsSignerBackend:
         endpoint_url: str,
         bearer_token: str = "",
         request_timeout: timedelta | None = None,
+        backend_id: str,
+        method: str,
+        level: ConfirmationLevel,
+        review_surface: ReviewSurface,
+        capabilities: ConfirmationCapabilities,
+        third_party_verifiable: bool,
     ) -> None:
-        self.backend_id = "kms.default"
-        self.method = "kms"
-        self.level = ConfirmationLevel.SIGNED_AUTHORIZATION
-        self.review_surface = ReviewSurface.PROVIDER_UI
-        self.capabilities = ConfirmationCapabilities(
-            principal_binding=True,
-            full_intent_signature=True,
-            third_party_verifiable=True,
-        )
-        self.third_party_verifiable = True
+        self.backend_id = backend_id
+        self.method = method
+        self.level = level
+        self.review_surface = review_surface
+        self.capabilities = capabilities
+        self.third_party_verifiable = third_party_verifiable
         self._credential_store = credential_store
         self._endpoint_url = endpoint_url.strip()
         self._bearer_token = bearer_token.strip()
@@ -925,7 +1084,7 @@ class EnterpriseKmsSignerBackend:
     ) -> list[SignerKeyInfo]:
         rows = self._credential_store.list_signer_keys(
             user_id=user_id,
-            backend="kms",
+            backend=self.method,
             include_revoked=include_revoked,
         )
         return [_signer_key_info_from_record(item) for item in rows]
@@ -986,6 +1145,7 @@ class EnterpriseKmsSignerBackend:
         status = str(body.get("status", "")).strip()
         if status not in {"approved", "rejected", "expired", "error"}:
             return SignatureResult(status="error", reason="signer_backend_invalid_status")
+        ledger_approved = self.method == "ledger" and status == "approved"
         reported_review_surface: ReviewSurface | None = None
         if "review_surface" in body:
             review_surface_raw = str(body.get("review_surface", "")).strip()
@@ -997,7 +1157,11 @@ class EnterpriseKmsSignerBackend:
                         status="error",
                         reason="signer_backend_invalid_response",
                     )
-        review_surface = _clamp_signer_review_surface(
+            elif ledger_approved:
+                reported_review_surface = ReviewSurface.OPAQUE_DEVICE
+        elif ledger_approved:
+            reported_review_surface = ReviewSurface.OPAQUE_DEVICE
+        clamped_review_surface = _clamp_signer_review_surface(
             default=self.review_surface,
             reported=reported_review_surface,
         )
@@ -1013,7 +1177,11 @@ class EnterpriseKmsSignerBackend:
                     status="error",
                     reason="signer_backend_invalid_response",
                 )
-        blind_sign_raw = body.get("blind_sign_detected", False)
+        blind_sign_raw = (
+            body.get("blind_sign_detected")
+            if "blind_sign_detected" in body
+            else ledger_approved
+        )
         if not isinstance(blind_sign_raw, bool):
             return SignatureResult(status="error", reason="signer_backend_invalid_response")
         return SignatureResult(
@@ -1021,7 +1189,7 @@ class EnterpriseKmsSignerBackend:
             signature=_normalize_signature_value(str(body.get("signature", ""))),
             signer_key_id=str(body.get("signer_key_id", "")).strip(),
             signed_at=signed_at,
-            review_surface=review_surface,
+            review_surface=clamped_review_surface,
             blind_sign_detected=blind_sign_raw,
             reason=str(body.get("reason", "")).strip(),
         )
@@ -1050,7 +1218,19 @@ class EnterpriseKmsSignerBackend:
                     return False
                 if public_key.curve.name.lower() != "secp256k1":
                     return False
-                public_key.verify(signed_bytes, message, ec.ECDSA(hashes.SHA256()))
+                scheme = signer_key.signing_scheme.strip().lower()
+                if scheme == "eip712":
+                    digest = _eip712_digest(envelope)
+                    public_key.verify(
+                        signed_bytes, digest, ec.ECDSA(_Prehashed(hashes.SHA256()))
+                    )
+                elif scheme == "eth_personal_sign":
+                    digest = _eth_personal_sign_digest(message)
+                    public_key.verify(
+                        signed_bytes, digest, ec.ECDSA(_Prehashed(hashes.SHA256()))
+                    )
+                else:
+                    public_key.verify(signed_bytes, message, ec.ECDSA(hashes.SHA256()))
                 return True
         except (InvalidSignature, TypeError, ValueError):
             return False
@@ -1064,6 +1244,71 @@ class EnterpriseKmsSignerBackend:
         updated.last_verified_at = when
         updated.last_used_at = when
         self._credential_store.update_signer_key(updated)
+
+
+class EnterpriseKmsSignerBackend(_HttpSignerBackend):
+    """Enterprise-style HTTPS signer backend for provider-UI approvals."""
+
+    def __init__(
+        self,
+        *,
+        credential_store: ApprovalFactorStore,
+        endpoint_url: str,
+        bearer_token: str = "",
+        request_timeout: timedelta | None = None,
+    ) -> None:
+        super().__init__(
+            credential_store=credential_store,
+            endpoint_url=endpoint_url,
+            bearer_token=bearer_token,
+            request_timeout=request_timeout,
+            backend_id="kms.default",
+            method="kms",
+            level=ConfirmationLevel.SIGNED_AUTHORIZATION,
+            review_surface=ReviewSurface.PROVIDER_UI,
+            capabilities=ConfirmationCapabilities(
+                principal_binding=True,
+                full_intent_signature=True,
+                third_party_verifiable=True,
+            ),
+            third_party_verifiable=True,
+        )
+
+
+class LedgerSignerBackend(_HttpSignerBackend):
+    """Ledger hardware device signer backend for L4 trusted-display approvals.
+
+    Communicates with a Ledger DMK bridge service (Node.js) that handles
+    USB/BLE transport to the device.  The bridge implements the same HTTP
+    sign-request/response contract as the KMS backend.
+    """
+
+    def __init__(
+        self,
+        *,
+        credential_store: ApprovalFactorStore,
+        endpoint_url: str,
+        bearer_token: str = "",
+        request_timeout: timedelta | None = None,
+    ) -> None:
+        super().__init__(
+            credential_store=credential_store,
+            endpoint_url=endpoint_url,
+            bearer_token=bearer_token,
+            request_timeout=request_timeout,
+            backend_id="ledger.default",
+            method="ledger",
+            level=ConfirmationLevel.TRUSTED_DISPLAY_AUTHORIZATION,
+            review_surface=ReviewSurface.TRUSTED_DEVICE_DISPLAY,
+            capabilities=ConfirmationCapabilities(
+                principal_binding=True,
+                full_intent_signature=True,
+                third_party_verifiable=True,
+                trusted_display=True,
+                blind_sign_detection=True,
+            ),
+            third_party_verifiable=True,
+        )
 
 
 class SignerConfirmationAdapter:

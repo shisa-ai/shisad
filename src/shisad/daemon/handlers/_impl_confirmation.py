@@ -704,7 +704,7 @@ class ConfirmationImplMixin(HandlerMixinBase):
 
     async def do_signer_register(self, params: Mapping[str, Any]) -> dict[str, Any]:
         backend = str(params.get("backend") or "kms").strip().lower()
-        if backend != "kms":
+        if backend not in {"kms", "ledger"}:
             return {"registered": False, "reason": "unsupported_signer_backend"}
         user_id = str(params.get("user_id") or "").strip()
         if not user_id:
@@ -716,12 +716,25 @@ class ConfirmationImplMixin(HandlerMixinBase):
         if not public_key_pem:
             raise ValueError("public_key_pem is required")
         principal_id = str(params.get("name") or "").strip() or getpass.getuser().strip() or user_id
-        algorithm = str(params.get("algorithm") or "ed25519").strip().lower() or "ed25519"
+        default_algorithm = "ecdsa-secp256k1" if backend == "ledger" else "ed25519"
+        algorithm = (
+            str(params.get("algorithm") or default_algorithm).strip().lower()
+            or default_algorithm
+        )
         if algorithm not in {"ed25519", "ecdsa-secp256k1"}:
             return {"registered": False, "reason": "unsupported_signer_algorithm"}
+        default_device_type = "ledger-consumer" if backend == "ledger" else "ledger-enterprise"
         device_type = (
-            str(params.get("device_type") or "ledger-enterprise").strip() or "ledger-enterprise"
+            str(params.get("device_type") or default_device_type).strip()
+            or default_device_type
         )
+        default_signing_scheme = "eip712" if backend == "ledger" else "raw"
+        signing_scheme = (
+            str(params.get("signing_scheme") or default_signing_scheme).strip().lower()
+            or default_signing_scheme
+        )
+        if signing_scheme not in {"raw", "eip712", "eth_personal_sign"}:
+            return {"registered": False, "reason": "unsupported_signing_scheme"}
         existing = self._credential_store.get_signer_key(key_id)
         if existing is not None:
             return {
@@ -740,6 +753,7 @@ class ConfirmationImplMixin(HandlerMixinBase):
             algorithm=algorithm,
             device_type=device_type,
             public_key_pem=public_key_pem,
+            signing_scheme=signing_scheme,
         )
         self._credential_store.register_signer_key(record)
         await self._event_bus.publish(

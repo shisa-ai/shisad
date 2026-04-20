@@ -57,6 +57,10 @@ Thumbs.db
 # Runner private env (explicit; do not rely on .env glob alone)
 runner/.env
 
+# Ledger bridge local artifacts
+contrib/ledger-bridge/node_modules/
+contrib/ledger-bridge/demo/
+
 # Secrets
 .env.local
 *.secret

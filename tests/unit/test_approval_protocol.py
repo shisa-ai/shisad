@@ -8,6 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
+import shisad.core.approval as approval_module
 from shisad.core.approval import (
     ApprovalEnvelope,
     BindingScope,
@@ -27,6 +28,8 @@ from shisad.core.approval import (
     SoftwareConfirmationBackend,
     TOTPBackend,
     WebAuthnBackend,
+    _eip712_digest,
+    _eip712_hash_struct,
     _origin_matches,
     approval_envelope_hash,
     canonical_json_dumps,
@@ -233,6 +236,67 @@ def test_intent_envelope_hash_matches_reference_vector() -> None:
     expected = f"sha256:{hashlib.sha256(canonical.encode('utf-8')).hexdigest()}"
 
     assert intent_envelope_hash(envelope) == expected
+
+
+def _ledger_reference_intent() -> IntentEnvelope:
+    return IntentEnvelope(
+        intent_id="intent-ledger-1",
+        agent_id="daemon-1",
+        workspace_id="workspace-1",
+        session_id="session-1",
+        created_at=datetime(2026, 4, 10, 12, 0, tzinfo=UTC),
+        expires_at=datetime(2026, 4, 10, 12, 5, tzinfo=UTC),
+        action=IntentAction(
+            tool="deploy.production",
+            display_summary="Deploy v2.1.0 to production cluster",
+            parameters={"version": "2.1.0", "target": "prod"},
+            destinations=["deploy.example.com"],
+        ),
+        policy_context=IntentPolicyContext(
+            required_level=ConfirmationLevel.TRUSTED_DISPLAY_AUTHORIZATION,
+            confirmation_reason="deploy.production requires trusted-display",
+            matched_rule="deploy.production",
+            action_digest="sha256:action-ledger",
+        ),
+        nonce="b64:intent-nonce-ledger",
+    )
+
+
+def test_eip712_digest_matches_full_intent_hash_reference_vector() -> None:
+    envelope = _ledger_reference_intent()
+
+    assert intent_envelope_hash(envelope) == (
+        "sha256:94f0e3e648c007a6069c42ca5df7f2386a9621b5264aac70f4228ea51a4276b7"
+    )
+    assert _eip712_digest(envelope).hex() == (
+        "19a9ec7e7b1d4a348cd3ba247c6f7b499d73049649e245d0a0c7bb59fbcbb5ed"
+    )
+
+
+def test_eip712_digest_changes_when_full_intent_only_field_changes() -> None:
+    envelope = _ledger_reference_intent()
+    changed = envelope.model_copy(update={"workspace_id": "workspace-2"})
+
+    assert _eip712_digest(changed) != _eip712_digest(envelope)
+
+
+def test_eip712_uint256_rejects_non_scalar_value() -> None:
+    with pytest.raises(ValueError, match="chainId"):
+        _eip712_hash_struct(
+            "EIP712Domain",
+            {"name": "shisad", "version": "1", "chainId": object()},
+        )
+
+
+def test_eip712_hash_struct_rejects_unsupported_field_type(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setitem(
+        approval_module._EIP712_TYPES,
+        "UnsupportedStruct",
+        [("payload", "bytes32")],
+    )
+
+    with pytest.raises(ValueError, match=r"UnsupportedStruct\.payload"):
+        _eip712_hash_struct("UnsupportedStruct", {"payload": "0x" + "00" * 32})
 
 
 def test_provider_ui_signature_satisfies_l3_but_not_l4() -> None:

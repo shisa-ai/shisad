@@ -52,7 +52,7 @@ least this much proof."
 | L1 | `reauthenticated` | Operator presented a registered secret (proves presence) | TOTP code from authenticator app |
 | L2 | `bound_approval` | Operator approved *this specific pending action* (cryptographically bound) | Passkey / YubiKey tap in browser |
 | L3 | `signed_authorization` | Registered credential signed a canonical description of the action (independently verifiable) | Enterprise KMS with approval workflow |
-| L4 | `trusted_display_authorization` | Same as L3, plus the operator reviewed the action on an independent hardware display | Ledger Stax clear-signing (*not yet shipped*) |
+| L4 | `trusted_display_authorization` | Same as L3, plus the operator reviewed the action on an independent hardware display | Ledger Stax/Flex clear-signing when the local bridge is configured |
 
 **Higher is not always better.** L1 (TOTP) is simple and covers the most
 common risk — someone else using your open session. L2 (passkey) is stronger
@@ -609,10 +609,11 @@ For L3+ signed approvals, the audit trail also includes:
 
 ## Not Yet Shipped
 
-- **L4 trusted-display authorization:** Consumer Ledger clear-signing and
-  other trusted-display hardware flows. The protocol and policy language are
-  ready; device integration is follow-on. See the developer section below for
-  integration details.
+- **Additional trusted-display hardware:** Consumer Ledger Stax/Flex can satisfy
+  L4 when the local Ledger bridge is configured and reports a trusted display.
+  Nano and unknown Ledger models downgrade to L2 (`bound_approval`) because the
+  bridge reports them as opaque-device review. Other trusted-display hardware
+  flows remain follow-on.
 - **Push-notification approvals:** Planned as a future L1 method.
 - **M-of-N multi-approver / quorum:** The schema supports multiple principals
   and credentials, but quorum enforcement is not yet built. Environments that
@@ -854,7 +855,7 @@ action*, not the device's general capabilities.
 |---|---|---|
 | No device display | YubiKey PIV, cloud KMS API-only | `opaque_device` or `provider_ui` |
 | Raw hex / opaque digest | Ledger with unsupported contract | `opaque_device`, `blind_sign_detected: true` |
-| Decoded fields on small screen | Ledger Nano S+ clear-signing | `trusted_device_display` (but note scroll-through UX) |
+| Decoded fields on small screen | Ledger Nano S+ clear-signing | `opaque_device` for this bridge; does not satisfy L4 |
 | Full summary on large screen | Ledger Stax/Flex, GridPlus Lattice1 | `trusted_device_display` |
 | Provider web UI | Enterprise KMS approval dashboard | `provider_ui` (not L4 — runs in a browser) |
 

@@ -16,6 +16,7 @@ from shisad.core.approval import (
     IntentAction,
     IntentEnvelope,
     IntentPolicyContext,
+    LedgerSignerBackend,
     SignerConfirmationAdapter,
     approval_envelope_hash,
     confirmation_evidence_satisfies_requirement,
@@ -24,7 +25,12 @@ from shisad.core.approval import (
 from shisad.daemon.handlers._impl import PendingAction
 from shisad.security.credentials import InMemoryCredentialStore, SignerKeyRecord
 from tests.helpers.approval import make_pending_action
-from tests.helpers.signer import StubSignerService, generate_ed25519_private_key, public_key_pem
+from tests.helpers.signer import (
+    StubSignerService,
+    generate_ed25519_private_key,
+    generate_secp256k1_private_key,
+    public_key_pem,
+)
 
 
 def _signer_record(*, key_id: str = "kms:finance-primary") -> SignerKeyRecord:
@@ -308,3 +314,267 @@ def test_malformed_signer_timestamp_fails_closed(tmp_path) -> None:
         )
         with pytest.raises(ConfirmationVerificationError, match="signer_backend_invalid_response"):
             backend.verify(pending_action=pending, params=params)
+
+
+# ---------------------------------------------------------------------------
+# Ledger signer backend (L4 trusted-display) adversarial tests
+# ---------------------------------------------------------------------------
+
+
+def _ledger_pending_action(
+    *, key_id: str
+) -> tuple[PendingAction, dict[str, str]]:
+    intent = IntentEnvelope(
+        intent_id="intent-ledger-1",
+        agent_id="daemon-1",
+        workspace_id="workspace-1",
+        session_id="session-1",
+        created_at=datetime(2026, 4, 10, 12, 0, tzinfo=UTC),
+        expires_at=datetime(2026, 4, 10, 12, 5, tzinfo=UTC),
+        action=IntentAction(
+            tool="deploy.production",
+            display_summary="Deploy v2.1.0 to production cluster",
+            parameters={"version": "2.1.0", "target": "prod"},
+            destinations=["deploy.example.com"],
+        ),
+        policy_context=IntentPolicyContext(
+            required_level=ConfirmationLevel.TRUSTED_DISPLAY_AUTHORIZATION,
+            confirmation_reason="deploy.production requires trusted-display",
+            matched_rule="deploy.production",
+            action_digest="sha256:action-ledger",
+        ),
+        nonce="b64:intent-nonce-ledger",
+    )
+    envelope = ApprovalEnvelope(
+        approval_id="approval-ledger-1",
+        pending_action_id="c-ledger-1",
+        workspace_id="workspace-1",
+        daemon_id="daemon-1",
+        session_id="session-1",
+        required_level=ConfirmationLevel.TRUSTED_DISPLAY_AUTHORIZATION,
+        policy_reason="deploy.production requires trusted-display",
+        action_digest="sha256:action-ledger",
+        allowed_principals=["ops-owner"],
+        allowed_credentials=[key_id],
+        expires_at=datetime(2026, 4, 10, 12, 5, tzinfo=UTC),
+        nonce="b64:approval-nonce-ledger",
+        intent_envelope_hash=intent_envelope_hash(intent),
+        action_summary="Deploy v2.1.0 to production cluster",
+    )
+    pending = make_pending_action(
+        confirmation_id="c-ledger-1",
+        user_id="alice",
+        tool_name="deploy.production",
+        arguments={"version": "2.1.0", "target": "prod"},
+        allowed_principals=["ops-owner"],
+        allowed_credentials=[key_id],
+        approval_envelope=envelope,
+        approval_envelope_hash=approval_envelope_hash(envelope),
+        intent_envelope=intent,
+        required_level=ConfirmationLevel.TRUSTED_DISPLAY_AUTHORIZATION,
+        selected_backend_id="ledger.default",
+        selected_backend_method="ledger",
+        fallback_used=False,
+    )
+    return pending, {"decision_nonce": "nonce", "approval_method": "ledger"}
+
+
+def test_ledger_trusted_display_with_valid_signature(tmp_path) -> None:
+    private_key = generate_secp256k1_private_key()
+    store = InMemoryCredentialStore()
+    store.set_approval_store_path(tmp_path / "approval-factors.json")
+    store.register_signer_key(
+        SignerKeyRecord(
+            credential_id="ledger:stax-1",
+            user_id="alice",
+            backend="ledger",
+            principal_id="ops-owner",
+            algorithm="ecdsa-secp256k1",
+            device_type="ledger-consumer",
+            public_key_pem=public_key_pem(private_key),
+            signing_scheme="eip712",
+        )
+    )
+    pending, params = _ledger_pending_action(key_id="ledger:stax-1")
+    with StubSignerService(
+        private_key=private_key,
+        algorithm="eip712",
+        review_surface="trusted_device_display",
+    ).run() as signer_url:
+        backend = SignerConfirmationAdapter(
+            LedgerSignerBackend(
+                credential_store=store,
+                endpoint_url=signer_url,
+            )
+        )
+        evidence = backend.verify(pending_action=pending, params=params)
+        assert evidence.level == ConfirmationLevel.TRUSTED_DISPLAY_AUTHORIZATION
+        assert evidence.review_surface.value == "trusted_device_display"
+        assert evidence.blind_sign_detected is False
+
+
+def test_ledger_blind_sign_drops_to_bound_approval(tmp_path) -> None:
+    private_key = generate_secp256k1_private_key()
+    store = InMemoryCredentialStore()
+    store.set_approval_store_path(tmp_path / "approval-factors.json")
+    store.register_signer_key(
+        SignerKeyRecord(
+            credential_id="ledger:stax-1",
+            user_id="alice",
+            backend="ledger",
+            principal_id="ops-owner",
+            algorithm="ecdsa-secp256k1",
+            device_type="ledger-consumer",
+            public_key_pem=public_key_pem(private_key),
+            signing_scheme="eip712",
+        )
+    )
+    pending, params = _ledger_pending_action(key_id="ledger:stax-1")
+    with StubSignerService(
+        private_key=private_key,
+        algorithm="eip712",
+        review_surface="opaque_device",
+        blind_sign_detected=True,
+    ).run() as signer_url:
+        backend = SignerConfirmationAdapter(
+            LedgerSignerBackend(
+                credential_store=store,
+                endpoint_url=signer_url,
+            )
+        )
+        evidence = backend.verify(pending_action=pending, params=params)
+        assert evidence.level == ConfirmationLevel.BOUND_APPROVAL
+        assert evidence.blind_sign_detected is True
+        assert not confirmation_evidence_satisfies_requirement(
+            requirement=ConfirmationRequirement(
+                level=ConfirmationLevel.TRUSTED_DISPLAY_AUTHORIZATION,
+                methods=["ledger"],
+                allowed_principals=["ops-owner"],
+                allowed_credentials=["ledger:stax-1"],
+                require_capabilities=ConfirmationCapabilities(
+                    principal_binding=True,
+                    full_intent_signature=True,
+                    trusted_display=True,
+                ),
+            ),
+            evidence=evidence,
+            backend=backend,
+        )
+
+
+def test_ledger_missing_review_metadata_drops_to_blind_bound_approval(tmp_path) -> None:
+    private_key = generate_secp256k1_private_key()
+    store = InMemoryCredentialStore()
+    store.set_approval_store_path(tmp_path / "approval-factors.json")
+    store.register_signer_key(
+        SignerKeyRecord(
+            credential_id="ledger:stax-1",
+            user_id="alice",
+            backend="ledger",
+            principal_id="ops-owner",
+            algorithm="ecdsa-secp256k1",
+            device_type="ledger-consumer",
+            public_key_pem=public_key_pem(private_key),
+            signing_scheme="eip712",
+        )
+    )
+    pending, params = _ledger_pending_action(key_id="ledger:stax-1")
+    with StubSignerService(
+        private_key=private_key,
+        algorithm="eip712",
+        include_review_surface=False,
+        include_blind_sign_detected=False,
+    ).run() as signer_url:
+        backend = SignerConfirmationAdapter(
+            LedgerSignerBackend(
+                credential_store=store,
+                endpoint_url=signer_url,
+            )
+        )
+        evidence = backend.verify(pending_action=pending, params=params)
+        assert evidence.level == ConfirmationLevel.BOUND_APPROVAL
+        assert evidence.review_surface.value == "opaque_device"
+        assert evidence.blind_sign_detected is True
+        assert not confirmation_evidence_satisfies_requirement(
+            requirement=ConfirmationRequirement(
+                level=ConfirmationLevel.TRUSTED_DISPLAY_AUTHORIZATION,
+                methods=["ledger"],
+                allowed_principals=["ops-owner"],
+                allowed_credentials=["ledger:stax-1"],
+                require_capabilities=ConfirmationCapabilities(
+                    principal_binding=True,
+                    full_intent_signature=True,
+                    trusted_display=True,
+                ),
+            ),
+            evidence=evidence,
+            backend=backend,
+        )
+
+
+def test_ledger_tampered_intent_rejected(tmp_path) -> None:
+    private_key = generate_secp256k1_private_key()
+    store = InMemoryCredentialStore()
+    store.set_approval_store_path(tmp_path / "approval-factors.json")
+    store.register_signer_key(
+        SignerKeyRecord(
+            credential_id="ledger:stax-1",
+            user_id="alice",
+            backend="ledger",
+            principal_id="ops-owner",
+            algorithm="ecdsa-secp256k1",
+            device_type="ledger-consumer",
+            public_key_pem=public_key_pem(private_key),
+            signing_scheme="eip712",
+        )
+    )
+    pending, params = _ledger_pending_action(key_id="ledger:stax-1")
+    with StubSignerService(
+        private_key=private_key,
+        algorithm="eip712",
+        review_surface="trusted_device_display",
+        tamper_intent=True,
+    ).run() as signer_url:
+        backend = SignerConfirmationAdapter(
+            LedgerSignerBackend(
+                credential_store=store,
+                endpoint_url=signer_url,
+            )
+        )
+        with pytest.raises(
+            ConfirmationVerificationError, match="invalid_signer_signature"
+        ):
+            backend.verify(pending_action=pending, params=params)
+
+
+def test_ledger_opaque_device_drops_below_signed_authorization(tmp_path) -> None:
+    private_key = generate_secp256k1_private_key()
+    store = InMemoryCredentialStore()
+    store.set_approval_store_path(tmp_path / "approval-factors.json")
+    store.register_signer_key(
+        SignerKeyRecord(
+            credential_id="ledger:stax-1",
+            user_id="alice",
+            backend="ledger",
+            principal_id="ops-owner",
+            algorithm="ecdsa-secp256k1",
+            device_type="ledger-consumer",
+            public_key_pem=public_key_pem(private_key),
+            signing_scheme="eip712",
+        )
+    )
+    pending, params = _ledger_pending_action(key_id="ledger:stax-1")
+    with StubSignerService(
+        private_key=private_key,
+        algorithm="eip712",
+        review_surface="opaque_device",
+        blind_sign_detected=False,
+    ).run() as signer_url:
+        backend = SignerConfirmationAdapter(
+            LedgerSignerBackend(
+                credential_store=store,
+                endpoint_url=signer_url,
+            )
+        )
+        evidence = backend.verify(pending_action=pending, params=params)
+        assert evidence.level == ConfirmationLevel.BOUND_APPROVAL
