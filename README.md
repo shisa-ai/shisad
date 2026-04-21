@@ -50,10 +50,10 @@ Rather than ignoring the elephant in the room, our design targets the [lethal tr
 ## Status
 
 This repo is public and still pre-alpha. The latest published line is
-`v0.6.6` (GitHub Release and PyPI package). This release adds config-path
-`SOUL.md` persona preferences, Discord public-channel policy controls, local
-MsgVault email read/search, local image and voice attachment ingest, and
-same-session evidence carry-forward for follow-up turns.
+`v0.6.7` (GitHub Release and PyPI package). This release adds Ledger-backed
+signer approvals through the local bridge, conservative downgrade behavior for
+opaque or blind-signing device paths, and the macOS peer-credential fix needed
+for Unix-socket client identity checks on Darwin.
 
 | Version | Focus |
 |---------|-------|
