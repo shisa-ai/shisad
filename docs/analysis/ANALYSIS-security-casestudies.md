@@ -949,9 +949,15 @@ Supply-chain risk is moving upstream too: not just skills and installer flows, b
   - Settlement network supports EIP-3009 TransferWithAuthorization (currently USDC on Base/Sepolia).
 - **Impact (of adopting this pattern)**:
   - Creates a **hardware root of trust** for agent financial operations. Software compromise cannot bypass hardware enforcement.
-  - Eliminates the entire class of "agent drains wallet" attacks — the most feared outcome in crypto-enabled agent systems.
+  - Eliminates the autonomous "agent drains wallet" path when the
+    payment policy requires approval evidence it will accept. Opaque or
+    blind-signing device paths can be downgraded or rejected instead of
+    being treated as trusted-display confirmation.
   - Provides a complete audit trail: every intent is logged with its lifecycle (proposed, approved, rejected, expired), creating regulatory-grade provenance.
-  - Makes "agent autonomy" safe for high-stakes actions: agents can run complex financial workflows unsupervised because irreversible actions still require human confirmation via hardware.
+  - Makes high-stakes agent autonomy safer when irreversible actions
+    still require an approval path the policy accepts, such as
+    compatible hardware confirmation or another configured
+    high-assurance step.
 - **Shisad defenses (expected integration)**:
   - **PEP integration: "Proof of Ledger" as policy input**:
     - PEP policies can require hardware-backed signing for specific action classes: `require: proof_of_ledger` for any `payment.*` or `wallet.*` tool call.
@@ -1056,7 +1062,11 @@ Supply-chain risk is moving upstream too: not just skills and installer flows, b
   - **Hardware-backed financial authorization (Ledger integration)**:
     - For crypto transactions: PEP requires `proof_of_ledger` for any `payment.*` or `wallet.*` tool call. No software path bypasses the hardware. Private keys never leave the Ledger secure element.
     - For API payments (x402): PEP intercepts HTTP 402 → requests hardware authorization → replays with signed payment header. Agent never sees payment credentials.
-    - This **eliminates the entire class of "agent drains wallet" attacks**: no matter what the LLM proposes (via injection or hallucination), nothing executes without physical hardware confirmation.
+    - This blocks autonomous wallet-drain attempts whenever the PEP is
+      configured to reject requests that lack acceptable approval
+      evidence: no matter what the LLM proposes (via injection or
+      hallucination), nothing executes without an approval path the
+      policy accepts.
     - LKRP agent identity provides cryptographic authentication separate from signing authority: even a stolen agent credential cannot authorize transactions.
   - **ZKP identity proofs as PEP policy inputs** (internal ZKP identity notes):
     - Proof of Ledger: possession of hardware wallet required for crypto operations.
