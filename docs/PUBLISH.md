@@ -229,17 +229,30 @@ the already-tagged section.
    Mention the mechanism only after the end-user-facing effect is already
    clear, and only when it helps explain limits or setup.
 
-8. **Use a quick jargon smell test before you ship it.** Read each bullet and
+8. **Expand acronyms on first use across the CHANGELOG.** Treat the whole
+   file as one continuous document from a reader's perspective — they may
+   read it top-to-bottom when catching up on a project. The first time an
+   acronym appears in the file (counting from the newest release down),
+   write the expansion in parentheses: `KMS (Key Management Service)`,
+   `MCP (Model Context Protocol)`, `ACP (Agent Client Protocol)`. Subsequent
+   appearances in older sections can use the bare acronym. Do not rewrite
+   already-tagged sections to add expansions; instead, add the expansion in
+   the newest section where the acronym appears, and it back-fills the
+   reader's understanding as they read older entries. Industry-standard
+   expansions only — do not invent an expansion that reads plausibly but
+   is not the commonly-used form.
+
+9. **Use a quick jargon smell test before you ship it.** Read each bullet and
    ask:
    - Would an end-user understand this without knowing our internal system names?
    - Does the first sentence say what changed for them, not what we built?
    - Could they explain it back after one read?
    If not, rewrite it.
 
-9. **Prefer everyday product language over internal threat language.** Write
-   what the end-user can notice or act on. For example:
-   - Better: "The daemon now warns when suspicious denied actions repeat."
-   - Worse: "The daemon records structured deny metadata for taint bypass attempts and unattributed egress probes."
+10. **Prefer everyday product language over internal threat language.** Write
+    what the end-user can notice or act on. For example:
+    - Better: "The daemon now warns when suspicious denied actions repeat."
+    - Worse: "The daemon records structured deny metadata for taint bypass attempts and unattributed egress probes."
 
 ## Trusted Publishing Setup
 
