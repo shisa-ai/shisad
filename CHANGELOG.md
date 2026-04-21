@@ -43,11 +43,14 @@ Versioning follows semver (see `docs/PUBLISH.md` for policy and style guide).
   clients connecting to the daemon. The daemon now uses the
   platform-appropriate syscall on each OS.
 
-- **Public docs now address you as "user", not "operator".** The
-  README, CHANGELOG style guide, 2FA guide, env-var reference, and
-  other user-facing docs were inconsistent about how they addressed
-  the reader. "Operator" still appears in deployment, admin, runbook,
-  and threat-model docs where it names a distinct role.
+- **Public docs and CHANGELOG now address you as "user", not "operator".**
+  The README, CHANGELOG, 2FA guide, env-var reference, and other
+  user-facing docs were inconsistent about how they addressed the
+  reader. "Operator" still appears in deployment, admin, runbook, and
+  threat-model docs where it names a distinct role. Prior CHANGELOG
+  sections were also updated so readers don't hit the old term when
+  scanning release history — the `[X.Y.Z]` sections on `main` now
+  differ slightly from the frozen GitHub Release notes at each tag.
 
 Thanks @GuitareCiel from Ledger for contributing shisad's first external pull
 request.
@@ -62,7 +65,7 @@ request.
 
 - **Read and search local email through the assistant.** A new
   MsgVault-backed email toolkit lets the assistant search configured local
-  mail archives and read individual messages. When an operator configures
+  mail archives and read individual messages. When you configure
   `SHISAD_MSGVAULT_ACCOUNT_ALLOWLIST`, requests are scoped to granted accounts
   before reaching the archive.
 
@@ -71,7 +74,7 @@ request.
   while public-channel sessions exclude owner-private conversation context.
 
 - **`SOUL.md` customizes the assistant's persona.** Put `SOUL.md` in the
-  operator config path and the planner layers it in as trusted persona
+  user config path and the planner layers it in as trusted persona
   preferences below safety and developer instructions. Updates go through a
   dedicated admin edit path from a clean session, so injected content cannot
   rewrite persona mid-conversation.
@@ -140,7 +143,7 @@ request.
 
 - **MCP tools require confirmation by default.** Unless a server appears in
   `SHISAD_MCP_TRUSTED_SERVERS`, every tool call from that server asks for
-  operator approval before executing. Trusted servers skip the prompt, but
+  your approval before executing. Trusted servers skip the prompt, but
   their outputs are still treated as external input for screening purposes.
 
 - **MCP tool definitions are validated before registration.** Parameter names,
@@ -156,8 +159,8 @@ request.
   are rejected.
 
 - **A2A access is fail-closed.** Each remote agent can only send requests for
-  intents the operator has explicitly allowed. Omitting the allowlist means
-  zero access until the operator adds grants. Per-agent rate limits (default
+  intents you have explicitly allowed. Omitting the allowlist means
+  zero access until you add grants. Per-agent rate limits (default
   60/min, 600/hour) are enforced on the verified cryptographic identity to
   prevent abuse.
 
@@ -221,9 +224,9 @@ request.
 - **Creating todos, notes, and reminders from the CLI no longer asks for
   unnecessary confirmation.** When PromptGuard content safety was enabled, its
   injection-detection score (always slightly above zero for any input) caused
-  the system to treat even simple operator commands like "create a todo" as
+  the system to treat even simple user commands like "create a todo" as
   needing approval. The content safety classifier now skips the neural-net
-  check on direct operator input — the operator is the trust root, not an
+  check on direct user input — the user is the trust root, not an
   attack surface. Pattern-based detection still runs for telemetry.
 - **Confirmation replies no longer create new actions.** Typing `confirm 1`,
   `y`, `yes`, a bare number, or `reject` is now recognized as a command
@@ -288,8 +291,8 @@ request.
 ### Changed
 
 - **Public docs now match the shipped v0.6.2 trust model.** The roadmap,
-  operator docs, and user docs now reflect what is actually shipped in the
-  approval/key-boundary lane and what remains follow-on work.
+  deployment docs, and user docs now reflect what is actually shipped in
+  the approval/key-boundary lane and what remains follow-on work.
 
 ## [0.6.1] - 2026-04-05
 
@@ -303,9 +306,9 @@ request.
 - **Unicode-steganography detection works in the shipped build.** The YARA
   rule for hidden-character detection was broken in prior releases due to a
   build issue; it now compiles and runs correctly.
-- **Operators get alerts when denied actions repeat.** When the daemon denies
+- **You get alerts when denied actions repeat.** When the daemon denies
   a suspicious action (e.g., an unexpected capability request or outbound
-  connection), it now logs structured details and warns operators once the
+  connection), it now logs structured details and warns you once the
   pattern crosses a configurable threshold — previously these were silently
   dropped.
 - **Tool actions are checked against what the user actually asked for.** Before

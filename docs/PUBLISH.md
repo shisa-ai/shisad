@@ -181,6 +181,17 @@ readers and breaks the invariant that the section describes the tagged
 release. Fix-follow corrections belong in the next patch release, not in
 the already-tagged section.
 
+**Narrow exception: cross-section terminology sweeps.** If a
+terminology change would make `main`'s CHANGELOG confusing to a new
+reader scanning top-to-bottom (e.g., one term used in the latest
+release, a different term in older sections), the sweep can be
+applied to prior sections in the same commit. This breaks the
+`HEAD`/Release-notes invariant for the rewritten sections, so
+document the drift in the announcing release's CHANGELOG bullet and
+keep the change terminology-only (no semantic edits). Do not use
+this exception for content corrections — those still belong in a
+follow-on patch release.
+
 ### Principles
 
 1. **Lead with the end-user-visible effect, not the subsystem.**
