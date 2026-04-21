@@ -9,16 +9,41 @@ left unlinked until the tag exists. There is no standing "Unreleased" section.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Versioning follows semver (see `docs/PUBLISH.md` for policy and style guide).
 
-## [0.6.7] - 2026-04-20 (release-prepared)
+## 0.6.7 Release Content - 2026-04-20
 
 ### Added
 
-- **Ledger hardware signer approvals are prepared for v0.6.7.** Operators can
-  register Ledger-backed ECDSA signer keys, use the local Ledger bridge for
-  EIP-712 `IntentEnvelope` signing, and have shisad downgrade approvals when
-  the device reports blind signing or an opaque review surface.
+- **See and approve transactions on your Ledger's display.** When a
+  Ledger signer key is registered, shisad now sends the transaction
+  to the device over USB or Bluetooth (via a local bridge service)
+  and waits for you to read it on the Ledger's screen and physically
+  confirm. Because the display and confirm button are on the
+  hardware, a compromised host can't change what you're approving
+  behind the scenes.
+  - Configure with `SHISAD_SIGNER_LEDGER_URL` and register the key
+    with `shisad signer register --backend ledger`.
+  - Ledger is the first hardware device on shisad's generic
+    trusted-display signer interface. The same interface (a local
+    HTTP bridge that shisad signs against) already backs the KMS
+    (Key Management Service) signer and is the path for adding other
+    hardware wallets later.
 
-Thanks @GuitareCiel (Ledger) for contributing shisad's first external pull
+### Security
+
+- **Ledger approvals step down when the device can't show you what
+  you're signing.** If the Ledger reports blind-signing mode or an
+  unreadable transaction, shisad treats the approval as lower-trust
+  instead of claiming you verified it on the hardware screen.
+
+### Fixed
+
+- **Peer-credential enforcement works on macOS and BSD.** When shisad
+  runs on macOS or BSD, the daemon's Unix-socket peer check previously
+  used a Linux-only syscall, so it couldn't read the uid or pid of
+  clients connecting to the daemon. The daemon now uses the
+  platform-appropriate syscall on each OS.
+
+Thanks @GuitareCiel from Ledger for contributing shisad's first external pull
 request.
 
 ## [0.6.6] - 2026-04-19
