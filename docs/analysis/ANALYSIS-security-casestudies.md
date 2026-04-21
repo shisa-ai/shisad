@@ -961,7 +961,12 @@ Supply-chain risk is moving upstream too: not just skills and installer flows, b
 - **Shisad defenses (expected integration)**:
   - **PEP integration: "Proof of Ledger" as policy input**:
     - PEP policies can require hardware-backed signing for specific action classes: `require: proof_of_ledger` for any `payment.*` or `wallet.*` tool call.
-    - This extends the existing `REQUIRE_CONFIRMATION` pattern from "human clicks approve in UI" to "human physically confirms on hardware" — a strictly stronger guarantee.
+    - This extends the existing `REQUIRE_CONFIRMATION` pattern from
+      "human clicks approve in UI" to a hardware-backed approval path
+      when the policy requires compatible device evidence. That can be
+      a stronger guarantee on readable-review device paths, while
+      opaque or downgraded paths can still be rejected or handled more
+      conservatively by policy.
     - The Ledger verification happens in the control plane (immutable to LLM), never in the data plane.
   - **Intent lifecycle maps to PEP action states**:
     - Agent proposes action (PEP receives tool call proposal) → `pending`
