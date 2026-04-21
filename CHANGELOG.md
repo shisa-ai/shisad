@@ -13,13 +13,13 @@ Versioning follows semver (see `docs/PUBLISH.md` for policy and style guide).
 
 ### Added
 
-- **See and approve transactions on your Ledger's display.** When a
-  Ledger signer key is registered, shisad now sends the transaction
-  to the device over USB or Bluetooth (via a local bridge service)
-  and waits for you to read it on the Ledger's screen and physically
-  confirm. Because the display and confirm button are on the
-  hardware, a compromised host can't change what you're approving
-  behind the scenes.
+- **See and approve transactions on compatible Ledger displays.**
+  When a compatible Ledger signer key is registered, shisad can send
+  the transaction to the device over USB or Bluetooth (via a local
+  bridge service) and wait for you to read it on the Ledger's screen
+  and physically confirm. Because the display and confirm button are
+  on the hardware, a compromised host can't change what you're
+  approving behind the scenes.
   - Configure with `SHISAD_SIGNER_LEDGER_URL` and register the key
     with `shisad signer register --backend ledger`.
   - Ledger is the first hardware device on shisad's generic
@@ -27,6 +27,8 @@ Versioning follows semver (see `docs/PUBLISH.md` for policy and style guide).
     HTTP bridge that shisad signs against) already backs the KMS
     (Key Management Service) signer and is the path for adding other
     hardware wallets later.
+  - `v0.6.7` ships before a maintainer-validated device and firmware
+    compatibility matrix; that follow-up is tracked for `v0.6.7.1`.
 
 ### Security
 
@@ -37,11 +39,11 @@ Versioning follows semver (see `docs/PUBLISH.md` for policy and style guide).
 
 ### Fixed
 
-- **Peer-credential enforcement works on macOS and BSD.** When shisad
-  runs on macOS or BSD, the daemon's Unix-socket peer check previously
-  used a Linux-only syscall, so it couldn't read the uid or pid of
-  clients connecting to the daemon. The daemon now uses the
-  platform-appropriate syscall on each OS.
+- **Peer-credential enforcement works on macOS.** When shisad runs on
+  macOS, the daemon's Unix-socket peer check previously used a
+  Linux-only syscall, so it couldn't read the uid or pid of clients
+  connecting to the daemon. The daemon now uses the Darwin
+  peer-credential syscalls instead.
 
 - **Public docs and CHANGELOG now address you as "user", not "operator".**
   The README, CHANGELOG, 2FA guide, env-var reference, and other

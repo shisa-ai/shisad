@@ -85,15 +85,21 @@ tools:
 |------|---------|-------------|
 | `--derivation-path` | `44'/60'/0'/0/0` | Ethereum derivation path |
 
-## Supported Devices
+## Reported Model Classification
 
-| Device | Screen | Review Surface |
-|--------|--------|---------------|
-| Ledger Stax | Large touchscreen | `trusted_device_display` |
-| Ledger Flex | Large touchscreen | `trusted_device_display` |
-| Ledger Nano X | Small OLED (scroll) | `opaque_device` |
-| Ledger Nano S Plus | Small OLED (scroll) | `opaque_device` |
-| Unknown model | Unknown | `opaque_device` |
+| Device | Screen | Review Surface | Maintainer verification |
+|--------|--------|----------------|-------------------------|
+| Ledger Stax | Large touchscreen | `trusted_device_display` | Pending device-attached verification |
+| Ledger Flex | Large touchscreen | `trusted_device_display` | Pending device-attached verification |
+| Ledger Nano X | Small OLED (scroll) | `opaque_device` | Unverified; maintainer-side DMK 1.2.0 + Linux round-trip currently hangs |
+| Ledger Nano S Plus | Small OLED (scroll) | `opaque_device` | Unverified; awaiting Ledger compatibility matrix |
+| Unknown model | Unknown | `opaque_device` | Unverified |
+
+This table shows the bridge's runtime classification for device models it
+reports. It is not a maintainer-validated hardware and firmware support
+matrix. `v0.6.7` ships before that matrix is published; the current
+follow-up is to request Ledger's validated device, firmware, and Ethereum-app
+list and publish it in `v0.6.7.1`.
 
 ## Signing Mechanism
 

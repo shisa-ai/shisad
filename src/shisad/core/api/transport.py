@@ -508,8 +508,10 @@ class ControlServer:
         """Extract peer credentials from a Unix socket.
 
         Linux: SO_PEERCRED on SOL_SOCKET returns (pid, uid, gid) in one call.
-        macOS/BSD: LOCAL_PEERCRED on SOL_LOCAL returns uid/gid (xucred struct),
-        and LOCAL_PEEREPID on SOL_LOCAL returns the peer PID separately.
+        macOS (Darwin): LOCAL_PEERCRED on SOL_LOCAL returns uid/gid (xucred
+        struct), and LOCAL_PEEREPID on SOL_LOCAL returns the peer PID
+        separately. Other Unix platforms currently fall back to empty peer
+        credentials.
         """
         try:
             sock = writer.get_extra_info("socket")
