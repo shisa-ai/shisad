@@ -1,6 +1,8 @@
 # shisad Ledger Bridge
 
-HTTP bridge service that connects shisad's L4 trusted-display approval system to Ledger hardware devices via the [Device Management Kit (DMK)](https://github.com/LedgerHQ/device-sdk-ts).
+HTTP bridge service that connects shisad's signer-backend contract to Ledger
+hardware devices via the [Device Management Kit
+(DMK)](https://github.com/LedgerHQ/device-sdk-ts).
 
 ## How It Works
 
@@ -10,12 +12,13 @@ shisad daemon  ──HTTP POST──>  ledger-bridge  ──USB/DMK──>  Ledg
                <──SignatureResult──            <──ECDSA sig──
 ```
 
-The bridge implements the same sign-request/response contract as shisad's KMS backend. When the daemon needs an L4 approval:
+The bridge implements the same sign-request/response contract as
+shisad's KMS backend. When the daemon needs a Ledger-backed signature:
 
 1. The daemon POSTs an `IntentEnvelope` plus its canonical `intent_envelope_hash` to the bridge
 2. The bridge builds EIP-712 typed data with readable action fields and the full-intent hash
-3. The bridge connects to the Ledger and calls `signTypedData`
-4. The user reviews the action on the device display and confirms
+3. The reference bridge connects to the Ledger over USB HID and calls `signTypedData`
+4. If the device path exposes readable review metadata, the user reviews the action on the device display and confirms; if the device reports an opaque or blind-signing path, shisad records that lower-trust evidence instead of treating it as L4
 5. The bridge returns the ECDSA signature to the daemon
 
 ## Setup
@@ -104,9 +107,17 @@ list and publish it in `v0.6.7.1`.
 ## Signing Mechanism
 
 The bridge uses the Ethereum app's `signTypedData` which:
-- Renders EIP-712 structured fields on the device display
+- Can render EIP-712 structured fields on the device display when the device/app path exposes readable review metadata
 - Includes the canonical `intent_envelope_hash` in the signed typed data, binding the signature to the full daemon-side `IntentEnvelope`
 - Signs with ECDSA secp256k1 over the EIP-712 digest
 - Returns `(r, s, v)` which the bridge DER-encodes for shisad
 
-The daemon verifies the signature using the `eip712` signing scheme registered with the key. Stax/Flex models are reported as `trusted_device_display`; Nano and unknown models are reported as `opaque_device` with `blind_sign_detected: true`, which downgrades the approval below L4.
+The daemon verifies the signature using the `eip712` signing scheme
+registered with the key. Stax/Flex models are reported as
+`trusted_device_display`; Nano and unknown models are reported as
+`opaque_device` with `blind_sign_detected: true`, which downgrades the
+approval below L4.
+
+The reference bridge currently uses Ledger's Node HID transport
+(`@ledgerhq/device-transport-kit-node-hid`). Bluetooth is not
+implemented in this bridge today.
