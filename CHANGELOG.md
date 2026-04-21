@@ -15,11 +15,11 @@ Versioning follows semver (see `docs/PUBLISH.md` for policy and style guide).
 
 - **See and approve transactions on compatible Ledger displays.**
   When a compatible Ledger signer key is registered, shisad can send
-  the transaction to the device over USB or Bluetooth (via a local
-  bridge service) and wait for you to read it on the Ledger's screen
-  and physically confirm. Because the display and confirm button are
-  on the hardware, a compromised host can't change what you're
-  approving behind the scenes.
+  the transaction to the device over the local USB bridge service and
+  wait for you to read it on the Ledger's screen and physically
+  confirm. Because the display and confirm button are on the hardware,
+  a compromised host can't change what you're approving behind the
+  scenes.
   - Configure with `SHISAD_SIGNER_LEDGER_URL` and register the key
     with `shisad signer register --backend ledger`.
   - Ledger is the first hardware device on shisad's generic
