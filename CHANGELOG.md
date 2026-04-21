@@ -45,7 +45,7 @@ Versioning follows semver (see `docs/PUBLISH.md` for policy and style guide).
   connecting to the daemon. The daemon now uses the Darwin
   peer-credential syscalls instead.
 
-- **Public docs and CHANGELOG now address you as "user", not "operator".**
+- **Public docs and CHANGELOG now address end-users as "user", not "operator".**
   The README, CHANGELOG, 2FA guide, env-var reference, and other
   user-facing docs were inconsistent about how they addressed the
   reader. "Operator" still appears in deployment, admin, runbook, and
