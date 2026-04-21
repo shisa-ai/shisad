@@ -292,7 +292,7 @@ Dependencies are pinned via `uv.lock` with SHA256 integrity hashes. Skills are
 treated as untrusted code: capability manifests declare what a skill can
 access, PEP rejects undeclared operations, all skill-initiated tool calls go
 through the same enforcement pipeline as direct actions, and no skill
-auto-installs without operator review.
+auto-installs without user review.
 
 As of the published `v0.6.0` line, the CI/release path is also materially
 hardened: GitHub Actions are pinned by SHA, CI runs dependency-review on PRs,
@@ -351,7 +351,7 @@ of the published `v0.6.0` line:
 - **Differential execution** (post-`v0.6.1`) — when suspicious content enters the context and the next proposed action involves egress or side effects, run the same request with and without the suspect content and compare proposed actions. Behavioral divergence is empirical evidence of injection influence. If proposals are identical, the content is not influencing behavior (reduces false positives). If they diverge materially, a third-party evaluator in a clean context (it never sees the suspect content directly) judges whether the divergence is benign or suspicious. This catches subtle goal drift and laundered injection that passes the content firewall — and equally importantly, confirms innocence when content looks suspicious but isn't actually influencing behavior.
 - **Full spotlighting with datamarking** — enhanced context builder with per-request cryptographically random delimiters and character-level datamarking of untrusted content
 - **Memory write gating with quarantine** (`v0.7`) — proposed memory writes held in quarantine with provenance review before committing to durable storage; poisoned entries can be identified and removed before they influence future sessions
-- **Hardware-backed approval signing** (`v0.6.2`) — hardware token (for example Ledger) signing for high-value operations plus operator-authenticated artifact approval flows that cannot be spoofed by software
+- **Hardware-backed approval signing** (`v0.6.2`) — hardware token (for example Ledger) signing for high-value operations plus user-authenticated artifact approval flows that cannot be spoofed by software
 
 ---
 

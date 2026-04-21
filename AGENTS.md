@@ -357,6 +357,7 @@ If you encounter:
 - Fix doc↔code drift immediately (especially around security guarantees and runtime enforcement semantics).
 - During release-close, explicitly include `README.md` and the top-level public docs under `docs/` in docs-parity review. If dependency resolutions or workflow/action trust anchors changed, include `docs/AUDIT-supply-chain.md` in the same parity pass.
 - When writing release stats or quoting numbers (tests, churn, LOC), scope calculations to a specific tag/commit and include the exact commands used.
+- **Address end-users as "user" or "you", not "operator"**, in public-facing documentation (`README.md`, `CHANGELOG.md`, `docs/2FA.md`, `docs/USE-CASES.md`, user-facing parts of `docs/SECURITY.md` and `docs/ENV-VARS.md`). "Operator" reads as jargon and makes the reader wonder whether you mean them or a separate software role. It is still appropriate in deployment/admin/runbook docs (`docs/DEPLOY.md`, `runner/RUNBOOK.md`, `docs/runbooks/`) and in threat-model / design docs (`docs/DESIGN-PHILOSOPHY.md`, `docs/adr/`, `docs/analysis/`) where it names a distinct policy-author role separate from the end user. See `docs/PUBLISH.md` CHANGELOG style principle 3 for the long form.
 
 ### Claim Integrity (Done/Shipped/Complete)
 

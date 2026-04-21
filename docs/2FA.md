@@ -49,10 +49,10 @@ least this much proof."
 | Level | Policy value | What it proves | Example method |
 |---|---|---|---|
 | L0 | `software` | Someone with the current session clicked approve | Default click-to-confirm |
-| L1 | `reauthenticated` | Operator presented a registered secret (proves presence) | TOTP code from authenticator app |
-| L2 | `bound_approval` | Operator approved *this specific pending action* (cryptographically bound) | Passkey / YubiKey tap in browser |
+| L1 | `reauthenticated` | User presented a registered secret (proves presence) | TOTP code from authenticator app |
+| L2 | `bound_approval` | User approved *this specific pending action* (cryptographically bound) | Passkey / YubiKey tap in browser |
 | L3 | `signed_authorization` | Registered credential signed a canonical description of the action (independently verifiable) | Enterprise KMS with approval workflow |
-| L4 | `trusted_display_authorization` | Same as L3, plus the operator reviewed the action on an independent hardware display | Ledger Stax/Flex clear-signing when the local bridge is configured |
+| L4 | `trusted_display_authorization` | Same as L3, plus the user reviewed the action on an independent hardware display | Ledger Stax/Flex clear-signing when the local bridge is configured |
 
 **Higher is not always better.** L1 (TOTP) is simple and covers the most
 common risk — someone else using your open session. L2 (passkey) is stronger
@@ -210,7 +210,7 @@ action.
 ### Required setting
 
 You must set `SHISAD_APPROVAL_ORIGIN` to enable the browser ceremony surface.
-This is the HTTPS URL that operators will open in their browser.
+This is the HTTPS URL you will open in your browser.
 
 ```bash
 export SHISAD_APPROVAL_ORIGIN="https://approve.example.com"
@@ -395,7 +395,7 @@ tools:
       timeout_seconds: 300
 ```
 
-The operator must present a valid TOTP code (or recovery code) within 5
+You must present a valid TOTP code (or recovery code) within 5
 minutes.
 
 ### L2: require passkey-bound approval
@@ -416,7 +416,7 @@ tools:
       timeout_seconds: 300
 ```
 
-The operator must complete a WebAuthn ceremony that is cryptographically bound
+You must complete a WebAuthn ceremony that is cryptographically bound
 to this specific pending action. If the passkey is unavailable, the action is
 denied (no fallback).
 
@@ -578,7 +578,7 @@ Every approval records:
 | Approver principal | Who approved (label from enrollment) |
 | Credential ID | Which specific credential was used |
 | Binding scope | What the proof commits to (`none`, `action_digest`, `approval_envelope`, `full_intent`) |
-| Review surface | Where the operator reviewed the action (`host_rendered`, `browser_rendered`, `provider_ui`, etc.) |
+| Review surface | Where you reviewed the action (`host_rendered`, `browser_rendered`, `provider_ui`, etc.) |
 | Third-party verifiable | Whether the proof can be verified outside shisad |
 | Fallback used | Whether a lower-than-requested level was accepted via explicit fallback policy |
 | Evidence hash | Tamper-detection hash over the full evidence payload |
@@ -670,7 +670,7 @@ Daemon verifies signature against registered public key
 ### The `IntentEnvelope` (what gets signed)
 
 The `IntentEnvelope` is a canonical, deterministic description of the action
-the operator is approving. The signer backend signs this structure (or its
+the user is approving. The signer backend signs this structure (or its
 hash). It is a Pydantic model with `frozen=True`.
 
 **Fields:**
@@ -810,11 +810,11 @@ Backends advertise their capabilities via `ConfirmationCapabilities`:
 
 | Capability | Type | Meaning |
 |---|---|---|
-| `principal_binding` | `bool` | Evidence can be tied to a specific registered operator |
+| `principal_binding` | `bool` | Evidence can be tied to a specific registered user |
 | `approval_binding` | `bool` | Proof is bound to the approval envelope |
 | `action_digest_binding` | `bool` | Proof commits to the action digest |
 | `full_intent_signature` | `bool` | Proof signs the full `IntentEnvelope` |
-| `trusted_display` | `bool` | The operator reviewed the action on an independent hardware display |
+| `trusted_display` | `bool` | The user reviewed the action on an independent hardware display |
 | `third_party_verifiable` | `bool` | The proof can be verified outside shisad |
 | `blind_sign_detection` | `bool` | The backend can detect when the device signed opaque bytes |
 
@@ -830,7 +830,7 @@ require_capabilities:
 ### Implementing an L4 trusted-display backend
 
 L4 (`trusted_display_authorization`) is L3 plus the guarantee that the
-operator reviewed the action on an independent tamper-resistant display (e.g.,
+user reviewed the action on an independent tamper-resistant display (e.g.,
 Ledger Stax/Flex touchscreen, GridPlus Lattice1).
 
 To qualify for L4, a backend must:
@@ -844,7 +844,7 @@ To qualify for L4, a backend must:
    action (e.g., unsupported transaction type, device fell back to raw hex)
 5. **Advertise `trusted_display: true`** in its capability claims
 
-**Important:** Blind signing (device signs opaque bytes the operator cannot
+**Important:** Blind signing (device signs opaque bytes the user cannot
 read) is *not* L4, even if the device is capable of clear-signing in other
 contexts. The `review_surface` must reflect what happened for *this specific
 action*, not the device's general capabilities.
@@ -869,7 +869,7 @@ the daemon stores in the audit trail. Key fields for signer backends:
 | `level` | The confirmation level that was satisfied |
 | `method` | Backend method name (e.g., `"kms"`) |
 | `binding_scope` | `"full_intent"` for L3+ signers |
-| `review_surface` | What the operator actually saw |
+| `review_surface` | What the user actually saw |
 | `third_party_verifiable` | `true` for signature-based proofs |
 | `intent_envelope_hash` | Hash of the signed intent |
 | `signature` | The cryptographic signature |

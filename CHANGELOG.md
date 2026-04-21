@@ -43,6 +43,12 @@ Versioning follows semver (see `docs/PUBLISH.md` for policy and style guide).
   clients connecting to the daemon. The daemon now uses the
   platform-appropriate syscall on each OS.
 
+- **Public docs now address you as "user", not "operator".** The
+  README, CHANGELOG style guide, 2FA guide, env-var reference, and
+  other user-facing docs were inconsistent about how they addressed
+  the reader. "Operator" still appears in deployment, admin, runbook,
+  and threat-model docs where it names a distinct role.
+
 Thanks @GuitareCiel from Ledger for contributing shisad's first external pull
 request.
 

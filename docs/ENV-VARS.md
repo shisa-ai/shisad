@@ -1,6 +1,6 @@
 # Environment Variables
 
-This document is the operator-facing inventory of the repo's env-var surface.
+This document is the user-facing inventory of the repo's env-var surface.
 
 Source of truth:
 
@@ -18,7 +18,7 @@ There are three kinds of env vars in the current codebase:
 2. external provider credentials discovered by shisad (`OPENAI_API_KEY`, `SHISA_API_KEY`, etc.)
 3. tool or CLI internal env vars (`_SHISAD_COMPLETE`, opt-in live-test vars, placeholders)
 
-This surface is large. That is now documented, but it should be simplified in a future lane. A reasonable future direction is to move more operator settings into explicit config files and leave env vars for secrets and local overrides only. That is a future design decision, not part of this release.
+This surface is large. That is now documented, but it should be simplified in a future lane. A reasonable future direction is to move more user-facing settings into explicit config files and leave env vars for secrets and local overrides only. That is a future design decision, not part of this release.
 
 ## Parsing Rules
 
@@ -91,8 +91,8 @@ Discord public-channel rules:
   `read-along`, or `passive-observe`), `public_enabled`, `public_tools`,
   `trusted_guest_users`, `trusted_guest_tools`, `denied_users`,
   `relevance_keywords`, `cooldown_seconds`, and `proactive_marker`.
-- `guild_id` must match a concrete guild ID unless the operator intentionally
-  sets `guild_id` to `*`. Empty or omitted `channels` means every channel in the
+- `guild_id` must match a concrete guild ID unless you intentionally
+  set `guild_id` to `*`. Empty or omitted `channels` means every channel in the
   matching guild except `exclude_channels`; use explicit `channels` for
   include-only public grants. When multiple matching rules have equal
   specificity, later rules override earlier rules.
@@ -117,12 +117,12 @@ Assistant/persona:
 
 SOUL.md notes:
 
-- `SHISAD_ASSISTANT_PERSONA_SOUL_PATH` points to the operator-owned persona
+- `SHISAD_ASSISTANT_PERSONA_SOUL_PATH` points to your persona
   preference file. Its content is treated as trusted persona preference text
   below safety/developer instructions, not as project memory or policy.
 - `shisad admin soul update --content ...` replaces that file through the
   admin `SOUL.md` update path. The file may contain personal tone/persona
-  preferences and is readable by any operator or process with access to the
+  preferences and is readable by any user or process with access to the
   configured path. Store project-specific facts in the memory system instead.
 - `--expected-sha256` is an optional write precondition for concurrent-edit
   protection; it is not a secret.
@@ -175,7 +175,7 @@ msgvault notes:
   text bodies to `SHISAD_MSGVAULT_MAX_BODY_BYTES`.
 - Email tool output is tainted as both untrusted and sensitive email content.
   Covered write, send, task, reminder, and egress paths still rely on the
-  existing taint/PEP confirmation or block behavior; operators should treat
+  existing taint/PEP confirmation or block behavior; treat
   email content as context, not as user authorization for follow-on actions.
 - Email send/reply, calendar read/write, Google Workspace write skills, remote
   msgvault API/MCP transport, and msgvault sync/setup automation are deferred.
@@ -192,7 +192,7 @@ Browser:
 Browser notes:
 
 - `SHISAD_BROWSER_ENABLED=1` turns on the planner-visible browser tool surface (`browser.navigate`, `browser.read_page`, `browser.screenshot`, `browser.click`, `browser.type_text`, `browser.end_session`).
-- `SHISAD_BROWSER_COMMAND` must point at a Playwright-compatible browser CLI. In tests and local harness runs this can be a wrapper script; in operator environments it is typically a real Playwright CLI install.
+- `SHISAD_BROWSER_COMMAND` must point at a Playwright-compatible browser CLI. In tests and local harness runs this can be a wrapper script; in normal environments it is typically a real Playwright CLI install.
 - If `SHISAD_BROWSER_ALLOWED_DOMAINS` is empty, both the runtime browser sandbox policy and the planner/PEP browser tool registry fall back to `SHISAD_WEB_ALLOWED_DOMAINS`.
 - `SHISAD_BROWSER_ALLOWED_DOMAINS` acts as an auto-approve/browser-egress scope seed, not a hard deny wall for explicit public-host navigation; the runtime still adds the concrete requested browser host to the per-action sandbox allowlist.
 - Hardened browser isolation currently requires literal browser scope entries. If `SHISAD_BROWSER_REQUIRE_HARDENED_ISOLATION=1`, wildcard host patterns in `SHISAD_BROWSER_ALLOWED_DOMAINS` or the `SHISAD_WEB_ALLOWED_DOMAINS` fallback are rejected fail-closed because the connect-path runtime cannot precompute wildcard sibling hosts safely.
@@ -243,7 +243,7 @@ A2A notes:
   owner-only, and prints the public-key fingerprint for out-of-band exchange.
 - `allowed_intents` is enforced fail-closed at A2A ingress. Missing
   `allowed_intents` rejects all requests from that configured remote agent
-  until the operator adds explicit grants.
+  until you add explicit grants.
 - Configured remote-agent fingerprints must be unique. Shared-key aliases are
   rejected so grants and rate limits remain anchored to one authenticated
   remote principal.

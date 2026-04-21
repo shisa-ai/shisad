@@ -853,7 +853,7 @@ Key design choices: phone-number-based routing, Docker sandboxing for restricted
 |--------|--------|
 | **shisad support** | Deliberate divergence: clean-room workflow exists for admin-reviewed skill proposals, but no self-modification |
 | **Gap** | No "agent creates skill" workflow. This is intentional — self-modification is a security anti-pattern. |
-| **shisad approach** | shisad's v0.3 clean-room workflow supports proposal artifacts (diffs, manifests) but never auto-applies. Skill creation is an admin-reviewed process. The agent can *propose* a skill, but installation requires operator review via trusted admin surface. |
+| **shisad approach** | shisad's v0.3 clean-room workflow supports proposal artifacts (diffs, manifests) but never auto-applies. Skill creation is an admin-reviewed process. The agent can *propose* a skill, but installation requires user review via trusted admin surface. |
 | **Security notes** | Self-extending agents are a major supply-chain and integrity risk. An injected prompt could cause the agent to create a malicious skill that persists beyond the current session. shisad explicitly avoids this by design. The proposal-only pattern preserves the utility (agent can draft skills) while maintaining security (human reviews before activation). |
 
 ---

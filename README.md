@@ -36,7 +36,7 @@ Rather than ignoring the elephant in the room, our design targets the [lethal tr
 - **Per-call policy enforcement** — 8-layer PEP pipeline (registry, schema, capability, DLP, resource authorization, egress allowlisting, credential scoping, taint sink enforcement) runs on every tool call, not just at session start
 - **Taint-aware content handling** — ingress/egress content firewalls track provenance of untrusted input through the execution path
 - **Confirmation gates, not blanket denial** — user-requested actions proceed; ambiguous or tainted actions route to confirmation; only genuine anomalies trigger lockdown
-- **Behavioral anomaly detection** — control plane consensus (5 independent voters) for runtime anomaly detection, rate limiting, lockdown escalation, and operator-visible warnings on repeated suspicious deny patterns
+- **Behavioral anomaly detection** — control plane consensus (5 independent voters) for runtime anomaly detection, rate limiting, lockdown escalation, and user-visible warnings on repeated suspicious deny patterns
 - **Destructive command protection** — enforced at the sandbox policy layer before execution, not by LLM judgment; structurally incapable of `rm -rf /` regardless of prompt injection or misconfiguration
 - **Clean-room workflows** — admin operations run in a taint-isolated session mode with no auto-apply
 - **Multi-channel messaging** — Matrix, Discord, Telegram, Slack (Socket Mode), with default-deny identity allowlisting per channel
@@ -64,7 +64,7 @@ same-session evidence carry-forward for follow-up turns.
 | v0.2 | Structural refactor (typed handlers, decomposed runtime, coverage) |
 | v0.1 | Core daemon, PEP security pipeline, control API |
 
-This table tracks major release lines for operator orientation; patch releases
+This table tracks major release lines for reader orientation; patch releases
 like `v0.5.1` and `v0.5.2` stay in the changelog rather than being listed here.
 
 See [`docs/ROADMAP.md`](docs/ROADMAP.md) for more details.

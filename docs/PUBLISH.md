@@ -205,6 +205,14 @@ the already-tagged section.
    "control-plane", "sidecar boundary", "lane", "COMMAND/TASK", "taint",
    "TDG", "runtime root", or similar internal shorthand, rewrite it unless
    that term is part of the actual user-facing product surface.
+   - **Address the reader as "user" or "you", not "operator".** In
+     end-user-facing text (CHANGELOG, README, quickstart, 2FA guide,
+     USE-CASES), "operator" reads as jargon and makes the reader wonder
+     whether you mean them or a separate software role. "Operator" is
+     still appropriate in deployment/admin docs (`docs/DEPLOY.md`,
+     `runner/RUNBOOK.md`, runbooks) and in threat-model/design docs
+     where it names a distinct policy-author role separate from the
+     end user.
 
 4. **Bold the headline, then explain.** Start each Added/Security bullet with
    a short bold phrase, then follow with a plain sentence.
