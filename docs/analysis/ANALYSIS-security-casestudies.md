@@ -941,7 +941,9 @@ Supply-chain risk is moving upstream too: not just skills and installer flows, b
   - **Replay attacks**: Each x402 authorization uses a unique 32-byte nonce with database unique index enforcement. `validBefore` timestamps + cron auto-expiry (5-minute window) prevent stale authorizations.
   - **Software key extraction**: Secure element hardware blocks software access to private keys — not during provisioning, not during signing, not at runtime.
 - **Preconditions**:
-  - User has a Ledger hardware wallet connected (USB or Bluetooth).
+  - User has a Ledger hardware wallet connected through the transport
+    supported by the chosen signer bridge (the current reference
+    bridge is USB HID).
   - Agent has been provisioned with an LKRP credential (requires hardware approval to create).
   - The payment backend enforces the signing requirement (server-side validation, not client-side check).
   - Settlement network supports EIP-3009 TransferWithAuthorization (currently USDC on Base/Sepolia).
