@@ -28,9 +28,12 @@ from shisad.memory.trust import (
     SourceOrigin,
     backfill_legacy_triple,
     clamp_confidence,
+    derive_trust_band,
     is_invocation_eligible_triple,
 )
 from shisad.security.firewall.pii import PIIDetector
+
+_TRUST_BAND_ORDER: dict[str, int] = {"untrusted": 0, "observed": 1, "elevated": 2}
 
 
 class MemoryManager:
@@ -239,7 +242,13 @@ class MemoryManager:
                 kind="reject",
                 reason="invocation_eligible_requires_install_triple",
             )
+        resolved_trust_band = derive_trust_band(
+            source_origin,
+            channel_trust,
+            confirmation_status,
+        )
         prior_entry: MemoryEntry | None = None
+        prior_trust_band: str | None = None
         if supersedes is not None:
             prior_entry = self._entries.get(supersedes)
             if prior_entry is None or self._is_deleted(prior_entry):
@@ -251,6 +260,22 @@ class MemoryManager:
                 )
             if prior_entry.entry_type != entry_type or prior_entry.key != key:
                 return MemoryWriteDecision(kind="reject", reason="supersedes_target_mismatch")
+            prior_trust_band = derive_trust_band(
+                prior_entry.source_origin,
+                prior_entry.channel_trust,
+                prior_entry.confirmation_status,
+            )
+            if _TRUST_BAND_ORDER[resolved_trust_band] > _TRUST_BAND_ORDER[prior_trust_band]:
+                if confirmation_status not in {"user_confirmed", "user_corrected"}:
+                    return MemoryWriteDecision(
+                        kind="reject",
+                        reason="trust_upgrade_requires_user_confirmation",
+                    )
+                if not ingress_handle_id:
+                    return MemoryWriteDecision(
+                        kind="reject",
+                        reason="trust_upgrade_requires_ingress_handle",
+                    )
         resolved_workflow_state = workflow_state or (
             "active" if entry_type in ACTIVE_AGENDA_ENTRY_TYPES else None
         )
@@ -310,6 +335,27 @@ class MemoryManager:
                 "supersedes": entry.supersedes,
             },
         )
+        if prior_entry is not None and prior_trust_band != resolved_trust_band:
+            self._record_event(
+                entry=entry,
+                event_type="trust_tier_changed",
+                ingress_handle_id=ingress_handle_id,
+                metadata={
+                    "from": prior_trust_band,
+                    "to": resolved_trust_band,
+                    "supersedes": prior_entry.id,
+                },
+            )
+            self._audit(
+                "memory.trust_tier_changed",
+                {
+                    "entry_id": entry.id,
+                    "supersedes": prior_entry.id,
+                    "from": prior_trust_band,
+                    "to": resolved_trust_band,
+                    "ingress_handle_id": ingress_handle_id,
+                },
+            )
         if entry.entry_type in ACTIVE_AGENDA_ENTRY_TYPES:
             self._record_event(
                 entry=entry,

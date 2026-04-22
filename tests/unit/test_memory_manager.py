@@ -874,3 +874,106 @@ def test_m1_supersedes_rejects_mismatched_or_reused_targets(tmp_path: Path) -> N
     )
     assert reused.kind == "reject"
     assert reused.reason == "supersedes_target_already_has_successor"
+
+
+def test_m1_supersede_trust_upgrade_requires_user_confirmation(tmp_path: Path) -> None:
+    manager = MemoryManager(tmp_path / "memory")
+
+    first = manager.write_with_provenance(
+        entry_type="note",
+        key="note:trust-upgrade",
+        value="raw external draft",
+        source=MemorySource(origin="external", source_id="web-1", extraction_method="fetch"),
+        source_origin="external_web",
+        channel_trust="web_passed",
+        confirmation_status="auto_accepted",
+        source_id="web-1",
+        scope="user",
+        confidence=0.4,
+        confirmation_satisfied=True,
+        ingress_handle_id="handle-external",
+    )
+    assert first.entry is not None
+
+    rejected = manager.write_with_provenance(
+        entry_type="note",
+        key="note:trust-upgrade",
+        value="owner restatement without explicit confirmation",
+        source=MemorySource(origin="user", source_id="msg-14", extraction_method="manual"),
+        source_origin="user_direct",
+        channel_trust="command",
+        confirmation_status="user_asserted",
+        source_id="msg-14",
+        scope="user",
+        confidence=0.9,
+        confirmation_satisfied=True,
+        ingress_handle_id="handle-asserted",
+        supersedes=first.entry.id,
+    )
+
+    assert rejected.kind == "reject"
+    assert rejected.reason == "trust_upgrade_requires_user_confirmation"
+
+
+def test_m1_supersede_confirmed_trust_upgrade_records_tier_change_event(
+    tmp_path: Path,
+) -> None:
+    audits: list[tuple[str, dict[str, object]]] = []
+    manager = MemoryManager(
+        tmp_path / "memory",
+        audit_hook=lambda action, data: audits.append((action, data)),
+    )
+
+    first = manager.write_with_provenance(
+        entry_type="note",
+        key="note:trust-upgrade",
+        value="raw external draft",
+        source=MemorySource(origin="external", source_id="web-2", extraction_method="fetch"),
+        source_origin="external_web",
+        channel_trust="web_passed",
+        confirmation_status="auto_accepted",
+        source_id="web-2",
+        scope="user",
+        confidence=0.4,
+        confirmation_satisfied=True,
+        ingress_handle_id="handle-external",
+    )
+    assert first.entry is not None
+
+    second = manager.write_with_provenance(
+        entry_type="note",
+        key="note:trust-upgrade",
+        value="owner confirmed correction",
+        source=MemorySource(origin="user", source_id="msg-15", extraction_method="manual"),
+        source_origin="user_confirmed",
+        channel_trust="command",
+        confirmation_status="user_confirmed",
+        source_id="msg-15",
+        scope="user",
+        confidence=0.9,
+        confirmation_satisfied=True,
+        ingress_handle_id="handle-confirmed",
+        supersedes=first.entry.id,
+    )
+
+    assert second.kind == "allow"
+    assert second.entry is not None
+    event = manager.list_events(
+        entry_id=second.entry.id,
+        event_type="trust_tier_changed",
+        limit=10,
+    )[0]
+    assert event.ingress_handle_id == "handle-confirmed"
+    assert event.metadata_json["from"] == "untrusted"
+    assert event.metadata_json["to"] == "elevated"
+    assert event.metadata_json["supersedes"] == first.entry.id
+    assert (
+        "memory.trust_tier_changed",
+        {
+            "entry_id": second.entry.id,
+            "supersedes": first.entry.id,
+            "from": "untrusted",
+            "to": "elevated",
+            "ingress_handle_id": "handle-confirmed",
+        },
+    ) in audits
