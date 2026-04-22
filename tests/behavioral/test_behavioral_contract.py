@@ -1308,6 +1308,38 @@ async def test_contract_memory_retrieve_auto_widens_into_archive(
 
 
 @pytest.mark.asyncio
+async def test_contract_memory_retrieve_marks_conflicting_results(
+    contract_harness: ContractHarness,
+) -> None:
+    positive = await ingest_memory_via_ingress(
+        contract_harness.client,
+        source_type="external",
+        source_id="conflict-positive",
+        collection="external_web",
+        content="Favorite color is blue for this profile note.",
+    )
+    negative = await ingest_memory_via_ingress(
+        contract_harness.client,
+        source_type="external",
+        source_id="conflict-negative",
+        collection="external_web",
+        content="Favorite color is not blue for this profile note.",
+    )
+
+    retrieved = await contract_harness.client.call(
+        "memory.retrieve",
+        {"query": "favorite color blue", "limit": 5},
+    )
+
+    results = list(retrieved.get("results") or [])
+    assert {item.get("chunk_id") for item in results} == {
+        positive["chunk_id"],
+        negative["chunk_id"],
+    }
+    assert all(item.get("conflict") is True for item in results)
+
+
+@pytest.mark.asyncio
 async def test_contract_memory_write_round_trips_through_ingress_context_handle(
     contract_harness: ContractHarness,
 ) -> None:
