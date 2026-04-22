@@ -67,6 +67,7 @@ class MemoryHandlers:
             ctx,
             internal_ingress_marker=self._internal_ingress_marker,
         )
+        payload[_CONTROL_API_AUTHENTICATED_WRITE] = True
         return MemoryIngestResult.model_validate(await self._impl.do_memory_ingest(payload))
 
     async def handle_memory_retrieve(

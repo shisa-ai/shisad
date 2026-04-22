@@ -58,6 +58,21 @@ class MemoryImplMixin(HandlerMixinBase):
             return "tool"
         return "external"
 
+    @staticmethod
+    def _control_ingest_triple(
+        source_type: str,
+        *,
+        user_confirmed: bool = False,
+    ) -> tuple[str, str, str]:
+        normalized = source_type.strip().lower()
+        if normalized == "tool":
+            return ("tool_output", "tool_passed", "auto_accepted")
+        if normalized == "external":
+            return ("external_web", "web_passed", "auto_accepted")
+        if user_confirmed:
+            return ("user_confirmed", "command", "user_confirmed")
+        return ("user_direct", "command", "user_asserted")
+
     def _write_control_api_authenticated_entry(
         self,
         params: Mapping[str, Any],
@@ -161,6 +176,28 @@ class MemoryImplMixin(HandlerMixinBase):
                 collection=params.get("collection"),
             )
             return cast(dict[str, Any], result.model_dump(mode="json"))
+        if params.get(_CONTROL_API_AUTHENTICATED_WRITE):
+            content = str(params.get("content", ""))
+            source_origin, channel_trust, confirmation_status = self._control_ingest_triple(
+                str(params.get("source_type", "user")),
+                user_confirmed=bool(params.get("user_confirmed", False)),
+            )
+            context = self._memory_ingress_registry.mint(
+                source_origin=source_origin,
+                channel_trust=channel_trust,
+                confirmation_status=confirmation_status,
+                scope="user",
+                source_id=self._source_id_for_control_write(params),
+                content=content,
+                taint_labels=self._firewall_taint_labels(params),
+            )
+            return await self.do_memory_ingest(
+                {
+                    "ingress_context": context.handle_id,
+                    "content": content,
+                    "collection": params.get("collection"),
+                }
+            )
         result = self._ingestion.ingest(
             source_id=params.get("source_id", ""),
             source_type=params.get("source_type", "user"),

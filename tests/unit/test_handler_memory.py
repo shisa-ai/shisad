@@ -17,10 +17,12 @@ from shisad.daemon.handlers.memory import MemoryHandlers
 
 class _StubImpl:
     def __init__(self) -> None:
+        self.last_memory_ingest_payload: dict[str, object] | None = None
         self.last_memory_list_payload: dict[str, object] | None = None
         self.last_memory_get_payload: dict[str, object] | None = None
 
     async def do_memory_ingest(self, payload: dict[str, object]) -> dict[str, object]:
+        self.last_memory_ingest_payload = payload
         return {
             "chunk_id": "ing-1",
             "source_id": str(payload["source_id"]),
@@ -68,7 +70,8 @@ class _StubImpl:
 
 @pytest.mark.asyncio
 async def test_memory_ingest_and_list_wrappers() -> None:
-    handlers = MemoryHandlers(_StubImpl(), internal_ingress_marker=object())  # type: ignore[arg-type]
+    impl = _StubImpl()
+    handlers = MemoryHandlers(impl, internal_ingress_marker=object())  # type: ignore[arg-type]
     ingest = await handlers.handle_memory_ingest(
         MemoryIngestParams(source_id="src-1", content="hello"),
         RequestContext(),
@@ -79,6 +82,8 @@ async def test_memory_ingest_and_list_wrappers() -> None:
         RequestContext(),
     )
     assert ingest.model_dump(mode="json")["source_id"] == "src-1"
+    assert impl.last_memory_ingest_payload is not None
+    assert impl.last_memory_ingest_payload["_control_api_authenticated_write"] is True
     assert listing.count == 1
     assert review_queue.entries[0].id == "review-1"
 

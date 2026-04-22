@@ -85,3 +85,23 @@ async def test_memory_ingest_rejects_mismatched_handle_binding(tmp_path: Path) -
                 "content": "different payload",
             }
         )
+
+
+@pytest.mark.asyncio
+async def test_memory_ingest_control_api_path_mints_handle_and_maps_external_source(
+    tmp_path: Path,
+) -> None:
+    harness = _MemoryIngestHarness(tmp_path)
+
+    result = await harness.do_memory_ingest(
+        {
+            "_control_api_authenticated_write": True,
+            "source_id": "fetch-2",
+            "source_type": "external",
+            "content": "fetched external context",
+        }
+    )
+
+    assert result["source_id"] == "fetch-2"
+    assert result["source_type"] == "external"
+    assert result["collection"] == "external_web"
