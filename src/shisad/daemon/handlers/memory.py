@@ -8,6 +8,7 @@ from shisad.core.api.schema import (
     MemoryExportParams,
     MemoryExportResult,
     MemoryGetResult,
+    MemoryIdentityCandidateResult,
     MemoryIngestParams,
     MemoryIngestResult,
     MemoryLifecycleParams,
@@ -16,6 +17,8 @@ from shisad.core.api.schema import (
     MemoryListResult,
     MemoryMintIngressParams,
     MemoryMintIngressResult,
+    MemoryPromoteIdentityCandidateParams,
+    MemoryRejectIdentityCandidateParams,
     MemoryRetrieveParams,
     MemoryRetrieveResult,
     MemoryReviewQueueParams,
@@ -128,6 +131,36 @@ class MemoryHandlers:
         )
         payload[_CONTROL_API_AUTHENTICATED_WRITE] = True
         return MemoryWriteResult.model_validate(await self._impl.do_memory_supersede(payload))
+
+    async def handle_memory_promote_identity_candidate(
+        self,
+        params: MemoryPromoteIdentityCandidateParams,
+        ctx: RequestContext,
+    ) -> MemoryWriteResult:
+        payload = build_params_payload(
+            params,
+            ctx,
+            internal_ingress_marker=self._internal_ingress_marker,
+        )
+        payload[_CONTROL_API_AUTHENTICATED_WRITE] = True
+        return MemoryWriteResult.model_validate(
+            await self._impl.do_memory_promote_identity_candidate(payload)
+        )
+
+    async def handle_memory_reject_identity_candidate(
+        self,
+        params: MemoryRejectIdentityCandidateParams,
+        ctx: RequestContext,
+    ) -> MemoryIdentityCandidateResult:
+        payload = build_params_payload(
+            params,
+            ctx,
+            internal_ingress_marker=self._internal_ingress_marker,
+        )
+        payload[_CONTROL_API_AUTHENTICATED_WRITE] = True
+        return MemoryIdentityCandidateResult.model_validate(
+            await self._impl.do_memory_reject_identity_candidate(payload)
+        )
 
     async def handle_memory_list(
         self,

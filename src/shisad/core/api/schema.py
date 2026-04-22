@@ -403,6 +403,33 @@ class MemoryMintIngressParams(_StrictParams):
         return self
 
 
+class MemoryPromoteIdentityCandidateParams(_StrictParams):
+    ingress_context: str
+    candidate_id: str
+    value: Any = None
+
+    @model_validator(mode="after")
+    def _validate_candidate_shape(self) -> MemoryPromoteIdentityCandidateParams:
+        if not self.ingress_context.strip():
+            raise ValueError("ingress_context is required")
+        if not self.candidate_id.strip():
+            raise ValueError("candidate_id is required")
+        return self
+
+
+class MemoryRejectIdentityCandidateParams(_StrictParams):
+    ingress_context: str
+    candidate_id: str
+
+    @model_validator(mode="after")
+    def _validate_candidate_shape(self) -> MemoryRejectIdentityCandidateParams:
+        if not self.ingress_context.strip():
+            raise ValueError("ingress_context is required")
+        if not self.candidate_id.strip():
+            raise ValueError("candidate_id is required")
+        return self
+
+
 class MemorySupersedeParams(MemoryWriteParams):
     supersedes: str
 
@@ -523,6 +550,12 @@ class MemoryWriteResult(BaseModel):
     kind: str
     reason: str = ""
     entry: dict[str, Any] | None = None
+
+
+class MemoryIdentityCandidateResult(BaseModel):
+    changed: bool
+    candidate_id: str
+    reason: str = ""
 
 
 class MemoryListEntry(BaseModel):

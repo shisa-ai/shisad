@@ -47,6 +47,8 @@ from shisad.core.api.schema import (
     MemoryLifecycleParams,
     MemoryListParams,
     MemoryMintIngressParams,
+    MemoryPromoteIdentityCandidateParams,
+    MemoryRejectIdentityCandidateParams,
     MemoryRetrieveParams,
     MemoryReviewQueueParams,
     MemoryRotateKeyParams,
@@ -218,6 +220,18 @@ def _method_specs(
         ("memory.retrieve", handlers.handle_memory_retrieve, False, MemoryRetrieveParams),
         ("memory.write", handlers.handle_memory_write, True, MemoryWriteParams),
         ("memory.supersede", handlers.handle_memory_supersede, True, MemorySupersedeParams),
+        (
+            "memory.promote_identity_candidate",
+            handlers.handle_memory_promote_identity_candidate,
+            True,
+            MemoryPromoteIdentityCandidateParams,
+        ),
+        (
+            "memory.reject_identity_candidate",
+            handlers.handle_memory_reject_identity_candidate,
+            True,
+            MemoryRejectIdentityCandidateParams,
+        ),
         ("memory.list", handlers.handle_memory_list, False, MemoryListParams),
         (
             "memory.list_review_queue",

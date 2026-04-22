@@ -111,6 +111,7 @@ from shisad.memory.identity_candidates import (
 from shisad.memory.ingestion import IngestionPipeline
 from shisad.memory.ingress import (
     IngressContext,
+    IngressContextRegistry,
     mint_explicit_user_memory_ingress_context,
 )
 from shisad.memory.manager import MemoryManager
@@ -5511,6 +5512,219 @@ class SessionImplMixin(HandlerMixinBase):
             return None
         return decision.entry.id
 
+    @staticmethod
+    def _identity_command_response(
+        *,
+        validated: SessionMessageValidationResult,
+        response: str,
+    ) -> dict[str, Any]:
+        return {
+            "session_id": str(validated.sid),
+            "response": response,
+        }
+
+    @staticmethod
+    def _identity_command_source_id(validated: SessionMessageValidationResult) -> str:
+        if validated.user_transcript_entry is not None and validated.user_transcript_entry.entry_id:
+            return validated.user_transcript_entry.entry_id
+        if validated.channel_message_id:
+            return str(validated.channel_message_id)
+        return str(validated.sid)
+
+    @staticmethod
+    def _canonical_identity_command_content(value: Any) -> str | bytes:
+        if isinstance(value, (str, bytes)):
+            return value
+        return json.dumps(
+            value,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+            default=str,
+        )
+
+    def _mint_identity_command_context(
+        self,
+        *,
+        validated: SessionMessageValidationResult,
+        source_origin: str,
+        confirmation_status: str,
+        content: Any,
+    ) -> IngressContext | None:
+        registry = cast(
+            IngressContextRegistry | None,
+            getattr(self, "_memory_ingress_registry", None),
+        )
+        if registry is None:
+            return None
+        return registry.mint(
+            source_origin=cast(Any, source_origin),
+            channel_trust="command",
+            confirmation_status=cast(Any, confirmation_status),
+            scope="user",
+            source_id=self._identity_command_source_id(validated),
+            content=self._canonical_identity_command_content(content),
+            taint_labels=list(validated.firewall_result.taint_labels),
+        )
+
+    async def _maybe_handle_identity_candidate_command(
+        self,
+        *,
+        validated: SessionMessageValidationResult,
+    ) -> dict[str, Any] | None:
+        memory_manager = cast(MemoryManager | None, getattr(self, "_memory_manager", None))
+        registry = getattr(self, "_memory_ingress_registry", None)
+        if memory_manager is None or registry is None:
+            return None
+
+        text = validated.firewall_result.sanitized_text.strip()
+        if not text.startswith("/identity"):
+            return None
+        normalized_channel = str(validated.channel or validated.session.channel).strip().lower()
+        if normalized_channel != "cli" or validated.session_mode != SessionMode.DEFAULT:
+            return self._identity_command_response(
+                validated=validated,
+                response=(
+                    "Identity review commands are only available in the trusted "
+                    "command channel."
+                ),
+            )
+
+        body = text[len("/identity") :].strip()
+        if not body:
+            return self._identity_command_response(
+                validated=validated,
+                response="Usage: /identity review | accept <id> | reject <id> | edit <id> <text>",
+            )
+        command, _, remainder = body.partition(" ")
+        command = command.strip().lower()
+        remainder = remainder.strip()
+
+        if command == "review":
+            rows = [
+                entry
+                for entry in memory_manager.list_review_queue(limit=20)
+                if entry.entry_type in {"persona_fact", "preference", "soft_constraint"}
+            ]
+            if not rows:
+                return self._identity_command_response(
+                    validated=validated,
+                    response="No pending identity candidates.",
+                )
+            lines = ["Pending identity candidates:"]
+            for entry in rows:
+                preview = str(entry.value).strip()
+                lines.append(f"- {entry.id} [{entry.entry_type}] {preview}")
+            return self._identity_command_response(
+                validated=validated,
+                response="\n".join(lines),
+            )
+
+        candidate_id, _, edit_text = remainder.partition(" ")
+        candidate_id = candidate_id.strip()
+        edit_text = edit_text.strip()
+        if not candidate_id:
+            return self._identity_command_response(
+                validated=validated,
+                response="Usage: /identity review | accept <id> | reject <id> | edit <id> <text>",
+            )
+
+        candidate = memory_manager.get_entry(
+            candidate_id,
+            include_pending_review=True,
+            include_quarantined=True,
+        )
+        if command in {"accept", "edit"}:
+            if candidate is None:
+                return self._identity_command_response(
+                    validated=validated,
+                    response=f"Identity candidate {candidate_id} was not found.",
+                )
+            promoted_value = candidate.value if command == "accept" else edit_text
+            if command == "edit" and not edit_text:
+                return self._identity_command_response(
+                    validated=validated,
+                    response="Usage: /identity edit <id> <text>",
+                )
+            source_origin = "user_confirmed" if command == "accept" else "user_corrected"
+            confirmation_status = "user_confirmed" if command == "accept" else "user_corrected"
+            ingress_context = self._mint_identity_command_context(
+                validated=validated,
+                source_origin=source_origin,
+                confirmation_status=confirmation_status,
+                content=promoted_value,
+            )
+            if ingress_context is None:
+                return self._identity_command_response(
+                    validated=validated,
+                    response="Identity candidate promotion is unavailable in this session.",
+                )
+            decision = memory_manager.promote_identity_candidate(
+                candidate_id=candidate_id,
+                value=promoted_value,
+                source=MemorySource(
+                    origin="user",
+                    source_id=ingress_context.source_id,
+                    extraction_method=(
+                        "identity.review.accept" if command == "accept" else "identity.review.edit"
+                    ),
+                ),
+                source_origin=cast(Any, ingress_context.source_origin),
+                channel_trust=cast(Any, ingress_context.channel_trust),
+                confirmation_status=cast(Any, ingress_context.confirmation_status),
+                source_id=ingress_context.source_id,
+                scope=ingress_context.scope,
+                ingress_handle_id=ingress_context.handle_id,
+                content_digest=ingress_context.content_digest,
+                taint_labels=ingress_context.taint_labels,
+            )
+            if decision.kind != "allow" or decision.entry is None:
+                return self._identity_command_response(
+                    validated=validated,
+                    response=(
+                        f"Could not promote identity candidate {candidate_id}: "
+                        f"{decision.reason or 'unknown_error'}."
+                    ),
+                )
+            return self._identity_command_response(
+                validated=validated,
+                response=f"Remembered identity candidate {candidate_id}.",
+            )
+
+        if command == "reject":
+            ingress_context = self._mint_identity_command_context(
+                validated=validated,
+                source_origin="user_confirmed",
+                confirmation_status="user_confirmed",
+                content=candidate.value if candidate is not None else candidate_id,
+            )
+            if ingress_context is None:
+                return self._identity_command_response(
+                    validated=validated,
+                    response="Identity candidate rejection is unavailable in this session.",
+                )
+            changed, reason = memory_manager.reject_identity_candidate(
+                candidate_id,
+                ingress_handle_id=ingress_context.handle_id,
+            )
+            if not changed:
+                return self._identity_command_response(
+                    validated=validated,
+                    response=(
+                        f"Could not reject identity candidate {candidate_id}: "
+                        f"{reason or 'unknown_error'}."
+                    ),
+                )
+            return self._identity_command_response(
+                validated=validated,
+                response=f"Rejected identity candidate {candidate_id}.",
+            )
+
+        return self._identity_command_response(
+            validated=validated,
+            response="Usage: /identity review | accept <id> | reject <id> | edit <id> <text>",
+        )
+
     async def _synthesize_post_tool_response(
         self,
         *,
@@ -7172,6 +7386,11 @@ class SessionImplMixin(HandlerMixinBase):
         validated = await self._validate_and_load_session(params)
         if validated.early_response is not None:
             return validated.early_response
+        identity_command_response = await self._maybe_handle_identity_candidate_command(
+            validated=validated
+        )
+        if identity_command_response is not None:
+            return identity_command_response
         self._record_identity_observation_candidate(validated=validated)
         task_request = self._task_request_from_params(
             params=params,

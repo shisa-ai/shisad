@@ -349,6 +349,75 @@ class MemoryImplMixin(HandlerMixinBase):
             raise ValueError("ingress_context is required for memory.supersede")
         return await self.do_memory_write(params)
 
+    async def do_memory_promote_identity_candidate(
+        self,
+        params: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        handle_id = str(params.get("ingress_context", "")).strip()
+        if not handle_id:
+            raise ValueError("ingress_context is required for memory.promote_identity_candidate")
+        candidate_id = str(params.get("candidate_id", "")).strip()
+        context = self._memory_ingress_registry.resolve(handle_id)
+        promoted_value = params.get("value")
+        if promoted_value is None:
+            candidate = self._memory_manager.get_entry(
+                candidate_id,
+                include_pending_review=True,
+                include_quarantined=True,
+            )
+            promoted_value = candidate.value if candidate is not None else None
+        if promoted_value is None:
+            return {
+                "kind": "reject",
+                "reason": "candidate_not_found",
+                "entry": None,
+            }
+        content_digest = str(params.get("content_digest", "")).strip() or None
+        if content_digest is None and not isinstance(promoted_value, (str, bytes)):
+            content_digest = digest_memory_value(promoted_value)
+        resolved_digest = self._memory_ingress_registry.validate_binding(
+            handle_id,
+            content=promoted_value if isinstance(promoted_value, (str, bytes)) else None,
+            content_digest=content_digest,
+        )
+        decision = self._memory_manager.promote_identity_candidate(
+            candidate_id=candidate_id,
+            value=promoted_value,
+            source=MemorySource(
+                origin=legacy_source_view_origin(context.source_origin),
+                source_id=context.source_id,
+                extraction_method="identity.review.promote",
+            ),
+            source_origin=context.source_origin,
+            channel_trust=context.channel_trust,
+            confirmation_status=context.confirmation_status,
+            source_id=context.source_id,
+            scope=context.scope,
+            ingress_handle_id=context.handle_id,
+            content_digest=resolved_digest,
+            taint_labels=context.taint_labels,
+        )
+        return cast(dict[str, Any], decision.model_dump(mode="json"))
+
+    async def do_memory_reject_identity_candidate(
+        self,
+        params: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        handle_id = str(params.get("ingress_context", "")).strip()
+        if not handle_id:
+            raise ValueError("ingress_context is required for memory.reject_identity_candidate")
+        self._memory_ingress_registry.resolve(handle_id)
+        candidate_id = str(params.get("candidate_id", "")).strip()
+        changed, reason = self._memory_manager.reject_identity_candidate(
+            candidate_id,
+            ingress_handle_id=handle_id,
+        )
+        return {
+            "changed": changed,
+            "candidate_id": candidate_id,
+            "reason": reason,
+        }
+
     async def do_memory_list(self, params: Mapping[str, Any]) -> dict[str, Any]:
         if params.get("include_quarantined") and not params.get("confirmed"):
             raise ValueError("confirmed is required when include_quarantined is true")

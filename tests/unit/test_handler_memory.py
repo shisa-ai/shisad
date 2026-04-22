@@ -10,6 +10,8 @@ from shisad.core.api.schema import (
     MemoryLifecycleParams,
     MemoryListParams,
     MemoryMintIngressParams,
+    MemoryPromoteIdentityCandidateParams,
+    MemoryRejectIdentityCandidateParams,
     MemoryReviewQueueParams,
     MemoryRotateKeyParams,
     MemorySupersedeParams,
@@ -24,6 +26,8 @@ class _StubImpl:
         self.last_memory_mint_ingress_payload: dict[str, object] | None = None
         self.last_memory_ingest_payload: dict[str, object] | None = None
         self.last_memory_supersede_payload: dict[str, object] | None = None
+        self.last_memory_promote_identity_candidate_payload: dict[str, object] | None = None
+        self.last_memory_reject_identity_candidate_payload: dict[str, object] | None = None
         self.last_memory_list_payload: dict[str, object] | None = None
         self.last_memory_get_payload: dict[str, object] | None = None
         self.last_memory_quarantine_payload: dict[str, object] | None = None
@@ -64,6 +68,22 @@ class _StubImpl:
     async def do_memory_supersede(self, payload: dict[str, object]) -> dict[str, object]:
         self.last_memory_supersede_payload = payload
         return {"kind": "allow", "entry": {"id": "e2", "supersedes": str(payload["supersedes"])}}
+
+    async def do_memory_promote_identity_candidate(
+        self, payload: dict[str, object]
+    ) -> dict[str, object]:
+        self.last_memory_promote_identity_candidate_payload = payload
+        return {"kind": "allow", "entry": {"id": "e3", "supersedes": str(payload["candidate_id"])}}
+
+    async def do_memory_reject_identity_candidate(
+        self, payload: dict[str, object]
+    ) -> dict[str, object]:
+        self.last_memory_reject_identity_candidate_payload = payload
+        return {
+            "changed": True,
+            "candidate_id": str(payload["candidate_id"]),
+            "reason": "candidate_rejected",
+        }
 
     async def do_memory_list(self, payload: dict[str, object]) -> dict[str, object]:
         self.last_memory_list_payload = payload
@@ -165,6 +185,51 @@ async def test_memory_supersede_wrapper_forwards_authenticated_payload() -> None
     assert impl.last_memory_supersede_payload is not None
     assert impl.last_memory_supersede_payload["supersedes"] == "e1"
     assert impl.last_memory_supersede_payload["_control_api_authenticated_write"] is True
+
+
+@pytest.mark.asyncio
+async def test_memory_identity_candidate_wrappers_forward_authenticated_payload() -> None:
+    impl = _StubImpl()
+    handlers = MemoryHandlers(impl, internal_ingress_marker=object())  # type: ignore[arg-type]
+
+    promoted = await handlers.handle_memory_promote_identity_candidate(
+        MemoryPromoteIdentityCandidateParams(
+            ingress_context="handle-1",
+            candidate_id="candidate-1",
+            value="I prefer green tea.",
+        ),
+        RequestContext(),
+    )
+    rejected = await handlers.handle_memory_reject_identity_candidate(
+        MemoryRejectIdentityCandidateParams(
+            ingress_context="handle-2",
+            candidate_id="candidate-2",
+        ),
+        RequestContext(),
+    )
+
+    assert promoted.kind == "allow"
+    assert promoted.entry is not None
+    assert promoted.entry["supersedes"] == "candidate-1"
+    assert impl.last_memory_promote_identity_candidate_payload is not None
+    assert impl.last_memory_promote_identity_candidate_payload["candidate_id"] == "candidate-1"
+    assert (
+        impl.last_memory_promote_identity_candidate_payload[
+            "_control_api_authenticated_write"
+        ]
+        is True
+    )
+
+    assert rejected.changed is True
+    assert rejected.candidate_id == "candidate-2"
+    assert impl.last_memory_reject_identity_candidate_payload is not None
+    assert impl.last_memory_reject_identity_candidate_payload["candidate_id"] == "candidate-2"
+    assert (
+        impl.last_memory_reject_identity_candidate_payload[
+            "_control_api_authenticated_write"
+        ]
+        is True
+    )
 
 
 @pytest.mark.asyncio

@@ -72,6 +72,7 @@ from shisad.core.api.schema import (
     MemoryExportParams,
     MemoryExportResult,
     MemoryGetResult,
+    MemoryIdentityCandidateResult,
     MemoryIngestParams,
     MemoryIngestResult,
     MemoryLifecycleParams,
@@ -80,6 +81,8 @@ from shisad.core.api.schema import (
     MemoryListResult,
     MemoryMintIngressParams,
     MemoryMintIngressResult,
+    MemoryPromoteIdentityCandidateParams,
+    MemoryRejectIdentityCandidateParams,
     MemoryRetrieveParams,
     MemoryRetrieveResult,
     MemoryReviewQueueParams,
@@ -465,6 +468,20 @@ class DaemonControlHandlers:
         self, params: MemorySupersedeParams, ctx: RequestContext
     ) -> MemoryWriteResult:
         return await self._memory.handle_memory_supersede(params, ctx)
+
+    async def handle_memory_promote_identity_candidate(
+        self,
+        params: MemoryPromoteIdentityCandidateParams,
+        ctx: RequestContext,
+    ) -> MemoryWriteResult:
+        return await self._memory.handle_memory_promote_identity_candidate(params, ctx)
+
+    async def handle_memory_reject_identity_candidate(
+        self,
+        params: MemoryRejectIdentityCandidateParams,
+        ctx: RequestContext,
+    ) -> MemoryIdentityCandidateResult:
+        return await self._memory.handle_memory_reject_identity_candidate(params, ctx)
 
     async def handle_memory_list(
         self, params: MemoryListParams, ctx: RequestContext

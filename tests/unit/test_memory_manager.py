@@ -1166,3 +1166,162 @@ def test_m1_supersede_confirmed_trust_upgrade_records_tier_change_event(
             "ingress_handle_id": "handle-confirmed",
         },
     ) in audits
+
+
+def _write_pending_identity_candidate(
+    manager: MemoryManager,
+    *,
+    entry_type: str = "preference",
+    key: str = "preference:tea",
+    value: str = "I prefer tea over coffee.",
+    predicate: str | None = "likes(tea)",
+) -> object:
+    decision = manager.write_with_provenance(
+        entry_type=entry_type,
+        key=key,
+        value=value,
+        predicate=predicate,
+        source=MemorySource(
+            origin="external",
+            source_id="candidate-1",
+            extraction_method="identity.candidate",
+        ),
+        source_origin="external_message",
+        channel_trust="shared_participant",
+        confirmation_status="pending_review",
+        source_id="candidate-1",
+        scope="user",
+        confidence=0.62,
+        confirmation_satisfied=True,
+        ingress_handle_id="handle-candidate",
+        content_digest="digest-candidate",
+    )
+    assert decision.entry is not None
+    return decision.entry
+
+
+def test_m3_promote_identity_candidate_creates_elevated_successor_and_closes_queue(
+    tmp_path: Path,
+) -> None:
+    audits: list[tuple[str, dict[str, object]]] = []
+    manager = MemoryManager(
+        tmp_path / "memory",
+        audit_hook=lambda action, data: audits.append((action, data)),
+    )
+    candidate = _write_pending_identity_candidate(manager)
+
+    decision = manager.promote_identity_candidate(
+        candidate_id=str(candidate.id),
+        source=MemorySource(
+            origin="user",
+            source_id="cmd-accept-1",
+            extraction_method="identity.review.accept",
+        ),
+        source_origin="user_confirmed",
+        channel_trust="command",
+        confirmation_status="user_confirmed",
+        source_id="cmd-accept-1",
+        scope="user",
+        ingress_handle_id="handle-accept",
+        content_digest="digest-accept",
+        taint_labels=[],
+    )
+
+    assert decision.kind == "allow"
+    assert decision.entry is not None
+    promoted = decision.entry
+    assert promoted.supersedes == str(candidate.id)
+    assert promoted.source_origin == "user_confirmed"
+    assert promoted.channel_trust == "command"
+    assert promoted.confirmation_status == "user_confirmed"
+    assert promoted.trust_band == "elevated"
+    assert promoted.confidence == pytest.approx(0.90)
+    assert manager.list_review_queue(limit=10) == []
+    assert [entry.id for entry in manager.compile_identity(max_tokens=64).entries] == [promoted.id]
+    promote_event = manager.list_events(
+        entry_id=promoted.id,
+        event_type="candidate_promoted",
+        limit=10,
+    )[0]
+    assert promote_event.ingress_handle_id == "handle-accept"
+    assert promote_event.metadata_json["candidate_id"] == str(candidate.id)
+    assert promote_event.metadata_json["edited"] is False
+    assert (
+        "memory.candidate_promoted",
+        {
+            "candidate_id": str(candidate.id),
+            "entry_id": promoted.id,
+            "confirmation_status": "user_confirmed",
+            "edited": False,
+            "ingress_handle_id": "handle-accept",
+        },
+    ) in audits
+
+
+def test_m3_promote_identity_candidate_with_edit_uses_corrected_floor(tmp_path: Path) -> None:
+    manager = MemoryManager(tmp_path / "memory")
+    candidate = _write_pending_identity_candidate(manager)
+
+    decision = manager.promote_identity_candidate(
+        candidate_id=str(candidate.id),
+        value="I prefer green tea over coffee.",
+        source=MemorySource(
+            origin="user",
+            source_id="cmd-edit-1",
+            extraction_method="identity.review.edit",
+        ),
+        source_origin="user_corrected",
+        channel_trust="command",
+        confirmation_status="user_corrected",
+        source_id="cmd-edit-1",
+        scope="user",
+        ingress_handle_id="handle-edit",
+        content_digest="digest-edit",
+        taint_labels=[],
+    )
+
+    assert decision.kind == "allow"
+    assert decision.entry is not None
+    assert decision.entry.value == "I prefer green tea over coffee."
+    assert decision.entry.confirmation_status == "user_corrected"
+    assert decision.entry.confidence == pytest.approx(0.85)
+
+
+def test_m3_reject_identity_candidate_tombstones_entry_and_records_backoff(tmp_path: Path) -> None:
+    audits: list[tuple[str, dict[str, object]]] = []
+    manager = MemoryManager(
+        tmp_path / "memory",
+        audit_hook=lambda action, data: audits.append((action, data)),
+    )
+    candidate = _write_pending_identity_candidate(manager)
+
+    changed, reason = manager.reject_identity_candidate(
+        str(candidate.id),
+        ingress_handle_id="handle-reject",
+    )
+
+    assert changed is True
+    assert reason == "candidate_rejected"
+    assert manager.list_review_queue(limit=10) == []
+    historical = manager.get_entry(
+        str(candidate.id),
+        include_deleted=True,
+        include_pending_review=True,
+    )
+    assert historical is not None
+    assert historical.status == "tombstoned"
+    reject_event = manager.list_events(
+        entry_id=str(candidate.id),
+        event_type="candidate_rejected",
+        limit=10,
+    )[0]
+    assert reject_event.ingress_handle_id == "handle-reject"
+    assert reject_event.metadata_json["backoff_key"] == "likes(tea)"
+    assert (
+        "memory.candidate_rejected",
+        {
+            "candidate_id": str(candidate.id),
+            "backoff_key": "likes(tea)",
+            "ingress_handle_id": "handle-reject",
+        },
+    ) in audits

@@ -124,6 +124,11 @@ class MemoryManager:
         "user_confirmed",
         "user_corrected",
     }
+    _IDENTITY_ENTRY_TYPES: ClassVar[set[str]] = {
+        "persona_fact",
+        "preference",
+        "soft_constraint",
+    }
 
     def __init__(
         self,
@@ -513,7 +518,11 @@ class MemoryManager:
         rows = [
             self._refresh_ttl(entry)
             for entry in self._entries.values()
-            if not self._is_deleted(entry) and self._is_pending_review(entry)
+            if (
+                not self._is_deleted(entry)
+                and self._is_pending_review(entry)
+                and entry.superseded_by is None
+            )
         ]
         rows.sort(key=lambda item: item.created_at, reverse=True)
         selected = rows[:limit]
@@ -581,6 +590,113 @@ class MemoryManager:
                 },
             )
         return changed
+
+    def promote_identity_candidate(
+        self,
+        *,
+        candidate_id: str,
+        source: MemorySource,
+        source_origin: SourceOrigin,
+        channel_trust: ChannelTrust,
+        confirmation_status: ConfirmationStatus,
+        source_id: str,
+        scope: str,
+        ingress_handle_id: str,
+        content_digest: str | None,
+        taint_labels: list[TaintLabel] | None = None,
+        value: Any | None = None,
+    ) -> MemoryWriteDecision:
+        candidate, reason = self._resolve_identity_candidate(candidate_id)
+        if candidate is None:
+            return MemoryWriteDecision(kind="reject", reason=reason)
+        if confirmation_status not in {"user_confirmed", "user_corrected"}:
+            return MemoryWriteDecision(
+                kind="reject",
+                reason="candidate_promotion_requires_user_confirmation",
+            )
+
+        promoted_value = candidate.value if value is None else value
+        confidence_floor = 0.90 if confirmation_status == "user_confirmed" else 0.85
+        decision = self.write_with_provenance(
+            entry_type=candidate.entry_type,
+            key=candidate.key,
+            value=promoted_value,
+            predicate=candidate.predicate,
+            strength=candidate.strength,
+            source=source,
+            source_origin=source_origin,
+            channel_trust=channel_trust,
+            confirmation_status=confirmation_status,
+            source_id=source_id,
+            scope=scope,
+            confidence=max(candidate.confidence, confidence_floor),
+            confirmation_satisfied=True,
+            taint_labels=list(taint_labels or []),
+            ingress_handle_id=ingress_handle_id,
+            content_digest=content_digest,
+            supersedes=candidate.id,
+        )
+        if decision.kind != "allow" or decision.entry is None:
+            return decision
+        self._record_event(
+            entry=decision.entry,
+            event_type="candidate_promoted",
+            ingress_handle_id=ingress_handle_id,
+            metadata={
+                "candidate_id": candidate.id,
+                "confirmation_status": confirmation_status,
+                "edited": promoted_value != candidate.value,
+            },
+        )
+        self._audit(
+            "memory.candidate_promoted",
+            {
+                "candidate_id": candidate.id,
+                "entry_id": decision.entry.id,
+                "confirmation_status": confirmation_status,
+                "edited": promoted_value != candidate.value,
+                "ingress_handle_id": ingress_handle_id,
+            },
+        )
+        return decision
+
+    def reject_identity_candidate(
+        self,
+        candidate_id: str,
+        *,
+        ingress_handle_id: str | None = None,
+    ) -> tuple[bool, str]:
+        candidate, reason = self._resolve_identity_candidate(candidate_id)
+        if candidate is None:
+            return False, reason
+        candidate.deleted_at = datetime.now(UTC)
+        candidate.status = "tombstoned"
+        self._persist_entry(candidate)
+        self._record_event(
+            entry=candidate,
+            event_type="tombstoned",
+            ingress_handle_id=ingress_handle_id,
+            metadata={
+                "reason": "candidate_rejected",
+                "workflow_state": candidate.workflow_state,
+            },
+        )
+        backoff_key = candidate.predicate or candidate.key
+        self._record_event(
+            entry=candidate,
+            event_type="candidate_rejected",
+            ingress_handle_id=ingress_handle_id,
+            metadata={"backoff_key": backoff_key},
+        )
+        self._audit(
+            "memory.candidate_rejected",
+            {
+                "candidate_id": candidate.id,
+                "backoff_key": backoff_key,
+                "ingress_handle_id": ingress_handle_id,
+            },
+        )
+        return True, "candidate_rejected"
 
     def delete(self, entry_id: str) -> bool:
         entry = self._entries.get(entry_id)
@@ -1085,6 +1201,24 @@ class MemoryManager:
             entry.expires_at = datetime.now(UTC) + timedelta(days=self._default_ttl_days)
             self._persist_entry(entry)
         return entry
+
+    def _resolve_identity_candidate(self, candidate_id: str) -> tuple[MemoryEntry | None, str]:
+        candidate = self.get_entry(
+            candidate_id,
+            include_pending_review=True,
+            include_quarantined=True,
+        )
+        if candidate is None:
+            return None, "candidate_not_found"
+        if self._is_deleted(candidate):
+            return None, "candidate_not_found"
+        if candidate.superseded_by is not None:
+            return None, "candidate_already_resolved"
+        if not self._is_pending_review(candidate):
+            return None, "candidate_not_pending_review"
+        if candidate.entry_type not in self._IDENTITY_ENTRY_TYPES:
+            return None, "candidate_entry_type_invalid"
+        return candidate, ""
 
     @staticmethod
     def _is_deleted(entry: MemoryEntry) -> bool:
