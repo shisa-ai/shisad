@@ -22,6 +22,12 @@ from shisad.memory.remap import (
     resolve_legacy_source_origin,
 )
 from shisad.memory.schema import MemoryEntry, MemorySource, MemoryWriteDecision, WorkflowState
+from shisad.memory.surfaces import (
+    ActiveAttentionPack,
+    IdentityPack,
+    build_active_attention_pack,
+    build_identity_pack,
+)
 from shisad.memory.trust import (
     ChannelTrust,
     ConfirmationStatus,
@@ -520,6 +526,23 @@ class MemoryManager:
             },
         )
         return selected
+
+    def compile_identity(self, *, max_tokens: int = 750) -> IdentityPack:
+        entries = self.list_entries(limit=max(1, len(self._entries)))
+        return build_identity_pack(entries=entries, max_tokens=max_tokens)
+
+    def compile_active_attention(
+        self,
+        *,
+        max_tokens: int = 750,
+        scope_filter: set[str] | None = None,
+    ) -> ActiveAttentionPack:
+        entries = self.list_entries(limit=max(1, len(self._entries)))
+        return build_active_attention_pack(
+            entries=entries,
+            max_tokens=max_tokens,
+            scope_filter=scope_filter,
+        )
 
     def delete(self, entry_id: str) -> bool:
         entry = self._entries.get(entry_id)
