@@ -2341,16 +2341,10 @@ def memory_list(limit: int) -> None:
 )
 @click.option("--key", required=True)
 @click.option("--value", required=True)
-@click.option("--origin", default="user", type=click.Choice(["user", "external", "inferred"]))
-@click.option("--source-id", default="cli")
-@click.option("--confirm", is_flag=True, help="Confirm external/suspicious writes")
 def memory_write(
     entry_type: str,
     key: str,
     value: str,
-    origin: str,
-    source_id: str,
-    confirm: bool,
 ) -> None:
     config = _get_config()
     result = rpc_call(
@@ -2360,12 +2354,6 @@ def memory_write(
             "entry_type": entry_type,
             "key": key,
             "value": value,
-            "source": {
-                "origin": origin,
-                "source_id": source_id,
-                "extraction_method": "cli",
-            },
-            "user_confirmed": confirm,
         },
         response_model=MemoryWriteResult,
     )
@@ -2398,10 +2386,7 @@ def note() -> None:
 @note.command("create")
 @click.option("--key", required=True)
 @click.option("--content", required=True)
-@click.option("--origin", default="user", type=click.Choice(["user", "external", "inferred"]))
-@click.option("--source-id", default="cli")
-@click.option("--confirm", is_flag=True, help="Confirm external/suspicious writes")
-def note_create(key: str, content: str, origin: str, source_id: str, confirm: bool) -> None:
+def note_create(key: str, content: str) -> None:
     config = _get_config()
     result = rpc_call(
         config,
@@ -2409,9 +2394,6 @@ def note_create(key: str, content: str, origin: str, source_id: str, confirm: bo
         {
             "key": key,
             "content": content,
-            "origin": origin,
-            "source_id": source_id,
-            "user_confirmed": confirm,
         },
         response_model=MemoryWriteResult,
     )
@@ -2484,17 +2466,11 @@ def todo() -> None:
 @click.option("--details", default="")
 @click.option("--status", default="open", type=click.Choice(["open", "in_progress", "done"]))
 @click.option("--due-date", default="", help="Optional due date string")
-@click.option("--origin", default="user", type=click.Choice(["user", "external", "inferred"]))
-@click.option("--source-id", default="cli")
-@click.option("--confirm", is_flag=True, help="Confirm external/suspicious writes")
 def todo_create(
     title: str,
     details: str,
     status: str,
     due_date: str,
-    origin: str,
-    source_id: str,
-    confirm: bool,
 ) -> None:
     config = _get_config()
     result = rpc_call(
@@ -2505,9 +2481,6 @@ def todo_create(
             "details": details,
             "status": status,
             "due_date": due_date,
-            "origin": origin,
-            "source_id": source_id,
-            "user_confirmed": confirm,
         },
         response_model=MemoryWriteResult,
     )

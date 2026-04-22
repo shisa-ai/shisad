@@ -151,7 +151,9 @@ async def test_todo_create_accepts_handle_bound_extracted_payload(tmp_path: Path
 
 
 @pytest.mark.asyncio
-async def test_memory_write_legacy_source_path_still_works(tmp_path: Path) -> None:
+async def test_memory_write_legacy_source_path_still_works_for_internal_fallbacks(
+    tmp_path: Path,
+) -> None:
     harness = _MemoryWriteHarness(tmp_path)
 
     result = await harness.do_memory_write(
@@ -288,11 +290,6 @@ async def test_memory_write_control_api_path_mints_user_asserted_handle(tmp_path
             "entry_type": "fact",
             "key": "profile.note",
             "value": "typed directly in CLI",
-            "source": {
-                "origin": "external",
-                "source_id": "cli-1",
-                "extraction_method": "cli",
-            },
         }
     )
 
@@ -314,8 +311,6 @@ async def test_note_create_control_api_path_mints_user_asserted_handle(tmp_path:
             "_control_api_authenticated_write": True,
             "key": "note:cli",
             "content": "direct note command",
-            "origin": "external",
-            "source_id": "cli-note-1",
         }
     )
 
@@ -338,8 +333,6 @@ async def test_todo_create_control_api_path_mints_user_asserted_handle(tmp_path:
             "details": "",
             "status": "open",
             "due_date": "",
-            "origin": "external",
-            "source_id": "cli-todo-1",
         }
     )
 

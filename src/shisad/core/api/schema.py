@@ -354,7 +354,6 @@ class MemoryRetrieveParams(_StrictParams):
 
 
 class MemoryWriteParams(_StrictParams):
-    source: dict[str, Any] | None = None
     ingress_context: str | None = None
     content_digest: str | None = None
     derivation_path: Literal["direct", "extracted", "summary"] = "direct"
@@ -366,14 +365,16 @@ class MemoryWriteParams(_StrictParams):
     workflow_state: Literal["active", "waiting", "blocked", "stale", "closed"] | None = None
     invocation_eligible: bool = False
     supersedes: str | None = None
-    user_confirmed: bool = False
 
     @model_validator(mode="after")
-    def _validate_source_shape(self) -> MemoryWriteParams:
-        if self.source is None and self.ingress_context is None:
-            raise ValueError("source or ingress_context is required")
-        if self.source is not None and self.ingress_context is not None:
-            raise ValueError("source and ingress_context are mutually exclusive")
+    def _validate_ingress_shape(self) -> MemoryWriteParams:
+        if self.ingress_context is None:
+            if self.content_digest is not None:
+                raise ValueError("content_digest requires ingress_context")
+            if self.parent_digest is not None:
+                raise ValueError("parent_digest requires ingress_context")
+            if self.derivation_path != "direct":
+                raise ValueError("non-direct derivation requires ingress_context")
         return self
 
 
@@ -484,10 +485,22 @@ class MemoryRotateKeyResult(BaseModel):
 class NoteCreateParams(_StrictParams):
     key: str
     content: str
-    origin: Literal["user", "external", "inferred"] = "user"
-    source_id: str = "cli"
-    user_confirmed: bool = False
+    ingress_context: str | None = None
+    content_digest: str | None = None
+    derivation_path: Literal["direct", "extracted", "summary"] = "direct"
+    parent_digest: str | None = None
     confidence: float = 0.8
+
+    @model_validator(mode="after")
+    def _validate_ingress_shape(self) -> NoteCreateParams:
+        if self.ingress_context is None:
+            if self.content_digest is not None:
+                raise ValueError("content_digest requires ingress_context")
+            if self.parent_digest is not None:
+                raise ValueError("parent_digest requires ingress_context")
+            if self.derivation_path != "direct":
+                raise ValueError("non-direct derivation requires ingress_context")
+        return self
 
 
 class NoteListParams(_StrictParams):
@@ -542,10 +555,22 @@ class TodoCreateParams(_StrictParams):
     details: str = ""
     status: Literal["open", "in_progress", "done"] = "open"
     due_date: str = ""
-    origin: Literal["user", "external", "inferred"] = "user"
-    source_id: str = "cli"
-    user_confirmed: bool = False
+    ingress_context: str | None = None
+    content_digest: str | None = None
+    derivation_path: Literal["direct", "extracted", "summary"] = "direct"
+    parent_digest: str | None = None
     confidence: float = 0.8
+
+    @model_validator(mode="after")
+    def _validate_ingress_shape(self) -> TodoCreateParams:
+        if self.ingress_context is None:
+            if self.content_digest is not None:
+                raise ValueError("content_digest requires ingress_context")
+            if self.parent_digest is not None:
+                raise ValueError("parent_digest requires ingress_context")
+            if self.derivation_path != "direct":
+                raise ValueError("non-direct derivation requires ingress_context")
+        return self
 
 
 class TodoListParams(_StrictParams):

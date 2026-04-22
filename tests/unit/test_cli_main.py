@@ -589,10 +589,6 @@ def test_cli_commands_route_through_rpc_wrapper(
             "favorite_color",
             "--value",
             "blue",
-            "--origin",
-            "user",
-            "--source-id",
-            "cli",
         ],
     )
     _invoke_ok(runner, ["memory", "rotate-key"])
@@ -681,7 +677,21 @@ def test_cli_commands_route_through_rpc_wrapper(
         "lockdown.set",
         {"session_id": "s-1", "action": "quarantine", "reason": "manual"},
     ) in calls
+    assert (
+        "memory.write",
+        {"entry_type": "fact", "key": "favorite_color", "value": "blue"},
+    ) in calls
+    assert ("note.create", {"key": "meeting", "content": "prep"}) in calls
     assert ("memory.rotate_key", {"reencrypt_existing": True}) in calls
+    assert (
+        "todo.create",
+        {
+            "title": "Ship M2",
+            "details": "review ready",
+            "status": "open",
+            "due_date": "2026-02-16",
+        },
+    ) in calls
     assert ("doctor.check", {"component": "realitycheck"}) in calls
 
     assert ("realitycheck.read", {"path": "sources/a.md", "max_bytes": 64}) in calls

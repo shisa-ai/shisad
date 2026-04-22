@@ -31,6 +31,7 @@ from shisad.core.api.schema import (
     MemoryVerifyResult,
     MemoryWriteParams,
     MemoryWriteResult,
+    NoteCreateParams,
     PolicyExplainResult,
     RealityCheckReadResult,
     RealityCheckSearchResult,
@@ -51,6 +52,7 @@ from shisad.core.api.schema import (
     TaskListResult,
     TaskPendingConfirmationsResult,
     TaskTriggerEventResult,
+    TodoCreateParams,
     ToolExecuteParams,
     ToolExecuteResult,
 )
@@ -361,29 +363,85 @@ class TestApiSchemaValidation:
         )
 
         assert params.ingress_context == "handle-1"
-        assert params.source is None
         assert params.derivation_path == "direct"
 
-    def test_m1_memory_write_params_reject_ambiguous_or_empty_source_shape(self) -> None:
+    def test_m1_memory_write_params_accept_direct_control_shape_without_ingress(self) -> None:
+        params = MemoryWriteParams.model_validate(
+            {
+                "entry_type": "fact",
+                "key": "profile.name",
+                "value": "alice",
+            }
+        )
+
+        assert params.ingress_context is None
+        assert params.derivation_path == "direct"
+
+    def test_m1_memory_write_params_reject_legacy_source_and_orphaned_binding_fields(self) -> None:
         with pytest.raises(ValidationError):
             MemoryWriteParams.model_validate(
                 {
                     "entry_type": "fact",
                     "key": "profile.name",
                     "value": "alice",
+                    "source": {
+                        "origin": "user",
+                        "source_id": "msg-1",
+                        "extraction_method": "cli",
+                    },
                 }
             )
 
         with pytest.raises(ValidationError):
             MemoryWriteParams.model_validate(
                 {
-                    "source": {"origin": "user", "source_id": "msg-1", "extraction_method": "cli"},
-                    "ingress_context": "handle-1",
                     "entry_type": "fact",
                     "key": "profile.name",
                     "value": "alice",
+                    "content_digest": "sha256:abc",
                 }
             )
+
+    def test_m1_note_and_todo_params_reject_legacy_trust_fields(self) -> None:
+        with pytest.raises(ValidationError):
+            NoteCreateParams.model_validate(
+                {
+                    "key": "note:1",
+                    "content": "hello",
+                    "origin": "external",
+                }
+            )
+
+        with pytest.raises(ValidationError):
+            TodoCreateParams.model_validate(
+                {
+                    "title": "task",
+                    "origin": "external",
+                }
+            )
+
+        note = NoteCreateParams.model_validate(
+            {
+                "key": "note:2",
+                "content": "hello",
+                "ingress_context": "handle-2",
+                "content_digest": "sha256:def",
+                "derivation_path": "extracted",
+                "parent_digest": "sha256:parent",
+            }
+        )
+        todo = TodoCreateParams.model_validate(
+            {
+                "title": "task",
+                "ingress_context": "handle-3",
+                "content_digest": "sha256:ghi",
+                "derivation_path": "summary",
+                "parent_digest": "sha256:parent",
+            }
+        )
+
+        assert note.ingress_context == "handle-2"
+        assert todo.ingress_context == "handle-3"
 
     def test_m1_memory_list_params_gate_quarantined_reads_on_confirmation(self) -> None:
         with pytest.raises(ValidationError):
