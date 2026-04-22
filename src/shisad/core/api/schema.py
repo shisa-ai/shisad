@@ -365,6 +365,7 @@ class MemoryWriteParams(_StrictParams):
     confidence: float = 0.5
     workflow_state: Literal["active", "waiting", "blocked", "stale", "closed"] | None = None
     invocation_eligible: bool = False
+    supersedes: str | None = None
     user_confirmed: bool = False
 
     @model_validator(mode="after")

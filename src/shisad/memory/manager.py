@@ -80,6 +80,7 @@ class MemoryManager:
         user_confirmed: bool = False,
         workflow_state: WorkflowState | None = None,
         invocation_eligible: bool = False,
+        supersedes: str | None = None,
     ) -> MemoryWriteDecision:
         source_origin = resolve_legacy_source_origin(
             source.origin,
@@ -103,6 +104,7 @@ class MemoryManager:
             confirmation_satisfied=user_confirmed,
             workflow_state=workflow_state,
             invocation_eligible=invocation_eligible,
+            supersedes=supersedes,
         )
 
     def write_with_provenance(
@@ -124,6 +126,7 @@ class MemoryManager:
         content_digest: str | None = None,
         workflow_state: WorkflowState | None = None,
         invocation_eligible: bool = False,
+        supersedes: str | None = None,
     ) -> MemoryWriteDecision:
         text_value = str(value)
         if self._looks_instruction_like(text_value):
@@ -187,10 +190,24 @@ class MemoryManager:
                 kind="reject",
                 reason="invocation_eligible_requires_install_triple",
             )
+        prior_entry: MemoryEntry | None = None
+        if supersedes is not None:
+            prior_entry = self._entries.get(supersedes)
+            if prior_entry is None or self._is_deleted(prior_entry):
+                return MemoryWriteDecision(kind="reject", reason="supersedes_target_not_found")
+            if prior_entry.superseded_by is not None:
+                return MemoryWriteDecision(
+                    kind="reject",
+                    reason="supersedes_target_already_has_successor",
+                )
+            if prior_entry.entry_type != entry_type or prior_entry.key != key:
+                return MemoryWriteDecision(kind="reject", reason="supersedes_target_mismatch")
         resolved_workflow_state = workflow_state or (
             "active" if entry_type in ACTIVE_AGENDA_ENTRY_TYPES else None
         )
         entry = MemoryEntry(
+            version=(prior_entry.version + 1) if prior_entry is not None else 1,
+            supersedes=supersedes,
             entry_type=entry_type,
             key=key,
             value=stored_value,
@@ -210,6 +227,26 @@ class MemoryManager:
         )
         self._entries[entry.id] = entry
         self._persist_entry(entry)
+        if prior_entry is not None:
+            prior_entry.superseded_by = entry.id
+            self._persist_entry(prior_entry)
+            self._record_event(
+                entry=prior_entry,
+                event_type="superseded",
+                ingress_handle_id=entry.ingress_handle_id,
+                metadata={
+                    "superseded_by": entry.id,
+                    "replacement_version": entry.version,
+                },
+            )
+            self._audit(
+                "memory.supersede",
+                {
+                    "entry_id": prior_entry.id,
+                    "superseded_by": entry.id,
+                    "replacement_version": entry.version,
+                },
+            )
         self._record_event(
             entry=entry,
             event_type="created",
@@ -219,6 +256,7 @@ class MemoryManager:
                 "workflow_state": entry.workflow_state,
                 "source_origin": entry.source_origin,
                 "invocation_eligible": entry.invocation_eligible,
+                "supersedes": entry.supersedes,
             },
         )
         if entry.entry_type in ACTIVE_AGENDA_ENTRY_TYPES:

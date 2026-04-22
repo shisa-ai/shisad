@@ -231,3 +231,48 @@ async def test_memory_write_rejects_invalid_install_triple_for_procedural_entry(
 
     assert result["kind"] == "reject"
     assert result["reason"] == "invocation_eligible_requires_install_triple"
+
+
+@pytest.mark.asyncio
+async def test_memory_write_supports_supersedes_chain(tmp_path: Path) -> None:
+    harness = _MemoryWriteHarness(tmp_path)
+    context = harness._memory_ingress_registry.mint(
+        source_origin="user_direct",
+        channel_trust="command",
+        confirmation_status="user_asserted",
+        scope="user",
+        source_id="turn-6",
+        content="draft one",
+    )
+    first = await harness.do_memory_write(
+        {
+            "ingress_context": context.handle_id,
+            "entry_type": "note",
+            "key": "note:chain",
+            "value": "draft one",
+        }
+    )
+    assert first["entry"] is not None
+
+    next_context = harness._memory_ingress_registry.mint(
+        source_origin="user_direct",
+        channel_trust="command",
+        confirmation_status="user_asserted",
+        scope="user",
+        source_id="turn-7",
+        content="draft two",
+    )
+    second = await harness.do_memory_write(
+        {
+            "ingress_context": next_context.handle_id,
+            "entry_type": "note",
+            "key": "note:chain",
+            "value": "draft two",
+            "supersedes": first["entry"]["id"],
+        }
+    )
+
+    assert second["kind"] == "allow"
+    assert second["entry"] is not None
+    assert second["entry"]["version"] == 2
+    assert second["entry"]["supersedes"] == first["entry"]["id"]

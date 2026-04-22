@@ -538,3 +538,132 @@ def test_m1_procedural_install_triples_control_invocation_eligibility(tmp_path: 
 
     assert rejected.kind == "reject"
     assert rejected.reason == "invocation_eligible_requires_install_triple"
+
+
+def test_m1_supersedes_creates_version_chain_and_forward_pointer(tmp_path: Path) -> None:
+    audits: list[tuple[str, dict[str, object]]] = []
+    manager = MemoryManager(
+        tmp_path / "memory",
+        audit_hook=lambda action, data: audits.append((action, data)),
+    )
+
+    first = manager.write_with_provenance(
+        entry_type="note",
+        key="note:plan",
+        value="draft one",
+        source=MemorySource(origin="user", source_id="msg-8", extraction_method="manual"),
+        source_origin="user_direct",
+        channel_trust="command",
+        confirmation_status="user_asserted",
+        source_id="msg-8",
+        scope="user",
+        confidence=0.8,
+        confirmation_satisfied=True,
+    )
+    assert first.entry is not None
+
+    second = manager.write_with_provenance(
+        entry_type="note",
+        key="note:plan",
+        value="draft two",
+        source=MemorySource(origin="user", source_id="msg-9", extraction_method="manual"),
+        source_origin="user_direct",
+        channel_trust="command",
+        confirmation_status="user_asserted",
+        source_id="msg-9",
+        scope="user",
+        confidence=0.8,
+        confirmation_satisfied=True,
+        supersedes=first.entry.id,
+    )
+
+    assert second.kind == "allow"
+    assert second.entry is not None
+    assert second.entry.version == 2
+    assert second.entry.supersedes == first.entry.id
+    prior = manager.list_entries(limit=10, include_pending_review=True)
+    original = next(entry for entry in prior if entry.id == first.entry.id)
+    assert original.superseded_by == second.entry.id
+    supersede_event = manager.list_events(
+        entry_id=first.entry.id,
+        event_type="superseded",
+        limit=10,
+    )[0]
+    assert supersede_event.metadata_json["superseded_by"] == second.entry.id
+    assert (
+        "memory.supersede",
+        {
+            "entry_id": first.entry.id,
+            "superseded_by": second.entry.id,
+            "replacement_version": 2,
+        },
+    ) in audits
+
+
+def test_m1_supersedes_rejects_mismatched_or_reused_targets(tmp_path: Path) -> None:
+    manager = MemoryManager(tmp_path / "memory")
+
+    first = manager.write_with_provenance(
+        entry_type="note",
+        key="note:plan",
+        value="draft one",
+        source=MemorySource(origin="user", source_id="msg-10", extraction_method="manual"),
+        source_origin="user_direct",
+        channel_trust="command",
+        confirmation_status="user_asserted",
+        source_id="msg-10",
+        scope="user",
+        confidence=0.8,
+        confirmation_satisfied=True,
+    )
+    assert first.entry is not None
+
+    mismatch = manager.write_with_provenance(
+        entry_type="fact",
+        key="fact:plan",
+        value="not the same chain",
+        source=MemorySource(origin="user", source_id="msg-11", extraction_method="manual"),
+        source_origin="user_direct",
+        channel_trust="command",
+        confirmation_status="user_asserted",
+        source_id="msg-11",
+        scope="user",
+        confidence=0.8,
+        confirmation_satisfied=True,
+        supersedes=first.entry.id,
+    )
+    assert mismatch.kind == "reject"
+    assert mismatch.reason == "supersedes_target_mismatch"
+
+    second = manager.write_with_provenance(
+        entry_type="note",
+        key="note:plan",
+        value="draft two",
+        source=MemorySource(origin="user", source_id="msg-12", extraction_method="manual"),
+        source_origin="user_direct",
+        channel_trust="command",
+        confirmation_status="user_asserted",
+        source_id="msg-12",
+        scope="user",
+        confidence=0.8,
+        confirmation_satisfied=True,
+        supersedes=first.entry.id,
+    )
+    assert second.entry is not None
+
+    reused = manager.write_with_provenance(
+        entry_type="note",
+        key="note:plan",
+        value="draft three",
+        source=MemorySource(origin="user", source_id="msg-13", extraction_method="manual"),
+        source_origin="user_direct",
+        channel_trust="command",
+        confirmation_status="user_asserted",
+        source_id="msg-13",
+        scope="user",
+        confidence=0.8,
+        confirmation_satisfied=True,
+        supersedes=first.entry.id,
+    )
+    assert reused.kind == "reject"
+    assert reused.reason == "supersedes_target_already_has_successor"

@@ -61,6 +61,7 @@ class MemoryImplMixin(HandlerMixinBase):
             content_digest=resolved_digest,
             workflow_state=params.get("workflow_state"),
             invocation_eligible=bool(params.get("invocation_eligible", False)),
+            supersedes=str(params.get("supersedes", "")).strip() or None,
         )
         return cast(dict[str, Any], decision.model_dump(mode="json"))
 
@@ -106,6 +107,7 @@ class MemoryImplMixin(HandlerMixinBase):
             confidence=float(params.get("confidence", 0.5)),
             workflow_state=params.get("workflow_state"),
             invocation_eligible=bool(params.get("invocation_eligible", False)),
+            supersedes=str(params.get("supersedes", "")).strip() or None,
             user_confirmed=bool(params.get("user_confirmed", False)),
         )
         return cast(dict[str, Any], decision.model_dump(mode="json"))
