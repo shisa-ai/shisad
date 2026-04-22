@@ -1756,6 +1756,158 @@ async def test_contract_pending_review_entries_are_isolated_to_review_queue(
 
 
 @pytest.mark.asyncio
+async def test_contract_identity_candidate_cli_surface_and_accept_flow(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seeded: dict[str, str] = {}
+
+    def _seed(config: DaemonConfig) -> None:
+        manager = MemoryManager(config.data_dir / "memory_entries")
+        decision = manager.write_with_provenance(
+            entry_type="preference",
+            key="preference:tea",
+            value="I prefer tea over coffee.",
+            predicate="likes(tea)",
+            source=MemorySource(
+                origin="external",
+                source_id="candidate-identity-1",
+                extraction_method="identity.candidate",
+            ),
+            source_origin="external_message",
+            channel_trust="shared_participant",
+            confirmation_status="pending_review",
+            source_id="candidate-identity-1",
+            scope="user",
+            confidence=0.62,
+            confirmation_satisfied=True,
+        )
+        assert decision.entry is not None
+        seeded["candidate_id"] = decision.entry.id
+
+    async with _contract_harness_context(tmp_path, monkeypatch, prestart=_seed) as harness:
+        candidate_id = seeded["candidate_id"]
+        sid = await _create_session(harness.client)
+
+        surfaced = await harness.client.call(
+            "session.message",
+            {"session_id": sid, "content": "hello"},
+        )
+        assert candidate_id in str(surfaced.get("response", ""))
+        assert "/identity accept" in str(surfaced.get("response", ""))
+
+        accepted = await harness.client.call(
+            "session.message",
+            {"session_id": sid, "content": f"/identity accept {candidate_id}"},
+        )
+        assert "Remembered identity candidate" in str(accepted.get("response", ""))
+
+        review_queue = await harness.client.call("memory.list_review_queue", {"limit": 10})
+        queued_ids = {
+            str(item.get("id") or item.get("entry_id") or "").strip()
+            for item in review_queue.get("entries", [])
+            if isinstance(item, dict)
+        }
+        assert candidate_id not in queued_ids
+
+        listing = await harness.client.call("memory.list", {"limit": 20})
+        promoted = next(
+            (
+                item
+                for item in listing.get("entries", [])
+                if isinstance(item, dict)
+                and str(item.get("entry_type", "")) == "preference"
+                and str(item.get("key", "")) == "preference:tea"
+                and str(item.get("confirmation_status", "")) == "user_confirmed"
+            ),
+            None,
+        )
+        assert isinstance(promoted, dict)
+
+
+@pytest.mark.asyncio
+async def test_contract_identity_candidate_silence_expires_without_rejection_signal(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seeded: dict[str, str] = {}
+
+    def _seed(config: DaemonConfig) -> None:
+        manager = MemoryManager(config.data_dir / "memory_entries")
+        decision = manager.write_with_provenance(
+            entry_type="preference",
+            key="preference:tea",
+            value="I prefer tea over coffee.",
+            predicate="likes(tea)",
+            source=MemorySource(
+                origin="external",
+                source_id="candidate-identity-2",
+                extraction_method="identity.candidate",
+            ),
+            source_origin="external_message",
+            channel_trust="shared_participant",
+            confirmation_status="pending_review",
+            source_id="candidate-identity-2",
+            scope="user",
+            confidence=0.62,
+            confirmation_satisfied=True,
+        )
+        assert decision.entry is not None
+        seeded["candidate_id"] = decision.entry.id
+
+    async with _contract_harness_context(tmp_path, monkeypatch, prestart=_seed) as harness:
+        candidate_id = seeded["candidate_id"]
+        sid = await _create_session(harness.client)
+
+        first = await harness.client.call(
+            "session.message",
+            {"session_id": sid, "content": "hello"},
+        )
+        second = await harness.client.call(
+            "session.message",
+            {"session_id": sid, "content": "hello again"},
+        )
+        third = await harness.client.call(
+            "session.message",
+            {"session_id": sid, "content": "still there?"},
+        )
+
+        assert candidate_id in str(first.get("response", ""))
+        assert candidate_id in str(second.get("response", ""))
+        assert candidate_id not in str(third.get("response", ""))
+
+        review_queue = await harness.client.call("memory.list_review_queue", {"limit": 10})
+        queued_ids = {
+            str(item.get("id") or item.get("entry_id") or "").strip()
+            for item in review_queue.get("entries", [])
+            if isinstance(item, dict)
+        }
+        assert candidate_id not in queued_ids
+
+        db_path = harness.config.data_dir / "memory_entries" / "memory.sqlite3"
+        with sqlite3.connect(db_path) as conn:
+            expired = conn.execute(
+                """
+                SELECT COUNT(*)
+                FROM memory_events
+                WHERE entry_id = ? AND event_type = 'candidate_expired'
+                """,
+                (candidate_id,),
+            ).fetchone()
+            rejected = conn.execute(
+                """
+                SELECT COUNT(*)
+                FROM memory_events
+                WHERE entry_id = ? AND event_type = 'candidate_rejected'
+                """,
+                (candidate_id,),
+            ).fetchone()
+
+        assert expired is not None and int(expired[0]) == 1
+        assert rejected is not None and int(rejected[0]) == 0
+
+
+@pytest.mark.asyncio
 async def test_contract_trust_matrix_rows_round_trip_with_expected_bands(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
