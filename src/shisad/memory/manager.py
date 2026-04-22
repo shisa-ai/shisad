@@ -698,6 +698,73 @@ class MemoryManager:
         )
         return True, "candidate_rejected"
 
+    def note_identity_candidate_surface(
+        self,
+        candidate_id: str,
+        *,
+        surfaced_at: datetime | None = None,
+    ) -> tuple[bool, int]:
+        candidate, _reason = self._resolve_identity_candidate(candidate_id)
+        if candidate is None:
+            return False, 0
+        timestamp = surfaced_at or datetime.now(UTC)
+        surface_count = self._identity_candidate_surface_count(candidate.id) + 1
+        self._record_event(
+            entry=candidate,
+            event_type="candidate_surfaced",
+            ingress_handle_id=None,
+            metadata={
+                "surface_count": surface_count,
+                "surfaced_at": timestamp.isoformat(),
+            },
+        )
+        self._audit(
+            "memory.candidate_surfaced",
+            {
+                "candidate_id": candidate.id,
+                "surface_count": surface_count,
+            },
+        )
+        return True, surface_count
+
+    def expire_identity_candidate(
+        self,
+        candidate_id: str,
+        *,
+        ingress_handle_id: str | None = None,
+    ) -> tuple[bool, str]:
+        candidate, reason = self._resolve_identity_candidate(candidate_id)
+        if candidate is None:
+            return False, reason
+        candidate.deleted_at = datetime.now(UTC)
+        candidate.status = "tombstoned"
+        self._persist_entry(candidate)
+        surface_count = self._identity_candidate_surface_count(candidate.id)
+        self._record_event(
+            entry=candidate,
+            event_type="tombstoned",
+            ingress_handle_id=ingress_handle_id,
+            metadata={
+                "reason": "candidate_expired",
+                "workflow_state": candidate.workflow_state,
+            },
+        )
+        self._record_event(
+            entry=candidate,
+            event_type="candidate_expired",
+            ingress_handle_id=ingress_handle_id,
+            metadata={"surface_count": surface_count},
+        )
+        self._audit(
+            "memory.candidate_expired",
+            {
+                "candidate_id": candidate.id,
+                "surface_count": surface_count,
+                "ingress_handle_id": ingress_handle_id,
+            },
+        )
+        return True, "candidate_expired"
+
     def delete(self, entry_id: str) -> bool:
         entry = self._entries.get(entry_id)
         if entry is None:
@@ -1219,6 +1286,15 @@ class MemoryManager:
         if candidate.entry_type not in self._IDENTITY_ENTRY_TYPES:
             return None, "candidate_entry_type_invalid"
         return candidate, ""
+
+    def _identity_candidate_surface_count(self, candidate_id: str) -> int:
+        return len(
+            self.list_events(
+                entry_id=candidate_id,
+                event_type="candidate_surfaced",
+                limit=10,
+            )
+        )
 
     @staticmethod
     def _is_deleted(entry: MemoryEntry) -> bool:

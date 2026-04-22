@@ -1325,3 +1325,30 @@ def test_m3_reject_identity_candidate_tombstones_entry_and_records_backoff(tmp_p
             "ingress_handle_id": "handle-reject",
         },
     ) in audits
+
+
+def test_m3_note_identity_candidate_surface_records_event_and_count(tmp_path: Path) -> None:
+    audits: list[tuple[str, dict[str, object]]] = []
+    manager = MemoryManager(
+        tmp_path / "memory",
+        audit_hook=lambda action, data: audits.append((action, data)),
+    )
+    candidate = _write_pending_identity_candidate(manager)
+
+    changed, count = manager.note_identity_candidate_surface(str(candidate.id))
+
+    assert changed is True
+    assert count == 1
+    surface_event = manager.list_events(
+        entry_id=str(candidate.id),
+        event_type="candidate_surfaced",
+        limit=10,
+    )[0]
+    assert surface_event.metadata_json["surface_count"] == 1
+    assert (
+        "memory.candidate_surfaced",
+        {
+            "candidate_id": str(candidate.id),
+            "surface_count": 1,
+        },
+    ) in audits

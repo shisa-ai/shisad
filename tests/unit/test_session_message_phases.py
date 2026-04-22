@@ -6,6 +6,7 @@ import asyncio
 import json
 import time
 from collections.abc import Mapping
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
@@ -44,6 +45,8 @@ from shisad.daemon.handlers._impl_session import (
     TaskDelegationRecommendation,
 )
 from shisad.memory.ingress import IngressContextRegistry
+from shisad.memory.manager import MemoryManager
+from shisad.memory.schema import MemorySource
 from shisad.security.control_plane.schema import ActionKind, ControlDecision, RiskTier
 from shisad.security.firewall import FirewallResult
 from shisad.security.monitor import MonitorDecisionType
@@ -927,6 +930,31 @@ class _FinalizeEvidenceHarness(SessionImplMixin):
         _ = kwargs
 
 
+def _write_pending_identity_candidate(manager: MemoryManager) -> str:
+    decision = manager.write_with_provenance(
+        entry_type="preference",
+        key="preference:tea",
+        value="I prefer tea over coffee.",
+        predicate="likes(tea)",
+        source=MemorySource(
+            origin="external",
+            source_id="candidate-finalize-1",
+            extraction_method="identity.candidate",
+        ),
+        source_origin="external_message",
+        channel_trust="shared_participant",
+        confirmation_status="pending_review",
+        source_id="candidate-finalize-1",
+        scope="user",
+        confidence=0.62,
+        confirmation_satisfied=True,
+        ingress_handle_id="handle-candidate",
+        content_digest="digest-candidate",
+    )
+    assert decision.entry is not None
+    return decision.entry.id
+
+
 class _PostToolSynthesisPlanner:
     def __init__(self, response_text: str) -> None:
         self.response_text = response_text
@@ -1127,6 +1155,56 @@ async def test_finalize_response_marks_unsynthesized_tool_summary_as_intermediat
     assert text.startswith("I completed the tool step")
     assert not text.startswith("Tool results summary:")
     assert "Tool results summary:" in text
+
+
+@pytest.mark.asyncio
+async def test_m3_finalize_response_surfaces_pending_identity_candidate_on_cli(
+    tmp_path: Path,
+) -> None:
+    harness = _FinalizeEvidenceHarness()
+    harness._memory_manager = MemoryManager(tmp_path / "memory")
+    candidate_id = _write_pending_identity_candidate(harness._memory_manager)
+    execution = _finalize_execution_result(tool_outputs=[], assistant_response="Planner reply")
+
+    response = await SessionImplMixin._finalize_response(harness, execution)
+
+    assert candidate_id in str(response["response"])
+    assert "/identity accept" in str(response["response"])
+    surfaced = harness._memory_manager.list_events(
+        entry_id=candidate_id,
+        event_type="candidate_surfaced",
+        limit=10,
+    )
+    assert len(surfaced) == 1
+
+
+@pytest.mark.asyncio
+async def test_m3_finalize_response_expires_ignored_identity_candidate_without_backoff(
+    tmp_path: Path,
+) -> None:
+    harness = _FinalizeEvidenceHarness()
+    harness._memory_manager = MemoryManager(tmp_path / "memory")
+    candidate_id = _write_pending_identity_candidate(harness._memory_manager)
+    assert harness._memory_manager.note_identity_candidate_surface(candidate_id) == (True, 1)
+    assert harness._memory_manager.note_identity_candidate_surface(candidate_id) == (True, 2)
+    execution = _finalize_execution_result(tool_outputs=[], assistant_response="Planner reply")
+
+    response = await SessionImplMixin._finalize_response(harness, execution)
+
+    assert candidate_id not in str(response["response"])
+    assert harness._memory_manager.list_review_queue(limit=10) == []
+    expired = harness._memory_manager.list_events(
+        entry_id=candidate_id,
+        event_type="candidate_expired",
+        limit=10,
+    )
+    assert len(expired) == 1
+    rejected = harness._memory_manager.list_events(
+        entry_id=candidate_id,
+        event_type="candidate_rejected",
+        limit=10,
+    )
+    assert rejected == []
 
 
 @pytest.mark.asyncio

@@ -5975,6 +5975,12 @@ class SessionImplMixin(HandlerMixinBase):
         response_taint_labels = set(planner_context.context.taint_labels)
         for tool_output in execution.executed_tool_outputs:
             response_taint_labels.update(tool_output.taint_labels)
+        response_text = self._maybe_append_identity_candidate_suggestion(
+            validated=validated,
+            execution=execution,
+            response_text=response_text,
+            response_taint_labels=response_taint_labels,
+        )
         public_sensitive_taints = (
             _public_channel_sensitive_taints(response_taint_labels)
             if _is_public_channel_level(validated.trust_level)
@@ -6643,6 +6649,51 @@ class SessionImplMixin(HandlerMixinBase):
                 passed=False,
             )
         return _parse_task_close_gate_response(response_text)
+
+    def _maybe_append_identity_candidate_suggestion(
+        self,
+        *,
+        validated: SessionMessageValidationResult,
+        execution: SessionMessageExecutionResult,
+        response_text: str,
+        response_taint_labels: set[TaintLabel],
+    ) -> str:
+        memory_manager = cast(MemoryManager | None, getattr(self, "_memory_manager", None))
+        if memory_manager is None:
+            return response_text
+        normalized_channel = str(validated.channel or validated.session.channel).strip().lower()
+        if normalized_channel != "cli" or validated.session_mode != SessionMode.DEFAULT:
+            return response_text
+        if execution.pending_confirmation_ids:
+            return response_text
+
+        for candidate in memory_manager.list_review_queue(limit=20):
+            if candidate.entry_type not in {"persona_fact", "preference", "soft_constraint"}:
+                continue
+            surface_count = len(
+                memory_manager.list_events(
+                    entry_id=candidate.id,
+                    event_type="candidate_surfaced",
+                    limit=10,
+                )
+            )
+            if surface_count >= 2:
+                memory_manager.expire_identity_candidate(candidate.id)
+                continue
+            changed, _ = memory_manager.note_identity_candidate_surface(candidate.id)
+            if not changed:
+                continue
+            suggestion = (
+                "\n\nIdentity candidate pending review: "
+                f"{candidate.id} — {str(candidate.value).strip()}\n"
+                f"Use /identity accept {candidate.id}, "
+                f"/identity edit {candidate.id} <text>, or "
+                f"/identity reject {candidate.id}."
+            )
+            response_taint_labels.update(candidate.taint_labels)
+            response_taint_labels.add(TaintLabel.UNTRUSTED)
+            return f"{response_text}{suggestion}" if response_text.strip() else suggestion.strip()
+        return response_text
 
     async def _mark_command_context_degraded(
         self,
