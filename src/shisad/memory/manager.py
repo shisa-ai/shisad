@@ -539,6 +539,15 @@ class MemoryManager:
             return buffer.getvalue()
         raise ValueError(f"Unsupported export format: {fmt}")
 
+    def reset_storage(self) -> None:
+        """Clear persisted memory rows without deleting the shared SQLite file."""
+        self._entries.clear()
+        with self._connect_db() as conn:
+            conn.execute("DELETE FROM memory_entries")
+        self._event_store.clear()
+        for path in self._storage_dir.glob("*.json"):
+            path.unlink(missing_ok=True)
+
     def quarantine(self, entry_id: str, *, reason: str) -> bool:
         entry = self._entries.get(entry_id)
         if entry is None:

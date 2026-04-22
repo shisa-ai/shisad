@@ -153,6 +153,15 @@ class MemoryEventStore:
         snapshots.reverse()
         return snapshots
 
+    def clear(self) -> int:
+        """Remove persisted events and any legacy JSONL source."""
+        with self._connect() as conn:
+            row = conn.execute("SELECT COUNT(*) FROM memory_events").fetchone()
+            cleared = int(row[0]) if row is not None else 0
+            conn.execute("DELETE FROM memory_events")
+        self._legacy_jsonl_path.unlink(missing_ok=True)
+        return cleared
+
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self._path)
         conn.row_factory = sqlite3.Row

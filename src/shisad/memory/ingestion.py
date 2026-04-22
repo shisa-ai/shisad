@@ -7,6 +7,8 @@ import hashlib
 import json
 import math
 import os
+import shutil
+import sqlite3
 import uuid
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -96,10 +98,14 @@ class IngestionPipeline:
         embedding_fingerprint: EmbeddingFingerprint | None = None,
         embeddings_provider: SyncEmbeddingsProvider | None = None,
         encryption_key: str | None = None,
+        legacy_storage_dir: Path | None = None,
         quarantine_threshold: float = 0.75,
         audit_hook: Callable[[str, dict[str, Any]], None] | None = None,
     ) -> None:
         self._storage_dir = storage_dir
+        self._storage_dir.mkdir(parents=True, exist_ok=True)
+        self._legacy_storage_dir = legacy_storage_dir
+        self._db_path = self._storage_dir / "memory.sqlite3"
         self._records: dict[str, RetrievalResult] = {}
         self._vectors: dict[str, list[float]] = {}
         self._firewall = firewall or ContentFirewall()
@@ -109,21 +115,16 @@ class IngestionPipeline:
             chunk_size=1024,
         )
         self._embeddings_provider = embeddings_provider
+        self._explicit_encryption_key = encryption_key
         self._quarantine_threshold = quarantine_threshold
         self._audit_hook = audit_hook
-
-        self._sanitized_dir = self._storage_dir / "sanitized"
-        self._original_dir = self._storage_dir / "original_encrypted"
-        self._legacy_key_file = self._storage_dir / "key.bin"
-        self._key_manifest_file = self._storage_dir / "keys.json"
-        self._master_salt_file = self._storage_dir / "master_salt.bin"
-        self._sanitized_dir.mkdir(parents=True, exist_ok=True)
-        self._original_dir.mkdir(parents=True, exist_ok=True)
+        self._ensure_schema()
         self._master_secret = self._resolve_master_secret(encryption_key)
         self._key_material_by_id: dict[str, bytes] = {}
         self._key_metadata_by_id: dict[str, dict[str, str]] = {}
         self._active_key_id = ""
         self._load_or_create_keys()
+        self._import_legacy_records()
         self._load_existing_records()
 
     @property
@@ -175,11 +176,9 @@ class IngestionPipeline:
 
         self._records[chunk_id] = result
         self._vectors[chunk_id] = self._embed_text(result.content_sanitized)
-
-        (self._sanitized_dir / f"{chunk_id}.json").write_text(result.model_dump_json(indent=2))
-        (self._original_dir / f"{chunk_id}.bin").write_bytes(
-            self._encrypt_payload(content.encode("utf-8"), chunk_id=chunk_id)
-        )
+        encrypted_original = self._encrypt_payload(content.encode("utf-8"), chunk_id=chunk_id)
+        with self._connect_db() as conn:
+            self._upsert_record(conn, result, encrypted_original)
         return result
 
     def retrieve(
@@ -243,12 +242,16 @@ class IngestionPipeline:
 
     def read_original(self, chunk_id: str) -> str | None:
         """Return decrypted original content for explicit user inspection."""
-        path = self._original_dir / f"{chunk_id}.bin"
-        if not path.exists():
+        with self._connect_db() as conn:
+            row = conn.execute(
+                "SELECT original_payload FROM retrieval_records WHERE chunk_id = ?",
+                (chunk_id,),
+            ).fetchone()
+        if row is None:
             return None
         try:
-            decrypted = self._decrypt_payload(path.read_bytes(), chunk_id=chunk_id)
-        except (InvalidTag, OSError, ValueError, TypeError):
+            decrypted = self._decrypt_payload(bytes(row["original_payload"]), chunk_id=chunk_id)
+        except (InvalidTag, OSError, ValueError, TypeError, KeyError):
             self._audit(
                 "memory.original_read_failed",
                 {"chunk_id": chunk_id, "reason": "decrypt_failed"},
@@ -262,10 +265,20 @@ class IngestionPipeline:
         self._active_key_id = new_key_id
         self._persist_key_manifest()
         if reencrypt_existing:
-            for path in sorted(self._original_dir.glob("*.bin")):
-                chunk_id = path.stem
-                plaintext = self._decrypt_payload(path.read_bytes(), chunk_id=chunk_id)
-                path.write_bytes(self._encrypt_payload(plaintext, chunk_id=chunk_id))
+            with self._connect_db() as conn:
+                rows = conn.execute(
+                    "SELECT chunk_id, original_payload FROM retrieval_records ORDER BY chunk_id ASC"
+                ).fetchall()
+                for row in rows:
+                    chunk_id = str(row["chunk_id"])
+                    plaintext = self._decrypt_payload(
+                        bytes(row["original_payload"]),
+                        chunk_id=chunk_id,
+                    )
+                    conn.execute(
+                        "UPDATE retrieval_records SET original_payload = ? WHERE chunk_id = ?",
+                        (self._encrypt_payload(plaintext, chunk_id=chunk_id), chunk_id),
+                    )
         self._audit(
             "memory.key_rotated",
             {"active_key_id": self._active_key_id, "reencrypt_existing": reencrypt_existing},
@@ -275,18 +288,52 @@ class IngestionPipeline:
     def quarantine_source(self, source_id: str, *, reason: str = "") -> int:
         """Quarantine all chunks from a suspicious source."""
         count = 0
+        changed_ids: list[str] = []
         for chunk_id, record in list(self._records.items()):
-            if record.source_id != source_id:
-                continue
-            if record.quarantined:
+            if record.source_id != source_id or record.quarantined:
                 continue
             self._records[chunk_id] = record.model_copy(update={"quarantined": True})
-            (self._sanitized_dir / f"{chunk_id}.json").write_text(
-                self._records[chunk_id].model_dump_json(indent=2)
-            )
+            changed_ids.append(chunk_id)
             count += 1
+        if changed_ids:
+            with self._connect_db() as conn:
+                conn.executemany(
+                    "UPDATE retrieval_records SET quarantined = 1 WHERE chunk_id = ?",
+                    [(chunk_id,) for chunk_id in changed_ids],
+                )
         _ = reason
         return count
+
+    def persisted_artifact_count(self) -> int:
+        """Return the number of persisted retrieval records."""
+        with self._connect_db() as conn:
+            row = conn.execute("SELECT COUNT(*) FROM retrieval_records").fetchone()
+        return int(row[0]) if row is not None else 0
+
+    def artifacts_empty(self) -> bool:
+        """Whether retrieval storage is empty apart from key metadata."""
+        return self.persisted_artifact_count() == 0
+
+    def reset_storage(self) -> None:
+        """Clear retrieval rows while preserving the shared SQLite substrate."""
+        self._records.clear()
+        self._vectors.clear()
+        self._key_material_by_id.clear()
+        self._key_metadata_by_id.clear()
+        self._active_key_id = ""
+        with self._connect_db() as conn:
+            conn.execute("DELETE FROM retrieval_records")
+            conn.execute("DELETE FROM retrieval_keys")
+            conn.execute(
+                "DELETE FROM retrieval_metadata WHERE key != 'master_salt_b64'"
+            )
+        for root in self._legacy_storage_roots():
+            shutil.rmtree(root / "sanitized", ignore_errors=True)
+            shutil.rmtree(root / "original_encrypted", ignore_errors=True)
+            (root / "keys.json").unlink(missing_ok=True)
+            (root / "key.bin").unlink(missing_ok=True)
+            (root / "master_salt.bin").unlink(missing_ok=True)
+        self._load_or_create_keys()
 
     def collections_for_capabilities(
         self,
@@ -298,21 +345,34 @@ class IngestionPipeline:
         return collections
 
     def _resolve_master_secret(self, encryption_key: str | None) -> bytes:
-        if encryption_key:
-            return self._derive_password_secret(encryption_key.encode("utf-8"))
+        salt = self._load_master_salt()
+        return self._resolve_storage_secret(
+            storage_dir=self._storage_dir,
+            secret_override=encryption_key,
+            salt=salt,
+        )
+
+    def _resolve_storage_secret(
+        self,
+        *,
+        storage_dir: Path,
+        secret_override: str | None,
+        salt: bytes,
+    ) -> bytes:
+        if secret_override:
+            return self._derive_password_secret(secret_override.encode("utf-8"), salt=salt)
         env_secret = os.getenv("SHISAD_MEMORY_MASTER_KEY", "").strip()
         if env_secret:
-            return self._derive_password_secret(env_secret.encode("utf-8"))
+            return self._derive_password_secret(env_secret.encode("utf-8"), salt=salt)
         machine_id = ""
         for candidate in (Path("/etc/machine-id"), Path("/var/lib/dbus/machine-id")):
             if candidate.exists():
                 machine_id = candidate.read_text(encoding="utf-8").strip()
                 break
-        basis = f"{os.getuid()}|{machine_id}|{self._storage_dir.resolve()}"
-        return self._derive_password_secret(basis.encode("utf-8"))
+        basis = f"{os.getuid()}|{machine_id}|{storage_dir.resolve()}"
+        return self._derive_password_secret(basis.encode("utf-8"), salt=salt)
 
-    def _derive_password_secret(self, secret: bytes) -> bytes:
-        salt = self._load_master_salt()
+    def _derive_password_secret(self, secret: bytes, *, salt: bytes) -> bytes:
         kdf = PBKDF2HMAC(
             algorithm=hashes.SHA256(),
             length=32,
@@ -322,25 +382,33 @@ class IngestionPipeline:
         return kdf.derive(secret)
 
     def _load_master_salt(self) -> bytes:
-        if self._master_salt_file.exists():
-            salt = self._master_salt_file.read_bytes()
+        stored = self._metadata_get("master_salt_b64")
+        if stored is not None:
+            salt = self._unb64(stored)
             if len(salt) != 16:
                 raise ValueError("Invalid master salt length")
             return salt
+        for root in self._legacy_storage_roots():
+            salt_path = root / "master_salt.bin"
+            if not salt_path.exists():
+                continue
+            salt = salt_path.read_bytes()
+            if len(salt) != 16:
+                raise ValueError("Invalid master salt length")
+            self._metadata_set("master_salt_b64", self._b64(salt))
+            return salt
         salt = os.urandom(16)
-        self._master_salt_file.parent.mkdir(parents=True, exist_ok=True)
-        self._master_salt_file.write_bytes(salt)
-        os.chmod(self._master_salt_file, 0o600)
+        self._metadata_set("master_salt_b64", self._b64(salt))
         return salt
 
-    def _derive_kek(self, salt: bytes) -> bytes:
+    def _derive_kek(self, salt: bytes, *, master_secret: bytes | None = None) -> bytes:
         kdf = PBKDF2HMAC(
             algorithm=hashes.SHA256(),
             length=32,
             salt=salt,
             iterations=200_000,
         )
-        return kdf.derive(self._master_secret)
+        return kdf.derive(self._master_secret if master_secret is None else master_secret)
 
     @staticmethod
     def _b64(data: bytes) -> str:
@@ -357,21 +425,34 @@ class IngestionPipeline:
         wrapped = AESGCM(kek).encrypt(nonce, key_material, associated_data=None)
         return self._b64(salt), self._b64(nonce), self._b64(wrapped)
 
-    def _unwrap_data_key(self, *, salt_b64: str, nonce_b64: str, wrapped_key_b64: str) -> bytes:
+    def _unwrap_data_key(
+        self,
+        *,
+        salt_b64: str,
+        nonce_b64: str,
+        wrapped_key_b64: str,
+        master_secret: bytes | None = None,
+    ) -> bytes:
         salt = self._unb64(salt_b64)
         nonce = self._unb64(nonce_b64)
         wrapped = self._unb64(wrapped_key_b64)
-        kek = self._derive_kek(salt)
+        kek = self._derive_kek(salt, master_secret=master_secret)
         return AESGCM(kek).decrypt(nonce, wrapped, associated_data=None)
 
     def _load_or_create_keys(self) -> None:
-        if self._key_manifest_file.exists():
-            raw = json.loads(self._key_manifest_file.read_text(encoding="utf-8"))
-            keys = raw.get("keys", [])
-            active = str(raw.get("active_key_id", "")).strip()
-            if not isinstance(keys, list) or not keys:
-                raise ValueError("Invalid key manifest: keys missing")
-            for entry in keys:
+        self._key_material_by_id.clear()
+        self._key_metadata_by_id.clear()
+        with self._connect_db() as conn:
+            rows = conn.execute(
+                """
+                SELECT key_id, created_at, salt_b64, nonce_b64, wrapped_key_b64
+                FROM retrieval_keys
+                ORDER BY created_at ASC, key_id ASC
+                """
+            ).fetchall()
+            active = self._metadata_get("active_key_id", conn=conn)
+        if rows:
+            for entry in rows:
                 key_id = str(entry["key_id"])
                 key_material = self._unwrap_data_key(
                     salt_b64=str(entry["salt_b64"]),
@@ -381,7 +462,7 @@ class IngestionPipeline:
                 self._key_material_by_id[key_id] = key_material
                 self._key_metadata_by_id[key_id] = {
                     "key_id": key_id,
-                    "created_at": str(entry.get("created_at", "")),
+                    "created_at": str(entry["created_at"]),
                     "salt_b64": str(entry["salt_b64"]),
                     "nonce_b64": str(entry["nonce_b64"]),
                     "wrapped_key_b64": str(entry["wrapped_key_b64"]),
@@ -389,28 +470,72 @@ class IngestionPipeline:
             self._active_key_id = active or next(iter(self._key_material_by_id))
             return
 
-        # Migrate legacy plaintext key file to wrapped manifest if present.
-        if self._legacy_key_file.exists():
-            legacy = self._legacy_key_file.read_bytes()
-            if len(legacy) != 32:
-                raise ValueError("Invalid legacy key length")
-            key_id = self._register_data_key(legacy)
-            self._active_key_id = key_id
-            self._persist_key_manifest()
-            self._legacy_key_file.unlink(missing_ok=True)
+        if self._import_legacy_keys():
             return
 
         # First-run key bootstrap.
         self._active_key_id = self._add_data_key()
         self._persist_key_manifest()
 
-    def _register_data_key(self, key_material: bytes) -> str:
-        key_id = uuid.uuid4().hex
+    def _import_legacy_keys(self) -> bool:
+        for root in self._legacy_storage_roots():
+            manifest_path = root / "keys.json"
+            if manifest_path.exists():
+                raw = json.loads(manifest_path.read_text(encoding="utf-8"))
+                keys = raw.get("keys", [])
+                active = str(raw.get("active_key_id", "")).strip()
+                if not isinstance(keys, list) or not keys:
+                    raise ValueError("Invalid key manifest: keys missing")
+                salt_path = root / "master_salt.bin"
+                if not salt_path.exists():
+                    raise ValueError("Legacy key manifest missing master salt")
+                salt = salt_path.read_bytes()
+                if len(salt) != 16:
+                    raise ValueError("Invalid master salt length")
+                legacy_secret = self._resolve_storage_secret(
+                    storage_dir=root,
+                    secret_override=self._explicit_encryption_key,
+                    salt=salt,
+                )
+                for entry in keys:
+                    key_material = self._unwrap_data_key(
+                        salt_b64=str(entry["salt_b64"]),
+                        nonce_b64=str(entry["nonce_b64"]),
+                        wrapped_key_b64=str(entry["wrapped_key_b64"]),
+                        master_secret=legacy_secret,
+                    )
+                    self._register_data_key(
+                        key_material,
+                        key_id=str(entry["key_id"]),
+                        created_at=str(entry.get("created_at", "")),
+                    )
+                self._active_key_id = active or next(iter(self._key_material_by_id))
+                self._persist_key_manifest()
+                return True
+            legacy_key_file = root / "key.bin"
+            if not legacy_key_file.exists():
+                continue
+            legacy = legacy_key_file.read_bytes()
+            if len(legacy) != 32:
+                raise ValueError("Invalid legacy key length")
+            self._active_key_id = self._register_data_key(legacy)
+            self._persist_key_manifest()
+            return True
+        return False
+
+    def _register_data_key(
+        self,
+        key_material: bytes,
+        *,
+        key_id: str | None = None,
+        created_at: str | None = None,
+    ) -> str:
+        key_id = key_id or uuid.uuid4().hex
         salt_b64, nonce_b64, wrapped_key_b64 = self._wrap_data_key(key_material)
         self._key_material_by_id[key_id] = key_material
         self._key_metadata_by_id[key_id] = {
             "key_id": key_id,
-            "created_at": datetime.now(UTC).isoformat(),
+            "created_at": created_at or datetime.now(UTC).isoformat(),
             "salt_b64": salt_b64,
             "nonce_b64": nonce_b64,
             "wrapped_key_b64": wrapped_key_b64,
@@ -421,25 +546,250 @@ class IngestionPipeline:
         return self._register_data_key(os.urandom(32))
 
     def _persist_key_manifest(self) -> None:
-        payload = {
-            "version": 1,
-            "active_key_id": self._active_key_id,
-            "keys": [
-                self._key_metadata_by_id[key_id] for key_id in sorted(self._key_metadata_by_id)
-            ],
-        }
-        self._key_manifest_file.parent.mkdir(parents=True, exist_ok=True)
-        self._key_manifest_file.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-        os.chmod(self._key_manifest_file, 0o600)
+        with self._connect_db() as conn:
+            conn.execute("DELETE FROM retrieval_keys")
+            conn.executemany(
+                """
+                INSERT INTO retrieval_keys (
+                    key_id,
+                    created_at,
+                    salt_b64,
+                    nonce_b64,
+                    wrapped_key_b64
+                ) VALUES (?, ?, ?, ?, ?)
+                """,
+                [
+                    (
+                        metadata["key_id"],
+                        metadata["created_at"],
+                        metadata["salt_b64"],
+                        metadata["nonce_b64"],
+                        metadata["wrapped_key_b64"],
+                    )
+                    for metadata in (
+                        self._key_metadata_by_id[key_id]
+                        for key_id in sorted(self._key_metadata_by_id)
+                    )
+                ],
+            )
+            self._metadata_set("active_key_id", self._active_key_id, conn=conn)
 
     def _load_existing_records(self) -> None:
-        for path in sorted(self._sanitized_dir.glob("*.json")):
+        self._records.clear()
+        self._vectors.clear()
+        with self._connect_db() as conn:
+            rows = conn.execute(
+                """
+                SELECT
+                    chunk_id,
+                    source_id,
+                    source_type,
+                    collection,
+                    created_at,
+                    content_sanitized,
+                    extracted_facts_json,
+                    risk_score,
+                    original_hash,
+                    taint_labels_json,
+                    quarantined
+                FROM retrieval_records
+                ORDER BY created_at ASC, chunk_id ASC
+                """
+            ).fetchall()
+        for row in rows:
             try:
-                record = RetrievalResult.model_validate_json(path.read_text(encoding="utf-8"))
-            except (OSError, UnicodeError, ValidationError):
+                record = RetrievalResult.model_validate(
+                    {
+                        "chunk_id": str(row["chunk_id"]),
+                        "source_id": str(row["source_id"]),
+                        "source_type": str(row["source_type"]),
+                        "collection": str(row["collection"]),
+                        "created_at": str(row["created_at"]),
+                        "content_sanitized": str(row["content_sanitized"]),
+                        "extracted_facts": json.loads(str(row["extracted_facts_json"])),
+                        "risk_score": float(row["risk_score"]),
+                        "original_hash": str(row["original_hash"]),
+                        "taint_labels": json.loads(str(row["taint_labels_json"])),
+                        "quarantined": bool(row["quarantined"]),
+                    }
+                )
+            except (TypeError, ValueError, ValidationError, json.JSONDecodeError):
                 continue
             self._records[record.chunk_id] = record
             self._vectors[record.chunk_id] = self._embed_text(record.content_sanitized)
+
+    def _import_legacy_records(self) -> None:
+        with self._connect_db() as conn:
+            existing_chunk_ids = {
+                str(row["chunk_id"])
+                for row in conn.execute("SELECT chunk_id FROM retrieval_records").fetchall()
+            }
+            for root in self._legacy_storage_roots():
+                sanitized_dir = root / "sanitized"
+                original_dir = root / "original_encrypted"
+                if not sanitized_dir.is_dir():
+                    continue
+                for path in sorted(sanitized_dir.glob("*.json")):
+                    if path.stem in existing_chunk_ids:
+                        continue
+                    try:
+                        record = RetrievalResult.model_validate_json(
+                            path.read_text(encoding="utf-8")
+                        )
+                        encrypted_original = (original_dir / f"{record.chunk_id}.bin").read_bytes()
+                    except (OSError, UnicodeError, ValidationError):
+                        continue
+                    self._upsert_record(conn, record, encrypted_original)
+                    existing_chunk_ids.add(record.chunk_id)
+
+    def _connect_db(self) -> sqlite3.Connection:
+        conn = sqlite3.connect(self._db_path)
+        conn.row_factory = sqlite3.Row
+        return conn
+
+    def _ensure_schema(self) -> None:
+        with self._connect_db() as conn:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS retrieval_records (
+                    chunk_id TEXT PRIMARY KEY,
+                    source_id TEXT NOT NULL,
+                    source_type TEXT NOT NULL,
+                    collection TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    content_sanitized TEXT NOT NULL,
+                    extracted_facts_json TEXT NOT NULL,
+                    risk_score REAL NOT NULL,
+                    original_hash TEXT NOT NULL,
+                    taint_labels_json TEXT NOT NULL,
+                    quarantined INTEGER NOT NULL,
+                    original_payload BLOB NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS retrieval_keys (
+                    key_id TEXT PRIMARY KEY,
+                    created_at TEXT NOT NULL,
+                    salt_b64 TEXT NOT NULL,
+                    nonce_b64 TEXT NOT NULL,
+                    wrapped_key_b64 TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS retrieval_metadata (
+                    key TEXT PRIMARY KEY,
+                    value_text TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_retrieval_records_collection_created
+                ON retrieval_records (collection, created_at)
+                """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_retrieval_records_source_created
+                ON retrieval_records (source_id, created_at)
+                """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_retrieval_records_quarantined
+                ON retrieval_records (quarantined, created_at)
+                """
+            )
+
+    def _metadata_get(
+        self,
+        key: str,
+        *,
+        conn: sqlite3.Connection | None = None,
+    ) -> str | None:
+        if conn is None:
+            with self._connect_db() as inner:
+                return self._metadata_get(key, conn=inner)
+        row = conn.execute(
+            "SELECT value_text FROM retrieval_metadata WHERE key = ?",
+            (key,),
+        ).fetchone()
+        if row is None:
+            return None
+        return str(row["value_text"])
+
+    def _metadata_set(
+        self,
+        key: str,
+        value: str,
+        *,
+        conn: sqlite3.Connection | None = None,
+    ) -> None:
+        if conn is None:
+            with self._connect_db() as inner:
+                self._metadata_set(key, value, conn=inner)
+                return
+        conn.execute(
+            """
+            INSERT INTO retrieval_metadata (key, value_text)
+            VALUES (?, ?)
+            ON CONFLICT(key) DO UPDATE SET value_text = excluded.value_text
+            """,
+            (key, value),
+        )
+
+    def _legacy_storage_roots(self) -> tuple[Path, ...]:
+        roots = [self._storage_dir]
+        if (
+            self._legacy_storage_dir is not None
+            and self._legacy_storage_dir.resolve() != self._storage_dir.resolve()
+        ):
+            roots.append(self._legacy_storage_dir)
+        return tuple(roots)
+
+    @staticmethod
+    def _upsert_record(
+        conn: sqlite3.Connection,
+        record: RetrievalResult,
+        original_payload: bytes,
+    ) -> None:
+        payload = record.model_dump(mode="json")
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO retrieval_records (
+                chunk_id,
+                source_id,
+                source_type,
+                collection,
+                created_at,
+                content_sanitized,
+                extracted_facts_json,
+                risk_score,
+                original_hash,
+                taint_labels_json,
+                quarantined,
+                original_payload
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                payload["chunk_id"],
+                payload["source_id"],
+                payload["source_type"],
+                payload["collection"],
+                payload["created_at"],
+                payload["content_sanitized"],
+                json.dumps(payload["extracted_facts"], sort_keys=True),
+                payload["risk_score"],
+                payload["original_hash"],
+                json.dumps(payload["taint_labels"], sort_keys=True),
+                int(payload["quarantined"]),
+                original_payload,
+            ),
+        )
 
     def _encrypt_payload(self, payload: bytes, *, chunk_id: str | None = None) -> bytes:
         key = self._key_material_by_id[self._active_key_id]

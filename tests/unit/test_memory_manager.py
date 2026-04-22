@@ -10,8 +10,9 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
-from shisad.memory.ingestion import IngestionPipeline
+from shisad.memory.ingestion import IngestionPipeline, RetrievalResult
 from shisad.memory.manager import MemoryManager
 from shisad.memory.schema import MemorySource
 
@@ -87,10 +88,18 @@ def test_m2_t4_memory_delete_is_soft_and_reversible(tmp_path: Path) -> None:
 def test_m2_t19_authenticated_encryption_detects_tampering(tmp_path: Path) -> None:
     pipeline = IngestionPipeline(tmp_path / "memory")
     stored = pipeline.ingest(source_id="doc-1", source_type="external", content="Hello world")
-    encrypted_path = tmp_path / "memory" / "original_encrypted" / f"{stored.chunk_id}.bin"
-    ciphertext = bytearray(encrypted_path.read_bytes())
-    ciphertext[-1] ^= 0xFF
-    encrypted_path.write_bytes(bytes(ciphertext))
+    with sqlite3.connect(tmp_path / "memory" / "memory.sqlite3") as conn:
+        row = conn.execute(
+            "SELECT original_payload FROM retrieval_records WHERE chunk_id = ?",
+            (stored.chunk_id,),
+        ).fetchone()
+        assert row is not None
+        ciphertext = bytearray(row[0])
+        ciphertext[-1] ^= 0xFF
+        conn.execute(
+            "UPDATE retrieval_records SET original_payload = ? WHERE chunk_id = ?",
+            (bytes(ciphertext), stored.chunk_id),
+        )
 
     assert pipeline.read_original(stored.chunk_id) is None
 
@@ -103,21 +112,33 @@ def test_m2_t19_key_manifest_is_wrapped_and_rotation_preserves_reads(tmp_path: P
         content="Encrypted payload before rotation",
     )
 
-    manifest_path = tmp_path / "memory" / "keys.json"
-    manifest = manifest_path.read_text(encoding="utf-8")
-    assert '"wrapped_key_b64"' in manifest
-    assert not (tmp_path / "memory" / "key.bin").exists()
+    with sqlite3.connect(tmp_path / "memory" / "memory.sqlite3") as conn:
+        row = conn.execute(
+            "SELECT wrapped_key_b64 FROM retrieval_keys WHERE key_id = ?",
+            (pipeline.active_key_id,),
+        ).fetchone()
+        assert row is not None
+        assert str(row[0]).strip()
 
     old_key_id = pipeline.active_key_id
     new_key_id = pipeline.rotate_data_key(reencrypt_existing=True)
     assert new_key_id != old_key_id
+    with sqlite3.connect(tmp_path / "memory" / "memory.sqlite3") as conn:
+        count = conn.execute("SELECT COUNT(*) FROM retrieval_keys").fetchone()
+        assert count is not None
+        assert int(count[0]) == 2
     assert pipeline.read_original(first.chunk_id) == "Encrypted payload before rotation"
 
 
-def test_m2_t19_password_kdf_uses_salt_file_and_not_plain_sha(tmp_path: Path) -> None:
+def test_m2_t19_password_kdf_uses_persisted_salt_and_not_plain_sha(tmp_path: Path) -> None:
     memory_dir = tmp_path / "memory"
     pipeline = IngestionPipeline(memory_dir, encryption_key="password-123")
-    assert (memory_dir / "master_salt.bin").exists()
+    with sqlite3.connect(memory_dir / "memory.sqlite3") as conn:
+        row = conn.execute(
+            "SELECT value_text FROM retrieval_metadata WHERE key = 'master_salt_b64'"
+        ).fetchone()
+    assert row is not None
+    assert str(row[0]).strip()
     assert pipeline._master_secret != hashlib.sha256(b"password-123").digest()
 
 
@@ -180,14 +201,90 @@ def test_m2_ingestion_pipeline_hydrates_records_after_restart(tmp_path: Path) ->
     assert results
 
 
-def test_m2_ingestion_pipeline_skips_corrupt_utf8_record_files(tmp_path: Path) -> None:
+def test_m2_ingestion_pipeline_skips_corrupt_sqlite_rows(tmp_path: Path) -> None:
     storage = tmp_path / "ingestion"
-    sanitized = storage / "sanitized"
-    sanitized.mkdir(parents=True, exist_ok=True)
-    (sanitized / "bad.json").write_bytes(b"\xff")
+    IngestionPipeline(storage)
+    with sqlite3.connect(storage / "memory.sqlite3") as conn:
+        conn.execute(
+            """
+            INSERT INTO retrieval_records (
+                chunk_id,
+                source_id,
+                source_type,
+                collection,
+                created_at,
+                content_sanitized,
+                extracted_facts_json,
+                risk_score,
+                original_hash,
+                taint_labels_json,
+                quarantined,
+                original_payload
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "bad-row",
+                "doc-bad",
+                "external",
+                "external_web",
+                datetime.now(UTC).isoformat(),
+                "corrupt row",
+                "[",
+                0.2,
+                "hash",
+                "[]",
+                0,
+                b"not-used",
+            ),
+        )
 
     restarted = IngestionPipeline(storage)
     assert restarted.retrieve("anything", limit=5) == []
+
+
+def test_m1_ingestion_pipeline_imports_legacy_sidecar_storage(tmp_path: Path) -> None:
+    legacy_root = tmp_path / "memory"
+    sanitized_dir = legacy_root / "sanitized"
+    original_dir = legacy_root / "original_encrypted"
+    sanitized_dir.mkdir(parents=True, exist_ok=True)
+    original_dir.mkdir(parents=True, exist_ok=True)
+
+    chunk_id = "legacy-chunk"
+    plaintext = "Legacy retrieval payload"
+    key_material = bytes(range(32))
+    nonce = bytes(range(12))
+    ciphertext = AESGCM(key_material).encrypt(nonce, plaintext.encode("utf-8"), None)
+    (legacy_root / "key.bin").write_bytes(key_material)
+    (original_dir / f"{chunk_id}.bin").write_bytes(nonce + ciphertext)
+    record = RetrievalResult(
+        chunk_id=chunk_id,
+        source_id="legacy-doc",
+        source_type="external",
+        collection="external_web",
+        created_at=datetime.now(UTC),
+        content_sanitized=plaintext,
+        extracted_facts=[],
+        risk_score=0.1,
+        original_hash="legacy-hash",
+        taint_labels=[],
+        quarantined=False,
+    )
+    (sanitized_dir / f"{chunk_id}.json").write_text(
+        record.model_dump_json(indent=2),
+        encoding="utf-8",
+    )
+
+    shared_root = tmp_path / "memory_entries"
+    pipeline = IngestionPipeline(shared_root, legacy_storage_dir=legacy_root)
+
+    results = pipeline.retrieve("legacy retrieval", limit=5)
+    assert len(results) == 1
+    assert results[0].chunk_id == chunk_id
+    assert pipeline.read_original(chunk_id) == plaintext
+    with sqlite3.connect(shared_root / "memory.sqlite3") as conn:
+        count = conn.execute("SELECT COUNT(*) FROM retrieval_records").fetchone()
+        assert count is not None
+        assert int(count[0]) == 1
 
 
 @pytest.mark.asyncio

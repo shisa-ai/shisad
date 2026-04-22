@@ -1405,8 +1405,7 @@ class HandlerImplementation(
             and not self._evidence_store._metadata_path.exists()
             and _dir_empty(self._evidence_store._quarantine_dir),
             "ingestion_empty": not self._ingestion._records and not self._ingestion._vectors,
-            "ingestion_artifacts_empty": _dir_empty(self._ingestion._sanitized_dir)
-            and _dir_empty(self._ingestion._original_dir),
+            "ingestion_artifacts_empty": self._ingestion.artifacts_empty(),
             "selfmod_empty": not self._selfmod_manager._inventory.skills
             and not self._selfmod_manager._inventory.behavior_packs,
             "selfmod_artifacts_empty": _dir_empty(self._selfmod_manager._proposal_dir)

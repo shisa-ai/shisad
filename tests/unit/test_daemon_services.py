@@ -140,6 +140,7 @@ async def test_h2_daemon_services_reuses_firewall_for_ingestion_pipeline(
     services = await DaemonServices.build(config)
     try:
         assert services.ingestion._firewall is services.firewall
+        assert services.ingestion._db_path == config.data_dir / "memory_entries" / "memory.sqlite3"
     finally:
         await services.shutdown()
 

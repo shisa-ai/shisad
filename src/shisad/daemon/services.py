@@ -690,17 +690,19 @@ class DaemonServices:
                 connect_path_proxy=connect_path_proxy,
                 checkpoint_store=checkpoint_store,
             )
+            memory_storage_root = config.data_dir / "memory_entries"
             ingestion = IngestionPipeline(
-                config.data_dir / "memory",
+                memory_storage_root,
                 firewall=firewall,
                 embedding_fingerprint=EmbeddingFingerprint(
                     model_id=embeddings_route.model_id,
                     base_url=embeddings_route.base_url,
                 ),
                 embeddings_provider=embeddings_adapter,
+                legacy_storage_dir=config.data_dir / "memory",
             )
             memory_manager = MemoryManager(
-                config.data_dir / "memory_entries",
+                memory_storage_root,
                 audit_hook=event_wiring.audit_memory_event,
             )
             memory_ingress_registry = IngressContextRegistry()
@@ -980,8 +982,7 @@ class DaemonServices:
 
         # -- Memory --
         cleared["memory_entries"] = len(self.memory_manager._entries)
-        self.memory_manager._entries.clear()
-        _wipe_dir_contents(self.memory_manager._storage_dir)
+        self.memory_manager.reset_storage()
 
         # -- Lockdown --
         cleared["lockdown_states"] = len(self.lockdown_manager._states)
@@ -1045,17 +1046,8 @@ class DaemonServices:
         cleared["ingestion_records"] = len(self.ingestion._records)
         cleared["ingestion_vectors"] = len(self.ingestion._vectors)
         cleared["ingestion_keys"] = len(self.ingestion._key_metadata_by_id)
-        cleared["ingestion_artifacts"] = _count_files_recursive(
-            self.ingestion._sanitized_dir
-        ) + _count_files_recursive(self.ingestion._original_dir)
-        self.ingestion._records.clear()
-        self.ingestion._vectors.clear()
-        self.ingestion._key_material_by_id.clear()
-        self.ingestion._key_metadata_by_id.clear()
-        self.ingestion._active_key_id = ""
-        _wipe_dir_contents(self.ingestion._sanitized_dir)
-        _wipe_dir_contents(self.ingestion._original_dir)
-        self.ingestion._load_or_create_keys()
+        cleared["ingestion_artifacts"] = self.ingestion.persisted_artifact_count()
+        self.ingestion.reset_storage()
 
         # -- Self-modification --
         cleared["selfmod_entries"] = len(self.selfmod_manager._inventory.skills) + len(
