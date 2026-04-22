@@ -19,6 +19,7 @@ from shisad.memory.trust import (
     ("source_origin", "channel_trust", "confirmation_status", "trust_band", "confidence"),
     [
         ("user_direct", "command", "user_asserted", "elevated", 0.95),
+        ("user_confirmed", "command", "auto_accepted", "untrusted", None),
         ("tool_output", "tool_passed", "pep_approved", "untrusted", 0.70),
         ("consolidation_derived", "consolidation", "auto_accepted", "untrusted", None),
         ("user_direct", "command", "auto_accepted", "untrusted", None),
@@ -136,4 +137,3 @@ def test_backfill_legacy_project_doc_maps_to_tool_passed() -> None:
         "tool_passed",
         "auto_accepted",
     )
-

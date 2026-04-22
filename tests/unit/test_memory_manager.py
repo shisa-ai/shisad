@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -211,3 +213,91 @@ async def test_m2_memory_manager_interleaved_writes_remain_consistent(tmp_path: 
     ids = await asyncio.gather(*[_write(i) for i in range(20)])
     assert len(ids) == len(set(ids))
     assert len(manager.list_entries(limit=100)) == 20
+
+
+def test_m1_memory_manager_filters_backfilled_statuses(tmp_path: Path) -> None:
+    storage = tmp_path / "memory"
+    storage.mkdir(parents=True, exist_ok=True)
+    created_at = datetime(2026, 4, 22, 9, 0, tzinfo=UTC)
+    fixtures = [
+        {
+            "id": "active-entry",
+            "entry_type": "fact",
+            "key": "active",
+            "value": "keep",
+            "source": {
+                "origin": "user",
+                "source_id": "msg-active",
+                "extraction_method": "manual",
+            },
+            "created_at": created_at.isoformat(),
+        },
+        {
+            "id": "quarantined-entry",
+            "entry_type": "fact",
+            "key": "quarantined",
+            "value": "hold",
+            "source": {
+                "origin": "external",
+                "source_id": "msg-quarantine",
+                "extraction_method": "extract",
+            },
+            "created_at": created_at.isoformat(),
+            "quarantined": True,
+        },
+        {
+            "id": "deleted-entry",
+            "entry_type": "fact",
+            "key": "deleted",
+            "value": "gone",
+            "source": {
+                "origin": "external",
+                "source_id": "msg-delete",
+                "extraction_method": "extract",
+            },
+            "created_at": created_at.isoformat(),
+            "deleted_at": created_at.isoformat(),
+        },
+    ]
+    for payload in fixtures:
+        (storage / f"{payload['id']}.json").write_text(json.dumps(payload), encoding="utf-8")
+
+    manager = MemoryManager(storage)
+
+    visible_ids = {entry.id for entry in manager.list_entries(limit=10)}
+    assert visible_ids == {"active-entry"}
+    assert manager.get_entry("quarantined-entry") is None
+    assert manager.get_entry("deleted-entry") is None
+
+    widened_ids = {
+        entry.id
+        for entry in manager.list_entries(
+            limit=10,
+            include_deleted=True,
+            include_quarantined=True,
+        )
+    }
+    assert widened_ids == {"active-entry", "quarantined-entry", "deleted-entry"}
+
+
+def test_m1_memory_manager_write_persists_canonical_v070_fields(tmp_path: Path) -> None:
+    storage = tmp_path / "memory"
+    manager = MemoryManager(storage)
+    decision = manager.write(
+        entry_type="fact",
+        key="profile.name",
+        value="alice",
+        source=MemorySource(origin="user", source_id="msg-1", extraction_method="manual"),
+        confidence=0.72,
+        user_confirmed=True,
+    )
+
+    assert decision.kind == "allow"
+    assert decision.entry is not None
+    persisted = json.loads((storage / f"{decision.entry.id}.json").read_text(encoding="utf-8"))
+    assert persisted["source_origin"] == "user_direct"
+    assert persisted["channel_trust"] == "command"
+    assert persisted["confirmation_status"] == "auto_accepted"
+    assert persisted["status"] == "active"
+    assert persisted["scope"] == "user"
+    assert persisted["content_digest"]

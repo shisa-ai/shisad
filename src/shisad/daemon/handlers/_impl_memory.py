@@ -252,6 +252,7 @@ class MemoryImplMixin(HandlerMixinBase):
         updated_value["completed_at"] = datetime.now(UTC).isoformat()
         entry.value = updated_value
         entry.user_verified = True
+        entry.last_verified_at = datetime.now(UTC)
         self._memory_manager._persist_entry(entry)
         self._memory_manager._audit(
             "memory.todo_complete",

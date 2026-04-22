@@ -89,6 +89,16 @@ _VALID_TRUST_MATRIX: dict[tuple[SourceOrigin, ChannelTrust, ConfirmationStatus],
     ("user_direct", "command", "user_asserted"): TrustRule("elevated", 0.95),
     ("user_confirmed", "command", "user_confirmed"): TrustRule("elevated", 0.90),
     ("user_corrected", "command", "user_corrected"): TrustRule("elevated", 0.85),
+    (
+        "user_confirmed",
+        "command",
+        "auto_accepted",
+    ): TrustRule(
+        "untrusted",
+        None,
+        confidence_mode="preserved",
+        note="legacy/backfill compatibility row for passive confirmed assertions",
+    ),
     ("user_direct", "owner_observed", "auto_accepted"): TrustRule("observed", 0.30),
     ("external_message", "external_incoming", "auto_accepted"): TrustRule("untrusted", 0.40),
     ("external_message", "shared_participant", "auto_accepted"): TrustRule("untrusted", 0.40),
@@ -278,4 +288,3 @@ def backfill_legacy_triple(
     resolved_confirmation = confirmation_status or "auto_accepted"
     validate_trust_triple(resolved_origin, resolved_channel, resolved_confirmation)
     return (resolved_origin, resolved_channel, resolved_confirmation)
-

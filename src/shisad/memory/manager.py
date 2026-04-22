@@ -14,7 +14,9 @@ from typing import Any, ClassVar
 from pydantic import ValidationError
 
 from shisad.core.types import TaintLabel
+from shisad.memory.remap import resolve_legacy_source_origin
 from shisad.memory.schema import MemoryEntry, MemorySource, MemoryWriteDecision
+from shisad.memory.trust import backfill_legacy_triple, clamp_confidence
 from shisad.security.firewall.pii import PIIDetector
 
 
@@ -100,11 +102,30 @@ class MemoryManager:
         if source.origin != "user":
             taint_labels = [TaintLabel.UNTRUSTED]
 
+        source_origin = resolve_legacy_source_origin(
+            source.origin,
+            source_id=source.source_id,
+            extraction_method=source.extraction_method,
+        )
+        source_origin, channel_trust, confirmation_status = backfill_legacy_triple(
+            source_origin=source_origin
+        )
+        confidence = clamp_confidence(
+            confidence,
+            source_origin,
+            channel_trust,
+            confirmation_status,
+            fallback=confidence,
+        )
         entry = MemoryEntry(
             entry_type=entry_type,
             key=key,
             value=stored_value,
             source=source,
+            source_origin=source_origin,
+            channel_trust=channel_trust,
+            confirmation_status=confirmation_status,
+            source_id=source.source_id,
             confidence=confidence,
             expires_at=expires_at,
             taint_labels=taint_labels,
@@ -136,9 +157,9 @@ class MemoryManager:
         for entry in self._entries.values():
             if selected_type and str(entry.entry_type).lower() != selected_type:
                 continue
-            if entry.deleted_at is not None and not include_deleted:
+            if self._is_deleted(entry) and not include_deleted:
                 continue
-            if entry.quarantined and not include_quarantined:
+            if self._is_quarantined(entry) and not include_quarantined:
                 continue
             rows.append(self._refresh_ttl(entry))
         rows.sort(key=lambda item: item.created_at, reverse=True)
@@ -147,9 +168,9 @@ class MemoryManager:
     def get_entry(self, entry_id: str) -> MemoryEntry | None:
         self.purge_expired()
         entry = self._entries.get(entry_id)
-        if entry is None or entry.deleted_at is not None:
+        if entry is None or self._is_deleted(entry):
             return None
-        if entry.quarantined:
+        if self._is_quarantined(entry):
             return None
         return self._refresh_ttl(entry)
 
@@ -157,9 +178,10 @@ class MemoryManager:
         entry = self._entries.get(entry_id)
         if entry is None:
             return False
-        if entry.deleted_at is not None:
+        if self._is_deleted(entry):
             return True
         entry.deleted_at = datetime.now(UTC)
+        entry.status = "tombstoned"
         self._persist_entry(entry)
         self._audit("memory.delete", {"entry_id": entry_id})
         return True
@@ -169,6 +191,7 @@ class MemoryManager:
         if entry is None:
             return False
         entry.user_verified = True
+        entry.last_verified_at = datetime.now(UTC)
         self._persist_entry(entry)
         self._audit("memory.verify", {"entry_id": entry_id})
         return True
@@ -221,6 +244,7 @@ class MemoryManager:
         if entry is None:
             return False
         entry.quarantined = True
+        entry.status = "quarantined"
         self._persist_entry(entry)
         self._audit("memory.quarantine", {"entry_id": entry_id, "reason": reason})
         return True
@@ -228,10 +252,11 @@ class MemoryManager:
     def purge_expired(self) -> None:
         now = datetime.now(UTC)
         for entry in self._entries.values():
-            if entry.deleted_at is not None:
+            if self._is_deleted(entry):
                 continue
             if entry.expires_at is not None and entry.expires_at < now:
                 entry.deleted_at = now
+                entry.status = "tombstoned"
                 self._persist_entry(entry)
                 self._audit("memory.expire", {"entry_id": entry.id})
 
@@ -250,10 +275,18 @@ class MemoryManager:
     def _refresh_ttl(self, entry: MemoryEntry) -> MemoryEntry:
         if entry.source.origin == "user":
             return entry
-        if entry.expires_at is not None and entry.deleted_at is None:
+        if entry.expires_at is not None and not self._is_deleted(entry):
             entry.expires_at = datetime.now(UTC) + timedelta(days=self._default_ttl_days)
             self._persist_entry(entry)
         return entry
+
+    @staticmethod
+    def _is_deleted(entry: MemoryEntry) -> bool:
+        return entry.status in {"tombstoned", "hard_deleted"} or entry.deleted_at is not None
+
+    @staticmethod
+    def _is_quarantined(entry: MemoryEntry) -> bool:
+        return entry.status == "quarantined" or entry.quarantined
 
     def _audit(self, action: str, payload: dict[str, Any]) -> None:
         if self._audit_hook is not None:
