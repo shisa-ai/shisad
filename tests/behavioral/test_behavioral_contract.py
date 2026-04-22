@@ -23,6 +23,7 @@ from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from itertools import product
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
@@ -35,9 +36,17 @@ from shisad.core.providers.base import Message, ProviderResponse
 from shisad.core.providers.local_planner import LocalPlannerProvider
 from shisad.daemon.runner import run_daemon
 from shisad.memory.manager import MemoryManager
+from shisad.memory.remap import legacy_source_view_origin
 from shisad.memory.schema import MemorySource
 from shisad.memory.summarizer import _SUMMARY_SYSTEM_PROMPT
-from shisad.memory.trust import derive_trust_band
+from shisad.memory.trust import (
+    _VALID_TRUST_MATRIX,
+    CHANNEL_TRUST_VALUES,
+    CONFIRMATION_STATUS_VALUES,
+    SOURCE_ORIGIN_VALUES,
+    TrustGateViolation,
+    derive_trust_band,
+)
 from tests.helpers.behavioral import extract_tool_outputs
 from tests.helpers.daemon import wait_for_socket as _wait_for_socket
 
@@ -1567,6 +1576,117 @@ async def test_contract_pending_review_entries_are_isolated_to_review_queue(
             if isinstance(item, dict)
         }
         assert entry_id in queued_ids
+
+
+@pytest.mark.asyncio
+async def test_contract_trust_matrix_rows_round_trip_with_expected_bands(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seeded: dict[str, tuple[str, str, str, float, str]] = {}
+    invalid_rejection_count = 0
+
+    def _seed(config: DaemonConfig) -> None:
+        nonlocal invalid_rejection_count
+        manager = MemoryManager(config.data_dir / "memory_entries")
+
+        for idx, ((source_origin, channel_trust, confirmation_status), rule) in enumerate(
+            _VALID_TRUST_MATRIX.items()
+        ):
+            requested_confidence = (
+                float(rule.default_confidence) if rule.default_confidence is not None else 0.42
+            )
+            decision = manager.write_with_provenance(
+                entry_type="fact",
+                key=f"trust.matrix.{idx}",
+                value=f"matrix row {idx}",
+                source=MemorySource(
+                    origin=legacy_source_view_origin(source_origin),
+                    source_id=f"matrix-row-{idx}",
+                    extraction_method="behavioral.matrix",
+                ),
+                source_origin=source_origin,
+                channel_trust=channel_trust,
+                confirmation_status=confirmation_status,
+                source_id=f"matrix-row-{idx}",
+                scope="user",
+                confidence=requested_confidence,
+                confirmation_satisfied=True,
+            )
+            assert decision.kind == "allow"
+            assert decision.entry is not None
+            seeded[decision.entry.id] = (
+                source_origin,
+                channel_trust,
+                confirmation_status,
+                requested_confidence,
+                "untrusted" if rule.trust_band == "observed" else rule.trust_band,
+            )
+
+        for source_origin, channel_trust, confirmation_status in product(
+            SOURCE_ORIGIN_VALUES,
+            CHANNEL_TRUST_VALUES,
+            CONFIRMATION_STATUS_VALUES,
+        ):
+            triple = (source_origin, channel_trust, confirmation_status)
+            if confirmation_status == "pending_review":
+                continue
+            if triple in _VALID_TRUST_MATRIX:
+                continue
+            invalid_rejection_count += 1
+            with pytest.raises(TrustGateViolation):
+                manager.write_with_provenance(
+                    entry_type="fact",
+                    key=f"invalid.matrix.{invalid_rejection_count}",
+                    value="invalid triple",
+                    source=MemorySource(
+                        origin=legacy_source_view_origin(source_origin),
+                        source_id=f"invalid-row-{invalid_rejection_count}",
+                        extraction_method="behavioral.matrix.invalid",
+                    ),
+                    source_origin=source_origin,
+                    channel_trust=channel_trust,
+                    confirmation_status=confirmation_status,
+                    source_id=f"invalid-row-{invalid_rejection_count}",
+                    scope="user",
+                    confidence=0.42,
+                    confirmation_satisfied=True,
+                )
+
+    async with _contract_harness_context(tmp_path, monkeypatch, prestart=_seed) as harness:
+        assert len(seeded) == len(_VALID_TRUST_MATRIX)
+        assert invalid_rejection_count > 0
+
+        listing = await harness.client.call("memory.list", {"limit": len(seeded) + 10})
+        listed_ids = {
+            str(item.get("id") or item.get("entry_id") or "").strip()
+            for item in listing.get("entries", [])
+            if isinstance(item, dict)
+        }
+        assert set(seeded).issubset(listed_ids)
+
+        for entry_id, (
+            source_origin,
+            channel_trust,
+            confirmation_status,
+            expected_confidence,
+            expected_band,
+        ) in seeded.items():
+            fetched = await harness.client.call("memory.get", {"entry_id": entry_id})
+            entry = fetched.get("entry") or {}
+
+            assert entry.get("source_origin") == source_origin
+            assert entry.get("channel_trust") == channel_trust
+            assert entry.get("confirmation_status") == confirmation_status
+            assert (
+                derive_trust_band(
+                    str(entry.get("source_origin", "")),
+                    str(entry.get("channel_trust", "")),
+                    str(entry.get("confirmation_status", "")),
+                )
+                == expected_band
+            )
+            assert float(entry.get("confidence", 0.0)) == pytest.approx(expected_confidence)
 
 
 @pytest.mark.asyncio
