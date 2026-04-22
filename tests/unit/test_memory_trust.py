@@ -2,9 +2,15 @@
 
 from __future__ import annotations
 
+from itertools import product
+
 import pytest
 
 from shisad.memory.trust import (
+    _VALID_TRUST_MATRIX,
+    CHANNEL_TRUST_VALUES,
+    CONFIRMATION_STATUS_VALUES,
+    SOURCE_ORIGIN_VALUES,
     TrustGateViolation,
     backfill_legacy_triple,
     clamp_confidence,
@@ -35,6 +41,39 @@ def test_validate_trust_triple_accepts_documented_rows(
     rule = validate_trust_triple(source_origin, channel_trust, confirmation_status)
     assert rule.trust_band == trust_band
     assert rule.default_confidence == confidence
+
+
+def test_m1_trust_matrix_validates_every_canonical_non_pending_row() -> None:
+    for (
+        source_origin,
+        channel_trust,
+        confirmation_status,
+    ), expected in _VALID_TRUST_MATRIX.items():
+        assert validate_trust_triple(
+            source_origin,
+            channel_trust,
+            confirmation_status,
+            enable_observed=True,
+        ) == expected
+
+
+def test_m1_trust_matrix_rejects_every_unlisted_non_pending_triple() -> None:
+    for source_origin, channel_trust, confirmation_status in product(
+        SOURCE_ORIGIN_VALUES,
+        CHANNEL_TRUST_VALUES,
+        CONFIRMATION_STATUS_VALUES,
+    ):
+        if confirmation_status == "pending_review":
+            continue
+        if (source_origin, channel_trust, confirmation_status) in _VALID_TRUST_MATRIX:
+            continue
+        with pytest.raises(TrustGateViolation):
+            validate_trust_triple(
+                source_origin,
+                channel_trust,
+                confirmation_status,
+                enable_observed=True,
+            )
 
 
 def test_owner_observed_row_is_untrusted_in_v070_and_observed_when_enabled() -> None:
