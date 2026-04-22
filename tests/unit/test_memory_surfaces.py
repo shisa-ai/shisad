@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from shisad.memory.manager import MemoryManager
+from shisad.memory.participation import InboxItemValue, inbox_item_key
 from shisad.memory.schema import MemoryEntry, MemorySource
 
 
@@ -181,3 +182,86 @@ def test_m3_compile_active_attention_filters_scope_workflow_and_channel_trust(
     assert pack.count == 2
     assert pack.scope_filter == {"session", "channel"}
     assert {entry.workflow_state for entry in pack.entries} == {"active", "waiting"}
+
+
+def test_m3_compile_active_attention_channel_binding_limits_channel_scoped_entries(
+    tmp_path: Path,
+) -> None:
+    manager = MemoryManager(tmp_path / "memory")
+    session_thread = _write_entry(
+        manager,
+        entry_type="open_thread",
+        key="thread:session-followup",
+        value="Follow up on the current conversation.",
+        scope="session",
+        workflow_state="active",
+    )
+    user_thread = _write_entry(
+        manager,
+        entry_type="waiting_on",
+        key="thread:user-followup",
+        value="Remember to answer the owner later.",
+        scope="user",
+        workflow_state="waiting",
+    )
+    general_inbox = _write_entry(
+        manager,
+        entry_type="inbox_item",
+        key=inbox_item_key(owner_id="owner-1", item_id="msg-general"),
+        value=InboxItemValue(
+            owner_id="owner-1",
+            sender_id="guest-1",
+            channel_id="discord:guild/general",
+            body="Question from #general",
+        ).model_dump(mode="python"),
+        source_legacy_origin="external",
+        source_origin="external_message",
+        channel_trust="shared_participant",
+        confirmation_status="auto_accepted",
+        scope="channel",
+        confirmation_satisfied=True,
+    )
+    _write_entry(
+        manager,
+        entry_type="inbox_item",
+        key=inbox_item_key(owner_id="owner-1", item_id="msg-private"),
+        value=InboxItemValue(
+            owner_id="owner-1",
+            sender_id="guest-2",
+            channel_id="discord:guild/private",
+            body="Question from #private",
+        ).model_dump(mode="python"),
+        source_legacy_origin="external",
+        source_origin="external_message",
+        channel_trust="shared_participant",
+        confirmation_status="auto_accepted",
+        scope="channel",
+        confirmation_satisfied=True,
+    )
+    _write_entry(
+        manager,
+        entry_type="open_thread",
+        key="thread:unbound-channel-entry",
+        value="Channel-scoped item without a bound channel id should fail closed.",
+        source_legacy_origin="external",
+        source_origin="external_message",
+        channel_trust="external_incoming",
+        confirmation_status="auto_accepted",
+        scope="channel",
+        workflow_state="active",
+        confirmation_satisfied=True,
+    )
+
+    pack = manager.compile_active_attention(
+        max_tokens=128,
+        scope_filter={"session", "user", "channel"},
+        channel_binding="general",
+    )
+
+    assert {entry.id for entry in pack.entries} == {
+        session_thread.id,
+        user_thread.id,
+        general_inbox.id,
+    }
+    assert pack.count == 3
+    assert pack.channel_binding == "general"

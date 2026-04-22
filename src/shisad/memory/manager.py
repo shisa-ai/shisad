@@ -537,6 +537,7 @@ class MemoryManager:
         max_tokens: int = 750,
         scope_filter: set[str] | None = None,
         allowed_channel_trusts: set[str] | None = None,
+        channel_binding: str | None = None,
     ) -> ActiveAttentionPack:
         entries = self.list_entries(limit=max(1, len(self._entries)))
         return build_active_attention_pack(
@@ -544,6 +545,7 @@ class MemoryManager:
             max_tokens=max_tokens,
             scope_filter=scope_filter,
             allowed_channel_trusts=allowed_channel_trusts,
+            channel_binding=channel_binding,
         )
 
     def delete(self, entry_id: str) -> bool:
