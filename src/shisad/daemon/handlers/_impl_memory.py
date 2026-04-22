@@ -294,11 +294,22 @@ class MemoryImplMixin(HandlerMixinBase):
         query = params.get("query", "")
         limit = int(params.get("limit", 5))
         capabilities = {Capability(cap) for cap in params.get("capabilities", [])}
+        as_of_raw = params.get("as_of")
+        as_of: datetime | None = None
+        if isinstance(as_of_raw, datetime):
+            as_of = as_of_raw
+        elif str(as_of_raw or "").strip():
+            as_of = datetime.fromisoformat(str(as_of_raw))
         pack = self._ingestion.compile_recall(
             query,
             limit=limit,
             capabilities=capabilities,
             require_corroboration=bool(params.get("require_corroboration", False)),
+            max_tokens=(
+                int(params["max_tokens"]) if params.get("max_tokens") is not None else None
+            ),
+            as_of=as_of,
+            include_archived=bool(params.get("include_archived", False)),
         )
         return cast(dict[str, Any], pack.legacy_payload())
 

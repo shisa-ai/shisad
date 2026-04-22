@@ -43,6 +43,28 @@ _SIDE_EFFECT_CAPABILITIES = {
     Capability.MESSAGE_SEND,
 }
 
+_RECALL_COLLECTION_PRIORITY: tuple[RetrievalCollection, ...] = (
+    "user_curated",
+    "project_docs",
+    "tool_outputs",
+    "external_web",
+)
+_RECALL_CONFIDENCE_PRIOR: dict[RetrievalCollection, float] = {
+    "user_curated": 0.95,
+    "project_docs": 0.8,
+    "tool_outputs": 0.65,
+    "external_web": 0.55,
+}
+_RECALL_IMPORTANCE_PRIOR: dict[RetrievalCollection, float] = {
+    "user_curated": 1.2,
+    "project_docs": 1.0,
+    "tool_outputs": 0.95,
+    "external_web": 0.85,
+}
+_RECALL_STALE_AFTER_DAYS = 14.0
+_RECALL_ARCHIVE_AFTER_DAYS = 45.0
+_RECALL_MIN_DECAY_SCORE = 0.2
+
 
 class Fact(BaseModel):
     """Extracted fact from sanitized content."""
@@ -68,7 +90,16 @@ class RetrievalResult(BaseModel):
     lexical_score: float = 0.0
     semantic_score: float = 0.0
     blended_score: float = 0.0
+    confidence: float = 0.5
+    importance_weight: float = 1.0
+    decay_score: float = 1.0
+    effective_score: float = 0.0
     corroborated: bool = False
+    archived: bool = False
+    stale: bool = False
+    verification_gap: bool = False
+    revision_churn: bool = False
+    conflict: bool = False
 
 
 class SyncEmbeddingsProvider(Protocol):
@@ -195,14 +226,15 @@ class IngestionPipeline:
         max_tokens: int | None = None,
         as_of: datetime | None = None,
         include_archived: bool = False,
+        class_budgets: dict[RetrievalCollection, int] | None = None,
     ) -> RecallPack:
         """Compile the current Recall surface over retrieval storage."""
-        del as_of
         if self._backend.count_records() == 0:
             return build_recall_pack(
                 query=query,
                 results=[],
                 max_tokens=max_tokens,
+                as_of=as_of,
                 include_archived=include_archived,
             )
 
@@ -216,6 +248,7 @@ class IngestionPipeline:
                 query=query,
                 results=[],
                 max_tokens=max_tokens,
+                as_of=as_of,
                 include_archived=include_archived,
             )
 
@@ -230,6 +263,7 @@ class IngestionPipeline:
                 query=query,
                 results=[],
                 max_tokens=max_tokens,
+                as_of=as_of,
                 include_archived=include_archived,
             )
         lexical_matches = self._backend.lexical_match_ids(
@@ -237,11 +271,19 @@ class IngestionPipeline:
             collections=set(collections),
             include_quarantined=include_quarantined,
         )
-        scored: list[tuple[float, RetrievalResult]] = []
+        reference_time = as_of.astimezone(UTC) if as_of is not None else datetime.now(UTC)
+        revision_counts: dict[str, int] = {}
+        for row in rows:
+            revision_counts[row.source_id] = revision_counts.get(row.source_id, 0) + 1
+
+        active_scored: list[tuple[float, RetrievalResult]] = []
+        archived_scored: list[tuple[float, RetrievalResult]] = []
 
         for row in rows:
             record = self._record_from_backend_row(row)
             if record is None:
+                continue
+            if as_of is not None and record.created_at > reference_time:
                 continue
 
             lexical = 0.0
@@ -249,34 +291,183 @@ class IngestionPipeline:
                 text = row.content_sanitized.lower()
                 lexical = float(sum(text.count(term) for term in terms))
             semantic = self._cosine_similarity(query_vector, row.embedding)
-            trust = _TRUST_PRIOR[record.collection]
-            blended = (0.45 * lexical) + (0.45 * semantic) + (0.10 * trust)
-            scored.append(
-                (
-                    blended,
-                    record.model_copy(
-                        update={
-                            "lexical_score": lexical,
-                            "semantic_score": semantic,
-                            "blended_score": blended,
-                        }
-                    ),
-                )
+            lexical_score = self._normalized_lexical_score(lexical, term_count=len(terms))
+            blended = (
+                (0.55 * semantic)
+                + (0.35 * lexical_score)
+                + (0.10 * _TRUST_PRIOR[record.collection])
             )
+            age_days = max(
+                0.0,
+                (reference_time - record.created_at).total_seconds() / 86_400.0,
+            )
+            decay_score = self._decay_score_for_age(age_days)
+            confidence = _RECALL_CONFIDENCE_PRIOR[record.collection]
+            importance_weight = _RECALL_IMPORTANCE_PRIOR[record.collection]
+            archived = age_days >= _RECALL_ARCHIVE_AFTER_DAYS
+            scored_record = record.model_copy(
+                update={
+                    "lexical_score": lexical_score,
+                    "semantic_score": semantic,
+                    "blended_score": blended,
+                    "confidence": confidence,
+                    "importance_weight": importance_weight,
+                    "decay_score": decay_score,
+                    "effective_score": blended * decay_score * confidence * importance_weight,
+                    "archived": archived,
+                    "stale": age_days >= _RECALL_STALE_AFTER_DAYS,
+                    "verification_gap": record.collection in {"external_web", "tool_outputs"},
+                    "revision_churn": revision_counts.get(record.source_id, 0) > 1,
+                    "conflict": False,
+                }
+            )
+            if archived:
+                archived_scored.append((scored_record.effective_score, scored_record))
+            else:
+                active_scored.append((scored_record.effective_score, scored_record))
 
-        scored.sort(key=lambda item: item[0], reverse=True)
-        top = [record for _, record in scored[:limit]]
+        scored = active_scored
+        used_archived = include_archived
+        if include_archived:
+            scored = active_scored + archived_scored
+        elif not active_scored and archived_scored:
+            scored = archived_scored
+            used_archived = True
+        top = self._select_recall_results(
+            scored,
+            limit=limit,
+            class_budgets=class_budgets,
+        )
         if require_corroboration:
             source_ids = {record.source_id for record in top}
             tiers = {record.collection for record in top}
             corroborated = len(source_ids) >= 2 and len(tiers) >= 2
-            top = [record.model_copy(update={"corroborated": corroborated}) for record in top]
+            top = [
+                record.model_copy(
+                    update={
+                        "corroborated": corroborated,
+                        "verification_gap": record.verification_gap and not corroborated,
+                    }
+                )
+                for record in top
+            ]
+        if max_tokens is not None:
+            top = self._trim_recall_to_token_budget(top, max_tokens=max_tokens)
         return build_recall_pack(
             query=query,
             results=top,
             max_tokens=max_tokens,
-            include_archived=include_archived,
+            as_of=as_of,
+            include_archived=used_archived or any(record.archived for record in top),
         )
+
+    @staticmethod
+    def _normalized_lexical_score(raw_hits: float, *, term_count: int) -> float:
+        if raw_hits <= 0.0:
+            return 0.0
+        ceiling = max(1.0, float(max(1, term_count) * 2))
+        return min(raw_hits, ceiling) / ceiling
+
+    @staticmethod
+    def _decay_score_for_age(age_days: float) -> float:
+        age_ratio = min(max(age_days, 0.0) / _RECALL_ARCHIVE_AFTER_DAYS, 1.0)
+        return max(_RECALL_MIN_DECAY_SCORE, 1.0 - (0.8 * age_ratio))
+
+    @classmethod
+    def _resolve_class_budgets(
+        cls,
+        *,
+        limit: int,
+        scored: list[tuple[float, RetrievalResult]],
+        class_budgets: dict[RetrievalCollection, int] | None,
+    ) -> dict[RetrievalCollection, int]:
+        if limit <= 0:
+            return {}
+        present_collections = {
+            record.collection
+            for _, record in scored
+            if record.collection in _RECALL_COLLECTION_PRIORITY
+        }
+        if class_budgets is not None:
+            return {
+                collection: max(0, int(class_budgets.get(collection, 0)))
+                for collection in _RECALL_COLLECTION_PRIORITY
+                if collection in present_collections
+            }
+        budgets: dict[RetrievalCollection, int] = {}
+        remaining = limit
+        for collection in _RECALL_COLLECTION_PRIORITY:
+            if collection not in present_collections or remaining <= 0:
+                continue
+            budgets[collection] = 1
+            remaining -= 1
+        return budgets
+
+    @classmethod
+    def _select_recall_results(
+        cls,
+        scored: list[tuple[float, RetrievalResult]],
+        *,
+        limit: int,
+        class_budgets: dict[RetrievalCollection, int] | None,
+    ) -> list[RetrievalResult]:
+        if limit <= 0 or not scored:
+            return []
+        by_collection: dict[RetrievalCollection, list[tuple[float, RetrievalResult]]] = {
+            collection: [] for collection in _RECALL_COLLECTION_PRIORITY
+        }
+        for score, record in scored:
+            by_collection[record.collection].append((score, record))
+        for rows in by_collection.values():
+            rows.sort(key=lambda item: item[0], reverse=True)
+        budgets = cls._resolve_class_budgets(
+            limit=limit,
+            scored=scored,
+            class_budgets=class_budgets,
+        )
+        selected: list[tuple[float, RetrievalResult]] = []
+        selected_ids: set[str] = set()
+        for collection in _RECALL_COLLECTION_PRIORITY:
+            budget = budgets.get(collection, 0)
+            if budget <= 0:
+                continue
+            taken = 0
+            for score, record in by_collection[collection]:
+                if taken >= budget or len(selected) >= limit:
+                    break
+                if record.chunk_id in selected_ids:
+                    continue
+                selected.append((score, record))
+                selected_ids.add(record.chunk_id)
+                taken += 1
+        leftovers = sorted(scored, key=lambda item: item[0], reverse=True)
+        for score, record in leftovers:
+            if len(selected) >= limit:
+                break
+            if record.chunk_id in selected_ids:
+                continue
+            selected.append((score, record))
+            selected_ids.add(record.chunk_id)
+        selected.sort(key=lambda item: item[0], reverse=True)
+        return [record for _, record in selected[:limit]]
+
+    @staticmethod
+    def _trim_recall_to_token_budget(
+        results: list[RetrievalResult],
+        *,
+        max_tokens: int,
+    ) -> list[RetrievalResult]:
+        if max_tokens <= 0 or not results:
+            return results[:1]
+        kept: list[RetrievalResult] = []
+        used_tokens = 0
+        for record in results:
+            token_estimate = max(1, len(record.content_sanitized.split()))
+            if kept and used_tokens + token_estimate > max_tokens:
+                break
+            kept.append(record)
+            used_tokens += token_estimate
+        return kept or results[:1]
 
     def retrieve(
         self,

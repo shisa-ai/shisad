@@ -23,10 +23,16 @@ class RecallPack:
 
     def legacy_payload(self) -> dict[str, Any]:
         """Return the current public `memory.retrieve` response shape."""
-        return {
+        payload: dict[str, Any] = {
             "results": [item.model_dump(mode="json") for item in self.results],
             "count": self.count,
         }
+        if self.max_tokens is not None:
+            payload["max_tokens"] = self.max_tokens
+        if self.as_of is not None:
+            payload["as_of"] = self.as_of.isoformat()
+        payload["include_archived"] = self.include_archived
+        return payload
 
 
 def build_recall_pack(

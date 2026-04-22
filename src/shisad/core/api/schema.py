@@ -360,6 +360,9 @@ class MemoryRetrieveParams(_StrictParams):
     limit: int = 5
     capabilities: list[str] = Field(default_factory=list)
     require_corroboration: bool = False
+    max_tokens: int | None = None
+    as_of: datetime | None = None
+    include_archived: bool = False
 
 
 class MemoryWriteParams(_StrictParams):
@@ -475,7 +478,16 @@ class MemoryIngestResult(BaseModel):
     lexical_score: float = 0.0
     semantic_score: float = 0.0
     blended_score: float = 0.0
+    confidence: float = 0.5
+    importance_weight: float = 1.0
+    decay_score: float = 1.0
+    effective_score: float = 0.0
     corroborated: bool = False
+    archived: bool = False
+    stale: bool = False
+    verification_gap: bool = False
+    revision_churn: bool = False
+    conflict: bool = False
 
 
 class MemoryMintIngressResult(BaseModel):
@@ -491,6 +503,9 @@ class MemoryMintIngressResult(BaseModel):
 class MemoryRetrieveResult(BaseModel):
     results: list[MemoryIngestResult] = Field(default_factory=list)
     count: int = 0
+    max_tokens: int | None = None
+    as_of: datetime | str | None = None
+    include_archived: bool = False
 
 
 class MemoryWriteResult(BaseModel):
