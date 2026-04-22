@@ -410,6 +410,25 @@ class TestApiSchemaValidation:
         assert params.ingress_context is None
         assert params.derivation_path == "direct"
 
+    def test_m1_memory_write_params_accept_canonical_and_legacy_entry_type_aliases(self) -> None:
+        canonical = MemoryWriteParams.model_validate(
+            {
+                "entry_type": "soft_constraint",
+                "key": "behavior.reply_style",
+                "value": "keep replies short",
+            }
+        )
+        legacy = MemoryWriteParams.model_validate(
+            {
+                "entry_type": "context",
+                "key": "legacy.context",
+                "value": "remember this",
+            }
+        )
+
+        assert canonical.entry_type == "soft_constraint"
+        assert legacy.entry_type == "context"
+
     def test_m1_memory_write_params_reject_legacy_source_and_orphaned_binding_fields(self) -> None:
         with pytest.raises(ValidationError):
             MemoryWriteParams.model_validate(

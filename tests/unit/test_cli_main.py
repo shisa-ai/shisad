@@ -591,6 +591,19 @@ def test_cli_commands_route_through_rpc_wrapper(
             "blue",
         ],
     )
+    _invoke_ok(
+        runner,
+        [
+            "memory",
+            "write",
+            "--type",
+            "episode",
+            "--key",
+            "timeline.launch",
+            "--value",
+            "the launch retrospective happened on monday",
+        ],
+    )
     _invoke_ok(runner, ["memory", "rotate-key"])
     _invoke_ok(runner, ["note", "create", "--key", "meeting", "--content", "prep"])
     assert "n-1 meeting" in _invoke_ok(runner, ["note", "list", "--limit", "5"]).output
@@ -680,6 +693,14 @@ def test_cli_commands_route_through_rpc_wrapper(
     assert (
         "memory.write",
         {"entry_type": "fact", "key": "favorite_color", "value": "blue"},
+    ) in calls
+    assert (
+        "memory.write",
+        {
+            "entry_type": "episode",
+            "key": "timeline.launch",
+            "value": "the launch retrospective happened on monday",
+        },
     ) in calls
     assert ("note.create", {"key": "meeting", "content": "prep"}) in calls
     assert ("memory.rotate_key", {"reencrypt_existing": True}) in calls

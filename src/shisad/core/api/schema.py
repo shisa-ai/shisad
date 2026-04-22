@@ -16,6 +16,7 @@ from pydantic import (
 )
 
 from shisad.executors.sandbox import SandboxResult
+from shisad.memory.schema import MemoryEntryType
 
 # --- JSON-RPC 2.0 wire format ---
 
@@ -375,7 +376,7 @@ class MemoryWriteParams(_StrictParams):
     content_digest: str | None = None
     derivation_path: Literal["direct", "extracted", "summary"] = "direct"
     parent_digest: str | None = None
-    entry_type: str = "fact"
+    entry_type: MemoryEntryType | Literal["context"] = "fact"
     key: str
     value: Any = None
     confidence: float = 0.5

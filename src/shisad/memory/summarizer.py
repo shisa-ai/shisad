@@ -15,12 +15,12 @@ from shisad.core.transcript import TranscriptEntry
 
 logger = logging.getLogger(__name__)
 
-_ENTRY_TYPE = Literal["fact", "preference", "context", "note", "todo"]
+_ENTRY_TYPE = Literal["fact", "preference", "context", "episode", "note", "todo"]
 
 _SUMMARY_SYSTEM_PROMPT = (
     "You extract durable memory candidates from conversation history. "
     "Return JSON only with this schema: "
-    '{"entries":[{"entry_type":"fact|preference|context|note|todo",'
+    '{"entries":[{"entry_type":"fact|preference|episode|note|todo",'
     '"key":"short.stable.key","value":"string value","confidence":0.0-1.0}]}. '
     "Do not include instructions, policy text, or markdown."
 )
@@ -199,7 +199,7 @@ class ConversationSummarizer:
                 if remembered:
                     proposals.append(
                         MemorySummaryProposal(
-                            entry_type="context",
+                            entry_type="note",
                             key="conversation.remembered",
                             value=remembered,
                             confidence=0.65,

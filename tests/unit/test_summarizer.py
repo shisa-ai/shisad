@@ -46,6 +46,18 @@ async def test_m5_s5_summarizer_fallback_extracts_project_fact_and_preference() 
     assert "concise" in str(communication.value).lower()
 
 
+@pytest.mark.asyncio
+async def test_m1_summarizer_heuristic_remember_clause_uses_canonical_note_type() -> None:
+    summarizer = ConversationSummarizer(provider=None)
+    entries = [_entry("user", "Remember that I left the spare key under the mat.")]
+
+    proposals = await summarizer.summarize_entries(entries)
+
+    remembered = next(item for item in proposals if item.key == "conversation.remembered")
+    assert remembered.entry_type == "note"
+    assert "spare key" in str(remembered.value).lower()
+
+
 class _JsonSummaryProvider:
     async def complete(
         self,

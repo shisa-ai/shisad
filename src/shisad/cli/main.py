@@ -108,6 +108,27 @@ from shisad.ui.evidence import (
     sanitize_terminal_text,
 )
 
+_MEMORY_WRITE_ENTRY_TYPES = (
+    "persona_fact",
+    "preference",
+    "soft_constraint",
+    "open_thread",
+    "scheduled",
+    "recurring",
+    "waiting_on",
+    "fact",
+    "decision",
+    "relationship",
+    "episode",
+    "note",
+    "todo",
+    "project_state",
+    "skill",
+    "runbook",
+    "template",
+    "context",
+)
+
 
 def _get_config() -> DaemonConfig:
     return DaemonConfig()
@@ -2337,7 +2358,7 @@ def memory_list(limit: int) -> None:
     "--type",
     "entry_type",
     required=True,
-    type=click.Choice(["fact", "preference", "context"]),
+    type=click.Choice(_MEMORY_WRITE_ENTRY_TYPES),
 )
 @click.option("--key", required=True)
 @click.option("--value", required=True)
