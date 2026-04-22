@@ -1132,6 +1132,32 @@ async def test_contract_note_create_and_search_executes_without_lockdown(
 
 
 @pytest.mark.asyncio
+async def test_contract_note_create_persists_ingress_metadata_on_readback(
+    contract_harness: ContractHarness,
+) -> None:
+    sid = await _create_session(contract_harness.client)
+
+    created = await contract_harness.client.call(
+        "session.message",
+        {"session_id": sid, "content": "add a note: remember to buy groceries"},
+    )
+    created_outputs = _extract_tool_outputs(created)
+    created_payload = created_outputs["note.create"][0]
+    entry = created_payload.get("entry") or {}
+    entry_id = str(entry.get("id", "")).strip()
+
+    assert entry_id
+
+    fetched = await contract_harness.client.call("note.get", {"entry_id": entry_id})
+    stored = fetched.get("entry") or {}
+
+    assert str(stored.get("ingress_handle_id", "")).strip()
+    assert stored.get("source_origin") == "user_direct"
+    assert stored.get("channel_trust") == "command"
+    assert stored.get("confirmation_status") == "user_asserted"
+
+
+@pytest.mark.asyncio
 async def test_contract_todo_create_list_and_complete_executes_without_lockdown(
     contract_harness: ContractHarness,
 ) -> None:
@@ -1183,6 +1209,25 @@ async def test_contract_todo_create_list_and_complete_executes_without_lockdown(
     value = entry.get("value") if isinstance(entry, dict) else {}
     assert isinstance(value, dict)
     assert value.get("status") == "done"
+
+
+@pytest.mark.asyncio
+async def test_contract_memory_write_rejects_caller_supplied_trust_fields(
+    contract_harness: ContractHarness,
+) -> None:
+    with pytest.raises(RuntimeError, match=r"RPC error -32602"):
+        await contract_harness.client.call(
+            "memory.write",
+            {
+                "entry_type": "fact",
+                "key": "profile.color",
+                "value": "blue",
+                "source_origin": "user_direct",
+                "channel_trust": "command",
+                "confirmation_status": "user_asserted",
+                "scope": "user",
+            },
+        )
 
 
 @pytest.mark.asyncio
