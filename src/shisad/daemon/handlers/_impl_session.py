@@ -103,6 +103,7 @@ from shisad.daemon.handlers._pending_approval import (
 )
 from shisad.daemon.handlers._task_scope import task_declared_tdg_roots, task_resource_authorizer
 from shisad.governance.merge import PolicyMergeError
+from shisad.memory.context_defaults import resolve_active_attention_defaults
 from shisad.memory.ingestion import IngestionPipeline
 from shisad.memory.ingress import (
     IngressContext,
@@ -139,9 +140,6 @@ from shisad.security.taint import normalize_retrieval_taints
 logger = logging.getLogger(__name__)
 
 AssistantTone = Literal["strict", "neutral", "friendly"]
-
-_CLI_ACTIVE_ATTENTION_SCOPE_FILTER = {"session", "project", "user", "channel"}
-_CLI_ACTIVE_ATTENTION_CHANNEL_TRUSTS = {"command", "owner_observed"}
 
 _CLEANROOM_CHANNELS: set[str] = {"cli"}
 _CLEANROOM_UNTRUSTED_TOOL_NAMES: set[str] = {
@@ -4518,10 +4516,15 @@ class SessionImplMixin(HandlerMixinBase):
             )
             if Capability.MEMORY_READ in effective_caps:
                 identity_entries = self._memory_manager.compile_identity().entries
-                if str(getattr(session, "channel", "cli")).strip().lower() == "cli":
+                active_attention_defaults = resolve_active_attention_defaults(
+                    channel=str(getattr(session, "channel", "cli"))
+                )
+                if active_attention_defaults is not None:
                     active_attention_entries = self._memory_manager.compile_active_attention(
-                        scope_filter=set(_CLI_ACTIVE_ATTENTION_SCOPE_FILTER),
-                        allowed_channel_trusts=set(_CLI_ACTIVE_ATTENTION_CHANNEL_TRUSTS),
+                        scope_filter=set(active_attention_defaults.scope_filter),
+                        allowed_channel_trusts=set(
+                            active_attention_defaults.allowed_channel_trusts
+                        ),
                     ).entries
                     active_attention_context = _build_active_attention_context(
                         active_attention_entries
