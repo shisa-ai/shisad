@@ -11,7 +11,7 @@ Rather than ignoring the elephant in the room, our design targets the [lethal tr
 ```
                        ┌─────────────────┐
                        │   LLM (Planner) │
-   Untrusted ────────▶│   [tokens mix]  │─────────▶ Proposed
+   Untrusted ─────────▶│   [tokens mix]  │─────────▶ Proposed
    Content             │                 │            Actions
                        └─────────────────┘
                                                        │

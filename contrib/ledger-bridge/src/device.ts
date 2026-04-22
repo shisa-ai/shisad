@@ -6,6 +6,10 @@
  * stale. This avoids the 200-500ms USB enumeration cost per request.
  */
 
+// Must run before the DMK transport is imported so node-hid is patched in
+// its CJS module cache before DMK requires it.
+import "./linux-hid-filter.js";
+
 import {
   type DeviceManagementKit,
   DeviceManagementKitBuilder,

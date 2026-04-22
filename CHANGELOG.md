@@ -9,6 +9,20 @@ left unlinked until the tag exists. There is no standing "Unreleased" section.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Versioning follows semver (see `docs/PUBLISH.md` for policy and style guide).
 
+## [0.6.7.1] - 2026-04-23
+
+### Fixed
+
+- **Ledger Nano X now round-trips on Linux.** On Linux, the bridge was
+  sometimes picking the Nano X's FIDO/U2F HID interface instead of the
+  APDU interface, which made the first transaction request hang. The
+  bridge now filters Ledger HID interfaces by their APDU usage page on
+  Linux, matching what Ledger's own transport already does on macOS and
+  Windows. Stax and Flex users were not affected — those models only
+  expose the APDU interface.
+
+[0.6.7.1]: https://github.com/shisa-ai/shisad/compare/v0.6.7...v0.6.7.1
+
 ## [0.6.7] - 2026-04-21
 
 ### Added

@@ -94,15 +94,26 @@ tools:
 |--------|--------|----------------|-------------------------|
 | Ledger Stax | Large touchscreen | `trusted_device_display` | Pending device-attached verification |
 | Ledger Flex | Large touchscreen | `trusted_device_display` | Pending device-attached verification |
-| Ledger Nano X | Small OLED (scroll) | `opaque_device` | Unverified; maintainer-side DMK 1.2.0 + Linux round-trip currently hangs |
+| Ledger Nano X | Small OLED (scroll) | `opaque_device` | Linux: verified round-trip in `v0.6.7.1` (maintainer test, Ethereum app 1.22.0). macOS/Windows: not maintainer-tested yet. |
 | Ledger Nano S Plus | Small OLED (scroll) | `opaque_device` | Unverified; awaiting Ledger compatibility matrix |
 | Unknown model | Unknown | `opaque_device` | Unverified |
 
 This table shows the bridge's runtime classification for device models it
 reports. It is not a maintainer-validated hardware and firmware support
-matrix. `v0.6.7` ships before that matrix is published; the current
-follow-up is to request Ledger's validated device, firmware, and Ethereum-app
-list and publish it in `v0.6.7.1`.
+matrix. The Ledger-validated device, firmware, and Ethereum-app compatibility
+list is still pending from Ledger.
+
+### Linux-specific note for Nano X / Nano S Plus
+
+Some Ledger devices expose multiple HID interfaces on USB (APDU, FIDO/U2F,
+and sometimes a generic interface). Ledger's upstream Node HID transport
+filters to the APDU interface on macOS and Windows only — on Linux it
+accepts all interfaces, which can cause the bridge to latch onto the
+FIDO interface and hang on the first APDU. The bridge applies the same
+APDU-interface filter on Linux as a workaround (see
+`src/linux-hid-filter.ts`). The Nano X Linux round-trip was verified by
+the maintainer in `v0.6.7.1` against Ethereum app 1.22.0; Nano S Plus
+is expected to behave the same way but has not been maintainer-tested.
 
 ## Signing Mechanism
 
