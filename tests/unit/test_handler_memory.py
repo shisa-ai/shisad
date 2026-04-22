@@ -16,6 +16,10 @@ from shisad.daemon.handlers.memory import MemoryHandlers
 
 
 class _StubImpl:
+    def __init__(self) -> None:
+        self.last_memory_list_payload: dict[str, object] | None = None
+        self.last_memory_get_payload: dict[str, object] | None = None
+
     async def do_memory_ingest(self, payload: dict[str, object]) -> dict[str, object]:
         return {
             "chunk_id": "ing-1",
@@ -34,13 +38,15 @@ class _StubImpl:
     async def do_memory_write(self, _payload: dict[str, object]) -> dict[str, object]:
         return {"written": True}
 
-    async def do_memory_list(self, _payload: dict[str, object]) -> dict[str, object]:
+    async def do_memory_list(self, payload: dict[str, object]) -> dict[str, object]:
+        self.last_memory_list_payload = payload
         return {"entries": [{"entry_id": "e1"}], "count": 1}
 
     async def do_memory_list_review_queue(self, _payload: dict[str, object]) -> dict[str, object]:
         return {"entries": [{"entry_id": "review-1"}], "count": 1}
 
-    async def do_memory_get(self, _payload: dict[str, object]) -> dict[str, object]:
+    async def do_memory_get(self, payload: dict[str, object]) -> dict[str, object]:
+        self.last_memory_get_payload = payload
         return {"entry": {"entry_id": "e1"}}
 
     async def do_memory_delete(self, payload: dict[str, object]) -> dict[str, object]:
@@ -90,3 +96,37 @@ async def test_memory_verify_and_rotate_wrappers() -> None:
     )
     assert verify.verified is True
     assert rotated.active_key_id == "k1"
+
+
+@pytest.mark.asyncio
+async def test_memory_list_and_get_wrappers_forward_history_flags() -> None:
+    impl = _StubImpl()
+    handlers = MemoryHandlers(impl, internal_ingress_marker=object())  # type: ignore[arg-type]
+
+    await handlers.handle_memory_list(
+        MemoryListParams(
+            limit=5,
+            include_deleted=True,
+            include_quarantined=True,
+            confirmed=True,
+        ),
+        RequestContext(),
+    )
+    await handlers.handle_memory_get(
+        MemoryEntryParams(
+            entry_id="e1",
+            include_deleted=True,
+            include_quarantined=True,
+            confirmed=True,
+        ),
+        RequestContext(),
+    )
+
+    assert impl.last_memory_list_payload is not None
+    assert impl.last_memory_list_payload["include_deleted"] is True
+    assert impl.last_memory_list_payload["include_quarantined"] is True
+    assert impl.last_memory_list_payload["confirmed"] is True
+    assert impl.last_memory_get_payload is not None
+    assert impl.last_memory_get_payload["include_deleted"] is True
+    assert impl.last_memory_get_payload["include_quarantined"] is True
+    assert impl.last_memory_get_payload["confirmed"] is True

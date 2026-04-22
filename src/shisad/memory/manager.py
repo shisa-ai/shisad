@@ -324,14 +324,23 @@ class MemoryManager:
         rows.sort(key=lambda item: item.created_at, reverse=True)
         return rows[:limit]
 
-    def get_entry(self, entry_id: str) -> MemoryEntry | None:
+    def get_entry(
+        self,
+        entry_id: str,
+        *,
+        include_deleted: bool = False,
+        include_quarantined: bool = False,
+        include_pending_review: bool = False,
+    ) -> MemoryEntry | None:
         self.purge_expired()
         entry = self._entries.get(entry_id)
-        if entry is None or self._is_deleted(entry):
+        if entry is None:
             return None
-        if self._is_quarantined(entry):
+        if self._is_deleted(entry) and not include_deleted:
             return None
-        if self._is_pending_review(entry):
+        if self._is_quarantined(entry) and not include_quarantined:
+            return None
+        if self._is_pending_review(entry) and not include_pending_review:
             return None
         return self._refresh_ttl(entry)
 

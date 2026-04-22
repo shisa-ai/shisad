@@ -20,9 +20,11 @@ from shisad.core.api.schema import (
     JsonRpcRequest,
     LockdownSetResult,
     MemoryDeleteResult,
+    MemoryEntryParams,
     MemoryExportResult,
     MemoryGetResult,
     MemoryIngestResult,
+    MemoryListParams,
     MemoryListResult,
     MemoryRetrieveResult,
     MemoryRotateKeyResult,
@@ -382,6 +384,39 @@ class TestApiSchemaValidation:
                     "value": "alice",
                 }
             )
+
+    def test_m1_memory_list_params_gate_quarantined_reads_on_confirmation(self) -> None:
+        with pytest.raises(ValidationError):
+            MemoryListParams.model_validate({"include_quarantined": True})
+
+        params = MemoryListParams.model_validate(
+            {
+                "include_quarantined": True,
+                "confirmed": True,
+                "limit": 5,
+            }
+        )
+        assert params.include_quarantined is True
+        assert params.confirmed is True
+
+    def test_m1_memory_entry_params_gate_quarantined_reads_on_confirmation(self) -> None:
+        with pytest.raises(ValidationError):
+            MemoryEntryParams.model_validate(
+                {
+                    "entry_id": "e1",
+                    "include_quarantined": True,
+                }
+            )
+
+        params = MemoryEntryParams.model_validate(
+            {
+                "entry_id": "e1",
+                "include_quarantined": True,
+                "confirmed": True,
+            }
+        )
+        assert params.include_quarantined is True
+        assert params.confirmed is True
 
     def test_m4_list_entry_models_preserve_additional_payload_fields(self) -> None:
         memory_list = MemoryListResult.model_validate(

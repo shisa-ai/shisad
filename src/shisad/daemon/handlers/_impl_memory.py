@@ -185,7 +185,13 @@ class MemoryImplMixin(HandlerMixinBase):
         return cast(dict[str, Any], decision.model_dump(mode="json"))
 
     async def do_memory_list(self, params: Mapping[str, Any]) -> dict[str, Any]:
-        rows = self._memory_manager.list_entries(limit=int(params.get("limit", 100)))
+        if params.get("include_quarantined") and not params.get("confirmed"):
+            raise ValueError("confirmed is required when include_quarantined is true")
+        rows = self._memory_manager.list_entries(
+            limit=int(params.get("limit", 100)),
+            include_deleted=bool(params.get("include_deleted", False)),
+            include_quarantined=bool(params.get("include_quarantined", False)),
+        )
         return {"entries": [entry.model_dump(mode="json") for entry in rows], "count": len(rows)}
 
     async def do_memory_list_review_queue(self, params: Mapping[str, Any]) -> dict[str, Any]:
@@ -193,8 +199,14 @@ class MemoryImplMixin(HandlerMixinBase):
         return {"entries": [entry.model_dump(mode="json") for entry in rows], "count": len(rows)}
 
     async def do_memory_get(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        if params.get("include_quarantined") and not params.get("confirmed"):
+            raise ValueError("confirmed is required when include_quarantined is true")
         entry_id = str(params.get("entry_id", ""))
-        entry = self._memory_manager.get_entry(entry_id)
+        entry = self._memory_manager.get_entry(
+            entry_id,
+            include_deleted=bool(params.get("include_deleted", False)),
+            include_quarantined=bool(params.get("include_quarantined", False)),
+        )
         return {"entry": entry.model_dump(mode="json") if entry is not None else None}
 
     async def do_memory_delete(self, params: Mapping[str, Any]) -> dict[str, Any]:

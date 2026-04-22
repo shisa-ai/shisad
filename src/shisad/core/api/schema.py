@@ -379,6 +379,15 @@ class MemoryWriteParams(_StrictParams):
 
 class MemoryListParams(_StrictParams):
     limit: int = 100
+    include_deleted: bool = False
+    include_quarantined: bool = False
+    confirmed: bool = False
+
+    @model_validator(mode="after")
+    def _validate_history_flags(self) -> MemoryListParams:
+        if self.include_quarantined and not self.confirmed:
+            raise ValueError("confirmed is required when include_quarantined is true")
+        return self
 
 
 class MemoryReviewQueueParams(_StrictParams):
@@ -387,6 +396,15 @@ class MemoryReviewQueueParams(_StrictParams):
 
 class MemoryEntryParams(_StrictParams):
     entry_id: str
+    include_deleted: bool = False
+    include_quarantined: bool = False
+    confirmed: bool = False
+
+    @model_validator(mode="after")
+    def _validate_history_flags(self) -> MemoryEntryParams:
+        if self.include_quarantined and not self.confirmed:
+            raise ValueError("confirmed is required when include_quarantined is true")
+        return self
 
 
 class MemoryExportParams(_StrictParams):

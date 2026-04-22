@@ -441,6 +441,9 @@ def test_m1_quarantine_cycle_preserves_workflow_state(tmp_path: Path) -> None:
         "quarantined",
         "unquarantined",
     ]
+    included = manager.get_entry(entry_id, include_quarantined=True)
+    assert included is not None
+    assert included.workflow_state == "waiting"
 
 
 def test_m1_set_workflow_state_preserves_status_and_records_event(tmp_path: Path) -> None:
@@ -511,6 +514,32 @@ def test_m1_pending_review_entries_are_isolated_to_review_queue(tmp_path: Path) 
             "entry_ids": [decision.entry.id],
         },
     ) in audits
+
+
+def test_m1_deleted_entries_are_history_visible_only_with_explicit_include(tmp_path: Path) -> None:
+    manager = MemoryManager(tmp_path / "memory")
+    decision = manager.write_with_provenance(
+        entry_type="note",
+        key="note:history",
+        value="Keep for audit history",
+        source=MemorySource(origin="user", source_id="msg-delete-1", extraction_method="manual"),
+        source_origin="user_direct",
+        channel_trust="command",
+        confirmation_status="user_asserted",
+        source_id="msg-delete-1",
+        scope="user",
+        confidence=0.8,
+        confirmation_satisfied=True,
+    )
+
+    assert decision.entry is not None
+    entry_id = decision.entry.id
+    assert manager.delete(entry_id)
+    assert manager.get_entry(entry_id) is None
+
+    historical = manager.get_entry(entry_id, include_deleted=True)
+    assert historical is not None
+    assert historical.status == "tombstoned"
 
 
 def test_m1_invocation_eligible_requires_procedural_entry_type(tmp_path: Path) -> None:
