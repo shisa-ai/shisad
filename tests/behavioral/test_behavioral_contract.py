@@ -14,6 +14,7 @@ import asyncio
 import json
 import os
 import re
+import sqlite3
 import struct
 import subprocess
 import sys
@@ -1228,6 +1229,167 @@ async def test_contract_memory_write_rejects_caller_supplied_trust_fields(
                 "scope": "user",
             },
         )
+
+
+@pytest.mark.asyncio
+async def test_contract_persona_fact_write_rejects_workflow_state(
+    contract_harness: ContractHarness,
+) -> None:
+    result = await contract_harness.client.call(
+        "memory.write",
+        {
+            "entry_type": "persona_fact",
+            "key": "persona:timezone",
+            "value": "UTC",
+            "workflow_state": "active",
+        },
+    )
+
+    assert result.get("kind") == "reject"
+    assert result.get("reason") == "workflow_state_requires_active_agenda_entry_type"
+
+
+@pytest.mark.asyncio
+async def test_contract_open_thread_defaults_workflow_state_and_emits_init_audit(
+    contract_harness: ContractHarness,
+) -> None:
+    created = await contract_harness.client.call(
+        "memory.write",
+        {
+            "entry_type": "open_thread",
+            "key": "thread:vendor-followup",
+            "value": "follow up with vendor tomorrow",
+        },
+    )
+
+    assert created.get("kind") == "allow"
+    entry = created.get("entry") or {}
+    entry_id = str(entry.get("id", "")).strip()
+
+    assert entry_id
+    assert entry.get("workflow_state") == "active"
+    assert entry.get("status") == "active"
+
+    db_path = contract_harness.config.data_dir / "memory_entries" / "memory.sqlite3"
+    with sqlite3.connect(db_path) as conn:
+        rows = conn.execute(
+            """
+            SELECT event_type, metadata_json
+            FROM memory_events
+            WHERE entry_id = ?
+            ORDER BY timestamp ASC, rowid ASC
+            """,
+            (entry_id,),
+        ).fetchall()
+
+    assert [str(row[0]) for row in rows] == ["created", "workflow_state_changed"]
+    transition = json.loads(str(rows[-1][1]))
+    assert transition.get("from") is None
+    assert transition.get("to") == "active"
+    assert transition.get("status") == "active"
+
+
+@pytest.mark.asyncio
+async def test_contract_quarantine_cycle_preserves_open_thread_workflow_state(
+    contract_harness: ContractHarness,
+) -> None:
+    created = await contract_harness.client.call(
+        "memory.write",
+        {
+            "entry_type": "open_thread",
+            "key": "thread:customer-response",
+            "value": "waiting on customer response",
+            "workflow_state": "waiting",
+        },
+    )
+
+    assert created.get("kind") == "allow"
+    entry = created.get("entry") or {}
+    entry_id = str(entry.get("id", "")).strip()
+
+    assert entry_id
+    assert entry.get("workflow_state") == "waiting"
+    assert entry.get("status") == "active"
+
+    quarantined = await contract_harness.client.call(
+        "memory.quarantine",
+        {"entry_id": entry_id, "reason": "manual-review"},
+    )
+    assert quarantined.get("changed") is True
+
+    hidden = await contract_harness.client.call("memory.get", {"entry_id": entry_id})
+    assert hidden.get("entry") is None
+
+    quarantined_view = await contract_harness.client.call(
+        "memory.get",
+        {"entry_id": entry_id, "include_quarantined": True, "confirmed": True},
+    )
+    quarantined_entry = quarantined_view.get("entry") or {}
+    assert quarantined_entry.get("workflow_state") == "waiting"
+    assert quarantined_entry.get("status") == "quarantined"
+
+    restored = await contract_harness.client.call(
+        "memory.unquarantine",
+        {"entry_id": entry_id, "reason": "review-cleared"},
+    )
+    assert restored.get("changed") is True
+
+    restored_view = await contract_harness.client.call("memory.get", {"entry_id": entry_id})
+    restored_entry = restored_view.get("entry") or {}
+    assert restored_entry.get("workflow_state") == "waiting"
+    assert restored_entry.get("status") == "active"
+
+
+@pytest.mark.asyncio
+async def test_contract_set_workflow_state_keeps_status_active(
+    contract_harness: ContractHarness,
+) -> None:
+    created = await contract_harness.client.call(
+        "memory.write",
+        {
+            "entry_type": "open_thread",
+            "key": "thread:closeable",
+            "value": "close this thread later",
+        },
+    )
+
+    assert created.get("kind") == "allow"
+    entry = created.get("entry") or {}
+    entry_id = str(entry.get("id", "")).strip()
+
+    assert entry_id
+
+    updated = await contract_harness.client.call(
+        "memory.set_workflow_state",
+        {"entry_id": entry_id, "workflow_state": "closed"},
+    )
+    assert updated.get("changed") is True
+    assert updated.get("workflow_state") == "closed"
+
+    fetched = await contract_harness.client.call("memory.get", {"entry_id": entry_id})
+    stored = fetched.get("entry") or {}
+
+    assert stored.get("workflow_state") == "closed"
+    assert stored.get("status") == "active"
+
+    db_path = contract_harness.config.data_dir / "memory_entries" / "memory.sqlite3"
+    with sqlite3.connect(db_path) as conn:
+        row = conn.execute(
+            """
+            SELECT metadata_json
+            FROM memory_events
+            WHERE entry_id = ? AND event_type = 'workflow_state_changed'
+            ORDER BY timestamp DESC, rowid DESC
+            LIMIT 1
+            """,
+            (entry_id,),
+        ).fetchone()
+
+    assert row is not None
+    transition = json.loads(str(row[0]))
+    assert transition.get("from") == "active"
+    assert transition.get("to") == "closed"
+    assert transition.get("status") == "active"
 
 
 @pytest.mark.asyncio
