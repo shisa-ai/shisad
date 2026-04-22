@@ -281,6 +281,91 @@ async def test_memory_write_supports_supersedes_chain(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_memory_set_workflow_state_updates_active_agenda_entry(tmp_path: Path) -> None:
+    harness = _MemoryWriteHarness(tmp_path)
+    context = harness._memory_ingress_registry.mint(
+        source_origin="user_direct",
+        channel_trust="command",
+        confirmation_status="user_asserted",
+        scope="user",
+        source_id="turn-open-thread",
+        content="follow up with vendor tomorrow",
+    )
+
+    created = await harness.do_memory_write(
+        {
+            "ingress_context": context.handle_id,
+            "entry_type": "open_thread",
+            "key": "thread:vendor-followup",
+            "value": "follow up with vendor tomorrow",
+        }
+    )
+
+    assert created["entry"] is not None
+    entry_id = str(created["entry"]["id"])
+
+    updated = await harness.do_memory_set_workflow_state(
+        {
+            "entry_id": entry_id,
+            "workflow_state": "closed",
+        }
+    )
+
+    assert updated["changed"] is True
+    assert updated["workflow_state"] == "closed"
+    entry = harness._memory_manager.get_entry(entry_id)
+    assert entry is not None
+    assert entry.workflow_state == "closed"
+    assert entry.status == "active"
+
+
+@pytest.mark.asyncio
+async def test_memory_quarantine_cycle_preserves_workflow_state_via_impl(tmp_path: Path) -> None:
+    harness = _MemoryWriteHarness(tmp_path)
+    context = harness._memory_ingress_registry.mint(
+        source_origin="user_direct",
+        channel_trust="command",
+        confirmation_status="user_asserted",
+        scope="user",
+        source_id="turn-waiting-thread",
+        content="waiting on customer response",
+    )
+
+    created = await harness.do_memory_write(
+        {
+            "ingress_context": context.handle_id,
+            "entry_type": "open_thread",
+            "key": "thread:customer-response",
+            "value": "waiting on customer response",
+            "workflow_state": "waiting",
+        }
+    )
+
+    assert created["entry"] is not None
+    entry_id = str(created["entry"]["id"])
+
+    quarantined = await harness.do_memory_quarantine(
+        {
+            "entry_id": entry_id,
+            "reason": "manual-review",
+        }
+    )
+    restored = await harness.do_memory_unquarantine(
+        {
+            "entry_id": entry_id,
+            "reason": "review-cleared",
+        }
+    )
+
+    assert quarantined["changed"] is True
+    assert restored["changed"] is True
+    entry = harness._memory_manager.get_entry(entry_id)
+    assert entry is not None
+    assert entry.workflow_state == "waiting"
+    assert entry.status == "active"
+
+
+@pytest.mark.asyncio
 async def test_memory_write_control_api_path_mints_user_asserted_handle(tmp_path: Path) -> None:
     harness = _MemoryWriteHarness(tmp_path)
 

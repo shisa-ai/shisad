@@ -74,6 +74,8 @@ from shisad.core.api.schema import (
     MemoryGetResult,
     MemoryIngestParams,
     MemoryIngestResult,
+    MemoryLifecycleParams,
+    MemoryLifecycleResult,
     MemoryListParams,
     MemoryListResult,
     MemoryRetrieveParams,
@@ -82,6 +84,8 @@ from shisad.core.api.schema import (
     MemoryRotateKeyParams,
     MemoryRotateKeyResult,
     MemoryVerifyResult,
+    MemoryWorkflowStateParams,
+    MemoryWorkflowStateResult,
     MemoryWriteParams,
     MemoryWriteResult,
     NoParams,
@@ -466,6 +470,21 @@ class DaemonControlHandlers:
         self, params: MemoryEntryParams, ctx: RequestContext
     ) -> MemoryDeleteResult:
         return await self._memory.handle_memory_delete(params, ctx)
+
+    async def handle_memory_quarantine(
+        self, params: MemoryLifecycleParams, ctx: RequestContext
+    ) -> MemoryLifecycleResult:
+        return await self._memory.handle_memory_quarantine(params, ctx)
+
+    async def handle_memory_unquarantine(
+        self, params: MemoryLifecycleParams, ctx: RequestContext
+    ) -> MemoryLifecycleResult:
+        return await self._memory.handle_memory_unquarantine(params, ctx)
+
+    async def handle_memory_set_workflow_state(
+        self, params: MemoryWorkflowStateParams, ctx: RequestContext
+    ) -> MemoryWorkflowStateResult:
+        return await self._memory.handle_memory_set_workflow_state(params, ctx)
 
     async def handle_memory_export(
         self, params: MemoryExportParams, ctx: RequestContext

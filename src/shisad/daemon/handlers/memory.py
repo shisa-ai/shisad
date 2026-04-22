@@ -10,6 +10,8 @@ from shisad.core.api.schema import (
     MemoryGetResult,
     MemoryIngestParams,
     MemoryIngestResult,
+    MemoryLifecycleParams,
+    MemoryLifecycleResult,
     MemoryListParams,
     MemoryListResult,
     MemoryRetrieveParams,
@@ -18,6 +20,8 @@ from shisad.core.api.schema import (
     MemoryRotateKeyParams,
     MemoryRotateKeyResult,
     MemoryVerifyResult,
+    MemoryWorkflowStateParams,
+    MemoryWorkflowStateResult,
     MemoryWriteParams,
     MemoryWriteResult,
     NoteCreateParams,
@@ -144,6 +148,46 @@ class MemoryHandlers:
             internal_ingress_marker=self._internal_ingress_marker,
         )
         return MemoryDeleteResult.model_validate(await self._impl.do_memory_delete(payload))
+
+    async def handle_memory_quarantine(
+        self,
+        params: MemoryLifecycleParams,
+        ctx: RequestContext,
+    ) -> MemoryLifecycleResult:
+        payload = build_params_payload(
+            params,
+            ctx,
+            internal_ingress_marker=self._internal_ingress_marker,
+        )
+        return MemoryLifecycleResult.model_validate(await self._impl.do_memory_quarantine(payload))
+
+    async def handle_memory_unquarantine(
+        self,
+        params: MemoryLifecycleParams,
+        ctx: RequestContext,
+    ) -> MemoryLifecycleResult:
+        payload = build_params_payload(
+            params,
+            ctx,
+            internal_ingress_marker=self._internal_ingress_marker,
+        )
+        return MemoryLifecycleResult.model_validate(
+            await self._impl.do_memory_unquarantine(payload)
+        )
+
+    async def handle_memory_set_workflow_state(
+        self,
+        params: MemoryWorkflowStateParams,
+        ctx: RequestContext,
+    ) -> MemoryWorkflowStateResult:
+        payload = build_params_payload(
+            params,
+            ctx,
+            internal_ingress_marker=self._internal_ingress_marker,
+        )
+        return MemoryWorkflowStateResult.model_validate(
+            await self._impl.do_memory_set_workflow_state(payload)
+        )
 
     async def handle_memory_export(
         self,

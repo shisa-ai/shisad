@@ -282,6 +282,28 @@ class MemoryImplMixin(HandlerMixinBase):
         deleted = self._memory_manager.delete(entry_id)
         return {"deleted": deleted, "entry_id": entry_id}
 
+    async def do_memory_quarantine(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        entry_id = str(params.get("entry_id", ""))
+        reason = str(params.get("reason", "")).strip()
+        changed = self._memory_manager.quarantine(entry_id, reason=reason)
+        return {"changed": changed, "entry_id": entry_id, "reason": reason}
+
+    async def do_memory_unquarantine(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        entry_id = str(params.get("entry_id", ""))
+        reason = str(params.get("reason", "")).strip()
+        changed = self._memory_manager.unquarantine(entry_id, reason=reason)
+        return {"changed": changed, "entry_id": entry_id, "reason": reason}
+
+    async def do_memory_set_workflow_state(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        entry_id = str(params.get("entry_id", ""))
+        workflow_state = str(params.get("workflow_state", "")).strip()
+        changed = self._memory_manager.set_workflow_state(entry_id, workflow_state)
+        return {
+            "changed": changed,
+            "entry_id": entry_id,
+            "workflow_state": workflow_state,
+        }
+
     async def do_memory_export(self, params: Mapping[str, Any]) -> dict[str, Any]:
         fmt = str(params.get("format", "json"))
         return {"format": fmt, "data": self._memory_manager.export(fmt=fmt)}

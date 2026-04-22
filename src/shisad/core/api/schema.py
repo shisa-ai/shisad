@@ -425,6 +425,22 @@ class MemoryEntryParams(_StrictParams):
         return self
 
 
+class MemoryLifecycleParams(_StrictParams):
+    entry_id: str
+    reason: str
+
+    @model_validator(mode="after")
+    def _validate_reason(self) -> MemoryLifecycleParams:
+        if not self.reason.strip():
+            raise ValueError("reason is required")
+        return self
+
+
+class MemoryWorkflowStateParams(_StrictParams):
+    entry_id: str
+    workflow_state: Literal["active", "waiting", "blocked", "stale", "closed"]
+
+
 class MemoryExportParams(_StrictParams):
     format: str = "json"
 
@@ -481,6 +497,18 @@ class MemoryGetResult(BaseModel):
 class MemoryDeleteResult(BaseModel):
     deleted: bool
     entry_id: str
+
+
+class MemoryLifecycleResult(BaseModel):
+    changed: bool
+    entry_id: str
+    reason: str = ""
+
+
+class MemoryWorkflowStateResult(BaseModel):
+    changed: bool
+    entry_id: str
+    workflow_state: str = ""
 
 
 class MemoryExportResult(BaseModel):

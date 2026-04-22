@@ -7,9 +7,11 @@ import pytest
 from shisad.core.api.schema import (
     MemoryEntryParams,
     MemoryIngestParams,
+    MemoryLifecycleParams,
     MemoryListParams,
     MemoryReviewQueueParams,
     MemoryRotateKeyParams,
+    MemoryWorkflowStateParams,
 )
 from shisad.daemon.context import RequestContext
 from shisad.daemon.handlers.memory import MemoryHandlers
@@ -20,6 +22,9 @@ class _StubImpl:
         self.last_memory_ingest_payload: dict[str, object] | None = None
         self.last_memory_list_payload: dict[str, object] | None = None
         self.last_memory_get_payload: dict[str, object] | None = None
+        self.last_memory_quarantine_payload: dict[str, object] | None = None
+        self.last_memory_unquarantine_payload: dict[str, object] | None = None
+        self.last_memory_set_workflow_state_payload: dict[str, object] | None = None
 
     async def do_memory_ingest(self, payload: dict[str, object]) -> dict[str, object]:
         self.last_memory_ingest_payload = payload
@@ -67,6 +72,30 @@ class _StubImpl:
             "reencrypt_existing": bool(payload["reencrypt_existing"]),
         }
 
+    async def do_memory_quarantine(self, payload: dict[str, object]) -> dict[str, object]:
+        self.last_memory_quarantine_payload = payload
+        return {
+            "changed": True,
+            "entry_id": str(payload["entry_id"]),
+            "reason": str(payload["reason"]),
+        }
+
+    async def do_memory_unquarantine(self, payload: dict[str, object]) -> dict[str, object]:
+        self.last_memory_unquarantine_payload = payload
+        return {
+            "changed": True,
+            "entry_id": str(payload["entry_id"]),
+            "reason": str(payload["reason"]),
+        }
+
+    async def do_memory_set_workflow_state(self, payload: dict[str, object]) -> dict[str, object]:
+        self.last_memory_set_workflow_state_payload = payload
+        return {
+            "changed": True,
+            "entry_id": str(payload["entry_id"]),
+            "workflow_state": str(payload["workflow_state"]),
+        }
+
 
 @pytest.mark.asyncio
 async def test_memory_ingest_and_list_wrappers() -> None:
@@ -101,6 +130,35 @@ async def test_memory_verify_and_rotate_wrappers() -> None:
     )
     assert verify.verified is True
     assert rotated.active_key_id == "k1"
+
+
+@pytest.mark.asyncio
+async def test_memory_lifecycle_wrappers_forward_payloads() -> None:
+    impl = _StubImpl()
+    handlers = MemoryHandlers(impl, internal_ingress_marker=object())  # type: ignore[arg-type]
+
+    quarantined = await handlers.handle_memory_quarantine(
+        MemoryLifecycleParams(entry_id="e1", reason="manual-review"),
+        RequestContext(),
+    )
+    unquarantined = await handlers.handle_memory_unquarantine(
+        MemoryLifecycleParams(entry_id="e1", reason="review-cleared"),
+        RequestContext(),
+    )
+    updated = await handlers.handle_memory_set_workflow_state(
+        MemoryWorkflowStateParams(entry_id="e1", workflow_state="closed"),
+        RequestContext(),
+    )
+
+    assert quarantined.changed is True
+    assert unquarantined.changed is True
+    assert updated.workflow_state == "closed"
+    assert impl.last_memory_quarantine_payload is not None
+    assert impl.last_memory_quarantine_payload["reason"] == "manual-review"
+    assert impl.last_memory_unquarantine_payload is not None
+    assert impl.last_memory_unquarantine_payload["reason"] == "review-cleared"
+    assert impl.last_memory_set_workflow_state_payload is not None
+    assert impl.last_memory_set_workflow_state_payload["workflow_state"] == "closed"
 
 
 @pytest.mark.asyncio

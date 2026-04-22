@@ -25,11 +25,13 @@ from shisad.core.api.schema import (
     MemoryGetResult,
     MemoryIngestParams,
     MemoryIngestResult,
+    MemoryLifecycleParams,
     MemoryListParams,
     MemoryListResult,
     MemoryRetrieveResult,
     MemoryRotateKeyResult,
     MemoryVerifyResult,
+    MemoryWorkflowStateParams,
     MemoryWriteParams,
     MemoryWriteResult,
     NoteCreateParams,
@@ -472,6 +474,26 @@ class TestApiSchemaValidation:
 
         assert note.ingress_context == "handle-2"
         assert todo.ingress_context == "handle-3"
+
+    def test_m1_memory_lifecycle_params_require_reason_and_valid_workflow_state(self) -> None:
+        params = MemoryLifecycleParams.model_validate(
+            {
+                "entry_id": "entry-1",
+                "reason": "manual-review",
+            }
+        )
+        workflow = MemoryWorkflowStateParams.model_validate(
+            {
+                "entry_id": "entry-1",
+                "workflow_state": "closed",
+            }
+        )
+
+        assert params.reason == "manual-review"
+        assert workflow.workflow_state == "closed"
+
+        with pytest.raises(ValidationError):
+            MemoryLifecycleParams.model_validate({"entry_id": "entry-1", "reason": ""})
 
     def test_m1_memory_list_params_gate_quarantined_reads_on_confirmation(self) -> None:
         with pytest.raises(ValidationError):
