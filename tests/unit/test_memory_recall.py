@@ -4,8 +4,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from shisad.core.types import Capability
-from shisad.memory.ingestion import IngestionPipeline
+from shisad.memory.ingestion import IngestionPipeline, RetrieveRagTool
+from shisad.memory.surfaces.recall import build_recall_pack
 
 
 def test_m2_compile_recall_preserves_legacy_retrieve_results(tmp_path: Path) -> None:
@@ -70,3 +73,41 @@ def test_m2_compile_recall_legacy_payload_matches_current_runtime_shape(tmp_path
         "risk_score",
         "original_hash",
     }
+
+
+def test_m2_retrieve_rag_tool_executes_recall_surface(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    pipeline = IngestionPipeline(tmp_path / "memory")
+    stored = pipeline.ingest(
+        source_id="doc-tool",
+        source_type="external",
+        content="Runtime retrieve_rag calls should flow through compile_recall.",
+    )
+    calls: list[tuple[str, int, set[Capability] | None]] = []
+
+    def _fail_legacy_retrieve(*_args: object, **_kwargs: object) -> list[object]:
+        raise AssertionError("RetrieveRagTool should not call the legacy retrieve alias")
+
+    def _fake_compile_recall(
+        query: str,
+        *,
+        limit: int = 5,
+        capabilities: set[Capability] | None = None,
+        **_kwargs: object,
+    ) -> object:
+        calls.append((query, limit, capabilities))
+        return build_recall_pack(query=query, results=[stored])
+
+    monkeypatch.setattr(pipeline, "retrieve", _fail_legacy_retrieve)
+    monkeypatch.setattr(pipeline, "compile_recall", _fake_compile_recall)
+
+    results = RetrieveRagTool(pipeline).execute(
+        query="runtime recall",
+        limit=1,
+        capabilities={Capability.MEMORY_READ},
+    )
+
+    assert calls == [("runtime recall", 1, {Capability.MEMORY_READ})]
+    assert [item.chunk_id for item in results] == [stored.chunk_id]

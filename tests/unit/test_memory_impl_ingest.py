@@ -6,9 +6,11 @@ from pathlib import Path
 
 import pytest
 
+from shisad.core.types import Capability
 from shisad.daemon.handlers._impl_memory import MemoryImplMixin
 from shisad.memory.ingestion import IngestionPipeline
 from shisad.memory.ingress import IngressContextRegistry
+from shisad.memory.surfaces.recall import build_recall_pack
 from shisad.memory.trust import TrustGateViolation
 
 
@@ -119,3 +121,45 @@ async def test_memory_ingest_rejects_unauthenticated_raw_source_shape(tmp_path: 
                 "content": "legacy payload",
             }
         )
+
+
+@pytest.mark.asyncio
+async def test_m2_memory_retrieve_uses_recall_surface(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    harness = _MemoryIngestHarness(tmp_path)
+    stored = harness._ingestion.ingest(
+        source_id="doc-recall-api",
+        source_type="external",
+        content="Memory retrieve RPC should route through compile_recall.",
+    )
+    calls: list[tuple[str, int, set[Capability]]] = []
+
+    def _fail_legacy_retrieve(*_args: object, **_kwargs: object) -> list[object]:
+        raise AssertionError("do_memory_retrieve should not call the legacy retrieve alias")
+
+    def _fake_compile_recall(
+        query: str,
+        *,
+        limit: int = 5,
+        capabilities: set[Capability] | None = None,
+        **_kwargs: object,
+    ) -> object:
+        calls.append((query, limit, set(capabilities or set())))
+        return build_recall_pack(query=query, results=[stored])
+
+    monkeypatch.setattr(harness._ingestion, "retrieve", _fail_legacy_retrieve)
+    monkeypatch.setattr(harness._ingestion, "compile_recall", _fake_compile_recall)
+
+    result = await harness.do_memory_retrieve(
+        {
+            "query": "recall rpc",
+            "limit": 1,
+            "capabilities": [Capability.MEMORY_READ.value],
+        }
+    )
+
+    assert calls == [("recall rpc", 1, {Capability.MEMORY_READ})]
+    assert result["count"] == 1
+    assert result["results"][0]["chunk_id"] == stored.chunk_id

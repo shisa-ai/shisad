@@ -294,16 +294,13 @@ class MemoryImplMixin(HandlerMixinBase):
         query = params.get("query", "")
         limit = int(params.get("limit", 5))
         capabilities = {Capability(cap) for cap in params.get("capabilities", [])}
-        results = self._ingestion.retrieve(
+        pack = self._ingestion.compile_recall(
             query,
             limit=limit,
             capabilities=capabilities,
             require_corroboration=bool(params.get("require_corroboration", False)),
         )
-        return {
-            "results": [item.model_dump(mode="json") for item in results],
-            "count": len(results),
-        }
+        return cast(dict[str, Any], pack.legacy_payload())
 
     async def do_memory_write(self, params: Mapping[str, Any]) -> dict[str, Any]:
         if params.get("ingress_context"):

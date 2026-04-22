@@ -11,7 +11,15 @@ import pytest
 
 from shisad.core.events import ToolApproved, ToolExecuted, ToolRejected
 from shisad.core.session import Session, SessionManager
-from shisad.core.types import SessionId, SessionMode, TaintLabel, ToolName, UserId, WorkspaceId
+from shisad.core.types import (
+    Capability,
+    SessionId,
+    SessionMode,
+    TaintLabel,
+    ToolName,
+    UserId,
+    WorkspaceId,
+)
 from shisad.daemon.handlers._impl import (
     HandlerImplementation,
     StructuredToolContext,
@@ -22,9 +30,11 @@ from shisad.daemon.handlers._impl import (
     _structured_todo_create,
 )
 from shisad.daemon.handlers._impl_memory import MemoryImplMixin
+from shisad.memory.ingestion import IngestionPipeline
 from shisad.memory.ingress import IngressContextRegistry, digest_content
 from shisad.memory.manager import MemoryManager
 from shisad.memory.remap import digest_memory_value
+from shisad.memory.surfaces.recall import build_recall_pack
 from shisad.security.control_plane.schema import Origin
 
 
@@ -379,6 +389,15 @@ class _MemoryStructuredExecutionHarness(_StructuredBranchHarness, MemoryImplMixi
         self._memory_ingress_registry = IngressContextRegistry()
 
 
+class _RetrieveStructuredExecutionHarness(_StructuredBranchHarness):
+    def __init__(self, storage_dir: Path) -> None:
+        super().__init__(
+            web_payload={"ok": True, "results": []},
+            git_status_payload={"ok": True, "status": "clean"},
+        )
+        self._ingestion = IngestionPipeline(storage_dir)
+
+
 @pytest.mark.asyncio
 async def test_m1_execute_approved_action_passes_memory_ingress_context_to_note_create(
     tmp_path: Path,
@@ -410,6 +429,55 @@ async def test_m1_execute_approved_action_passes_memory_ingress_context_to_note_
     assert notes[0].ingress_handle_id == ingress.handle_id
     assert notes[0].confirmation_status == "user_asserted"
     assert str(notes[0].value) == "my favorite color is blue"
+
+
+@pytest.mark.asyncio
+async def test_m2_execute_approved_action_retrieve_rag_uses_recall_surface(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    harness = _RetrieveStructuredExecutionHarness(tmp_path / "memory")
+    stored = harness._ingestion.ingest(
+        source_id="doc-runtime-recall",
+        source_type="external",
+        collection="project_docs",
+        content="Approved retrieve_rag execution should route through compile_recall.",
+    )
+    calls: list[tuple[str, int, set[Capability]]] = []
+
+    def _fail_legacy_retrieve(*_args: object, **_kwargs: object) -> list[object]:
+        raise AssertionError("retrieve_rag runtime branch should not call retrieve")
+
+    def _fake_compile_recall(
+        query: str,
+        *,
+        limit: int = 5,
+        capabilities: set[Capability] | None = None,
+        **_kwargs: object,
+    ) -> object:
+        calls.append((query, limit, set(capabilities or set())))
+        return build_recall_pack(query=query, results=[stored])
+
+    monkeypatch.setattr(harness._ingestion, "retrieve", _fail_legacy_retrieve)
+    monkeypatch.setattr(harness._ingestion, "compile_recall", _fake_compile_recall)
+
+    result = await HandlerImplementation._execute_approved_action(
+        harness,  # type: ignore[arg-type]
+        sid=harness.session_id,
+        user_id=UserId("user-1"),
+        tool_name=ToolName("retrieve_rag"),
+        arguments={"query": "runtime recall", "limit": 1},
+        capabilities={Capability.MEMORY_READ},
+        approval_actor="control_api",
+    )
+
+    assert result.success is True
+    assert calls == [("runtime recall", 1, {Capability.MEMORY_READ})]
+    assert result.tool_output is not None
+    assert result.tool_output.tool_name == "retrieve_rag"
+    assert result.tool_output.taint_labels == {TaintLabel.UNTRUSTED}
+    preview_rows = json.loads(result.tool_output.content)
+    assert preview_rows[0]["chunk_id"] == stored.chunk_id
 
 
 def test_u5_structured_fs_write_treats_trusted_cli_policy_approval_as_confirmed() -> None:

@@ -2581,11 +2581,11 @@ def _build_planner_memory_context(
     retrieval_query = query.strip()
     if not retrieval_query:
         return "", set(), False
-    results = ingestion.retrieve(
+    results = ingestion.compile_recall(
         retrieval_query,
         limit=max(1, int(top_k)),
         capabilities=capabilities,
-    )
+    ).results
     if not results:
         return "", set(), False
 

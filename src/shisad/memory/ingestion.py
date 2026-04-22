@@ -889,4 +889,8 @@ class RetrieveRagTool:
         limit: int = 5,
         capabilities: set[Capability] | None = None,
     ) -> list[RetrievalResult]:
-        return self._ingestion.retrieve(query, limit=limit, capabilities=capabilities)
+        return self._ingestion.compile_recall(
+            query,
+            limit=limit,
+            capabilities=capabilities,
+        ).results
