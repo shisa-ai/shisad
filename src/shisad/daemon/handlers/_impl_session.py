@@ -269,6 +269,7 @@ class SessionMessageValidationResult:
     delivery_target: DeliveryTarget | None = None
     channel_message_id: str = ""
     tool_allowlist: set[ToolName] | None = None
+    explicit_memory_ingress_context: IngressContext | None = None
     early_response: dict[str, Any] | None = None
 
 
@@ -4301,6 +4302,28 @@ class SessionImplMixin(HandlerMixinBase):
             }
             tool_allowlist = canonical_allowlist
 
+        explicit_memory_ingress_context: IngressContext | None = None
+        raw_explicit_memory_ingress_context = params.get("_explicit_memory_ingress_context")
+        if (
+            isinstance(raw_explicit_memory_ingress_context, str)
+            and raw_explicit_memory_ingress_context.strip()
+        ):
+            explicit_memory_ingress_context = self._memory_ingress_registry.resolve(
+                raw_explicit_memory_ingress_context.strip()
+            )
+        elif isinstance(raw_explicit_memory_ingress_context, IngressContext):
+            explicit_memory_ingress_context = raw_explicit_memory_ingress_context
+        elif _build_explicit_memory_intent_proposal(firewall_result.sanitized_text) is not None:
+            explicit_memory_ingress_context = mint_explicit_user_memory_ingress_context(
+                self._memory_ingress_registry,
+                channel=channel,
+                trust_level=trust_level,
+                session_id=str(sid),
+                message_id=channel_message_id,
+                content=firewall_result.sanitized_text,
+                taint_labels=list(firewall_result.taint_labels),
+            )
+
         return SessionMessageValidationResult(
             sid=sid,
             params=params,
@@ -4319,6 +4342,7 @@ class SessionImplMixin(HandlerMixinBase):
             delivery_target=delivery_target,
             channel_message_id=channel_message_id,
             tool_allowlist=tool_allowlist,
+            explicit_memory_ingress_context=explicit_memory_ingress_context,
             early_response=early_response,
         )
 
@@ -5272,6 +5296,8 @@ class SessionImplMixin(HandlerMixinBase):
         *,
         validated: SessionMessageValidationResult,
     ) -> IngressContext | None:
+        if validated.explicit_memory_ingress_context is not None:
+            return validated.explicit_memory_ingress_context
         raw_existing_context = validated.params.get("_explicit_memory_ingress_context")
         if isinstance(raw_existing_context, str) and raw_existing_context.strip():
             resolved_context = self._memory_ingress_registry.resolve(raw_existing_context.strip())

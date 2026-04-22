@@ -31,6 +31,7 @@ from shisad.daemon.handlers._impl_session import (
     _trusted_cli_firewall_result_is_clean,
     _user_goal_host_patterns_for_validated_input,
 )
+from shisad.memory.ingress import IngressContextRegistry, digest_content
 from shisad.security.firewall import ContentFirewall, FirewallResult
 from shisad.security.pep import PEP, PolicyContext
 from shisad.security.policy import EgressRule, PolicyBundle, ToolPolicy
@@ -80,6 +81,7 @@ class _SessionMessageHarness(_SessionCreateHarness):
     def __init__(self, policy: PolicyBundle, tmp_path: Any) -> None:
         super().__init__(policy)
         self._firewall = ContentFirewall()
+        self._memory_ingress_registry = IngressContextRegistry()
         self._transcript_store = TranscriptStore(tmp_path / "transcripts")
         self._pending_actions: dict[str, object] = {}
         self._lockdown_manager = SimpleNamespace(
@@ -478,6 +480,37 @@ async def test_lt1_validate_default_cli_does_not_taint_clean_operator_input(
     assert validated.trust_level == "trusted"
     assert validated.trusted_input is True
     assert TaintLabel.UNTRUSTED not in validated.incoming_taint_labels
+
+
+@pytest.mark.asyncio
+async def test_m1_validate_default_cli_pre_mints_explicit_memory_ingress_handle(
+    tmp_path,
+) -> None:
+    harness = _SessionMessageHarness(PolicyBundle(), tmp_path)
+    created = await SessionImplMixin.do_session_create(
+        harness,
+        {"channel": "cli", "user_id": "alice", "workspace_id": "ws1"},
+    )  # type: ignore[arg-type]
+
+    validated = await SessionImplMixin._validate_and_load_session(
+        harness,
+        {
+            "session_id": str(created["session_id"]),
+            "channel": "cli",
+            "user_id": "alice",
+            "workspace_id": "ws1",
+            "content": "remember that I like tea",
+        },
+    )  # type: ignore[arg-type]
+
+    context = validated.explicit_memory_ingress_context
+    assert context is not None
+    assert context.source_origin == "user_direct"
+    assert context.channel_trust == "command"
+    assert context.confirmation_status == "user_asserted"
+    assert context.scope == "user"
+    assert context.source_id == str(validated.sid)
+    assert context.content_digest == digest_content("remember that I like tea")
 
 
 @pytest.mark.asyncio
