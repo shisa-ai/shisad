@@ -2595,6 +2595,12 @@ def _build_planner_memory_context(
     amv_tainted = False
     cited_chunk_ids: list[str] = []
     for index, item in enumerate(results, start=1):
+        snippet = _compact_context_text(
+            item.content_sanitized,
+            max_chars=_MEMORY_CONTEXT_ENTRY_MAX_CHARS,
+        )
+        if not snippet:
+            continue
         item_taints = normalize_retrieval_taints(
             taint_labels=item.taint_labels,
             collection=item.collection,
@@ -2602,12 +2608,6 @@ def _build_planner_memory_context(
         taints.update(item_taints)
         if item.collection != "user_curated" or bool(item.taint_labels):
             amv_tainted = True
-        snippet = _compact_context_text(
-            item.content_sanitized,
-            max_chars=_MEMORY_CONTEXT_ENTRY_MAX_CHARS,
-        )
-        if not snippet:
-            continue
         cited_chunk_ids.append(item.chunk_id)
         taint_value = ",".join(sorted(label.value for label in item_taints)) or "none"
         lines.append(

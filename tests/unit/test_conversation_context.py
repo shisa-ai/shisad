@@ -376,6 +376,44 @@ def test_m2_memory_context_builder_records_only_rendered_citations(
     assert recorded == [[visible.chunk_id]]
 
 
+def test_m2_memory_context_builder_ignores_compacted_blank_hits_for_taint(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    ingestion = IngestionPipeline(tmp_path / "memory")
+    hidden = ingestion.ingest(
+        source_id="doc-context-blank-taint",
+        source_type="external",
+        collection="external_web",
+        content="Whitespace-only planner recall hits should not taint the prompt.",
+    )
+    recorded: list[list[str]] = []
+
+    def _fake_compile_recall(*_args: object, **_kwargs: object) -> object:
+        hidden_blank = hidden.model_copy(update={"content_sanitized": "   "})
+        return build_recall_pack(query="blank taint", results=[hidden_blank])
+
+    def _record(chunk_ids: list[str], *, cited_at: object | None = None) -> int:
+        _ = cited_at
+        recorded.append(list(chunk_ids))
+        return len(chunk_ids)
+
+    monkeypatch.setattr(ingestion, "compile_recall", _fake_compile_recall)
+    monkeypatch.setattr(ingestion, "record_citations", _record)
+
+    rendered, taints, amv_tainted = _build_planner_memory_context(
+        ingestion=ingestion,
+        query="blank taint",
+        capabilities={Capability.MEMORY_READ},
+        top_k=3,
+    )
+
+    assert rendered == ""
+    assert taints == set()
+    assert amv_tainted is False
+    assert recorded == []
+
+
 def test_m5_s7_memory_context_builder_requires_memory_read_capability(tmp_path: Path) -> None:
     ingestion = IngestionPipeline(tmp_path / "memory")
     ingestion.ingest(
