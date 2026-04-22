@@ -24,6 +24,7 @@ from pydantic import BaseModel, Field, ValidationError
 from shisad.core.tools.schema import ToolDefinition, ToolParameter
 from shisad.core.types import Capability, TaintLabel, ToolName
 from shisad.memory.backend import RetrievalBackendRow, SQLiteRetrievalBackend
+from shisad.memory.surfaces import RecallPack, build_recall_pack
 from shisad.security.firewall import ContentFirewall, SanitizationMode
 
 RetrievalCollection = Literal["user_curated", "project_docs", "external_web", "tool_outputs"]
@@ -182,7 +183,7 @@ class IngestionPipeline:
         )
         return result
 
-    def retrieve(
+    def compile_recall(
         self,
         query: str,
         *,
@@ -191,10 +192,19 @@ class IngestionPipeline:
         allowed_collections: set[RetrievalCollection] | None = None,
         include_quarantined: bool = False,
         require_corroboration: bool = False,
-    ) -> list[RetrievalResult]:
-        """Hybrid retrieval over lexical + semantic + trust prior."""
+        max_tokens: int | None = None,
+        as_of: datetime | None = None,
+        include_archived: bool = False,
+    ) -> RecallPack:
+        """Compile the current Recall surface over retrieval storage."""
+        del as_of
         if self._backend.count_records() == 0:
-            return []
+            return build_recall_pack(
+                query=query,
+                results=[],
+                max_tokens=max_tokens,
+                include_archived=include_archived,
+            )
 
         collections = (
             set(allowed_collections) if allowed_collections is not None else set(_TRUST_PRIOR)
@@ -202,7 +212,12 @@ class IngestionPipeline:
         if capabilities is not None and capabilities & _SIDE_EFFECT_CAPABILITIES:
             collections.discard("external_web")
         if not collections:
-            return []
+            return build_recall_pack(
+                query=query,
+                results=[],
+                max_tokens=max_tokens,
+                include_archived=include_archived,
+            )
 
         terms = [term for term in query.lower().split() if term]
         query_vector = self._embed_text(query)
@@ -211,7 +226,12 @@ class IngestionPipeline:
             include_quarantined=include_quarantined,
         )
         if not rows:
-            return []
+            return build_recall_pack(
+                query=query,
+                results=[],
+                max_tokens=max_tokens,
+                include_archived=include_archived,
+            )
         lexical_matches = self._backend.lexical_match_ids(
             query,
             collections=set(collections),
@@ -246,14 +266,38 @@ class IngestionPipeline:
 
         scored.sort(key=lambda item: item[0], reverse=True)
         top = [record for _, record in scored[:limit]]
-        if not top:
-            return []
         if require_corroboration:
             source_ids = {record.source_id for record in top}
             tiers = {record.collection for record in top}
             corroborated = len(source_ids) >= 2 and len(tiers) >= 2
             top = [record.model_copy(update={"corroborated": corroborated}) for record in top]
-        return top
+        return build_recall_pack(
+            query=query,
+            results=top,
+            max_tokens=max_tokens,
+            include_archived=include_archived,
+        )
+
+    def retrieve(
+        self,
+        query: str,
+        *,
+        limit: int = 5,
+        capabilities: set[Capability] | None = None,
+        allowed_collections: set[RetrievalCollection] | None = None,
+        include_quarantined: bool = False,
+        require_corroboration: bool = False,
+    ) -> list[RetrievalResult]:
+        """Backwards-compatible alias for the emerging Recall surface."""
+
+        return self.compile_recall(
+            query,
+            limit=limit,
+            capabilities=capabilities,
+            allowed_collections=allowed_collections,
+            include_quarantined=include_quarantined,
+            require_corroboration=require_corroboration,
+        ).results
 
     def read_original(self, chunk_id: str) -> str | None:
         """Return decrypted original content for explicit user inspection."""
