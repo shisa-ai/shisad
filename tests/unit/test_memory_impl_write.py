@@ -203,59 +203,42 @@ async def test_todo_create_accepts_handle_bound_extracted_payload(tmp_path: Path
 
 
 @pytest.mark.asyncio
-async def test_memory_write_legacy_source_path_still_works_for_internal_fallbacks(
-    tmp_path: Path,
-) -> None:
+async def test_memory_write_rejects_unauthenticated_raw_source_shape(tmp_path: Path) -> None:
     harness = _MemoryWriteHarness(tmp_path)
 
-    result = await harness.do_memory_write(
-        {
-            "source": {
-                "origin": "user",
-                "source_id": "legacy-1",
-                "extraction_method": "manual",
-            },
-            "entry_type": "fact",
-            "key": "profile.name",
-            "value": "alice",
-        }
-    )
-
-    assert result["kind"] == "allow"
-    entry = result["entry"]
-    assert entry is not None
-    assert entry["source_origin"] == "user_direct"
-    assert entry["confirmation_status"] == "auto_accepted"
-    assert entry["ingress_handle_id"]
-    assert entry["content_digest"]
+    with pytest.raises(ValueError, match=r"ingress_context is required for memory\.write"):
+        await harness.do_memory_write(
+            {
+                "source": {
+                    "origin": "user",
+                    "source_id": "legacy-1",
+                    "extraction_method": "manual",
+                },
+                "entry_type": "fact",
+                "key": "profile.name",
+                "value": "alice",
+            }
+        )
 
 
 @pytest.mark.asyncio
-async def test_memory_write_legacy_external_path_respects_confirmation_override(
-    tmp_path: Path,
-) -> None:
+async def test_memory_supersede_rejects_unauthenticated_raw_source_shape(tmp_path: Path) -> None:
     harness = _MemoryWriteHarness(tmp_path)
 
-    result = await harness.do_memory_write(
-        {
-            "source": {
-                "origin": "external",
-                "source_id": "doc-1",
-                "extraction_method": "extract",
-            },
-            "entry_type": "fact",
-            "key": "project.note",
-            "value": "external fact",
-            "user_confirmed": True,
-        }
-    )
-
-    assert result["kind"] == "allow"
-    entry = result["entry"]
-    assert entry is not None
-    assert entry["source_origin"] == "external_web"
-    assert entry["confirmation_status"] == "auto_accepted"
-    assert entry["ingress_handle_id"]
+    with pytest.raises(ValueError, match=r"ingress_context is required for memory\.supersede"):
+        await harness.do_memory_supersede(
+            {
+                "source": {
+                    "origin": "external",
+                    "source_id": "doc-1",
+                    "extraction_method": "extract",
+                },
+                "entry_type": "fact",
+                "key": "project.note",
+                "value": "external fact",
+                "supersedes": "entry-1",
+            }
+        )
 
 
 @pytest.mark.asyncio

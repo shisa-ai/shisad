@@ -806,6 +806,34 @@ async def _mint_memory_ingress_context(
     return dict(await client.call("memory.mint_ingress_context", payload))
 
 
+async def _write_memory_via_ingress(
+    client: ControlClient,
+    *,
+    entry_type: str,
+    key: str,
+    value: Any,
+    source_type: str = "user",
+    source_id: str = "",
+    user_confirmed: bool = False,
+    **extra: Any,
+) -> dict[str, Any]:
+    minted = await _mint_memory_ingress_context(
+        client,
+        content=value,
+        source_type=source_type,
+        source_id=source_id,
+        user_confirmed=user_confirmed,
+    )
+    payload: dict[str, Any] = {
+        "ingress_context": minted["ingress_context"],
+        "entry_type": entry_type,
+        "key": key,
+        "value": value,
+        **extra,
+    }
+    return dict(await client.call("memory.write", payload))
+
+
 async def _run_contract_cli(config: DaemonConfig, *args: str) -> subprocess.CompletedProcess[str]:
     repo_root = Path(__file__).resolve().parents[2]
     env = os.environ.copy()
@@ -1319,10 +1347,16 @@ async def test_contract_todo_create_list_and_complete_executes_without_lockdown(
 async def test_contract_memory_write_rejects_caller_supplied_trust_fields(
     contract_harness: ContractHarness,
 ) -> None:
+    minted = await _mint_memory_ingress_context(
+        contract_harness.client,
+        content="blue",
+    )
+
     with pytest.raises(RuntimeError, match=r"RPC error -32602"):
         await contract_harness.client.call(
             "memory.write",
             {
+                "ingress_context": minted["ingress_context"],
                 "entry_type": "fact",
                 "key": "profile.color",
                 "value": "blue",
@@ -1338,14 +1372,12 @@ async def test_contract_memory_write_rejects_caller_supplied_trust_fields(
 async def test_contract_persona_fact_write_rejects_workflow_state(
     contract_harness: ContractHarness,
 ) -> None:
-    result = await contract_harness.client.call(
-        "memory.write",
-        {
-            "entry_type": "persona_fact",
-            "key": "persona:timezone",
-            "value": "UTC",
-            "workflow_state": "active",
-        },
+    result = await _write_memory_via_ingress(
+        contract_harness.client,
+        entry_type="persona_fact",
+        key="persona:timezone",
+        value="UTC",
+        workflow_state="active",
     )
 
     assert result.get("kind") == "reject"
@@ -1356,13 +1388,11 @@ async def test_contract_persona_fact_write_rejects_workflow_state(
 async def test_contract_open_thread_defaults_workflow_state_and_emits_init_audit(
     contract_harness: ContractHarness,
 ) -> None:
-    created = await contract_harness.client.call(
-        "memory.write",
-        {
-            "entry_type": "open_thread",
-            "key": "thread:vendor-followup",
-            "value": "follow up with vendor tomorrow",
-        },
+    created = await _write_memory_via_ingress(
+        contract_harness.client,
+        entry_type="open_thread",
+        key="thread:vendor-followup",
+        value="follow up with vendor tomorrow",
     )
 
     assert created.get("kind") == "allow"
@@ -1396,14 +1426,12 @@ async def test_contract_open_thread_defaults_workflow_state_and_emits_init_audit
 async def test_contract_quarantine_cycle_preserves_open_thread_workflow_state(
     contract_harness: ContractHarness,
 ) -> None:
-    created = await contract_harness.client.call(
-        "memory.write",
-        {
-            "entry_type": "open_thread",
-            "key": "thread:customer-response",
-            "value": "waiting on customer response",
-            "workflow_state": "waiting",
-        },
+    created = await _write_memory_via_ingress(
+        contract_harness.client,
+        entry_type="open_thread",
+        key="thread:customer-response",
+        value="waiting on customer response",
+        workflow_state="waiting",
     )
 
     assert created.get("kind") == "allow"
@@ -1447,13 +1475,11 @@ async def test_contract_quarantine_cycle_preserves_open_thread_workflow_state(
 async def test_contract_set_workflow_state_keeps_status_active(
     contract_harness: ContractHarness,
 ) -> None:
-    created = await contract_harness.client.call(
-        "memory.write",
-        {
-            "entry_type": "open_thread",
-            "key": "thread:closeable",
-            "value": "close this thread later",
-        },
+    created = await _write_memory_via_ingress(
+        contract_harness.client,
+        entry_type="open_thread",
+        key="thread:closeable",
+        value="close this thread later",
     )
 
     assert created.get("kind") == "allow"
@@ -1709,14 +1735,12 @@ async def test_contract_legacy_v06_entries_backfill_on_daemon_start(
 async def test_contract_memory_write_clamps_confidence_to_trust_cap(
     contract_harness: ContractHarness,
 ) -> None:
-    result = await contract_harness.client.call(
-        "memory.write",
-        {
-            "entry_type": "fact",
-            "key": "profile.color",
-            "value": "blue",
-            "confidence": 0.99,
-        },
+    result = await _write_memory_via_ingress(
+        contract_harness.client,
+        entry_type="fact",
+        key="profile.color",
+        value="blue",
+        confidence=0.99,
     )
 
     assert result.get("kind") == "allow"
@@ -1728,14 +1752,12 @@ async def test_contract_memory_write_clamps_confidence_to_trust_cap(
 async def test_contract_user_authored_skill_write_sets_invocation_eligible(
     contract_harness: ContractHarness,
 ) -> None:
-    result = await contract_harness.client.call(
-        "memory.write",
-        {
-            "entry_type": "skill",
-            "key": "skill:demo",
-            "value": "demo skill contents",
-            "invocation_eligible": True,
-        },
+    result = await _write_memory_via_ingress(
+        contract_harness.client,
+        entry_type="skill",
+        key="skill:demo",
+        value="demo skill contents",
+        invocation_eligible=True,
     )
 
     assert result.get("kind") == "allow"

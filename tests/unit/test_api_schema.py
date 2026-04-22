@@ -398,16 +398,15 @@ class TestApiSchemaValidation:
                 }
             )
 
-    def test_m1_memory_write_params_accept_direct_control_shape_without_ingress(self) -> None:
-        params = MemoryWriteParams.model_validate(
-            {
-                "entry_type": "fact",
-                "key": "profile.name",
-                "value": "alice",
-            }
-        )
-
-        assert params.ingress_context is None
+    def test_m1_memory_write_params_require_ingress_context(self) -> None:
+        with pytest.raises(ValidationError):
+            MemoryWriteParams.model_validate(
+                {
+                    "entry_type": "fact",
+                    "key": "profile.name",
+                    "value": "alice",
+                }
+            )
 
     def test_m1_memory_mint_ingress_params_accept_user_shape(self) -> None:
         params = MemoryMintIngressParams.model_validate({"content": {"name": "alice"}})
@@ -428,6 +427,7 @@ class TestApiSchemaValidation:
     def test_m1_memory_write_params_accept_canonical_and_legacy_entry_type_aliases(self) -> None:
         canonical = MemoryWriteParams.model_validate(
             {
+                "ingress_context": "handle-1",
                 "entry_type": "soft_constraint",
                 "key": "behavior.reply_style",
                 "value": "keep replies short",
@@ -435,6 +435,7 @@ class TestApiSchemaValidation:
         )
         legacy = MemoryWriteParams.model_validate(
             {
+                "ingress_context": "handle-2",
                 "entry_type": "context",
                 "key": "legacy.context",
                 "value": "remember this",
@@ -447,6 +448,7 @@ class TestApiSchemaValidation:
     def test_m1_memory_write_params_accept_preference_predicate_fields(self) -> None:
         params = MemoryWriteParams.model_validate(
             {
+                "ingress_context": "handle-1",
                 "entry_type": "preference",
                 "key": "food.preference",
                 "value": "prefers coffee over tea",
@@ -486,6 +488,7 @@ class TestApiSchemaValidation:
     def test_m1_memory_supersede_params_require_non_empty_target(self) -> None:
         params = MemorySupersedeParams.model_validate(
             {
+                "ingress_context": "handle-1",
                 "entry_type": "note",
                 "key": "note:chain",
                 "value": "updated",
@@ -498,6 +501,7 @@ class TestApiSchemaValidation:
         with pytest.raises(ValidationError):
             MemorySupersedeParams.model_validate(
                 {
+                    "ingress_context": "handle-1",
                     "entry_type": "note",
                     "key": "note:chain",
                     "value": "updated",

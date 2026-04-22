@@ -363,7 +363,7 @@ class MemoryRetrieveParams(_StrictParams):
 
 
 class MemoryWriteParams(_StrictParams):
-    ingress_context: str | None = None
+    ingress_context: str
     content_digest: str | None = None
     derivation_path: Literal["direct", "extracted", "summary"] = "direct"
     parent_digest: str | None = None
@@ -379,13 +379,8 @@ class MemoryWriteParams(_StrictParams):
 
     @model_validator(mode="after")
     def _validate_ingress_shape(self) -> MemoryWriteParams:
-        if self.ingress_context is None:
-            if self.content_digest is not None:
-                raise ValueError("content_digest requires ingress_context")
-            if self.parent_digest is not None:
-                raise ValueError("parent_digest requires ingress_context")
-            if self.derivation_path != "direct":
-                raise ValueError("non-direct derivation requires ingress_context")
+        if not self.ingress_context.strip():
+            raise ValueError("ingress_context is required")
         return self
 
 

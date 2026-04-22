@@ -311,29 +311,11 @@ class MemoryImplMixin(HandlerMixinBase):
                 value=params.get("value"),
                 confidence=float(params.get("confidence", 0.5)),
             )
-        source = MemorySource.model_validate(params.get("source", {}))
-        value = params.get("value")
-        context = self._mint_legacy_compat_ingress(
-            params,
-            source=source,
-            value=value,
-        )
-        handle_params = dict(params)
-        handle_params["ingress_context"] = context.handle_id
-        handle_params["_confirmation_satisfied_override"] = bool(
-            params.get("user_confirmed", False)
-        )
-        if not isinstance(value, (str, bytes)):
-            handle_params["content_digest"] = digest_memory_value(value)
-        return self._write_handle_bound_entry(
-            handle_params,
-            entry_type=str(params.get("entry_type", "fact")),
-            key=str(params.get("key", "")),
-            value=value,
-            confidence=float(params.get("confidence", 0.5)),
-        )
+        raise ValueError("ingress_context is required for memory.write")
 
     async def do_memory_supersede(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        if not params.get("ingress_context") and not params.get(_CONTROL_API_AUTHENTICATED_WRITE):
+            raise ValueError("ingress_context is required for memory.supersede")
         return await self.do_memory_write(params)
 
     async def do_memory_list(self, params: Mapping[str, Any]) -> dict[str, Any]:
