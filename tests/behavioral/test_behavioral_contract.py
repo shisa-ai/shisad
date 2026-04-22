@@ -1505,6 +1505,30 @@ async def test_contract_legacy_v06_entries_backfill_on_daemon_start(
                 "created_at": created_at,
             },
             {
+                "id": "legacy-user-confirmed",
+                "entry_type": "fact",
+                "key": "profile.city",
+                "value": "Berlin",
+                "source": {
+                    "origin": "user",
+                    "source_id": "approval-1",
+                    "extraction_method": "agent_confirmed",
+                },
+                "created_at": created_at,
+            },
+            {
+                "id": "legacy-inferred",
+                "entry_type": "fact",
+                "key": "profile.preference",
+                "value": "likes coffee",
+                "source": {
+                    "origin": "inferred",
+                    "source_id": "infer-1",
+                    "extraction_method": "summarize",
+                },
+                "created_at": created_at,
+            },
+            {
                 "id": "legacy-deleted",
                 "entry_type": "fact",
                 "key": "profile.deleted",
@@ -1547,6 +1571,21 @@ async def test_contract_legacy_v06_entries_backfill_on_daemon_start(
         legacy_note = await harness.client.call("memory.get", {"entry_id": "legacy-context-note"})
         assert (legacy_note.get("entry") or {}).get("entry_type") == "note"
 
+        legacy_user_confirmed = await harness.client.call(
+            "memory.get",
+            {"entry_id": "legacy-user-confirmed"},
+        )
+        user_confirmed_entry = legacy_user_confirmed.get("entry") or {}
+        assert user_confirmed_entry.get("source_origin") == "user_confirmed"
+        assert user_confirmed_entry.get("channel_trust") == "command"
+        assert user_confirmed_entry.get("confirmation_status") == "auto_accepted"
+
+        legacy_inferred = await harness.client.call("memory.get", {"entry_id": "legacy-inferred"})
+        inferred_entry = legacy_inferred.get("entry") or {}
+        assert inferred_entry.get("source_origin") == "consolidation_derived"
+        assert inferred_entry.get("channel_trust") == "consolidation"
+        assert inferred_entry.get("confirmation_status") == "auto_accepted"
+
         default_list = await harness.client.call("memory.list", {"limit": 20})
         default_ids = {
             str(item.get("id") or item.get("entry_id") or "").strip()
@@ -1567,6 +1606,16 @@ async def test_contract_legacy_v06_entries_backfill_on_daemon_start(
         assert deleted_entry.get("source_origin") == "external_web"
         assert deleted_entry.get("channel_trust") == "web_passed"
         assert deleted_entry.get("confirmation_status") == "auto_accepted"
+
+        for entry in (user_entry, user_confirmed_entry, inferred_entry, deleted_entry):
+            assert (
+                derive_trust_band(
+                    str(entry.get("source_origin", "")),
+                    str(entry.get("channel_trust", "")),
+                    str(entry.get("confirmation_status", "")),
+                )
+                == "untrusted"
+            )
 
 
 @pytest.mark.asyncio
