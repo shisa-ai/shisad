@@ -356,3 +356,38 @@ def test_m2_record_citations_is_best_effort_on_operational_error(
     monkeypatch.setattr(pipeline._backend, "record_citations", _raise_operational_error)
 
     assert pipeline.record_citations([stored.chunk_id]) == 0
+
+
+def test_m2_compile_recall_backfills_null_provenance_for_legacy_rows(
+    tmp_path: Path,
+) -> None:
+    storage = tmp_path / "memory"
+    pipeline = IngestionPipeline(storage)
+    stored = pipeline.ingest(
+        source_id="doc-legacy-null-backfill",
+        source_type="external",
+        collection="external_web",
+        content="Legacy recall rows should survive nullable provenance schema upgrades.",
+    )
+
+    with sqlite3.connect(storage / "memory.sqlite3") as conn:
+        conn.execute(
+            """
+            UPDATE retrieval_records
+            SET source_origin = NULL,
+                channel_trust = NULL,
+                confirmation_status = NULL,
+                scope = NULL
+            WHERE chunk_id = ?
+            """,
+            (stored.chunk_id,),
+        )
+
+    restarted = IngestionPipeline(storage)
+    pack = restarted.compile_recall("nullable provenance schema upgrades", limit=5)
+
+    assert [item.chunk_id for item in pack.results] == [stored.chunk_id]
+    assert pack.results[0].source_origin == "external_web"
+    assert pack.results[0].channel_trust == "web_passed"
+    assert pack.results[0].confirmation_status == "auto_accepted"
+    assert pack.results[0].scope == "user"

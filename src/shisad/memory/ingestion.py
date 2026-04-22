@@ -174,10 +174,14 @@ class RetrievalResult(BaseModel):
             collection=collection,
             source_type=source_type,
         )
-        payload.setdefault("source_origin", source_origin)
-        payload.setdefault("channel_trust", channel_trust)
-        payload.setdefault("confirmation_status", confirmation_status)
-        payload.setdefault("scope", "user")
+        if payload.get("source_origin") is None:
+            payload["source_origin"] = source_origin
+        if payload.get("channel_trust") is None:
+            payload["channel_trust"] = channel_trust
+        if payload.get("confirmation_status") is None:
+            payload["confirmation_status"] = confirmation_status
+        if payload.get("scope") is None:
+            payload["scope"] = "user"
         return payload
 
     @model_validator(mode="after")
