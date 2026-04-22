@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
+import json
 import os
+import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -21,6 +23,7 @@ from shisad.core.types import SessionId, TaintLabel
 class TranscriptEntry(BaseModel):
     """A single transcript entry for a session."""
 
+    entry_id: str = Field(default_factory=lambda: f"tx-{uuid.uuid4().hex}")
     role: str
     content_hash: str
     taint_labels: list[TaintLabel] = Field(default_factory=list)
@@ -99,10 +102,20 @@ class TranscriptStore:
             return []
 
         entries: list[TranscriptEntry] = []
-        for line in path.read_text(encoding="utf-8").splitlines():
+        for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
             if not line.strip():
                 continue
-            entries.append(TranscriptEntry.model_validate_json(line))
+            payload = json.loads(line)
+            if not isinstance(payload, dict):
+                continue
+            entry_id = str(payload.get("entry_id", "")).strip()
+            if not entry_id:
+                payload["entry_id"] = self._derive_legacy_entry_id(
+                    session_id=session_id,
+                    line_number=line_number,
+                    payload=payload,
+                )
+            entries.append(TranscriptEntry.model_validate(payload))
         return entries
 
     def truncate(self, session_id: SessionId, *, keep_entries: int) -> int:
@@ -153,3 +166,28 @@ class TranscriptStore:
         if timestamp.tzinfo is None:
             return timestamp.replace(tzinfo=UTC)
         return timestamp.astimezone(UTC)
+
+    @staticmethod
+    def _derive_legacy_entry_id(
+        *,
+        session_id: SessionId,
+        line_number: int,
+        payload: dict[str, Any],
+    ) -> str:
+        serialized_metadata = json.dumps(
+            payload.get("metadata", {}),
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+            default=str,
+        )
+        digest = hashlib.sha256(
+            (
+                f"{session_id}:{line_number}:"
+                f"{payload.get('role', '')}:"
+                f"{payload.get('content_hash', '')}:"
+                f"{payload.get('timestamp', '')}:"
+                f"{serialized_metadata}"
+            ).encode()
+        ).hexdigest()
+        return f"tx-{digest[:32]}"

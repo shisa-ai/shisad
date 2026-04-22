@@ -129,6 +129,7 @@ def mint_explicit_user_memory_ingress_context(
     session_id: str,
     message_id: str,
     content: str,
+    transcript_entry_id: str = "",
     taint_labels: list[TaintLabel] | None = None,
     scope: ScopeKind = "user",
 ) -> IngressContext | None:
@@ -142,16 +143,17 @@ def mint_explicit_user_memory_ingress_context(
     source_origin: SourceOrigin = "user_direct"
     channel_trust: ChannelTrust = "command"
     confirmation_status: ConfirmationStatus = "user_asserted"
-    source_id = session_id.strip()
+    source_id = transcript_entry_id.strip() or session_id.strip()
 
     if normalized_channel != "cli":
         normalized_trust = trust_level.strip().lower()
         confirmation_status = "auto_accepted"
-        source_id = (
-            f"{normalized_channel}:{message_id.strip()}"
-            if message_id.strip()
-            else f"{normalized_channel}:{session_id.strip()}"
-        )
+        if not transcript_entry_id.strip():
+            source_id = (
+                f"{normalized_channel}:{message_id.strip()}"
+                if message_id.strip()
+                else f"{normalized_channel}:{session_id.strip()}"
+            )
         if normalized_trust in {"trusted", "verified", "internal", "owner"}:
             channel_trust = "owner_observed"
         else:

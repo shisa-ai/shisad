@@ -270,6 +270,7 @@ class SessionMessageValidationResult:
     channel_message_id: str = ""
     tool_allowlist: set[ToolName] | None = None
     explicit_memory_ingress_context: IngressContext | None = None
+    user_transcript_entry: TranscriptEntry | None = None
     early_response: dict[str, Any] | None = None
 
 
@@ -2484,6 +2485,15 @@ def _episode_timestamp_from_metadata(entry: TranscriptEntry) -> datetime:
     return parsed.astimezone(UTC)
 
 
+def _conversation_summary_source_id(entries: list[TranscriptEntry]) -> str:
+    entry_ids = [entry.entry_id.strip() for entry in entries if entry.entry_id.strip()]
+    if not entry_ids:
+        return "transcript-summary:missing"
+    if len(entry_ids) == 1:
+        return f"transcript-summary:{entry_ids[0]}"
+    return f"transcript-summary:{entry_ids[0]}:{entry_ids[-1]}"
+
+
 def _build_episode_snapshot(
     entries: list[TranscriptEntry],
     *,
@@ -4258,6 +4268,7 @@ class SessionImplMixin(HandlerMixinBase):
                     "output_policy": {},
                 }
 
+        user_transcript_entry: TranscriptEntry | None = None
         if early_response is None:
             user_transcript_metadata = _transcript_metadata_for_channel(
                 channel=channel,
@@ -4272,7 +4283,7 @@ class SessionImplMixin(HandlerMixinBase):
                 if not suppress_delivery_target_persist:
                     session.metadata["delivery_target"] = serialized_target
                     self._session_manager.persist(sid)
-            self._transcript_store.append(
+            user_transcript_entry = self._transcript_store.append(
                 sid,
                 role="user",
                 content=firewall_result.sanitized_text,
@@ -4315,7 +4326,12 @@ class SessionImplMixin(HandlerMixinBase):
             )
         elif isinstance(raw_explicit_memory_ingress_context, IngressContext):
             explicit_memory_ingress_context = raw_explicit_memory_ingress_context
-        elif _build_explicit_memory_intent_proposal(firewall_result.sanitized_text) is not None:
+        explicit_memory_intent = (
+            _build_explicit_memory_intent_proposal(firewall_result.sanitized_text) is not None
+        )
+        if explicit_memory_intent and (
+            explicit_memory_ingress_context is None or is_internal_ingress
+        ):
             explicit_memory_ingress_context = mint_explicit_user_memory_ingress_context(
                 self._memory_ingress_registry,
                 channel=channel,
@@ -4323,6 +4339,9 @@ class SessionImplMixin(HandlerMixinBase):
                 session_id=str(sid),
                 message_id=channel_message_id,
                 content=firewall_result.sanitized_text,
+                transcript_entry_id=(
+                    user_transcript_entry.entry_id if user_transcript_entry is not None else ""
+                ),
                 taint_labels=list(firewall_result.taint_labels),
             )
 
@@ -4345,6 +4364,7 @@ class SessionImplMixin(HandlerMixinBase):
             channel_message_id=channel_message_id,
             tool_allowlist=tool_allowlist,
             explicit_memory_ingress_context=explicit_memory_ingress_context,
+            user_transcript_entry=user_transcript_entry,
             early_response=early_response,
         )
 
@@ -5314,6 +5334,11 @@ class SessionImplMixin(HandlerMixinBase):
             session_id=str(validated.sid),
             message_id=str(validated.channel_message_id),
             content=validated.firewall_result.sanitized_text,
+            transcript_entry_id=(
+                validated.user_transcript_entry.entry_id
+                if validated.user_transcript_entry is not None
+                else ""
+            ),
             taint_labels=list(validated.firewall_result.taint_labels),
         )
 
@@ -7132,6 +7157,7 @@ class SessionImplMixin(HandlerMixinBase):
         allow_count = 0
         confirmation_count = 0
         reject_count = 0
+        summary_source_id = _conversation_summary_source_id(pending_entries)
 
         for proposal in proposals:
             write_context = self._memory_ingress_registry.mint(
@@ -7139,7 +7165,7 @@ class SessionImplMixin(HandlerMixinBase):
                 channel_trust="consolidation",
                 confirmation_status="auto_accepted",
                 scope="user",
-                source_id=f"session:{sid}",
+                source_id=summary_source_id,
                 content=self._canonical_ingress_content(proposal.value),
                 taint_labels=list(source_taints),
             )
@@ -7156,14 +7182,13 @@ class SessionImplMixin(HandlerMixinBase):
             entry = decision.get("entry")
             if decision.get("kind") == "allow" and isinstance(entry, Mapping):
                 allow_count += 1
-                entry_id = str(entry.get("id", ""))
                 ingest_text = f"{proposal.key}: {proposal.value}"
                 ingest_context = self._memory_ingress_registry.mint(
                     source_origin="consolidation_derived",
                     channel_trust="consolidation",
                     confirmation_status="auto_accepted",
                     scope="user",
-                    source_id=f"summary:{sid}:{entry_id}",
+                    source_id=write_context.source_id,
                     content=ingest_text,
                     taint_labels=list(source_taints),
                 )

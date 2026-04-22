@@ -68,8 +68,8 @@ async def test_m1_conversation_summarizer_mints_handles_for_memory_and_ingest(
         async def _summarize(_entries):
             return [
                 MemorySummaryProposal(
-                    entry_type="preference",
-                    key="user.preference.communication",
+                    entry_type="note",
+                    key="conversation.preference.communication",
                     value="short replies",
                     confidence=0.7,
                 )
@@ -87,23 +87,24 @@ async def test_m1_conversation_summarizer_mints_handles_for_memory_and_ingest(
         entries = services.memory_manager.list_entries(limit=10)
         assert len(entries) == 1
         entry = entries[0]
-        assert entry.key == "user.preference.communication"
+        assert entry.key == "conversation.preference.communication"
         assert entry.source_origin == "consolidation_derived"
         assert entry.channel_trust == "consolidation"
         assert entry.ingress_handle_id
+        assert entry.source_id.startswith("transcript-summary:")
         assert entry.taint_labels == [TaintLabel.UNTRUSTED]
 
         summary_records = [
             record
             for record in services.ingestion._records.values()
-            if record.source_id.startswith(f"summary:{session.id}:")
+            if record.source_id == entry.source_id
         ]
         assert len(summary_records) == 1
         assert summary_records[0].source_type == "tool"
         assert summary_records[0].collection == "tool_outputs"
         assert (
             summary_records[0].content_sanitized
-            == "user.preference.communication: short replies"
+            == "conversation.preference.communication: short replies"
         )
     finally:
         await services.shutdown()

@@ -22,6 +22,7 @@ from shisad.core.providers.base import Message, ProviderResponse
 from shisad.core.session import Session
 from shisad.core.tools.registry import ToolRegistry
 from shisad.core.tools.schema import ToolDefinition, ToolParameter
+from shisad.core.transcript import TranscriptEntry
 from shisad.core.types import (
     Capability,
     PEPDecision,
@@ -57,6 +58,7 @@ def _validation_result(
     params: Mapping[str, Any],
     early_response: dict[str, Any] | None = None,
     sanitized_text: str | None = None,
+    user_transcript_entry: TranscriptEntry | None = None,
 ) -> SessionMessageValidationResult:
     session = Session(
         id=SessionId("sess-g1"),
@@ -85,6 +87,7 @@ def _validation_result(
         ),
         incoming_taint_labels=set(),
         is_internal_ingress=False,
+        user_transcript_entry=user_transcript_entry,
         early_response=early_response,
     )
 
@@ -628,6 +631,12 @@ def test_m1_explicit_memory_ingress_context_mints_cli_user_asserted_handle() -> 
     harness = _ExplicitMemoryIngressHarness()
     validated = _validation_result(
         params={"session_id": "sess-g1", "content": "remember that I like tea"},
+        user_transcript_entry=TranscriptEntry(
+            entry_id="tx-cli-turn-1",
+            role="user",
+            content_hash="hash-cli-turn-1",
+            content_preview="remember that I like tea",
+        ),
     )
 
     context = SessionImplMixin._mint_explicit_memory_ingress_context(
@@ -640,7 +649,7 @@ def test_m1_explicit_memory_ingress_context_mints_cli_user_asserted_handle() -> 
     assert context.channel_trust == "command"
     assert context.confirmation_status == "user_asserted"
     assert context.scope == "user"
-    assert context.source_id == "sess-g1"
+    assert context.source_id == "tx-cli-turn-1"
 
 
 def test_m1_explicit_memory_ingress_context_reuses_pre_minted_handle() -> None:
@@ -685,6 +694,12 @@ def test_m1_explicit_memory_ingress_context_derives_channel_provenance(
     harness = _ExplicitMemoryIngressHarness()
     validated = _validation_result(
         params={"session_id": "sess-g1", "content": "remember that tea is good"},
+        user_transcript_entry=TranscriptEntry(
+            entry_id="tx-discord-turn-1",
+            role="user",
+            content_hash="hash-discord-turn-1",
+            content_preview="remember that tea is good",
+        ),
     )
     validated.session.channel = "discord"
     validated.channel = "discord"
@@ -701,7 +716,7 @@ def test_m1_explicit_memory_ingress_context_derives_channel_provenance(
     assert context.channel_trust == expected_channel_trust
     assert context.confirmation_status == "auto_accepted"
     assert context.scope == "user"
-    assert context.source_id == "discord:m-1"
+    assert context.source_id == "tx-discord-turn-1"
 
 
 @pytest.mark.asyncio

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import stat
 from pathlib import Path
@@ -87,7 +88,58 @@ def test_m1_transcript_store_uses_blob_reference_for_large_content(tmp_path: Pat
     )
 
     assert entry.blob_ref is not None
+    assert entry.entry_id.startswith("tx-")
     assert store.read_blob(entry.blob_ref) == payload
+
+
+def test_m1_transcript_store_persists_entry_ids_across_reload(tmp_path: Path) -> None:
+    store = TranscriptStore(tmp_path / "sessions")
+    session_id = SessionId("persist-entry-id")
+
+    created = store.append(
+        session_id,
+        role="user",
+        content="remember this exact turn",
+        taint_labels=set(),
+    )
+
+    reloaded = TranscriptStore(tmp_path / "sessions")
+    entries = reloaded.list_entries(session_id)
+
+    assert len(entries) == 1
+    assert entries[0].entry_id == created.entry_id
+
+
+def test_m1_transcript_store_backfills_legacy_entry_ids_deterministically(
+    tmp_path: Path,
+) -> None:
+    store = TranscriptStore(tmp_path / "sessions")
+    session_id = SessionId("legacy-entry-id")
+    transcript_path = tmp_path / "sessions" / "transcripts" / f"{session_id}.jsonl"
+    transcript_path.parent.mkdir(parents=True, exist_ok=True)
+    transcript_path.write_text(
+        json.dumps(
+            {
+                "role": "user",
+                "content_hash": "deadbeef",
+                "taint_labels": [],
+                "timestamp": "2026-04-22T00:00:00+00:00",
+                "blob_ref": None,
+                "content_preview": "legacy turn",
+                "evidence_ref_id": None,
+                "metadata": {"timestamp_utc": "2026-04-22T00:00:00+00:00"},
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    first = store.list_entries(session_id)
+    second = store.list_entries(session_id)
+
+    assert len(first) == 1
+    assert first[0].entry_id.startswith("tx-")
+    assert second[0].entry_id == first[0].entry_id
 
 
 def test_m6_transcript_store_writes_secure_permissions(tmp_path: Path) -> None:

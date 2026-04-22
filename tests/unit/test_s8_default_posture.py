@@ -505,12 +505,69 @@ async def test_m1_validate_default_cli_pre_mints_explicit_memory_ingress_handle(
 
     context = validated.explicit_memory_ingress_context
     assert context is not None
+    assert validated.user_transcript_entry is not None
     assert context.source_origin == "user_direct"
     assert context.channel_trust == "command"
     assert context.confirmation_status == "user_asserted"
     assert context.scope == "user"
-    assert context.source_id == str(validated.sid)
+    assert context.source_id == validated.user_transcript_entry.entry_id
     assert context.content_digest == digest_content("remember that I like tea")
+
+
+@pytest.mark.asyncio
+async def test_m1_validate_internal_channel_memory_handle_rebinds_to_transcript_entry(
+    tmp_path,
+) -> None:
+    harness = _SessionMessageHarness(PolicyBundle(), tmp_path)
+    created = await SessionImplMixin.do_session_create(
+        harness,
+        {
+            "channel": "discord",
+            "user_id": "alice",
+            "workspace_id": "ws1",
+            "trust_level": "owner",
+            "_internal_ingress_marker": harness._internal_ingress_marker,
+        },
+    )  # type: ignore[arg-type]
+    pre_minted = harness._memory_ingress_registry.mint(
+        source_origin="user_direct",
+        channel_trust="owner_observed",
+        confirmation_status="auto_accepted",
+        scope="user",
+        source_id="discord:msg-9",
+        content="remember that I like tea",
+    )
+
+    validated = await SessionImplMixin._validate_and_load_session(
+        harness,
+        {
+            "session_id": str(created["session_id"]),
+            "channel": "discord",
+            "user_id": "alice",
+            "workspace_id": "ws1",
+            "content": "remember that I like tea",
+            "trust_level": "owner",
+            "_internal_ingress_marker": harness._internal_ingress_marker,
+            "_channel_message_id": "msg-9",
+            "_firewall_result": FirewallResult(
+                sanitized_text="remember that I like tea",
+                original_hash="0" * 64,
+                risk_score=0.1,
+                taint_labels=[],
+            ).model_dump(mode="json"),
+            "_explicit_memory_ingress_context": pre_minted.handle_id,
+        },
+    )  # type: ignore[arg-type]
+
+    context = validated.explicit_memory_ingress_context
+    assert context is not None
+    assert validated.user_transcript_entry is not None
+    assert context.source_origin == "user_direct"
+    assert context.channel_trust == "owner_observed"
+    assert context.confirmation_status == "auto_accepted"
+    assert context.scope == "user"
+    assert context.source_id == validated.user_transcript_entry.entry_id
+    assert context.source_id != "discord:msg-9"
 
 
 @pytest.mark.asyncio
