@@ -23,6 +23,7 @@ from shisad.core.api.schema import (
     MemoryEntryParams,
     MemoryExportResult,
     MemoryGetResult,
+    MemoryIngestParams,
     MemoryIngestResult,
     MemoryListParams,
     MemoryListResult,
@@ -364,6 +365,35 @@ class TestApiSchemaValidation:
 
         assert params.ingress_context == "handle-1"
         assert params.derivation_path == "direct"
+
+    def test_m1_memory_ingest_params_accept_handle_bound_shape(self) -> None:
+        params = MemoryIngestParams.model_validate(
+            {
+                "ingress_context": "handle-1",
+                "content": "remember this",
+                "content_digest": "sha256:abc",
+                "derivation_path": "summary",
+                "parent_digest": "sha256:parent",
+            }
+        )
+
+        assert params.ingress_context == "handle-1"
+        assert params.source_id is None
+
+    def test_m1_memory_ingest_params_reject_missing_source_and_orphaned_binding_fields(
+        self,
+    ) -> None:
+        with pytest.raises(ValidationError):
+            MemoryIngestParams.model_validate({"content": "hello"})
+
+        with pytest.raises(ValidationError):
+            MemoryIngestParams.model_validate(
+                {
+                    "source_id": "src-1",
+                    "content": "hello",
+                    "content_digest": "sha256:abc",
+                }
+            )
 
     def test_m1_memory_write_params_accept_direct_control_shape_without_ingress(self) -> None:
         params = MemoryWriteParams.model_validate(

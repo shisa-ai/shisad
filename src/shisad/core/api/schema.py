@@ -340,10 +340,27 @@ class AuditQueryResult(BaseModel):
 
 
 class MemoryIngestParams(_StrictParams):
-    source_id: str
+    source_id: str | None = None
     source_type: str = "user"
     content: str
     collection: str | None = None
+    ingress_context: str | None = None
+    content_digest: str | None = None
+    derivation_path: Literal["direct", "extracted", "summary"] = "direct"
+    parent_digest: str | None = None
+
+    @model_validator(mode="after")
+    def _validate_ingest_source_shape(self) -> MemoryIngestParams:
+        if self.ingress_context is None and not self.source_id:
+            raise ValueError("source_id or ingress_context is required")
+        if self.ingress_context is None:
+            if self.content_digest is not None:
+                raise ValueError("content_digest requires ingress_context")
+            if self.parent_digest is not None:
+                raise ValueError("parent_digest requires ingress_context")
+            if self.derivation_path != "direct":
+                raise ValueError("non-direct derivation requires ingress_context")
+        return self
 
 
 class MemoryRetrieveParams(_StrictParams):

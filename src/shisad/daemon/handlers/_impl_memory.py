@@ -50,6 +50,14 @@ class MemoryImplMixin(HandlerMixinBase):
             return []
         return [item for item in taints if isinstance(item, str)]
 
+    @staticmethod
+    def _retrieval_source_type_for_ingress(source_origin: str) -> str:
+        if source_origin in {"user_direct", "user_confirmed", "user_corrected"}:
+            return "user"
+        if source_origin == "tool_output":
+            return "tool"
+        return "external"
+
     def _write_control_api_authenticated_entry(
         self,
         params: Mapping[str, Any],
@@ -130,6 +138,26 @@ class MemoryImplMixin(HandlerMixinBase):
         return cast(dict[str, Any], decision.model_dump(mode="json"))
 
     async def do_memory_ingest(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        if params.get("ingress_context"):
+            handle_id = str(params.get("ingress_context", ""))
+            content = str(params.get("content", ""))
+            context = self._memory_ingress_registry.resolve(handle_id)
+            derivation_path = DerivationPath(str(params.get("derivation_path", "direct")))
+            content_digest = str(params.get("content_digest", "")).strip() or None
+            self._memory_ingress_registry.validate_binding(
+                handle_id,
+                content=content,
+                content_digest=content_digest,
+                derivation_path=derivation_path,
+                parent_digest=str(params.get("parent_digest", "")).strip() or None,
+            )
+            result = self._ingestion.ingest(
+                source_id=context.source_id,
+                source_type=self._retrieval_source_type_for_ingress(context.source_origin),
+                content=content,
+                collection=params.get("collection"),
+            )
+            return cast(dict[str, Any], result.model_dump(mode="json"))
         result = self._ingestion.ingest(
             source_id=params.get("source_id", ""),
             source_type=params.get("source_type", "user"),
