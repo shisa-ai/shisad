@@ -11,8 +11,13 @@ from shisad.core.types import Capability
 from shisad.daemon.handlers._csv import render_csv_row
 from shisad.daemon.handlers._mixin_typing import HandlerMixinBase
 from shisad.memory.ingress import DerivationPath
-from shisad.memory.remap import digest_memory_value, legacy_source_view_origin
+from shisad.memory.remap import (
+    digest_memory_value,
+    legacy_source_view_origin,
+    resolve_legacy_source_origin,
+)
 from shisad.memory.schema import MemorySource
+from shisad.memory.trust import backfill_legacy_triple
 
 _CONTROL_API_AUTHENTICATED_WRITE = "_control_api_authenticated_write"
 
@@ -49,6 +54,42 @@ class MemoryImplMixin(HandlerMixinBase):
         if not isinstance(taints, list):
             return []
         return [item for item in taints if isinstance(item, str)]
+
+    @staticmethod
+    def _legacy_confirmation_satisfied(params: Mapping[str, Any], context: Any) -> bool:
+        if bool(params.get("_confirmation_satisfied_override", False)):
+            return True
+        return context.confirmation_status in {
+            "user_asserted",
+            "user_confirmed",
+            "user_corrected",
+            "pep_approved",
+        }
+
+    def _mint_legacy_compat_ingress(
+        self,
+        params: Mapping[str, Any],
+        *,
+        source: MemorySource,
+        value: Any,
+    ) -> Any:
+        source_origin = resolve_legacy_source_origin(
+            source.origin,
+            source_id=source.source_id,
+            extraction_method=source.extraction_method,
+        )
+        source_origin, channel_trust, confirmation_status = backfill_legacy_triple(
+            source_origin=source_origin
+        )
+        return self._memory_ingress_registry.mint(
+            source_origin=source_origin,
+            channel_trust=channel_trust,
+            confirmation_status=confirmation_status,
+            scope="user",
+            source_id=source.source_id or self._source_id_for_control_write(params),
+            content=self._canonical_ingress_content(value),
+            taint_labels=self._firewall_taint_labels(params),
+        )
 
     @staticmethod
     def _retrieval_source_type_for_ingress(source_origin: str) -> str:
@@ -133,6 +174,7 @@ class MemoryImplMixin(HandlerMixinBase):
             source_id=context.source_id,
             extraction_method=f"ingress.{derivation_path.value}",
         )
+        confirmation_satisfied = self._legacy_confirmation_satisfied(params, context)
         decision = self._memory_manager.write_with_provenance(
             entry_type=entry_type,
             key=key,
@@ -146,8 +188,7 @@ class MemoryImplMixin(HandlerMixinBase):
             source_id=context.source_id,
             scope=context.scope,
             confidence=confidence,
-            confirmation_satisfied=context.confirmation_status
-            in {"user_asserted", "user_confirmed", "user_corrected", "pep_approved"},
+            confirmation_satisfied=confirmation_satisfied,
             taint_labels=context.taint_labels,
             ingress_handle_id=context.handle_id,
             content_digest=resolved_digest,
@@ -241,20 +282,26 @@ class MemoryImplMixin(HandlerMixinBase):
                 confidence=float(params.get("confidence", 0.5)),
             )
         source = MemorySource.model_validate(params.get("source", {}))
-        decision = self._memory_manager.write(
-            entry_type=params.get("entry_type", "fact"),
-            key=params.get("key", ""),
-            value=params.get("value"),
-            predicate=str(params.get("predicate", "")).strip() or None,
-            strength=str(params.get("strength", "moderate")).strip() or "moderate",
+        value = params.get("value")
+        context = self._mint_legacy_compat_ingress(
+            params,
             source=source,
-            confidence=float(params.get("confidence", 0.5)),
-            workflow_state=params.get("workflow_state"),
-            invocation_eligible=bool(params.get("invocation_eligible", False)),
-            supersedes=str(params.get("supersedes", "")).strip() or None,
-            user_confirmed=bool(params.get("user_confirmed", False)),
+            value=value,
         )
-        return cast(dict[str, Any], decision.model_dump(mode="json"))
+        handle_params = dict(params)
+        handle_params["ingress_context"] = context.handle_id
+        handle_params["_confirmation_satisfied_override"] = bool(
+            params.get("user_confirmed", False)
+        )
+        if not isinstance(value, (str, bytes)):
+            handle_params["content_digest"] = digest_memory_value(value)
+        return self._write_handle_bound_entry(
+            handle_params,
+            entry_type=str(params.get("entry_type", "fact")),
+            key=str(params.get("key", "")),
+            value=value,
+            confidence=float(params.get("confidence", 0.5)),
+        )
 
     async def do_memory_supersede(self, params: Mapping[str, Any]) -> dict[str, Any]:
         return await self.do_memory_write(params)
@@ -351,15 +398,22 @@ class MemoryImplMixin(HandlerMixinBase):
             source_id=str(params.get("source_id", "cli")),
             extraction_method="note.create",
         )
-        decision = self._memory_manager.write(
+        context = self._mint_legacy_compat_ingress(
+            params,
+            source=source,
+            value=str(params.get("content", "")),
+        )
+        return self._write_handle_bound_entry(
+            {
+                **dict(params),
+                "ingress_context": context.handle_id,
+                "_confirmation_satisfied_override": bool(params.get("user_confirmed", False)),
+            },
             entry_type="note",
             key=str(params.get("key", "")),
             value=str(params.get("content", "")),
-            source=source,
             confidence=float(params.get("confidence", 0.8)),
-            user_confirmed=bool(params.get("user_confirmed", False)),
         )
-        return cast(dict[str, Any], decision.model_dump(mode="json"))
 
     async def do_note_list(self, params: Mapping[str, Any]) -> dict[str, Any]:
         limit = max(1, int(params.get("limit", 100)))
@@ -468,15 +522,23 @@ class MemoryImplMixin(HandlerMixinBase):
             source_id=str(params.get("source_id", "cli")),
             extraction_method="todo.create",
         )
-        decision = self._memory_manager.write(
+        context = self._mint_legacy_compat_ingress(
+            params,
+            source=source,
+            value=payload,
+        )
+        return self._write_handle_bound_entry(
+            {
+                **dict(params),
+                "ingress_context": context.handle_id,
+                "content_digest": digest_memory_value(payload),
+                "_confirmation_satisfied_override": bool(params.get("user_confirmed", False)),
+            },
             entry_type="todo",
             key=f"todo:{payload['title'][:64]}",
             value=payload,
-            source=source,
             confidence=float(params.get("confidence", 0.8)),
-            user_confirmed=bool(params.get("user_confirmed", False)),
         )
-        return cast(dict[str, Any], decision.model_dump(mode="json"))
 
     async def do_todo_list(self, params: Mapping[str, Any]) -> dict[str, Any]:
         limit = max(1, int(params.get("limit", 100)))

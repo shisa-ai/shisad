@@ -174,6 +174,36 @@ async def test_memory_write_legacy_source_path_still_works_for_internal_fallback
     assert entry is not None
     assert entry["source_origin"] == "user_direct"
     assert entry["confirmation_status"] == "auto_accepted"
+    assert entry["ingress_handle_id"]
+    assert entry["content_digest"]
+
+
+@pytest.mark.asyncio
+async def test_memory_write_legacy_external_path_respects_confirmation_override(
+    tmp_path: Path,
+) -> None:
+    harness = _MemoryWriteHarness(tmp_path)
+
+    result = await harness.do_memory_write(
+        {
+            "source": {
+                "origin": "external",
+                "source_id": "doc-1",
+                "extraction_method": "extract",
+            },
+            "entry_type": "fact",
+            "key": "project.note",
+            "value": "external fact",
+            "user_confirmed": True,
+        }
+    )
+
+    assert result["kind"] == "allow"
+    entry = result["entry"]
+    assert entry is not None
+    assert entry["source_origin"] == "external_web"
+    assert entry["confirmation_status"] == "auto_accepted"
+    assert entry["ingress_handle_id"]
 
 
 @pytest.mark.asyncio
@@ -478,6 +508,26 @@ async def test_note_create_control_api_path_respects_user_confirmed_flag(tmp_pat
 
 
 @pytest.mark.asyncio
+async def test_note_create_legacy_fallback_mints_compat_handle(tmp_path: Path) -> None:
+    harness = _MemoryWriteHarness(tmp_path)
+
+    result = await harness.do_note_create(
+        {
+            "key": "note:legacy",
+            "content": "legacy note path",
+            "origin": "user",
+            "source_id": "legacy-note-1",
+        }
+    )
+
+    assert result["kind"] == "allow"
+    entry = result["entry"]
+    assert entry is not None
+    assert entry["source_origin"] == "user_direct"
+    assert entry["ingress_handle_id"]
+
+
+@pytest.mark.asyncio
 async def test_todo_create_control_api_path_mints_user_asserted_handle(tmp_path: Path) -> None:
     harness = _MemoryWriteHarness(tmp_path)
 
@@ -496,4 +546,26 @@ async def test_todo_create_control_api_path_mints_user_asserted_handle(tmp_path:
     assert entry is not None
     assert entry["source_origin"] == "user_direct"
     assert entry["confirmation_status"] == "user_asserted"
+    assert entry["ingress_handle_id"]
+
+
+@pytest.mark.asyncio
+async def test_todo_create_legacy_fallback_mints_compat_handle(tmp_path: Path) -> None:
+    harness = _MemoryWriteHarness(tmp_path)
+
+    result = await harness.do_todo_create(
+        {
+            "title": "legacy todo",
+            "details": "",
+            "status": "open",
+            "due_date": "",
+            "origin": "user",
+            "source_id": "legacy-todo-1",
+        }
+    )
+
+    assert result["kind"] == "allow"
+    entry = result["entry"]
+    assert entry is not None
+    assert entry["source_origin"] == "user_direct"
     assert entry["ingress_handle_id"]
