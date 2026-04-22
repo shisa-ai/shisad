@@ -83,6 +83,16 @@ def resolve_legacy_source_origin(
     raise TrustGateViolation(f"unknown legacy origin: {legacy_origin}")
 
 
+def legacy_source_view_origin(source_origin: SourceOrigin) -> str:
+    """Return the compatibility `MemorySource.origin` view for a v0.7 source origin."""
+
+    if source_origin in {"user_direct", "user_confirmed", "user_corrected"}:
+        return "user"
+    if source_origin == "consolidation_derived":
+        return "inferred"
+    return "external"
+
+
 def remap_memory_entry_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
     """Backfill missing v0.7 fields from legacy entry shapes."""
 

@@ -16,7 +16,13 @@ from pydantic import ValidationError
 from shisad.core.types import TaintLabel
 from shisad.memory.remap import resolve_legacy_source_origin
 from shisad.memory.schema import MemoryEntry, MemorySource, MemoryWriteDecision
-from shisad.memory.trust import backfill_legacy_triple, clamp_confidence
+from shisad.memory.trust import (
+    ChannelTrust,
+    ConfirmationStatus,
+    SourceOrigin,
+    backfill_legacy_triple,
+    clamp_confidence,
+)
 from shisad.security.firewall.pii import PIIDetector
 
 
@@ -66,6 +72,46 @@ class MemoryManager:
         confidence: float = 0.5,
         user_confirmed: bool = False,
     ) -> MemoryWriteDecision:
+        source_origin = resolve_legacy_source_origin(
+            source.origin,
+            source_id=source.source_id,
+            extraction_method=source.extraction_method,
+        )
+        source_origin, channel_trust, confirmation_status = backfill_legacy_triple(
+            source_origin=source_origin
+        )
+        return self.write_with_provenance(
+            entry_type=entry_type,
+            key=key,
+            value=value,
+            source=source,
+            source_origin=source_origin,
+            channel_trust=channel_trust,
+            confirmation_status=confirmation_status,
+            source_id=source.source_id,
+            scope="user",
+            confidence=confidence,
+            confirmation_satisfied=user_confirmed,
+        )
+
+    def write_with_provenance(
+        self,
+        *,
+        entry_type: str,
+        key: str,
+        value: Any,
+        source: MemorySource,
+        source_origin: SourceOrigin,
+        channel_trust: ChannelTrust,
+        confirmation_status: ConfirmationStatus,
+        source_id: str,
+        scope: str,
+        confidence: float = 0.5,
+        confirmation_satisfied: bool = False,
+        taint_labels: list[TaintLabel] | None = None,
+        ingress_handle_id: str | None = None,
+        content_digest: str | None = None,
+    ) -> MemoryWriteDecision:
         text_value = str(value)
         if self._looks_instruction_like(text_value):
             return MemoryWriteDecision(
@@ -73,14 +119,14 @@ class MemoryManager:
                 reason="instruction_like_content_blocked",
             )
 
-        if source.origin == "external" and not user_confirmed:
+        if source.origin == "external" and not confirmation_satisfied:
             return MemoryWriteDecision(
                 kind="require_confirmation",
                 reason="external_origin_requires_confirmation",
             )
 
         suspicious = self._looks_suspicious(text_value)
-        if suspicious and not user_confirmed:
+        if suspicious and not confirmation_satisfied:
             return MemoryWriteDecision(
                 kind="require_confirmation",
                 reason="suspicious_memory_write_requires_confirmation",
@@ -98,18 +144,10 @@ class MemoryManager:
         if source.origin != "user":
             expires_at = datetime.now(UTC) + timedelta(days=self._default_ttl_days)
 
-        taint_labels = []
-        if source.origin != "user":
-            taint_labels = [TaintLabel.UNTRUSTED]
+        resolved_taints = list(taint_labels or [])
+        if source.origin != "user" and TaintLabel.UNTRUSTED not in resolved_taints:
+            resolved_taints.append(TaintLabel.UNTRUSTED)
 
-        source_origin = resolve_legacy_source_origin(
-            source.origin,
-            source_id=source.source_id,
-            extraction_method=source.extraction_method,
-        )
-        source_origin, channel_trust, confirmation_status = backfill_legacy_triple(
-            source_origin=source_origin
-        )
         confidence = clamp_confidence(
             confidence,
             source_origin,
@@ -125,10 +163,13 @@ class MemoryManager:
             source_origin=source_origin,
             channel_trust=channel_trust,
             confirmation_status=confirmation_status,
-            source_id=source.source_id,
+            source_id=source_id,
             confidence=confidence,
             expires_at=expires_at,
-            taint_labels=taint_labels,
+            taint_labels=resolved_taints,
+            scope=scope,
+            ingress_handle_id=ingress_handle_id,
+            content_digest=content_digest,
         )
         self._entries[entry.id] = entry
         self._persist_entry(entry)
@@ -137,7 +178,8 @@ class MemoryManager:
             {
                 "entry_id": entry.id,
                 "key": key,
-                "source_origin": source.origin,
+                "source_origin": source_origin,
+                "ingress_handle_id": ingress_handle_id,
                 "pii_findings": pii_findings,
             },
         )

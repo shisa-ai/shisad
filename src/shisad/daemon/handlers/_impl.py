@@ -1062,6 +1062,7 @@ class HandlerImplementation(
         self._risk_calibrator = services.risk_calibrator
         self._ingestion = services.ingestion
         self._memory_manager = services.memory_manager
+        self._memory_ingress_registry = services.memory_ingress_registry
         self._conversation_summarizer = ConversationSummarizer(provider=services.provider)
         self._scheduler = services.scheduler
         self._skill_manager = services.skill_manager

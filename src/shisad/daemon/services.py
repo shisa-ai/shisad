@@ -56,6 +56,7 @@ from shisad.interop.a2a_ratelimit import A2aRateLimiter
 from shisad.interop.a2a_registry import A2aRegistry, load_local_identity
 from shisad.interop.mcp_client import McpClientManager
 from shisad.memory.ingestion import EmbeddingFingerprint, IngestionPipeline, RetrieveRagTool
+from shisad.memory.ingress import IngressContextRegistry
 from shisad.memory.manager import MemoryManager
 from shisad.scheduler.manager import SchedulerManager
 from shisad.security.control_plane.sidecar import (
@@ -441,6 +442,7 @@ class DaemonServices:
     planner_model_id: str
     model_routes: dict[str, str]
     provider_diagnostics: dict[str, Any]
+    memory_ingress_registry: IngressContextRegistry
     internal_ingress_marker: object
     identity_default_trust_baseline: dict[str, str]
     identity_allowlists_baseline: dict[str, frozenset[str]]
@@ -701,6 +703,7 @@ class DaemonServices:
                 config.data_dir / "memory_entries",
                 audit_hook=event_wiring.audit_memory_event,
             )
+            memory_ingress_registry = IngressContextRegistry()
             scheduler = SchedulerManager(storage_dir=config.data_dir / "tasks")
             msgvault_toolkit = MsgvaultToolkit(
                 enabled=config.msgvault_enabled,
@@ -891,6 +894,7 @@ class DaemonServices:
                 planner_model_id=planner_model_id,
                 model_routes=model_routes,
                 provider_diagnostics=provider_diagnostics,
+                memory_ingress_registry=memory_ingress_registry,
                 internal_ingress_marker=internal_ingress_marker,
                 identity_default_trust_baseline=identity_default_trust_baseline,
                 identity_allowlists_baseline=identity_allowlists_baseline,

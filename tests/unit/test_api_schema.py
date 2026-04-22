@@ -27,6 +27,7 @@ from shisad.core.api.schema import (
     MemoryRetrieveResult,
     MemoryRotateKeyResult,
     MemoryVerifyResult,
+    MemoryWriteParams,
     MemoryWriteResult,
     PolicyExplainResult,
     RealityCheckReadResult,
@@ -346,6 +347,41 @@ class TestApiSchemaValidation:
         assert ingest.ingress_risk == 0.1
         assert set_mode.mode == "admin_cleanroom"
         assert pairing.proposal_id == "p1"
+
+    def test_m1_memory_write_params_accept_ingress_context_shape(self) -> None:
+        params = MemoryWriteParams.model_validate(
+            {
+                "ingress_context": "handle-1",
+                "entry_type": "fact",
+                "key": "profile.name",
+                "value": "alice",
+            }
+        )
+
+        assert params.ingress_context == "handle-1"
+        assert params.source is None
+        assert params.derivation_path == "direct"
+
+    def test_m1_memory_write_params_reject_ambiguous_or_empty_source_shape(self) -> None:
+        with pytest.raises(ValidationError):
+            MemoryWriteParams.model_validate(
+                {
+                    "entry_type": "fact",
+                    "key": "profile.name",
+                    "value": "alice",
+                }
+            )
+
+        with pytest.raises(ValidationError):
+            MemoryWriteParams.model_validate(
+                {
+                    "source": {"origin": "user", "source_id": "msg-1", "extraction_method": "cli"},
+                    "ingress_context": "handle-1",
+                    "entry_type": "fact",
+                    "key": "profile.name",
+                    "value": "alice",
+                }
+            )
 
     def test_m4_list_entry_models_preserve_additional_payload_fields(self) -> None:
         memory_list = MemoryListResult.model_validate(

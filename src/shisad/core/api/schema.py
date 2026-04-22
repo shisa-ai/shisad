@@ -5,7 +5,15 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field, StrictInt, StrictStr
+from pydantic import (
+    AliasChoices,
+    BaseModel,
+    ConfigDict,
+    Field,
+    StrictInt,
+    StrictStr,
+    model_validator,
+)
 
 from shisad.executors.sandbox import SandboxResult
 
@@ -346,12 +354,24 @@ class MemoryRetrieveParams(_StrictParams):
 
 
 class MemoryWriteParams(_StrictParams):
-    source: dict[str, Any]
+    source: dict[str, Any] | None = None
+    ingress_context: str | None = None
+    content_digest: str | None = None
+    derivation_path: Literal["direct", "extracted", "summary"] = "direct"
+    parent_digest: str | None = None
     entry_type: str = "fact"
     key: str
     value: Any = None
     confidence: float = 0.5
     user_confirmed: bool = False
+
+    @model_validator(mode="after")
+    def _validate_source_shape(self) -> MemoryWriteParams:
+        if self.source is None and self.ingress_context is None:
+            raise ValueError("source or ingress_context is required")
+        if self.source is not None and self.ingress_context is not None:
+            raise ValueError("source and ingress_context are mutually exclusive")
+        return self
 
 
 class MemoryListParams(_StrictParams):
