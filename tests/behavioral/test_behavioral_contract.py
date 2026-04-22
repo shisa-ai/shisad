@@ -2002,6 +2002,98 @@ async def test_contract_cli_planner_context_filters_identity_and_active_attentio
 
 
 @pytest.mark.asyncio
+async def test_contract_discord_channel_context_binds_active_attention_to_current_channel(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured_inputs: list[str] = []
+
+    def _seed(config: DaemonConfig) -> None:
+        config.channel_identity_allowlist = {"discord": ["guest-1"]}
+        manager = MemoryManager(config.data_dir / "memory_entries")
+        current_channel_inbox = manager.write_with_provenance(
+            entry_type="inbox_item",
+            key=inbox_item_key(owner_id="owner-1", item_id="current"),
+            value=InboxItemValue(
+                owner_id="owner-1",
+                sender_id="guest-1",
+                channel_id="chan-1",
+                body="Current channel inbox item should surface.",
+            ).model_dump(mode="python"),
+            source=MemorySource(
+                origin="external",
+                source_id="discord-current",
+                extraction_method="channel.ingest.structured",
+            ),
+            source_origin="external_message",
+            channel_trust="shared_participant",
+            confirmation_status="auto_accepted",
+            source_id="discord-current",
+            scope="user",
+            confidence=0.5,
+            confirmation_satisfied=True,
+        )
+        other_channel_inbox = manager.write_with_provenance(
+            entry_type="inbox_item",
+            key=inbox_item_key(owner_id="owner-1", item_id="other"),
+            value=InboxItemValue(
+                owner_id="owner-1",
+                sender_id="guest-2",
+                channel_id="chan-2",
+                body="Other channel inbox item should not surface.",
+            ).model_dump(mode="python"),
+            source=MemorySource(
+                origin="external",
+                source_id="discord-other",
+                extraction_method="channel.ingest.structured",
+            ),
+            source_origin="external_message",
+            channel_trust="shared_participant",
+            confirmation_status="auto_accepted",
+            source_id="discord-other",
+            scope="user",
+            confidence=0.5,
+            confirmation_satisfied=True,
+        )
+        assert current_channel_inbox.kind == "allow"
+        assert other_channel_inbox.kind == "allow"
+
+    async with _contract_harness_context(tmp_path, monkeypatch, prestart=_seed) as harness:
+        async def _capture_complete(
+            self: LocalPlannerProvider,
+            messages: list[Message],
+            tools: list[dict[str, Any]] | None = None,
+        ) -> ProviderResponse:
+            if messages:
+                captured_inputs.append(str(messages[-1].content))
+            return await _stub_complete(self, messages, tools)
+
+        monkeypatch.setattr(LocalPlannerProvider, "complete", _capture_complete, raising=True)
+        reply = await harness.client.call(
+            "channel.ingest",
+            {
+                "message": {
+                    "channel": "discord",
+                    "external_user_id": "guest-1",
+                    "workspace_hint": "guild-1",
+                    "reply_target": "chan-1",
+                    "message_id": "msg-live-discord",
+                    "content": "hello",
+                }
+            },
+        )
+        assert str(reply.get("response", "")).strip()
+
+    planner_input = _latest_user_request_planner_input(captured_inputs).replace("^", "")
+    trusted_section = planner_input.split("=== USER REQUEST ===", 1)[0]
+
+    assert "inbox:owner-1:current" in trusted_section
+    assert "inbox:owner-1:other" not in trusted_section
+    assert "Current channel inbox item should surface." in planner_input
+    assert "Other channel inbox item should not surface." not in planner_input
+
+
+@pytest.mark.asyncio
 async def test_contract_identity_candidate_cli_surface_and_accept_flow(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
