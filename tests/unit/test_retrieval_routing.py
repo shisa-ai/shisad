@@ -172,3 +172,19 @@ def test_m1_ingestion_pipeline_escapes_fts_operator_tokens(tmp_path: Path) -> No
 
     assert results
     assert results[0].chunk_id == stored.chunk_id
+
+
+def test_m1_ingestion_pipeline_surfaces_backend_fts_failures(tmp_path: Path) -> None:
+    storage = tmp_path / "memory"
+    pipeline = IngestionPipeline(storage)
+    pipeline.ingest(
+        source_id="doc-broken-fts",
+        source_type="external",
+        content="Retrieval infrastructure failures must stay visible to callers.",
+    )
+
+    with sqlite3.connect(storage / "memory.sqlite3") as conn:
+        conn.execute("DROP TABLE retrieval_fts")
+
+    with pytest.raises(sqlite3.OperationalError, match="no such table: retrieval_fts"):
+        pipeline.retrieve("retrieval infrastructure", limit=5)

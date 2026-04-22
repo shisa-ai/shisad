@@ -237,10 +237,7 @@ class SQLiteRetrievalBackend:
         if not include_quarantined:
             sql += " AND r.quarantined = 0"
         with self._connect() as conn:
-            try:
-                rows = conn.execute(sql, params).fetchall()
-            except sqlite3.OperationalError:
-                return set()
+            rows = conn.execute(sql, params).fetchall()
         return {str(row["chunk_id"]) for row in rows}
 
     def read_original_payload(self, chunk_id: str) -> bytes | None:
