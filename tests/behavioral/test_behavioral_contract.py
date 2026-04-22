@@ -29,7 +29,7 @@ from urllib.parse import parse_qs, urlparse
 
 import pytest
 
-from shisad.core.api.transport import ControlClient
+from shisad.core.api.transport import ControlClient, JsonRpcCallError
 from shisad.core.config import DaemonConfig
 from shisad.core.providers.base import Message, ProviderResponse
 from shisad.core.providers.local_planner import LocalPlannerProvider
@@ -790,6 +790,22 @@ async def _reject_pending_action(
     return dict(result)
 
 
+async def _mint_memory_ingress_context(
+    client: ControlClient,
+    *,
+    content: Any,
+    source_type: str = "user",
+    source_id: str = "",
+    user_confirmed: bool = False,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {"content": content, "source_type": source_type}
+    if source_id:
+        payload["source_id"] = source_id
+    if user_confirmed:
+        payload["user_confirmed"] = True
+    return dict(await client.call("memory.mint_ingress_context", payload))
+
+
 async def _run_contract_cli(config: DaemonConfig, *args: str) -> subprocess.CompletedProcess[str]:
     repo_root = Path(__file__).resolve().parents[2]
     env = os.environ.copy()
@@ -1107,6 +1123,77 @@ async def test_contract_memory_remember_persists_and_is_used_later(
     )
     assert reply.get("lockdown_level") == "normal"
     assert "blue" in str(reply.get("response", "")).lower()
+
+
+@pytest.mark.asyncio
+async def test_contract_memory_write_round_trips_through_ingress_context_handle(
+    contract_harness: ContractHarness,
+) -> None:
+    minted = await _mint_memory_ingress_context(
+        contract_harness.client,
+        content="prefers structured write paths",
+    )
+
+    created = await contract_harness.client.call(
+        "memory.write",
+        {
+            "ingress_context": minted["ingress_context"],
+            "entry_type": "fact",
+            "key": "profile.write_path",
+            "value": "prefers structured write paths",
+        },
+    )
+
+    assert created.get("kind") == "allow"
+    entry = created.get("entry") or {}
+    entry_id = str(entry.get("id", "")).strip()
+    assert entry_id
+    assert entry.get("ingress_handle_id") == minted["ingress_context"]
+    assert entry.get("source_origin") == "user_direct"
+    assert entry.get("channel_trust") == "command"
+    assert entry.get("confirmation_status") == "user_asserted"
+
+    fetched = await contract_harness.client.call("memory.get", {"entry_id": entry_id})
+    stored = fetched.get("entry") or {}
+    assert stored.get("key") == "profile.write_path"
+    assert stored.get("value") == "prefers structured write paths"
+    assert stored.get("content_digest") == minted["content_digest"]
+
+
+@pytest.mark.asyncio
+async def test_contract_memory_write_rejects_mismatched_handle_digest_and_trust_fields(
+    contract_harness: ContractHarness,
+) -> None:
+    minted = await _mint_memory_ingress_context(
+        contract_harness.client,
+        content="handle-bound memory payload",
+    )
+
+    with pytest.raises(JsonRpcCallError, match="content digest does not match ingress context"):
+        await contract_harness.client.call(
+            "memory.write",
+            {
+                "ingress_context": minted["ingress_context"],
+                "entry_type": "fact",
+                "key": "profile.invalid",
+                "value": "handle-bound memory payload",
+                "content_digest": "0" * 64,
+            },
+        )
+
+    with pytest.raises(JsonRpcCallError) as excinfo:
+        await contract_harness.client.call(
+            "memory.write",
+            {
+                "ingress_context": minted["ingress_context"],
+                "entry_type": "fact",
+                "key": "profile.invalid",
+                "value": "handle-bound memory payload",
+                "source_origin": "user_direct",
+            },
+        )
+
+    assert excinfo.value.code == -32602
 
 
 @pytest.mark.asyncio

@@ -14,6 +14,8 @@ from shisad.core.api.schema import (
     MemoryLifecycleResult,
     MemoryListParams,
     MemoryListResult,
+    MemoryMintIngressParams,
+    MemoryMintIngressResult,
     MemoryRetrieveParams,
     MemoryRetrieveResult,
     MemoryReviewQueueParams,
@@ -74,6 +76,20 @@ class MemoryHandlers:
         )
         payload[_CONTROL_API_AUTHENTICATED_WRITE] = True
         return MemoryIngestResult.model_validate(await self._impl.do_memory_ingest(payload))
+
+    async def handle_memory_mint_ingress_context(
+        self,
+        params: MemoryMintIngressParams,
+        ctx: RequestContext,
+    ) -> MemoryMintIngressResult:
+        payload = build_params_payload(
+            params,
+            ctx,
+            internal_ingress_marker=self._internal_ingress_marker,
+        )
+        return MemoryMintIngressResult.model_validate(
+            await self._impl.do_memory_mint_ingress_context(payload)
+        )
 
     async def handle_memory_retrieve(
         self,

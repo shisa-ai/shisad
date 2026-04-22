@@ -398,6 +398,19 @@ class MemoryWriteParams(_StrictParams):
         return self
 
 
+class MemoryMintIngressParams(_StrictParams):
+    content: Any
+    source_type: Literal["user", "external", "tool"] = "user"
+    source_id: str | None = None
+    user_confirmed: bool = False
+
+    @model_validator(mode="after")
+    def _validate_confirmation_shape(self) -> MemoryMintIngressParams:
+        if self.user_confirmed and self.source_type != "user":
+            raise ValueError("user_confirmed requires source_type=user")
+        return self
+
+
 class MemorySupersedeParams(MemoryWriteParams):
     supersedes: str
 
@@ -477,6 +490,16 @@ class MemoryIngestResult(BaseModel):
     semantic_score: float = 0.0
     blended_score: float = 0.0
     corroborated: bool = False
+
+
+class MemoryMintIngressResult(BaseModel):
+    ingress_context: str
+    content_digest: str
+    source_origin: str
+    channel_trust: str
+    confirmation_status: str
+    scope: str
+    source_id: str
 
 
 class MemoryRetrieveResult(BaseModel):

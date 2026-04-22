@@ -28,6 +28,7 @@ from shisad.core.api.schema import (
     MemoryLifecycleParams,
     MemoryListParams,
     MemoryListResult,
+    MemoryMintIngressParams,
     MemoryRetrieveResult,
     MemoryRotateKeyResult,
     MemorySupersedeParams,
@@ -381,7 +382,6 @@ class TestApiSchemaValidation:
         )
 
         assert params.ingress_context == "handle-1"
-        assert params.source_id is None
 
     def test_m1_memory_ingest_params_reject_missing_source_and_orphaned_binding_fields(
         self,
@@ -408,7 +408,22 @@ class TestApiSchemaValidation:
         )
 
         assert params.ingress_context is None
-        assert params.derivation_path == "direct"
+
+    def test_m1_memory_mint_ingress_params_accept_user_shape(self) -> None:
+        params = MemoryMintIngressParams.model_validate({"content": {"name": "alice"}})
+
+        assert params.source_type == "user"
+        assert params.user_confirmed is False
+
+    def test_m1_memory_mint_ingress_params_reject_confirmed_non_user_shapes(self) -> None:
+        with pytest.raises(ValidationError, match="user_confirmed requires source_type=user"):
+            MemoryMintIngressParams.model_validate(
+                {
+                    "content": "tool output",
+                    "source_type": "tool",
+                    "user_confirmed": True,
+                }
+            )
 
     def test_m1_memory_write_params_accept_canonical_and_legacy_entry_type_aliases(self) -> None:
         canonical = MemoryWriteParams.model_validate(

@@ -198,6 +198,42 @@ class MemoryImplMixin(HandlerMixinBase):
         )
         return cast(dict[str, Any], decision.model_dump(mode="json"))
 
+    async def do_memory_mint_ingress_context(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        source_type = str(params.get("source_type", "user")).strip().lower() or "user"
+        user_confirmed = bool(params.get("user_confirmed", False))
+        if user_confirmed and source_type != "user":
+            raise ValueError("user_confirmed requires source_type=user")
+
+        if source_type == "user":
+            source_origin = "user_confirmed" if user_confirmed else "user_direct"
+            channel_trust = "command"
+            confirmation_status = "user_confirmed" if user_confirmed else "user_asserted"
+        else:
+            source_origin, channel_trust, confirmation_status = self._control_ingest_triple(
+                source_type,
+                user_confirmed=False,
+            )
+
+        content = self._canonical_ingress_content(params.get("content"))
+        context = self._memory_ingress_registry.mint(
+            source_origin=source_origin,
+            channel_trust=channel_trust,
+            confirmation_status=confirmation_status,
+            scope="user",
+            source_id=self._source_id_for_control_write(params),
+            content=content,
+            taint_labels=self._firewall_taint_labels(params),
+        )
+        return {
+            "ingress_context": context.handle_id,
+            "content_digest": context.content_digest,
+            "source_origin": context.source_origin,
+            "channel_trust": context.channel_trust,
+            "confirmation_status": context.confirmation_status,
+            "scope": context.scope,
+            "source_id": context.source_id,
+        }
+
     async def do_memory_ingest(self, params: Mapping[str, Any]) -> dict[str, Any]:
         if params.get("ingress_context"):
             handle_id = str(params.get("ingress_context", ""))

@@ -285,6 +285,15 @@ def test_cli_commands_route_through_rpc_wrapper(
             "entries": [{"id": "m-1", "entry_type": "fact", "key": "favorite_color"}],
             "count": 1,
         },
+        "memory.mint_ingress_context": {
+            "ingress_context": "handle-1",
+            "content_digest": "digest-1",
+            "source_origin": "user_direct",
+            "channel_trust": "command",
+            "confirmation_status": "user_asserted",
+            "scope": "user",
+            "source_id": "cli",
+        },
         "memory.write": {"kind": "allow", "entry": {"id": "m-1"}},
         "memory.rotate_key": {
             "rotated": True,
@@ -708,12 +717,30 @@ def test_cli_commands_route_through_rpc_wrapper(
         {"session_id": "s-1", "action": "quarantine", "reason": "manual"},
     ) in calls
     assert (
-        "memory.write",
-        {"entry_type": "fact", "key": "favorite_color", "value": "blue"},
+        "memory.mint_ingress_context",
+        {"content": "blue"},
+    ) in calls
+    assert (
+        "memory.mint_ingress_context",
+        {"content": "the launch retrospective happened on monday"},
+    ) in calls
+    assert (
+        "memory.mint_ingress_context",
+        {"content": "prefers coffee over tea"},
     ) in calls
     assert (
         "memory.write",
         {
+            "ingress_context": "handle-1",
+            "entry_type": "fact",
+            "key": "favorite_color",
+            "value": "blue",
+        },
+    ) in calls
+    assert (
+        "memory.write",
+        {
+            "ingress_context": "handle-1",
             "entry_type": "episode",
             "key": "timeline.launch",
             "value": "the launch retrospective happened on monday",
@@ -722,6 +749,7 @@ def test_cli_commands_route_through_rpc_wrapper(
     assert (
         "memory.write",
         {
+            "ingress_context": "handle-1",
             "entry_type": "preference",
             "key": "food.preference",
             "value": "prefers coffee over tea",

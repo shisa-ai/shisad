@@ -9,6 +9,7 @@ from shisad.core.api.schema import (
     MemoryIngestParams,
     MemoryLifecycleParams,
     MemoryListParams,
+    MemoryMintIngressParams,
     MemoryReviewQueueParams,
     MemoryRotateKeyParams,
     MemorySupersedeParams,
@@ -20,6 +21,7 @@ from shisad.daemon.handlers.memory import MemoryHandlers
 
 class _StubImpl:
     def __init__(self) -> None:
+        self.last_memory_mint_ingress_payload: dict[str, object] | None = None
         self.last_memory_ingest_payload: dict[str, object] | None = None
         self.last_memory_supersede_payload: dict[str, object] | None = None
         self.last_memory_list_payload: dict[str, object] | None = None
@@ -28,11 +30,23 @@ class _StubImpl:
         self.last_memory_unquarantine_payload: dict[str, object] | None = None
         self.last_memory_set_workflow_state_payload: dict[str, object] | None = None
 
+    async def do_memory_mint_ingress_context(self, payload: dict[str, object]) -> dict[str, object]:
+        self.last_memory_mint_ingress_payload = payload
+        return {
+            "ingress_context": "handle-1",
+            "content_digest": "digest-1",
+            "source_origin": "user_direct",
+            "channel_trust": "command",
+            "confirmation_status": "user_asserted",
+            "scope": "user",
+            "source_id": str(payload.get("source_id", "cli")),
+        }
+
     async def do_memory_ingest(self, payload: dict[str, object]) -> dict[str, object]:
         self.last_memory_ingest_payload = payload
         return {
             "chunk_id": "ing-1",
-            "source_id": str(payload["source_id"]),
+            "source_id": "src-1",
             "source_type": "user",
             "collection": "user_curated",
             "created_at": "2026-02-13T00:00:00+00:00",
@@ -107,8 +121,12 @@ class _StubImpl:
 async def test_memory_ingest_and_list_wrappers() -> None:
     impl = _StubImpl()
     handlers = MemoryHandlers(impl, internal_ingress_marker=object())  # type: ignore[arg-type]
+    minted = await handlers.handle_memory_mint_ingress_context(
+        MemoryMintIngressParams(content="hello", source_id="src-1"),
+        RequestContext(),
+    )
     ingest = await handlers.handle_memory_ingest(
-        MemoryIngestParams(source_id="src-1", content="hello"),
+        MemoryIngestParams(ingress_context="handle-1", content="hello"),
         RequestContext(),
     )
     listing = await handlers.handle_memory_list(MemoryListParams(limit=10), RequestContext())
@@ -116,7 +134,9 @@ async def test_memory_ingest_and_list_wrappers() -> None:
         MemoryReviewQueueParams(limit=10),
         RequestContext(),
     )
+    assert minted.ingress_context == "handle-1"
     assert ingest.model_dump(mode="json")["source_id"] == "src-1"
+    assert impl.last_memory_mint_ingress_payload is not None
     assert impl.last_memory_ingest_payload is not None
     assert impl.last_memory_ingest_payload["_control_api_authenticated_write"] is True
     assert listing.count == 1
@@ -130,6 +150,7 @@ async def test_memory_supersede_wrapper_forwards_authenticated_payload() -> None
 
     result = await handlers.handle_memory_supersede(
         MemorySupersedeParams(
+            ingress_context="handle-1",
             entry_type="note",
             key="note:chain",
             value="updated",

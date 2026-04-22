@@ -20,6 +20,23 @@ class _MemoryWriteHarness(MemoryImplMixin):
 
 
 @pytest.mark.asyncio
+async def test_memory_mint_ingress_context_returns_authenticated_user_handle(
+    tmp_path: Path,
+) -> None:
+    harness = _MemoryWriteHarness(tmp_path)
+
+    result = await harness.do_memory_mint_ingress_context({"content": "remember this"})
+
+    assert result["source_origin"] == "user_direct"
+    assert result["channel_trust"] == "command"
+    assert result["confirmation_status"] == "user_asserted"
+    assert result["scope"] == "user"
+    assert result["source_id"] == "cli"
+    context = harness._memory_ingress_registry.resolve(str(result["ingress_context"]))
+    assert context.content_digest == result["content_digest"]
+
+
+@pytest.mark.asyncio
 async def test_memory_write_accepts_handle_bound_direct_payload(tmp_path: Path) -> None:
     harness = _MemoryWriteHarness(tmp_path)
     context = harness._memory_ingress_registry.mint(

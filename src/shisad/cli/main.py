@@ -54,6 +54,7 @@ from shisad.core.api.schema import (
     GitStatusResult,
     LockdownSetResult,
     MemoryListResult,
+    MemoryMintIngressResult,
     MemoryRotateKeyResult,
     MemoryWriteResult,
     NoteDeleteResult,
@@ -2378,7 +2379,14 @@ def memory_write(
     strength: str,
 ) -> None:
     config = _get_config()
+    ingress = rpc_call(
+        config,
+        "memory.mint_ingress_context",
+        {"content": value},
+        response_model=MemoryMintIngressResult,
+    )
     payload: dict[str, object] = {
+        "ingress_context": ingress.ingress_context,
         "entry_type": entry_type,
         "key": key,
         "value": value,
