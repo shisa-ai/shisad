@@ -27,9 +27,9 @@ class MemoryEvent(BaseModel):
 class MemoryEventStore:
     """SQLite-backed append-only event store for memory lifecycle events."""
 
-    def __init__(self, path: Path) -> None:
+    def __init__(self, path: Path, *, legacy_jsonl_path: Path | None = None) -> None:
         self._path = path
-        self._legacy_jsonl_path = path.with_suffix(".jsonl")
+        self._legacy_jsonl_path = legacy_jsonl_path or path.with_suffix(".jsonl")
         self._path.parent.mkdir(parents=True, exist_ok=True)
         with self._connect() as conn:
             self._ensure_schema(conn)

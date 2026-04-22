@@ -6,6 +6,7 @@ import csv
 import io
 import json
 import re
+import sqlite3
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -62,11 +63,17 @@ class MemoryManager:
     ) -> None:
         self._storage_dir = storage_dir
         self._storage_dir.mkdir(parents=True, exist_ok=True)
+        self._db_path = self._storage_dir / "memory.sqlite3"
         self._entries: dict[str, MemoryEntry] = {}
-        self._event_store = MemoryEventStore(self._storage_dir / "memory_events.sqlite3")
+        self._ensure_entry_schema()
+        self._event_store = MemoryEventStore(
+            self._db_path,
+            legacy_jsonl_path=self._storage_dir / "memory_events.jsonl",
+        )
         self._default_ttl_days = default_ttl_days
         self._audit_hook = audit_hook
         self._pii_detector = pii_detector or PIIDetector()
+        self._import_legacy_entry_files_if_needed()
         self._load_existing_entries()
 
     def write(
@@ -517,16 +524,278 @@ class MemoryManager:
                 self._audit("memory.expire", {"entry_id": entry.id})
 
     def _persist_entry(self, entry: MemoryEntry) -> None:
-        path = self._storage_dir / f"{entry.id}.json"
-        path.write_text(entry.model_dump_json(indent=2))
+        with self._connect_db() as conn:
+            self._upsert_entry(conn, entry)
 
     def _load_existing_entries(self) -> None:
-        for path in sorted(self._storage_dir.glob("*.json")):
+        self._entries = {}
+        with self._connect_db() as conn:
+            rows = conn.execute(
+                """
+                SELECT
+                    id,
+                    version,
+                    supersedes,
+                    superseded_by,
+                    entry_type,
+                    key,
+                    value_json,
+                    source_json,
+                    source_origin,
+                    channel_trust,
+                    confirmation_status,
+                    source_id,
+                    created_at,
+                    valid_from,
+                    valid_to,
+                    last_verified_at,
+                    expires_at,
+                    confidence,
+                    taint_labels_json,
+                    citation_count,
+                    last_cited_at,
+                    decay_score,
+                    importance_weight,
+                    status,
+                    workflow_state,
+                    scope,
+                    invocation_eligible,
+                    ingress_handle_id,
+                    content_digest,
+                    user_verified,
+                    deleted_at,
+                    quarantined
+                FROM memory_entries
+                ORDER BY created_at ASC, id ASC
+                """
+            ).fetchall()
+        for row in rows:
             try:
-                entry = MemoryEntry.model_validate_json(path.read_text(encoding="utf-8"))
-            except (OSError, UnicodeError, ValidationError):
+                entry = MemoryEntry.model_validate(
+                    {
+                        "id": str(row["id"]),
+                        "version": int(row["version"]),
+                        "supersedes": row["supersedes"],
+                        "superseded_by": row["superseded_by"],
+                        "entry_type": str(row["entry_type"]),
+                        "key": str(row["key"]),
+                        "value": json.loads(str(row["value_json"])),
+                        "source": json.loads(str(row["source_json"])),
+                        "source_origin": str(row["source_origin"]),
+                        "channel_trust": str(row["channel_trust"]),
+                        "confirmation_status": str(row["confirmation_status"]),
+                        "source_id": str(row["source_id"]),
+                        "created_at": str(row["created_at"]),
+                        "valid_from": row["valid_from"],
+                        "valid_to": row["valid_to"],
+                        "last_verified_at": row["last_verified_at"],
+                        "expires_at": row["expires_at"],
+                        "confidence": float(row["confidence"]),
+                        "taint_labels": json.loads(str(row["taint_labels_json"])),
+                        "citation_count": int(row["citation_count"]),
+                        "last_cited_at": row["last_cited_at"],
+                        "decay_score": float(row["decay_score"]),
+                        "importance_weight": float(row["importance_weight"]),
+                        "status": str(row["status"]),
+                        "workflow_state": row["workflow_state"],
+                        "scope": str(row["scope"]),
+                        "invocation_eligible": bool(row["invocation_eligible"]),
+                        "ingress_handle_id": row["ingress_handle_id"],
+                        "content_digest": row["content_digest"],
+                        "user_verified": bool(row["user_verified"]),
+                        "deleted_at": row["deleted_at"],
+                        "quarantined": bool(row["quarantined"]),
+                    }
+                )
+            except (TypeError, ValueError, ValidationError, json.JSONDecodeError):
                 continue
             self._entries[entry.id] = entry
+
+    def _connect_db(self) -> sqlite3.Connection:
+        conn = sqlite3.connect(self._db_path)
+        conn.row_factory = sqlite3.Row
+        return conn
+
+    def _ensure_entry_schema(self) -> None:
+        with self._connect_db() as conn:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS memory_entries (
+                    id TEXT PRIMARY KEY,
+                    version INTEGER NOT NULL,
+                    supersedes TEXT,
+                    superseded_by TEXT,
+                    entry_type TEXT NOT NULL,
+                    key TEXT NOT NULL,
+                    value_json TEXT NOT NULL,
+                    source_json TEXT NOT NULL,
+                    source_origin TEXT NOT NULL,
+                    channel_trust TEXT NOT NULL,
+                    confirmation_status TEXT NOT NULL,
+                    source_id TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    valid_from TEXT,
+                    valid_to TEXT,
+                    last_verified_at TEXT,
+                    expires_at TEXT,
+                    confidence REAL NOT NULL,
+                    taint_labels_json TEXT NOT NULL,
+                    citation_count INTEGER NOT NULL,
+                    last_cited_at TEXT,
+                    decay_score REAL NOT NULL,
+                    importance_weight REAL NOT NULL,
+                    status TEXT NOT NULL,
+                    workflow_state TEXT,
+                    scope TEXT NOT NULL,
+                    invocation_eligible INTEGER NOT NULL,
+                    ingress_handle_id TEXT,
+                    content_digest TEXT,
+                    user_verified INTEGER NOT NULL,
+                    deleted_at TEXT,
+                    quarantined INTEGER NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_memory_entries_type_created
+                ON memory_entries (entry_type, created_at)
+                """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_memory_entries_status_created
+                ON memory_entries (status, created_at)
+                """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_memory_entries_workflow_created
+                ON memory_entries (workflow_state, created_at)
+                """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_memory_entries_trust
+                ON memory_entries (source_origin, channel_trust, confirmation_status)
+                """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_memory_entries_scope_created
+                ON memory_entries (scope, created_at)
+                """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_memory_entries_key_type
+                ON memory_entries (entry_type, key)
+                """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_memory_entries_supersedes
+                ON memory_entries (supersedes)
+                """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_memory_entries_superseded_by
+                ON memory_entries (superseded_by)
+                """
+            )
+
+    def _import_legacy_entry_files_if_needed(self) -> None:
+        with self._connect_db() as conn:
+            row = conn.execute("SELECT COUNT(*) FROM memory_entries").fetchone()
+            existing = int(row[0]) if row is not None else 0
+            if existing:
+                return
+            for path in sorted(self._storage_dir.glob("*.json")):
+                try:
+                    entry = MemoryEntry.model_validate_json(path.read_text(encoding="utf-8"))
+                except (OSError, UnicodeError, ValidationError):
+                    continue
+                self._upsert_entry(conn, entry)
+
+    @staticmethod
+    def _upsert_entry(conn: sqlite3.Connection, entry: MemoryEntry) -> None:
+        payload = entry.model_dump(mode="json")
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO memory_entries (
+                id,
+                version,
+                supersedes,
+                superseded_by,
+                entry_type,
+                key,
+                value_json,
+                source_json,
+                source_origin,
+                channel_trust,
+                confirmation_status,
+                source_id,
+                created_at,
+                valid_from,
+                valid_to,
+                last_verified_at,
+                expires_at,
+                confidence,
+                taint_labels_json,
+                citation_count,
+                last_cited_at,
+                decay_score,
+                importance_weight,
+                status,
+                workflow_state,
+                scope,
+                invocation_eligible,
+                ingress_handle_id,
+                content_digest,
+                user_verified,
+                deleted_at,
+                quarantined
+            ) VALUES (
+                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+            )
+            """,
+            (
+                payload["id"],
+                payload["version"],
+                payload["supersedes"],
+                payload["superseded_by"],
+                payload["entry_type"],
+                payload["key"],
+                json.dumps(payload["value"], sort_keys=True),
+                json.dumps(payload["source"], sort_keys=True),
+                payload["source_origin"],
+                payload["channel_trust"],
+                payload["confirmation_status"],
+                payload.get("source_id", ""),
+                payload["created_at"],
+                payload["valid_from"],
+                payload["valid_to"],
+                payload["last_verified_at"],
+                payload["expires_at"],
+                payload["confidence"],
+                json.dumps(payload["taint_labels"], sort_keys=True),
+                payload["citation_count"],
+                payload["last_cited_at"],
+                payload["decay_score"],
+                payload["importance_weight"],
+                payload["status"],
+                payload["workflow_state"],
+                payload["scope"],
+                int(bool(payload["invocation_eligible"])),
+                payload["ingress_handle_id"],
+                payload["content_digest"],
+                int(bool(payload["user_verified"])),
+                payload["deleted_at"],
+                int(bool(payload["quarantined"])),
+            ),
+        )
 
     def _record_event(
         self,

@@ -279,6 +279,14 @@ def test_m1_memory_manager_filters_backfilled_statuses(tmp_path: Path) -> None:
         )
     }
     assert widened_ids == {"active-entry", "quarantined-entry", "deleted-entry"}
+    conn = sqlite3.connect(storage / "memory.sqlite3")
+    try:
+        count = conn.execute("SELECT COUNT(*) FROM memory_entries").fetchone()
+    finally:
+        conn.close()
+
+    assert count is not None
+    assert count[0] == 3
 
 
 def test_m1_memory_manager_write_persists_canonical_v070_fields(tmp_path: Path) -> None:
@@ -295,13 +303,33 @@ def test_m1_memory_manager_write_persists_canonical_v070_fields(tmp_path: Path) 
 
     assert decision.kind == "allow"
     assert decision.entry is not None
-    persisted = json.loads((storage / f"{decision.entry.id}.json").read_text(encoding="utf-8"))
-    assert persisted["source_origin"] == "user_direct"
-    assert persisted["channel_trust"] == "command"
-    assert persisted["confirmation_status"] == "auto_accepted"
-    assert persisted["status"] == "active"
-    assert persisted["scope"] == "user"
-    assert persisted["content_digest"]
+    conn = sqlite3.connect(storage / "memory.sqlite3")
+    try:
+        persisted = conn.execute(
+            """
+            SELECT
+                source_origin,
+                channel_trust,
+                confirmation_status,
+                status,
+                scope,
+                content_digest
+            FROM memory_entries
+            WHERE id = ?
+            """,
+            (decision.entry.id,),
+        ).fetchone()
+    finally:
+        conn.close()
+
+    assert persisted is not None
+    assert persisted[0] == "user_direct"
+    assert persisted[1] == "command"
+    assert persisted[2] == "auto_accepted"
+    assert persisted[3] == "active"
+    assert persisted[4] == "user"
+    assert persisted[5]
+    assert not (storage / f"{decision.entry.id}.json").exists()
 
 
 def test_m1_write_rejects_workflow_state_for_non_active_agenda_entries(tmp_path: Path) -> None:
@@ -364,7 +392,7 @@ def test_m1_open_thread_defaults_workflow_state_and_records_init_event(tmp_path:
             "status": "active",
         },
     ) in audits
-    conn = sqlite3.connect(tmp_path / "memory" / "memory_events.sqlite3")
+    conn = sqlite3.connect(tmp_path / "memory" / "memory.sqlite3")
     try:
         count = conn.execute("SELECT COUNT(*) FROM memory_events").fetchone()
     finally:
