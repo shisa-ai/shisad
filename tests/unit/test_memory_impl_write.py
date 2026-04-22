@@ -163,6 +163,61 @@ async def test_note_create_accepts_handle_bound_extracted_payload(tmp_path: Path
 
 
 @pytest.mark.asyncio
+async def test_note_create_allows_short_user_asserted_extracted_payload(tmp_path: Path) -> None:
+    harness = _MemoryWriteHarness(tmp_path)
+    context = harness._memory_ingress_registry.mint(
+        source_origin="user_direct",
+        channel_trust="command",
+        confirmation_status="user_asserted",
+        scope="user",
+        source_id="turn-3b",
+        content="remember that blue",
+    )
+
+    result = await harness.do_note_create(
+        {
+            "ingress_context": context.handle_id,
+            "key": "note:short-color",
+            "content": "blue",
+            "content_digest": digest_memory_value("blue"),
+            "derivation_path": "extracted",
+            "parent_digest": context.content_digest,
+        }
+    )
+
+    assert result["kind"] == "allow"
+    entry = result["entry"]
+    assert entry is not None
+    assert entry["value"] == "blue"
+    assert entry["source_origin"] == "user_direct"
+
+
+@pytest.mark.asyncio
+async def test_memory_write_rejects_low_signal_non_user_handle_payload(tmp_path: Path) -> None:
+    harness = _MemoryWriteHarness(tmp_path)
+    context = harness._memory_ingress_registry.mint(
+        source_origin="consolidation_derived",
+        channel_trust="consolidation",
+        confirmation_status="auto_accepted",
+        scope="user",
+        source_id="summary-1",
+        content="okay",
+    )
+
+    result = await harness.do_memory_write(
+        {
+            "ingress_context": context.handle_id,
+            "entry_type": "note",
+            "key": "conversation.remembered",
+            "value": "okay",
+        }
+    )
+
+    assert result["kind"] == "reject"
+    assert result["reason"] == "insufficient_memory_signal"
+
+
+@pytest.mark.asyncio
 async def test_todo_create_accepts_handle_bound_extracted_payload(tmp_path: Path) -> None:
     harness = _MemoryWriteHarness(tmp_path)
     context = harness._memory_ingress_registry.mint(

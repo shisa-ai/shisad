@@ -64,6 +64,55 @@ class MemoryManager:
         "ignore",
         "prioritize",
     )
+    _LOW_SIGNAL_PHRASES: ClassVar[set[str]] = {
+        "got it",
+        "great",
+        "later",
+        "maybe",
+        "no",
+        "noted",
+        "ok",
+        "okay",
+        "sure",
+        "thanks",
+        "thank you",
+        "yes",
+    }
+    _LOW_SIGNAL_TOKENS: ClassVar[set[str]] = {
+        "fine",
+        "got",
+        "great",
+        "it",
+        "later",
+        "maybe",
+        "no",
+        "noted",
+        "ok",
+        "okay",
+        "sure",
+        "thanks",
+        "them",
+        "thing",
+        "things",
+        "this",
+        "those",
+        "yes",
+    }
+    _GENERIC_KEY_SEGMENTS: ClassVar[set[str]] = {
+        "conversation",
+        "entry",
+        "fact",
+        "item",
+        "memory",
+        "note",
+        "profile",
+        "project",
+        "record",
+        "remembered",
+        "summary",
+        "user",
+        "value",
+    }
     _USER_AUTHORED_ORIGINS: ClassVar[set[str]] = {
         "user_direct",
         "user_confirmed",
@@ -176,6 +225,15 @@ class MemoryManager:
             return MemoryWriteDecision(
                 kind="require_confirmation",
                 reason="suspicious_memory_write_requires_confirmation",
+            )
+
+        if source_origin not in self._USER_AUTHORED_ORIGINS and self._fails_minimum_signal(
+            key=key,
+            value=value,
+        ):
+            return MemoryWriteDecision(
+                kind="reject",
+                reason="insufficient_memory_signal",
             )
 
         stored_value = value
@@ -1000,3 +1058,44 @@ class MemoryManager:
         lowered = text.lower()
         suspicious_tokens = ("cc attacker", "exfiltrate", "bypass", "steal")
         return any(token in lowered for token in suspicious_tokens)
+
+    @classmethod
+    def _fails_minimum_signal(cls, *, key: str, value: Any) -> bool:
+        if isinstance(value, (dict, list, tuple, set)):
+            text = json.dumps(
+                value,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+                default=str,
+            )
+        else:
+            text = str(value)
+        normalized = " ".join(text.split()).strip()
+        if not normalized:
+            return True
+        lowered = normalized.lower().strip(" \t\r\n.,;:!?\"'")
+        if not lowered:
+            return True
+        if lowered in cls._LOW_SIGNAL_PHRASES:
+            return True
+
+        tokens = [token.lower() for token in re.findall(r"[a-z0-9]+", lowered)]
+        informative_tokens = [
+            token
+            for token in tokens
+            if len(token) >= 3 and token not in cls._LOW_SIGNAL_TOKENS
+        ]
+        if len(informative_tokens) >= 2:
+            return False
+        if len(informative_tokens) == 1:
+            token = informative_tokens[0]
+            if len(token) >= 6:
+                return False
+            key_segments = [
+                segment
+                for segment in re.split(r"[._:-]+", key.lower())
+                if segment and segment not in cls._GENERIC_KEY_SEGMENTS
+            ]
+            return not (len(token) >= 4 and bool(key_segments))
+        return True

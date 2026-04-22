@@ -717,6 +717,57 @@ def test_m1_preference_entries_require_user_provenance_or_pending_review(tmp_pat
     assert manager.list_review_queue(limit=10)[0].id == queued.entry.id
 
 
+def test_m1_minimum_signal_gate_rejects_low_signal_non_user_write(tmp_path: Path) -> None:
+    manager = MemoryManager(tmp_path / "memory")
+
+    decision = manager.write_with_provenance(
+        entry_type="note",
+        key="conversation.remembered",
+        value="okay",
+        source=MemorySource(
+            origin="inferred",
+            source_id="summary-1",
+            extraction_method="ingress.summary",
+        ),
+        source_origin="consolidation_derived",
+        channel_trust="consolidation",
+        confirmation_status="auto_accepted",
+        source_id="summary-1",
+        scope="user",
+        confidence=0.41,
+        confirmation_satisfied=True,
+    )
+
+    assert decision.kind == "reject"
+    assert decision.reason == "insufficient_memory_signal"
+
+
+def test_m1_minimum_signal_gate_allows_specific_short_non_user_fact(tmp_path: Path) -> None:
+    manager = MemoryManager(tmp_path / "memory")
+
+    decision = manager.write_with_provenance(
+        entry_type="fact",
+        key="project.codename",
+        value="Nebula",
+        source=MemorySource(
+            origin="inferred",
+            source_id="summary-2",
+            extraction_method="ingress.summary",
+        ),
+        source_origin="consolidation_derived",
+        channel_trust="consolidation",
+        confirmation_status="auto_accepted",
+        source_id="summary-2",
+        scope="user",
+        confidence=0.7,
+        confirmation_satisfied=True,
+    )
+
+    assert decision.kind == "allow"
+    assert decision.entry is not None
+    assert decision.entry.value == "Nebula"
+
+
 def test_m1_pending_review_entries_are_isolated_to_review_queue(tmp_path: Path) -> None:
     audits: list[tuple[str, dict[str, object]]] = []
     manager = MemoryManager(
