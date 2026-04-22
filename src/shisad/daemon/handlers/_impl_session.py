@@ -2606,7 +2606,7 @@ def _build_planner_memory_context(
             collection=item.collection,
         )
         taints.update(item_taints)
-        if item.collection != "user_curated" or bool(item.taint_labels):
+        if item.trust_band != "elevated" or bool(item.taint_labels):
             amv_tainted = True
         cited_chunk_ids.append(item.chunk_id)
         taint_value = ",".join(sorted(label.value for label in item_taints)) or "none"

@@ -102,6 +102,35 @@ async def test_memory_ingest_preserves_handle_provenance_and_scope_for_recall(
 
 
 @pytest.mark.asyncio
+async def test_memory_ingest_preserves_non_user_handle_provenance_under_collection_override(
+    tmp_path: Path,
+) -> None:
+    harness = _MemoryIngestHarness(tmp_path)
+    context = harness._memory_ingress_registry.mint(
+        source_origin="external_web",
+        channel_trust="web_passed",
+        confirmation_status="auto_accepted",
+        scope="session",
+        source_id="fetch-collection-override",
+        content="Fetched evidence should not become elevated when stored in user_curated.",
+    )
+
+    result = await harness.do_memory_ingest(
+        {
+            "ingress_context": context.handle_id,
+            "content": "Fetched evidence should not become elevated when stored in user_curated.",
+            "collection": "user_curated",
+        }
+    )
+
+    assert result["collection"] == "user_curated"
+    assert result["source_origin"] == "external_web"
+    assert result["channel_trust"] == "web_passed"
+    assert result["confirmation_status"] == "auto_accepted"
+    assert result["trust_band"] == "untrusted"
+
+
+@pytest.mark.asyncio
 async def test_memory_ingest_rejects_mismatched_handle_binding(tmp_path: Path) -> None:
     harness = _MemoryIngestHarness(tmp_path)
     context = harness._memory_ingress_registry.mint(

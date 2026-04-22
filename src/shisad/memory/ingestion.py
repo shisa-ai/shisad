@@ -299,7 +299,7 @@ class IngestionPipeline:
         resolved_origin = source_origin or source_default_origin
         resolved_channel = channel_trust or source_default_channel
         resolved_confirmation = confirmation_status or source_default_confirmation
-        if resolved_collection != source_default_collection and (
+        if source_type == "user" and resolved_collection != source_default_collection and (
             source_origin is None
             or (
                 resolved_origin,

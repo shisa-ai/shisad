@@ -414,6 +414,45 @@ def test_m2_memory_context_builder_ignores_compacted_blank_hits_for_taint(
     assert recorded == []
 
 
+def test_m2_memory_context_builder_marks_untrusted_user_curated_hits_for_amv(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    ingestion = IngestionPipeline(tmp_path / "memory")
+    stored = ingestion.ingest(
+        source_id="doc-context-untrusted-user-curated",
+        source_type="user",
+        content="Owner-observed user_curated recall still needs AMV cleanroom.",
+        source_origin="user_direct",
+        channel_trust="owner_observed",
+        confirmation_status="auto_accepted",
+        scope="channel",
+    )
+    rendered_item = stored.model_copy(
+        update={
+            "taint_labels": [],
+            "trust_band": "untrusted",
+            "trust_caveat": "owner-observed content is not user-confirmed",
+        }
+    )
+
+    def _fake_compile_recall(*_args: object, **_kwargs: object) -> object:
+        return build_recall_pack(query="owner-observed recall", results=[rendered_item])
+
+    monkeypatch.setattr(ingestion, "compile_recall", _fake_compile_recall)
+
+    rendered, taints, amv_tainted = _build_planner_memory_context(
+        ingestion=ingestion,
+        query="owner-observed recall",
+        capabilities={Capability.MEMORY_READ},
+        top_k=3,
+    )
+
+    assert "doc-context-untrusted-user-curated" in rendered
+    assert TaintLabel.UNTRUSTED in taints
+    assert amv_tainted is True
+
+
 def test_m5_s7_memory_context_builder_requires_memory_read_capability(tmp_path: Path) -> None:
     ingestion = IngestionPipeline(tmp_path / "memory")
     ingestion.ingest(
