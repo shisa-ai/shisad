@@ -477,6 +477,49 @@ def test_m1_set_workflow_state_preserves_status_and_records_event(tmp_path: Path
     assert transition_event.metadata_json["from"] == "active"
     assert transition_event.metadata_json["to"] == "closed"
     assert transition_event.metadata_json["status"] == "active"
+    assert transition_event.metadata_json["entry_snapshot"]["workflow_state"] == "closed"
+    assert transition_event.metadata_json["entry_snapshot"]["status"] == "active"
+
+
+def test_m1_manager_rehydrates_entries_from_event_snapshots(tmp_path: Path) -> None:
+    memory_dir = tmp_path / "memory"
+    manager = MemoryManager(memory_dir)
+    decision = manager.write_with_provenance(
+        entry_type="open_thread",
+        key="thread:rehydrate",
+        value="follow up on release blockers",
+        source=MemorySource(origin="user", source_id="msg-6", extraction_method="manual"),
+        source_origin="user_direct",
+        channel_trust="command",
+        confirmation_status="user_asserted",
+        source_id="msg-6",
+        scope="user",
+        confidence=0.8,
+        confirmation_satisfied=True,
+    )
+
+    assert decision.entry is not None
+    entry_id = decision.entry.id
+    assert manager.set_workflow_state(entry_id, "blocked")
+    assert manager.quarantine(entry_id, reason="manual-review")
+
+    with sqlite3.connect(memory_dir / "memory.sqlite3") as conn:
+        conn.execute("DELETE FROM memory_entries")
+
+    reloaded = MemoryManager(memory_dir)
+    entry = reloaded.get_entry(entry_id, include_quarantined=True)
+
+    assert entry is not None
+    assert entry.workflow_state == "blocked"
+    assert entry.status == "quarantined"
+    assert entry.key == "thread:rehydrate"
+    assert entry.value == "follow up on release blockers"
+
+    with sqlite3.connect(memory_dir / "memory.sqlite3") as conn:
+        count = conn.execute("SELECT COUNT(*) FROM memory_entries").fetchone()
+
+    assert count is not None
+    assert count[0] == 1
 
 
 def test_m1_pending_review_entries_are_isolated_to_review_queue(tmp_path: Path) -> None:

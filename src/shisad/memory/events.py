@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import builtins
 import json
 import sqlite3
 import uuid
@@ -117,6 +118,40 @@ class MemoryEventStore:
             except (TypeError, ValueError, ValidationError, json.JSONDecodeError):
                 continue
         return events
+
+    def latest_entry_snapshots(
+        self, *, limit: int | None = None
+    ) -> builtins.list[dict[str, Any]]:
+        if not self._path.exists():
+            return []
+        query = """
+            SELECT
+                entry_id,
+                metadata_json
+            FROM memory_events
+            ORDER BY timestamp DESC, rowid DESC
+        """
+        with self._connect() as conn:
+            rows = conn.execute(query).fetchall()
+        snapshots: builtins.list[dict[str, Any]] = []
+        seen_entry_ids: set[str] = set()
+        for row in rows:
+            entry_id = str(row["entry_id"])
+            if entry_id in seen_entry_ids:
+                continue
+            try:
+                metadata = json.loads(str(row["metadata_json"]))
+            except json.JSONDecodeError:
+                continue
+            snapshot = metadata.get("entry_snapshot")
+            if not isinstance(snapshot, dict):
+                continue
+            snapshots.append(snapshot)
+            seen_entry_ids.add(entry_id)
+            if limit is not None and len(snapshots) >= limit:
+                break
+        snapshots.reverse()
+        return snapshots
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self._path)

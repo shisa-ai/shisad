@@ -619,6 +619,22 @@ class MemoryManager:
             except (TypeError, ValueError, ValidationError, json.JSONDecodeError):
                 continue
             self._entries[entry.id] = entry
+        snapshots = self._event_store.latest_entry_snapshots()
+        if not snapshots:
+            return
+        rebuilt_entries: list[MemoryEntry] = []
+        for snapshot in snapshots:
+            try:
+                entry = MemoryEntry.model_validate(snapshot)
+            except (TypeError, ValueError, ValidationError, json.JSONDecodeError):
+                continue
+            self._entries[entry.id] = entry
+            rebuilt_entries.append(entry)
+        if not rebuilt_entries:
+            return
+        with self._connect_db() as conn:
+            for entry in rebuilt_entries:
+                self._upsert_entry(conn, entry)
 
     def _connect_db(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self._db_path)
@@ -814,12 +830,14 @@ class MemoryManager:
         ingress_handle_id: str | None,
         metadata: dict[str, Any] | None = None,
     ) -> None:
+        payload = dict(metadata or {})
+        payload["entry_snapshot"] = entry.model_dump(mode="json")
         self._event_store.append(
             MemoryEvent(
                 entry_id=entry.id,
                 event_type=event_type,
                 ingress_handle_id=ingress_handle_id,
-                metadata_json=metadata or {},
+                metadata_json=payload,
             )
         )
 

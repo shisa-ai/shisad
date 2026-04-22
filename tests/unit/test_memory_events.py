@@ -81,3 +81,39 @@ def test_m1_memory_event_store_imports_legacy_jsonl_records(tmp_path: Path) -> N
 
     assert count is not None
     assert count[0] == 1
+
+
+def test_m1_memory_event_store_returns_latest_entry_snapshots(tmp_path: Path) -> None:
+    db_path = tmp_path / "memory_events.sqlite3"
+    store = MemoryEventStore(db_path)
+
+    store.append(
+        MemoryEvent(
+            entry_id="entry-1",
+            event_type="created",
+            metadata_json={"entry_snapshot": {"id": "entry-1", "status": "active", "version": 1}},
+        )
+    )
+    store.append(
+        MemoryEvent(
+            entry_id="entry-1",
+            event_type="quarantined",
+            metadata_json={
+                "entry_snapshot": {"id": "entry-1", "status": "quarantined", "version": 1}
+            },
+        )
+    )
+    store.append(
+        MemoryEvent(
+            entry_id="entry-2",
+            event_type="created",
+            metadata_json={"entry_snapshot": {"id": "entry-2", "status": "active", "version": 1}},
+        )
+    )
+
+    snapshots = store.latest_entry_snapshots()
+
+    assert snapshots == [
+        {"id": "entry-1", "status": "quarantined", "version": 1},
+        {"id": "entry-2", "status": "active", "version": 1},
+    ]
