@@ -12,14 +12,16 @@ def _write_entry(
     entry_type: str,
     key: str,
     value: object,
+    source_legacy_origin: str = "user",
     source_origin: str = "user_direct",
     channel_trust: str = "command",
     confirmation_status: str = "user_asserted",
     scope: str = "user",
     predicate: str | None = None,
     workflow_state: str | None = None,
+    confirmation_satisfied: bool = False,
 ) -> MemoryEntry:
-    source = MemorySource(origin="user", source_id=key, extraction_method="manual")
+    source = MemorySource(origin=source_legacy_origin, source_id=key, extraction_method="manual")
     decision = manager.write_with_provenance(
         entry_type=entry_type,
         key=key,
@@ -32,6 +34,7 @@ def _write_entry(
         source_id=key,
         scope=scope,
         workflow_state=workflow_state,
+        confirmation_satisfied=confirmation_satisfied,
     )
     assert decision.kind == "allow"
     assert decision.entry is not None
@@ -109,7 +112,9 @@ def test_m3_compile_identity_respects_token_budget(tmp_path: Path) -> None:
     assert pack.count == 1
 
 
-def test_m3_compile_active_attention_filters_scope_and_workflow_state(tmp_path: Path) -> None:
+def test_m3_compile_active_attention_filters_scope_workflow_and_channel_trust(
+    tmp_path: Path,
+) -> None:
     manager = MemoryManager(tmp_path / "memory")
     session_thread = _write_entry(
         manager,
@@ -145,12 +150,29 @@ def test_m3_compile_active_attention_filters_scope_and_workflow_state(tmp_path: 
     )
     _write_entry(
         manager,
+        entry_type="open_thread",
+        key="thread:shared-participant",
+        value="Shared participant channel item should not be in the CLI default.",
+        source_legacy_origin="external",
+        source_origin="external_message",
+        scope="channel",
+        workflow_state="active",
+        channel_trust="shared_participant",
+        confirmation_status="auto_accepted",
+        confirmation_satisfied=True,
+    )
+    _write_entry(
+        manager,
         entry_type="fact",
         key="fact:ignore-me",
         value="Not an active-agenda entry.",
     )
 
-    pack = manager.compile_active_attention(max_tokens=64, scope_filter={"session", "channel"})
+    pack = manager.compile_active_attention(
+        max_tokens=64,
+        scope_filter={"session", "channel"},
+        allowed_channel_trusts={"command", "owner_observed"},
+    )
 
     assert {entry.id for entry in pack.entries} == {
         session_thread.id,
