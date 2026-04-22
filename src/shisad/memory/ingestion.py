@@ -87,6 +87,8 @@ class RetrievalResult(BaseModel):
     original_hash: str
     taint_labels: list[TaintLabel] = Field(default_factory=list)
     quarantined: bool = False
+    citation_count: int = 0
+    last_cited_at: datetime | None = None
     lexical_score: float = 0.0
     semantic_score: float = 0.0
     blended_score: float = 0.0
@@ -351,6 +353,7 @@ class IngestionPipeline:
                 )
                 for record in top
             ]
+        top = self._mark_conflicting_results(top, terms=terms)
         if max_tokens is not None:
             top = self._trim_recall_to_token_budget(top, max_tokens=max_tokens)
         return build_recall_pack(
@@ -469,6 +472,40 @@ class IngestionPipeline:
             used_tokens += token_estimate
         return kept or results[:1]
 
+    @staticmethod
+    def _mark_conflicting_results(
+        results: list[RetrievalResult],
+        *,
+        terms: list[str],
+    ) -> list[RetrievalResult]:
+        if len(results) < 2 or not terms:
+            return results
+        query_terms = {term for term in terms if len(term) > 2}
+        if not query_terms:
+            return results
+        negation_markers = (" not ", " never ", " no longer ", " cannot ", " can't ", " isn't ")
+        updated = list(results)
+        conflict_indexes: set[int] = set()
+        token_sets = [
+            {token for token in record.content_sanitized.lower().replace(".", " ").split() if token}
+            for record in results
+        ]
+        negated = [
+            any(marker in f" {record.content_sanitized.lower()} " for marker in negation_markers)
+            for record in results
+        ]
+        for left in range(len(results)):
+            for right in range(left + 1, len(results)):
+                overlap = (token_sets[left] & token_sets[right]) & query_terms
+                if len(overlap) >= 2 and negated[left] != negated[right]:
+                    conflict_indexes.add(left)
+                    conflict_indexes.add(right)
+        if not conflict_indexes:
+            return results
+        for index in conflict_indexes:
+            updated[index] = updated[index].model_copy(update={"conflict": True})
+        return updated
+
     def retrieve(
         self,
         query: str,
@@ -489,6 +526,19 @@ class IngestionPipeline:
             include_quarantined=include_quarantined,
             require_corroboration=require_corroboration,
         ).results
+
+    def record_citations(
+        self,
+        chunk_ids: list[str],
+        *,
+        cited_at: datetime | None = None,
+    ) -> int:
+        """Persist citation usage for surfaced retrieval results."""
+
+        return self._backend.record_citations(
+            chunk_ids,
+            cited_at=(cited_at or datetime.now(UTC)).isoformat(),
+        )
 
     def read_original(self, chunk_id: str) -> str | None:
         """Return decrypted original content for explicit user inspection."""
@@ -939,6 +989,10 @@ class IngestionPipeline:
             original_hash=str(payload["original_hash"]),
             taint_labels_json=json.dumps(payload["taint_labels"], sort_keys=True),
             quarantined=bool(payload["quarantined"]),
+            citation_count=int(payload.get("citation_count", 0)),
+            last_cited_at=(
+                str(payload["last_cited_at"]) if payload.get("last_cited_at") is not None else None
+            ),
             embedding=embedding,
         )
 
@@ -958,6 +1012,8 @@ class IngestionPipeline:
                     "original_hash": row.original_hash,
                     "taint_labels": json.loads(row.taint_labels_json),
                     "quarantined": row.quarantined,
+                    "citation_count": row.citation_count,
+                    "last_cited_at": row.last_cited_at,
                 }
             )
         except (TypeError, ValueError, ValidationError, json.JSONDecodeError):
@@ -1080,8 +1136,10 @@ class RetrieveRagTool:
         limit: int = 5,
         capabilities: set[Capability] | None = None,
     ) -> list[RetrievalResult]:
-        return self._ingestion.compile_recall(
+        pack = self._ingestion.compile_recall(
             query,
             limit=limit,
             capabilities=capabilities,
-        ).results
+        )
+        self._ingestion.record_citations(pack.citation_ids)
+        return pack.results

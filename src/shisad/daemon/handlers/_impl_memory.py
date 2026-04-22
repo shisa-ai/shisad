@@ -311,6 +311,7 @@ class MemoryImplMixin(HandlerMixinBase):
             as_of=as_of,
             include_archived=bool(params.get("include_archived", False)),
         )
+        self._ingestion.record_citations(pack.citation_ids)
         return cast(dict[str, Any], pack.legacy_payload())
 
     async def do_memory_write(self, params: Mapping[str, Any]) -> dict[str, Any]:

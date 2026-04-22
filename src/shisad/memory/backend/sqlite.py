@@ -26,6 +26,8 @@ class RetrievalBackendRow:
     original_hash: str
     taint_labels_json: str
     quarantined: bool
+    citation_count: int
+    last_cited_at: str | None
     embedding: list[float]
 
 
@@ -61,6 +63,13 @@ class RetrievalBackend(Protocol):
     def replace_original_payload(self, *, chunk_id: str, original_payload: bytes) -> None: ...
 
     def quarantine_source(self, source_id: str) -> int: ...
+
+    def record_citations(
+        self,
+        chunk_ids: list[str],
+        *,
+        cited_at: str,
+    ) -> int: ...
 
     def count_records(self) -> int: ...
 
@@ -108,8 +117,10 @@ class SQLiteRetrievalBackend:
                     original_hash,
                     taint_labels_json,
                     quarantined,
+                    citation_count,
+                    last_cited_at,
                     original_payload
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     row.chunk_id,
@@ -123,6 +134,8 @@ class SQLiteRetrievalBackend:
                     row.original_hash,
                     row.taint_labels_json,
                     int(row.quarantined),
+                    row.citation_count,
+                    row.last_cited_at,
                     original_payload,
                 ),
             )
@@ -167,6 +180,8 @@ class SQLiteRetrievalBackend:
                 r.original_hash,
                 r.taint_labels_json,
                 r.quarantined,
+                r.citation_count,
+                r.last_cited_at,
                 v.embedding_json
             FROM retrieval_records r
             LEFT JOIN retrieval_vectors v ON v.chunk_id = r.chunk_id
@@ -203,6 +218,10 @@ class SQLiteRetrievalBackend:
                         original_hash=str(row["original_hash"]),
                         taint_labels_json=str(row["taint_labels_json"]),
                         quarantined=bool(row["quarantined"]),
+                        citation_count=int(row["citation_count"]),
+                        last_cited_at=(
+                            str(row["last_cited_at"]) if row["last_cited_at"] is not None else None
+                        ),
                         embedding=[float(value) for value in json.loads(str(embedding_json))],
                     )
                 )
@@ -275,6 +294,27 @@ class SQLiteRetrievalBackend:
                 (source_id,),
             )
             return int(cursor.rowcount or 0)
+
+    def record_citations(
+        self,
+        chunk_ids: list[str],
+        *,
+        cited_at: str,
+    ) -> int:
+        unique_chunk_ids = [chunk_id for chunk_id in dict.fromkeys(chunk_ids) if chunk_id]
+        if not unique_chunk_ids:
+            return 0
+        with self._connect() as conn:
+            cursor = conn.executemany(
+                """
+                UPDATE retrieval_records
+                SET citation_count = citation_count + 1,
+                    last_cited_at = ?
+                WHERE chunk_id = ?
+                """,
+                [(cited_at, chunk_id) for chunk_id in unique_chunk_ids],
+            )
+        return int(cursor.rowcount or 0)
 
     def count_records(self) -> int:
         with self._connect() as conn:
@@ -365,10 +405,30 @@ class SQLiteRetrievalBackend:
                 original_hash TEXT NOT NULL,
                 taint_labels_json TEXT NOT NULL,
                 quarantined INTEGER NOT NULL,
+                citation_count INTEGER NOT NULL DEFAULT 0,
+                last_cited_at TEXT,
                 original_payload BLOB NOT NULL
             )
             """
         )
+        columns = {
+            str(row["name"])
+            for row in conn.execute("PRAGMA table_info(retrieval_records)").fetchall()
+        }
+        if "citation_count" not in columns:
+            conn.execute(
+                """
+                ALTER TABLE retrieval_records
+                ADD COLUMN citation_count INTEGER NOT NULL DEFAULT 0
+                """
+            )
+        if "last_cited_at" not in columns:
+            conn.execute(
+                """
+                ALTER TABLE retrieval_records
+                ADD COLUMN last_cited_at TEXT
+                """
+            )
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS retrieval_vectors (

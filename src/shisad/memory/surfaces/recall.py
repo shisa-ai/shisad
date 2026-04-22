@@ -17,6 +17,7 @@ class RecallPack:
     query: str
     results: list[RetrievalResult]
     count: int
+    citation_ids: list[str]
     max_tokens: int | None = None
     as_of: datetime | None = None
     include_archived: bool = False
@@ -49,6 +50,7 @@ def build_recall_pack(
         query=query,
         results=results,
         count=len(results),
+        citation_ids=[item.chunk_id for item in results],
         max_tokens=max_tokens,
         as_of=as_of,
         include_archived=include_archived,

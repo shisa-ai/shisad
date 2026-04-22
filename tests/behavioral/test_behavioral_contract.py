@@ -48,6 +48,7 @@ from shisad.memory.trust import (
     derive_trust_band,
 )
 from tests.helpers.behavioral import extract_tool_outputs
+from tests.helpers.daemon import ingest_memory_via_ingress
 from tests.helpers.daemon import wait_for_socket as _wait_for_socket
 
 _USER_GOAL_RE = re.compile(
@@ -1160,6 +1161,70 @@ async def test_contract_memory_remember_persists_and_is_used_later(
     )
     assert reply.get("lockdown_level") == "normal"
     assert "blue" in str(reply.get("response", "")).lower()
+
+
+@pytest.mark.asyncio
+async def test_contract_memory_retrieve_prioritizes_user_curated_and_marks_untrusted(
+    contract_harness: ContractHarness,
+) -> None:
+    await ingest_memory_via_ingress(
+        contract_harness.client,
+        source_type="user",
+        source_id="user-ranked",
+        content="The release codename is nebula and the user confirmed it directly.",
+    )
+    await ingest_memory_via_ingress(
+        contract_harness.client,
+        source_type="external",
+        source_id="web-ranked",
+        collection="external_web",
+        content="The release codename is nebula according to an untrusted web mirror.",
+    )
+
+    retrieved = await contract_harness.client.call(
+        "memory.retrieve",
+        {"query": "release codename nebula", "limit": 2},
+    )
+
+    results = list(retrieved.get("results") or [])
+    assert len(results) == 2
+    assert str(results[0].get("collection", "")) == "user_curated"
+    assert float(results[0].get("effective_score", 0.0)) >= float(
+        results[1].get("effective_score", 0.0)
+    )
+    assert str(results[1].get("collection", "")) == "external_web"
+    assert results[1].get("verification_gap") is True
+
+
+@pytest.mark.asyncio
+async def test_contract_memory_retrieve_auto_widens_into_archive(
+    contract_harness: ContractHarness,
+) -> None:
+    stored = await ingest_memory_via_ingress(
+        contract_harness.client,
+        source_type="external",
+        source_id="archive-ranked",
+        collection="external_web",
+        content="Archived nebula status note from a stale web snapshot.",
+    )
+    db_path = contract_harness.config.data_dir / "memory_entries" / "memory.sqlite3"
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "UPDATE retrieval_records SET created_at = ? WHERE chunk_id = ?",
+            ("2025-01-01T00:00:00+00:00", str(stored.get("chunk_id", ""))),
+        )
+
+    retrieved = await contract_harness.client.call(
+        "memory.retrieve",
+        {"query": "nebula status note", "limit": 5},
+    )
+
+    assert retrieved.get("include_archived") is True
+    results = list(retrieved.get("results") or [])
+    assert len(results) == 1
+    assert results[0].get("archived") is True
+    assert results[0].get("stale") is True
+    assert results[0].get("verification_gap") is True
 
 
 @pytest.mark.asyncio

@@ -53,6 +53,29 @@ def test_m2_compile_recall_preserves_capability_scoping(tmp_path: Path) -> None:
     assert pack.count == 0
 
 
+def test_m2_compile_recall_prioritizes_user_curated_over_untrusted_matches(tmp_path: Path) -> None:
+    pipeline = IngestionPipeline(tmp_path / "memory")
+    pipeline.ingest(
+        source_id="doc-user-ranked",
+        source_type="user",
+        content="The release codename is nebula and the user confirmed it directly.",
+    )
+    pipeline.ingest(
+        source_id="doc-web-ranked",
+        source_type="external",
+        collection="external_web",
+        content="The release codename is nebula according to an untrusted web mirror.",
+    )
+
+    pack = pipeline.compile_recall("release codename nebula", limit=2)
+
+    assert pack.count == 2
+    assert pack.results[0].collection == "user_curated"
+    assert pack.results[0].effective_score >= pack.results[1].effective_score
+    assert pack.results[1].collection == "external_web"
+    assert pack.results[1].verification_gap is True
+
+
 def test_m2_compile_recall_legacy_payload_matches_current_runtime_shape(tmp_path: Path) -> None:
     pipeline = IngestionPipeline(tmp_path / "memory")
     pipeline.ingest(
@@ -228,3 +251,24 @@ def test_m2_compile_recall_marks_revision_churn_and_respects_max_tokens(tmp_path
     assert pack.count == 1
     assert pack.max_tokens == 6
     assert pack.results[0].revision_churn is True
+
+
+def test_m2_compile_recall_marks_conflicting_results(tmp_path: Path) -> None:
+    pipeline = IngestionPipeline(tmp_path / "memory")
+    pipeline.ingest(
+        source_id="doc-positive",
+        source_type="external",
+        collection="project_docs",
+        content="Favorite color is blue for this profile note.",
+    )
+    pipeline.ingest(
+        source_id="doc-negative",
+        source_type="external",
+        collection="project_docs",
+        content="Favorite color is not blue for this profile note.",
+    )
+
+    pack = pipeline.compile_recall("favorite color blue", limit=5)
+
+    assert pack.count == 2
+    assert all(item.conflict for item in pack.results)

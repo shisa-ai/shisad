@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -301,6 +302,35 @@ def test_m2_memory_context_builder_uses_recall_surface(
     assert stored.source_id in rendered
     assert TaintLabel.UNTRUSTED in taints
     assert amv_tainted is True
+
+
+def test_m2_memory_context_builder_records_citations(tmp_path: Path) -> None:
+    storage = tmp_path / "memory"
+    ingestion = IngestionPipeline(storage)
+    stored = ingestion.ingest(
+        source_id="doc-context-citation",
+        source_type="external",
+        collection="project_docs",
+        content="Planner memory context should record citation usage.",
+    )
+
+    rendered, _taints, _amv_tainted = _build_planner_memory_context(
+        ingestion=ingestion,
+        query="citation usage",
+        capabilities={Capability.MEMORY_READ},
+        top_k=3,
+    )
+
+    assert stored.source_id in rendered
+    with sqlite3.connect(storage / "memory.sqlite3") as conn:
+        row = conn.execute(
+            "SELECT citation_count, last_cited_at FROM retrieval_records WHERE chunk_id = ?",
+            (stored.chunk_id,),
+        ).fetchone()
+
+    assert row is not None
+    assert int(row[0]) == 1
+    assert str(row[1]).strip()
 
 
 def test_m5_s7_memory_context_builder_requires_memory_read_capability(tmp_path: Path) -> None:

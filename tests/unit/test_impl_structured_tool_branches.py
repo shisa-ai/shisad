@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -478,6 +479,39 @@ async def test_m2_execute_approved_action_retrieve_rag_uses_recall_surface(
     assert result.tool_output.taint_labels == {TaintLabel.UNTRUSTED}
     preview_rows = json.loads(result.tool_output.content)
     assert preview_rows[0]["chunk_id"] == stored.chunk_id
+
+
+@pytest.mark.asyncio
+async def test_m2_execute_approved_action_retrieve_rag_records_citations(tmp_path: Path) -> None:
+    storage = tmp_path / "memory"
+    harness = _RetrieveStructuredExecutionHarness(storage)
+    stored = harness._ingestion.ingest(
+        source_id="doc-runtime-citation",
+        source_type="external",
+        collection="project_docs",
+        content="Approved retrieve_rag execution should record citation usage.",
+    )
+
+    result = await HandlerImplementation._execute_approved_action(
+        harness,  # type: ignore[arg-type]
+        sid=harness.session_id,
+        user_id=UserId("user-1"),
+        tool_name=ToolName("retrieve_rag"),
+        arguments={"query": "citation usage", "limit": 1},
+        capabilities={Capability.MEMORY_READ},
+        approval_actor="control_api",
+    )
+
+    assert result.success is True
+    with sqlite3.connect(storage / "memory.sqlite3") as conn:
+        row = conn.execute(
+            "SELECT citation_count, last_cited_at FROM retrieval_records WHERE chunk_id = ?",
+            (stored.chunk_id,),
+        ).fetchone()
+
+    assert row is not None
+    assert int(row[0]) == 1
+    assert str(row[1]).strip()
 
 
 def test_u5_structured_fs_write_treats_trusted_cli_policy_approval_as_confirmed() -> None:

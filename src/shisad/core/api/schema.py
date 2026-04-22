@@ -475,6 +475,8 @@ class MemoryIngestResult(BaseModel):
     risk_score: float
     original_hash: str
     quarantined: bool = False
+    citation_count: int = 0
+    last_cited_at: datetime | str | None = None
     lexical_score: float = 0.0
     semantic_score: float = 0.0
     blended_score: float = 0.0

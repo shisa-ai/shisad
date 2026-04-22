@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -163,3 +164,26 @@ async def test_m2_memory_retrieve_uses_recall_surface(
     assert calls == [("recall rpc", 1, {Capability.MEMORY_READ})]
     assert result["count"] == 1
     assert result["results"][0]["chunk_id"] == stored.chunk_id
+
+
+@pytest.mark.asyncio
+async def test_m2_memory_retrieve_records_citations(tmp_path: Path) -> None:
+    harness = _MemoryIngestHarness(tmp_path)
+    stored = harness._ingestion.ingest(
+        source_id="doc-citation-rpc",
+        source_type="external",
+        content="Memory retrieve RPC should record citation usage.",
+    )
+
+    result = await harness.do_memory_retrieve({"query": "citation usage", "limit": 1})
+
+    assert result["count"] == 1
+    with sqlite3.connect(tmp_path / "retrieval" / "memory.sqlite3") as conn:
+        row = conn.execute(
+            "SELECT citation_count, last_cited_at FROM retrieval_records WHERE chunk_id = ?",
+            (stored.chunk_id,),
+        ).fetchone()
+
+    assert row is not None
+    assert int(row[0]) == 1
+    assert str(row[1]).strip()

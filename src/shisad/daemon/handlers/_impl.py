@@ -2973,11 +2973,13 @@ class HandlerImplementation(
             )
 
         if tool_name == "retrieve_rag":
-            records = self._ingestion.compile_recall(
+            pack = self._ingestion.compile_recall(
                 query=str(arguments.get("query", "")),
                 limit=int(arguments.get("limit", 5)),
                 capabilities=capabilities,
-            ).results
+            )
+            self._ingestion.record_citations(pack.citation_ids)
+            records = pack.results
             await self._event_bus.publish(
                 ToolExecuted(
                     session_id=sid,
