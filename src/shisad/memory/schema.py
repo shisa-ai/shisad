@@ -9,6 +9,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field, model_validator
 
 from shisad.core.types import TaintLabel
+from shisad.memory.participation import normalize_structured_memory_value
 from shisad.memory.remap import remap_memory_entry_payload
 from shisad.memory.trust import (
     ChannelTrust,
@@ -34,6 +35,11 @@ MemoryEntryType = Literal[
     "note",
     "todo",
     "project_state",
+    "inbox_item",
+    "channel_summary",
+    "person_note",
+    "channel_participation",
+    "response_feedback",
     "skill",
     "runbook",
     "template",
@@ -105,6 +111,11 @@ class MemoryEntry(BaseModel):
         if isinstance(payload, dict):
             return remap_memory_entry_payload(payload)
         return payload
+
+    @model_validator(mode="after")
+    def _normalize_structured_payloads(self) -> MemoryEntry:
+        self.value = normalize_structured_memory_value(str(self.entry_type), self.value)
+        return self
 
     @property
     def entry_id(self) -> str:

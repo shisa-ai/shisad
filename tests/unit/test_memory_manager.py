@@ -14,6 +14,7 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 from shisad.memory.ingestion import IngestionPipeline, RetrievalResult
 from shisad.memory.manager import MemoryManager
+from shisad.memory.participation import InboxItemValue, inbox_item_key
 from shisad.memory.schema import MemorySource
 
 
@@ -497,6 +498,46 @@ def test_m1_open_thread_defaults_workflow_state_and_records_init_event(tmp_path:
 
     assert count is not None
     assert count[0] == 2
+
+
+def test_m1_inbox_item_defaults_workflow_state_and_uses_channel_scope(tmp_path: Path) -> None:
+    manager = MemoryManager(tmp_path / "memory")
+    decision = manager.write_with_provenance(
+        entry_type="inbox_item",
+        key=inbox_item_key(owner_id="owner-1", item_id="msg-7"),
+        value=InboxItemValue(
+            owner_id="owner-1",
+            sender_id="guest-1",
+            sender_display_name="Alice",
+            channel_id="discord:guild/general",
+            message_type="message_for_owner",
+            body="Deploy is ready for review.",
+            status="unread",
+        ).model_dump(mode="python"),
+        source=MemorySource(origin="user", source_id="msg-7", extraction_method="manual"),
+        source_origin="user_direct",
+        channel_trust="command",
+        confirmation_status="user_asserted",
+        source_id="msg-7",
+        scope="channel",
+        confidence=0.75,
+        confirmation_satisfied=True,
+    )
+
+    assert decision.kind == "allow"
+    assert decision.entry is not None
+    assert decision.entry.entry_type == "inbox_item"
+    assert decision.entry.workflow_state == "active"
+    assert decision.entry.scope == "channel"
+    assert manager.list_entries(entry_type="inbox_item", limit=10)[0].id == decision.entry.id
+
+    reloaded = MemoryManager(tmp_path / "memory")
+    persisted = reloaded.get_entry(decision.entry.id)
+
+    assert persisted is not None
+    assert persisted.entry_type == "inbox_item"
+    assert persisted.workflow_state == "active"
+    assert persisted.value["body"] == "Deploy is ready for review."
 
 
 def test_m1_quarantine_cycle_preserves_workflow_state(tmp_path: Path) -> None:

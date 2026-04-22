@@ -370,6 +370,23 @@ class TestApiSchemaValidation:
         assert params.ingress_context == "handle-1"
         assert params.derivation_path == "direct"
 
+    def test_m1_memory_write_params_accept_multiuser_entry_types(self) -> None:
+        params = MemoryWriteParams.model_validate(
+            {
+                "ingress_context": "handle-2",
+                "entry_type": "inbox_item",
+                "key": "inbox:owner-1:item-1",
+                "value": {
+                    "owner_id": "owner-1",
+                    "sender_id": "guest-1",
+                    "channel_id": "discord:guild/general",
+                    "body": "Deploy is ready.",
+                },
+            }
+        )
+
+        assert params.entry_type == "inbox_item"
+
     def test_m1_memory_ingest_params_accept_handle_bound_shape(self) -> None:
         params = MemoryIngestParams.model_validate(
             {
