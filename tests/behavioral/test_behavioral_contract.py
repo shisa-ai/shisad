@@ -19,8 +19,8 @@ import struct
 import subprocess
 import sys
 import threading
-from collections.abc import Callable
-from contextlib import suppress
+from collections.abc import AsyncIterator, Callable
+from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -34,7 +34,10 @@ from shisad.core.config import DaemonConfig
 from shisad.core.providers.base import Message, ProviderResponse
 from shisad.core.providers.local_planner import LocalPlannerProvider
 from shisad.daemon.runner import run_daemon
+from shisad.memory.manager import MemoryManager
+from shisad.memory.schema import MemorySource
 from shisad.memory.summarizer import _SUMMARY_SYSTEM_PROMPT
+from shisad.memory.trust import derive_trust_band
 from tests.helpers.behavioral import extract_tool_outputs
 from tests.helpers.daemon import wait_for_socket as _wait_for_socket
 
@@ -640,8 +643,13 @@ class ContractHarness:
     browser_base_url: str
 
 
-@pytest.fixture
-async def contract_harness(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> ContractHarness:
+@asynccontextmanager
+async def _contract_harness_context(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    prestart: Callable[[DaemonConfig], None] | None = None,
+) -> AsyncIterator[ContractHarness]:
     server, thread, backend_url, backend_port = _start_stub_search_backend()
     workspace_root = tmp_path / "workspace"
     workspace_root.mkdir(parents=True, exist_ok=True)
@@ -686,6 +694,8 @@ async def contract_harness(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> C
         browser_require_hardened_isolation=False,
         assistant_fs_roots=[workspace_root],
     )
+    if prestart is not None:
+        prestart(config)
 
     daemon_task = asyncio.create_task(run_daemon(config))
     client = ControlClient(config.socket_path)
@@ -709,6 +719,12 @@ async def contract_harness(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> C
         server.server_close()
         with suppress(Exception):
             thread.join(timeout=1.0)
+
+
+@pytest.fixture
+async def contract_harness(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> ContractHarness:
+    async with _contract_harness_context(tmp_path, monkeypatch) as harness:
+        yield harness
 
 
 async def _create_session(client: ControlClient, *, channel: str = "cli") -> str:
@@ -1390,6 +1406,167 @@ async def test_contract_set_workflow_state_keeps_status_active(
     assert transition.get("from") == "active"
     assert transition.get("to") == "closed"
     assert transition.get("status") == "active"
+
+
+@pytest.mark.asyncio
+async def test_contract_pending_review_entries_are_isolated_to_review_queue(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seeded: dict[str, str] = {}
+
+    def _seed(config: DaemonConfig) -> None:
+        manager = MemoryManager(config.data_dir / "memory_entries")
+        decision = manager.write_with_provenance(
+            entry_type="note",
+            key="note:queue",
+            value="Needs operator review",
+            source=MemorySource(origin="external", source_id="msg-5", extraction_method="extract"),
+            source_origin="external_message",
+            channel_trust="shared_participant",
+            confirmation_status="pending_review",
+            source_id="msg-5",
+            scope="user",
+            confidence=0.41,
+            confirmation_satisfied=True,
+        )
+        assert decision.entry is not None
+        seeded["entry_id"] = decision.entry.id
+
+    async with _contract_harness_context(tmp_path, monkeypatch, prestart=_seed) as harness:
+        entry_id = seeded["entry_id"]
+
+        listing = await harness.client.call("memory.list", {"limit": 10})
+        listed_ids = {
+            str(item.get("id") or item.get("entry_id") or "").strip()
+            for item in listing.get("entries", [])
+            if isinstance(item, dict)
+        }
+        assert entry_id not in listed_ids
+
+        fetched = await harness.client.call("memory.get", {"entry_id": entry_id})
+        assert fetched.get("entry") is None
+
+        review_queue = await harness.client.call("memory.list_review_queue", {"limit": 10})
+        queued_ids = {
+            str(item.get("id") or item.get("entry_id") or "").strip()
+            for item in review_queue.get("entries", [])
+            if isinstance(item, dict)
+        }
+        assert entry_id in queued_ids
+
+
+@pytest.mark.asyncio
+async def test_contract_legacy_v06_entries_backfill_on_daemon_start(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    created_at = "2026-04-22T09:00:00+00:00"
+
+    def _seed(config: DaemonConfig) -> None:
+        storage = config.data_dir / "memory_entries"
+        storage.mkdir(parents=True, exist_ok=True)
+        payloads = [
+            {
+                "id": "legacy-user-verified",
+                "entry_type": "fact",
+                "key": "profile.name",
+                "value": "alice",
+                "source": {
+                    "origin": "user",
+                    "source_id": "msg-legacy-user",
+                    "extraction_method": "manual",
+                },
+                "created_at": created_at,
+                "user_verified": True,
+            },
+            {
+                "id": "legacy-context-episode",
+                "entry_type": "context",
+                "key": "legacy.context.episode",
+                "value": "2026-04-22 design review meeting with Alice",
+                "source": {
+                    "origin": "external",
+                    "source_id": "doc-legacy-episode",
+                    "extraction_method": "extract",
+                },
+                "created_at": created_at,
+            },
+            {
+                "id": "legacy-context-note",
+                "entry_type": "context",
+                "key": "legacy.context.note",
+                "value": "Blue notebook lives on the top shelf",
+                "source": {
+                    "origin": "external",
+                    "source_id": "doc-legacy-note",
+                    "extraction_method": "extract",
+                },
+                "created_at": created_at,
+            },
+            {
+                "id": "legacy-deleted",
+                "entry_type": "fact",
+                "key": "profile.deleted",
+                "value": "gone",
+                "source": {
+                    "origin": "external",
+                    "source_id": "doc-legacy-deleted",
+                    "extraction_method": "extract",
+                },
+                "created_at": created_at,
+                "deleted_at": created_at,
+            },
+        ]
+        for payload in payloads:
+            (storage / f"{payload['id']}.json").write_text(json.dumps(payload), encoding="utf-8")
+
+    async with _contract_harness_context(tmp_path, monkeypatch, prestart=_seed) as harness:
+        legacy_user = await harness.client.call("memory.get", {"entry_id": "legacy-user-verified"})
+        user_entry = legacy_user.get("entry") or {}
+        assert user_entry.get("scope") == "user"
+        assert user_entry.get("source_origin") == "user_direct"
+        assert user_entry.get("channel_trust") == "command"
+        assert user_entry.get("confirmation_status") == "auto_accepted"
+        assert (
+            derive_trust_band(
+                str(user_entry.get("source_origin", "")),
+                str(user_entry.get("channel_trust", "")),
+                str(user_entry.get("confirmation_status", "")),
+            )
+            == "untrusted"
+        )
+        assert str(user_entry.get("last_verified_at", "")).startswith("2026-04-22T09:00:00")
+
+        legacy_episode = await harness.client.call(
+            "memory.get",
+            {"entry_id": "legacy-context-episode"},
+        )
+        assert (legacy_episode.get("entry") or {}).get("entry_type") == "episode"
+
+        legacy_note = await harness.client.call("memory.get", {"entry_id": "legacy-context-note"})
+        assert (legacy_note.get("entry") or {}).get("entry_type") == "note"
+
+        default_list = await harness.client.call("memory.list", {"limit": 20})
+        default_ids = {
+            str(item.get("id") or item.get("entry_id") or "").strip()
+            for item in default_list.get("entries", [])
+            if isinstance(item, dict)
+        }
+        assert "legacy-deleted" not in default_ids
+
+        hidden_deleted = await harness.client.call("memory.get", {"entry_id": "legacy-deleted"})
+        assert hidden_deleted.get("entry") is None
+
+        visible_deleted = await harness.client.call(
+            "memory.get",
+            {"entry_id": "legacy-deleted", "include_deleted": True},
+        )
+        deleted_entry = visible_deleted.get("entry") or {}
+        assert deleted_entry.get("status") == "tombstoned"
+        assert deleted_entry.get("source_origin") == "external_web"
+        assert deleted_entry.get("channel_trust") == "web_passed"
+        assert deleted_entry.get("confirmation_status") == "auto_accepted"
 
 
 @pytest.mark.asyncio
