@@ -250,7 +250,7 @@ async def test_m1_structured_note_create_tolerates_null_optional_key() -> None:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("user_confirmed", [False, True])
-async def test_m1_structured_note_create_propagates_confirmation_origin(
+async def test_m1_structured_note_create_uses_control_authenticated_fallback(
     user_confirmed: bool,
 ) -> None:
     captured: dict[str, Any] = {}
@@ -276,7 +276,10 @@ async def test_m1_structured_note_create_propagates_confirmation_origin(
     payload = await _structured_note_create(_Handler(), {"content": "remember groceries"}, context)
 
     assert payload["ok"] is True
+    assert captured["_control_api_authenticated_write"] is True
+    assert captured["source_id"] == "s-note-confirmed"
     assert captured["user_confirmed"] is user_confirmed
+    assert "origin" not in captured
 
 
 @pytest.mark.asyncio
@@ -328,7 +331,7 @@ async def test_m1_structured_note_create_uses_ingress_handle_when_available() ->
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("user_confirmed", [False, True])
-async def test_m1_structured_todo_create_propagates_confirmation_origin(
+async def test_m1_structured_todo_create_uses_control_authenticated_fallback(
     user_confirmed: bool,
 ) -> None:
     captured: dict[str, Any] = {}
@@ -354,7 +357,10 @@ async def test_m1_structured_todo_create_propagates_confirmation_origin(
     payload = await _structured_todo_create(_Handler(), {"title": "review PRs"}, context)
 
     assert payload["ok"] is True
+    assert captured["_control_api_authenticated_write"] is True
+    assert captured["source_id"] == "s-todo-confirmed"
     assert captured["user_confirmed"] is user_confirmed
+    assert "origin" not in captured
 
 
 class _MemoryStructuredExecutionHarness(_StructuredBranchHarness, MemoryImplMixin):

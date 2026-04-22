@@ -168,6 +168,7 @@ logger = logging.getLogger(__name__)
 _MONITOR_REJECT_THRESHOLD = 3
 _HIGH_RISK_CONFIRM_TOKENS: tuple[str, ...] = ("send", "share", "delete")
 _CONFIRMATION_ALERT_COOLDOWN_SECONDS = 600
+_CONTROL_API_AUTHENTICATED_WRITE = "_control_api_authenticated_write"
 
 
 class _EventPublisher:
@@ -732,7 +733,7 @@ async def _structured_note_create(
         {
             "key": _argument_string(arguments, "key") or _slugify_memory_key("note", content),
             "content": content,
-            "origin": "user",
+            _CONTROL_API_AUTHENTICATED_WRITE: True,
             "source_id": str(context.session_id),
             "user_confirmed": context.user_confirmed,
         }
@@ -801,7 +802,7 @@ async def _structured_todo_create(
     payload = await handler.do_todo_create(
         {
             **todo_payload,
-            "origin": "user",
+            _CONTROL_API_AUTHENTICATED_WRITE: True,
             "source_id": str(context.session_id),
             "user_confirmed": context.user_confirmed,
         }

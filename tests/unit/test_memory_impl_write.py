@@ -323,6 +323,27 @@ async def test_note_create_control_api_path_mints_user_asserted_handle(tmp_path:
 
 
 @pytest.mark.asyncio
+async def test_note_create_control_api_path_respects_user_confirmed_flag(tmp_path: Path) -> None:
+    harness = _MemoryWriteHarness(tmp_path)
+
+    result = await harness.do_note_create(
+        {
+            "_control_api_authenticated_write": True,
+            "key": "note:confirmed",
+            "content": "confirmed note command",
+            "user_confirmed": True,
+        }
+    )
+
+    assert result["kind"] == "allow"
+    entry = result["entry"]
+    assert entry is not None
+    assert entry["source_origin"] == "user_confirmed"
+    assert entry["confirmation_status"] == "user_confirmed"
+    assert entry["ingress_handle_id"]
+
+
+@pytest.mark.asyncio
 async def test_todo_create_control_api_path_mints_user_asserted_handle(tmp_path: Path) -> None:
     harness = _MemoryWriteHarness(tmp_path)
 

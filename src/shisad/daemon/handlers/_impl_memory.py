@@ -67,10 +67,13 @@ class MemoryImplMixin(HandlerMixinBase):
         value: Any,
         confidence: float,
     ) -> dict[str, Any]:
+        user_confirmed = bool(params.get("user_confirmed", False))
+        source_origin = "user_confirmed" if user_confirmed else "user_direct"
+        confirmation_status = "user_confirmed" if user_confirmed else "user_asserted"
         context = self._memory_ingress_registry.mint(
-            source_origin="user_direct",
+            source_origin=source_origin,
             channel_trust="command",
-            confirmation_status="user_asserted",
+            confirmation_status=confirmation_status,
             scope="user",
             source_id=self._source_id_for_control_write(params),
             content=self._canonical_ingress_content(value),
