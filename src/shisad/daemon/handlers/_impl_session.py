@@ -109,6 +109,7 @@ from shisad.memory.ingress import (
     mint_explicit_user_memory_ingress_context,
 )
 from shisad.memory.remap import digest_memory_value
+from shisad.memory.schema import MemoryEntry
 from shisad.scheduler.schema import TaskEnvelope
 from shisad.security.control_plane.consensus import TRACE_VOTER_NAME
 from shisad.security.control_plane.schema import (
@@ -2798,6 +2799,7 @@ def _build_session_frontmatter(
     policy_taints: set[TaintLabel],
     episode_snapshot: dict[str, Any] | None,
     task_ledger_snapshot: dict[str, Any] | None = None,
+    identity_entries: Sequence[MemoryEntry] = (),
 ) -> str:
     active_capabilities = ",".join(sorted(cap.value for cap in capabilities)) or "none"
     taint_labels = ",".join(sorted(label.value for label in policy_taints)) or "none"
@@ -2854,6 +2856,14 @@ def _build_session_frontmatter(
                 f"confirmation_needed:{bool(row.get('confirmation_needed', False))}"
             )
             lines.append(f"task_meta_{index}={_sanitize_frontmatter_value(task_meta)}")
+    if identity_entries:
+        lines.append(f"identity_total={len(identity_entries)}")
+        for index, entry in enumerate(identity_entries, start=1):
+            identity_meta = (
+                f"type:{entry.entry_type},key:{entry.key},"
+                f"value:{json.dumps(entry.value, ensure_ascii=True, sort_keys=True, default=str)}"
+            )
+            lines.append(f"identity_{index}={_sanitize_frontmatter_value(identity_meta)}")
     return "\n".join(lines)
 
 
@@ -2943,6 +2953,7 @@ def _build_planner_context_scaffold(
     memory_context: str,
     episode_snapshot: dict[str, Any] | None,
     task_ledger_snapshot: dict[str, Any] | None = None,
+    identity_entries: Sequence[MemoryEntry] = (),
 ) -> ContextScaffold:
     policy_taints = set(incoming_taint_labels)
     if conversation_context.strip():
@@ -2965,11 +2976,12 @@ def _build_planner_context_scaffold(
             session_id=session_id,
             session=session,
             trust_level=trust_level,
-            capabilities=capabilities,
-            policy_taints=policy_taints,
-            episode_snapshot=episode_snapshot,
-            task_ledger_snapshot=task_ledger_snapshot,
-        ),
+        capabilities=capabilities,
+        policy_taints=policy_taints,
+        episode_snapshot=episode_snapshot,
+        task_ledger_snapshot=task_ledger_snapshot,
+        identity_entries=identity_entries,
+    ),
         internal_entries=internal_entries,
         untrusted_entries=untrusted_entries,
     )
@@ -4422,11 +4434,13 @@ class SessionImplMixin(HandlerMixinBase):
             session.capabilities,
         )
         memory_context_taints: set[TaintLabel]
+        identity_entries: list[MemoryEntry]
         if zero_context_session:
             memory_query = ""
             memory_context = ""
             memory_context_taints = set()
             memory_context_tainted_for_amv = False
+            identity_entries = []
         else:
             memory_query = _build_memory_retrieval_query(
                 user_goal=firewall_result.sanitized_text,
@@ -4442,6 +4456,10 @@ class SessionImplMixin(HandlerMixinBase):
                 capabilities=effective_caps,
                 top_k=int(self._config.planner_memory_top_k),
             )
+            if Capability.MEMORY_READ in effective_caps:
+                identity_entries = self._memory_manager.compile_identity().entries
+            else:
+                identity_entries = []
 
         user_goal_host_patterns: set[str] = set()
         user_goal_host_patterns = _user_goal_host_patterns_for_validated_input(validated)
@@ -4600,6 +4618,7 @@ class SessionImplMixin(HandlerMixinBase):
                 memory_context=memory_context,
                 episode_snapshot=episode_snapshot,
                 task_ledger_snapshot=task_ledger_snapshot,
+                identity_entries=identity_entries,
             )
         except Exception as exc:
             context_scaffold_degraded = True
