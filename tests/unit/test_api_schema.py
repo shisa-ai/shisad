@@ -30,6 +30,7 @@ from shisad.core.api.schema import (
     MemoryListResult,
     MemoryRetrieveResult,
     MemoryRotateKeyResult,
+    MemorySupersedeParams,
     MemoryVerifyResult,
     MemoryWorkflowStateParams,
     MemoryWriteParams,
@@ -431,6 +432,28 @@ class TestApiSchemaValidation:
                     "key": "profile.name",
                     "value": "alice",
                     "content_digest": "sha256:abc",
+                }
+            )
+
+    def test_m1_memory_supersede_params_require_non_empty_target(self) -> None:
+        params = MemorySupersedeParams.model_validate(
+            {
+                "entry_type": "note",
+                "key": "note:chain",
+                "value": "updated",
+                "supersedes": "entry-1",
+            }
+        )
+
+        assert params.supersedes == "entry-1"
+
+        with pytest.raises(ValidationError):
+            MemorySupersedeParams.model_validate(
+                {
+                    "entry_type": "note",
+                    "key": "note:chain",
+                    "value": "updated",
+                    "supersedes": "",
                 }
             )
 

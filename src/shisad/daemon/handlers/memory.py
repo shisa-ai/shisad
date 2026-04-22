@@ -19,6 +19,7 @@ from shisad.core.api.schema import (
     MemoryReviewQueueParams,
     MemoryRotateKeyParams,
     MemoryRotateKeyResult,
+    MemorySupersedeParams,
     MemoryVerifyResult,
     MemoryWorkflowStateParams,
     MemoryWorkflowStateResult,
@@ -98,6 +99,19 @@ class MemoryHandlers:
         )
         payload[_CONTROL_API_AUTHENTICATED_WRITE] = True
         return MemoryWriteResult.model_validate(await self._impl.do_memory_write(payload))
+
+    async def handle_memory_supersede(
+        self,
+        params: MemorySupersedeParams,
+        ctx: RequestContext,
+    ) -> MemoryWriteResult:
+        payload = build_params_payload(
+            params,
+            ctx,
+            internal_ingress_marker=self._internal_ingress_marker,
+        )
+        payload[_CONTROL_API_AUTHENTICATED_WRITE] = True
+        return MemoryWriteResult.model_validate(await self._impl.do_memory_supersede(payload))
 
     async def handle_memory_list(
         self,

@@ -395,6 +395,16 @@ class MemoryWriteParams(_StrictParams):
         return self
 
 
+class MemorySupersedeParams(MemoryWriteParams):
+    supersedes: str
+
+    @model_validator(mode="after")
+    def _validate_supersedes(self) -> MemorySupersedeParams:
+        if not self.supersedes.strip():
+            raise ValueError("supersedes is required")
+        return self
+
+
 class MemoryListParams(_StrictParams):
     limit: int = 100
     include_deleted: bool = False

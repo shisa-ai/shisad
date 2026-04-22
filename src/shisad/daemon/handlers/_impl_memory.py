@@ -252,6 +252,9 @@ class MemoryImplMixin(HandlerMixinBase):
         )
         return cast(dict[str, Any], decision.model_dump(mode="json"))
 
+    async def do_memory_supersede(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        return await self.do_memory_write(params)
+
     async def do_memory_list(self, params: Mapping[str, Any]) -> dict[str, Any]:
         if params.get("include_quarantined") and not params.get("confirmed"):
             raise ValueError("confirmed is required when include_quarantined is true")

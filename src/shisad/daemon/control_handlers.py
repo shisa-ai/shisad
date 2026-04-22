@@ -83,6 +83,7 @@ from shisad.core.api.schema import (
     MemoryReviewQueueParams,
     MemoryRotateKeyParams,
     MemoryRotateKeyResult,
+    MemorySupersedeParams,
     MemoryVerifyResult,
     MemoryWorkflowStateParams,
     MemoryWorkflowStateResult,
@@ -450,6 +451,11 @@ class DaemonControlHandlers:
         self, params: MemoryWriteParams, ctx: RequestContext
     ) -> MemoryWriteResult:
         return await self._memory.handle_memory_write(params, ctx)
+
+    async def handle_memory_supersede(
+        self, params: MemorySupersedeParams, ctx: RequestContext
+    ) -> MemoryWriteResult:
+        return await self._memory.handle_memory_supersede(params, ctx)
 
     async def handle_memory_list(
         self, params: MemoryListParams, ctx: RequestContext

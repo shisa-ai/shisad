@@ -281,6 +281,55 @@ async def test_memory_write_supports_supersedes_chain(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_memory_supersede_impl_reuses_write_path(tmp_path: Path) -> None:
+    harness = _MemoryWriteHarness(tmp_path)
+    context = harness._memory_ingress_registry.mint(
+        source_origin="user_direct",
+        channel_trust="command",
+        confirmation_status="user_asserted",
+        scope="user",
+        source_id="turn-8",
+        content="first draft",
+    )
+    first = await harness.do_memory_write(
+        {
+            "ingress_context": context.handle_id,
+            "entry_type": "note",
+            "key": "note:supersede-api",
+            "value": "first draft",
+        }
+    )
+
+    assert first["entry"] is not None
+
+    next_context = harness._memory_ingress_registry.mint(
+        source_origin="user_direct",
+        channel_trust="command",
+        confirmation_status="user_asserted",
+        scope="user",
+        source_id="turn-9",
+        content="second draft",
+    )
+    second = await harness.do_memory_supersede(
+        {
+            "ingress_context": next_context.handle_id,
+            "entry_type": "note",
+            "key": "note:supersede-api",
+            "value": "second draft",
+            "supersedes": first["entry"]["id"],
+        }
+    )
+
+    assert second["kind"] == "allow"
+    assert second["entry"] is not None
+    assert second["entry"]["version"] == 2
+    assert second["entry"]["supersedes"] == first["entry"]["id"]
+    original = harness._memory_manager.get_entry(str(first["entry"]["id"]), include_deleted=True)
+    assert original is not None
+    assert original.superseded_by == second["entry"]["id"]
+
+
+@pytest.mark.asyncio
 async def test_memory_set_workflow_state_updates_active_agenda_entry(tmp_path: Path) -> None:
     harness = _MemoryWriteHarness(tmp_path)
     context = harness._memory_ingress_registry.mint(

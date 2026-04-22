@@ -11,6 +11,7 @@ from shisad.core.api.schema import (
     MemoryListParams,
     MemoryReviewQueueParams,
     MemoryRotateKeyParams,
+    MemorySupersedeParams,
     MemoryWorkflowStateParams,
 )
 from shisad.daemon.context import RequestContext
@@ -20,6 +21,7 @@ from shisad.daemon.handlers.memory import MemoryHandlers
 class _StubImpl:
     def __init__(self) -> None:
         self.last_memory_ingest_payload: dict[str, object] | None = None
+        self.last_memory_supersede_payload: dict[str, object] | None = None
         self.last_memory_list_payload: dict[str, object] | None = None
         self.last_memory_get_payload: dict[str, object] | None = None
         self.last_memory_quarantine_payload: dict[str, object] | None = None
@@ -44,6 +46,10 @@ class _StubImpl:
 
     async def do_memory_write(self, _payload: dict[str, object]) -> dict[str, object]:
         return {"written": True}
+
+    async def do_memory_supersede(self, payload: dict[str, object]) -> dict[str, object]:
+        self.last_memory_supersede_payload = payload
+        return {"kind": "allow", "entry": {"id": "e2", "supersedes": str(payload["supersedes"])}}
 
     async def do_memory_list(self, payload: dict[str, object]) -> dict[str, object]:
         self.last_memory_list_payload = payload
@@ -115,6 +121,29 @@ async def test_memory_ingest_and_list_wrappers() -> None:
     assert impl.last_memory_ingest_payload["_control_api_authenticated_write"] is True
     assert listing.count == 1
     assert review_queue.entries[0].id == "review-1"
+
+
+@pytest.mark.asyncio
+async def test_memory_supersede_wrapper_forwards_authenticated_payload() -> None:
+    impl = _StubImpl()
+    handlers = MemoryHandlers(impl, internal_ingress_marker=object())  # type: ignore[arg-type]
+
+    result = await handlers.handle_memory_supersede(
+        MemorySupersedeParams(
+            entry_type="note",
+            key="note:chain",
+            value="updated",
+            supersedes="e1",
+        ),
+        RequestContext(),
+    )
+
+    assert result.kind == "allow"
+    assert result.entry is not None
+    assert result.entry["supersedes"] == "e1"
+    assert impl.last_memory_supersede_payload is not None
+    assert impl.last_memory_supersede_payload["supersedes"] == "e1"
+    assert impl.last_memory_supersede_payload["_control_api_authenticated_write"] is True
 
 
 @pytest.mark.asyncio
