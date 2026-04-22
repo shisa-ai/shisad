@@ -1570,6 +1570,47 @@ async def test_contract_legacy_v06_entries_backfill_on_daemon_start(
 
 
 @pytest.mark.asyncio
+async def test_contract_memory_write_clamps_confidence_to_trust_cap(
+    contract_harness: ContractHarness,
+) -> None:
+    result = await contract_harness.client.call(
+        "memory.write",
+        {
+            "entry_type": "fact",
+            "key": "profile.color",
+            "value": "blue",
+            "confidence": 0.99,
+        },
+    )
+
+    assert result.get("kind") == "allow"
+    entry = result.get("entry") or {}
+    assert float(entry.get("confidence", 0.0)) == pytest.approx(0.95)
+
+
+@pytest.mark.asyncio
+async def test_contract_user_authored_skill_write_sets_invocation_eligible(
+    contract_harness: ContractHarness,
+) -> None:
+    result = await contract_harness.client.call(
+        "memory.write",
+        {
+            "entry_type": "skill",
+            "key": "skill:demo",
+            "value": "demo skill contents",
+            "invocation_eligible": True,
+        },
+    )
+
+    assert result.get("kind") == "allow"
+    entry = result.get("entry") or {}
+    assert entry.get("invocation_eligible") is True
+    assert entry.get("source_origin") == "user_direct"
+    assert entry.get("channel_trust") == "command"
+    assert entry.get("confirmation_status") == "user_asserted"
+
+
+@pytest.mark.asyncio
 async def test_contract_reminder_create_executes_and_due_run_delivers_without_lockdown(
     contract_harness: ContractHarness,
 ) -> None:
