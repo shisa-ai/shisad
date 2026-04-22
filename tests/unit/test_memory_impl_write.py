@@ -77,6 +77,41 @@ async def test_memory_write_rejects_mismatched_handle_binding(tmp_path: Path) ->
 
 
 @pytest.mark.asyncio
+async def test_memory_write_handle_scope_and_source_id_override_are_ignored(
+    tmp_path: Path,
+) -> None:
+    harness = _MemoryWriteHarness(tmp_path)
+    context = harness._memory_ingress_registry.mint(
+        source_origin="user_direct",
+        channel_trust="command",
+        confirmation_status="user_asserted",
+        scope="channel",
+        source_id="discord:msg-42",
+        content="shared channel note",
+    )
+
+    result = await harness.do_memory_write(
+        {
+            "ingress_context": context.handle_id,
+            "entry_type": "note",
+            "key": "note:shared-channel",
+            "value": "shared channel note",
+            "scope": "user",
+            "source_id": "forged-source-id",
+        }
+    )
+
+    assert result["kind"] == "allow"
+    entry = result["entry"]
+    assert entry is not None
+    assert entry["scope"] == "channel"
+    assert entry["source_id"] == "discord:msg-42"
+    assert entry["source_origin"] == "user_direct"
+    assert entry["channel_trust"] == "command"
+    assert entry["confirmation_status"] == "user_asserted"
+
+
+@pytest.mark.asyncio
 async def test_note_create_accepts_handle_bound_extracted_payload(tmp_path: Path) -> None:
     harness = _MemoryWriteHarness(tmp_path)
     context = harness._memory_ingress_registry.mint(
