@@ -42,6 +42,7 @@ from shisad.daemon.handlers._impl_session import (
     SessionMessageValidationResult,
     TaskDelegationRecommendation,
 )
+from shisad.memory.ingress import IngressContextRegistry
 from shisad.security.control_plane.schema import ActionKind, ControlDecision, RiskTier
 from shisad.security.firewall import FirewallResult
 from shisad.security.monitor import MonitorDecisionType
@@ -575,6 +576,194 @@ async def test_m1_dispatch_to_planner_uses_sanitized_text_for_intent_rewrite() -
     proposal = dispatch.planner_result.evaluated[0].proposal
     assert proposal.tool_name == ToolName("todo.create")
     assert proposal.arguments == {"title": "safe-title"}
+
+
+class _ExplicitMemoryIngressHarness(SessionImplMixin):
+    def __init__(self) -> None:
+        self._memory_ingress_registry = IngressContextRegistry()
+
+
+class _ExplicitMemoryExecutionHarness(_PendingPolicySnapshotHarness):
+    def __init__(self, session: Session) -> None:
+        super().__init__()
+        self._memory_ingress_registry = IngressContextRegistry()
+        self._session_manager = SimpleNamespace(get=lambda _sid: session)
+        self._pep = SimpleNamespace(
+            evaluate=lambda tool_name, _arguments, _context: PEPDecision(
+                kind=PEPDecisionKind.ALLOW,
+                reason="allow",
+                tool_name=tool_name,
+                risk_score=0.0,
+            )
+        )
+        self.captured_memory_ingress_context: Any = None
+
+    async def _evaluate_action(self, **_kwargs: object) -> object:
+        return SimpleNamespace(
+            decision=ControlDecision.ALLOW,
+            reason_codes=[],
+            trace_result=SimpleNamespace(
+                allowed=True,
+                reason_code="",
+                risk_tier=RiskTier.LOW,
+            ),
+            consensus=SimpleNamespace(votes=[]),
+            action=SimpleNamespace(
+                action_kind=ActionKind.MEMORY_WRITE,
+                resource_id="note.create",
+                resource_ids=[],
+                origin=SimpleNamespace(model_dump=lambda mode="json": {}),
+            ),
+        )
+
+    async def _publish_control_plane_evaluation(self, **_kwargs: object) -> None:
+        return None
+
+    async def _execute_approved_action(self, **kwargs: object) -> object:
+        self.captured_memory_ingress_context = kwargs.get("memory_ingress_context")
+        return SimpleNamespace(success=True, checkpoint_id=None, tool_output=None)
+
+
+def test_m1_explicit_memory_ingress_context_mints_cli_user_asserted_handle() -> None:
+    harness = _ExplicitMemoryIngressHarness()
+    validated = _validation_result(
+        params={"session_id": "sess-g1", "content": "remember that I like tea"},
+    )
+
+    context = SessionImplMixin._mint_explicit_memory_ingress_context(
+        harness,
+        validated=validated,
+    )
+
+    assert context is not None
+    assert context.source_origin == "user_direct"
+    assert context.channel_trust == "command"
+    assert context.confirmation_status == "user_asserted"
+    assert context.scope == "user"
+    assert context.source_id == "sess-g1"
+
+
+@pytest.mark.parametrize(
+    ("trust_level", "expected_origin", "expected_channel_trust"),
+    [
+        ("owner", "user_direct", "owner_observed"),
+        ("public", "external_message", "shared_participant"),
+        ("untrusted", "external_message", "external_incoming"),
+    ],
+)
+def test_m1_explicit_memory_ingress_context_derives_channel_provenance(
+    trust_level: str,
+    expected_origin: str,
+    expected_channel_trust: str,
+) -> None:
+    harness = _ExplicitMemoryIngressHarness()
+    validated = _validation_result(
+        params={"session_id": "sess-g1", "content": "remember that tea is good"},
+    )
+    validated.session.channel = "discord"
+    validated.channel = "discord"
+    validated.trust_level = trust_level
+    validated.channel_message_id = "m-1"
+
+    context = SessionImplMixin._mint_explicit_memory_ingress_context(
+        harness,
+        validated=validated,
+    )
+
+    assert context is not None
+    assert context.source_origin == expected_origin
+    assert context.channel_trust == expected_channel_trust
+    assert context.confirmation_status == "auto_accepted"
+    assert context.scope == "user"
+    assert context.source_id == "discord:m-1"
+
+
+@pytest.mark.asyncio
+async def test_m1_evaluate_and_execute_actions_passes_channel_handle_for_explicit_note_create(
+) -> None:
+    session = Session(
+        id=SessionId("sess-g1"),
+        channel="discord",
+        user_id=UserId("user-g1"),
+        workspace_id=WorkspaceId("workspace-g1"),
+        state=SessionState.ACTIVE,
+        mode=SessionMode.DEFAULT,
+    )
+    harness = _ExplicitMemoryExecutionHarness(session)
+    validated = _validation_result(
+        params={"session_id": "sess-g1", "content": "remember that I like tea"},
+    )
+    validated.session = session
+    validated.channel = "discord"
+    validated.trust_level = "owner"
+    validated.channel_message_id = "msg-7"
+    planner_context = SessionMessagePlannerContextResult(
+        validated=validated,
+        conversation_context="",
+        transcript_context_taints=set(),
+        effective_caps={Capability.MEMORY_WRITE},
+        memory_query="",
+        memory_context="",
+        memory_context_taints=set(),
+        memory_context_tainted_for_amv=False,
+        user_goal_host_patterns=set(),
+        untrusted_current_turn="",
+        untrusted_host_patterns=set(),
+        policy_egress_host_patterns=set(),
+        context=PolicyContext(capabilities={Capability.MEMORY_WRITE}),
+        planner_origin="planner-origin",
+        committed_plan_hash="plan-g1",
+        active_plan_hash="plan-g1",
+        planner_tools_payload=[],
+        planner_input="planner input",
+        assistant_tone_override=None,
+    )
+    proposal = ActionProposal(
+        action_id="explicit-note-create",
+        tool_name=ToolName("note.create"),
+        arguments={"content": "I like tea"},
+        reasoning="Execute the user's explicit note-creation request.",
+        data_sources=["user_text:explicit_memory_intent"],
+    )
+    planner_dispatch = SessionMessagePlannerDispatchResult(
+        planner_context=planner_context,
+        planner_result=PlannerResult(
+            output=PlannerOutput(assistant_response="", actions=[proposal]),
+            evaluated=[
+                EvaluatedProposal(
+                    proposal=proposal,
+                    decision=PEPDecision(
+                        kind=PEPDecisionKind.ALLOW,
+                        reason="allow",
+                        tool_name=proposal.tool_name,
+                        risk_score=0.0,
+                    ),
+                )
+            ],
+            attempts=1,
+            provider_response=None,
+            messages_sent=(),
+        ),
+        planner_failure_code="",
+        trace_t0=0.0,
+        delegation_advisory=TaskDelegationRecommendation(
+            delegate=False,
+            action_count=0,
+            reason_codes=(),
+            tools=(),
+        ),
+        trace_tool_calls=[],
+    )
+
+    result = await SessionImplMixin._evaluate_and_execute_actions(harness, planner_dispatch)
+
+    assert result.executed == 1
+    context = harness.captured_memory_ingress_context
+    assert context is not None
+    assert context.source_origin == "user_direct"
+    assert context.channel_trust == "owner_observed"
+    assert context.confirmation_status == "auto_accepted"
+    assert context.source_id == "discord:msg-7"
 
 
 def _finalize_execution_result(

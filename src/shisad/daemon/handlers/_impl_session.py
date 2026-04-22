@@ -4791,19 +4791,8 @@ class SessionImplMixin(HandlerMixinBase):
             nonlocal explicit_memory_ingress_context
             if explicit_memory_ingress_context is not None:
                 return explicit_memory_ingress_context
-            if str(session.channel).strip().lower() != "cli":
-                return None
-            user_turn_text = validated.firewall_result.sanitized_text.strip()
-            if not user_turn_text:
-                return None
-            explicit_memory_ingress_context = self._memory_ingress_registry.mint(
-                source_origin="user_direct",
-                channel_trust="command",
-                confirmation_status="user_asserted",
-                scope="user",
-                source_id=str(sid),
-                content=user_turn_text,
-                taint_labels=list(validated.firewall_result.taint_labels),
+            explicit_memory_ingress_context = self._mint_explicit_memory_ingress_context(
+                validated=validated,
             )
             return explicit_memory_ingress_context
 
@@ -5274,6 +5263,50 @@ class SessionImplMixin(HandlerMixinBase):
             cleanroom_block_reasons=cleanroom_block_reasons,
             trace_tool_calls=trace_tool_calls,
         )
+
+    def _mint_explicit_memory_ingress_context(
+        self,
+        *,
+        validated: SessionMessageValidationResult,
+    ) -> IngressContext | None:
+        user_turn_text = validated.firewall_result.sanitized_text.strip()
+        if not user_turn_text:
+            return None
+
+        channel = str(validated.channel or validated.session.channel).strip().lower() or "cli"
+        source_origin = "user_direct"
+        channel_trust = "command"
+        confirmation_status = "user_asserted"
+        source_id = str(validated.sid)
+
+        if channel != "cli":
+            trust_level = str(validated.trust_level or "").strip().lower()
+            confirmation_status = "auto_accepted"
+            raw_message_id = str(validated.channel_message_id or "").strip()
+            if raw_message_id:
+                source_id = f"{channel}:{raw_message_id}"
+            else:
+                source_id = f"{channel}:{validated.sid}"
+            if trust_level in {"trusted", "verified", "internal", "owner"}:
+                channel_trust = "owner_observed"
+            else:
+                source_origin = "external_message"
+                channel_trust = (
+                    "shared_participant"
+                    if trust_level in {"public", "trusted_guest"}
+                    else "external_incoming"
+                )
+
+        context: IngressContext = self._memory_ingress_registry.mint(
+            source_origin=source_origin,
+            channel_trust=channel_trust,
+            confirmation_status=confirmation_status,
+            scope="user",
+            source_id=source_id,
+            content=user_turn_text,
+            taint_labels=list(validated.firewall_result.taint_labels),
+        )
+        return context
 
     async def _synthesize_post_tool_response(
         self,
