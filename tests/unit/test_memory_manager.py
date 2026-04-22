@@ -437,3 +437,40 @@ def test_m1_set_workflow_state_preserves_status_and_records_event(tmp_path: Path
     assert transition_event.metadata_json["from"] == "active"
     assert transition_event.metadata_json["to"] == "closed"
     assert transition_event.metadata_json["status"] == "active"
+
+
+def test_m1_pending_review_entries_are_isolated_to_review_queue(tmp_path: Path) -> None:
+    audits: list[tuple[str, dict[str, object]]] = []
+    manager = MemoryManager(
+        tmp_path / "memory",
+        audit_hook=lambda action, data: audits.append((action, data)),
+    )
+    decision = manager.write_with_provenance(
+        entry_type="note",
+        key="note:queue",
+        value="Needs operator review",
+        source=MemorySource(origin="external", source_id="msg-5", extraction_method="extract"),
+        source_origin="external_message",
+        channel_trust="shared_participant",
+        confirmation_status="pending_review",
+        source_id="msg-5",
+        scope="user",
+        confidence=0.41,
+        confirmation_satisfied=True,
+    )
+
+    assert decision.kind == "allow"
+    assert decision.entry is not None
+    assert manager.list_entries(limit=10) == []
+    assert manager.get_entry(decision.entry.id) is None
+
+    queued = manager.list_review_queue(limit=10)
+    assert [entry.id for entry in queued] == [decision.entry.id]
+    assert (
+        "memory.review_queue_list",
+        {
+            "limit": 10,
+            "count": 1,
+            "entry_ids": [decision.entry.id],
+        },
+    ) in audits

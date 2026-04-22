@@ -8,6 +8,7 @@ from shisad.core.api.schema import (
     MemoryEntryParams,
     MemoryIngestParams,
     MemoryListParams,
+    MemoryReviewQueueParams,
     MemoryRotateKeyParams,
 )
 from shisad.daemon.context import RequestContext
@@ -35,6 +36,9 @@ class _StubImpl:
 
     async def do_memory_list(self, _payload: dict[str, object]) -> dict[str, object]:
         return {"entries": [{"entry_id": "e1"}], "count": 1}
+
+    async def do_memory_list_review_queue(self, _payload: dict[str, object]) -> dict[str, object]:
+        return {"entries": [{"entry_id": "review-1"}], "count": 1}
 
     async def do_memory_get(self, _payload: dict[str, object]) -> dict[str, object]:
         return {"entry": {"entry_id": "e1"}}
@@ -64,8 +68,13 @@ async def test_memory_ingest_and_list_wrappers() -> None:
         RequestContext(),
     )
     listing = await handlers.handle_memory_list(MemoryListParams(limit=10), RequestContext())
+    review_queue = await handlers.handle_memory_list_review_queue(
+        MemoryReviewQueueParams(limit=10),
+        RequestContext(),
+    )
     assert ingest.model_dump(mode="json")["source_id"] == "src-1"
     assert listing.count == 1
+    assert review_queue.entries[0].id == "review-1"
 
 
 @pytest.mark.asyncio

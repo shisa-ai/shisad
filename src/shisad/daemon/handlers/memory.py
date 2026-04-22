@@ -14,6 +14,7 @@ from shisad.core.api.schema import (
     MemoryListResult,
     MemoryRetrieveParams,
     MemoryRetrieveResult,
+    MemoryReviewQueueParams,
     MemoryRotateKeyParams,
     MemoryRotateKeyResult,
     MemoryVerifyResult,
@@ -101,6 +102,20 @@ class MemoryHandlers:
             internal_ingress_marker=self._internal_ingress_marker,
         )
         return MemoryListResult.model_validate(await self._impl.do_memory_list(payload))
+
+    async def handle_memory_list_review_queue(
+        self,
+        params: MemoryReviewQueueParams,
+        ctx: RequestContext,
+    ) -> MemoryListResult:
+        payload = build_params_payload(
+            params,
+            ctx,
+            internal_ingress_marker=self._internal_ingress_marker,
+        )
+        return MemoryListResult.model_validate(
+            await self._impl.do_memory_list_review_queue(payload)
+        )
 
     async def handle_memory_get(
         self,

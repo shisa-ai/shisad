@@ -110,6 +110,10 @@ class MemoryImplMixin(HandlerMixinBase):
         rows = self._memory_manager.list_entries(limit=int(params.get("limit", 100)))
         return {"entries": [entry.model_dump(mode="json") for entry in rows], "count": len(rows)}
 
+    async def do_memory_list_review_queue(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        rows = self._memory_manager.list_review_queue(limit=int(params.get("limit", 100)))
+        return {"entries": [entry.model_dump(mode="json") for entry in rows], "count": len(rows)}
+
     async def do_memory_get(self, params: Mapping[str, Any]) -> dict[str, Any]:
         entry_id = str(params.get("entry_id", ""))
         entry = self._memory_manager.get_entry(entry_id)

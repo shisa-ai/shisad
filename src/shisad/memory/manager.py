@@ -234,6 +234,7 @@ class MemoryManager:
         entry_type: str | None = None,
         include_deleted: bool = False,
         include_quarantined: bool = False,
+        include_pending_review: bool = False,
         limit: int = 100,
     ) -> list[MemoryEntry]:
         self.purge_expired()
@@ -246,6 +247,8 @@ class MemoryManager:
                 continue
             if self._is_quarantined(entry) and not include_quarantined:
                 continue
+            if self._is_pending_review(entry) and not include_pending_review:
+                continue
             rows.append(self._refresh_ttl(entry))
         rows.sort(key=lambda item: item.created_at, reverse=True)
         return rows[:limit]
@@ -257,6 +260,8 @@ class MemoryManager:
             return None
         if self._is_quarantined(entry):
             return None
+        if self._is_pending_review(entry):
+            return None
         return self._refresh_ttl(entry)
 
     def list_events(
@@ -267,6 +272,25 @@ class MemoryManager:
         limit: int = 100,
     ) -> list[MemoryEvent]:
         return self._event_store.list(entry_id=entry_id, event_type=event_type, limit=limit)
+
+    def list_review_queue(self, *, limit: int = 100) -> list[MemoryEntry]:
+        self.purge_expired()
+        rows = [
+            self._refresh_ttl(entry)
+            for entry in self._entries.values()
+            if not self._is_deleted(entry) and self._is_pending_review(entry)
+        ]
+        rows.sort(key=lambda item: item.created_at, reverse=True)
+        selected = rows[:limit]
+        self._audit(
+            "memory.review_queue_list",
+            {
+                "limit": limit,
+                "count": len(selected),
+                "entry_ids": [entry.id for entry in selected],
+            },
+        )
+        return selected
 
     def delete(self, entry_id: str) -> bool:
         entry = self._entries.get(entry_id)
@@ -472,6 +496,10 @@ class MemoryManager:
     @staticmethod
     def _is_quarantined(entry: MemoryEntry) -> bool:
         return entry.status == "quarantined" or entry.quarantined
+
+    @staticmethod
+    def _is_pending_review(entry: MemoryEntry) -> bool:
+        return entry.confirmation_status == "pending_review"
 
     def _audit(self, action: str, payload: dict[str, Any]) -> None:
         if self._audit_hook is not None:

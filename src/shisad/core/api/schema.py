@@ -378,6 +378,10 @@ class MemoryListParams(_StrictParams):
     limit: int = 100
 
 
+class MemoryReviewQueueParams(_StrictParams):
+    limit: int = 100
+
+
 class MemoryEntryParams(_StrictParams):
     entry_id: str
 
