@@ -4515,13 +4515,16 @@ class SessionImplMixin(HandlerMixinBase):
                 top_k=int(self._config.planner_memory_top_k),
             )
             if Capability.MEMORY_READ in effective_caps:
-                identity_entries = self._memory_manager.compile_identity().entries
+                identity_pack = self._memory_manager.compile_identity()
+                identity_entries = identity_pack.entries
+                if identity_pack.citation_ids:
+                    self._memory_manager.record_citations(identity_pack.citation_ids)
                 active_attention_defaults = resolve_active_attention_defaults(
                     channel=str(getattr(session, "channel", "cli")),
                     delivery_target=validated.delivery_target,
                 )
                 if active_attention_defaults is not None:
-                    active_attention_entries = self._memory_manager.compile_active_attention(
+                    active_attention_pack = self._memory_manager.compile_active_attention(
                         scope_filter=set(active_attention_defaults.scope_filter),
                         allowed_channel_trusts=set(
                             active_attention_defaults.allowed_channel_trusts
@@ -4529,7 +4532,10 @@ class SessionImplMixin(HandlerMixinBase):
                         if active_attention_defaults.allowed_channel_trusts is not None
                         else None,
                         channel_binding=active_attention_defaults.channel_binding,
-                    ).entries
+                    )
+                    active_attention_entries = active_attention_pack.entries
+                    if active_attention_pack.citation_ids:
+                        self._memory_manager.record_citations(active_attention_pack.citation_ids)
                     active_attention_context = _build_active_attention_context(
                         active_attention_entries
                     )

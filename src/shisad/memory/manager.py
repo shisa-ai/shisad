@@ -548,6 +548,40 @@ class MemoryManager:
             channel_binding=channel_binding,
         )
 
+    def record_citations(
+        self,
+        entry_ids: list[str],
+        *,
+        cited_at: datetime | None = None,
+    ) -> int:
+        timestamp = cited_at or datetime.now(UTC)
+        unique_entry_ids = [entry_id for entry_id in dict.fromkeys(entry_ids) if entry_id]
+        changed = 0
+        for entry_id in unique_entry_ids:
+            entry = self._entries.get(entry_id)
+            if entry is None or self._is_deleted(entry):
+                continue
+            entry.citation_count += 1
+            entry.last_cited_at = timestamp
+            self._persist_entry(entry)
+            self._record_event(
+                entry=entry,
+                event_type="cited",
+                ingress_handle_id=entry.ingress_handle_id,
+                metadata={"cited_at": timestamp.isoformat()},
+            )
+            changed += 1
+        if changed:
+            self._audit(
+                "memory.citations_recorded",
+                {
+                    "entry_ids": unique_entry_ids,
+                    "count": changed,
+                    "cited_at": timestamp.isoformat(),
+                },
+            )
+        return changed
+
     def delete(self, entry_id: str) -> bool:
         entry = self._entries.get(entry_id)
         if entry is None:

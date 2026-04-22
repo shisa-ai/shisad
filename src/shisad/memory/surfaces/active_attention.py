@@ -31,6 +31,7 @@ class ActiveAttentionPack:
 
     entries: list[MemoryEntry]
     count: int
+    citation_ids: list[str]
     used_tokens: int
     max_tokens: int
     scope_filter: set[str] | None
@@ -76,6 +77,7 @@ def build_active_attention_pack(
     return ActiveAttentionPack(
         entries=kept,
         count=len(kept),
+        citation_ids=[entry.id for entry in kept],
         used_tokens=used_tokens,
         max_tokens=max_tokens,
         scope_filter=set(scope_filter) if scope_filter is not None else None,

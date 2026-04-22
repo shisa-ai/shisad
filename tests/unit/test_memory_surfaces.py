@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from pathlib import Path
 
 from shisad.memory.manager import MemoryManager
@@ -265,3 +266,55 @@ def test_m3_compile_active_attention_channel_binding_limits_channel_scoped_entri
     }
     assert pack.count == 3
     assert pack.channel_binding == "general"
+
+
+def test_m3_surface_compiler_citation_ids_drive_usage_updates(tmp_path: Path) -> None:
+    manager = MemoryManager(tmp_path / "memory")
+    identity_entry = _write_entry(
+        manager,
+        entry_type="persona_fact",
+        key="persona:timezone",
+        value="UTC",
+    )
+    attention_entry = _write_entry(
+        manager,
+        entry_type="open_thread",
+        key="thread:session-followup",
+        value="Follow up on the current conversation.",
+        scope="session",
+        workflow_state="active",
+    )
+
+    identity_pack = manager.compile_identity(max_tokens=64)
+    attention_pack = manager.compile_active_attention(
+        max_tokens=64,
+        scope_filter={"session"},
+    )
+    cited_at = datetime(2026, 4, 22, 22, 15, tzinfo=UTC)
+
+    changed = manager.record_citations(
+        identity_pack.citation_ids + attention_pack.citation_ids,
+        cited_at=cited_at,
+    )
+
+    assert identity_pack.citation_ids == [identity_entry.id]
+    assert attention_pack.citation_ids == [attention_entry.id]
+    assert changed == 2
+
+    updated_identity = manager.get_entry(identity_entry.id)
+    updated_attention = manager.get_entry(attention_entry.id)
+
+    assert updated_identity is not None
+    assert updated_attention is not None
+    assert updated_identity.citation_count == 1
+    assert updated_attention.citation_count == 1
+    assert updated_identity.last_cited_at == cited_at
+    assert updated_attention.last_cited_at == cited_at
+
+    identity_events = manager.list_events(entry_id=identity_entry.id, event_type="cited", limit=5)
+    attention_events = manager.list_events(entry_id=attention_entry.id, event_type="cited", limit=5)
+
+    assert len(identity_events) == 1
+    assert len(attention_events) == 1
+    assert identity_events[0].metadata_json["cited_at"] == cited_at.isoformat()
+    assert attention_events[0].metadata_json["cited_at"] == cited_at.isoformat()

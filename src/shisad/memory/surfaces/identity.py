@@ -23,7 +23,7 @@ def _estimate_identity_tokens(entry: MemoryEntry) -> int:
     if isinstance(value, str):
         rendered = value
     else:
-        rendered = json.dumps(value, ensure_ascii=True, sort_keys=True)
+        rendered = json.dumps(value, ensure_ascii=True, sort_keys=True, default=str)
     return max(1, len(f"{entry.key} {rendered}".split()))
 
 
@@ -33,6 +33,7 @@ class IdentityPack:
 
     entries: list[MemoryEntry]
     count: int
+    citation_ids: list[str]
     used_tokens: int
     max_tokens: int
 
@@ -68,6 +69,7 @@ def build_identity_pack(
     return IdentityPack(
         entries=kept,
         count=len(kept),
+        citation_ids=[entry.id for entry in kept],
         used_tokens=used_tokens,
         max_tokens=max_tokens,
     )
