@@ -131,6 +131,8 @@ from shisad.governance.merge import (
     ToolExecutionPolicy,
     normalize_patch,
 )
+from shisad.memory.ingress import IngressContext
+from shisad.memory.remap import digest_memory_value
 from shisad.memory.summarizer import ConversationSummarizer
 from shisad.security.control_plane.engine import ControlPlaneEvaluation
 from shisad.security.control_plane.schema import (
@@ -577,6 +579,7 @@ class StructuredToolContext:
     workspace_id: WorkspaceId
     session: Session
     user_confirmed: bool = False
+    memory_ingress_context: IngressContext | None = None
 
 
 def _task_declared_fs_runtime_roots(session: Session) -> list[Path]:
@@ -713,6 +716,18 @@ async def _structured_note_create(
     content = _argument_string(arguments, "content")
     if not content:
         return {"ok": False, "error": "note_content_required"}
+    if context.memory_ingress_context is not None:
+        payload = await handler.do_note_create(
+            {
+                "key": _argument_string(arguments, "key") or _slugify_memory_key("note", content),
+                "content": content,
+                "ingress_context": context.memory_ingress_context.handle_id,
+                "content_digest": digest_memory_value(content),
+                "derivation_path": "extracted",
+                "parent_digest": context.memory_ingress_context.content_digest,
+            }
+        )
+        return _wrap_structured_payload(payload, ok=str(payload.get("kind", "")) == "allow")
     payload = await handler.do_note_create(
         {
             "key": _argument_string(arguments, "key") or _slugify_memory_key("note", content),
@@ -767,11 +782,25 @@ async def _structured_todo_create(
     title = _argument_string(arguments, "title")
     if not title:
         return {"ok": False, "error": "todo_title_required"}
+    todo_payload = {
+        "title": title,
+        "details": _argument_string(arguments, "details"),
+        "due_date": _argument_string(arguments, "due_date"),
+    }
+    if context.memory_ingress_context is not None:
+        payload = await handler.do_todo_create(
+            {
+                **todo_payload,
+                "ingress_context": context.memory_ingress_context.handle_id,
+                "content_digest": digest_memory_value({**todo_payload, "status": "open"}),
+                "derivation_path": "extracted",
+                "parent_digest": context.memory_ingress_context.content_digest,
+            }
+        )
+        return _wrap_structured_payload(payload, ok=str(payload.get("kind", "")) == "allow")
     payload = await handler.do_todo_create(
         {
-            "title": title,
-            "details": _argument_string(arguments, "details"),
-            "due_date": _argument_string(arguments, "due_date"),
+            **todo_payload,
             "origin": "user",
             "source_id": str(context.session_id),
             "user_confirmed": context.user_confirmed,
@@ -2794,6 +2823,7 @@ class HandlerImplementation(
         approval_timestamp: str = "",
         approval_evidence: ConfirmationEvidence | None = None,
         strip_direct_tool_execute_envelope_keys: bool = False,
+        memory_ingress_context: IngressContext | None = None,
     ) -> ApprovedToolExecutionResult:
         session = self._session_manager.get(sid)
         if session is None:
@@ -3178,6 +3208,7 @@ class HandlerImplementation(
                 workspace_id=session.workspace_id,
                 session=session,
                 user_confirmed=user_confirmed,
+                memory_ingress_context=memory_ingress_context,
             )
             try:
                 structured_payload_result = payload_builder(

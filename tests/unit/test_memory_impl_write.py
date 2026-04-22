@@ -9,6 +9,7 @@ import pytest
 from shisad.daemon.handlers._impl_memory import MemoryImplMixin
 from shisad.memory.ingress import IngressContextRegistry
 from shisad.memory.manager import MemoryManager
+from shisad.memory.remap import digest_memory_value
 from shisad.memory.trust import TrustGateViolation
 
 
@@ -76,6 +77,80 @@ async def test_memory_write_rejects_mismatched_handle_binding(tmp_path: Path) ->
 
 
 @pytest.mark.asyncio
+async def test_note_create_accepts_handle_bound_extracted_payload(tmp_path: Path) -> None:
+    harness = _MemoryWriteHarness(tmp_path)
+    context = harness._memory_ingress_registry.mint(
+        source_origin="user_direct",
+        channel_trust="command",
+        confirmation_status="user_asserted",
+        scope="user",
+        source_id="turn-3",
+        content="remember that my favorite color is blue",
+    )
+
+    result = await harness.do_note_create(
+        {
+            "ingress_context": context.handle_id,
+            "key": "note:favorite-color",
+            "content": "my favorite color is blue",
+            "content_digest": digest_memory_value("my favorite color is blue"),
+            "derivation_path": "extracted",
+            "parent_digest": context.content_digest,
+        }
+    )
+
+    assert result["kind"] == "allow"
+    entry = result["entry"]
+    assert entry is not None
+    assert entry["entry_type"] == "note"
+    assert entry["source_origin"] == "user_direct"
+    assert entry["channel_trust"] == "command"
+    assert entry["confirmation_status"] == "user_asserted"
+    assert entry["ingress_handle_id"] == context.handle_id
+    assert entry["content_digest"] == digest_memory_value("my favorite color is blue")
+
+
+@pytest.mark.asyncio
+async def test_todo_create_accepts_handle_bound_extracted_payload(tmp_path: Path) -> None:
+    harness = _MemoryWriteHarness(tmp_path)
+    context = harness._memory_ingress_registry.mint(
+        source_origin="user_direct",
+        channel_trust="command",
+        confirmation_status="user_asserted",
+        scope="user",
+        source_id="turn-4",
+        content="add a todo: review PRs tomorrow",
+    )
+
+    todo_payload = {
+        "title": "review PRs",
+        "details": "",
+        "status": "open",
+        "due_date": "tomorrow",
+    }
+    result = await harness.do_todo_create(
+        {
+            **todo_payload,
+            "ingress_context": context.handle_id,
+            "content_digest": digest_memory_value(todo_payload),
+            "derivation_path": "extracted",
+            "parent_digest": context.content_digest,
+        }
+    )
+
+    assert result["kind"] == "allow"
+    entry = result["entry"]
+    assert entry is not None
+    assert entry["entry_type"] == "todo"
+    assert entry["source_origin"] == "user_direct"
+    assert entry["channel_trust"] == "command"
+    assert entry["confirmation_status"] == "user_asserted"
+    assert entry["ingress_handle_id"] == context.handle_id
+    assert entry["content_digest"] == digest_memory_value(todo_payload)
+    assert entry["value"]["title"] == "review PRs"
+
+
+@pytest.mark.asyncio
 async def test_memory_write_legacy_source_path_still_works(tmp_path: Path) -> None:
     harness = _MemoryWriteHarness(tmp_path)
 
@@ -97,4 +172,3 @@ async def test_memory_write_legacy_source_path_still_works(tmp_path: Path) -> No
     assert entry is not None
     assert entry["source_origin"] == "user_direct"
     assert entry["confirmation_status"] == "auto_accepted"
-

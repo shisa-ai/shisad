@@ -22,7 +22,9 @@ from shisad.daemon.handlers._impl import (
     _structured_todo_create,
 )
 from shisad.daemon.handlers._impl_memory import MemoryImplMixin
+from shisad.memory.ingress import IngressContextRegistry
 from shisad.memory.manager import MemoryManager
+from shisad.memory.remap import digest_memory_value
 from shisad.security.control_plane.schema import Origin
 
 
@@ -181,6 +183,7 @@ class _StructuredBranchHarness:
 class _MemoryStructuredHandler(MemoryImplMixin):
     def __init__(self, storage_dir: Path) -> None:
         self._memory_manager = MemoryManager(storage_dir)
+        self._memory_ingress_registry = IngressContextRegistry()
 
 
 def test_m1_rf014_structured_tool_registry_lists_expected_handlers() -> None:
@@ -277,6 +280,53 @@ async def test_m1_structured_note_create_propagates_confirmation_origin(
 
 
 @pytest.mark.asyncio
+async def test_m1_structured_note_create_uses_ingress_handle_when_available() -> None:
+    captured: dict[str, Any] = {}
+    registry = IngressContextRegistry()
+    ingress = registry.mint(
+        source_origin="user_direct",
+        channel_trust="command",
+        confirmation_status="user_asserted",
+        scope="user",
+        source_id="turn-1",
+        content="remember that my favorite color is blue",
+    )
+
+    class _Handler:
+        async def do_note_create(self, payload: dict[str, Any]) -> dict[str, Any]:
+            captured.update(payload)
+            return {"kind": "allow"}
+
+    context = StructuredToolContext(
+        session_id=SessionId("s-note-ingress"),
+        user_id=UserId("user-1"),
+        workspace_id=WorkspaceId("ws-1"),
+        session=Session(
+            id=SessionId("s-note-ingress"),
+            channel="cli",
+            user_id=UserId("user-1"),
+            workspace_id=WorkspaceId("ws-1"),
+        ),
+        memory_ingress_context=ingress,
+    )
+
+    payload = await _structured_note_create(
+        _Handler(),
+        {"content": "my favorite color is blue"},
+        context,
+    )
+
+    assert payload["ok"] is True
+    assert captured["ingress_context"] == ingress.handle_id
+    assert captured["derivation_path"] == "extracted"
+    assert captured["parent_digest"] == ingress.content_digest
+    assert captured["content_digest"] == digest_memory_value("my favorite color is blue")
+    assert "origin" not in captured
+    assert "source_id" not in captured
+    assert "user_confirmed" not in captured
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("user_confirmed", [False, True])
 async def test_m1_structured_todo_create_propagates_confirmation_origin(
     user_confirmed: bool,
@@ -305,6 +355,49 @@ async def test_m1_structured_todo_create_propagates_confirmation_origin(
 
     assert payload["ok"] is True
     assert captured["user_confirmed"] is user_confirmed
+
+
+class _MemoryStructuredExecutionHarness(_StructuredBranchHarness, MemoryImplMixin):
+    def __init__(self, storage_dir: Path) -> None:
+        super().__init__(
+            web_payload={"ok": True, "results": []},
+            git_status_payload={"ok": True, "status": "clean"},
+        )
+        self._memory_manager = MemoryManager(storage_dir)
+        self._memory_ingress_registry = IngressContextRegistry()
+
+
+@pytest.mark.asyncio
+async def test_m1_execute_approved_action_passes_memory_ingress_context_to_note_create(
+    tmp_path: Path,
+) -> None:
+    harness = _MemoryStructuredExecutionHarness(tmp_path / "memory")
+    ingress = harness._memory_ingress_registry.mint(
+        source_origin="user_direct",
+        channel_trust="command",
+        confirmation_status="user_asserted",
+        scope="user",
+        source_id=str(harness.session_id),
+        content="remember that my favorite color is blue",
+    )
+
+    result = await HandlerImplementation._execute_approved_action(
+        harness,  # type: ignore[arg-type]
+        sid=harness.session_id,
+        user_id=UserId("user-1"),
+        tool_name=ToolName("note.create"),
+        arguments={"content": "my favorite color is blue"},
+        capabilities=set(),
+        approval_actor="control_api",
+        memory_ingress_context=ingress,
+    )
+
+    assert result.success is True
+    notes = harness._memory_manager.list_entries(entry_type="note", limit=10)
+    assert len(notes) == 1
+    assert notes[0].ingress_handle_id == ingress.handle_id
+    assert notes[0].confirmation_status == "user_asserted"
+    assert str(notes[0].value) == "my favorite color is blue"
 
 
 def test_u5_structured_fs_write_treats_trusted_cli_policy_approval_as_confirmed() -> None:

@@ -16,6 +16,52 @@ from shisad.memory.schema import MemorySource
 
 
 class MemoryImplMixin(HandlerMixinBase):
+    def _write_handle_bound_entry(
+        self,
+        params: Mapping[str, Any],
+        *,
+        entry_type: str,
+        key: str,
+        value: Any,
+        confidence: float,
+    ) -> dict[str, Any]:
+        handle_id = str(params.get("ingress_context", ""))
+        context = self._memory_ingress_registry.resolve(handle_id)
+        derivation_path = DerivationPath(str(params.get("derivation_path", "direct")))
+        content_digest = str(params.get("content_digest", "")).strip() or None
+        if content_digest is None and not isinstance(value, (str, bytes)):
+            content_digest = digest_memory_value(value)
+        resolved_digest = self._memory_ingress_registry.validate_binding(
+            handle_id,
+            content=value if isinstance(value, (str, bytes)) else None,
+            content_digest=content_digest,
+            derivation_path=derivation_path,
+            parent_digest=str(params.get("parent_digest", "")).strip() or None,
+        )
+        source = MemorySource(
+            origin=legacy_source_view_origin(context.source_origin),
+            source_id=context.source_id,
+            extraction_method=f"ingress.{derivation_path.value}",
+        )
+        decision = self._memory_manager.write_with_provenance(
+            entry_type=entry_type,
+            key=key,
+            value=value,
+            source=source,
+            source_origin=context.source_origin,
+            channel_trust=context.channel_trust,
+            confirmation_status=context.confirmation_status,
+            source_id=context.source_id,
+            scope=context.scope,
+            confidence=confidence,
+            confirmation_satisfied=context.confirmation_status
+            in {"user_asserted", "user_confirmed", "user_corrected", "pep_approved"},
+            taint_labels=context.taint_labels,
+            ingress_handle_id=context.handle_id,
+            content_digest=resolved_digest,
+        )
+        return cast(dict[str, Any], decision.model_dump(mode="json"))
+
     async def do_memory_ingest(self, params: Mapping[str, Any]) -> dict[str, Any]:
         result = self._ingestion.ingest(
             source_id=params.get("source_id", ""),
@@ -42,52 +88,22 @@ class MemoryImplMixin(HandlerMixinBase):
 
     async def do_memory_write(self, params: Mapping[str, Any]) -> dict[str, Any]:
         if params.get("ingress_context"):
-            handle_id = str(params.get("ingress_context", ""))
-            context = self._memory_ingress_registry.resolve(handle_id)
-            derivation_path = DerivationPath(str(params.get("derivation_path", "direct")))
-            value = params.get("value")
-            content_digest = str(params.get("content_digest", "")).strip() or None
-            if content_digest is None and not isinstance(value, (str, bytes)):
-                content_digest = digest_memory_value(value)
-            resolved_digest = self._memory_ingress_registry.validate_binding(
-                handle_id,
-                content=value if isinstance(value, (str, bytes)) else None,
-                content_digest=content_digest,
-                derivation_path=derivation_path,
-                parent_digest=str(params.get("parent_digest", "")).strip() or None,
-            )
-            source = MemorySource(
-                origin=legacy_source_view_origin(context.source_origin),
-                source_id=context.source_id,
-                extraction_method=f"ingress.{derivation_path.value}",
-            )
-            decision = self._memory_manager.write_with_provenance(
-                entry_type=params.get("entry_type", "fact"),
-                key=params.get("key", ""),
-                value=value,
-                source=source,
-                source_origin=context.source_origin,
-                channel_trust=context.channel_trust,
-                confirmation_status=context.confirmation_status,
-                source_id=context.source_id,
-                scope=context.scope,
-                confidence=float(params.get("confidence", 0.5)),
-                confirmation_satisfied=context.confirmation_status
-                in {"user_asserted", "user_confirmed", "user_corrected", "pep_approved"},
-                taint_labels=context.taint_labels,
-                ingress_handle_id=context.handle_id,
-                content_digest=resolved_digest,
-            )
-        else:
-            source = MemorySource.model_validate(params.get("source", {}))
-            decision = self._memory_manager.write(
-                entry_type=params.get("entry_type", "fact"),
-                key=params.get("key", ""),
+            return self._write_handle_bound_entry(
+                params,
+                entry_type=str(params.get("entry_type", "fact")),
+                key=str(params.get("key", "")),
                 value=params.get("value"),
-                source=source,
                 confidence=float(params.get("confidence", 0.5)),
-                user_confirmed=bool(params.get("user_confirmed", False)),
             )
+        source = MemorySource.model_validate(params.get("source", {}))
+        decision = self._memory_manager.write(
+            entry_type=params.get("entry_type", "fact"),
+            key=params.get("key", ""),
+            value=params.get("value"),
+            source=source,
+            confidence=float(params.get("confidence", 0.5)),
+            user_confirmed=bool(params.get("user_confirmed", False)),
+        )
         return cast(dict[str, Any], decision.model_dump(mode="json"))
 
     async def do_memory_list(self, params: Mapping[str, Any]) -> dict[str, Any]:
@@ -123,6 +139,14 @@ class MemoryImplMixin(HandlerMixinBase):
         }
 
     async def do_note_create(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        if params.get("ingress_context"):
+            return self._write_handle_bound_entry(
+                params,
+                entry_type="note",
+                key=str(params.get("key", "")),
+                value=str(params.get("content", "")),
+                confidence=float(params.get("confidence", 0.8)),
+            )
         source = MemorySource(
             origin=str(params.get("origin", "user")),
             source_id=str(params.get("source_id", "cli")),
@@ -216,11 +240,6 @@ class MemoryImplMixin(HandlerMixinBase):
         raise ValueError(f"Unsupported export format: {fmt}")
 
     async def do_todo_create(self, params: Mapping[str, Any]) -> dict[str, Any]:
-        source = MemorySource(
-            origin=str(params.get("origin", "user")),
-            source_id=str(params.get("source_id", "cli")),
-            extraction_method="todo.create",
-        )
         payload = {
             "title": str(params.get("title", "")).strip(),
             "details": str(params.get("details", "")).strip(),
@@ -229,6 +248,19 @@ class MemoryImplMixin(HandlerMixinBase):
         }
         if payload["status"] not in {"open", "in_progress", "done"}:
             raise ValueError("status must be one of: open, in_progress, done")
+        if params.get("ingress_context"):
+            return self._write_handle_bound_entry(
+                params,
+                entry_type="todo",
+                key=f"todo:{payload['title'][:64]}",
+                value=payload,
+                confidence=float(params.get("confidence", 0.8)),
+            )
+        source = MemorySource(
+            origin=str(params.get("origin", "user")),
+            source_id=str(params.get("source_id", "cli")),
+            extraction_method="todo.create",
+        )
         decision = self._memory_manager.write(
             entry_type="todo",
             key=f"todo:{payload['title'][:64]}",

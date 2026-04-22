@@ -104,6 +104,7 @@ from shisad.daemon.handlers._pending_approval import (
 from shisad.daemon.handlers._task_scope import task_declared_tdg_roots, task_resource_authorizer
 from shisad.governance.merge import PolicyMergeError
 from shisad.memory.ingestion import IngestionPipeline
+from shisad.memory.ingress import IngressContext
 from shisad.memory.schema import MemorySource
 from shisad.scheduler.schema import TaskEnvelope
 from shisad.security.control_plane.consensus import TRACE_VOTER_NAME
@@ -4782,6 +4783,27 @@ class SessionImplMixin(HandlerMixinBase):
         )
         clean_trusted_input = _has_clean_trusted_turn_privileges(validated)
         operator_owned_cli_input = _is_clean_direct_trusted_cli_turn(validated)
+        explicit_memory_ingress_context: IngressContext | None = None
+
+        def _explicit_memory_ingress_context() -> IngressContext | None:
+            nonlocal explicit_memory_ingress_context
+            if explicit_memory_ingress_context is not None:
+                return explicit_memory_ingress_context
+            if str(session.channel).strip().lower() != "cli":
+                return None
+            user_turn_text = validated.firewall_result.sanitized_text.strip()
+            if not user_turn_text:
+                return None
+            explicit_memory_ingress_context = self._memory_ingress_registry.mint(
+                source_origin="user_direct",
+                channel_trust="command",
+                confirmation_status="user_asserted",
+                scope="user",
+                source_id=str(sid),
+                content=user_turn_text,
+                taint_labels=list(validated.firewall_result.taint_labels),
+            )
+            return explicit_memory_ingress_context
 
         for evaluated in planner_result.evaluated:
             proposal = evaluated.proposal
@@ -5205,6 +5227,14 @@ class SessionImplMixin(HandlerMixinBase):
                 approval_actor="policy_loop",
                 execution_action=cp_eval.action,
                 user_confirmed="user_text:explicit_memory_intent" in proposal.data_sources,
+                memory_ingress_context=(
+                    _explicit_memory_ingress_context()
+                    if (
+                        "user_text:explicit_memory_intent" in proposal.data_sources
+                        and str(proposal.tool_name) in {"note.create", "todo.create"}
+                    )
+                    else None
+                ),
             )
             success = execution_result.success
             checkpoint_id = execution_result.checkpoint_id
