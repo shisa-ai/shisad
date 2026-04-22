@@ -14,6 +14,13 @@ if TYPE_CHECKING:
 
 DEFAULT_ACTIVE_ATTENTION_MAX_TOKENS = 750
 ACTIVE_ATTENTION_WORKFLOW_STATES = {"active", "waiting", "blocked"}
+CHANNEL_AFFINED_ENTRY_TYPES = {
+    "inbox_item",
+    "channel_summary",
+    "person_note",
+    "channel_participation",
+    "response_feedback",
+}
 
 
 def _estimate_attention_tokens(entry: MemoryEntry) -> int:
@@ -56,8 +63,9 @@ def build_active_attention_pack(
             and entry.status == "active"
             and entry.workflow_state in ACTIVE_ATTENTION_WORKFLOW_STATES
             and (scope_filter is None or entry.scope in scope_filter)
-            and (
-                allowed_channel_trusts is None or entry.channel_trust in allowed_channel_trusts
+            and _passes_allowed_channel_trusts(
+                entry=entry,
+                allowed_channel_trusts=allowed_channel_trusts,
             )
             and _matches_channel_binding(entry, channel_binding)
         ),
@@ -85,13 +93,29 @@ def build_active_attention_pack(
     )
 
 
+def _passes_allowed_channel_trusts(
+    *,
+    entry: MemoryEntry,
+    allowed_channel_trusts: set[str] | None,
+) -> bool:
+    if allowed_channel_trusts is None:
+        return True
+    if entry.scope != "channel":
+        return True
+    return entry.channel_trust in allowed_channel_trusts
+
+
 def _matches_channel_binding(entry: MemoryEntry, channel_binding: str | None) -> bool:
-    if channel_binding is None or entry.scope != "channel":
+    if channel_binding is None:
         return True
     entry_binding = _extract_channel_binding(entry)
     if entry_binding is None:
-        return False
+        return not _requires_channel_binding(entry)
     return _channel_bindings_match(entry_binding, channel_binding)
+
+
+def _requires_channel_binding(entry: MemoryEntry) -> bool:
+    return entry.scope == "channel" or entry.entry_type in CHANNEL_AFFINED_ENTRY_TYPES
 
 
 def _extract_channel_binding(entry: MemoryEntry) -> str | None:

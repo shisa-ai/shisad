@@ -12,6 +12,14 @@ from shisad.channels.identity import ChannelIdentityMap
 from shisad.core.types import SessionId, TaintLabel
 from shisad.daemon.handlers._impl_admin import AdminImplMixin
 from shisad.memory.ingress import IngressContextRegistry
+from shisad.memory.manager import MemoryManager
+from shisad.memory.participation import (
+    channel_participation_key,
+    channel_summary_key,
+    inbox_item_key,
+    person_note_key,
+    response_feedback_key,
+)
 from shisad.security.firewall import FirewallResult
 
 
@@ -28,6 +36,30 @@ class _DeliveryStub:
     async def send(self, *, target: object, message: str) -> _DeliveryResult:
         _ = (target, message)
         return _DeliveryResult()
+
+
+class _TranscriptStoreStub:
+    def __init__(self) -> None:
+        self.entries: list[dict[str, object]] = []
+
+    def append(
+        self,
+        sid: object,
+        *,
+        role: str,
+        content: str,
+        taint_labels: object,
+        metadata: dict[str, object],
+    ) -> None:
+        self.entries.append(
+            {
+                "session_id": str(sid),
+                "role": role,
+                "content": content,
+                "taint_labels": taint_labels,
+                "metadata": metadata,
+            }
+        )
 
 
 class _SessionManagerStub:
@@ -56,24 +88,39 @@ class _SessionManagerStub:
 
 
 class _AdminChannelIngressHarness(AdminImplMixin):
-    def __init__(self) -> None:
-        self._config = SimpleNamespace(discord_channel_rules=(), matrix_room_id="")
+    def __init__(
+        self,
+        *,
+        tmp_path: Path,
+        default_trust: str = "owner",
+        allowlisted_users: set[str] | None = None,
+    ) -> None:
+        self._config = SimpleNamespace(
+            discord_channel_rules=(),
+            matrix_room_id="",
+            discord_trusted_users=["owner-user"],
+            slack_trusted_users=[],
+            matrix_trusted_users=[],
+            telegram_trusted_users=[],
+        )
         self._matrix_channel = None
         self._discord_channel = None
         self._telegram_channel = None
         self._slack_channel = None
         self._identity_map = ChannelIdentityMap(
-            default_trust={"discord": "owner"},
-            allowlists={"discord": {"alice"}},
+            default_trust={"discord": default_trust},
+            allowlists={"discord": set(allowlisted_users or {"alice"})},
         )
         self._channel_ingress = SimpleNamespace(process=self._process_channel_ingress)
         self._transcript_root = Path("/tmp/shisad-tests")
+        self._transcript_store = _TranscriptStoreStub()
         self._session_manager = _SessionManagerStub()
         self._delivery = _DeliveryStub()
         self._channel_proactive_last_sent_at: dict[str, object] = {}
         self._internal_ingress_marker = object()
         self._event_bus = SimpleNamespace(publish=self._publish)
         self._memory_ingress_registry = IngressContextRegistry()
+        self._memory_manager = MemoryManager(tmp_path / "memory_entries")
         self.created_payloads: list[dict[str, Any]] = []
         self.message_payloads: list[dict[str, Any]] = []
 
@@ -113,8 +160,10 @@ class _AdminChannelIngressHarness(AdminImplMixin):
 
 
 @pytest.mark.asyncio
-async def test_m1_channel_ingest_mints_explicit_memory_handle_at_boundary() -> None:
-    harness = _AdminChannelIngressHarness()
+async def test_m1_channel_ingest_mints_explicit_memory_handle_at_boundary(
+    tmp_path: Path,
+) -> None:
+    harness = _AdminChannelIngressHarness(tmp_path=tmp_path)
 
     result = await harness.do_channel_ingest(
         {
@@ -140,3 +189,137 @@ async def test_m1_channel_ingest_mints_explicit_memory_handle_at_boundary() -> N
     assert context.confirmation_status == "auto_accepted"
     assert context.scope == "user"
     assert context.source_id == "discord:msg-9"
+
+
+@pytest.mark.asyncio
+async def test_m3_channel_ingest_persists_structured_participation_memory(
+    tmp_path: Path,
+) -> None:
+    harness = _AdminChannelIngressHarness(
+        tmp_path=tmp_path,
+        default_trust="public",
+        allowlisted_users={"guest-1"},
+    )
+
+    result = await harness.do_channel_ingest(
+        {
+            "message": {
+                "channel": "discord",
+                "external_user_id": "guest-1",
+                "workspace_hint": "guild-1",
+                "reply_target": "chan-1",
+                "message_id": "msg-21",
+                "content": "Can you share the release notes?",
+                "metadata": {
+                    "display_name": "Guest One",
+                    "interaction_type": "direct",
+                },
+            }
+        }
+    )
+
+    assert result["response"] == "ok"
+    entries = harness._memory_manager.list_entries(limit=20)
+    by_key = {entry.key: entry for entry in entries}
+
+    inbox = by_key[inbox_item_key(owner_id="owner-user", item_id="msg-21")]
+    assert inbox.entry_type == "inbox_item"
+    assert inbox.scope == "user"
+    assert inbox.source_origin == "external_message"
+    assert inbox.channel_trust == "shared_participant"
+
+    note = by_key[person_note_key(channel_id="chan-1", external_user_id="guest-1")]
+    assert note.entry_type == "person_note"
+    assert note.scope == "channel"
+    assert note.channel_trust == "shared_participant"
+
+    participation = by_key[channel_participation_key(channel_id="chan-1")]
+    assert participation.entry_type == "channel_participation"
+    assert participation.scope == "channel"
+    assert participation.channel_trust == "shared_participant"
+
+
+@pytest.mark.asyncio
+async def test_m3_channel_ingest_persists_summary_and_feedback_records_from_metadata(
+    tmp_path: Path,
+) -> None:
+    harness = _AdminChannelIngressHarness(
+        tmp_path=tmp_path,
+        default_trust="public",
+        allowlisted_users={"guest-2"},
+    )
+
+    await harness.do_channel_ingest(
+        {
+            "message": {
+                "channel": "discord",
+                "external_user_id": "guest-2",
+                "workspace_hint": "guild-1",
+                "reply_target": "chan-2",
+                "message_id": "msg-30",
+                "content": "thumbs up",
+                "metadata": {
+                    "interaction_type": "direct",
+                    "summary_kind": "digest",
+                    "summary_text": "Guest follow-up summary.",
+                    "feedback_signal": "reaction_add",
+                    "feedback_target_message_id": "agent-msg-9",
+                    "feedback_emoji": ":+1:",
+                    "feedback_valence": "positive",
+                },
+            }
+        }
+    )
+
+    entries = harness._memory_manager.list_entries(limit=20)
+    by_key = {entry.key: entry for entry in entries}
+
+    summary = by_key[channel_summary_key(channel_id="chan-2", summary_kind="digest")]
+    assert summary.entry_type == "channel_summary"
+    assert summary.scope == "channel"
+
+    feedback = by_key[
+        response_feedback_key(
+            channel_id="chan-2",
+            message_id="agent-msg-9",
+            actor_external_user_id="guest-2",
+            signal="reaction_add",
+        )
+    ]
+    assert feedback.entry_type == "response_feedback"
+    assert feedback.scope == "channel"
+
+
+@pytest.mark.asyncio
+async def test_m3_channel_ingest_observation_updates_participation_without_inbox_item(
+    tmp_path: Path,
+) -> None:
+    harness = _AdminChannelIngressHarness(
+        tmp_path=tmp_path,
+        default_trust="public",
+        allowlisted_users={"guest-3"},
+    )
+
+    result = await harness.do_channel_ingest(
+        {
+            "message": {
+                "channel": "discord",
+                "external_user_id": "guest-3",
+                "workspace_hint": "guild-1",
+                "reply_target": "chan-3",
+                "message_id": "msg-44",
+                "content": "reading along here",
+                "metadata": {
+                    "interaction_type": "observed",
+                    "passive_reason": "passive_observe",
+                },
+            }
+        }
+    )
+
+    assert result["response"] == ""
+    entries = harness._memory_manager.list_entries(limit=20)
+    keys = {entry.key for entry in entries}
+    assert channel_participation_key(channel_id="chan-3") in keys
+    assert person_note_key(channel_id="chan-3", external_user_id="guest-3") in keys
+    assert inbox_item_key(owner_id="owner-user", item_id="msg-44") not in keys
