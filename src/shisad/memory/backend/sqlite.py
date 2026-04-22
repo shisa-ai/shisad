@@ -24,6 +24,10 @@ class RetrievalBackendRow:
     extracted_facts_json: str
     risk_score: float
     original_hash: str
+    source_origin: str | None
+    channel_trust: str | None
+    confirmation_status: str | None
+    scope: str | None
     taint_labels_json: str
     quarantined: bool
     citation_count: int
@@ -115,12 +119,16 @@ class SQLiteRetrievalBackend:
                     extracted_facts_json,
                     risk_score,
                     original_hash,
+                    source_origin,
+                    channel_trust,
+                    confirmation_status,
+                    scope,
                     taint_labels_json,
                     quarantined,
                     citation_count,
                     last_cited_at,
                     original_payload
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     row.chunk_id,
@@ -132,6 +140,10 @@ class SQLiteRetrievalBackend:
                     row.extracted_facts_json,
                     row.risk_score,
                     row.original_hash,
+                    row.source_origin,
+                    row.channel_trust,
+                    row.confirmation_status,
+                    row.scope,
                     row.taint_labels_json,
                     int(row.quarantined),
                     row.citation_count,
@@ -178,6 +190,10 @@ class SQLiteRetrievalBackend:
                 r.extracted_facts_json,
                 r.risk_score,
                 r.original_hash,
+                r.source_origin,
+                r.channel_trust,
+                r.confirmation_status,
+                r.scope,
                 r.taint_labels_json,
                 r.quarantined,
                 r.citation_count,
@@ -216,6 +232,20 @@ class SQLiteRetrievalBackend:
                         extracted_facts_json=str(row["extracted_facts_json"]),
                         risk_score=float(row["risk_score"]),
                         original_hash=str(row["original_hash"]),
+                        source_origin=(
+                            str(row["source_origin"]) if row["source_origin"] is not None else None
+                        ),
+                        channel_trust=(
+                            str(row["channel_trust"])
+                            if row["channel_trust"] is not None
+                            else None
+                        ),
+                        confirmation_status=(
+                            str(row["confirmation_status"])
+                            if row["confirmation_status"] is not None
+                            else None
+                        ),
+                        scope=str(row["scope"]) if row["scope"] is not None else None,
                         taint_labels_json=str(row["taint_labels_json"]),
                         quarantined=bool(row["quarantined"]),
                         citation_count=int(row["citation_count"]),
@@ -403,6 +433,10 @@ class SQLiteRetrievalBackend:
                 extracted_facts_json TEXT NOT NULL,
                 risk_score REAL NOT NULL,
                 original_hash TEXT NOT NULL,
+                source_origin TEXT,
+                channel_trust TEXT,
+                confirmation_status TEXT,
+                scope TEXT,
                 taint_labels_json TEXT NOT NULL,
                 quarantined INTEGER NOT NULL,
                 citation_count INTEGER NOT NULL DEFAULT 0,
@@ -427,6 +461,34 @@ class SQLiteRetrievalBackend:
                 """
                 ALTER TABLE retrieval_records
                 ADD COLUMN last_cited_at TEXT
+                """
+            )
+        if "source_origin" not in columns:
+            conn.execute(
+                """
+                ALTER TABLE retrieval_records
+                ADD COLUMN source_origin TEXT
+                """
+            )
+        if "channel_trust" not in columns:
+            conn.execute(
+                """
+                ALTER TABLE retrieval_records
+                ADD COLUMN channel_trust TEXT
+                """
+            )
+        if "confirmation_status" not in columns:
+            conn.execute(
+                """
+                ALTER TABLE retrieval_records
+                ADD COLUMN confirmation_status TEXT
+                """
+            )
+        if "scope" not in columns:
+            conn.execute(
+                """
+                ALTER TABLE retrieval_records
+                ADD COLUMN scope TEXT
                 """
             )
         conn.execute(

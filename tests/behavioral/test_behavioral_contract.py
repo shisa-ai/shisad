@@ -1197,6 +1197,86 @@ async def test_contract_memory_retrieve_prioritizes_user_curated_and_marks_untru
 
 
 @pytest.mark.asyncio
+async def test_contract_memory_retrieve_uses_canonical_trust_band_for_user_curated_hits(
+    contract_harness: ContractHarness,
+) -> None:
+    elevated = await ingest_memory_via_ingress(
+        contract_harness.client,
+        source_type="user",
+        source_id="user-elevated",
+        content="The release owner handle is shisa-ai according to the user directly.",
+    )
+    observed = await ingest_memory_via_ingress(
+        contract_harness.client,
+        source_type="user",
+        source_id="user-observed",
+        content="The release owner handle is shisa-ai from an owner-observed channel sync.",
+    )
+    db_path = contract_harness.config.data_dir / "memory_entries" / "memory.sqlite3"
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            UPDATE retrieval_records
+            SET source_origin = ?, channel_trust = ?, confirmation_status = ?, scope = ?
+            WHERE chunk_id = ?
+            """,
+            ("user_direct", "owner_observed", "auto_accepted", "channel", observed["chunk_id"]),
+        )
+
+    retrieved = await contract_harness.client.call(
+        "memory.retrieve",
+        {"query": "release owner handle shisa-ai", "limit": 2},
+    )
+
+    results = list(retrieved.get("results") or [])
+    assert [item.get("chunk_id") for item in results] == [
+        elevated["chunk_id"],
+        observed["chunk_id"],
+    ]
+    assert results[0].get("collection") == "user_curated"
+    assert results[0].get("trust_band") == "elevated"
+    assert results[0].get("trust_caveat") is None
+    assert results[1].get("collection") == "user_curated"
+    assert results[1].get("trust_band") == "untrusted"
+    assert str(results[1].get("trust_caveat", "")).strip()
+    assert results[1].get("verification_gap") is True
+
+
+@pytest.mark.asyncio
+async def test_contract_memory_retrieve_scope_filter_limits_results(
+    contract_harness: ContractHarness,
+) -> None:
+    session_entry = await ingest_memory_via_ingress(
+        contract_harness.client,
+        source_type="user",
+        source_id="session-scope",
+        content="Deployment checklist item for the active session only.",
+    )
+    await ingest_memory_via_ingress(
+        contract_harness.client,
+        source_type="user",
+        source_id="user-scope",
+        content="Deployment checklist item for the long-term user profile.",
+    )
+    db_path = contract_harness.config.data_dir / "memory_entries" / "memory.sqlite3"
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "UPDATE retrieval_records SET scope = ? WHERE chunk_id = ?",
+            ("session", session_entry["chunk_id"]),
+        )
+
+    retrieved = await contract_harness.client.call(
+        "memory.retrieve",
+        {"query": "deployment checklist item", "limit": 5, "scope_filter": ["session"]},
+    )
+
+    results = list(retrieved.get("results") or [])
+    assert len(results) == 1
+    assert results[0].get("chunk_id") == session_entry["chunk_id"]
+    assert results[0].get("scope") == "session"
+
+
+@pytest.mark.asyncio
 async def test_contract_memory_retrieve_auto_widens_into_archive(
     contract_harness: ContractHarness,
 ) -> None:

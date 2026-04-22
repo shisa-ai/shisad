@@ -19,12 +19,21 @@ from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field, ValidationError, model_validator
 
 from shisad.core.tools.schema import ToolDefinition, ToolParameter
 from shisad.core.types import Capability, TaintLabel, ToolName
 from shisad.memory.backend import RetrievalBackendRow, SQLiteRetrievalBackend
+from shisad.memory.schema import MemoryScope
 from shisad.memory.surfaces import RecallPack, build_recall_pack
+from shisad.memory.trust import (
+    ChannelTrust,
+    ConfirmationStatus,
+    SourceOrigin,
+    TrustBand,
+    default_confidence_for_triple,
+    derive_trust_band,
+)
 from shisad.security.firewall import ContentFirewall, SanitizationMode
 
 RetrievalCollection = Literal["user_curated", "project_docs", "external_web", "tool_outputs"]
@@ -64,6 +73,49 @@ _RECALL_IMPORTANCE_PRIOR: dict[RetrievalCollection, float] = {
 _RECALL_STALE_AFTER_DAYS = 14.0
 _RECALL_ARCHIVE_AFTER_DAYS = 45.0
 _RECALL_MIN_DECAY_SCORE = 0.2
+_RECALL_DEFAULT_PROVENANCE_BY_COLLECTION: dict[
+    RetrievalCollection,
+    tuple[SourceOrigin, ChannelTrust, ConfirmationStatus],
+] = {
+    "user_curated": ("user_direct", "command", "user_asserted"),
+    "project_docs": ("tool_output", "tool_passed", "auto_accepted"),
+    "tool_outputs": ("tool_output", "tool_passed", "auto_accepted"),
+    "external_web": ("external_web", "web_passed", "auto_accepted"),
+}
+
+
+def _default_recall_provenance(
+    *,
+    collection: RetrievalCollection,
+    source_type: Literal["user", "external", "tool"],
+) -> tuple[SourceOrigin, ChannelTrust, ConfirmationStatus]:
+    if collection in _RECALL_DEFAULT_PROVENANCE_BY_COLLECTION:
+        return _RECALL_DEFAULT_PROVENANCE_BY_COLLECTION[collection]
+    if source_type == "user":
+        return ("user_direct", "command", "user_asserted")
+    if source_type == "tool":
+        return ("tool_output", "tool_passed", "auto_accepted")
+    return ("external_web", "web_passed", "auto_accepted")
+
+
+def _trust_caveat_for(
+    *,
+    source_origin: SourceOrigin,
+    channel_trust: ChannelTrust,
+    confirmation_status: ConfirmationStatus,
+    trust_band: TrustBand,
+) -> str | None:
+    if trust_band == "elevated":
+        return None
+    if channel_trust == "owner_observed":
+        return "owner-observed content is not user-confirmed"
+    if source_origin == "external_web":
+        return "web content is untrusted recall data"
+    if source_origin == "tool_output":
+        return "tool-derived content is not user-authored"
+    if confirmation_status == "pending_review":
+        return "pending-review content is not surfaced as trusted recall"
+    return "non-elevated provenance; treat as untrusted recall data"
 
 
 class Fact(BaseModel):
@@ -85,7 +137,13 @@ class RetrievalResult(BaseModel):
     extracted_facts: list[Fact] = Field(default_factory=list)
     risk_score: float
     original_hash: str
+    source_origin: SourceOrigin = "user_direct"
+    channel_trust: ChannelTrust = "command"
+    confirmation_status: ConfirmationStatus = "user_asserted"
+    scope: MemoryScope = "user"
     taint_labels: list[TaintLabel] = Field(default_factory=list)
+    trust_band: TrustBand = "elevated"
+    trust_caveat: str | None = None
     quarantined: bool = False
     citation_count: int = 0
     last_cited_at: datetime | None = None
@@ -102,6 +160,41 @@ class RetrievalResult(BaseModel):
     verification_gap: bool = False
     revision_churn: bool = False
     conflict: bool = False
+
+    @model_validator(mode="before")
+    @classmethod
+    def _backfill_recall_provenance(cls, payload: Any) -> Any:
+        if not isinstance(payload, dict):
+            return payload
+        collection = payload.get("collection")
+        source_type = payload.get("source_type")
+        if collection not in _TRUST_PRIOR or source_type not in {"user", "external", "tool"}:
+            return payload
+        source_origin, channel_trust, confirmation_status = _default_recall_provenance(
+            collection=collection,
+            source_type=source_type,
+        )
+        payload.setdefault("source_origin", source_origin)
+        payload.setdefault("channel_trust", channel_trust)
+        payload.setdefault("confirmation_status", confirmation_status)
+        payload.setdefault("scope", "user")
+        return payload
+
+    @model_validator(mode="after")
+    def _derive_trust_metadata(self) -> RetrievalResult:
+        band = derive_trust_band(
+            self.source_origin,
+            self.channel_trust,
+            self.confirmation_status,
+        )
+        self.trust_band = band
+        self.trust_caveat = _trust_caveat_for(
+            source_origin=self.source_origin,
+            channel_trust=self.channel_trust,
+            confirmation_status=self.confirmation_status,
+            trust_band=band,
+        )
+        return self
 
 
 class SyncEmbeddingsProvider(Protocol):
@@ -180,11 +273,52 @@ class IngestionPipeline:
         source_type: Literal["user", "external", "tool"],
         content: str,
         collection: RetrievalCollection | None = None,
+        source_origin: SourceOrigin | None = None,
+        channel_trust: ChannelTrust | None = None,
+        confirmation_status: ConfirmationStatus | None = None,
+        scope: MemoryScope = "user",
     ) -> RetrievalResult:
         """Process content through firewall and store retrieval record."""
         chunk_id = uuid.uuid4().hex
         resolved_collection = collection or self._default_collection(source_type)
-        trusted_input = resolved_collection == "user_curated"
+        source_default_collection = self._default_collection(source_type)
+        source_default_origin, source_default_channel, source_default_confirmation = (
+            _default_recall_provenance(
+                collection=source_default_collection,
+                source_type=source_type,
+            )
+        )
+        default_origin, default_channel, default_confirmation = _default_recall_provenance(
+            collection=resolved_collection,
+            source_type=source_type,
+        )
+        resolved_origin = source_origin or source_default_origin
+        resolved_channel = channel_trust or source_default_channel
+        resolved_confirmation = confirmation_status or source_default_confirmation
+        if resolved_collection != source_default_collection and (
+            source_origin is None
+            or (
+                resolved_origin,
+                resolved_channel,
+                resolved_confirmation,
+            )
+            == (
+                source_default_origin,
+                source_default_channel,
+                source_default_confirmation,
+            )
+        ):
+            resolved_origin = default_origin
+            resolved_channel = default_channel
+            resolved_confirmation = default_confirmation
+        trusted_input = (
+            derive_trust_band(
+                resolved_origin,
+                resolved_channel,
+                resolved_confirmation,
+            )
+            == "elevated"
+        )
         inspection = self._firewall.inspect(
             content,
             mode=SanitizationMode.EXTRACT_FACTS,
@@ -204,6 +338,10 @@ class IngestionPipeline:
             ],
             risk_score=inspection.risk_score,
             original_hash=inspection.original_hash,
+            source_origin=resolved_origin,
+            channel_trust=resolved_channel,
+            confirmation_status=resolved_confirmation,
+            scope=scope,
             taint_labels=list(inspection.taint_labels),
             quarantined=quarantined,
         )
@@ -229,6 +367,7 @@ class IngestionPipeline:
         as_of: datetime | None = None,
         include_archived: bool = False,
         class_budgets: dict[RetrievalCollection, int] | None = None,
+        scope_filter: set[str] | None = None,
     ) -> RecallPack:
         """Compile the current Recall surface over retrieval storage."""
         if self._backend.count_records() == 0:
@@ -246,6 +385,15 @@ class IngestionPipeline:
         if capabilities is not None and capabilities & _SIDE_EFFECT_CAPABILITIES:
             collections.discard("external_web")
         if not collections:
+            return build_recall_pack(
+                query=query,
+                results=[],
+                max_tokens=max_tokens,
+                as_of=as_of,
+                include_archived=include_archived,
+            )
+        normalized_scopes = set(scope_filter) if scope_filter is not None else None
+        if normalized_scopes is not None and not normalized_scopes:
             return build_recall_pack(
                 query=query,
                 results=[],
@@ -285,6 +433,8 @@ class IngestionPipeline:
             record = self._record_from_backend_row(row)
             if record is None:
                 continue
+            if normalized_scopes is not None and record.scope not in normalized_scopes:
+                continue
             if as_of is not None and record.created_at > reference_time:
                 continue
 
@@ -304,7 +454,11 @@ class IngestionPipeline:
                 (reference_time - record.created_at).total_seconds() / 86_400.0,
             )
             decay_score = self._decay_score_for_age(age_days)
-            confidence = _RECALL_CONFIDENCE_PRIOR[record.collection]
+            confidence = default_confidence_for_triple(
+                record.source_origin,
+                record.channel_trust,
+                record.confirmation_status,
+            ) or _RECALL_CONFIDENCE_PRIOR[record.collection]
             importance_weight = _RECALL_IMPORTANCE_PRIOR[record.collection]
             archived = age_days >= _RECALL_ARCHIVE_AFTER_DAYS
             scored_record = record.model_copy(
@@ -318,7 +472,7 @@ class IngestionPipeline:
                     "effective_score": blended * decay_score * confidence * importance_weight,
                     "archived": archived,
                     "stale": age_days >= _RECALL_STALE_AFTER_DAYS,
-                    "verification_gap": record.collection in {"external_web", "tool_outputs"},
+                    "verification_gap": record.trust_band != "elevated",
                     "revision_churn": revision_counts.get(record.source_id, 0) > 1,
                     "conflict": False,
                 }
@@ -534,11 +688,20 @@ class IngestionPipeline:
         cited_at: datetime | None = None,
     ) -> int:
         """Persist citation usage for surfaced retrieval results."""
-
-        return self._backend.record_citations(
-            chunk_ids,
-            cited_at=(cited_at or datetime.now(UTC)).isoformat(),
-        )
+        try:
+            return self._backend.record_citations(
+                chunk_ids,
+                cited_at=(cited_at or datetime.now(UTC)).isoformat(),
+            )
+        except sqlite3.OperationalError as exc:
+            self._audit(
+                "memory.citation_record_failed",
+                {
+                    "reason": str(exc),
+                    "chunk_count": len([chunk_id for chunk_id in chunk_ids if chunk_id]),
+                },
+            )
+            return 0
 
     def read_original(self, chunk_id: str) -> str | None:
         """Return decrypted original content for explicit user inspection."""
@@ -987,6 +1150,10 @@ class IngestionPipeline:
             extracted_facts_json=json.dumps(payload["extracted_facts"], sort_keys=True),
             risk_score=float(payload["risk_score"]),
             original_hash=str(payload["original_hash"]),
+            source_origin=str(payload["source_origin"]),
+            channel_trust=str(payload["channel_trust"]),
+            confirmation_status=str(payload["confirmation_status"]),
+            scope=str(payload["scope"]),
             taint_labels_json=json.dumps(payload["taint_labels"], sort_keys=True),
             quarantined=bool(payload["quarantined"]),
             citation_count=int(payload.get("citation_count", 0)),
@@ -1010,6 +1177,10 @@ class IngestionPipeline:
                     "extracted_facts": json.loads(row.extracted_facts_json),
                     "risk_score": row.risk_score,
                     "original_hash": row.original_hash,
+                    "source_origin": row.source_origin,
+                    "channel_trust": row.channel_trust,
+                    "confirmation_status": row.confirmation_status,
+                    "scope": row.scope,
                     "taint_labels": json.loads(row.taint_labels_json),
                     "quarantined": row.quarantined,
                     "citation_count": row.citation_count,
@@ -1141,5 +1312,6 @@ class RetrieveRagTool:
             limit=limit,
             capabilities=capabilities,
         )
-        self._ingestion.record_citations(pack.citation_ids)
-        return pack.results
+        results = pack.results
+        self._ingestion.record_citations([item.chunk_id for item in results])
+        return results

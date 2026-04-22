@@ -70,6 +70,38 @@ async def test_memory_ingest_maps_tool_output_handle_to_tool_source_type(tmp_pat
 
 
 @pytest.mark.asyncio
+async def test_memory_ingest_preserves_handle_provenance_and_scope_for_recall(
+    tmp_path: Path,
+) -> None:
+    harness = _MemoryIngestHarness(tmp_path)
+    context = harness._memory_ingress_registry.mint(
+        source_origin="user_direct",
+        channel_trust="owner_observed",
+        confirmation_status="auto_accepted",
+        scope="channel",
+        source_id="discord:msg-1",
+        content="Owner-observed recall items must keep their canonical scope and trust fields.",
+    )
+
+    result = await harness.do_memory_ingest(
+        {
+            "ingress_context": context.handle_id,
+            "content": (
+                "Owner-observed recall items must keep their canonical scope "
+                "and trust fields."
+            ),
+        }
+    )
+
+    assert result["source_origin"] == "user_direct"
+    assert result["channel_trust"] == "owner_observed"
+    assert result["confirmation_status"] == "auto_accepted"
+    assert result["scope"] == "channel"
+    assert result["trust_band"] == "untrusted"
+    assert str(result["trust_caveat"]).strip()
+
+
+@pytest.mark.asyncio
 async def test_memory_ingest_rejects_mismatched_handle_binding(tmp_path: Path) -> None:
     harness = _MemoryIngestHarness(tmp_path)
     context = harness._memory_ingress_registry.mint(
@@ -167,6 +199,45 @@ async def test_m2_memory_retrieve_uses_recall_surface(
 
 
 @pytest.mark.asyncio
+async def test_m2_memory_retrieve_passes_scope_filter_to_recall_surface(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    harness = _MemoryIngestHarness(tmp_path)
+    stored = harness._ingestion.ingest(
+        source_id="doc-scope-rpc",
+        source_type="user",
+        content="Scoped recall RPC should forward the explicit scope filter.",
+    )
+    calls: list[tuple[str, int, set[Capability], set[str] | None]] = []
+
+    def _fake_compile_recall(
+        query: str,
+        *,
+        limit: int = 5,
+        capabilities: set[Capability] | None = None,
+        scope_filter: set[str] | None = None,
+        **_kwargs: object,
+    ) -> object:
+        calls.append((query, limit, set(capabilities or set()), scope_filter))
+        return build_recall_pack(query=query, results=[stored])
+
+    monkeypatch.setattr(harness._ingestion, "compile_recall", _fake_compile_recall)
+
+    result = await harness.do_memory_retrieve(
+        {
+            "query": "scoped recall",
+            "limit": 1,
+            "capabilities": [Capability.MEMORY_READ.value],
+            "scope_filter": ["session"],
+        }
+    )
+
+    assert calls == [("scoped recall", 1, {Capability.MEMORY_READ}, {"session"})]
+    assert result["count"] == 1
+
+
+@pytest.mark.asyncio
 async def test_m2_memory_retrieve_records_citations(tmp_path: Path) -> None:
     harness = _MemoryIngestHarness(tmp_path)
     stored = harness._ingestion.ingest(
@@ -187,3 +258,27 @@ async def test_m2_memory_retrieve_records_citations(tmp_path: Path) -> None:
     assert row is not None
     assert int(row[0]) == 1
     assert str(row[1]).strip()
+
+
+@pytest.mark.asyncio
+async def test_m2_memory_retrieve_citation_failures_do_not_break_response(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    harness = _MemoryIngestHarness(tmp_path)
+    stored = harness._ingestion.ingest(
+        source_id="doc-citation-best-effort",
+        source_type="external",
+        collection="project_docs",
+        content="Citation persistence failures should not break memory.retrieve.",
+    )
+
+    def _raise_operational_error(*_args: object, **_kwargs: object) -> int:
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(harness._ingestion._backend, "record_citations", _raise_operational_error)
+
+    result = await harness.do_memory_retrieve({"query": "citation persistence", "limit": 1})
+
+    assert result["count"] == 1
+    assert result["results"][0]["chunk_id"] == stored.chunk_id

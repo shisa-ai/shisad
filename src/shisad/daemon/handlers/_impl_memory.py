@@ -264,6 +264,10 @@ class MemoryImplMixin(HandlerMixinBase):
                 source_type=self._retrieval_source_type_for_ingress(context.source_origin),
                 content=content,
                 collection=params.get("collection"),
+                source_origin=context.source_origin,
+                channel_trust=context.channel_trust,
+                confirmation_status=context.confirmation_status,
+                scope=context.scope,
             )
             return cast(dict[str, Any], result.model_dump(mode="json"))
         if params.get(_CONTROL_API_AUTHENTICATED_WRITE):
@@ -300,6 +304,11 @@ class MemoryImplMixin(HandlerMixinBase):
             as_of = as_of_raw
         elif str(as_of_raw or "").strip():
             as_of = datetime.fromisoformat(str(as_of_raw))
+        scope_filter = (
+            {str(item).strip() for item in params.get("scope_filter", []) if str(item).strip()}
+            if params.get("scope_filter") is not None
+            else None
+        )
         pack = self._ingestion.compile_recall(
             query,
             limit=limit,
@@ -310,9 +319,11 @@ class MemoryImplMixin(HandlerMixinBase):
             ),
             as_of=as_of,
             include_archived=bool(params.get("include_archived", False)),
+            scope_filter=scope_filter,
         )
-        self._ingestion.record_citations(pack.citation_ids)
-        return cast(dict[str, Any], pack.legacy_payload())
+        payload = cast(dict[str, Any], pack.legacy_payload())
+        self._ingestion.record_citations([item.chunk_id for item in pack.results])
+        return payload
 
     async def do_memory_write(self, params: Mapping[str, Any]) -> dict[str, Any]:
         if params.get("ingress_context"):

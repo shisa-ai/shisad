@@ -2978,8 +2978,8 @@ class HandlerImplementation(
                 limit=int(arguments.get("limit", 5)),
                 capabilities=capabilities,
             )
-            self._ingestion.record_citations(pack.citation_ids)
             records = pack.results
+            self._ingestion.record_citations([item.chunk_id for item in records])
             await self._event_bus.publish(
                 ToolExecuted(
                     session_id=sid,

@@ -363,6 +363,9 @@ class MemoryRetrieveParams(_StrictParams):
     max_tokens: int | None = None
     as_of: datetime | None = None
     include_archived: bool = False
+    scope_filter: list[Literal["user", "project", "session", "channel", "workspace"]] | None = (
+        None
+    )
 
 
 class MemoryWriteParams(_StrictParams):
@@ -474,6 +477,12 @@ class MemoryIngestResult(BaseModel):
     extracted_facts: list[dict[str, Any]] = Field(default_factory=list)
     risk_score: float
     original_hash: str
+    source_origin: str = ""
+    channel_trust: str = ""
+    confirmation_status: str = ""
+    scope: str = ""
+    trust_band: str = ""
+    trust_caveat: str | None = None
     quarantined: bool = False
     citation_count: int = 0
     last_cited_at: datetime | str | None = None
