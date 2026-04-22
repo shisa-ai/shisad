@@ -36,6 +36,7 @@ from shisad.core.providers.base import Message, ProviderResponse
 from shisad.core.providers.local_planner import LocalPlannerProvider
 from shisad.daemon.runner import run_daemon
 from shisad.memory.manager import MemoryManager
+from shisad.memory.participation import InboxItemValue, inbox_item_key
 from shisad.memory.remap import legacy_source_view_origin
 from shisad.memory.schema import MemorySource
 from shisad.memory.summarizer import _SUMMARY_SYSTEM_PROMPT
@@ -84,6 +85,13 @@ def _extract_memory_context(planner_input: str) -> str:
     if stop >= 0:
         tail = tail[:stop]
     return tail
+
+
+def _latest_user_request_planner_input(records: list[str]) -> str:
+    for candidate in reversed(records):
+        if "=== USER REQUEST ===" in candidate or "=== USER GOAL ===" in candidate:
+            return candidate
+    raise AssertionError("expected at least one planner input containing a user request")
 
 
 def _tool_call(tool_name: str, arguments: dict[str, Any], *, call_id: str) -> dict[str, Any]:
@@ -1756,6 +1764,244 @@ async def test_contract_pending_review_entries_are_isolated_to_review_queue(
 
 
 @pytest.mark.asyncio
+async def test_contract_cli_planner_context_filters_identity_and_active_attention(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured_inputs: list[str] = []
+
+    def _seed(config: DaemonConfig) -> None:
+        manager = MemoryManager(config.data_dir / "memory_entries")
+        trusted_identity = manager.write_with_provenance(
+            entry_type="persona_fact",
+            key="persona:timezone",
+            value="Timezone is UTC.",
+            source=MemorySource(
+                origin="user",
+                source_id="identity-trusted",
+                extraction_method="manual",
+            ),
+            source_origin="user_direct",
+            channel_trust="command",
+            confirmation_status="user_asserted",
+            source_id="identity-trusted",
+            scope="user",
+            confidence=0.9,
+            confirmation_satisfied=True,
+        )
+        leaked_external = manager.write_with_provenance(
+            entry_type="persona_fact",
+            key="persona:leak-external",
+            value="This external persona fact should not enter Identity.",
+            source=MemorySource(
+                origin="external",
+                source_id="identity-external",
+                extraction_method="manual",
+            ),
+            source_origin="external_message",
+            channel_trust="shared_participant",
+            confirmation_status="auto_accepted",
+            source_id="identity-external",
+            scope="user",
+            confidence=0.4,
+            confirmation_satisfied=True,
+        )
+        leaked_tool = manager.write_with_provenance(
+            entry_type="persona_fact",
+            key="persona:leak-tool",
+            value="This tool-derived persona fact should not enter Identity.",
+            source=MemorySource(
+                origin="project_doc",
+                source_id="identity-tool",
+                extraction_method="tool.output",
+            ),
+            source_origin="tool_output",
+            channel_trust="tool_passed",
+            confirmation_status="pep_approved",
+            source_id="identity-tool",
+            scope="user",
+            confidence=0.4,
+            confirmation_satisfied=True,
+        )
+        leaked_consolidation = manager.write_with_provenance(
+            entry_type="persona_fact",
+            key="persona:leak-consolidation",
+            value="This consolidation-derived persona fact should not enter Identity.",
+            source=MemorySource(
+                origin="inferred",
+                source_id="identity-consolidation",
+                extraction_method="consolidation",
+            ),
+            source_origin="consolidation_derived",
+            channel_trust="consolidation",
+            confirmation_status="auto_accepted",
+            source_id="identity-consolidation",
+            scope="user",
+            confidence=0.4,
+            confirmation_satisfied=True,
+        )
+        owner_observed_attention = manager.write_with_provenance(
+            entry_type="waiting_on",
+            key="thread:owner-observed",
+            value="Owner-observed channel follow-up should surface in CLI attention.",
+            source=MemorySource(
+                origin="user",
+                source_id="attention-owner-observed",
+                extraction_method="manual",
+            ),
+            source_origin="user_direct",
+            channel_trust="owner_observed",
+            confirmation_status="auto_accepted",
+            source_id="attention-owner-observed",
+            scope="channel",
+            workflow_state="waiting",
+            confidence=0.5,
+            confirmation_satisfied=True,
+        )
+        cli_inbox = manager.write_with_provenance(
+            entry_type="inbox_item",
+            key=inbox_item_key(owner_id="owner-1", item_id="msg-general"),
+            value=InboxItemValue(
+                owner_id="owner-1",
+                sender_id="guest-1",
+                channel_id="discord:guild/general",
+                body="Shared inbox item should surface in CLI attention.",
+            ).model_dump(mode="python"),
+            source=MemorySource(
+                origin="external",
+                source_id="attention-inbox",
+                extraction_method="channel.ingest.structured",
+            ),
+            source_origin="external_message",
+            channel_trust="shared_participant",
+            confirmation_status="auto_accepted",
+            source_id="attention-inbox",
+            scope="user",
+            confidence=0.5,
+            confirmation_satisfied=True,
+        )
+        shared_noise = manager.write_with_provenance(
+            entry_type="open_thread",
+            key="thread:shared-noise",
+            value="Shared-participant channel noise should stay out of CLI attention.",
+            source=MemorySource(
+                origin="external",
+                source_id="attention-shared",
+                extraction_method="manual",
+            ),
+            source_origin="external_message",
+            channel_trust="shared_participant",
+            confirmation_status="auto_accepted",
+            source_id="attention-shared",
+            scope="channel",
+            workflow_state="active",
+            confidence=0.5,
+            confirmation_satisfied=True,
+        )
+        incoming_noise = manager.write_with_provenance(
+            entry_type="open_thread",
+            key="thread:incoming-noise",
+            value="External incoming channel noise should stay out of CLI attention.",
+            source=MemorySource(
+                origin="external",
+                source_id="attention-incoming",
+                extraction_method="manual",
+            ),
+            source_origin="external_message",
+            channel_trust="external_incoming",
+            confirmation_status="auto_accepted",
+            source_id="attention-incoming",
+            scope="channel",
+            workflow_state="active",
+            confidence=0.5,
+            confirmation_satisfied=True,
+        )
+        closed_thread = manager.write_with_provenance(
+            entry_type="open_thread",
+            key="thread:closed",
+            value="Closed agenda item should be excluded from active attention.",
+            source=MemorySource(
+                origin="user",
+                source_id="attention-closed",
+                extraction_method="manual",
+            ),
+            source_origin="user_direct",
+            channel_trust="command",
+            confirmation_status="user_asserted",
+            source_id="attention-closed",
+            scope="session",
+            workflow_state="closed",
+            confidence=0.5,
+            confirmation_satisfied=True,
+        )
+        assert all(
+            decision.kind == "allow"
+            for decision in (
+                trusted_identity,
+                leaked_external,
+                leaked_tool,
+                leaked_consolidation,
+                owner_observed_attention,
+                cli_inbox,
+                shared_noise,
+                incoming_noise,
+                closed_thread,
+            )
+        )
+
+    async with _contract_harness_context(tmp_path, monkeypatch, prestart=_seed) as harness:
+        async def _capture_complete(
+            self: LocalPlannerProvider,
+            messages: list[Message],
+            tools: list[dict[str, Any]] | None = None,
+        ) -> ProviderResponse:
+            if messages:
+                captured_inputs.append(str(messages[-1].content))
+            return await _stub_complete(self, messages, tools)
+
+        monkeypatch.setattr(LocalPlannerProvider, "complete", _capture_complete, raising=True)
+        sid = await _create_session(harness.client)
+        reply = await harness.client.call(
+            "session.message",
+            {"session_id": sid, "content": "hello"},
+        )
+        assert str(reply.get("response", "")).strip()
+
+    planner_input = _latest_user_request_planner_input(captured_inputs)
+    normalized_planner_input = planner_input.replace("^", "")
+    trusted_section = normalized_planner_input.split("=== USER REQUEST ===", 1)[0]
+
+    assert "identity_total=1" in trusted_section
+    assert "persona:timezone" in trusted_section
+    assert "persona:leak-external" not in trusted_section
+    assert "persona:leak-tool" not in trusted_section
+    assert "persona:leak-consolidation" not in trusted_section
+
+    assert "thread:owner-observed" in trusted_section
+    assert "inbox:owner-1:msg-general" in trusted_section
+    assert "thread:shared-noise" not in trusted_section
+    assert "thread:incoming-noise" not in trusted_section
+    assert "thread:closed" not in trusted_section
+
+    owner_attention_text = "Owner-observed channel follow-up should surface in CLI attention."
+    inbox_attention_text = "Shared inbox item should surface in CLI attention."
+    assert owner_attention_text in normalized_planner_input
+    assert inbox_attention_text in normalized_planner_input
+    assert owner_attention_text not in trusted_section
+    assert inbox_attention_text not in trusted_section
+    assert (
+        "Shared-participant channel noise should stay out of CLI attention."
+        not in normalized_planner_input
+    )
+    assert "External incoming channel noise should stay out of CLI attention." not in (
+        normalized_planner_input
+    )
+    assert "Closed agenda item should be excluded from active attention." not in (
+        normalized_planner_input
+    )
+
+
+@pytest.mark.asyncio
 async def test_contract_identity_candidate_cli_surface_and_accept_flow(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1823,6 +2069,78 @@ async def test_contract_identity_candidate_cli_surface_and_accept_flow(
             None,
         )
         assert isinstance(promoted, dict)
+
+
+@pytest.mark.asyncio
+async def test_contract_identity_candidate_reject_emits_backoff_and_closes_queue(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seeded: dict[str, str] = {}
+
+    def _seed(config: DaemonConfig) -> None:
+        manager = MemoryManager(config.data_dir / "memory_entries")
+        decision = manager.write_with_provenance(
+            entry_type="preference",
+            key="preference:tea",
+            value="I prefer tea over coffee.",
+            predicate="likes(tea)",
+            source=MemorySource(
+                origin="external",
+                source_id="candidate-identity-reject",
+                extraction_method="identity.candidate",
+            ),
+            source_origin="external_message",
+            channel_trust="shared_participant",
+            confirmation_status="pending_review",
+            source_id="candidate-identity-reject",
+            scope="user",
+            confidence=0.62,
+            confirmation_satisfied=True,
+        )
+        assert decision.entry is not None
+        seeded["candidate_id"] = decision.entry.id
+
+    async with _contract_harness_context(tmp_path, monkeypatch, prestart=_seed) as harness:
+        candidate_id = seeded["candidate_id"]
+        sid = await _create_session(harness.client)
+
+        surfaced = await harness.client.call(
+            "session.message",
+            {"session_id": sid, "content": "hello"},
+        )
+        assert candidate_id in str(surfaced.get("response", ""))
+
+        rejected = await harness.client.call(
+            "session.message",
+            {"session_id": sid, "content": f"/identity reject {candidate_id}"},
+        )
+        assert "Rejected identity candidate" in str(rejected.get("response", ""))
+
+        review_queue = await harness.client.call("memory.list_review_queue", {"limit": 10})
+        queued_ids = {
+            str(item.get("id") or item.get("entry_id") or "").strip()
+            for item in review_queue.get("entries", [])
+            if isinstance(item, dict)
+        }
+        assert candidate_id not in queued_ids
+
+        db_path = harness.config.data_dir / "memory_entries" / "memory.sqlite3"
+        with sqlite3.connect(db_path) as conn:
+            rejected_row = conn.execute(
+                """
+                SELECT metadata_json
+                FROM memory_events
+                WHERE entry_id = ? AND event_type = 'candidate_rejected'
+                ORDER BY timestamp DESC, rowid DESC
+                LIMIT 1
+                """,
+                (candidate_id,),
+            ).fetchone()
+
+        assert rejected_row is not None
+        rejected_meta = json.loads(str(rejected_row[0]))
+        assert rejected_meta.get("backoff_key") == "likes(tea)"
 
 
 @pytest.mark.asyncio
