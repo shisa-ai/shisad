@@ -2633,3 +2633,66 @@ async def test_contract_web_search_backend_unconfigured_is_actionable(
     payload = outputs["web.search"][0]
     assert payload.get("ok") is False
     assert payload.get("error") == "web_search_backend_unconfigured"
+
+
+@pytest.mark.asyncio
+async def test_contract_session_scoped_tool_handles_remain_session_scoped_on_write(
+    contract_harness_backend_unconfigured: ContractHarness,
+) -> None:
+    sid = await _create_session(contract_harness_backend_unconfigured.client)
+    reply = await contract_harness_backend_unconfigured.client.call(
+        "session.message",
+        {
+            "session_id": sid,
+            "content": "search for the latest news",
+        },
+    )
+    tool_output_records = reply.get("tool_outputs")
+    assert isinstance(tool_output_records, list)
+    web_search_record = next(
+        (
+            record
+            for record in tool_output_records
+            if isinstance(record, dict) and str(record.get("tool_name", "")) == "web.search"
+        ),
+        None,
+    )
+    assert isinstance(web_search_record, dict)
+    ingress_context = str(web_search_record.get("ingress_context", "")).strip()
+    content_digest = str(web_search_record.get("content_digest", "")).strip()
+    assert ingress_context
+    assert content_digest
+
+    created = await contract_harness_backend_unconfigured.client.call(
+        "memory.write",
+        {
+            "ingress_context": ingress_context,
+            "entry_type": "fact",
+            "key": "tool.web_search.status",
+            "value": "web search attempt noted",
+            "derivation_path": "summary",
+            "parent_digest": content_digest,
+        },
+    )
+    assert created.get("kind") == "require_confirmation"
+    assert created.get("reason") == "external_origin_requires_confirmation"
+
+    for extra_field in (
+        {"scope": "user"},
+        {"source_id": "forged-source"},
+        {"source_origin": "user_direct"},
+    ):
+        with pytest.raises(JsonRpcCallError) as excinfo:
+            await contract_harness_backend_unconfigured.client.call(
+                "memory.write",
+                {
+                    "ingress_context": ingress_context,
+                    "entry_type": "fact",
+                    "key": "tool.web_search.invalid",
+                    "value": "web search attempt noted",
+                    "derivation_path": "summary",
+                    "parent_digest": content_digest,
+                    **extra_field,
+                },
+            )
+        assert excinfo.value.code == -32602

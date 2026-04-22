@@ -2980,6 +2980,7 @@ def _serialize_tool_outputs(records: list[Any]) -> list[dict[str, Any]]:
         tool_name = str(getattr(record, "tool_name", "")).strip() or f"tool_{index}"
         payload = _parse_tool_output_payload(str(getattr(record, "content", "")))
         ingress_context = str(getattr(record, "ingress_context", "") or "").strip()
+        content_digest = str(getattr(record, "content_digest", "") or "").strip()
         taint_values_raw: Any = getattr(record, "taint_labels", set())
         taint_values_iterable: list[Any] | tuple[Any, ...] | set[Any] | frozenset[Any]
         if isinstance(taint_values_raw, (set, frozenset, list, tuple)):
@@ -3000,6 +3001,7 @@ def _serialize_tool_outputs(records: list[Any]) -> list[dict[str, Any]]:
                 "payload": payload,
                 "taint_labels": taint_values,
                 **({"ingress_context": ingress_context} if ingress_context else {}),
+                **({"content_digest": content_digest} if content_digest else {}),
             }
         )
     return serialized

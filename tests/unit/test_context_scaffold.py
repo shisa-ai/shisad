@@ -216,6 +216,7 @@ def test_m3_rr2_tool_output_serialization_preserves_non_json_and_success() -> No
         success=False,
         taint_labels=frozenset({TaintLabel.UNTRUSTED}),
         ingress_context="handle-123",
+        content_digest="digest-123",
     )
     serialized = _serialize_tool_outputs([record])
     assert len(serialized) == 1
@@ -225,6 +226,7 @@ def test_m3_rr2_tool_output_serialization_preserves_non_json_and_success() -> No
     assert serialized[0]["payload"]["structured"] is False
     assert serialized[0]["taint_labels"] == [TaintLabel.UNTRUSTED.value]
     assert serialized[0]["ingress_context"] == "handle-123"
+    assert serialized[0]["content_digest"] == "digest-123"
 
 
 def test_m4_cs6_task_ledger_entries_are_trusted_and_provenanced() -> None:
