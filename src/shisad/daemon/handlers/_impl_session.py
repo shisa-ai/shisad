@@ -104,13 +104,18 @@ from shisad.daemon.handlers._pending_approval import (
 from shisad.daemon.handlers._task_scope import task_declared_tdg_roots, task_resource_authorizer
 from shisad.governance.merge import PolicyMergeError
 from shisad.memory.context_defaults import resolve_active_attention_defaults
+from shisad.memory.identity_candidates import (
+    build_identity_observation_key,
+    detect_identity_observation,
+)
 from shisad.memory.ingestion import IngestionPipeline
 from shisad.memory.ingress import (
     IngressContext,
     mint_explicit_user_memory_ingress_context,
 )
+from shisad.memory.manager import MemoryManager
 from shisad.memory.remap import digest_memory_value
-from shisad.memory.schema import MemoryEntry
+from shisad.memory.schema import MemoryEntry, MemorySource
 from shisad.scheduler.schema import TaskEnvelope
 from shisad.security.control_plane.consensus import TRACE_VOTER_NAME
 from shisad.security.control_plane.schema import (
@@ -5458,6 +5463,54 @@ class SessionImplMixin(HandlerMixinBase):
             taint_labels=list(validated.firewall_result.taint_labels),
         )
 
+    def _record_identity_observation_candidate(
+        self,
+        *,
+        validated: SessionMessageValidationResult,
+    ) -> str | None:
+        memory_manager = cast(MemoryManager | None, getattr(self, "_memory_manager", None))
+        if memory_manager is None or getattr(self, "_memory_ingress_registry", None) is None:
+            return None
+        ingress_context = self._mint_explicit_memory_ingress_context(validated=validated)
+        if ingress_context is None:
+            return None
+        if (
+            ingress_context.source_origin != "user_direct"
+            or ingress_context.channel_trust != "owner_observed"
+        ):
+            return None
+        observation = detect_identity_observation(validated.firewall_result.sanitized_text)
+        if observation is None:
+            return None
+        content = validated.firewall_result.sanitized_text.strip()
+        key = build_identity_observation_key(
+            observation=observation,
+            source_id=ingress_context.source_id,
+            text=content,
+        )
+        decision = memory_manager.write_with_provenance(
+            entry_type="episode",
+            key=key,
+            value=content,
+            source=MemorySource(
+                origin="user",
+                source_id=ingress_context.source_id,
+                extraction_method=f"identity_candidate:{observation.pattern_id}",
+            ),
+            source_origin=ingress_context.source_origin,
+            channel_trust=ingress_context.channel_trust,
+            confirmation_status=ingress_context.confirmation_status,
+            source_id=ingress_context.source_id,
+            scope=ingress_context.scope,
+            confidence=observation.confidence,
+            taint_labels=list(ingress_context.taint_labels),
+            ingress_handle_id=ingress_context.handle_id,
+            content_digest=ingress_context.content_digest,
+        )
+        if decision.kind != "allow" or decision.entry is None:
+            return None
+        return decision.entry.id
+
     async def _synthesize_post_tool_response(
         self,
         *,
@@ -7119,6 +7172,7 @@ class SessionImplMixin(HandlerMixinBase):
         validated = await self._validate_and_load_session(params)
         if validated.early_response is not None:
             return validated.early_response
+        self._record_identity_observation_candidate(validated=validated)
         task_request = self._task_request_from_params(
             params=params,
             validated=validated,
