@@ -14,8 +14,72 @@ from shisad.memory.ingress import DerivationPath
 from shisad.memory.remap import digest_memory_value, legacy_source_view_origin
 from shisad.memory.schema import MemorySource
 
+_CONTROL_API_AUTHENTICATED_WRITE = "_control_api_authenticated_write"
+
 
 class MemoryImplMixin(HandlerMixinBase):
+    @staticmethod
+    def _canonical_ingress_content(value: Any) -> str | bytes:
+        if isinstance(value, (str, bytes)):
+            return value
+        return json.dumps(
+            value,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+            default=str,
+        )
+
+    @staticmethod
+    def _source_id_for_control_write(params: Mapping[str, Any]) -> str:
+        source = params.get("source")
+        if isinstance(source, Mapping):
+            source_id = str(source.get("source_id", "")).strip()
+            if source_id:
+                return source_id
+        source_id = str(params.get("source_id", "")).strip()
+        return source_id or "cli"
+
+    @staticmethod
+    def _firewall_taint_labels(params: Mapping[str, Any]) -> list[Any]:
+        firewall_result = params.get("_firewall_result")
+        if not isinstance(firewall_result, Mapping):
+            return []
+        taints = firewall_result.get("taint_labels")
+        if not isinstance(taints, list):
+            return []
+        return [item for item in taints if isinstance(item, str)]
+
+    def _write_control_api_authenticated_entry(
+        self,
+        params: Mapping[str, Any],
+        *,
+        entry_type: str,
+        key: str,
+        value: Any,
+        confidence: float,
+    ) -> dict[str, Any]:
+        context = self._memory_ingress_registry.mint(
+            source_origin="user_direct",
+            channel_trust="command",
+            confirmation_status="user_asserted",
+            scope="user",
+            source_id=self._source_id_for_control_write(params),
+            content=self._canonical_ingress_content(value),
+            taint_labels=self._firewall_taint_labels(params),
+        )
+        handle_params = dict(params)
+        handle_params["ingress_context"] = context.handle_id
+        if not isinstance(value, (str, bytes)):
+            handle_params["content_digest"] = digest_memory_value(value)
+        return self._write_handle_bound_entry(
+            handle_params,
+            entry_type=entry_type,
+            key=key,
+            value=value,
+            confidence=confidence,
+        )
+
     def _write_handle_bound_entry(
         self,
         params: Mapping[str, Any],
@@ -98,6 +162,14 @@ class MemoryImplMixin(HandlerMixinBase):
                 value=params.get("value"),
                 confidence=float(params.get("confidence", 0.5)),
             )
+        if params.get(_CONTROL_API_AUTHENTICATED_WRITE):
+            return self._write_control_api_authenticated_entry(
+                params,
+                entry_type=str(params.get("entry_type", "fact")),
+                key=str(params.get("key", "")),
+                value=params.get("value"),
+                confidence=float(params.get("confidence", 0.5)),
+            )
         source = MemorySource.model_validate(params.get("source", {}))
         decision = self._memory_manager.write(
             entry_type=params.get("entry_type", "fact"),
@@ -151,6 +223,14 @@ class MemoryImplMixin(HandlerMixinBase):
     async def do_note_create(self, params: Mapping[str, Any]) -> dict[str, Any]:
         if params.get("ingress_context"):
             return self._write_handle_bound_entry(
+                params,
+                entry_type="note",
+                key=str(params.get("key", "")),
+                value=str(params.get("content", "")),
+                confidence=float(params.get("confidence", 0.8)),
+            )
+        if params.get(_CONTROL_API_AUTHENTICATED_WRITE):
+            return self._write_control_api_authenticated_entry(
                 params,
                 entry_type="note",
                 key=str(params.get("key", "")),
@@ -260,6 +340,14 @@ class MemoryImplMixin(HandlerMixinBase):
             raise ValueError("status must be one of: open, in_progress, done")
         if params.get("ingress_context"):
             return self._write_handle_bound_entry(
+                params,
+                entry_type="todo",
+                key=f"todo:{payload['title'][:64]}",
+                value=payload,
+                confidence=float(params.get("confidence", 0.8)),
+            )
+        if params.get(_CONTROL_API_AUTHENTICATED_WRITE):
+            return self._write_control_api_authenticated_entry(
                 params,
                 entry_type="todo",
                 key=f"todo:{payload['title'][:64]}",

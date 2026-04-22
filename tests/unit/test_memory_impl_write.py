@@ -276,3 +276,76 @@ async def test_memory_write_supports_supersedes_chain(tmp_path: Path) -> None:
     assert second["entry"] is not None
     assert second["entry"]["version"] == 2
     assert second["entry"]["supersedes"] == first["entry"]["id"]
+
+
+@pytest.mark.asyncio
+async def test_memory_write_control_api_path_mints_user_asserted_handle(tmp_path: Path) -> None:
+    harness = _MemoryWriteHarness(tmp_path)
+
+    result = await harness.do_memory_write(
+        {
+            "_control_api_authenticated_write": True,
+            "entry_type": "fact",
+            "key": "profile.note",
+            "value": "typed directly in CLI",
+            "source": {
+                "origin": "external",
+                "source_id": "cli-1",
+                "extraction_method": "cli",
+            },
+        }
+    )
+
+    assert result["kind"] == "allow"
+    entry = result["entry"]
+    assert entry is not None
+    assert entry["source_origin"] == "user_direct"
+    assert entry["channel_trust"] == "command"
+    assert entry["confirmation_status"] == "user_asserted"
+    assert entry["ingress_handle_id"]
+
+
+@pytest.mark.asyncio
+async def test_note_create_control_api_path_mints_user_asserted_handle(tmp_path: Path) -> None:
+    harness = _MemoryWriteHarness(tmp_path)
+
+    result = await harness.do_note_create(
+        {
+            "_control_api_authenticated_write": True,
+            "key": "note:cli",
+            "content": "direct note command",
+            "origin": "external",
+            "source_id": "cli-note-1",
+        }
+    )
+
+    assert result["kind"] == "allow"
+    entry = result["entry"]
+    assert entry is not None
+    assert entry["source_origin"] == "user_direct"
+    assert entry["confirmation_status"] == "user_asserted"
+    assert entry["ingress_handle_id"]
+
+
+@pytest.mark.asyncio
+async def test_todo_create_control_api_path_mints_user_asserted_handle(tmp_path: Path) -> None:
+    harness = _MemoryWriteHarness(tmp_path)
+
+    result = await harness.do_todo_create(
+        {
+            "_control_api_authenticated_write": True,
+            "title": "review queue",
+            "details": "",
+            "status": "open",
+            "due_date": "",
+            "origin": "external",
+            "source_id": "cli-todo-1",
+        }
+    )
+
+    assert result["kind"] == "allow"
+    entry = result["entry"]
+    assert entry is not None
+    assert entry["source_origin"] == "user_direct"
+    assert entry["confirmation_status"] == "user_asserted"
+    assert entry["ingress_handle_id"]

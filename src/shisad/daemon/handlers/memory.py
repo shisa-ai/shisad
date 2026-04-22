@@ -47,6 +47,8 @@ from shisad.daemon.context import RequestContext
 from shisad.daemon.handlers._helpers import build_params_payload
 from shisad.daemon.handlers._impl import HandlerImplementation
 
+_CONTROL_API_AUTHENTICATED_WRITE = "_control_api_authenticated_write"
+
 
 class MemoryHandlers:
     """Memory CRUD and retrieval handlers."""
@@ -89,6 +91,7 @@ class MemoryHandlers:
             ctx,
             internal_ingress_marker=self._internal_ingress_marker,
         )
+        payload[_CONTROL_API_AUTHENTICATED_WRITE] = True
         return MemoryWriteResult.model_validate(await self._impl.do_memory_write(payload))
 
     async def handle_memory_list(
@@ -187,6 +190,7 @@ class MemoryHandlers:
             ctx,
             internal_ingress_marker=self._internal_ingress_marker,
         )
+        payload[_CONTROL_API_AUTHENTICATED_WRITE] = True
         return MemoryWriteResult.model_validate(await self._impl.do_note_create(payload))
 
     async def handle_note_list(
@@ -271,6 +275,7 @@ class MemoryHandlers:
             ctx,
             internal_ingress_marker=self._internal_ingress_marker,
         )
+        payload[_CONTROL_API_AUTHENTICATED_WRITE] = True
         return MemoryWriteResult.model_validate(await self._impl.do_todo_create(payload))
 
     async def handle_todo_list(
