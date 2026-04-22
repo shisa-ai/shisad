@@ -23,6 +23,7 @@ from pydantic import BaseModel, Field, ValidationError
 
 from shisad.core.tools.schema import ToolDefinition, ToolParameter
 from shisad.core.types import Capability, TaintLabel, ToolName
+from shisad.memory.backend import RetrievalBackendRow, SQLiteRetrievalBackend
 from shisad.security.firewall import ContentFirewall, SanitizationMode
 
 RetrievalCollection = Literal["user_curated", "project_docs", "external_web", "tool_outputs"]
@@ -106,8 +107,7 @@ class IngestionPipeline:
         self._storage_dir.mkdir(parents=True, exist_ok=True)
         self._legacy_storage_dir = legacy_storage_dir
         self._db_path = self._storage_dir / "memory.sqlite3"
-        self._records: dict[str, RetrievalResult] = {}
-        self._vectors: dict[str, list[float]] = {}
+        self._backend = SQLiteRetrievalBackend(self._db_path)
         self._firewall = firewall or ContentFirewall()
         self._embedding_fingerprint = embedding_fingerprint or EmbeddingFingerprint(
             model_id="text-embedding-3-small",
@@ -125,7 +125,7 @@ class IngestionPipeline:
         self._active_key_id = ""
         self._load_or_create_keys()
         self._import_legacy_records()
-        self._load_existing_records()
+        self._backend.backfill_search_index(embed_text=self._embed_text)
 
     @property
     def embedding_fingerprint(self) -> EmbeddingFingerprint:
@@ -174,11 +174,12 @@ class IngestionPipeline:
             quarantined=quarantined,
         )
 
-        self._records[chunk_id] = result
-        self._vectors[chunk_id] = self._embed_text(result.content_sanitized)
+        embedding = self._embed_text(result.content_sanitized)
         encrypted_original = self._encrypt_payload(content.encode("utf-8"), chunk_id=chunk_id)
-        with self._connect_db() as conn:
-            self._upsert_record(conn, result, encrypted_original)
+        self._backend.upsert_record(
+            row=self._backend_row_for_result(result, embedding=embedding),
+            original_payload=encrypted_original,
+        )
         return result
 
     def retrieve(
@@ -192,7 +193,7 @@ class IngestionPipeline:
         require_corroboration: bool = False,
     ) -> list[RetrievalResult]:
         """Hybrid retrieval over lexical + semantic + trust prior."""
-        if not self._records:
+        if self._backend.count_records() == 0:
             return []
 
         collections = (
@@ -203,17 +204,29 @@ class IngestionPipeline:
 
         terms = [term for term in query.lower().split() if term]
         query_vector = self._embed_text(query)
+        rows = self._backend.list_records(
+            collections=set(collections),
+            include_quarantined=include_quarantined,
+        )
+        if not rows:
+            return []
+        lexical_matches = self._backend.lexical_match_ids(
+            query,
+            collections=set(collections),
+            include_quarantined=include_quarantined,
+        )
         scored: list[tuple[float, RetrievalResult]] = []
 
-        for chunk_id, record in self._records.items():
-            if record.collection not in collections:
-                continue
-            if record.quarantined and not include_quarantined:
+        for row in rows:
+            record = self._record_from_backend_row(row)
+            if record is None:
                 continue
 
-            text = record.content_sanitized.lower()
-            lexical = float(sum(text.count(term) for term in terms))
-            semantic = self._cosine_similarity(query_vector, self._vectors.get(chunk_id, []))
+            lexical = 0.0
+            if row.chunk_id in lexical_matches:
+                text = row.content_sanitized.lower()
+                lexical = float(sum(text.count(term) for term in terms))
+            semantic = self._cosine_similarity(query_vector, row.embedding)
             trust = _TRUST_PRIOR[record.collection]
             blended = (0.45 * lexical) + (0.45 * semantic) + (0.10 * trust)
             scored.append(
@@ -242,15 +255,11 @@ class IngestionPipeline:
 
     def read_original(self, chunk_id: str) -> str | None:
         """Return decrypted original content for explicit user inspection."""
-        with self._connect_db() as conn:
-            row = conn.execute(
-                "SELECT original_payload FROM retrieval_records WHERE chunk_id = ?",
-                (chunk_id,),
-            ).fetchone()
-        if row is None:
+        payload = self._backend.read_original_payload(chunk_id)
+        if payload is None:
             return None
         try:
-            decrypted = self._decrypt_payload(bytes(row["original_payload"]), chunk_id=chunk_id)
+            decrypted = self._decrypt_payload(payload, chunk_id=chunk_id)
         except (InvalidTag, OSError, ValueError, TypeError, KeyError):
             self._audit(
                 "memory.original_read_failed",
@@ -265,20 +274,12 @@ class IngestionPipeline:
         self._active_key_id = new_key_id
         self._persist_key_manifest()
         if reencrypt_existing:
-            with self._connect_db() as conn:
-                rows = conn.execute(
-                    "SELECT chunk_id, original_payload FROM retrieval_records ORDER BY chunk_id ASC"
-                ).fetchall()
-                for row in rows:
-                    chunk_id = str(row["chunk_id"])
-                    plaintext = self._decrypt_payload(
-                        bytes(row["original_payload"]),
-                        chunk_id=chunk_id,
-                    )
-                    conn.execute(
-                        "UPDATE retrieval_records SET original_payload = ? WHERE chunk_id = ?",
-                        (self._encrypt_payload(plaintext, chunk_id=chunk_id), chunk_id),
-                    )
+            for chunk_id, payload in self._backend.iter_original_payloads():
+                plaintext = self._decrypt_payload(payload, chunk_id=chunk_id)
+                self._backend.replace_original_payload(
+                    chunk_id=chunk_id,
+                    original_payload=self._encrypt_payload(plaintext, chunk_id=chunk_id),
+                )
         self._audit(
             "memory.key_rotated",
             {"active_key_id": self._active_key_id, "reencrypt_existing": reencrypt_existing},
@@ -287,46 +288,51 @@ class IngestionPipeline:
 
     def quarantine_source(self, source_id: str, *, reason: str = "") -> int:
         """Quarantine all chunks from a suspicious source."""
-        count = 0
-        changed_ids: list[str] = []
-        for chunk_id, record in list(self._records.items()):
-            if record.source_id != source_id or record.quarantined:
-                continue
-            self._records[chunk_id] = record.model_copy(update={"quarantined": True})
-            changed_ids.append(chunk_id)
-            count += 1
-        if changed_ids:
-            with self._connect_db() as conn:
-                conn.executemany(
-                    "UPDATE retrieval_records SET quarantined = 1 WHERE chunk_id = ?",
-                    [(chunk_id,) for chunk_id in changed_ids],
-                )
+        count = self._backend.quarantine_source(source_id)
         _ = reason
         return count
 
     def persisted_artifact_count(self) -> int:
         """Return the number of persisted retrieval records."""
-        with self._connect_db() as conn:
-            row = conn.execute("SELECT COUNT(*) FROM retrieval_records").fetchone()
-        return int(row[0]) if row is not None else 0
+        return self._backend.count_records()
 
     def artifacts_empty(self) -> bool:
         """Whether retrieval storage is empty apart from key metadata."""
         return self.persisted_artifact_count() == 0
 
+    def search_index_count(self) -> int:
+        """Return the number of persisted vector-index rows."""
+        return self._backend.count_vectors()
+
+    def list_records(
+        self,
+        *,
+        limit: int = 100,
+        allowed_collections: set[RetrievalCollection] | None = None,
+        include_quarantined: bool = False,
+    ) -> list[RetrievalResult]:
+        """Return persisted retrieval records without ranking."""
+        rows = self._backend.list_records(
+            collections=set(allowed_collections) if allowed_collections is not None else None,
+            include_quarantined=include_quarantined,
+        )
+        records = [
+            record
+            for row in rows
+            if (record := self._record_from_backend_row(row)) is not None
+        ]
+        records.sort(key=lambda item: item.created_at, reverse=True)
+        return records[:limit]
+
     def reset_storage(self) -> None:
         """Clear retrieval rows while preserving the shared SQLite substrate."""
-        self._records.clear()
-        self._vectors.clear()
         self._key_material_by_id.clear()
         self._key_metadata_by_id.clear()
         self._active_key_id = ""
+        self._backend.clear_records()
         with self._connect_db() as conn:
-            conn.execute("DELETE FROM retrieval_records")
             conn.execute("DELETE FROM retrieval_keys")
-            conn.execute(
-                "DELETE FROM retrieval_metadata WHERE key != 'master_salt_b64'"
-            )
+            conn.execute("DELETE FROM retrieval_metadata WHERE key != 'master_salt_b64'")
         for root in self._legacy_storage_roots():
             shutil.rmtree(root / "sanitized", ignore_errors=True)
             shutil.rmtree(root / "original_encrypted", ignore_errors=True)
@@ -574,50 +580,6 @@ class IngestionPipeline:
             )
             self._metadata_set("active_key_id", self._active_key_id, conn=conn)
 
-    def _load_existing_records(self) -> None:
-        self._records.clear()
-        self._vectors.clear()
-        with self._connect_db() as conn:
-            rows = conn.execute(
-                """
-                SELECT
-                    chunk_id,
-                    source_id,
-                    source_type,
-                    collection,
-                    created_at,
-                    content_sanitized,
-                    extracted_facts_json,
-                    risk_score,
-                    original_hash,
-                    taint_labels_json,
-                    quarantined
-                FROM retrieval_records
-                ORDER BY created_at ASC, chunk_id ASC
-                """
-            ).fetchall()
-        for row in rows:
-            try:
-                record = RetrievalResult.model_validate(
-                    {
-                        "chunk_id": str(row["chunk_id"]),
-                        "source_id": str(row["source_id"]),
-                        "source_type": str(row["source_type"]),
-                        "collection": str(row["collection"]),
-                        "created_at": str(row["created_at"]),
-                        "content_sanitized": str(row["content_sanitized"]),
-                        "extracted_facts": json.loads(str(row["extracted_facts_json"])),
-                        "risk_score": float(row["risk_score"]),
-                        "original_hash": str(row["original_hash"]),
-                        "taint_labels": json.loads(str(row["taint_labels_json"])),
-                        "quarantined": bool(row["quarantined"]),
-                    }
-                )
-            except (TypeError, ValueError, ValidationError, json.JSONDecodeError):
-                continue
-            self._records[record.chunk_id] = record
-            self._vectors[record.chunk_id] = self._embed_text(record.content_sanitized)
-
     def _import_legacy_records(self) -> None:
         with self._connect_db() as conn:
             existing_chunk_ids = {
@@ -639,7 +601,13 @@ class IngestionPipeline:
                         encrypted_original = (original_dir / f"{record.chunk_id}.bin").read_bytes()
                     except (OSError, UnicodeError, ValidationError):
                         continue
-                    self._upsert_record(conn, record, encrypted_original)
+                    self._backend.upsert_record(
+                        row=self._backend_row_for_result(
+                            record,
+                            embedding=self._embed_text(record.content_sanitized),
+                        ),
+                        original_payload=encrypted_original,
+                    )
                     existing_chunk_ids.add(record.chunk_id)
 
     def _connect_db(self) -> sqlite3.Connection:
@@ -649,24 +617,6 @@ class IngestionPipeline:
 
     def _ensure_schema(self) -> None:
         with self._connect_db() as conn:
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS retrieval_records (
-                    chunk_id TEXT PRIMARY KEY,
-                    source_id TEXT NOT NULL,
-                    source_type TEXT NOT NULL,
-                    collection TEXT NOT NULL,
-                    created_at TEXT NOT NULL,
-                    content_sanitized TEXT NOT NULL,
-                    extracted_facts_json TEXT NOT NULL,
-                    risk_score REAL NOT NULL,
-                    original_hash TEXT NOT NULL,
-                    taint_labels_json TEXT NOT NULL,
-                    quarantined INTEGER NOT NULL,
-                    original_payload BLOB NOT NULL
-                )
-                """
-            )
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS retrieval_keys (
@@ -684,24 +634,6 @@ class IngestionPipeline:
                     key TEXT PRIMARY KEY,
                     value_text TEXT NOT NULL
                 )
-                """
-            )
-            conn.execute(
-                """
-                CREATE INDEX IF NOT EXISTS idx_retrieval_records_collection_created
-                ON retrieval_records (collection, created_at)
-                """
-            )
-            conn.execute(
-                """
-                CREATE INDEX IF NOT EXISTS idx_retrieval_records_source_created
-                ON retrieval_records (source_id, created_at)
-                """
-            )
-            conn.execute(
-                """
-                CREATE INDEX IF NOT EXISTS idx_retrieval_records_quarantined
-                ON retrieval_records (quarantined, created_at)
                 """
             )
 
@@ -752,44 +684,47 @@ class IngestionPipeline:
         return tuple(roots)
 
     @staticmethod
-    def _upsert_record(
-        conn: sqlite3.Connection,
+    def _backend_row_for_result(
         record: RetrievalResult,
-        original_payload: bytes,
-    ) -> None:
+        *,
+        embedding: list[float],
+    ) -> RetrievalBackendRow:
         payload = record.model_dump(mode="json")
-        conn.execute(
-            """
-            INSERT OR REPLACE INTO retrieval_records (
-                chunk_id,
-                source_id,
-                source_type,
-                collection,
-                created_at,
-                content_sanitized,
-                extracted_facts_json,
-                risk_score,
-                original_hash,
-                taint_labels_json,
-                quarantined,
-                original_payload
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                payload["chunk_id"],
-                payload["source_id"],
-                payload["source_type"],
-                payload["collection"],
-                payload["created_at"],
-                payload["content_sanitized"],
-                json.dumps(payload["extracted_facts"], sort_keys=True),
-                payload["risk_score"],
-                payload["original_hash"],
-                json.dumps(payload["taint_labels"], sort_keys=True),
-                int(payload["quarantined"]),
-                original_payload,
-            ),
+        return RetrievalBackendRow(
+            chunk_id=str(payload["chunk_id"]),
+            source_id=str(payload["source_id"]),
+            source_type=str(payload["source_type"]),
+            collection=str(payload["collection"]),
+            created_at=str(payload["created_at"]),
+            content_sanitized=str(payload["content_sanitized"]),
+            extracted_facts_json=json.dumps(payload["extracted_facts"], sort_keys=True),
+            risk_score=float(payload["risk_score"]),
+            original_hash=str(payload["original_hash"]),
+            taint_labels_json=json.dumps(payload["taint_labels"], sort_keys=True),
+            quarantined=bool(payload["quarantined"]),
+            embedding=embedding,
         )
+
+    @staticmethod
+    def _record_from_backend_row(row: RetrievalBackendRow) -> RetrievalResult | None:
+        try:
+            return RetrievalResult.model_validate(
+                {
+                    "chunk_id": row.chunk_id,
+                    "source_id": row.source_id,
+                    "source_type": row.source_type,
+                    "collection": row.collection,
+                    "created_at": row.created_at,
+                    "content_sanitized": row.content_sanitized,
+                    "extracted_facts": json.loads(row.extracted_facts_json),
+                    "risk_score": row.risk_score,
+                    "original_hash": row.original_hash,
+                    "taint_labels": json.loads(row.taint_labels_json),
+                    "quarantined": row.quarantined,
+                }
+            )
+        except (TypeError, ValueError, ValidationError, json.JSONDecodeError):
+            return None
 
     def _encrypt_payload(self, payload: bytes, *, chunk_id: str | None = None) -> bytes:
         key = self._key_material_by_id[self._active_key_id]

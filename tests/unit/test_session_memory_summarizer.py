@@ -96,7 +96,7 @@ async def test_m1_conversation_summarizer_mints_handles_for_memory_and_ingest(
 
         summary_records = [
             record
-            for record in services.ingestion._records.values()
+            for record in services.ingestion.list_records(limit=20)
             if record.source_id == entry.source_id
         ]
         assert len(summary_records) == 1

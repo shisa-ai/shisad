@@ -562,8 +562,8 @@ async def test_daemon_services_reset_test_state_clears_documented_subsystems(
         assert list(services.checkpoint_store._dir.iterdir()) == []
         assert services.channel_state_store.snapshot("matrix")["seen_count"] == 0
         assert services.evidence_store._refs == {}
-        assert services.ingestion._records == {}
-        assert services.ingestion._vectors == {}
+        assert services.ingestion.artifacts_empty()
+        assert services.ingestion.search_index_count() == 0
         assert services.ingestion._active_key_id
         assert services.selfmod_manager._inventory.skills == {}
         assert services.selfmod_manager._inventory.behavior_packs == {}

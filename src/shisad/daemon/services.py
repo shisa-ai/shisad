@@ -1043,8 +1043,8 @@ class DaemonServices:
         _unlink_if_exists(self.evidence_store._metadata_path)
 
         # -- Ingestion --
-        cleared["ingestion_records"] = len(self.ingestion._records)
-        cleared["ingestion_vectors"] = len(self.ingestion._vectors)
+        cleared["ingestion_records"] = self.ingestion.persisted_artifact_count()
+        cleared["ingestion_vectors"] = self.ingestion.search_index_count()
         cleared["ingestion_keys"] = len(self.ingestion._key_metadata_by_id)
         cleared["ingestion_artifacts"] = self.ingestion.persisted_artifact_count()
         self.ingestion.reset_storage()

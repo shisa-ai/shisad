@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -76,3 +77,53 @@ def test_m1_embedding_fingerprint_reindex_detection(tmp_path: Path) -> None:
             chunk_size=1024,
         )
     )
+
+
+def test_m1_ingestion_pipeline_persists_sqlite_backend_indexes(tmp_path: Path) -> None:
+    pipeline = IngestionPipeline(tmp_path / "memory")
+    stored = pipeline.ingest(
+        source_id="doc-idx",
+        source_type="external",
+        content="Defense layers depend on careful retrieval indexing.",
+    )
+
+    results = pipeline.retrieve("retrieval indexing", limit=1)
+
+    assert results
+    assert results[0].chunk_id == stored.chunk_id
+    with sqlite3.connect(tmp_path / "memory" / "memory.sqlite3") as conn:
+        vector_count = conn.execute("SELECT COUNT(*) FROM retrieval_vectors").fetchone()
+        fts_count = conn.execute("SELECT COUNT(*) FROM retrieval_fts").fetchone()
+
+    assert vector_count is not None
+    assert fts_count is not None
+    assert int(vector_count[0]) == 1
+    assert int(fts_count[0]) == 1
+
+
+def test_m1_ingestion_pipeline_rebuilds_sqlite_indexes_after_upgrade(tmp_path: Path) -> None:
+    storage = tmp_path / "memory"
+    first = IngestionPipeline(storage)
+    stored = first.ingest(
+        source_id="doc-upgrade",
+        source_type="external",
+        content="Defense layers still matter after backend upgrades.",
+    )
+
+    with sqlite3.connect(storage / "memory.sqlite3") as conn:
+        conn.execute("DELETE FROM retrieval_vectors")
+        conn.execute("DELETE FROM retrieval_fts")
+
+    restarted = IngestionPipeline(storage)
+    results = restarted.retrieve("backend upgrades", limit=5)
+
+    assert results
+    assert results[0].chunk_id == stored.chunk_id
+    with sqlite3.connect(storage / "memory.sqlite3") as conn:
+        vector_count = conn.execute("SELECT COUNT(*) FROM retrieval_vectors").fetchone()
+        fts_count = conn.execute("SELECT COUNT(*) FROM retrieval_fts").fetchone()
+
+    assert vector_count is not None
+    assert fts_count is not None
+    assert int(vector_count[0]) == 1
+    assert int(fts_count[0]) == 1
