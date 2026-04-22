@@ -14,8 +14,9 @@ from typing import Any, ClassVar
 from pydantic import ValidationError
 
 from shisad.core.types import TaintLabel
-from shisad.memory.remap import resolve_legacy_source_origin
-from shisad.memory.schema import MemoryEntry, MemorySource, MemoryWriteDecision
+from shisad.memory.events import MemoryEvent, MemoryEventStore
+from shisad.memory.remap import ACTIVE_AGENDA_ENTRY_TYPES, resolve_legacy_source_origin
+from shisad.memory.schema import MemoryEntry, MemorySource, MemoryWriteDecision, WorkflowState
 from shisad.memory.trust import (
     ChannelTrust,
     ConfirmationStatus,
@@ -57,6 +58,7 @@ class MemoryManager:
         self._storage_dir = storage_dir
         self._storage_dir.mkdir(parents=True, exist_ok=True)
         self._entries: dict[str, MemoryEntry] = {}
+        self._event_store = MemoryEventStore(self._storage_dir / "memory_events.jsonl")
         self._default_ttl_days = default_ttl_days
         self._audit_hook = audit_hook
         self._pii_detector = pii_detector or PIIDetector()
@@ -111,6 +113,7 @@ class MemoryManager:
         taint_labels: list[TaintLabel] | None = None,
         ingress_handle_id: str | None = None,
         content_digest: str | None = None,
+        workflow_state: WorkflowState | None = None,
     ) -> MemoryWriteDecision:
         text_value = str(value)
         if self._looks_instruction_like(text_value):
@@ -155,6 +158,14 @@ class MemoryManager:
             confirmation_status,
             fallback=confidence,
         )
+        if entry_type not in ACTIVE_AGENDA_ENTRY_TYPES and workflow_state is not None:
+            return MemoryWriteDecision(
+                kind="reject",
+                reason="workflow_state_requires_active_agenda_entry_type",
+            )
+        resolved_workflow_state = workflow_state or (
+            "active" if entry_type in ACTIVE_AGENDA_ENTRY_TYPES else None
+        )
         entry = MemoryEntry(
             entry_type=entry_type,
             key=key,
@@ -170,9 +181,41 @@ class MemoryManager:
             scope=scope,
             ingress_handle_id=ingress_handle_id,
             content_digest=content_digest,
+            workflow_state=resolved_workflow_state,
         )
         self._entries[entry.id] = entry
         self._persist_entry(entry)
+        self._record_event(
+            entry=entry,
+            event_type="created",
+            ingress_handle_id=ingress_handle_id,
+            metadata={
+                "status": entry.status,
+                "workflow_state": entry.workflow_state,
+                "source_origin": entry.source_origin,
+            },
+        )
+        if entry.entry_type in ACTIVE_AGENDA_ENTRY_TYPES:
+            self._record_event(
+                entry=entry,
+                event_type="workflow_state_changed",
+                ingress_handle_id=ingress_handle_id,
+                metadata={
+                    "from": None,
+                    "to": entry.workflow_state,
+                    "status": entry.status,
+                    "reason": "init_default" if workflow_state is None else "init_explicit",
+                },
+            )
+            self._audit(
+                "memory.workflow_state_changed",
+                {
+                    "entry_id": entry.id,
+                    "from": None,
+                    "to": entry.workflow_state,
+                    "status": entry.status,
+                },
+            )
         self._audit(
             "memory.write",
             {
@@ -216,6 +259,15 @@ class MemoryManager:
             return None
         return self._refresh_ttl(entry)
 
+    def list_events(
+        self,
+        *,
+        entry_id: str | None = None,
+        event_type: str | None = None,
+        limit: int = 100,
+    ) -> list[MemoryEvent]:
+        return self._event_store.list(entry_id=entry_id, event_type=event_type, limit=limit)
+
     def delete(self, entry_id: str) -> bool:
         entry = self._entries.get(entry_id)
         if entry is None:
@@ -225,6 +277,12 @@ class MemoryManager:
         entry.deleted_at = datetime.now(UTC)
         entry.status = "tombstoned"
         self._persist_entry(entry)
+        self._record_event(
+            entry=entry,
+            event_type="tombstoned",
+            ingress_handle_id=entry.ingress_handle_id,
+            metadata={"workflow_state": entry.workflow_state},
+        )
         self._audit("memory.delete", {"entry_id": entry_id})
         return True
 
@@ -235,6 +293,12 @@ class MemoryManager:
         entry.user_verified = True
         entry.last_verified_at = datetime.now(UTC)
         self._persist_entry(entry)
+        self._record_event(
+            entry=entry,
+            event_type="verified",
+            ingress_handle_id=entry.ingress_handle_id,
+            metadata={"last_verified_at": entry.last_verified_at.isoformat()},
+        )
         self._audit("memory.verify", {"entry_id": entry_id})
         return True
 
@@ -288,7 +352,63 @@ class MemoryManager:
         entry.quarantined = True
         entry.status = "quarantined"
         self._persist_entry(entry)
+        self._record_event(
+            entry=entry,
+            event_type="quarantined",
+            ingress_handle_id=entry.ingress_handle_id,
+            metadata={"reason": reason, "workflow_state": entry.workflow_state},
+        )
         self._audit("memory.quarantine", {"entry_id": entry_id, "reason": reason})
+        return True
+
+    def unquarantine(self, entry_id: str, *, reason: str) -> bool:
+        entry = self._entries.get(entry_id)
+        if entry is None or self._is_deleted(entry):
+            return False
+        if not self._is_quarantined(entry):
+            return True
+        entry.quarantined = False
+        entry.status = "active"
+        self._persist_entry(entry)
+        self._record_event(
+            entry=entry,
+            event_type="unquarantined",
+            ingress_handle_id=entry.ingress_handle_id,
+            metadata={"reason": reason, "workflow_state": entry.workflow_state},
+        )
+        self._audit("memory.unquarantine", {"entry_id": entry_id, "reason": reason})
+        return True
+
+    def set_workflow_state(self, entry_id: str, workflow_state: WorkflowState) -> bool:
+        entry = self._entries.get(entry_id)
+        if entry is None or self._is_deleted(entry):
+            return False
+        if entry.entry_type not in ACTIVE_AGENDA_ENTRY_TYPES:
+            raise ValueError("workflow_state only applies to active-agenda entry types")
+        previous_state = entry.workflow_state
+        if previous_state == workflow_state:
+            return True
+        entry.workflow_state = workflow_state
+        self._persist_entry(entry)
+        self._record_event(
+            entry=entry,
+            event_type="workflow_state_changed",
+            ingress_handle_id=entry.ingress_handle_id,
+            metadata={
+                "from": previous_state,
+                "to": workflow_state,
+                "status": entry.status,
+            },
+        )
+        self._audit(
+            "memory.workflow_state_changed",
+            {
+                "entry_id": entry_id,
+                "from": previous_state,
+                "to": workflow_state,
+                "status": entry.status,
+            },
+        )
         return True
 
     def purge_expired(self) -> None:
@@ -300,6 +420,12 @@ class MemoryManager:
                 entry.deleted_at = now
                 entry.status = "tombstoned"
                 self._persist_entry(entry)
+                self._record_event(
+                    entry=entry,
+                    event_type="tombstoned",
+                    ingress_handle_id=entry.ingress_handle_id,
+                    metadata={"reason": "expired", "workflow_state": entry.workflow_state},
+                )
                 self._audit("memory.expire", {"entry_id": entry.id})
 
     def _persist_entry(self, entry: MemoryEntry) -> None:
@@ -313,6 +439,23 @@ class MemoryManager:
             except (OSError, UnicodeError, ValidationError):
                 continue
             self._entries[entry.id] = entry
+
+    def _record_event(
+        self,
+        *,
+        entry: MemoryEntry,
+        event_type: str,
+        ingress_handle_id: str | None,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        self._event_store.append(
+            MemoryEvent(
+                entry_id=entry.id,
+                event_type=event_type,
+                ingress_handle_id=ingress_handle_id,
+                metadata_json=metadata or {},
+            )
+        )
 
     def _refresh_ttl(self, entry: MemoryEntry) -> MemoryEntry:
         if entry.source.origin == "user":

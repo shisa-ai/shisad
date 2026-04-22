@@ -301,3 +301,139 @@ def test_m1_memory_manager_write_persists_canonical_v070_fields(tmp_path: Path) 
     assert persisted["status"] == "active"
     assert persisted["scope"] == "user"
     assert persisted["content_digest"]
+
+
+def test_m1_write_rejects_workflow_state_for_non_active_agenda_entries(tmp_path: Path) -> None:
+    manager = MemoryManager(tmp_path / "memory")
+
+    decision = manager.write_with_provenance(
+        entry_type="persona_fact",
+        key="identity.likes",
+        value="coffee",
+        source=MemorySource(origin="user", source_id="msg-1", extraction_method="manual"),
+        source_origin="user_direct",
+        channel_trust="command",
+        confirmation_status="user_asserted",
+        source_id="msg-1",
+        scope="user",
+        workflow_state="waiting",
+        confidence=0.8,
+        confirmation_satisfied=True,
+    )
+
+    assert decision.kind == "reject"
+    assert decision.reason == "workflow_state_requires_active_agenda_entry_type"
+
+
+def test_m1_open_thread_defaults_workflow_state_and_records_init_event(tmp_path: Path) -> None:
+    audits: list[tuple[str, dict[str, object]]] = []
+    manager = MemoryManager(
+        tmp_path / "memory",
+        audit_hook=lambda action, data: audits.append((action, data)),
+    )
+
+    decision = manager.write_with_provenance(
+        entry_type="open_thread",
+        key="thread:launch",
+        value="Need to finish launch checklist",
+        source=MemorySource(origin="user", source_id="msg-2", extraction_method="manual"),
+        source_origin="user_direct",
+        channel_trust="command",
+        confirmation_status="user_asserted",
+        source_id="msg-2",
+        scope="user",
+        confidence=0.8,
+        confirmation_satisfied=True,
+    )
+
+    assert decision.kind == "allow"
+    assert decision.entry is not None
+    assert decision.entry.workflow_state == "active"
+    assert decision.entry.status == "active"
+    events = manager.list_events(entry_id=decision.entry.id, limit=10)
+    assert [event.event_type for event in events] == ["created", "workflow_state_changed"]
+    assert events[-1].metadata_json["from"] is None
+    assert events[-1].metadata_json["to"] == "active"
+    assert (
+        "memory.workflow_state_changed",
+        {
+            "entry_id": decision.entry.id,
+            "from": None,
+            "to": "active",
+            "status": "active",
+        },
+    ) in audits
+
+
+def test_m1_quarantine_cycle_preserves_workflow_state(tmp_path: Path) -> None:
+    manager = MemoryManager(tmp_path / "memory")
+    decision = manager.write_with_provenance(
+        entry_type="open_thread",
+        key="thread:waiting",
+        value="Waiting on vendor approval",
+        source=MemorySource(origin="user", source_id="msg-3", extraction_method="manual"),
+        source_origin="user_direct",
+        channel_trust="command",
+        confirmation_status="user_asserted",
+        source_id="msg-3",
+        scope="user",
+        workflow_state="waiting",
+        confidence=0.8,
+        confirmation_satisfied=True,
+    )
+
+    assert decision.entry is not None
+    entry_id = decision.entry.id
+    assert manager.quarantine(entry_id, reason="manual-review")
+    quarantined = next(
+        entry
+        for entry in manager.list_entries(limit=10, include_quarantined=True)
+        if entry.id == entry_id
+    )
+    assert quarantined.status == "quarantined"
+    assert quarantined.workflow_state == "waiting"
+
+    assert manager.unquarantine(entry_id, reason="review-cleared")
+    restored = manager.get_entry(entry_id)
+    assert restored is not None
+    assert restored.status == "active"
+    assert restored.workflow_state == "waiting"
+    assert [event.event_type for event in manager.list_events(entry_id=entry_id, limit=10)] == [
+        "created",
+        "workflow_state_changed",
+        "quarantined",
+        "unquarantined",
+    ]
+
+
+def test_m1_set_workflow_state_preserves_status_and_records_event(tmp_path: Path) -> None:
+    manager = MemoryManager(tmp_path / "memory")
+    decision = manager.write_with_provenance(
+        entry_type="open_thread",
+        key="thread:ship",
+        value="Ship release docs",
+        source=MemorySource(origin="user", source_id="msg-4", extraction_method="manual"),
+        source_origin="user_direct",
+        channel_trust="command",
+        confirmation_status="user_asserted",
+        source_id="msg-4",
+        scope="user",
+        confidence=0.8,
+        confirmation_satisfied=True,
+    )
+
+    assert decision.entry is not None
+    entry_id = decision.entry.id
+    assert manager.set_workflow_state(entry_id, "closed")
+    updated = manager.get_entry(entry_id)
+    assert updated is not None
+    assert updated.workflow_state == "closed"
+    assert updated.status == "active"
+    transition_event = manager.list_events(
+        entry_id=entry_id,
+        event_type="workflow_state_changed",
+        limit=10,
+    )[-1]
+    assert transition_event.metadata_json["from"] == "active"
+    assert transition_event.metadata_json["to"] == "closed"
+    assert transition_event.metadata_json["status"] == "active"
