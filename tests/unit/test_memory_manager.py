@@ -474,3 +474,67 @@ def test_m1_pending_review_entries_are_isolated_to_review_queue(tmp_path: Path) 
             "entry_ids": [decision.entry.id],
         },
     ) in audits
+
+
+def test_m1_invocation_eligible_requires_procedural_entry_type(tmp_path: Path) -> None:
+    manager = MemoryManager(tmp_path / "memory")
+
+    decision = manager.write_with_provenance(
+        entry_type="note",
+        key="note:not-a-skill",
+        value="not procedural",
+        source=MemorySource(origin="user", source_id="msg-6", extraction_method="manual"),
+        source_origin="user_direct",
+        channel_trust="command",
+        confirmation_status="user_asserted",
+        source_id="msg-6",
+        scope="user",
+        confidence=0.8,
+        confirmation_satisfied=True,
+        invocation_eligible=True,
+    )
+
+    assert decision.kind == "reject"
+    assert decision.reason == "invocation_eligible_requires_procedural_entry_type"
+
+
+def test_m1_procedural_install_triples_control_invocation_eligibility(tmp_path: Path) -> None:
+    manager = MemoryManager(tmp_path / "memory")
+
+    allowed = manager.write_with_provenance(
+        entry_type="skill",
+        key="skill:demo",
+        value="demo skill contents",
+        source=MemorySource(origin="external", source_id="tool-1", extraction_method="tool"),
+        source_origin="tool_output",
+        channel_trust="tool_passed",
+        confirmation_status="pep_approved",
+        source_id="tool-1",
+        scope="user",
+        confidence=0.8,
+        confirmation_satisfied=True,
+        invocation_eligible=True,
+    )
+
+    assert allowed.kind == "allow"
+    assert allowed.entry is not None
+    assert allowed.entry.invocation_eligible is True
+    assert allowed.entry.trust_band == "untrusted"
+
+    rejected = manager.write_with_provenance(
+        entry_type="skill",
+        key="skill:unreviewed",
+        value="unreviewed skill contents",
+        source=MemorySource(origin="external", source_id="web-1", extraction_method="fetch"),
+        source_origin="external_web",
+        channel_trust="web_passed",
+        confirmation_status="auto_accepted",
+        source_id="web-1",
+        scope="user",
+        confidence=0.4,
+        confirmation_satisfied=True,
+        invocation_eligible=True,
+    )
+
+    assert rejected.kind == "reject"
+    assert rejected.reason == "invocation_eligible_requires_install_triple"

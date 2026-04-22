@@ -15,7 +15,11 @@ from pydantic import ValidationError
 
 from shisad.core.types import TaintLabel
 from shisad.memory.events import MemoryEvent, MemoryEventStore
-from shisad.memory.remap import ACTIVE_AGENDA_ENTRY_TYPES, resolve_legacy_source_origin
+from shisad.memory.remap import (
+    ACTIVE_AGENDA_ENTRY_TYPES,
+    PROCEDURAL_ENTRY_TYPES,
+    resolve_legacy_source_origin,
+)
 from shisad.memory.schema import MemoryEntry, MemorySource, MemoryWriteDecision, WorkflowState
 from shisad.memory.trust import (
     ChannelTrust,
@@ -23,6 +27,7 @@ from shisad.memory.trust import (
     SourceOrigin,
     backfill_legacy_triple,
     clamp_confidence,
+    is_invocation_eligible_triple,
 )
 from shisad.security.firewall.pii import PIIDetector
 
@@ -73,6 +78,8 @@ class MemoryManager:
         source: MemorySource,
         confidence: float = 0.5,
         user_confirmed: bool = False,
+        workflow_state: WorkflowState | None = None,
+        invocation_eligible: bool = False,
     ) -> MemoryWriteDecision:
         source_origin = resolve_legacy_source_origin(
             source.origin,
@@ -94,6 +101,8 @@ class MemoryManager:
             scope="user",
             confidence=confidence,
             confirmation_satisfied=user_confirmed,
+            workflow_state=workflow_state,
+            invocation_eligible=invocation_eligible,
         )
 
     def write_with_provenance(
@@ -114,6 +123,7 @@ class MemoryManager:
         ingress_handle_id: str | None = None,
         content_digest: str | None = None,
         workflow_state: WorkflowState | None = None,
+        invocation_eligible: bool = False,
     ) -> MemoryWriteDecision:
         text_value = str(value)
         if self._looks_instruction_like(text_value):
@@ -163,6 +173,20 @@ class MemoryManager:
                 kind="reject",
                 reason="workflow_state_requires_active_agenda_entry_type",
             )
+        if entry_type not in PROCEDURAL_ENTRY_TYPES and invocation_eligible:
+            return MemoryWriteDecision(
+                kind="reject",
+                reason="invocation_eligible_requires_procedural_entry_type",
+            )
+        if invocation_eligible and not is_invocation_eligible_triple(
+            source_origin,
+            channel_trust,
+            confirmation_status,
+        ):
+            return MemoryWriteDecision(
+                kind="reject",
+                reason="invocation_eligible_requires_install_triple",
+            )
         resolved_workflow_state = workflow_state or (
             "active" if entry_type in ACTIVE_AGENDA_ENTRY_TYPES else None
         )
@@ -182,6 +206,7 @@ class MemoryManager:
             ingress_handle_id=ingress_handle_id,
             content_digest=content_digest,
             workflow_state=resolved_workflow_state,
+            invocation_eligible=invocation_eligible,
         )
         self._entries[entry.id] = entry
         self._persist_entry(entry)
@@ -193,6 +218,7 @@ class MemoryManager:
                 "status": entry.status,
                 "workflow_state": entry.workflow_state,
                 "source_origin": entry.source_origin,
+                "invocation_eligible": entry.invocation_eligible,
             },
         )
         if entry.entry_type in ACTIVE_AGENDA_ENTRY_TYPES:

@@ -59,6 +59,8 @@ class MemoryImplMixin(HandlerMixinBase):
             taint_labels=context.taint_labels,
             ingress_handle_id=context.handle_id,
             content_digest=resolved_digest,
+            workflow_state=params.get("workflow_state"),
+            invocation_eligible=bool(params.get("invocation_eligible", False)),
         )
         return cast(dict[str, Any], decision.model_dump(mode="json"))
 
@@ -102,6 +104,8 @@ class MemoryImplMixin(HandlerMixinBase):
             value=params.get("value"),
             source=source,
             confidence=float(params.get("confidence", 0.5)),
+            workflow_state=params.get("workflow_state"),
+            invocation_eligible=bool(params.get("invocation_eligible", False)),
             user_confirmed=bool(params.get("user_confirmed", False)),
         )
         return cast(dict[str, Any], decision.model_dump(mode="json"))

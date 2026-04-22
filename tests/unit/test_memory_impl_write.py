@@ -172,3 +172,62 @@ async def test_memory_write_legacy_source_path_still_works(tmp_path: Path) -> No
     assert entry is not None
     assert entry["source_origin"] == "user_direct"
     assert entry["confirmation_status"] == "auto_accepted"
+
+
+@pytest.mark.asyncio
+async def test_memory_write_accepts_procedural_install_triple(tmp_path: Path) -> None:
+    harness = _MemoryWriteHarness(tmp_path)
+    context = harness._memory_ingress_registry.mint(
+        source_origin="tool_output",
+        channel_trust="tool_passed",
+        confirmation_status="pep_approved",
+        scope="user",
+        source_id="tool-install-1",
+        content="skill demo v1",
+    )
+
+    result = await harness.do_memory_write(
+        {
+            "ingress_context": context.handle_id,
+            "entry_type": "skill",
+            "key": "skill:demo",
+            "value": "skill demo v1",
+            "invocation_eligible": True,
+        }
+    )
+
+    assert result["kind"] == "allow"
+    entry = result["entry"]
+    assert entry is not None
+    assert entry["invocation_eligible"] is True
+    assert entry["source_origin"] == "tool_output"
+    assert entry["channel_trust"] == "tool_passed"
+    assert entry["confirmation_status"] == "pep_approved"
+
+
+@pytest.mark.asyncio
+async def test_memory_write_rejects_invalid_install_triple_for_procedural_entry(
+    tmp_path: Path,
+) -> None:
+    harness = _MemoryWriteHarness(tmp_path)
+    context = harness._memory_ingress_registry.mint(
+        source_origin="user_direct",
+        channel_trust="command",
+        confirmation_status="auto_accepted",
+        scope="user",
+        source_id="turn-5",
+        content="skill from command channel",
+    )
+
+    result = await harness.do_memory_write(
+        {
+            "ingress_context": context.handle_id,
+            "entry_type": "skill",
+            "key": "skill:command",
+            "value": "skill from command channel",
+            "invocation_eligible": True,
+        }
+    )
+
+    assert result["kind"] == "reject"
+    assert result["reason"] == "invocation_eligible_requires_install_triple"
