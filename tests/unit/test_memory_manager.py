@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -363,6 +364,14 @@ def test_m1_open_thread_defaults_workflow_state_and_records_init_event(tmp_path:
             "status": "active",
         },
     ) in audits
+    conn = sqlite3.connect(tmp_path / "memory" / "memory_events.sqlite3")
+    try:
+        count = conn.execute("SELECT COUNT(*) FROM memory_events").fetchone()
+    finally:
+        conn.close()
+
+    assert count is not None
+    assert count[0] == 2
 
 
 def test_m1_quarantine_cycle_preserves_workflow_state(tmp_path: Path) -> None:

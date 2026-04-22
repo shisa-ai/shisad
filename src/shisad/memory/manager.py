@@ -63,7 +63,7 @@ class MemoryManager:
         self._storage_dir = storage_dir
         self._storage_dir.mkdir(parents=True, exist_ok=True)
         self._entries: dict[str, MemoryEntry] = {}
-        self._event_store = MemoryEventStore(self._storage_dir / "memory_events.jsonl")
+        self._event_store = MemoryEventStore(self._storage_dir / "memory_events.sqlite3")
         self._default_ttl_days = default_ttl_days
         self._audit_hook = audit_hook
         self._pii_detector = pii_detector or PIIDetector()
