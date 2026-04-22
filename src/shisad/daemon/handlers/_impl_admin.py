@@ -35,6 +35,7 @@ from shisad.daemon.handlers._mixin_typing import HandlerMixinBase
 from shisad.devloop import assess_milestone_readiness
 from shisad.executors.sandbox import SandboxType
 from shisad.governance.scopes import ScopedPolicy, ScopedPolicyCompiler, ScopeLevel
+from shisad.memory.ingress import mint_explicit_user_memory_ingress_context
 
 logger = logging.getLogger(__name__)
 
@@ -1150,19 +1151,33 @@ class AdminImplMixin(HandlerMixinBase):
                 session_payload["_channel_policy"] = channel_policy_payload
             created = await self.do_session_create(session_payload)
             sid = SessionId(created["session_id"])
+        explicit_memory_ingress_context = mint_explicit_user_memory_ingress_context(
+            self._memory_ingress_registry,
+            channel=message.channel,
+            trust_level=identity_trust_level,
+            session_id=str(sid),
+            message_id=message.message_id,
+            content=result.sanitized_text,
+            taint_labels=list(result.taint_labels),
+        )
+        session_message_payload: dict[str, Any] = {
+            "session_id": sid,
+            "channel": message.channel,
+            "user_id": identity_user_id,
+            "workspace_id": identity_workspace_id,
+            "content": message.content,
+            "trust_level": identity_trust_level,
+            "_internal_ingress_marker": self._internal_ingress_marker,
+            "_firewall_result": result.model_dump(mode="json"),
+            "_delivery_target": delivery_target.model_dump(mode="json"),
+            "_channel_message_id": message.message_id,
+        }
+        if explicit_memory_ingress_context is not None:
+            session_message_payload["_explicit_memory_ingress_context"] = (
+                explicit_memory_ingress_context.handle_id
+            )
         response = await self.do_session_message(
-            {
-                "session_id": sid,
-                "channel": message.channel,
-                "user_id": identity_user_id,
-                "workspace_id": identity_workspace_id,
-                "content": message.content,
-                "trust_level": identity_trust_level,
-                "_internal_ingress_marker": self._internal_ingress_marker,
-                "_firewall_result": result.model_dump(mode="json"),
-                "_delivery_target": delivery_target.model_dump(mode="json"),
-                "_channel_message_id": message.message_id,
-            }
+            session_message_payload
         )
         if proactive:
             marker = discord_decision.proactive_marker.strip() or "[proactive]"

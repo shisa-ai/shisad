@@ -119,3 +119,55 @@ class IngressContextRegistry:
         if parent_digest != context.content_digest:
             raise TrustGateViolation("derivation parent does not match ingress context")
         return resolved_digest
+
+
+def mint_explicit_user_memory_ingress_context(
+    registry: IngressContextRegistry,
+    *,
+    channel: str,
+    trust_level: str,
+    session_id: str,
+    message_id: str,
+    content: str,
+    taint_labels: list[TaintLabel] | None = None,
+    scope: ScopeKind = "user",
+) -> IngressContext | None:
+    """Mint the canonical explicit-user-memory handle for a turn payload."""
+
+    user_turn_text = content.strip()
+    if not user_turn_text:
+        return None
+
+    normalized_channel = channel.strip().lower() or "cli"
+    source_origin: SourceOrigin = "user_direct"
+    channel_trust: ChannelTrust = "command"
+    confirmation_status: ConfirmationStatus = "user_asserted"
+    source_id = session_id.strip()
+
+    if normalized_channel != "cli":
+        normalized_trust = trust_level.strip().lower()
+        confirmation_status = "auto_accepted"
+        source_id = (
+            f"{normalized_channel}:{message_id.strip()}"
+            if message_id.strip()
+            else f"{normalized_channel}:{session_id.strip()}"
+        )
+        if normalized_trust in {"trusted", "verified", "internal", "owner"}:
+            channel_trust = "owner_observed"
+        else:
+            source_origin = "external_message"
+            channel_trust = (
+                "shared_participant"
+                if normalized_trust in {"public", "trusted_guest"}
+                else "external_incoming"
+            )
+
+    return registry.mint(
+        source_origin=source_origin,
+        channel_trust=channel_trust,
+        confirmation_status=confirmation_status,
+        scope=scope,
+        source_id=source_id,
+        content=user_turn_text,
+        taint_labels=list(taint_labels or []),
+    )

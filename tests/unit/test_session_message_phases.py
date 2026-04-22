@@ -643,6 +643,32 @@ def test_m1_explicit_memory_ingress_context_mints_cli_user_asserted_handle() -> 
     assert context.source_id == "sess-g1"
 
 
+def test_m1_explicit_memory_ingress_context_reuses_pre_minted_handle() -> None:
+    harness = _ExplicitMemoryIngressHarness()
+    pre_minted = harness._memory_ingress_registry.mint(
+        source_origin="user_direct",
+        channel_trust="owner_observed",
+        confirmation_status="auto_accepted",
+        scope="user",
+        source_id="discord:msg-9",
+        content="remember that I like tea",
+    )
+    validated = _validation_result(
+        params={
+            "session_id": "sess-g1",
+            "content": "remember that I like tea",
+            "_explicit_memory_ingress_context": pre_minted.handle_id,
+        },
+    )
+
+    context = SessionImplMixin._mint_explicit_memory_ingress_context(
+        harness,
+        validated=validated,
+    )
+
+    assert context == pre_minted
+
+
 @pytest.mark.parametrize(
     ("trust_level", "expected_origin", "expected_channel_trust"),
     [
