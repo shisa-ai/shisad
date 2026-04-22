@@ -105,7 +105,7 @@ from shisad.daemon.handlers._task_scope import task_declared_tdg_roots, task_res
 from shisad.governance.merge import PolicyMergeError
 from shisad.memory.ingestion import IngestionPipeline
 from shisad.memory.ingress import IngressContext
-from shisad.memory.schema import MemorySource
+from shisad.memory.remap import digest_memory_value
 from shisad.scheduler.schema import TaskEnvelope
 from shisad.security.control_plane.consensus import TRACE_VOTER_NAME
 from shisad.security.control_plane.schema import (
@@ -7085,43 +7085,52 @@ class SessionImplMixin(HandlerMixinBase):
         source_taints: set[TaintLabel] = set()
         for entry in pending_entries:
             source_taints.update(entry.taint_labels)
-        source_origin = "external" if TaintLabel.UNTRUSTED in source_taints else "inferred"
         allow_count = 0
         confirmation_count = 0
         reject_count = 0
 
         for proposal in proposals:
-            source = MemorySource(
-                origin=source_origin,
+            write_context = self._memory_ingress_registry.mint(
+                source_origin="consolidation_derived",
+                channel_trust="consolidation",
+                confirmation_status="auto_accepted",
+                scope="user",
                 source_id=f"session:{sid}",
-                extraction_method="conversation_summarizer",
+                content=self._canonical_ingress_content(proposal.value),
+                taint_labels=list(source_taints),
             )
-            decision = self._memory_manager.write(
-                entry_type=proposal.entry_type,
-                key=proposal.key,
-                value=proposal.value,
-                source=source,
-                confidence=float(proposal.confidence),
-                user_confirmed=False,
-            )
-            if decision.kind == "allow" and decision.entry is not None:
+            write_payload: dict[str, Any] = {
+                "ingress_context": write_context.handle_id,
+                "entry_type": proposal.entry_type,
+                "key": proposal.key,
+                "value": proposal.value,
+                "confidence": float(proposal.confidence),
+            }
+            if not isinstance(proposal.value, (str, bytes)):
+                write_payload["content_digest"] = digest_memory_value(proposal.value)
+            decision = await self.do_memory_write(write_payload)
+            entry = decision.get("entry")
+            if decision.get("kind") == "allow" and isinstance(entry, Mapping):
                 allow_count += 1
+                entry_id = str(entry.get("id", ""))
                 ingest_text = f"{proposal.key}: {proposal.value}"
-                if source_origin == "external":
-                    self._ingestion.ingest(
-                        source_id=f"summary:{sid}:{decision.entry.id}",
-                        source_type="external",
-                        collection="tool_outputs",
-                        content=ingest_text,
-                    )
-                else:
-                    self._ingestion.ingest(
-                        source_id=f"summary:{sid}:{decision.entry.id}",
-                        source_type="tool",
-                        collection="tool_outputs",
-                        content=ingest_text,
-                    )
-            elif decision.kind == "require_confirmation":
+                ingest_context = self._memory_ingress_registry.mint(
+                    source_origin="consolidation_derived",
+                    channel_trust="consolidation",
+                    confirmation_status="auto_accepted",
+                    scope="user",
+                    source_id=f"summary:{sid}:{entry_id}",
+                    content=ingest_text,
+                    taint_labels=list(source_taints),
+                )
+                await self.do_memory_ingest(
+                    {
+                        "ingress_context": ingest_context.handle_id,
+                        "content": ingest_text,
+                        "collection": "tool_outputs",
+                    }
+                )
+            elif decision.get("kind") == "require_confirmation":
                 confirmation_count += 1
             else:
                 reject_count += 1
@@ -7145,7 +7154,7 @@ class SessionImplMixin(HandlerMixinBase):
                         channel=str(session.channel),
                         session_mode=session_mode,
                     ),
-                    "source_origin": source_origin,
+                    "source_origin": "consolidation_derived",
                 },
             )
 

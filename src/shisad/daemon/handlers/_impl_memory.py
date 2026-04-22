@@ -54,7 +54,7 @@ class MemoryImplMixin(HandlerMixinBase):
     def _retrieval_source_type_for_ingress(source_origin: str) -> str:
         if source_origin in {"user_direct", "user_confirmed", "user_corrected"}:
             return "user"
-        if source_origin == "tool_output":
+        if source_origin in {"tool_output", "consolidation_derived"}:
             return "tool"
         return "external"
 
