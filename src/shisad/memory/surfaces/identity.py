@@ -50,6 +50,7 @@ def build_identity_pack(
             entry
             for entry in entries
             if entry.entry_type in IDENTITY_ENTRY_TYPES
+            and entry.superseded_by is None
             and entry.trust_band == "elevated"
             and entry.source_origin not in IDENTITY_BLOCKED_SOURCE_ORIGINS
         ),

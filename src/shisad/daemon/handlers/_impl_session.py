@@ -331,6 +331,14 @@ class SessionMessageExecutionResult:
 
 
 @dataclass(frozen=True, slots=True)
+class PreparedIdentityCandidateSuggestion:
+    suggestion_text: str = ""
+    surfaced_candidate_id: str | None = None
+    expired_candidate_ids: tuple[str, ...] = ()
+    taint_labels: frozenset[TaintLabel] = frozenset()
+
+
+@dataclass(frozen=True, slots=True)
 class PostToolSynthesisResult:
     response_text: str = ""
     messages_sent: tuple[Any, ...] = ()
@@ -5975,12 +5983,17 @@ class SessionImplMixin(HandlerMixinBase):
         response_taint_labels = set(planner_context.context.taint_labels)
         for tool_output in execution.executed_tool_outputs:
             response_taint_labels.update(tool_output.taint_labels)
-        response_text = self._maybe_append_identity_candidate_suggestion(
+        candidate_suggestion = self._prepare_identity_candidate_suggestion(
             validated=validated,
             execution=execution,
-            response_text=response_text,
-            response_taint_labels=response_taint_labels,
         )
+        if candidate_suggestion.suggestion_text:
+            response_text = (
+                f"{response_text}{candidate_suggestion.suggestion_text}"
+                if response_text.strip()
+                else candidate_suggestion.suggestion_text.strip()
+            )
+            response_taint_labels.update(candidate_suggestion.taint_labels)
         public_sensitive_taints = (
             _public_channel_sensitive_taints(response_taint_labels)
             if _is_public_channel_level(validated.trust_level)
@@ -5999,6 +6012,8 @@ class SessionImplMixin(HandlerMixinBase):
             response_text = output_result.sanitized_text
             if output_result.require_confirmation:
                 response_text = f"[CONFIRMATION REQUIRED] {response_text}"
+        if not public_sensitive_taints and not output_result.blocked:
+            self._commit_identity_candidate_suggestion(candidate_suggestion)
 
         lockdown_notice = self._lockdown_manager.user_notification(sid)
         if lockdown_notice:
@@ -6650,23 +6665,22 @@ class SessionImplMixin(HandlerMixinBase):
             )
         return _parse_task_close_gate_response(response_text)
 
-    def _maybe_append_identity_candidate_suggestion(
+    def _prepare_identity_candidate_suggestion(
         self,
         *,
         validated: SessionMessageValidationResult,
         execution: SessionMessageExecutionResult,
-        response_text: str,
-        response_taint_labels: set[TaintLabel],
-    ) -> str:
+    ) -> PreparedIdentityCandidateSuggestion:
         memory_manager = cast(MemoryManager | None, getattr(self, "_memory_manager", None))
         if memory_manager is None:
-            return response_text
+            return PreparedIdentityCandidateSuggestion()
         normalized_channel = str(validated.channel or validated.session.channel).strip().lower()
         if normalized_channel != "cli" or validated.session_mode != SessionMode.DEFAULT:
-            return response_text
+            return PreparedIdentityCandidateSuggestion()
         if execution.pending_confirmation_ids:
-            return response_text
+            return PreparedIdentityCandidateSuggestion()
 
+        expired_candidate_ids: list[str] = []
         for candidate in memory_manager.list_review_queue(limit=20):
             if candidate.entry_type not in {"persona_fact", "preference", "soft_constraint"}:
                 continue
@@ -6678,10 +6692,7 @@ class SessionImplMixin(HandlerMixinBase):
                 )
             )
             if surface_count >= 2:
-                memory_manager.expire_identity_candidate(candidate.id)
-                continue
-            changed, _ = memory_manager.note_identity_candidate_surface(candidate.id)
-            if not changed:
+                expired_candidate_ids.append(candidate.id)
                 continue
             suggestion = (
                 "\n\nIdentity candidate pending review: "
@@ -6690,10 +6701,29 @@ class SessionImplMixin(HandlerMixinBase):
                 f"/identity edit {candidate.id} <text>, or "
                 f"/identity reject {candidate.id}."
             )
-            response_taint_labels.update(candidate.taint_labels)
-            response_taint_labels.add(TaintLabel.UNTRUSTED)
-            return f"{response_text}{suggestion}" if response_text.strip() else suggestion.strip()
-        return response_text
+            taint_labels = set(candidate.taint_labels)
+            taint_labels.add(TaintLabel.UNTRUSTED)
+            return PreparedIdentityCandidateSuggestion(
+                suggestion_text=suggestion,
+                surfaced_candidate_id=candidate.id,
+                expired_candidate_ids=tuple(expired_candidate_ids),
+                taint_labels=frozenset(taint_labels),
+            )
+        return PreparedIdentityCandidateSuggestion(
+            expired_candidate_ids=tuple(expired_candidate_ids)
+        )
+
+    def _commit_identity_candidate_suggestion(
+        self,
+        suggestion: PreparedIdentityCandidateSuggestion,
+    ) -> None:
+        memory_manager = cast(MemoryManager | None, getattr(self, "_memory_manager", None))
+        if memory_manager is None:
+            return
+        for candidate_id in suggestion.expired_candidate_ids:
+            memory_manager.expire_identity_candidate(candidate_id)
+        if suggestion.surfaced_candidate_id is not None:
+            memory_manager.note_identity_candidate_surface(suggestion.surfaced_candidate_id)
 
     async def _mark_command_context_degraded(
         self,

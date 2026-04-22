@@ -1208,6 +1208,74 @@ async def test_m3_finalize_response_expires_ignored_identity_candidate_without_b
 
 
 @pytest.mark.asyncio
+async def test_m3_finalize_response_does_not_mark_candidate_surfaced_when_output_blocked(
+    tmp_path: Path,
+) -> None:
+    harness = _FinalizeEvidenceHarness()
+    harness._memory_manager = MemoryManager(tmp_path / "memory")
+    candidate_id = _write_pending_identity_candidate(harness._memory_manager)
+    harness._output_firewall = SimpleNamespace(
+        inspect=lambda text, context: SimpleNamespace(
+            blocked=True,
+            sanitized_text=text,
+            require_confirmation=False,
+            model_dump=lambda mode="json": {
+                "blocked": True,
+                "require_confirmation": False,
+                "sanitized_text": text,
+            },
+        )
+    )
+    execution = _finalize_execution_result(tool_outputs=[], assistant_response="Planner reply")
+
+    response = await SessionImplMixin._finalize_response(harness, execution)
+
+    assert response["response"] == "Response blocked by output policy."
+    assert harness._memory_manager.list_events(
+        entry_id=candidate_id,
+        event_type="candidate_surfaced",
+        limit=10,
+    ) == []
+    queued_ids = {entry.id for entry in harness._memory_manager.list_review_queue(limit=10)}
+    assert candidate_id in queued_ids
+
+
+@pytest.mark.asyncio
+async def test_m3_finalize_response_does_not_expire_candidate_when_output_blocked(
+    tmp_path: Path,
+) -> None:
+    harness = _FinalizeEvidenceHarness()
+    harness._memory_manager = MemoryManager(tmp_path / "memory")
+    candidate_id = _write_pending_identity_candidate(harness._memory_manager)
+    assert harness._memory_manager.note_identity_candidate_surface(candidate_id) == (True, 1)
+    assert harness._memory_manager.note_identity_candidate_surface(candidate_id) == (True, 2)
+    harness._output_firewall = SimpleNamespace(
+        inspect=lambda text, context: SimpleNamespace(
+            blocked=True,
+            sanitized_text=text,
+            require_confirmation=False,
+            model_dump=lambda mode="json": {
+                "blocked": True,
+                "require_confirmation": False,
+                "sanitized_text": text,
+            },
+        )
+    )
+    execution = _finalize_execution_result(tool_outputs=[], assistant_response="Planner reply")
+
+    response = await SessionImplMixin._finalize_response(harness, execution)
+
+    assert response["response"] == "Response blocked by output policy."
+    assert harness._memory_manager.list_events(
+        entry_id=candidate_id,
+        event_type="candidate_expired",
+        limit=10,
+    ) == []
+    queued_ids = {entry.id for entry in harness._memory_manager.list_review_queue(limit=10)}
+    assert candidate_id in queued_ids
+
+
+@pytest.mark.asyncio
 async def test_finalize_response_replaces_planner_text_with_daemon_pending_summary() -> None:
     harness = _FinalizeEvidenceHarness()
     harness._pending_actions = {

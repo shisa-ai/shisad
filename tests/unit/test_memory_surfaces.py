@@ -4,8 +4,9 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from shisad.memory.manager import MemoryManager
-from shisad.memory.participation import InboxItemValue, inbox_item_key
+from shisad.memory.participation import InboxItemValue, compose_channel_binding, inbox_item_key
 from shisad.memory.schema import MemoryEntry, MemorySource
+from shisad.memory.surfaces.active_attention import _estimate_attention_tokens
 
 
 def _write_entry(
@@ -22,6 +23,7 @@ def _write_entry(
     predicate: str | None = None,
     workflow_state: str | None = None,
     confirmation_satisfied: bool = False,
+    supersedes: str | None = None,
 ) -> MemoryEntry:
     source = MemorySource(origin=source_legacy_origin, source_id=key, extraction_method="manual")
     decision = manager.write_with_provenance(
@@ -37,6 +39,7 @@ def _write_entry(
         scope=scope,
         workflow_state=workflow_state,
         confirmation_satisfied=confirmation_satisfied,
+        supersedes=supersedes,
     )
     assert decision.kind == "allow"
     assert decision.entry is not None
@@ -114,6 +117,27 @@ def test_m3_compile_identity_respects_token_budget(tmp_path: Path) -> None:
     assert pack.count == 1
 
 
+def test_m3_compile_identity_excludes_superseded_entries(tmp_path: Path) -> None:
+    manager = MemoryManager(tmp_path / "memory")
+    original = _write_entry(
+        manager,
+        entry_type="persona_fact",
+        key="persona:timezone",
+        value="UTC",
+    )
+    successor = _write_entry(
+        manager,
+        entry_type="persona_fact",
+        key="persona:timezone",
+        value="UTC+1",
+        supersedes=original.id,
+    )
+
+    pack = manager.compile_identity(max_tokens=64)
+
+    assert [entry.id for entry in pack.entries] == [successor.id]
+
+
 def test_m3_compile_active_attention_filters_scope_workflow_and_channel_trust(
     tmp_path: Path,
 ) -> None:
@@ -189,6 +213,11 @@ def test_m3_compile_active_attention_channel_binding_limits_channel_scoped_entri
     tmp_path: Path,
 ) -> None:
     manager = MemoryManager(tmp_path / "memory")
+    current_binding = compose_channel_binding(
+        channel="discord",
+        workspace_hint="guild-1",
+        channel_id="general",
+    )
     session_thread = _write_entry(
         manager,
         entry_type="open_thread",
@@ -212,7 +241,7 @@ def test_m3_compile_active_attention_channel_binding_limits_channel_scoped_entri
         value=InboxItemValue(
             owner_id="owner-1",
             sender_id="guest-1",
-            channel_id="discord:guild/general",
+            channel_id=current_binding,
             body="Question from #general",
         ).model_dump(mode="python"),
         source_legacy_origin="external",
@@ -229,8 +258,12 @@ def test_m3_compile_active_attention_channel_binding_limits_channel_scoped_entri
         value=InboxItemValue(
             owner_id="owner-1",
             sender_id="guest-2",
-            channel_id="discord:guild/private",
-            body="Question from #private",
+            channel_id=compose_channel_binding(
+                channel="discord",
+                workspace_hint="guild-2",
+                channel_id="general",
+            ),
+            body="Question from a same-named channel in another workspace.",
         ).model_dump(mode="python"),
         source_legacy_origin="external",
         source_origin="external_message",
@@ -256,7 +289,7 @@ def test_m3_compile_active_attention_channel_binding_limits_channel_scoped_entri
     pack = manager.compile_active_attention(
         max_tokens=128,
         scope_filter={"session", "user", "channel"},
-        channel_binding="general",
+        channel_binding=current_binding,
     )
 
     assert {entry.id for entry in pack.entries} == {
@@ -265,7 +298,7 @@ def test_m3_compile_active_attention_channel_binding_limits_channel_scoped_entri
         general_inbox.id,
     }
     assert pack.count == 3
-    assert pack.channel_binding == "general"
+    assert pack.channel_binding == current_binding
 
 
 def test_m3_compile_active_attention_cli_defaults_keep_user_scoped_inbox_items(
@@ -279,7 +312,11 @@ def test_m3_compile_active_attention_cli_defaults_keep_user_scoped_inbox_items(
         value=InboxItemValue(
             owner_id="owner-1",
             sender_id="guest-1",
-            channel_id="discord:guild/general",
+            channel_id=compose_channel_binding(
+                channel="discord",
+                workspace_hint="guild-1",
+                channel_id="general",
+            ),
             body="Question from #general",
         ).model_dump(mode="python"),
         source_legacy_origin="external",
@@ -316,6 +353,11 @@ def test_m3_compile_active_attention_channel_binding_filters_user_scoped_inbox_i
     tmp_path: Path,
 ) -> None:
     manager = MemoryManager(tmp_path / "memory")
+    current_binding = compose_channel_binding(
+        channel="discord",
+        workspace_hint="guild-1",
+        channel_id="general",
+    )
     user_thread = _write_entry(
         manager,
         entry_type="waiting_on",
@@ -331,7 +373,7 @@ def test_m3_compile_active_attention_channel_binding_filters_user_scoped_inbox_i
         value=InboxItemValue(
             owner_id="owner-1",
             sender_id="guest-1",
-            channel_id="discord:guild/general",
+            channel_id=current_binding,
             body="Question from #general",
         ).model_dump(mode="python"),
         source_legacy_origin="external",
@@ -348,8 +390,12 @@ def test_m3_compile_active_attention_channel_binding_filters_user_scoped_inbox_i
         value=InboxItemValue(
             owner_id="owner-1",
             sender_id="guest-2",
-            channel_id="discord:guild/private",
-            body="Question from #private",
+            channel_id=compose_channel_binding(
+                channel="discord",
+                workspace_hint="guild-2",
+                channel_id="general",
+            ),
+            body="Question from a same-named channel in another workspace.",
         ).model_dump(mode="python"),
         source_legacy_origin="external",
         source_origin="external_message",
@@ -362,13 +408,98 @@ def test_m3_compile_active_attention_channel_binding_filters_user_scoped_inbox_i
     pack = manager.compile_active_attention(
         max_tokens=128,
         scope_filter={"session", "user", "channel"},
-        channel_binding="general",
+        channel_binding=current_binding,
     )
 
     assert {entry.id for entry in pack.entries} == {
         user_thread.id,
         general_inbox.id,
     }
+
+
+def test_m3_compile_active_attention_excludes_superseded_entries(tmp_path: Path) -> None:
+    manager = MemoryManager(tmp_path / "memory")
+    original = _write_entry(
+        manager,
+        entry_type="waiting_on",
+        key="thread:followup",
+        value="Wait on the first reply.",
+        scope="user",
+        workflow_state="waiting",
+    )
+    successor = _write_entry(
+        manager,
+        entry_type="waiting_on",
+        key="thread:followup",
+        value="Wait on the corrected reply.",
+        scope="user",
+        workflow_state="waiting",
+        supersedes=original.id,
+    )
+
+    pack = manager.compile_active_attention(max_tokens=64, scope_filter={"user"})
+
+    assert [entry.id for entry in pack.entries] == [successor.id]
+
+
+def test_m3_compile_active_attention_balances_classes_under_budget(tmp_path: Path) -> None:
+    manager = MemoryManager(tmp_path / "memory")
+    waiting = _write_entry(
+        manager,
+        entry_type="waiting_on",
+        key="thread:waiting",
+        value="Reply soon.",
+        scope="user",
+        workflow_state="waiting",
+    )
+    older_inbox = _write_entry(
+        manager,
+        entry_type="inbox_item",
+        key=inbox_item_key(owner_id="owner-1", item_id="msg-older"),
+        value=InboxItemValue(
+            owner_id="owner-1",
+            sender_id="guest-1",
+            channel_id=compose_channel_binding(
+                channel="discord",
+                workspace_hint="guild-1",
+                channel_id="general",
+            ),
+            body="Older inbox item.",
+        ).model_dump(mode="python"),
+        source_legacy_origin="external",
+        source_origin="external_message",
+        channel_trust="shared_participant",
+        confirmation_status="auto_accepted",
+        scope="user",
+        confirmation_satisfied=True,
+    )
+    newer_inbox = _write_entry(
+        manager,
+        entry_type="inbox_item",
+        key=inbox_item_key(owner_id="owner-1", item_id="msg-newer"),
+        value=InboxItemValue(
+            owner_id="owner-1",
+            sender_id="guest-2",
+            channel_id=compose_channel_binding(
+                channel="discord",
+                workspace_hint="guild-1",
+                channel_id="general",
+            ),
+            body="Newest inbox item.",
+        ).model_dump(mode="python"),
+        source_legacy_origin="external",
+        source_origin="external_message",
+        channel_trust="shared_participant",
+        confirmation_status="auto_accepted",
+        scope="user",
+        confirmation_satisfied=True,
+    )
+    budget = _estimate_attention_tokens(waiting) + _estimate_attention_tokens(newer_inbox) + 1
+
+    pack = manager.compile_active_attention(max_tokens=budget, scope_filter={"user"})
+
+    assert [entry.id for entry in pack.entries] == [waiting.id, newer_inbox.id]
+    assert older_inbox.id not in {entry.id for entry in pack.entries}
 
 
 def test_m3_surface_compiler_citation_ids_drive_usage_updates(tmp_path: Path) -> None:

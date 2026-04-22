@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from shisad.channels.base import DeliveryTarget
 from shisad.memory.context_defaults import resolve_active_attention_defaults
+from shisad.memory.participation import compose_channel_binding
 
 
 def test_m3_cli_active_attention_defaults_match_scope_contract() -> None:
@@ -26,7 +27,11 @@ def test_m3_discord_channel_active_attention_defaults_bind_current_channel() -> 
     assert defaults is not None
     assert defaults.scope_filter == {"session", "user", "channel"}
     assert defaults.allowed_channel_trusts is None
-    assert defaults.channel_binding == "general"
+    assert defaults.channel_binding == compose_channel_binding(
+        channel="discord",
+        workspace_hint="guild-1",
+        channel_id="general",
+    )
 
 
 def test_m3_discord_dm_active_attention_defaults_use_owner_observed_channels() -> None:

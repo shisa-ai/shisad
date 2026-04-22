@@ -16,6 +16,7 @@ from shisad.memory.manager import MemoryManager
 from shisad.memory.participation import (
     channel_participation_key,
     channel_summary_key,
+    compose_channel_binding,
     inbox_item_key,
     person_note_key,
     response_feedback_key,
@@ -221,6 +222,11 @@ async def test_m3_channel_ingest_persists_structured_participation_memory(
     assert result["response"] == "ok"
     entries = harness._memory_manager.list_entries(limit=20)
     by_key = {entry.key: entry for entry in entries}
+    channel_binding = compose_channel_binding(
+        channel="discord",
+        workspace_hint="guild-1",
+        channel_id="chan-1",
+    )
 
     inbox = by_key[inbox_item_key(owner_id="owner-user", item_id="msg-21")]
     assert inbox.entry_type == "inbox_item"
@@ -228,12 +234,12 @@ async def test_m3_channel_ingest_persists_structured_participation_memory(
     assert inbox.source_origin == "external_message"
     assert inbox.channel_trust == "shared_participant"
 
-    note = by_key[person_note_key(channel_id="chan-1", external_user_id="guest-1")]
+    note = by_key[person_note_key(channel_id=channel_binding, external_user_id="guest-1")]
     assert note.entry_type == "person_note"
     assert note.scope == "channel"
     assert note.channel_trust == "shared_participant"
 
-    participation = by_key[channel_participation_key(channel_id="chan-1")]
+    participation = by_key[channel_participation_key(channel_id=channel_binding)]
     assert participation.entry_type == "channel_participation"
     assert participation.scope == "channel"
     assert participation.channel_trust == "shared_participant"
@@ -273,14 +279,19 @@ async def test_m3_channel_ingest_persists_summary_and_feedback_records_from_meta
 
     entries = harness._memory_manager.list_entries(limit=20)
     by_key = {entry.key: entry for entry in entries}
+    channel_binding = compose_channel_binding(
+        channel="discord",
+        workspace_hint="guild-1",
+        channel_id="chan-2",
+    )
 
-    summary = by_key[channel_summary_key(channel_id="chan-2", summary_kind="digest")]
+    summary = by_key[channel_summary_key(channel_id=channel_binding, summary_kind="digest")]
     assert summary.entry_type == "channel_summary"
     assert summary.scope == "channel"
 
     feedback = by_key[
         response_feedback_key(
-            channel_id="chan-2",
+            channel_id=channel_binding,
             message_id="agent-msg-9",
             actor_external_user_id="guest-2",
             signal="reaction_add",
@@ -320,6 +331,11 @@ async def test_m3_channel_ingest_observation_updates_participation_without_inbox
     assert result["response"] == ""
     entries = harness._memory_manager.list_entries(limit=20)
     keys = {entry.key for entry in entries}
-    assert channel_participation_key(channel_id="chan-3") in keys
-    assert person_note_key(channel_id="chan-3", external_user_id="guest-3") in keys
+    channel_binding = compose_channel_binding(
+        channel="discord",
+        workspace_hint="guild-1",
+        channel_id="chan-3",
+    )
+    assert channel_participation_key(channel_id=channel_binding) in keys
+    assert person_note_key(channel_id=channel_binding, external_user_id="guest-3") in keys
     assert inbox_item_key(owner_id="owner-user", item_id="msg-44") not in keys

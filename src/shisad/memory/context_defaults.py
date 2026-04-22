@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from shisad.channels.base import DeliveryTarget
+from shisad.memory.participation import compose_channel_binding
 
 
 @dataclass(frozen=True, slots=True)
@@ -56,7 +57,11 @@ def _resolve_connector_active_attention_defaults(
     if recipient:
         return ActiveAttentionDefaults(
             scope_filter=_CONNECTOR_ACTIVE_ATTENTION_SCOPE_FILTER,
-            channel_binding=recipient,
+            channel_binding=compose_channel_binding(
+                channel=channel,
+                workspace_hint=delivery_target.workspace_hint,
+                channel_id=recipient,
+            ),
         )
     return None
 

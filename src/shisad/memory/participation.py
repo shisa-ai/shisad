@@ -144,6 +144,21 @@ def inbox_item_key(*, owner_id: str, item_id: str) -> str:
     return _compose_key("inbox", owner_id, item_id)
 
 
+def compose_channel_binding(*, channel: str, workspace_hint: str = "", channel_id: str) -> str:
+    """Return a stable workspace-qualified binding for channel-affined records."""
+
+    normalized_channel = str(channel).strip().lower()
+    normalized_workspace = str(workspace_hint).strip()
+    normalized_channel_id = str(channel_id).strip()
+    if not normalized_channel_id:
+        raise ValueError("channel_id must be non-empty")
+    if normalized_workspace:
+        return f"{normalized_channel}:{normalized_workspace}/{normalized_channel_id}"
+    if normalized_channel:
+        return f"{normalized_channel}:{normalized_channel_id}"
+    return normalized_channel_id
+
+
 def channel_summary_key(*, channel_id: str, summary_kind: str) -> str:
     return _compose_key("channel-summary", channel_id, summary_kind)
 

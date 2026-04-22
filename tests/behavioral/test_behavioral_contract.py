@@ -36,7 +36,7 @@ from shisad.core.providers.base import Message, ProviderResponse
 from shisad.core.providers.local_planner import LocalPlannerProvider
 from shisad.daemon.runner import run_daemon
 from shisad.memory.manager import MemoryManager
-from shisad.memory.participation import InboxItemValue, inbox_item_key
+from shisad.memory.participation import InboxItemValue, compose_channel_binding, inbox_item_key
 from shisad.memory.remap import legacy_source_view_origin
 from shisad.memory.schema import MemorySource
 from shisad.memory.summarizer import _SUMMARY_SYSTEM_PROMPT
@@ -2017,7 +2017,11 @@ async def test_contract_discord_channel_context_binds_active_attention_to_curren
             value=InboxItemValue(
                 owner_id="owner-1",
                 sender_id="guest-1",
-                channel_id="chan-1",
+                channel_id=compose_channel_binding(
+                    channel="discord",
+                    workspace_hint="guild-1",
+                    channel_id="chan-1",
+                ),
                 body="Current channel inbox item should surface.",
             ).model_dump(mode="python"),
             source=MemorySource(
@@ -2039,7 +2043,11 @@ async def test_contract_discord_channel_context_binds_active_attention_to_curren
             value=InboxItemValue(
                 owner_id="owner-1",
                 sender_id="guest-2",
-                channel_id="chan-2",
+                channel_id=compose_channel_binding(
+                    channel="discord",
+                    workspace_hint="guild-1",
+                    channel_id="chan-2",
+                ),
                 body="Other channel inbox item should not surface.",
             ).model_dump(mode="python"),
             source=MemorySource(

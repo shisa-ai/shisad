@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections import deque
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
@@ -14,6 +15,13 @@ if TYPE_CHECKING:
 
 DEFAULT_ACTIVE_ATTENTION_MAX_TOKENS = 750
 ACTIVE_ATTENTION_WORKFLOW_STATES = {"active", "waiting", "blocked"}
+ACTIVE_ATTENTION_CLASS_PRIORITY = (
+    "waiting_on",
+    "scheduled",
+    "recurring",
+    "open_thread",
+    "inbox_item",
+)
 CHANNEL_AFFINED_ENTRY_TYPES = {
     "inbox_item",
     "channel_summary",
@@ -60,6 +68,7 @@ def build_active_attention_pack(
             entry
             for entry in entries
             if entry.entry_type in ACTIVE_AGENDA_ENTRY_TYPES
+            and entry.superseded_by is None
             and entry.status == "active"
             and entry.workflow_state in ACTIVE_ATTENTION_WORKFLOW_STATES
             and (scope_filter is None or entry.scope in scope_filter)
@@ -72,10 +81,11 @@ def build_active_attention_pack(
         key=lambda entry: entry.created_at,
         reverse=True,
     )
+    budgeted = _class_balance_attention_entries(selected)
 
     kept: list[MemoryEntry] = []
     used_tokens = 0
-    for entry in selected:
+    for entry in budgeted:
         token_estimate = _estimate_attention_tokens(entry)
         if kept and used_tokens + token_estimate > max_tokens:
             continue
@@ -134,12 +144,26 @@ def _channel_bindings_match(entry_binding: str, channel_binding: str) -> bool:
     normalized_current = channel_binding.strip().lower()
     if not normalized_entry or not normalized_current:
         return False
-    if normalized_entry == normalized_current:
-        return True
-    return _channel_binding_tail(normalized_entry) == _channel_binding_tail(normalized_current)
+    return normalized_entry == normalized_current
 
 
-def _channel_binding_tail(binding: str) -> str:
-    normalized = binding.replace("\\", "/")
-    tail = normalized.rsplit("/", 1)[-1]
-    return tail.rsplit(":", 1)[-1]
+def _class_balance_attention_entries(entries: list[MemoryEntry]) -> list[MemoryEntry]:
+    buckets: dict[str, deque[MemoryEntry]] = {
+        entry_type: deque() for entry_type in ACTIVE_ATTENTION_CLASS_PRIORITY
+    }
+    remainder: list[MemoryEntry] = []
+    for entry in entries:
+        bucket = buckets.get(entry.entry_type)
+        if bucket is None:
+            remainder.append(entry)
+            continue
+        bucket.append(entry)
+
+    ordered: list[MemoryEntry] = []
+    while any(bucket for bucket in buckets.values()):
+        for entry_type in ACTIVE_ATTENTION_CLASS_PRIORITY:
+            bucket = buckets[entry_type]
+            if bucket:
+                ordered.append(bucket.popleft())
+    ordered.extend(remainder)
+    return ordered

@@ -49,6 +49,7 @@ from shisad.memory.participation import (
     TrackedThreadState,
     channel_participation_key,
     channel_summary_key,
+    compose_channel_binding,
     inbox_item_key,
     person_note_key,
     response_feedback_key,
@@ -191,6 +192,15 @@ class AdminImplMixin(HandlerMixinBase):
             str(metadata.get("discord_guild_id") or "").strip() or message.workspace_hint.strip()
         )
         thread_id = message.thread_id.strip()
+        structured_channel_id = (
+            compose_channel_binding(
+                channel=message.channel,
+                workspace_hint=message.workspace_hint,
+                channel_id=channel_id,
+            )
+            if channel_id
+            else ""
+        )
         sender_display_name = (
             str(metadata.get("display_name") or metadata.get("author_display_name") or "").strip()
             or None
@@ -269,7 +279,7 @@ class AdminImplMixin(HandlerMixinBase):
                 owner_id=owner_id,
                 sender_id=message.external_user_id,
                 sender_display_name=sender_display_name,
-                channel_id=channel_id,
+                channel_id=structured_channel_id,
                 channel_name=str(metadata.get("channel_name") or "").strip() or None,
                 message_type=_channel_inbox_message_type(sanitized_text),
                 body=sanitized_text,
@@ -284,7 +294,7 @@ class AdminImplMixin(HandlerMixinBase):
 
         if channel_id:
             participation_key = channel_participation_key(
-                channel_id=channel_id,
+                channel_id=structured_channel_id,
                 thread_id=thread_id or None,
             )
             prior_participation = self._find_current_memory_entry(
@@ -297,7 +307,7 @@ class AdminImplMixin(HandlerMixinBase):
                 )
             else:
                 current_participation = ChannelParticipationStateValue(
-                    channel_id=channel_id,
+                    channel_id=structured_channel_id,
                     guild_id=guild_id,
                 )
             participants: set[str] = set()
@@ -331,7 +341,7 @@ class AdminImplMixin(HandlerMixinBase):
                 )
             participation_value = current_participation.model_copy(
                 update={
-                    "channel_id": channel_id,
+                    "channel_id": structured_channel_id,
                     "guild_id": guild_id,
                     "tracked_threads": updated_threads,
                 }
@@ -346,7 +356,7 @@ class AdminImplMixin(HandlerMixinBase):
 
         if channel_id and not owner_like:
             note_key = person_note_key(
-                channel_id=channel_id,
+                channel_id=structured_channel_id,
                 external_user_id=message.external_user_id,
             )
             prior_note = self._find_current_memory_entry(entry_type="person_note", key=note_key)
@@ -356,7 +366,7 @@ class AdminImplMixin(HandlerMixinBase):
                 current_note = PersonNoteValue(
                     external_user_id=message.external_user_id,
                     display_name=sender_display_name or message.external_user_id,
-                    channel_id=channel_id,
+                    channel_id=structured_channel_id,
                 )
             note_value = current_note.model_copy(
                 update={
@@ -377,13 +387,16 @@ class AdminImplMixin(HandlerMixinBase):
         summary_text = str(metadata.get("summary_text") or "").strip()
         if channel_id and summary_text:
             summary_kind = str(metadata.get("summary_kind") or "topic").strip() or "topic"
-            summary_key = channel_summary_key(channel_id=channel_id, summary_kind=summary_kind)
+            summary_key = channel_summary_key(
+                channel_id=structured_channel_id,
+                summary_kind=summary_kind,
+            )
             prior_summary = self._find_current_memory_entry(
                 entry_type="channel_summary",
                 key=summary_key,
             )
             summary_value = ChannelSummaryValue(
-                channel_id=channel_id,
+                channel_id=structured_channel_id,
                 guild_id=guild_id,
                 summary_kind=summary_kind,
                 summary_text=summary_text,
@@ -404,13 +417,13 @@ class AdminImplMixin(HandlerMixinBase):
         ).strip()
         if channel_id and feedback_signal and feedback_target_message_id:
             feedback_key = response_feedback_key(
-                channel_id=channel_id,
+                channel_id=structured_channel_id,
                 message_id=feedback_target_message_id,
                 actor_external_user_id=message.external_user_id,
                 signal=feedback_signal,
             )
             feedback_value = ResponseFeedbackEventValue(
-                channel_id=channel_id,
+                channel_id=structured_channel_id,
                 target_message_id=feedback_target_message_id,
                 actor_external_user_id=message.external_user_id,
                 signal=feedback_signal,
