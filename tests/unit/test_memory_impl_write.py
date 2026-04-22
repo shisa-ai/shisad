@@ -37,6 +37,48 @@ async def test_memory_mint_ingress_context_returns_authenticated_user_handle(
 
 
 @pytest.mark.asyncio
+async def test_memory_mint_ingress_context_public_path_ignores_caller_provenance_fields(
+    tmp_path: Path,
+) -> None:
+    harness = _MemoryWriteHarness(tmp_path)
+
+    result = await harness.do_memory_mint_ingress_context(
+        {
+            "content": "remember this",
+            "source_type": "external",
+            "source_id": "forged-source",
+        }
+    )
+
+    assert result["source_origin"] == "user_direct"
+    assert result["channel_trust"] == "command"
+    assert result["confirmation_status"] == "user_asserted"
+    assert result["source_id"] == "cli"
+
+
+@pytest.mark.asyncio
+async def test_memory_mint_ingress_context_internal_path_preserves_boundary_provenance(
+    tmp_path: Path,
+) -> None:
+    harness = _MemoryWriteHarness(tmp_path)
+    harness._internal_ingress_marker = object()
+
+    result = await harness.do_memory_mint_ingress_context(
+        {
+            "_internal_ingress_marker": harness._internal_ingress_marker,
+            "content": "fetched page",
+            "source_type": "external",
+            "source_id": "web:doc-7",
+        }
+    )
+
+    assert result["source_origin"] == "external_web"
+    assert result["channel_trust"] == "web_passed"
+    assert result["confirmation_status"] == "auto_accepted"
+    assert result["source_id"] == "web:doc-7"
+
+
+@pytest.mark.asyncio
 async def test_memory_write_accepts_handle_bound_direct_payload(tmp_path: Path) -> None:
     harness = _MemoryWriteHarness(tmp_path)
     context = harness._memory_ingress_registry.mint(
@@ -215,6 +257,35 @@ async def test_memory_write_rejects_low_signal_non_user_handle_payload(tmp_path:
 
     assert result["kind"] == "reject"
     assert result["reason"] == "insufficient_memory_signal"
+
+
+@pytest.mark.asyncio
+async def test_memory_write_routes_pending_review_handles_to_review_queue(tmp_path: Path) -> None:
+    harness = _MemoryWriteHarness(tmp_path)
+    context = harness._memory_ingress_registry.mint(
+        source_origin="external_message",
+        channel_trust="shared_participant",
+        confirmation_status="pending_review",
+        scope="user",
+        source_id="discord:msg-review-1",
+        content="Needs operator review",
+    )
+
+    result = await harness.do_memory_write(
+        {
+            "ingress_context": context.handle_id,
+            "entry_type": "note",
+            "key": "note:queue",
+            "value": "Needs operator review",
+        }
+    )
+
+    assert result["kind"] == "allow"
+    entry = result["entry"]
+    assert entry is not None
+    assert entry["confirmation_status"] == "pending_review"
+    assert harness._memory_manager.get_entry(str(entry["id"])) is None
+    assert harness._memory_manager.list_review_queue(limit=10)[0].id == str(entry["id"])
 
 
 @pytest.mark.asyncio

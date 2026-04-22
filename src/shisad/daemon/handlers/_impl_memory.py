@@ -23,6 +23,13 @@ _CONTROL_API_AUTHENTICATED_WRITE = "_control_api_authenticated_write"
 
 
 class MemoryImplMixin(HandlerMixinBase):
+    def _is_internal_ingress_request(self, params: Mapping[str, Any]) -> bool:
+        internal_marker = getattr(self, "_internal_ingress_marker", None)
+        return (
+            internal_marker is not None
+            and params.get("_internal_ingress_marker") is internal_marker
+        )
+
     @staticmethod
     def _canonical_ingress_content(value: Any) -> str | bytes:
         if isinstance(value, (str, bytes)):
@@ -199,8 +206,11 @@ class MemoryImplMixin(HandlerMixinBase):
         return cast(dict[str, Any], decision.model_dump(mode="json"))
 
     async def do_memory_mint_ingress_context(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        is_internal_ingress = self._is_internal_ingress_request(params)
         source_type = str(params.get("source_type", "user")).strip().lower() or "user"
         user_confirmed = bool(params.get("user_confirmed", False))
+        if not is_internal_ingress:
+            source_type = "user"
         if user_confirmed and source_type != "user":
             raise ValueError("user_confirmed requires source_type=user")
 
@@ -215,12 +225,13 @@ class MemoryImplMixin(HandlerMixinBase):
             )
 
         content = self._canonical_ingress_content(params.get("content"))
+        source_id = self._source_id_for_control_write(params) if is_internal_ingress else "cli"
         context = self._memory_ingress_registry.mint(
             source_origin=source_origin,
             channel_trust=channel_trust,
             confirmation_status=confirmation_status,
             scope="user",
-            source_id=self._source_id_for_control_write(params),
+            source_id=source_id,
             content=content,
             taint_labels=self._firewall_taint_labels(params),
         )

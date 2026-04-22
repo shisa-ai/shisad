@@ -152,6 +152,8 @@ class SQLiteRetrievalBackend:
         collections: set[str] | None = None,
         include_quarantined: bool = False,
     ) -> list[RetrievalBackendRow]:
+        if collections is not None and not collections:
+            return []
         query = """
             SELECT
                 r.chunk_id,
@@ -215,10 +217,12 @@ class SQLiteRetrievalBackend:
         collections: set[str] | None = None,
         include_quarantined: bool = False,
     ) -> set[str]:
+        if collections is not None and not collections:
+            return set()
         tokens = _FTS_TOKEN.findall(query)
         if not tokens:
             return set()
-        match_query = " OR ".join(tokens)
+        match_query = " OR ".join(f'"{token}"' for token in tokens)
         sql = """
             SELECT DISTINCT f.chunk_id
             FROM retrieval_fts f
@@ -233,7 +237,10 @@ class SQLiteRetrievalBackend:
         if not include_quarantined:
             sql += " AND r.quarantined = 0"
         with self._connect() as conn:
-            rows = conn.execute(sql, params).fetchall()
+            try:
+                rows = conn.execute(sql, params).fetchall()
+            except sqlite3.OperationalError:
+                return set()
         return {str(row["chunk_id"]) for row in rows}
 
     def read_original_payload(self, chunk_id: str) -> bytes | None:

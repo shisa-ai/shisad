@@ -201,6 +201,8 @@ class IngestionPipeline:
         )
         if capabilities is not None and capabilities & _SIDE_EFFECT_CAPABILITIES:
             collections.discard("external_web")
+        if not collections:
+            return []
 
         terms = [term for term in query.lower().split() if term]
         query_vector = self._embed_text(query)

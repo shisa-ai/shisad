@@ -9,6 +9,7 @@ import pytest
 
 from shisad.core.config import ModelConfig
 from shisad.core.providers.routing import ModelComponent, ModelRouter
+from shisad.core.types import Capability
 from shisad.memory.ingestion import EmbeddingFingerprint, IngestionPipeline, RetrieveRagTool
 
 
@@ -127,3 +128,47 @@ def test_m1_ingestion_pipeline_rebuilds_sqlite_indexes_after_upgrade(tmp_path: P
     assert fts_count is not None
     assert int(vector_count[0]) == 1
     assert int(fts_count[0]) == 1
+
+
+def test_m1_ingestion_pipeline_empty_collection_filters_fail_closed(tmp_path: Path) -> None:
+    pipeline = IngestionPipeline(tmp_path / "memory")
+    pipeline.ingest(
+        source_id="doc-empty-filter",
+        source_type="external",
+        content="Only project-doc results should be visible when the allowlist permits them.",
+    )
+
+    assert pipeline.list_records(allowed_collections=set()) == []
+    assert pipeline.retrieve("allowlist permits", limit=5, allowed_collections=set()) == []
+
+
+def test_m1_ingestion_pipeline_respects_side_effect_collection_restrictions(tmp_path: Path) -> None:
+    pipeline = IngestionPipeline(tmp_path / "memory")
+    pipeline.ingest(
+        source_id="doc-web-only",
+        source_type="external",
+        content="External web evidence should not surface when side effects are active.",
+    )
+
+    results = pipeline.retrieve(
+        "external web evidence",
+        limit=5,
+        allowed_collections={"external_web"},
+        capabilities={Capability.HTTP_REQUEST},
+    )
+
+    assert results == []
+
+
+def test_m1_ingestion_pipeline_escapes_fts_operator_tokens(tmp_path: Path) -> None:
+    pipeline = IngestionPipeline(tmp_path / "memory")
+    stored = pipeline.ingest(
+        source_id="doc-fts-ops",
+        source_type="external",
+        content="Alpha beta sequence remains searchable even when the query mentions operators.",
+    )
+
+    results = pipeline.retrieve("alpha OR beta", limit=5)
+
+    assert results
+    assert results[0].chunk_id == stored.chunk_id

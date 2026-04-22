@@ -208,20 +208,21 @@ class MemoryManager:
         supersedes: str | None = None,
     ) -> MemoryWriteDecision:
         text_value = str(value)
+        pending_review = confirmation_status == "pending_review"
         if self._looks_instruction_like(text_value):
             return MemoryWriteDecision(
                 kind="reject",
                 reason="instruction_like_content_blocked",
             )
 
-        if source.origin == "external" and not confirmation_satisfied:
+        if source.origin == "external" and not confirmation_satisfied and not pending_review:
             return MemoryWriteDecision(
                 kind="require_confirmation",
                 reason="external_origin_requires_confirmation",
             )
 
         suspicious = self._looks_suspicious(text_value)
-        if suspicious and not confirmation_satisfied:
+        if suspicious and not confirmation_satisfied and not pending_review:
             return MemoryWriteDecision(
                 kind="require_confirmation",
                 reason="suspicious_memory_write_requires_confirmation",
