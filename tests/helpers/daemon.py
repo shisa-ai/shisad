@@ -56,6 +56,51 @@ async def wait_for_socket(path: Path, timeout: float | None = None) -> None:
     raise TimeoutError(f"Timed out waiting for socket {path}")
 
 
+async def mint_memory_ingress_context(
+    client: Any,
+    *,
+    content: Any,
+    source_type: str = "user",
+    source_id: str = "",
+    user_confirmed: bool = False,
+) -> dict[str, Any]:
+    """Mint a public memory ingress handle for control-client tests."""
+
+    payload: dict[str, Any] = {"content": content, "source_type": source_type}
+    if source_id:
+        payload["source_id"] = source_id
+    if user_confirmed:
+        payload["user_confirmed"] = True
+    return dict(await client.call("memory.mint_ingress_context", payload))
+
+
+async def ingest_memory_via_ingress(
+    client: Any,
+    *,
+    content: str,
+    source_type: str = "user",
+    source_id: str = "",
+    collection: str | None = None,
+    user_confirmed: bool = False,
+) -> dict[str, Any]:
+    """Ingest retrieval content through a freshly minted ingress handle."""
+
+    minted = await mint_memory_ingress_context(
+        client,
+        content=content,
+        source_type=source_type,
+        source_id=source_id,
+        user_confirmed=user_confirmed,
+    )
+    payload: dict[str, Any] = {
+        "ingress_context": str(minted["ingress_context"]),
+        "content": content,
+    }
+    if collection is not None:
+        payload["collection"] = collection
+    return dict(await client.call("memory.ingest", payload))
+
+
 def clear_remote_provider_env(monkeypatch: Any) -> None:
     """Clear all remote-provider env vars so tests run against local fallback.
 

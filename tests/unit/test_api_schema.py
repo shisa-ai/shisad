@@ -383,7 +383,7 @@ class TestApiSchemaValidation:
 
         assert params.ingress_context == "handle-1"
 
-    def test_m1_memory_ingest_params_reject_missing_source_and_orphaned_binding_fields(
+    def test_m1_memory_ingest_params_require_ingress_context_and_reject_raw_source_fields(
         self,
     ) -> None:
         with pytest.raises(ValidationError):
@@ -393,8 +393,8 @@ class TestApiSchemaValidation:
             MemoryIngestParams.model_validate(
                 {
                     "source_id": "src-1",
+                    "source_type": "external",
                     "content": "hello",
-                    "content_digest": "sha256:abc",
                 }
             )
 

@@ -277,13 +277,7 @@ class MemoryImplMixin(HandlerMixinBase):
                     "collection": params.get("collection"),
                 }
             )
-        result = self._ingestion.ingest(
-            source_id=params.get("source_id", ""),
-            source_type=params.get("source_type", "user"),
-            content=params.get("content", ""),
-            collection=params.get("collection"),
-        )
-        return cast(dict[str, Any], result.model_dump(mode="json"))
+        raise ValueError("ingress_context is required for memory.ingest")
 
     async def do_memory_retrieve(self, params: Mapping[str, Any]) -> dict[str, Any]:
         query = params.get("query", "")

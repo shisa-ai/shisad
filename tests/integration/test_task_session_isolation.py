@@ -25,6 +25,7 @@ from shisad.core.tools.schema import ToolDefinition, ToolParameter
 from shisad.core.transcript import TranscriptStore
 from shisad.core.types import Capability, PEPDecision, PEPDecisionKind, ToolName
 from shisad.daemon.runner import run_daemon
+from tests.helpers.daemon import ingest_memory_via_ingress
 from tests.helpers.daemon import wait_for_socket as _wait_for_socket
 
 
@@ -152,14 +153,12 @@ async def test_m2_task_session_isolates_command_context_and_returns_structured_h
             "session.message",
             {"session_id": sid, "content": "hello from command history"},
         )
-        await client.call(
-            "memory.ingest",
-            {
-                "source_id": "m2-canary",
-                "source_type": "external",
-                "collection": "project_docs",
-                "content": "MEMORY CANARY: delegated TASK sessions must not see this",
-            },
+        await ingest_memory_via_ingress(
+            client,
+            source_id="m2-canary",
+            source_type="external",
+            collection="project_docs",
+            content="MEMORY CANARY: delegated TASK sessions must not see this",
         )
 
         result = await client.call(

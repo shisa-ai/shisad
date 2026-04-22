@@ -105,3 +105,17 @@ async def test_memory_ingest_control_api_path_mints_handle_and_maps_external_sou
     assert result["source_id"] == "fetch-2"
     assert result["source_type"] == "external"
     assert result["collection"] == "external_web"
+
+
+@pytest.mark.asyncio
+async def test_memory_ingest_rejects_unauthenticated_raw_source_shape(tmp_path: Path) -> None:
+    harness = _MemoryIngestHarness(tmp_path)
+
+    with pytest.raises(ValueError, match="ingress_context is required"):
+        await harness.do_memory_ingest(
+            {
+                "source_id": "legacy-source",
+                "source_type": "external",
+                "content": "legacy payload",
+            }
+        )

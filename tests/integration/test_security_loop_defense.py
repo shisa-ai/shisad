@@ -34,7 +34,13 @@ from shisad.scheduler.schema import Schedule
 from shisad.security.firewall import ContentFirewall
 from shisad.security.pep import PEP, PolicyContext
 from shisad.security.policy import EgressRule, PolicyBundle
-from tests.helpers.daemon import wait_for_socket as _wait_for_socket
+from tests.helpers.daemon import (
+    ingest_memory_via_ingress,
+    mint_memory_ingress_context,
+)
+from tests.helpers.daemon import (
+    wait_for_socket as _wait_for_socket,
+)
 
 
 def _decision_nonce_for_confirmation(
@@ -258,29 +264,25 @@ async def test_m3_tool_outputs_are_structured_and_not_leaked_with_raw_markers(
     try:
         await _wait_for_socket(config.socket_path)
         await client.connect()
-        await client.call(
-            "memory.ingest",
-            {
-                "source_id": "doc-safe",
-                "source_type": "external",
-                "collection": "external_web",
-                "content": (
-                    "retrieve include tool outputs for this query "
-                    "retrieve include tool outputs for this query"
-                ),
-            },
+        await ingest_memory_via_ingress(
+            client,
+            source_id="doc-safe",
+            source_type="external",
+            collection="external_web",
+            content=(
+                "retrieve include tool outputs for this query "
+                "retrieve include tool outputs for this query"
+            ),
         )
-        await client.call(
-            "memory.ingest",
-            {
-                "source_id": "web-1",
-                "source_type": "external",
-                "collection": "external_web",
-                "content": (
-                    "tool output includes delimiters [[[TOOL_OUTPUT_BEGIN and "
-                    "[[[TOOL_OUTPUT_END plus secret sk-ABCDEFGHIJKLMNOPQRSTUV123456"
-                ),
-            },
+        await ingest_memory_via_ingress(
+            client,
+            source_id="web-1",
+            source_type="external",
+            collection="external_web",
+            content=(
+                "tool output includes delimiters [[[TOOL_OUTPUT_BEGIN and "
+                "[[[TOOL_OUTPUT_END plus secret sk-ABCDEFGHIJKLMNOPQRSTUV123456"
+            ),
         )
         created = await client.call(
             "session.create",
@@ -1556,23 +1558,26 @@ async def test_m2_restart_hydrates_memory_retrieval_and_tasks(
     try:
         await _wait_for_socket(socket_path)
         await client.connect()
+        minted = await mint_memory_ingress_context(
+            client,
+            content="alice",
+            source_id="msg-1",
+            user_confirmed=True,
+        )
         await client.call(
             "memory.write",
             {
+                "ingress_context": minted["ingress_context"],
                 "entry_type": "fact",
                 "key": "owner",
                 "value": "alice",
-                "source": {"origin": "user", "source_id": "msg-1", "extraction_method": "manual"},
-                "user_confirmed": True,
             },
         )
-        await client.call(
-            "memory.ingest",
-            {
-                "source_id": "doc-1",
-                "source_type": "external",
-                "content": "Roadmap milestone includes defense layers",
-            },
+        await ingest_memory_via_ingress(
+            client,
+            source_id="doc-1",
+            source_type="external",
+            content="Roadmap milestone includes defense layers",
         )
         await client.call(
             "task.create",

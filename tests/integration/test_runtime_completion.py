@@ -30,6 +30,7 @@ from shisad.core.types import TaintLabel, ToolName
 from shisad.daemon.runner import run_daemon
 from shisad.security.firewall import ContentFirewall, FirewallResult
 from shisad.security.spotlight import datamark_text
+from tests.helpers.daemon import ingest_memory_via_ingress
 from tests.helpers.daemon import wait_for_socket as _wait_for_socket
 from tests.helpers.mcp import write_mock_mcp_server
 
@@ -1354,14 +1355,12 @@ async def test_m5_s7_session_message_injects_memory_context_as_untrusted_prompt_
     try:
         await _wait_for_socket(config.socket_path)
         await client.connect()
-        await client.call(
-            "memory.ingest",
-            {
-                "source_id": "doc-1",
-                "source_type": "external",
-                "collection": "project_docs",
-                "content": "Project codename is Nebula and owner is Alice.",
-            },
+        await ingest_memory_via_ingress(
+            client,
+            source_id="doc-1",
+            source_type="external",
+            collection="project_docs",
+            content="Project codename is Nebula and owner is Alice.",
         )
         created = await client.call(
             "session.create",
@@ -1452,14 +1451,12 @@ async def test_m5_s7_memory_context_taint_propagates_into_policy_context(
     try:
         await _wait_for_socket(config.socket_path)
         await client.connect()
-        await client.call(
-            "memory.ingest",
-            {
-                "source_id": "doc-1",
-                "source_type": "external",
-                "collection": "project_docs",
-                "content": "Project codename is Nebula and owner is Alice.",
-            },
+        await ingest_memory_via_ingress(
+            client,
+            source_id="doc-1",
+            source_type="external",
+            collection="project_docs",
+            content="Project codename is Nebula and owner is Alice.",
         )
         created = await client.call(
             "session.create",
@@ -1772,14 +1769,12 @@ async def test_m5_rr3_memory_context_credential_taint_reaches_policy_context(
     try:
         await _wait_for_socket(config.socket_path)
         await client.connect()
-        await client.call(
-            "memory.ingest",
-            {
-                "source_id": "doc-cred",
-                "source_type": "external",
-                "collection": "project_docs",
-                "content": "Credential sample sk-ABCDEFGHIJKLMNOPQRSTUV123456 appears here.",
-            },
+        await ingest_memory_via_ingress(
+            client,
+            source_id="doc-cred",
+            source_type="external",
+            collection="project_docs",
+            content="Credential sample sk-ABCDEFGHIJKLMNOPQRSTUV123456 appears here.",
         )
         created = await client.call(
             "session.create",

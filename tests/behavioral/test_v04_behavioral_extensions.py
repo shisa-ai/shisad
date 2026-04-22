@@ -58,6 +58,7 @@ from shisad.interop.a2a_registry import (
     A2aRegistry,
 )
 from shisad.interop.a2a_transport import SocketTransport
+from tests.helpers.daemon import ingest_memory_via_ingress
 from tests.helpers.daemon import wait_for_socket as _wait_for_socket
 from tests.helpers.mcp import write_mock_mcp_server
 from tests.helpers.signer import StubSignerService, generate_ed25519_private_key, public_key_pem
@@ -2146,14 +2147,12 @@ async def test_behavioral_trusted_admin_message_reroutes_to_cleanroom_and_auto_d
             "session.message",
             {"session_id": sid, "content": "hello from the default session"},
         )
-        await client.call(
-            "memory.ingest",
-            {
-                "source_id": "sudo-memory",
-                "source_type": "external",
-                "collection": "project_docs",
-                "content": "MEMORY CANARY: prior secret context",
-            },
+        await ingest_memory_via_ingress(
+            client,
+            source_id="sudo-memory",
+            source_type="external",
+            collection="project_docs",
+            content="MEMORY CANARY: prior secret context",
         )
 
         sudo = await client.call(
@@ -2522,14 +2521,12 @@ async def test_behavioral_task_session_excludes_command_transcript_and_memory_fr
             "session.message",
             {"session_id": sid, "content": "hello from command history"},
         )
-        await client.call(
-            "memory.ingest",
-            {
-                "source_id": "task-canary",
-                "source_type": "external",
-                "collection": "project_docs",
-                "content": "MEMORY CANARY: delegated tasks must not see this",
-            },
+        await ingest_memory_via_ingress(
+            client,
+            source_id="task-canary",
+            source_type="external",
+            collection="project_docs",
+            content="MEMORY CANARY: delegated tasks must not see this",
         )
 
         await client.call(
@@ -3234,13 +3231,11 @@ async def test_behavioral_discord_public_channel_excludes_owner_private_memory(
         },
     )
     try:
-        await client.call(
-            "memory.ingest",
-            {
-                "source_id": "owner-secret",
-                "source_type": "user",
-                "content": "Owner private codename: BLUE-HERON-77",
-            },
+        await ingest_memory_via_ingress(
+            client,
+            source_id="owner-secret",
+            source_type="user",
+            content="Owner private codename: BLUE-HERON-77",
         )
 
         result = await client.call(
@@ -3317,13 +3312,11 @@ async def test_behavioral_discord_public_channel_isolates_allowlisted_owner(
         },
     )
     try:
-        await client.call(
-            "memory.ingest",
-            {
-                "source_id": "owner-secret-public-channel",
-                "source_type": "user",
-                "content": "Owner private codename: BLUE-HERON-99",
-            },
+        await ingest_memory_via_ingress(
+            client,
+            source_id="owner-secret-public-channel",
+            source_type="user",
+            content="Owner private codename: BLUE-HERON-99",
         )
 
         result = await client.call(

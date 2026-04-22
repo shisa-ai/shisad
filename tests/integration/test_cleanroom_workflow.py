@@ -21,6 +21,7 @@ from shisad.core.planner import (
 from shisad.core.transcript import TranscriptStore
 from shisad.core.types import PEPDecision, PEPDecisionKind, ToolName
 from shisad.daemon.runner import run_daemon
+from tests.helpers.daemon import ingest_memory_via_ingress
 from tests.helpers.daemon import wait_for_socket as _wait_for_socket
 
 
@@ -128,17 +129,15 @@ async def test_m6_cleanroom_transition_rejects_tool_output_tainted_history(
     try:
         created = await client.call("session.create", {"channel": "cli", "user_id": "alice"})
         sid = created["session_id"]
-        _ = await client.call(
-            "memory.ingest",
-            {
-                "source_id": "evidence-1",
-                "source_type": "external",
-                # Under S8 defaults, sessions have side-effect capabilities and
-                # retrieve_rag excludes external_web by policy. Use project_docs
-                # to keep retrieval taint propagation deterministic in this test.
-                "collection": "project_docs",
-                "content": "evidence payload from external source",
-            },
+        _ = await ingest_memory_via_ingress(
+            client,
+            source_id="evidence-1",
+            source_type="external",
+            # Under S8 defaults, sessions have side-effect capabilities and
+            # retrieve_rag excludes external_web by policy. Use project_docs
+            # to keep retrieval taint propagation deterministic in this test.
+            collection="project_docs",
+            content="evidence payload from external source",
         )
         reply = await client.call(
             "session.message",
@@ -295,14 +294,12 @@ async def test_m1_trusted_cli_admin_intent_reroutes_to_fresh_cleanroom_and_auto_
             "session.message",
             {"session_id": sid, "content": "hello from the default session"},
         )
-        _ = await client.call(
-            "memory.ingest",
-            {
-                "source_id": "sudo-memory",
-                "source_type": "external",
-                "collection": "project_docs",
-                "content": "MEMORY CANARY: prior secret context",
-            },
+        _ = await ingest_memory_via_ingress(
+            client,
+            source_id="sudo-memory",
+            source_type="external",
+            collection="project_docs",
+            content="MEMORY CANARY: prior secret context",
         )
 
         sudo = await client.call(
