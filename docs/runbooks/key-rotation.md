@@ -1,22 +1,41 @@
-# Key Rotation Runbook (M6.6.3)
+# Memory Export + Key Rotation Runbook
 
-## 1. Rotation cadence
+## 1. When to run this
 
-- Scheduled: at least every 90 days
-- Emergency: immediately after suspected memory/retrieval data exposure
+- Before scheduled key rotation
+- Immediately after suspected memory/retrieval data exposure
+- Before risky storage maintenance that should have a human-readable backup artifact
 
 ## 2. Preparation
 
 - Ensure daemon health is stable:
 
-```bash
-shisad status
-shisad audit verify
-```
+  ```bash
+  shisad status
+  shisad audit verify
+  ```
 
 - Confirm low active write load if possible.
+- Pick an export destination outside the active data dir, for example `/var/backups/shisad/`.
 
-## 3. Execute rotation
+## 3. Export current memory
+
+Canonical JSON export:
+
+```bash
+mkdir -p /var/backups/shisad
+shisad memory export --format json > /var/backups/shisad/memory-$(date +%F).json
+```
+
+Optional CSV export for spreadsheet/audit review:
+
+```bash
+shisad memory export --format csv > /var/backups/shisad/memory-$(date +%F).csv
+```
+
+Confirm the export file is non-empty and parseable before continuing.
+
+## 4. Execute rotation
 
 Rotate with re-encryption (preferred):
 
@@ -30,9 +49,9 @@ Fast rotation without re-encryption (emergency stopgap):
 shisad memory rotate-key --no-reencrypt
 ```
 
-## 4. Validation
+## 5. Validation
 
-Validate audit trail and memory reads:
+Validate the audit trail and read-path health:
 
 ```bash
 shisad dashboard audit --search "memory.rotate_key" --limit 50
@@ -42,8 +61,9 @@ shisad memory list --limit 20
 Confirm:
 - new active key ID emitted
 - no decrypt failures on existing entries
+- the exported backup artifact is retained with the change record / incident ticket
 
-## 5. Post-rotation
+## 6. Post-rotation
 
 - Record rotation in change log/ticket
 - Revoke superseded key material per environment policy

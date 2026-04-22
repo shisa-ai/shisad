@@ -53,6 +53,7 @@ from shisad.core.api.schema import (
     GitLogResult,
     GitStatusResult,
     LockdownSetResult,
+    MemoryExportResult,
     MemoryListResult,
     MemoryMintIngressResult,
     MemoryRotateKeyResult,
@@ -2419,6 +2420,20 @@ def memory_rotate_key(no_reencrypt: bool) -> None:
         response_model=MemoryRotateKeyResult,
     )
     click.echo(_dump_model(result))
+
+
+@memory.command("export")
+@click.option("--format", "fmt", default="json", type=click.Choice(["json", "csv"]))
+def memory_export(fmt: str) -> None:
+    """Export current memory entries for operator backup/audit."""
+    config = _get_config()
+    result = rpc_call(
+        config,
+        "memory.export",
+        {"format": fmt},
+        response_model=MemoryExportResult,
+    )
+    click.echo(str(result.data))
 
 
 @cli.group()

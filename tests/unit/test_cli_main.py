@@ -285,6 +285,10 @@ def test_cli_commands_route_through_rpc_wrapper(
             "entries": [{"id": "m-1", "entry_type": "fact", "key": "favorite_color"}],
             "count": 1,
         },
+        "memory.export": {
+            "format": "json",
+            "data": '[{"id": "m-1", "entry_type": "fact", "key": "favorite_color"}]',
+        },
         "memory.mint_ingress_context": {
             "ingress_context": "handle-1",
             "content_digest": "digest-1",
@@ -630,6 +634,7 @@ def test_cli_commands_route_through_rpc_wrapper(
             "strong",
         ],
     )
+    assert "favorite_color" in _invoke_ok(runner, ["memory", "export", "--format", "json"]).output
     _invoke_ok(runner, ["memory", "rotate-key"])
     _invoke_ok(runner, ["note", "create", "--key", "meeting", "--content", "prep"])
     assert "n-1 meeting" in _invoke_ok(runner, ["note", "list", "--limit", "5"]).output
@@ -757,6 +762,7 @@ def test_cli_commands_route_through_rpc_wrapper(
             "strength": "strong",
         },
     ) in calls
+    assert ("memory.export", {"format": "json"}) in calls
     assert ("note.create", {"key": "meeting", "content": "prep"}) in calls
     assert ("memory.rotate_key", {"reencrypt_existing": True}) in calls
     assert (
