@@ -2362,20 +2362,34 @@ def memory_list(limit: int) -> None:
 )
 @click.option("--key", required=True)
 @click.option("--value", required=True)
+@click.option("--predicate", default="", help="Optional explicit predicate for preference entries.")
+@click.option(
+    "--strength",
+    type=click.Choice(["weak", "moderate", "strong"]),
+    default="moderate",
+    show_default=True,
+    help="Preference/soft-constraint strength.",
+)
 def memory_write(
     entry_type: str,
     key: str,
     value: str,
+    predicate: str,
+    strength: str,
 ) -> None:
     config = _get_config()
+    payload: dict[str, object] = {
+        "entry_type": entry_type,
+        "key": key,
+        "value": value,
+    }
+    if predicate.strip():
+        payload["predicate"] = predicate.strip()
+        payload["strength"] = strength
     result = rpc_call(
         config,
         "memory.write",
-        {
-            "entry_type": entry_type,
-            "key": key,
-            "value": value,
-        },
+        payload,
         response_model=MemoryWriteResult,
     )
     click.echo(_dump_model(result))

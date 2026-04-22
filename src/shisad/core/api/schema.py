@@ -379,6 +379,8 @@ class MemoryWriteParams(_StrictParams):
     entry_type: MemoryEntryType | Literal["context"] = "fact"
     key: str
     value: Any = None
+    predicate: str | None = None
+    strength: Literal["weak", "moderate", "strong"] = "moderate"
     confidence: float = 0.5
     workflow_state: Literal["active", "waiting", "blocked", "stale", "closed"] | None = None
     invocation_eligible: bool = False

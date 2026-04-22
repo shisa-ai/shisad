@@ -52,6 +52,20 @@ class MemoryManager:
             re.IGNORECASE,
         ),
     ]
+    _PREFERENCE_PREDICATE_PATTERN: ClassVar[re.Pattern[str]] = re.compile(
+        r"^[a-z][a-z0-9_]*\([^()\n]{1,200}\)$"
+    )
+    _DISALLOWED_PREFERENCE_PREFIXES: ClassVar[tuple[str, ...]] = (
+        "always",
+        "never",
+        "ignore",
+        "prioritize",
+    )
+    _USER_AUTHORED_ORIGINS: ClassVar[set[str]] = {
+        "user_direct",
+        "user_confirmed",
+        "user_corrected",
+    }
 
     def __init__(
         self,
@@ -82,6 +96,8 @@ class MemoryManager:
         entry_type: str,
         key: str,
         value: Any,
+        predicate: str | None = None,
+        strength: str = "moderate",
         source: MemorySource,
         confidence: float = 0.5,
         user_confirmed: bool = False,
@@ -101,6 +117,8 @@ class MemoryManager:
             entry_type=entry_type,
             key=key,
             value=value,
+            predicate=predicate,
+            strength=strength,
             source=source,
             source_origin=source_origin,
             channel_trust=channel_trust,
@@ -120,6 +138,8 @@ class MemoryManager:
         entry_type: str,
         key: str,
         value: Any,
+        predicate: str | None = None,
+        strength: str = "moderate",
         source: MemorySource,
         source_origin: SourceOrigin,
         channel_trust: ChannelTrust,
@@ -178,6 +198,28 @@ class MemoryManager:
             confirmation_status,
             fallback=confidence,
         )
+        normalized_predicate = predicate.strip() if isinstance(predicate, str) else None
+        if entry_type in {"preference", "soft_constraint"}:
+            if not normalized_predicate:
+                return MemoryWriteDecision(kind="reject", reason="preference_predicate_required")
+            if not self._PREFERENCE_PREDICATE_PATTERN.match(normalized_predicate):
+                return MemoryWriteDecision(kind="reject", reason="preference_predicate_invalid")
+            predicate_name = normalized_predicate.split("(", 1)[0].lower()
+            if predicate_name.startswith(self._DISALLOWED_PREFERENCE_PREFIXES):
+                return MemoryWriteDecision(kind="reject", reason="preference_predicate_invalid")
+            if (
+                source_origin not in self._USER_AUTHORED_ORIGINS
+                and confirmation_status != "pending_review"
+            ):
+                return MemoryWriteDecision(
+                    kind="require_confirmation",
+                    reason="preference_requires_user_provenance",
+                )
+        elif normalized_predicate is not None:
+            return MemoryWriteDecision(
+                kind="reject",
+                reason="predicate_requires_preference_entry_type",
+            )
         if entry_type not in ACTIVE_AGENDA_ENTRY_TYPES and workflow_state is not None:
             return MemoryWriteDecision(
                 kind="reject",
@@ -218,6 +260,8 @@ class MemoryManager:
             entry_type=entry_type,
             key=key,
             value=stored_value,
+            predicate=normalized_predicate,
+            strength=strength,
             source=source,
             source_origin=source_origin,
             channel_trust=channel_trust,
@@ -549,6 +593,8 @@ class MemoryManager:
                     entry_type,
                     key,
                     value_json,
+                    predicate,
+                    strength,
                     source_json,
                     source_origin,
                     channel_trust,
@@ -589,6 +635,8 @@ class MemoryManager:
                         "entry_type": str(row["entry_type"]),
                         "key": str(row["key"]),
                         "value": json.loads(str(row["value_json"])),
+                        "predicate": row["predicate"],
+                        "strength": str(row["strength"]),
                         "source": json.loads(str(row["source_json"])),
                         "source_origin": str(row["source_origin"]),
                         "channel_trust": str(row["channel_trust"]),
@@ -653,6 +701,8 @@ class MemoryManager:
                     entry_type TEXT NOT NULL,
                     key TEXT NOT NULL,
                     value_json TEXT NOT NULL,
+                    predicate TEXT,
+                    strength TEXT NOT NULL DEFAULT 'moderate',
                     source_json TEXT NOT NULL,
                     source_origin TEXT NOT NULL,
                     channel_trust TEXT NOT NULL,
@@ -681,6 +731,14 @@ class MemoryManager:
                 )
                 """
             )
+            columns = {row[1] for row in conn.execute("PRAGMA table_info(memory_entries)")}
+            if "predicate" not in columns:
+                conn.execute("ALTER TABLE memory_entries ADD COLUMN predicate TEXT")
+            if "strength" not in columns:
+                conn.execute(
+                    "ALTER TABLE memory_entries "
+                    "ADD COLUMN strength TEXT NOT NULL DEFAULT 'moderate'"
+                )
             conn.execute(
                 """
                 CREATE INDEX IF NOT EXISTS idx_memory_entries_type_created
@@ -756,6 +814,8 @@ class MemoryManager:
                 entry_type,
                 key,
                 value_json,
+                predicate,
+                strength,
                 source_json,
                 source_origin,
                 channel_trust,
@@ -782,8 +842,8 @@ class MemoryManager:
                 deleted_at,
                 quarantined
             ) VALUES (
-                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
             )
             """,
             (
@@ -794,6 +854,8 @@ class MemoryManager:
                 payload["entry_type"],
                 payload["key"],
                 json.dumps(payload["value"], sort_keys=True),
+                payload["predicate"],
+                payload["strength"],
                 json.dumps(payload["source"], sort_keys=True),
                 payload["source_origin"],
                 payload["channel_trust"],

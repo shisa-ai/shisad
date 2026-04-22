@@ -522,6 +522,104 @@ def test_m1_manager_rehydrates_entries_from_event_snapshots(tmp_path: Path) -> N
     assert count[0] == 1
 
 
+def test_m1_preference_entries_require_structured_predicates(tmp_path: Path) -> None:
+    manager = MemoryManager(tmp_path / "memory")
+
+    missing = manager.write_with_provenance(
+        entry_type="preference",
+        key="food.preference",
+        value="prefers coffee over tea",
+        source=MemorySource(origin="user", source_id="msg-pref-1", extraction_method="manual"),
+        source_origin="user_direct",
+        channel_trust="command",
+        confirmation_status="user_asserted",
+        source_id="msg-pref-1",
+        scope="user",
+        confidence=0.8,
+        confirmation_satisfied=True,
+    )
+    invalid = manager.write_with_provenance(
+        entry_type="preference",
+        key="food.preference",
+        value="prefers coffee over tea",
+        predicate="always_use(vim)",
+        source=MemorySource(origin="user", source_id="msg-pref-2", extraction_method="manual"),
+        source_origin="user_direct",
+        channel_trust="command",
+        confirmation_status="user_asserted",
+        source_id="msg-pref-2",
+        scope="user",
+        confidence=0.8,
+        confirmation_satisfied=True,
+    )
+    valid = manager.write_with_provenance(
+        entry_type="preference",
+        key="food.preference",
+        value="prefers coffee over tea",
+        predicate="prefers(coffee, over: tea)",
+        strength="strong",
+        source=MemorySource(origin="user", source_id="msg-pref-3", extraction_method="manual"),
+        source_origin="user_direct",
+        channel_trust="command",
+        confirmation_status="user_asserted",
+        source_id="msg-pref-3",
+        scope="user",
+        confidence=0.8,
+        confirmation_satisfied=True,
+    )
+
+    assert missing.kind == "reject"
+    assert missing.reason == "preference_predicate_required"
+    assert invalid.kind == "reject"
+    assert invalid.reason == "preference_predicate_invalid"
+    assert valid.kind == "allow"
+    assert valid.entry is not None
+    assert valid.entry.predicate == "prefers(coffee, over: tea)"
+    assert valid.entry.strength == "strong"
+
+
+def test_m1_preference_entries_require_user_provenance_or_pending_review(tmp_path: Path) -> None:
+    manager = MemoryManager(tmp_path / "memory")
+
+    gated = manager.write_with_provenance(
+        entry_type="preference",
+        key="food.avoidance",
+        value="avoid shellfish",
+        predicate="avoids(shellfish, reason: allergy)",
+        source=MemorySource(origin="external", source_id="doc-pref-1", extraction_method="extract"),
+        source_origin="external_web",
+        channel_trust="web_passed",
+        confirmation_status="auto_accepted",
+        source_id="doc-pref-1",
+        scope="user",
+        confidence=0.6,
+        confirmation_satisfied=True,
+    )
+    queued = manager.write_with_provenance(
+        entry_type="soft_constraint",
+        key="dietary.constraint",
+        value="avoid shellfish",
+        predicate="avoids(shellfish, reason: allergy)",
+        source=MemorySource(origin="external", source_id="doc-pref-2", extraction_method="extract"),
+        source_origin="external_web",
+        channel_trust="web_passed",
+        confirmation_status="pending_review",
+        source_id="doc-pref-2",
+        scope="user",
+        confidence=0.6,
+        confirmation_satisfied=True,
+    )
+
+    assert gated.kind == "require_confirmation"
+    assert gated.reason == "preference_requires_user_provenance"
+    assert queued.kind == "allow"
+    assert queued.entry is not None
+    assert queued.entry.entry_type == "soft_constraint"
+    assert queued.entry.confirmation_status == "pending_review"
+    assert manager.get_entry(queued.entry.id) is None
+    assert manager.list_review_queue(limit=10)[0].id == queued.entry.id
+
+
 def test_m1_pending_review_entries_are_isolated_to_review_queue(tmp_path: Path) -> None:
     audits: list[tuple[str, dict[str, object]]] = []
     manager = MemoryManager(

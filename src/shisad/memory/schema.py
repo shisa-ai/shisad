@@ -41,6 +41,7 @@ MemoryEntryType = Literal[
 MemoryStatus = Literal["active", "quarantined", "tombstoned", "hard_deleted"]
 WorkflowState = Literal["active", "waiting", "blocked", "stale", "closed"]
 MemoryScope = Literal["user", "project", "session", "channel", "workspace"]
+PreferenceStrength = Literal["weak", "moderate", "strong"]
 
 
 class MemorySource(BaseModel):
@@ -62,6 +63,8 @@ class MemoryEntry(BaseModel):
     entry_type: MemoryEntryType
     key: str
     value: Any
+    predicate: str | None = None
+    strength: PreferenceStrength = "moderate"
 
     source: MemorySource
     source_origin: SourceOrigin

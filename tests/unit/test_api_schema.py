@@ -429,6 +429,20 @@ class TestApiSchemaValidation:
         assert canonical.entry_type == "soft_constraint"
         assert legacy.entry_type == "context"
 
+    def test_m1_memory_write_params_accept_preference_predicate_fields(self) -> None:
+        params = MemoryWriteParams.model_validate(
+            {
+                "entry_type": "preference",
+                "key": "food.preference",
+                "value": "prefers coffee over tea",
+                "predicate": "prefers(coffee, over: tea)",
+                "strength": "strong",
+            }
+        )
+
+        assert params.predicate == "prefers(coffee, over: tea)"
+        assert params.strength == "strong"
+
     def test_m1_memory_write_params_reject_legacy_source_and_orphaned_binding_fields(self) -> None:
         with pytest.raises(ValidationError):
             MemoryWriteParams.model_validate(

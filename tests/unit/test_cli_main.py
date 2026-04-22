@@ -604,6 +604,23 @@ def test_cli_commands_route_through_rpc_wrapper(
             "the launch retrospective happened on monday",
         ],
     )
+    _invoke_ok(
+        runner,
+        [
+            "memory",
+            "write",
+            "--type",
+            "preference",
+            "--key",
+            "food.preference",
+            "--value",
+            "prefers coffee over tea",
+            "--predicate",
+            "prefers(coffee, over: tea)",
+            "--strength",
+            "strong",
+        ],
+    )
     _invoke_ok(runner, ["memory", "rotate-key"])
     _invoke_ok(runner, ["note", "create", "--key", "meeting", "--content", "prep"])
     assert "n-1 meeting" in _invoke_ok(runner, ["note", "list", "--limit", "5"]).output
@@ -700,6 +717,16 @@ def test_cli_commands_route_through_rpc_wrapper(
             "entry_type": "episode",
             "key": "timeline.launch",
             "value": "the launch retrospective happened on monday",
+        },
+    ) in calls
+    assert (
+        "memory.write",
+        {
+            "entry_type": "preference",
+            "key": "food.preference",
+            "value": "prefers coffee over tea",
+            "predicate": "prefers(coffee, over: tea)",
+            "strength": "strong",
         },
     ) in calls
     assert ("note.create", {"key": "meeting", "content": "prep"}) in calls
