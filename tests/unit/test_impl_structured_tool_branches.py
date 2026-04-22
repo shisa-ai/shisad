@@ -22,7 +22,7 @@ from shisad.daemon.handlers._impl import (
     _structured_todo_create,
 )
 from shisad.daemon.handlers._impl_memory import MemoryImplMixin
-from shisad.memory.ingress import IngressContextRegistry
+from shisad.memory.ingress import IngressContextRegistry, digest_content
 from shisad.memory.manager import MemoryManager
 from shisad.memory.remap import digest_memory_value
 from shisad.security.control_plane.schema import Origin
@@ -54,9 +54,14 @@ class _WebToolkitStub:
     def __init__(self, payload: dict[str, Any]) -> None:
         self._payload = payload
         self.calls: list[tuple[str, int]] = []
+        self.fetch_calls: list[tuple[str, bool, int | None]] = []
 
     def search(self, *, query: str, limit: int) -> dict[str, Any]:
         self.calls.append((query, limit))
+        return dict(self._payload)
+
+    def fetch(self, *, url: str, snapshot: bool, max_bytes: int | None) -> dict[str, Any]:
+        self.fetch_calls.append((url, snapshot, max_bytes))
         return dict(self._payload)
 
 
@@ -151,6 +156,7 @@ class _StructuredBranchHarness:
         self._delivery = _DeliveryStub(sent=delivery_sent, reason=delivery_reason)
         self._transcript_store = _TranscriptStoreStub()
         self._scheduler = _SchedulerStub()
+        self._memory_ingress_registry = IngressContextRegistry()
 
     @property
     def session_id(self) -> SessionId:
@@ -647,6 +653,14 @@ async def test_m7_impl_web_search_branch_records_success_with_structured_helper(
     assert result.tool_output is not None
     assert result.tool_output.tool_name == "web.search"
     assert result.tool_output.taint_labels == {TaintLabel.UNTRUSTED}
+    assert result.tool_output.ingress_context
+    ingress = harness._memory_ingress_registry.resolve(result.tool_output.ingress_context)
+    assert ingress.source_origin == "tool_output"
+    assert ingress.channel_trust == "tool_passed"
+    assert ingress.confirmation_status == "auto_accepted"
+    assert ingress.scope == "session"
+    assert ingress.source_id == f"{harness.session_id}:web.search"
+    assert ingress.content_digest == digest_content(result.tool_output.content)
     assert harness._web_toolkit.calls == [("roadmap", 2)]
     assert harness._control_plane.results == [True]
     assert any(isinstance(event, ToolApproved) for event in harness._event_bus.events)
@@ -693,6 +707,40 @@ async def test_m7_impl_git_status_branch_failure_keeps_rejected_before_executed(
     assert rejected_indices
     assert executed_indices
     assert rejected_indices[0] < executed_indices[0]
+
+
+@pytest.mark.asyncio
+async def test_m1_execute_approved_action_mints_external_web_handle_for_web_fetch() -> None:
+    harness = _StructuredBranchHarness(
+        web_payload={
+            "ok": True,
+            "url": "https://example.com/page",
+            "content": "Fetched page body",
+            "taint_labels": ["untrusted"],
+        },
+        git_status_payload={"ok": True, "status": "clean"},
+    )
+    result = await HandlerImplementation._execute_approved_action(
+        harness,  # type: ignore[arg-type]
+        sid=harness.session_id,
+        user_id=UserId("user-1"),
+        tool_name=ToolName("web.fetch"),
+        arguments={"url": "https://example.com/page"},
+        capabilities=set(),
+        approval_actor="control_api",
+    )
+
+    assert result.success is True
+    assert result.tool_output is not None
+    assert result.tool_output.ingress_context
+    ingress = harness._memory_ingress_registry.resolve(result.tool_output.ingress_context)
+    assert ingress.source_origin == "external_web"
+    assert ingress.channel_trust == "web_passed"
+    assert ingress.confirmation_status == "auto_accepted"
+    assert ingress.scope == "session"
+    assert ingress.source_id == "https://example.com/page"
+    assert ingress.content_digest == digest_content(result.tool_output.content)
+    assert harness._web_toolkit.fetch_calls == [("https://example.com/page", False, None)]
 
 
 @pytest.mark.asyncio

@@ -134,6 +134,7 @@ from shisad.governance.merge import (
 from shisad.memory.ingress import IngressContext
 from shisad.memory.remap import digest_memory_value
 from shisad.memory.summarizer import ConversationSummarizer
+from shisad.memory.trust import ChannelTrust, SourceOrigin
 from shisad.security.control_plane.engine import ControlPlaneEvaluation
 from shisad.security.control_plane.schema import (
     ActionKind,
@@ -1029,6 +1030,7 @@ class ToolOutputRecord:
     content: str
     success: bool = True
     taint_labels: set[TaintLabel] = field(default_factory=set)
+    ingress_context: str | None = None
 
 
 @dataclass(slots=True)
@@ -1241,6 +1243,48 @@ class HandlerImplementation(
             registration_complete=self._complete_webauthn_registration_ceremony,
             approval_context=self._webauthn_approval_ceremony_context,
             approval_complete=self._complete_webauthn_approval_ceremony,
+        )
+
+    def _with_tool_output_ingress(
+        self,
+        *,
+        session: Session,
+        tool_output: ToolOutputRecord | None,
+    ) -> ToolOutputRecord | None:
+        if tool_output is None:
+            return None
+        content = str(tool_output.content).strip()
+        if not content:
+            return tool_output
+
+        source_origin: SourceOrigin = "tool_output"
+        channel_trust: ChannelTrust = "tool_passed"
+        source_id = f"{session.id}:{tool_output.tool_name}"
+        if tool_output.tool_name == "web.fetch":
+            source_origin = "external_web"
+            channel_trust = "web_passed"
+            try:
+                payload = json.loads(content)
+            except json.JSONDecodeError:
+                payload = None
+            if isinstance(payload, Mapping):
+                source_id = str(payload.get("url", "")).strip() or source_id
+
+        context = self._memory_ingress_registry.mint(
+            source_origin=source_origin,
+            channel_trust=channel_trust,
+            confirmation_status="auto_accepted",
+            scope="session",
+            source_id=source_id,
+            content=content,
+            taint_labels=sorted(tool_output.taint_labels, key=lambda label: label.value),
+        )
+        return ToolOutputRecord(
+            tool_name=tool_output.tool_name,
+            content=tool_output.content,
+            success=tool_output.success,
+            taint_labels=set(tool_output.taint_labels),
+            ingress_context=context.handle_id,
         )
 
     async def reset_test_state(self) -> dict[str, Any]:
@@ -2916,10 +2960,14 @@ class HandlerImplementation(
             return ApprovedToolExecutionResult(
                 success=True,
                 checkpoint_id=checkpoint_id,
-                tool_output=ToolOutputRecord(
-                    tool_name=str(tool_name),
-                    content="Anomaly reported and lockdown evaluation triggered.",
-                    taint_labels=set(),
+                tool_output=HandlerImplementation._with_tool_output_ingress(
+                    self,
+                    session=session,
+                    tool_output=ToolOutputRecord(
+                        tool_name=str(tool_name),
+                        content="Anomaly reported and lockdown evaluation triggered.",
+                        taint_labels=set(),
+                    ),
                 ),
             )
 
@@ -2964,12 +3012,16 @@ class HandlerImplementation(
             return ApprovedToolExecutionResult(
                 success=True,
                 checkpoint_id=checkpoint_id,
-                tool_output=ToolOutputRecord(
-                    tool_name=str(tool_name),
-                    content=self._sanitize_tool_output_text(
-                        json.dumps(preview_rows, ensure_ascii=True)
+                tool_output=HandlerImplementation._with_tool_output_ingress(
+                    self,
+                    session=session,
+                    tool_output=ToolOutputRecord(
+                        tool_name=str(tool_name),
+                        content=self._sanitize_tool_output_text(
+                            json.dumps(preview_rows, ensure_ascii=True)
+                        ),
+                        taint_labels=retrieval_taints,
                     ),
-                    taint_labels=retrieval_taints,
                 ),
             )
 
@@ -3031,13 +3083,17 @@ class HandlerImplementation(
                     return ApprovedToolExecutionResult(
                         success=False,
                         checkpoint_id=checkpoint_id,
-                        tool_output=ToolOutputRecord(
-                            tool_name=str(tool_name),
-                            content=self._sanitize_tool_output_text(
-                                json.dumps(delivery_payload, ensure_ascii=True)
+                        tool_output=HandlerImplementation._with_tool_output_ingress(
+                            self,
+                            session=session,
+                            tool_output=ToolOutputRecord(
+                                tool_name=str(tool_name),
+                                content=self._sanitize_tool_output_text(
+                                    json.dumps(delivery_payload, ensure_ascii=True)
+                                ),
+                                success=False,
+                                taint_labels=set(),
                             ),
-                            success=False,
-                            taint_labels=set(),
                         ),
                     )
 
@@ -3092,13 +3148,17 @@ class HandlerImplementation(
                 return ApprovedToolExecutionResult(
                     success=True,
                     checkpoint_id=checkpoint_id,
-                    tool_output=ToolOutputRecord(
-                        tool_name=str(tool_name),
-                        content=self._sanitize_tool_output_text(
-                            json.dumps(delivery_payload, ensure_ascii=True)
+                    tool_output=HandlerImplementation._with_tool_output_ingress(
+                        self,
+                        session=session,
+                        tool_output=ToolOutputRecord(
+                            tool_name=str(tool_name),
+                            content=self._sanitize_tool_output_text(
+                                json.dumps(delivery_payload, ensure_ascii=True)
+                            ),
+                            success=True,
+                            taint_labels=set(),
                         ),
-                        success=True,
-                        taint_labels=set(),
                     ),
                 )
 
@@ -3150,13 +3210,17 @@ class HandlerImplementation(
             return ApprovedToolExecutionResult(
                 success=success,
                 checkpoint_id=checkpoint_id,
-                tool_output=ToolOutputRecord(
-                    tool_name=str(tool_name),
-                    content=self._sanitize_tool_output_text(
-                        json.dumps(delivery_payload, ensure_ascii=True)
+                tool_output=HandlerImplementation._with_tool_output_ingress(
+                    self,
+                    session=session,
+                    tool_output=ToolOutputRecord(
+                        tool_name=str(tool_name),
+                        content=self._sanitize_tool_output_text(
+                            json.dumps(delivery_payload, ensure_ascii=True)
+                        ),
+                        success=success,
+                        taint_labels=set(),
                     ),
-                    success=success,
-                    taint_labels=set(),
                 ),
             )
 
@@ -3192,11 +3256,15 @@ class HandlerImplementation(
             return ApprovedToolExecutionResult(
                 success=result.success,
                 checkpoint_id=checkpoint_id,
-                tool_output=ToolOutputRecord(
-                    tool_name=str(tool_name),
-                    content=result.content,
-                    success=result.success,
-                    taint_labels=result.taint_labels,
+                tool_output=HandlerImplementation._with_tool_output_ingress(
+                    self,
+                    session=session,
+                    tool_output=ToolOutputRecord(
+                        tool_name=str(tool_name),
+                        content=result.content,
+                        success=result.success,
+                        taint_labels=result.taint_labels,
+                    ),
                 ),
             )
 
@@ -3355,11 +3423,15 @@ class HandlerImplementation(
         return ApprovedToolExecutionResult(
             success=success,
             checkpoint_id=checkpoint_id,
-            tool_output=ToolOutputRecord(
-                tool_name=str(tool_name),
-                content=self._sanitize_tool_output_text(raw_output),
-                success=success,
-                taint_labels=label_tool_output(str(tool_name)),
+            tool_output=HandlerImplementation._with_tool_output_ingress(
+                self,
+                session=session,
+                tool_output=ToolOutputRecord(
+                    tool_name=str(tool_name),
+                    content=self._sanitize_tool_output_text(raw_output),
+                    success=success,
+                    taint_labels=label_tool_output(str(tool_name)),
+                ),
             )
             if raw_output
             else None,

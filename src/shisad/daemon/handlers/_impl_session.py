@@ -2975,6 +2975,7 @@ def _serialize_tool_outputs(records: list[Any]) -> list[dict[str, Any]]:
     for index, record in enumerate(records, start=1):
         tool_name = str(getattr(record, "tool_name", "")).strip() or f"tool_{index}"
         payload = _parse_tool_output_payload(str(getattr(record, "content", "")))
+        ingress_context = str(getattr(record, "ingress_context", "") or "").strip()
         taint_values_raw: Any = getattr(record, "taint_labels", set())
         taint_values_iterable: list[Any] | tuple[Any, ...] | set[Any] | frozenset[Any]
         if isinstance(taint_values_raw, (set, frozenset, list, tuple)):
@@ -2994,6 +2995,7 @@ def _serialize_tool_outputs(records: list[Any]) -> list[dict[str, Any]]:
                 "success": bool(getattr(record, "success", False)),
                 "payload": payload,
                 "taint_labels": taint_values,
+                **({"ingress_context": ingress_context} if ingress_context else {}),
             }
         )
     return serialized
