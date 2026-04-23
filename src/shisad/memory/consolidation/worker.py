@@ -346,6 +346,7 @@ class ConsolidationWorker:
                         "signal_entry_id": signal.id,
                         "pattern": pattern,
                         "overlap": sorted(overlap),
+                        "message": proposal.message,
                         "surface_limit": self._config.surface_limit,
                     },
                 ):

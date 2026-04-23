@@ -3141,6 +3141,22 @@ async def test_contract_graph_query_export_and_consolidation_run_via_control_api
             value="MemoryPack recall supports Shisad release workflows.",
             source_id="graph-live-2",
         )
+        _write(
+            entry_type="persona_fact",
+            key="work:acme",
+            value="I work at ACME as VP Eng.",
+            source_id="strong-live-target",
+        )
+        _write(
+            entry_type="episode",
+            key="episode:left-acme",
+            value="I no longer work at ACME.",
+            source_id="strong-live-signal",
+            source_origin="user_direct",
+            channel_trust="owner_observed",
+            confirmation_status="auto_accepted",
+            confidence=0.30,
+        )
         for index, value in enumerate(
             [
                 "I like ramen for lunch.",
@@ -3180,6 +3196,7 @@ async def test_contract_graph_query_export_and_consolidation_run_via_control_api
 
         consolidated = await harness.client.call("memory.consolidate", {})
         assert consolidated.get("identity_candidate_count") == 1
+        assert consolidated.get("strong_invalidation_count") == 1
         assert consolidated.get("capability_scope", {}).get("network") is False
         assert consolidated.get("capability_scope", {}).get("tool_recursion") is False
 
@@ -3190,6 +3207,34 @@ async def test_contract_graph_query_export_and_consolidation_run_via_control_api
             if isinstance(item, dict)
         }
         assert "prefers(ramen)" in predicates
+
+        sid = await _create_session(harness.client)
+        surfaced = await harness.client.call(
+            "session.message",
+            {"session_id": sid, "content": "hello"},
+        )
+        assert "Memory update candidate" in str(surfaced.get("response", ""))
+        assert "Reply yes to update this memory" in str(surfaced.get("response", ""))
+
+        accepted = await harness.client.call(
+            "session.message",
+            {"session_id": sid, "content": "yes"},
+        )
+        assert "Updated memory" in str(accepted.get("response", ""))
+
+        listing = await harness.client.call("memory.list", {"limit": 20})
+        promoted = next(
+            (
+                item
+                for item in listing.get("entries", [])
+                if isinstance(item, dict)
+                and str(item.get("entry_type", "")) == "persona_fact"
+                and str(item.get("key", "")) == "work:acme"
+                and str(item.get("confirmation_status", "")) == "user_confirmed"
+            ),
+            None,
+        )
+        assert isinstance(promoted, dict)
 
 
 @pytest.mark.asyncio

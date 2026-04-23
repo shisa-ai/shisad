@@ -103,6 +103,7 @@ from shisad.daemon.handlers._pending_approval import (
 )
 from shisad.daemon.handlers._task_scope import task_declared_tdg_roots, task_resource_authorizer
 from shisad.governance.merge import PolicyMergeError
+from shisad.memory.consolidation import ConsolidationConfig, ConsolidationWorker
 from shisad.memory.context_defaults import resolve_active_attention_defaults
 from shisad.memory.identity_candidates import (
     build_identity_observation_key,
@@ -199,6 +200,7 @@ _COMMAND_CONTEXT_PENDING_RECOVERY_CHECKPOINT_KEY = "command_context_pending_reco
 _COMMAND_CONTEXT_PENDING_RAW_HANDOFFS_KEY = "command_context_pending_raw_handoffs"
 _COMMAND_CONTEXT_REASON_KEY = "command_context_reason"
 _PENDING_SKILL_SUGGESTION_ID_KEY = "pending_skill_suggestion_id"
+_PENDING_STRONG_INVALIDATION_KEY = "pending_strong_invalidation"
 _TASK_REPORTED_PATH_MAX_CHARS = 512
 _TASK_CLOSE_GATE_HEADER = "TASK CLOSE-GATE SELF-CHECK"
 _TASK_CLOSE_GATE_STATUS_COMPLETE = "complete"
@@ -343,6 +345,15 @@ class PreparedIdentityCandidateSuggestion:
 class PreparedSkillSuggestion:
     suggestion_text: str = ""
     skill_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class PreparedStrongInvalidationSuggestion:
+    suggestion_text: str = ""
+    target_entry_id: str | None = None
+    signal_entry_id: str | None = None
+    expired_pairs: tuple[tuple[str, str], ...] = ()
+    taint_labels: frozenset[TaintLabel] = frozenset()
 
 
 @dataclass(frozen=True, slots=True)
@@ -6064,6 +6075,90 @@ class SessionImplMixin(HandlerMixinBase):
             response="Usage: /identity review | accept <id> | reject <id> | edit <id> <text>",
         )
 
+    async def _maybe_handle_pending_strong_invalidation(
+        self,
+        *,
+        validated: SessionMessageValidationResult,
+    ) -> dict[str, Any] | None:
+        memory_manager = cast(MemoryManager | None, getattr(self, "_memory_manager", None))
+        if memory_manager is None:
+            return None
+        normalized_channel = str(validated.channel or validated.session.channel).strip().lower()
+        if normalized_channel != "cli" or validated.session_mode != SessionMode.DEFAULT:
+            return None
+        pending = validated.session.metadata.get(_PENDING_STRONG_INVALIDATION_KEY)
+        if not isinstance(pending, dict):
+            return None
+        target_entry_id = str(pending.get("target_entry_id", "")).strip()
+        signal_entry_id = str(pending.get("signal_entry_id", "")).strip()
+        if not target_entry_id or not signal_entry_id:
+            validated.session.metadata.pop(_PENDING_STRONG_INVALIDATION_KEY, None)
+            session_manager = getattr(self, "_session_manager", None)
+            if session_manager is not None:
+                session_manager.persist(validated.session.id)
+            return None
+
+        normalized_text = " ".join(validated.firewall_result.sanitized_text.strip().lower().split())
+        if normalized_text not in _CRC_POSITIVE_PATTERNS | _CRC_NEGATIVE_PATTERNS:
+            return None
+        validated.session.metadata.pop(_PENDING_STRONG_INVALIDATION_KEY, None)
+        session_manager = getattr(self, "_session_manager", None)
+        if session_manager is not None:
+            session_manager.persist(validated.session.id)
+
+        worker = ConsolidationWorker(memory_manager)
+        if normalized_text in _CRC_NEGATIVE_PATTERNS:
+            if worker.reject_strong_invalidation(
+                target_entry_id=target_entry_id,
+                signal_entry_id=signal_entry_id,
+                ingress_handle_id=None,
+            ):
+                return self._identity_command_response(
+                    validated=validated,
+                    response=f"Rejected memory update candidate for {target_entry_id}.",
+                )
+            return self._identity_command_response(
+                validated=validated,
+                response=f"Memory update candidate for {target_entry_id} is no longer available.",
+            )
+
+        signal = memory_manager.get_entry(
+            signal_entry_id,
+            include_pending_review=True,
+            include_quarantined=True,
+        )
+        if signal is None:
+            return self._identity_command_response(
+                validated=validated,
+                response=f"Memory update evidence {signal_entry_id} is no longer available.",
+            )
+        ingress_context = self._mint_identity_command_context(
+            validated=validated,
+            source_origin="user_confirmed",
+            confirmation_status="user_confirmed",
+            content=signal.value,
+        )
+        if ingress_context is None:
+            return self._identity_command_response(
+                validated=validated,
+                response="Memory update confirmation is unavailable in this session.",
+            )
+        confirmed = worker.confirm_strong_invalidation(
+            target_entry_id=target_entry_id,
+            signal_entry_id=signal_entry_id,
+            new_value=str(signal.value),
+            ingress_handle_id=ingress_context.handle_id,
+        )
+        if confirmed is None:
+            return self._identity_command_response(
+                validated=validated,
+                response=f"Memory update candidate for {target_entry_id} is no longer available.",
+            )
+        return self._identity_command_response(
+            validated=validated,
+            response=f"Updated memory {target_entry_id} from confirmed correction.",
+        )
+
     async def _synthesize_post_tool_response(
         self,
         *,
@@ -6318,6 +6413,10 @@ class SessionImplMixin(HandlerMixinBase):
             validated=validated,
             execution=execution,
         )
+        strong_invalidation_suggestion = self._prepare_strong_invalidation_suggestion(
+            validated=validated,
+            execution=execution,
+        )
         skill_suggestion = self._prepare_skill_suggestion(
             validated=validated,
             execution=execution,
@@ -6329,6 +6428,13 @@ class SessionImplMixin(HandlerMixinBase):
                 else candidate_suggestion.suggestion_text.strip()
             )
             response_taint_labels.update(candidate_suggestion.taint_labels)
+        if strong_invalidation_suggestion.suggestion_text:
+            response_text = (
+                f"{response_text}{strong_invalidation_suggestion.suggestion_text}"
+                if response_text.strip()
+                else strong_invalidation_suggestion.suggestion_text.strip()
+            )
+            response_taint_labels.update(strong_invalidation_suggestion.taint_labels)
         if skill_suggestion.suggestion_text:
             response_text = (
                 f"{response_text}{skill_suggestion.suggestion_text}"
@@ -6355,6 +6461,10 @@ class SessionImplMixin(HandlerMixinBase):
                 response_text = f"[CONFIRMATION REQUIRED] {response_text}"
         if not public_sensitive_taints and not output_result.blocked:
             self._commit_identity_candidate_suggestion(candidate_suggestion)
+            self._commit_strong_invalidation_suggestion(
+                validated=validated,
+                suggestion=strong_invalidation_suggestion,
+            )
             self._commit_skill_suggestion(validated=validated, suggestion=skill_suggestion)
 
         lockdown_notice = self._lockdown_manager.user_notification(sid)
@@ -7066,6 +7176,141 @@ class SessionImplMixin(HandlerMixinBase):
             memory_manager.expire_identity_candidate(candidate_id)
         if suggestion.surfaced_candidate_id is not None:
             memory_manager.note_identity_candidate_surface(suggestion.surfaced_candidate_id)
+
+    def _prepare_strong_invalidation_suggestion(
+        self,
+        *,
+        validated: SessionMessageValidationResult,
+        execution: SessionMessageExecutionResult,
+    ) -> PreparedStrongInvalidationSuggestion:
+        memory_manager = cast(MemoryManager | None, getattr(self, "_memory_manager", None))
+        if memory_manager is None:
+            return PreparedStrongInvalidationSuggestion()
+        normalized_channel = str(validated.channel or validated.session.channel).strip().lower()
+        if normalized_channel != "cli" or validated.session_mode != SessionMode.DEFAULT:
+            return PreparedStrongInvalidationSuggestion()
+        if execution.pending_confirmation_ids:
+            return PreparedStrongInvalidationSuggestion()
+
+        expired_pairs: list[tuple[str, str]] = []
+        surface_limit = ConsolidationConfig().surface_limit
+        proposals = memory_manager.list_events(
+            event_type="strong_invalidation_proposed",
+            limit=20,
+        )
+        for event in reversed(proposals):
+            target_entry_id = event.entry_id
+            signal_entry_id = str(event.metadata_json.get("signal_entry_id", "")).strip()
+            if not signal_entry_id:
+                continue
+            if self._strong_invalidation_terminal_exists(
+                memory_manager=memory_manager,
+                target_entry_id=target_entry_id,
+                signal_entry_id=signal_entry_id,
+            ):
+                continue
+            target = memory_manager.get_entry(
+                target_entry_id,
+                include_pending_review=True,
+                include_quarantined=True,
+            )
+            signal = memory_manager.get_entry(
+                signal_entry_id,
+                include_pending_review=True,
+                include_quarantined=True,
+            )
+            if target is None or signal is None or target.superseded_by is not None:
+                continue
+            surfaced = self._strong_invalidation_surface_count(
+                memory_manager=memory_manager,
+                target_entry_id=target_entry_id,
+                signal_entry_id=signal_entry_id,
+            )
+            if surfaced >= surface_limit:
+                expired_pairs.append((target_entry_id, signal_entry_id))
+                continue
+            suggestion = (
+                "\n\nMemory update candidate: "
+                f"{str(event.metadata_json.get('message') or '').strip() or target.key}\n"
+                f"Current: {str(target.value).strip()}\n"
+                f"New evidence: {str(signal.value).strip()}\n"
+                "Reply yes to update this memory, or no to keep it unchanged."
+            )
+            return PreparedStrongInvalidationSuggestion(
+                suggestion_text=suggestion,
+                target_entry_id=target_entry_id,
+                signal_entry_id=signal_entry_id,
+                expired_pairs=tuple(expired_pairs),
+                taint_labels=frozenset({TaintLabel.UNTRUSTED}),
+            )
+        return PreparedStrongInvalidationSuggestion(expired_pairs=tuple(expired_pairs))
+
+    def _commit_strong_invalidation_suggestion(
+        self,
+        *,
+        validated: SessionMessageValidationResult,
+        suggestion: PreparedStrongInvalidationSuggestion,
+    ) -> None:
+        memory_manager = cast(MemoryManager | None, getattr(self, "_memory_manager", None))
+        if memory_manager is None:
+            return
+        worker = ConsolidationWorker(memory_manager)
+        for target_entry_id, signal_entry_id in suggestion.expired_pairs:
+            worker.expire_strong_invalidation(
+                target_entry_id=target_entry_id,
+                signal_entry_id=signal_entry_id,
+            )
+        if suggestion.target_entry_id is None or suggestion.signal_entry_id is None:
+            return
+        memory_manager.record_consolidation_event(
+            suggestion.target_entry_id,
+            "strong_invalidation_surfaced",
+            metadata={"signal_entry_id": suggestion.signal_entry_id},
+        )
+        validated.session.metadata[_PENDING_STRONG_INVALIDATION_KEY] = {
+            "target_entry_id": suggestion.target_entry_id,
+            "signal_entry_id": suggestion.signal_entry_id,
+        }
+        session_manager = getattr(self, "_session_manager", None)
+        if session_manager is not None:
+            session_manager.persist(validated.session.id)
+
+    @staticmethod
+    def _strong_invalidation_surface_count(
+        *,
+        memory_manager: MemoryManager,
+        target_entry_id: str,
+        signal_entry_id: str,
+    ) -> int:
+        return sum(
+            1
+            for event in memory_manager.list_events(
+                entry_id=target_entry_id,
+                event_type="strong_invalidation_surfaced",
+                limit=20,
+            )
+            if event.metadata_json.get("signal_entry_id") == signal_entry_id
+        )
+
+    @staticmethod
+    def _strong_invalidation_terminal_exists(
+        *,
+        memory_manager: MemoryManager,
+        target_entry_id: str,
+        signal_entry_id: str,
+    ) -> bool:
+        for event_type in (
+            "strong_invalidation_confirmed",
+            "strong_invalidation_rejected",
+            "strong_invalidation_expired",
+        ):
+            for event in memory_manager.list_events(event_type=event_type, limit=100):
+                metadata = event.metadata_json
+                event_target = str(metadata.get("target_entry_id") or event.entry_id)
+                event_signal = str(metadata.get("signal_entry_id", ""))
+                if event_target == target_entry_id and event_signal == signal_entry_id:
+                    return True
+        return False
 
     async def _mark_command_context_degraded(
         self,
@@ -7814,6 +8059,11 @@ class SessionImplMixin(HandlerMixinBase):
         )
         if pending_skill_response is not None:
             return pending_skill_response
+        strong_invalidation_response = await self._maybe_handle_pending_strong_invalidation(
+            validated=validated
+        )
+        if strong_invalidation_response is not None:
+            return strong_invalidation_response
         skill_command_response = await self._maybe_handle_skill_command(validated=validated)
         if skill_command_response is not None:
             return skill_command_response

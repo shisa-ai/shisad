@@ -38,6 +38,7 @@ from shisad.core.types import (
 )
 from shisad.daemon.handlers._impl_session import (
     _PENDING_SKILL_SUGGESTION_ID_KEY,
+    _PENDING_STRONG_INVALIDATION_KEY,
     SessionImplMixin,
     SessionMessageExecutionResult,
     SessionMessagePlannerContextResult,
@@ -45,6 +46,7 @@ from shisad.daemon.handlers._impl_session import (
     SessionMessageValidationResult,
     TaskDelegationRecommendation,
 )
+from shisad.memory.consolidation import ConsolidationWorker
 from shisad.memory.ingress import IngressContextRegistry
 from shisad.memory.manager import MemoryManager
 from shisad.memory.schema import MemorySource
@@ -979,6 +981,48 @@ def _write_invocable_skill(manager: MemoryManager) -> str:
     return decision.entry.id
 
 
+def _write_strong_invalidation_proposal(manager: MemoryManager) -> tuple[str, str]:
+    target = manager.write_with_provenance(
+        entry_type="persona_fact",
+        key="work:acme",
+        value="I work at ACME as VP Eng.",
+        source=MemorySource(
+            origin="user",
+            source_id="strong-finalize-target",
+            extraction_method="manual",
+        ),
+        source_origin="user_direct",
+        channel_trust="command",
+        confirmation_status="user_asserted",
+        source_id="strong-finalize-target",
+        scope="user",
+        confidence=0.95,
+        confirmation_satisfied=True,
+    )
+    assert target.entry is not None
+    signal = manager.write_with_provenance(
+        entry_type="episode",
+        key="episode:left-acme",
+        value="I no longer work at ACME.",
+        source=MemorySource(
+            origin="user",
+            source_id="strong-finalize-signal",
+            extraction_method="owner_observed",
+        ),
+        source_origin="user_direct",
+        channel_trust="owner_observed",
+        confirmation_status="auto_accepted",
+        source_id="strong-finalize-signal",
+        scope="user",
+        confidence=0.30,
+        confirmation_satisfied=True,
+    )
+    assert signal.entry is not None
+    proposals = ConsolidationWorker(manager).propose_strong_invalidations()
+    assert proposals
+    return target.entry.id, signal.entry.id
+
+
 class _PostToolSynthesisPlanner:
     def __init__(self, response_text: str) -> None:
         self.response_text = response_text
@@ -1200,6 +1244,70 @@ async def test_m3_finalize_response_surfaces_pending_identity_candidate_on_cli(
         limit=10,
     )
     assert len(surfaced) == 1
+
+
+@pytest.mark.asyncio
+async def test_m5_finalize_response_surfaces_strong_invalidation_candidate_on_cli(
+    tmp_path: Path,
+) -> None:
+    harness = _FinalizeEvidenceHarness()
+    harness._memory_manager = MemoryManager(tmp_path / "memory")
+    harness._session_manager = SimpleNamespace(persist=lambda _sid: None)
+    target_id, signal_id = _write_strong_invalidation_proposal(harness._memory_manager)
+    execution = _finalize_execution_result(tool_outputs=[], assistant_response="Planner reply")
+
+    response = await SessionImplMixin._finalize_response(harness, execution)
+
+    text = str(response["response"])
+    assert "Memory update candidate" in text
+    assert "Reply yes to update this memory" in text
+    session = execution.planner_dispatch.planner_context.validated.session
+    assert session.metadata[_PENDING_STRONG_INVALIDATION_KEY] == {
+        "target_entry_id": target_id,
+        "signal_entry_id": signal_id,
+    }
+    surfaced = harness._memory_manager.list_events(
+        entry_id=target_id,
+        event_type="strong_invalidation_surfaced",
+        limit=10,
+    )
+    assert len(surfaced) == 1
+
+
+@pytest.mark.asyncio
+async def test_m5_pending_strong_invalidation_yes_promotes_user_confirmed_version(
+    tmp_path: Path,
+) -> None:
+    harness = _FinalizeEvidenceHarness()
+    harness._memory_manager = MemoryManager(tmp_path / "memory")
+    harness._memory_ingress_registry = IngressContextRegistry()
+    harness._session_manager = SimpleNamespace(persist=lambda _sid: None)
+    target_id, signal_id = _write_strong_invalidation_proposal(harness._memory_manager)
+    validated = _validation_result(params={"session_id": "sess-g1", "content": "yes"})
+    validated.session.metadata[_PENDING_STRONG_INVALIDATION_KEY] = {
+        "target_entry_id": target_id,
+        "signal_entry_id": signal_id,
+    }
+
+    response = await SessionImplMixin._maybe_handle_pending_strong_invalidation(
+        harness,
+        validated=validated,
+    )
+
+    assert response is not None
+    assert "Updated memory" in str(response["response"])
+    target = harness._memory_manager.get_entry(target_id, include_deleted=True)
+    assert target is not None
+    assert target.superseded_by is not None
+    replacement = harness._memory_manager.get_entry(target.superseded_by)
+    assert replacement is not None
+    assert replacement.confirmation_status == "user_confirmed"
+    assert replacement.trust_band == "elevated"
+    assert harness._memory_manager.list_events(
+        entry_id=replacement.id,
+        event_type="strong_invalidation_confirmed",
+        limit=10,
+    )
 
 
 @pytest.mark.asyncio
