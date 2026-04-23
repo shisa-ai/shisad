@@ -467,3 +467,261 @@ async def test_m3_channel_ingest_migrates_legacy_bare_inbox_bindings(
     surfaced_ids = {entry.id for entry in pack.entries}
     assert legacy.entry.id in surfaced_ids
     assert other_workspace.entry.id not in surfaced_ids
+
+
+@pytest.mark.asyncio
+async def test_m3_channel_ingest_carries_forward_legacy_keyed_channel_state(
+    tmp_path: Path,
+) -> None:
+    harness = _AdminChannelIngressHarness(
+        tmp_path=tmp_path,
+        default_trust="public",
+        allowlisted_users={"guest-5"},
+    )
+    for session_id, message_id in (
+        ("sess-note", "legacy-note-msg"),
+        ("sess-participation", "legacy-participation-msg"),
+        ("sess-summary", "legacy-summary-msg"),
+        ("sess-note-other", "legacy-note-msg-other"),
+        ("sess-participation-other", "legacy-participation-msg-other"),
+        ("sess-summary-other", "legacy-summary-msg-other"),
+    ):
+        harness._transcript_store.append(
+            SessionId(session_id),
+            role="user",
+            content=f"legacy {message_id}",
+            taint_labels=set(),
+            metadata={
+                "channel_message_id": message_id,
+                "delivery_target": {
+                    "channel": "discord",
+                    "recipient": "chan-state",
+                    "workspace_hint": "guild-2" if message_id.endswith("-other") else "guild-1",
+                    "thread_id": "",
+                },
+            },
+        )
+
+    legacy_note = harness._memory_manager.write_with_provenance(
+        entry_type="person_note",
+        key=person_note_key(channel_id="chan-state", external_user_id="guest-5"),
+        value={
+            "external_user_id": "guest-5",
+            "display_name": "Guest Five",
+            "channel_id": "chan-state",
+            "total_interactions": 2,
+            "interaction_summary": "Legacy note",
+        },
+        source=MemorySource(
+            origin="external",
+            source_id="discord:legacy-note-msg",
+            extraction_method="channel.ingest.structured",
+        ),
+        source_origin="external_message",
+        channel_trust="shared_participant",
+        confirmation_status="auto_accepted",
+        source_id="discord:legacy-note-msg",
+        scope="channel",
+        confidence=0.5,
+        confirmation_satisfied=True,
+    )
+    assert legacy_note.kind == "allow"
+    assert legacy_note.entry is not None
+
+    other_workspace_note = harness._memory_manager.write_with_provenance(
+        entry_type="person_note",
+        key=person_note_key(channel_id="chan-state", external_user_id="guest-5"),
+        value={
+            "external_user_id": "guest-5",
+            "display_name": "Guest Five Elsewhere",
+            "channel_id": "chan-state",
+            "total_interactions": 7,
+            "interaction_summary": "Other workspace note",
+        },
+        source=MemorySource(
+            origin="external",
+            source_id="discord:legacy-note-msg-other",
+            extraction_method="channel.ingest.structured",
+        ),
+        source_origin="external_message",
+        channel_trust="shared_participant",
+        confirmation_status="auto_accepted",
+        source_id="discord:legacy-note-msg-other",
+        scope="channel",
+        confidence=0.5,
+        confirmation_satisfied=True,
+    )
+    assert other_workspace_note.kind == "allow"
+    assert other_workspace_note.entry is not None
+
+    legacy_participation = harness._memory_manager.write_with_provenance(
+        entry_type="channel_participation",
+        key=channel_participation_key(channel_id="chan-state"),
+        value={
+            "channel_id": "chan-state",
+            "tracked_threads": [
+                {
+                    "thread_id": "chan-state",
+                    "participants": ["guest-5"],
+                }
+            ],
+        },
+        source=MemorySource(
+            origin="external",
+            source_id="discord:legacy-participation-msg",
+            extraction_method="channel.ingest.structured",
+        ),
+        source_origin="external_message",
+        channel_trust="shared_participant",
+        confirmation_status="auto_accepted",
+        source_id="discord:legacy-participation-msg",
+        scope="channel",
+        confidence=0.5,
+        confirmation_satisfied=True,
+    )
+    assert legacy_participation.kind == "allow"
+    assert legacy_participation.entry is not None
+
+    other_workspace_participation = harness._memory_manager.write_with_provenance(
+        entry_type="channel_participation",
+        key=channel_participation_key(channel_id="chan-state"),
+        value={
+            "channel_id": "chan-state",
+            "tracked_threads": [
+                {
+                    "thread_id": "chan-state",
+                    "participants": ["guest-5", "guest-elsewhere"],
+                }
+            ],
+        },
+        source=MemorySource(
+            origin="external",
+            source_id="discord:legacy-participation-msg-other",
+            extraction_method="channel.ingest.structured",
+        ),
+        source_origin="external_message",
+        channel_trust="shared_participant",
+        confirmation_status="auto_accepted",
+        source_id="discord:legacy-participation-msg-other",
+        scope="channel",
+        confidence=0.5,
+        confirmation_satisfied=True,
+    )
+    assert other_workspace_participation.kind == "allow"
+    assert other_workspace_participation.entry is not None
+
+    legacy_summary = harness._memory_manager.write_with_provenance(
+        entry_type="channel_summary",
+        key=channel_summary_key(channel_id="chan-state", summary_kind="digest"),
+        value={
+            "channel_id": "chan-state",
+            "summary_kind": "digest",
+            "summary_text": "Legacy digest",
+        },
+        source=MemorySource(
+            origin="external",
+            source_id="discord:legacy-summary-msg",
+            extraction_method="channel.ingest.structured",
+        ),
+        source_origin="external_message",
+        channel_trust="shared_participant",
+        confirmation_status="auto_accepted",
+        source_id="discord:legacy-summary-msg",
+        scope="channel",
+        confidence=0.5,
+        confirmation_satisfied=True,
+    )
+    assert legacy_summary.kind == "allow"
+    assert legacy_summary.entry is not None
+
+    other_workspace_summary = harness._memory_manager.write_with_provenance(
+        entry_type="channel_summary",
+        key=channel_summary_key(channel_id="chan-state", summary_kind="digest"),
+        value={
+            "channel_id": "chan-state",
+            "summary_kind": "digest",
+            "summary_text": "Other workspace digest",
+        },
+        source=MemorySource(
+            origin="external",
+            source_id="discord:legacy-summary-msg-other",
+            extraction_method="channel.ingest.structured",
+        ),
+        source_origin="external_message",
+        channel_trust="shared_participant",
+        confirmation_status="auto_accepted",
+        source_id="discord:legacy-summary-msg-other",
+        scope="channel",
+        confidence=0.5,
+        confirmation_satisfied=True,
+    )
+    assert other_workspace_summary.kind == "allow"
+    assert other_workspace_summary.entry is not None
+
+    await harness.do_channel_ingest(
+        {
+            "message": {
+                "channel": "discord",
+                "external_user_id": "guest-5",
+                "workspace_hint": "guild-1",
+                "reply_target": "chan-state",
+                "message_id": "msg-77",
+                "content": "carry forward legacy state",
+                "metadata": {
+                    "interaction_type": "direct",
+                    "display_name": "Guest Five",
+                    "summary_kind": "digest",
+                    "summary_text": "Updated digest",
+                },
+            }
+        }
+    )
+
+    channel_binding = compose_channel_binding(
+        channel="discord",
+        workspace_hint="guild-1",
+        channel_id="chan-state",
+    )
+    current_entries = {
+        entry.key: entry
+        for entry in harness._memory_manager.list_entries(limit=20)
+        if entry.superseded_by is None
+    }
+
+    current_note = current_entries[
+        person_note_key(channel_id=channel_binding, external_user_id="guest-5")
+    ]
+    assert current_note.supersedes == legacy_note.entry.id
+    assert current_note.value["total_interactions"] == 3
+
+    current_participation = current_entries[channel_participation_key(channel_id=channel_binding)]
+    assert current_participation.supersedes == legacy_participation.entry.id
+    assert current_participation.value["tracked_threads"][0]["participants"] == ["guest-5"]
+
+    current_summary = current_entries[
+        channel_summary_key(channel_id=channel_binding, summary_kind="digest")
+    ]
+    assert current_summary.supersedes == legacy_summary.entry.id
+
+    preserved_note = harness._memory_manager.get_entry(other_workspace_note.entry.id)
+    assert preserved_note is not None
+    assert preserved_note.key == person_note_key(
+        channel_id="chan-state",
+        external_user_id="guest-5",
+    )
+    assert preserved_note.superseded_by is None
+
+    preserved_participation = harness._memory_manager.get_entry(
+        other_workspace_participation.entry.id
+    )
+    assert preserved_participation is not None
+    assert preserved_participation.key == channel_participation_key(channel_id="chan-state")
+    assert preserved_participation.superseded_by is None
+
+    preserved_summary = harness._memory_manager.get_entry(other_workspace_summary.entry.id)
+    assert preserved_summary is not None
+    assert preserved_summary.key == channel_summary_key(
+        channel_id="chan-state",
+        summary_kind="digest",
+    )
+    assert preserved_summary.superseded_by is None

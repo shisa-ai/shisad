@@ -11,6 +11,7 @@ from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
+from urllib.parse import unquote
 
 from shisad.channels.base import ChannelMessage, DeliveryTarget
 from shisad.channels.discord_policy import DiscordChannelPolicy, DiscordChannelPolicyDecision
@@ -51,6 +52,7 @@ from shisad.memory.participation import (
     channel_summary_key,
     compose_channel_binding,
     inbox_item_key,
+    normalize_structured_memory_value,
     person_note_key,
     response_feedback_key,
 )
@@ -148,6 +150,34 @@ def _is_legacy_bare_channel_id(value: str) -> bool:
         and "/" not in normalized
         and "\\" not in normalized
     )
+
+
+def _migrated_channel_memory_key(
+    *,
+    entry_type: str,
+    key: str,
+    value: Mapping[str, Any],
+    structured_channel_id: str,
+) -> str:
+    if entry_type == "person_note":
+        return person_note_key(
+            channel_id=structured_channel_id,
+            external_user_id=str(value.get("external_user_id") or "").strip(),
+        )
+    if entry_type == "channel_summary":
+        return channel_summary_key(
+            channel_id=structured_channel_id,
+            summary_kind=str(value.get("summary_kind") or "topic").strip() or "topic",
+        )
+    if entry_type == "channel_participation":
+        prefix = "channel-participation:"
+        encoded_parts = key[len(prefix) :].split(":") if key.startswith(prefix) else []
+        thread_id = unquote(encoded_parts[1]).strip() if len(encoded_parts) > 1 else ""
+        return channel_participation_key(
+            channel_id=structured_channel_id,
+            thread_id=thread_id or None,
+        )
+    return key
 
 
 class AdminImplMixin(HandlerMixinBase):
@@ -288,6 +318,46 @@ class AdminImplMixin(HandlerMixinBase):
                     return workspace_hint
         return None
 
+    def _find_legacy_channel_memory_entry(
+        self,
+        *,
+        entry_type: str,
+        key: str,
+        channel: str,
+        workspace_hint: str,
+        structured_channel_id: str,
+    ) -> Any | None:
+        memory_manager = getattr(self, "_memory_manager", None)
+        if memory_manager is None:
+            return None
+        for entry in memory_manager.list_entries(
+            entry_type=entry_type,
+            include_deleted=True,
+            include_quarantined=True,
+            include_pending_review=True,
+            limit=max(1, len(memory_manager._entries)),
+        ):
+            if entry.key != key or entry.superseded_by is not None:
+                continue
+            recovered_workspace = self._legacy_channel_entry_workspace_hint(
+                channel=channel,
+                entry=entry,
+            )
+            if recovered_workspace == workspace_hint:
+                if isinstance(entry.value, Mapping):
+                    updated_value = dict(entry.value)
+                    updated_value["channel_id"] = structured_channel_id
+                    entry.value = normalize_structured_memory_value(entry.entry_type, updated_value)
+                    entry.key = _migrated_channel_memory_key(
+                        entry_type=entry.entry_type,
+                        key=entry.key,
+                        value=updated_value,
+                        structured_channel_id=structured_channel_id,
+                    )
+                    memory_manager._persist_entry(entry)
+                return entry
+        return None
+
     def _persist_channel_memory_records(
         self,
         *,
@@ -424,6 +494,17 @@ class AdminImplMixin(HandlerMixinBase):
                 entry_type="channel_participation",
                 key=participation_key,
             )
+            if prior_participation is None:
+                prior_participation = self._find_legacy_channel_memory_entry(
+                    entry_type="channel_participation",
+                    key=channel_participation_key(
+                        channel_id=channel_id,
+                        thread_id=thread_id or None,
+                    ),
+                    channel=message.channel,
+                    workspace_hint=message.workspace_hint,
+                    structured_channel_id=structured_channel_id,
+                )
             if prior_participation is not None:
                 current_participation = ChannelParticipationStateValue.model_validate(
                     prior_participation.value
@@ -483,6 +564,17 @@ class AdminImplMixin(HandlerMixinBase):
                 external_user_id=message.external_user_id,
             )
             prior_note = self._find_current_memory_entry(entry_type="person_note", key=note_key)
+            if prior_note is None:
+                prior_note = self._find_legacy_channel_memory_entry(
+                    entry_type="person_note",
+                    key=person_note_key(
+                        channel_id=channel_id,
+                        external_user_id=message.external_user_id,
+                    ),
+                    channel=message.channel,
+                    workspace_hint=message.workspace_hint,
+                    structured_channel_id=structured_channel_id,
+                )
             if prior_note is not None:
                 current_note = PersonNoteValue.model_validate(prior_note.value)
             else:
@@ -518,6 +610,14 @@ class AdminImplMixin(HandlerMixinBase):
                 entry_type="channel_summary",
                 key=summary_key,
             )
+            if prior_summary is None:
+                prior_summary = self._find_legacy_channel_memory_entry(
+                    entry_type="channel_summary",
+                    key=channel_summary_key(channel_id=channel_id, summary_kind=summary_kind),
+                    channel=message.channel,
+                    workspace_hint=message.workspace_hint,
+                    structured_channel_id=structured_channel_id,
+                )
             summary_value = ChannelSummaryValue(
                 channel_id=structured_channel_id,
                 guild_id=guild_id,
