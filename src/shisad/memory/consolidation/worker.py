@@ -379,8 +379,13 @@ class ConsolidationWorker:
             entry
             for entry in entries
             if entry.entry_type in {"persona_fact", "preference", "relationship", "fact"}
+            and entry.superseded_by is None
         ]
-        signals = [entry for entry in entries if entry.entry_type in {"episode", "note", "fact"}]
+        signals = [
+            entry
+            for entry in entries
+            if entry.entry_type in {"episode", "note", "fact"} and entry.superseded_by is None
+        ]
         proposals: list[StrongInvalidationProposal] = []
         for signal in signals:
             signal_text = _entry_text(signal).lower()

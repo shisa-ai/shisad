@@ -656,6 +656,45 @@ def test_m5_strong_invalidation_resolution_and_two_phase_extraction(tmp_path: Pa
     assert {item.entry_type for item in extracted} == {"decision", "todo"}
 
 
+def test_m5_confirmed_strong_invalidations_are_not_reproposed_on_rerun(tmp_path: Path) -> None:
+    manager = MemoryManager(tmp_path / "memory")
+    acme = _write_entry(
+        manager,
+        entry_type="persona_fact",
+        key="work:acme",
+        value="I work at ACME as VP Eng.",
+        confidence=0.95,
+    )
+    signal = _write_owner_observed_episode(
+        manager,
+        value="I no longer work at ACME.",
+        source_id="left-acme-rerun",
+    )
+    worker = ConsolidationWorker(manager)
+
+    first = worker.propose_strong_invalidations()
+    assert [(proposal.target_entry_id, proposal.signal_entry_id) for proposal in first] == [
+        (acme.id, signal.id)
+    ]
+    confirmed = worker.confirm_strong_invalidation(
+        target_entry_id=acme.id,
+        signal_entry_id=signal.id,
+        new_value="I no longer work at ACME.",
+        ingress_handle_id="user-confirmed-strong-invalid",
+    )
+
+    assert confirmed is not None
+    rerun = worker.run_once()
+
+    assert rerun.strong_invalidations == []
+    assert len(
+        manager.list_events(
+            entry_id=acme.id,
+            event_type="strong_invalidation_proposed",
+        )
+    ) == 1
+
+
 class _ConsolidationHarness(MemoryImplMixin):
     def __init__(self, manager: MemoryManager) -> None:
         self._memory_manager = manager

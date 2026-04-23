@@ -3303,6 +3303,9 @@ async def test_contract_graph_query_export_and_consolidation_run_via_control_api
         )
         assert "Updated memory" in str(accepted.get("response", ""))
 
+        reconsolidated = await harness.client.call("memory.consolidate", {})
+        assert reconsolidated.get("strong_invalidation_count") == 0
+
         listing = await harness.client.call("memory.list", {"limit": 20})
         promoted = next(
             (
