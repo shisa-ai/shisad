@@ -833,6 +833,8 @@ class MemoryManager:
             entry = self._entries.get(entry_id)
             if entry is None or self._is_deleted(entry):
                 continue
+            if self._is_retention_quarantined(entry):
+                self.unquarantine(entry.id, reason="retention_rejoin_on_citation")
             entry.citation_count += 1
             entry.last_cited_at = timestamp
             self._persist_entry(entry)
@@ -1074,6 +1076,8 @@ class MemoryManager:
                 "new_value": entry.confidence,
             },
         )
+        if self._is_retention_quarantined(entry):
+            self.unquarantine(entry.id, reason="retention_rejoin_on_reverify")
         self._audit(
             "memory.verify",
             {
@@ -1907,6 +1911,16 @@ class MemoryManager:
                 continue
             if candidate.key == entry.key:
                 return True
+        return False
+
+    def _is_retention_quarantined(self, entry: MemoryEntry) -> bool:
+        if not self._is_quarantined(entry):
+            return False
+        for event in reversed(self.list_events(entry_id=entry.id, limit=100)):
+            if event.event_type == "unquarantined":
+                return False
+            if event.event_type == "quarantined":
+                return event.metadata_json.get("reason") == "consolidation_retention"
         return False
 
     def _audit(self, action: str, payload: dict[str, Any]) -> None:

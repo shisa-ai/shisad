@@ -222,6 +222,20 @@ def test_m5_dedup_merge_retention_and_reverification_paths(tmp_path: Path) -> No
     stale.created_at = now - timedelta(days=400)
     stale.decay_score = 0.01
     manager._persist_entry(stale)
+    stale_for_reverify = _write_entry(
+        manager,
+        entry_type="fact",
+        key="fact:stale-reverify",
+        value="Very old unverified derived fact to reverify",
+        confidence=0.35,
+        source_origin="consolidation_derived",
+        channel_trust="consolidation",
+        confirmation_status="auto_accepted",
+        source_id="stale-reverify",
+    )
+    stale_for_reverify.created_at = now - timedelta(days=400)
+    stale_for_reverify.decay_score = 0.01
+    manager._persist_entry(stale_for_reverify)
 
     worker = ConsolidationWorker(
         manager,
@@ -244,6 +258,20 @@ def test_m5_dedup_merge_retention_and_reverification_paths(tmp_path: Path) -> No
     assert quarantined is not None
     assert quarantined.status == "quarantined"
     assert manager.list_events(entry_id=stale.id, event_type="archive_review_candidate")
+    assert stale_for_reverify.id in retention.archive_candidate_ids
+    assert stale_for_reverify.id in retention.quarantined_entry_ids
+
+    assert manager.record_citations([stale.id], cited_at=now) == 1
+    cited_rejoined = manager.get_entry(stale.id)
+    assert cited_rejoined is not None
+    assert cited_rejoined.status == "active"
+    assert manager.list_events(entry_id=stale.id, event_type="unquarantined")
+
+    assert worker.reverify_entry(stale_for_reverify.id) is True
+    verified_rejoined = manager.get_entry(stale_for_reverify.id)
+    assert verified_rejoined is not None
+    assert verified_rejoined.status == "active"
+    assert manager.list_events(entry_id=stale_for_reverify.id, event_type="unquarantined")
 
     verified = _write_entry(
         manager,
