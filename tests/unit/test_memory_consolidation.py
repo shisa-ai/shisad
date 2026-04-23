@@ -284,6 +284,81 @@ def test_m5_quarantined_entries_do_not_drive_or_resolve_strong_invalidations(
     ) is None
 
 
+def test_m5_superseded_entries_do_not_resolve_strong_invalidations(tmp_path: Path) -> None:
+    manager = MemoryManager(tmp_path / "memory")
+    target = _write_entry(
+        manager,
+        entry_type="persona_fact",
+        key="work:acme",
+        value="I work at ACME as VP Eng.",
+        confidence=0.95,
+        source_id="superseded-target",
+    )
+    signal = _write_owner_observed_episode(
+        manager,
+        value="I no longer work at ACME.",
+        source_id="superseded-signal",
+    )
+    worker = ConsolidationWorker(manager)
+
+    superseded_signal = manager.write_with_provenance(
+        entry_type="episode",
+        key=signal.key,
+        value="I still work at ACME.",
+        source=MemorySource(
+            origin="user",
+            source_id="superseded-signal-new",
+            extraction_method="owner_observed",
+        ),
+        source_origin="user_direct",
+        channel_trust="owner_observed",
+        confirmation_status="auto_accepted",
+        source_id="superseded-signal-new",
+        scope="user",
+        confidence=0.30,
+        confirmation_satisfied=True,
+        supersedes=signal.id,
+    )
+    assert superseded_signal.entry is not None
+    assert worker.confirm_strong_invalidation(
+        target_entry_id=target.id,
+        signal_entry_id=signal.id,
+        new_value="I no longer work at ACME.",
+        ingress_handle_id="test-ingress",
+    ) is None
+
+    fresh_signal = _write_owner_observed_episode(
+        manager,
+        value="I no longer work at ACME.",
+        source_id="fresh-signal",
+    )
+    superseded_target = manager.write_with_provenance(
+        entry_type="persona_fact",
+        key=target.key,
+        value="I no longer work at ACME.",
+        source=MemorySource(
+            origin="user",
+            source_id="superseded-target-new",
+            extraction_method="manual",
+        ),
+        source_origin="user_confirmed",
+        channel_trust="command",
+        confirmation_status="user_confirmed",
+        source_id="superseded-target-new",
+        scope="user",
+        confidence=0.90,
+        confirmation_satisfied=True,
+        supersedes=target.id,
+    )
+    assert superseded_target.entry is not None
+    assert worker.confirm_strong_invalidation(
+        target_entry_id=target.id,
+        signal_entry_id=fresh_signal.id,
+        new_value="I no longer work at ACME.",
+        ingress_handle_id="test-ingress",
+    ) is None
+
+
 def test_m5_strong_invalidation_requires_specific_entity_or_topic_match(
     tmp_path: Path,
 ) -> None:

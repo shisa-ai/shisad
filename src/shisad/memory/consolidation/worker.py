@@ -449,6 +449,8 @@ class ConsolidationWorker:
         signal = self._manager.get_entry(signal_entry_id)
         if target is None or signal is None:
             return None
+        if target.superseded_by is not None or signal.superseded_by is not None:
+            return None
         decision = self._manager.write_with_provenance(
             entry_type=target.entry_type,
             key=target.key,

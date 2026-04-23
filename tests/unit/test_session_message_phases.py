@@ -1406,6 +1406,41 @@ async def test_m5_finalize_response_does_not_surface_quarantined_strong_invalida
 
 
 @pytest.mark.asyncio
+async def test_m5_finalize_response_does_not_surface_superseded_strong_invalidation_signal(
+    tmp_path: Path,
+) -> None:
+    harness = _FinalizeEvidenceHarness()
+    harness._memory_manager = MemoryManager(tmp_path / "memory")
+    _target_id, signal_id = _write_strong_invalidation_proposal(harness._memory_manager)
+    signal = harness._memory_manager.get_entry(signal_id)
+    assert signal is not None
+    replacement = harness._memory_manager.write_with_provenance(
+        entry_type="episode",
+        key=signal.key,
+        value="I still work at ACME.",
+        source=MemorySource(
+            origin="user",
+            source_id="strong-finalize-signal-supersede",
+            extraction_method="owner_observed",
+        ),
+        source_origin="user_direct",
+        channel_trust="owner_observed",
+        confirmation_status="auto_accepted",
+        source_id="strong-finalize-signal-supersede",
+        scope="user",
+        confidence=0.30,
+        confirmation_satisfied=True,
+        supersedes=signal_id,
+    )
+    assert replacement.entry is not None
+    execution = _finalize_execution_result(tool_outputs=[], assistant_response="Planner reply")
+
+    response = await SessionImplMixin._finalize_response(harness, execution)
+
+    assert "Memory update candidate" not in str(response["response"])
+
+
+@pytest.mark.asyncio
 async def test_m5_pending_strong_invalidation_yes_rejects_quarantined_signal(
     tmp_path: Path,
 ) -> None:
@@ -1415,6 +1450,51 @@ async def test_m5_pending_strong_invalidation_yes_rejects_quarantined_signal(
     harness._session_manager = SimpleNamespace(persist=lambda _sid: None)
     target_id, signal_id = _write_strong_invalidation_proposal(harness._memory_manager)
     assert harness._memory_manager.quarantine(signal_id, reason="test_quarantine")
+    validated = _validation_result(params={"session_id": "sess-g1", "content": "yes"})
+    validated.session.metadata[_PENDING_STRONG_INVALIDATION_KEY] = {
+        "target_entry_id": target_id,
+        "signal_entry_id": signal_id,
+    }
+
+    response = await SessionImplMixin._maybe_handle_pending_strong_invalidation(
+        harness,
+        validated=validated,
+    )
+
+    assert response is not None
+    assert "no longer available" in str(response["response"])
+
+
+@pytest.mark.asyncio
+async def test_m5_pending_strong_invalidation_yes_rejects_superseded_signal(
+    tmp_path: Path,
+) -> None:
+    harness = _FinalizeEvidenceHarness()
+    harness._memory_manager = MemoryManager(tmp_path / "memory")
+    harness._memory_ingress_registry = IngressContextRegistry()
+    harness._session_manager = SimpleNamespace(persist=lambda _sid: None)
+    target_id, signal_id = _write_strong_invalidation_proposal(harness._memory_manager)
+    signal = harness._memory_manager.get_entry(signal_id)
+    assert signal is not None
+    replacement = harness._memory_manager.write_with_provenance(
+        entry_type="episode",
+        key=signal.key,
+        value="I still work at ACME.",
+        source=MemorySource(
+            origin="user",
+            source_id="strong-finalize-signal-yes-supersede",
+            extraction_method="owner_observed",
+        ),
+        source_origin="user_direct",
+        channel_trust="owner_observed",
+        confirmation_status="auto_accepted",
+        source_id="strong-finalize-signal-yes-supersede",
+        scope="user",
+        confidence=0.30,
+        confirmation_satisfied=True,
+        supersedes=signal_id,
+    )
+    assert replacement.entry is not None
     validated = _validation_result(params={"session_id": "sess-g1", "content": "yes"})
     validated.session.metadata[_PENDING_STRONG_INVALIDATION_KEY] = {
         "target_entry_id": target_id,

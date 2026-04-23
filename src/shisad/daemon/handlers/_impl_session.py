@@ -6126,13 +6126,21 @@ class SessionImplMixin(HandlerMixinBase):
                 response=f"Memory update candidate for {target_entry_id} is no longer available.",
             )
 
+        target = memory_manager.get_entry(
+            target_entry_id,
+        )
         signal = memory_manager.get_entry(
             signal_entry_id,
         )
-        if signal is None:
+        if (
+            target is None
+            or signal is None
+            or target.superseded_by is not None
+            or signal.superseded_by is not None
+        ):
             return self._identity_command_response(
                 validated=validated,
-                response=f"Memory update evidence {signal_entry_id} is no longer available.",
+                response=f"Memory update candidate for {target_entry_id} is no longer available.",
             )
         ingress_context = self._mint_identity_command_context(
             validated=validated,
@@ -7219,6 +7227,7 @@ class SessionImplMixin(HandlerMixinBase):
                 target is None
                 or signal is None
                 or target.superseded_by is not None
+                or signal.superseded_by is not None
                 or target.scope != "user"
                 or signal.scope != "user"
                 or target.scope != signal.scope
