@@ -1046,20 +1046,42 @@ class MemoryManager:
         self._audit("memory.delete", {"entry_id": entry_id})
         return True
 
-    def verify(self, entry_id: str) -> bool:
+    def verify(
+        self,
+        entry_id: str,
+        *,
+        confidence_delta: float = 0.10,
+        confidence_cap: float = 0.95,
+    ) -> bool:
         entry = self._entries.get(entry_id)
         if entry is None:
             return False
+        previous_confidence = entry.confidence
         entry.user_verified = True
         entry.last_verified_at = datetime.now(UTC)
+        entry.confidence = round(
+            min(float(confidence_cap), entry.confidence + float(confidence_delta)),
+            4,
+        )
         self._persist_entry(entry)
         self._record_event(
             entry=entry,
             event_type="verified",
             ingress_handle_id=entry.ingress_handle_id,
-            metadata={"last_verified_at": entry.last_verified_at.isoformat()},
+            metadata={
+                "last_verified_at": entry.last_verified_at.isoformat(),
+                "old_value": previous_confidence,
+                "new_value": entry.confidence,
+            },
         )
-        self._audit("memory.verify", {"entry_id": entry_id})
+        self._audit(
+            "memory.verify",
+            {
+                "entry_id": entry_id,
+                "old_value": previous_confidence,
+                "new_value": entry.confidence,
+            },
+        )
         return True
 
     def update_decay_score(
@@ -1156,6 +1178,52 @@ class MemoryManager:
         self._audit(
             "memory.contradicted",
             {"entry_id": entry_id, "conflicting_entry_id": conflicting_entry_id},
+        )
+        return True
+
+    def mark_merged(
+        self,
+        entry_id: str,
+        merged_into_id: str,
+        *,
+        ingress_handle_id: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> bool:
+        entry = self._entries.get(entry_id)
+        keeper = self._entries.get(merged_into_id)
+        if entry is None or keeper is None or entry_id == merged_into_id:
+            return False
+        if self._is_deleted(keeper):
+            return False
+        if self._is_deleted(entry):
+            return entry.superseded_by == merged_into_id
+        timestamp = datetime.now(UTC)
+        entry.superseded_by = merged_into_id
+        entry.deleted_at = timestamp
+        entry.status = "tombstoned"
+        self._persist_entry(entry)
+        payload = dict(metadata or {})
+        payload.update(
+            {
+                "merged_into_id": merged_into_id,
+                "workflow_state": entry.workflow_state,
+            }
+        )
+        self._record_event(
+            entry=entry,
+            event_type="merged",
+            ingress_handle_id=ingress_handle_id or entry.ingress_handle_id,
+            metadata=payload,
+        )
+        self._record_event(
+            entry=entry,
+            event_type="tombstoned",
+            ingress_handle_id=ingress_handle_id or entry.ingress_handle_id,
+            metadata={"reason": "merged", "merged_into_id": merged_into_id},
+        )
+        self._audit(
+            "memory.merged",
+            {"entry_id": entry_id, "merged_into_id": merged_into_id, **payload},
         )
         return True
 

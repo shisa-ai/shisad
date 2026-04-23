@@ -23,6 +23,10 @@ _FAVORITE_OBJECT_RE = re.compile(
     re.IGNORECASE,
 )
 _NEGATION_RE = re.compile(r"\b(?:no longer|not|don't|do not|avoid|hate|dislike)\b", re.IGNORECASE)
+_EXTRACTION_RE = re.compile(
+    r"\b(?P<label>Decision|Todo|Fact|Note):\s*(?P<body>.*?)(?=\s+\b(?:Decision|Todo|Fact|Note):|$)",
+    re.IGNORECASE,
+)
 
 
 @dataclass(frozen=True)
@@ -43,6 +47,14 @@ class StrongInvalidationProposal:
     message: str
 
 
+@dataclass(frozen=True)
+class ExtractionCandidate:
+    entry_type: str
+    key: str
+    value: str
+    phase: str
+
+
 @dataclass
 class ConsolidationRunResult:
     updated_entry_ids: list[str] = field(default_factory=list)
@@ -50,6 +62,9 @@ class ConsolidationRunResult:
     contradicted_entry_ids: list[str] = field(default_factory=list)
     strong_invalidations: list[StrongInvalidationProposal] = field(default_factory=list)
     identity_candidates: list[MemoryEntry] = field(default_factory=list)
+    merged_entry_ids: list[str] = field(default_factory=list)
+    archive_candidate_ids: list[str] = field(default_factory=list)
+    quarantined_entry_ids: list[str] = field(default_factory=list)
 
 
 def _entry_text(entry: MemoryEntry) -> str:
@@ -81,6 +96,10 @@ def _confidence_score(entry: MemoryEntry) -> float:
     return max(0.0, min(0.99, entry.confidence))
 
 
+def _dedup_value(value: object) -> str:
+    return str(value).strip().casefold()
+
+
 class ConsolidationWorker:
     """Deterministic local consolidation worker.
 
@@ -103,10 +122,15 @@ class ConsolidationWorker:
         result = ConsolidationRunResult()
         decay = self.recompute_decay_scores(now=now)
         confidence = self.apply_confidence_updates()
+        dedup = self.deduplicate_entries()
+        retention = self.enforce_retention(now=now)
         result.updated_entry_ids.extend(decay.updated_entry_ids)
         result.updated_entry_ids.extend(confidence.updated_entry_ids)
         result.corroborating_entry_ids.extend(confidence.corroborating_entry_ids)
         result.contradicted_entry_ids.extend(confidence.contradicted_entry_ids)
+        result.merged_entry_ids.extend(dedup.merged_entry_ids)
+        result.archive_candidate_ids.extend(retention.archive_candidate_ids)
+        result.quarantined_entry_ids.extend(retention.quarantined_entry_ids)
         result.strong_invalidations.extend(self.propose_strong_invalidations())
         result.identity_candidates.extend(self.accumulate_identity_candidates())
         return result
@@ -207,6 +231,81 @@ class ConsolidationWorker:
                 result.contradicted_entry_ids.extend([older.id, newer.id])
         return result
 
+    def deduplicate_entries(self) -> ConsolidationRunResult:
+        result = ConsolidationRunResult()
+        entries = self._manager.list_entries(limit=max(1, len(self._manager._entries)))
+        groups: dict[tuple[str, str, str], list[MemoryEntry]] = defaultdict(list)
+        for entry in entries:
+            if (
+                entry.source_origin != "consolidation_derived"
+                or entry.channel_trust != "consolidation"
+                or entry.confirmation_status != "auto_accepted"
+                or entry.superseded_by is not None
+            ):
+                continue
+            groups[(entry.entry_type, entry.key, _dedup_value(entry.value))].append(entry)
+
+        for group in groups.values():
+            if len(group) < 2:
+                continue
+            keeper = max(group, key=lambda item: (item.confidence, item.created_at, item.id))
+            for duplicate in group:
+                if duplicate.id == keeper.id:
+                    continue
+                if self._manager.mark_merged(
+                    duplicate.id,
+                    keeper.id,
+                    metadata={
+                        "reason": "deduplicate_entries",
+                        "entry_type": duplicate.entry_type,
+                        "key": duplicate.key,
+                    },
+                ):
+                    result.merged_entry_ids.append(duplicate.id)
+        return result
+
+    def enforce_retention(self, *, now: datetime | None = None) -> ConsolidationRunResult:
+        current = now or datetime.now(UTC)
+        result = ConsolidationRunResult()
+        entries = self._manager.list_entries(
+            limit=max(1, len(self._manager._entries)),
+            include_quarantined=True,
+            include_pending_review=True,
+        )
+        for entry in entries:
+            if entry.superseded_by is not None:
+                continue
+            if entry.decay_score >= self._config.archive_threshold:
+                continue
+            self._manager.record_consolidation_event(
+                entry.id,
+                "archive_review_candidate",
+                metadata={
+                    "decay_score": entry.decay_score,
+                    "archive_threshold": self._config.archive_threshold,
+                },
+            )
+            result.archive_candidate_ids.append(entry.id)
+            created = entry.created_at
+            if created.tzinfo is None:
+                created = created.replace(tzinfo=UTC)
+            age_days = max(0.0, (current - created).total_seconds() / 86400)
+            if (
+                entry.last_verified_at is None
+                and entry.trust_band != "elevated"
+                and age_days >= self._config.max_unused_days
+                and self._manager.quarantine(entry.id, reason="consolidation_retention")
+            ):
+                result.quarantined_entry_ids.append(entry.id)
+        return result
+
+    def reverify_entry(self, entry_id: str) -> bool:
+        return self._manager.verify(
+            entry_id,
+            confidence_delta=self._config.delta_reverify,
+            confidence_cap=0.95,
+        )
+
     def propose_strong_invalidations(self) -> list[StrongInvalidationProposal]:
         entries = self._manager.list_entries(
             limit=max(1, len(self._manager._entries)),
@@ -252,6 +351,109 @@ class ConsolidationWorker:
                 ):
                     proposals.append(proposal)
         return proposals
+
+    def confirm_strong_invalidation(
+        self,
+        *,
+        target_entry_id: str,
+        signal_entry_id: str,
+        new_value: str,
+        ingress_handle_id: str,
+    ) -> MemoryEntry | None:
+        target = self._manager.get_entry(
+            target_entry_id,
+            include_quarantined=True,
+            include_pending_review=True,
+        )
+        signal = self._manager.get_entry(
+            signal_entry_id,
+            include_quarantined=True,
+            include_pending_review=True,
+        )
+        if target is None or signal is None:
+            return None
+        decision = self._manager.write_with_provenance(
+            entry_type=target.entry_type,
+            key=target.key,
+            value=new_value,
+            predicate=target.predicate,
+            strength=target.strength,
+            source=MemorySource(
+                origin="user",
+                source_id=f"strong-invalidation:{signal.id}",
+                extraction_method="strong_invalidation.confirm",
+            ),
+            source_origin="user_confirmed",
+            channel_trust="command",
+            confirmation_status="user_confirmed",
+            source_id=f"strong-invalidation:{signal.id}",
+            scope=target.scope,
+            confidence=max(target.confidence, 0.90),
+            confirmation_satisfied=True,
+            ingress_handle_id=ingress_handle_id,
+            supersedes=target.id,
+        )
+        if decision.entry is None:
+            return None
+        self._manager.record_consolidation_event(
+            decision.entry.id,
+            "strong_invalidation_confirmed",
+            ingress_handle_id=ingress_handle_id,
+            metadata={
+                "target_entry_id": target.id,
+                "signal_entry_id": signal.id,
+                "old_value": target.value,
+                "new_value": new_value,
+            },
+        )
+        return decision.entry
+
+    def reject_strong_invalidation(
+        self,
+        *,
+        target_entry_id: str,
+        signal_entry_id: str,
+        ingress_handle_id: str | None = None,
+    ) -> bool:
+        return self._record_strong_invalidation_resolution(
+            target_entry_id=target_entry_id,
+            signal_entry_id=signal_entry_id,
+            event_type="strong_invalidation_rejected",
+            ingress_handle_id=ingress_handle_id,
+        )
+
+    def expire_strong_invalidation(
+        self,
+        *,
+        target_entry_id: str,
+        signal_entry_id: str,
+        ingress_handle_id: str | None = None,
+    ) -> bool:
+        return self._record_strong_invalidation_resolution(
+            target_entry_id=target_entry_id,
+            signal_entry_id=signal_entry_id,
+            event_type="strong_invalidation_expired",
+            ingress_handle_id=ingress_handle_id,
+        )
+
+    def two_phase_extract(self, text: str) -> list[ExtractionCandidate]:
+        candidates: list[ExtractionCandidate] = []
+        for match in _EXTRACTION_RE.finditer(text):
+            label = match.group("label").casefold()
+            body = match.group("body").strip().rstrip(".")
+            if not body:
+                continue
+            entry_type = "todo" if label == "todo" else label
+            key = f"{entry_type}:{self._key_fragment(body)}"
+            candidates.append(
+                ExtractionCandidate(
+                    entry_type=entry_type,
+                    key=key,
+                    value=body,
+                    phase="cheap",
+                )
+            )
+        return candidates
 
     def accumulate_identity_candidates(self) -> list[MemoryEntry]:
         observations: dict[str, list[MemoryEntry]] = defaultdict(list)
@@ -347,6 +549,38 @@ class ConsolidationWorker:
             if pattern.strip() and pattern.lower() in text:
                 return pattern
         return None
+
+    def _record_strong_invalidation_resolution(
+        self,
+        *,
+        target_entry_id: str,
+        signal_entry_id: str,
+        event_type: str,
+        ingress_handle_id: str | None,
+    ) -> bool:
+        target = self._manager.get_entry(
+            target_entry_id,
+            include_quarantined=True,
+            include_pending_review=True,
+        )
+        signal = self._manager.get_entry(
+            signal_entry_id,
+            include_quarantined=True,
+            include_pending_review=True,
+        )
+        if target is None or signal is None:
+            return False
+        return self._manager.record_consolidation_event(
+            target.id,
+            event_type,
+            ingress_handle_id=ingress_handle_id,
+            metadata={"signal_entry_id": signal.id},
+        )
+
+    @staticmethod
+    def _key_fragment(text: str) -> str:
+        tokens = [token.lower() for token in _TOKEN_RE.findall(text)]
+        return "-".join(tokens[:6]) or "candidate"
 
     @staticmethod
     def _extract_preference_object(text: str) -> str | None:

@@ -181,3 +181,137 @@ def test_m5_strong_invalidation_and_identity_candidate_accumulation(
     assert candidate.trust_band == "untrusted"
     assert {entry.id for entry in manager.list_review_queue()} == {candidate.id}
     assert manager.list_events(entry_id=candidate.id, event_type="candidate_proposed")
+
+
+def test_m5_dedup_merge_retention_and_reverification_paths(tmp_path: Path) -> None:
+    manager = MemoryManager(tmp_path / "memory")
+    now = datetime(2026, 4, 23, tzinfo=UTC)
+    duplicate_a = _write_entry(
+        manager,
+        entry_type="fact",
+        key="fact:derived-duplicate",
+        value="Derived duplicate fact",
+        confidence=0.40,
+        source_origin="consolidation_derived",
+        channel_trust="consolidation",
+        confirmation_status="auto_accepted",
+        source_id="dup-a",
+    )
+    duplicate_b = _write_entry(
+        manager,
+        entry_type="fact",
+        key="fact:derived-duplicate",
+        value="Derived duplicate fact",
+        confidence=0.55,
+        source_origin="consolidation_derived",
+        channel_trust="consolidation",
+        confirmation_status="auto_accepted",
+        source_id="dup-b",
+    )
+    stale = _write_entry(
+        manager,
+        entry_type="fact",
+        key="fact:stale-derived",
+        value="Very old unverified derived fact",
+        confidence=0.35,
+        source_origin="consolidation_derived",
+        channel_trust="consolidation",
+        confirmation_status="auto_accepted",
+        source_id="stale-derived",
+    )
+    stale.created_at = now - timedelta(days=400)
+    stale.decay_score = 0.01
+    manager._persist_entry(stale)
+
+    worker = ConsolidationWorker(
+        manager,
+        config=ConsolidationConfig(archive_threshold=0.05, max_unused_days=180),
+    )
+    dedup = worker.deduplicate_entries()
+    retention = worker.enforce_retention(now=now)
+
+    assert duplicate_a.id in dedup.merged_entry_ids or duplicate_b.id in dedup.merged_entry_ids
+    merged = manager.get_entry(duplicate_a.id, include_deleted=True)
+    if merged is not None and merged.status != "tombstoned":
+        merged = manager.get_entry(duplicate_b.id, include_deleted=True)
+    assert merged is not None
+    assert merged.status == "tombstoned"
+    assert manager.list_events(entry_id=merged.id, event_type="merged")
+
+    assert stale.id in retention.archive_candidate_ids
+    assert stale.id in retention.quarantined_entry_ids
+    quarantined = manager.get_entry(stale.id, include_quarantined=True)
+    assert quarantined is not None
+    assert quarantined.status == "quarantined"
+    assert manager.list_events(entry_id=stale.id, event_type="archive_review_candidate")
+
+    verified = _write_entry(
+        manager,
+        entry_type="fact",
+        key="fact:reverify",
+        value="Reverification raises confidence toward the cap.",
+        confidence=0.50,
+    )
+    assert worker.reverify_entry(verified.id) is True
+    refreshed = manager.get_entry(verified.id)
+    assert refreshed is not None
+    assert refreshed.confidence == 0.60
+    assert refreshed.last_verified_at is not None
+    assert manager.list_events(entry_id=verified.id, event_type="verified")
+
+
+def test_m5_strong_invalidation_resolution_and_two_phase_extraction(tmp_path: Path) -> None:
+    manager = MemoryManager(tmp_path / "memory")
+    acme = _write_entry(
+        manager,
+        entry_type="persona_fact",
+        key="work:acme",
+        value="I work at ACME as VP Eng.",
+        confidence=0.95,
+    )
+    signal = _write_owner_observed_episode(
+        manager,
+        value="I no longer work at ACME.",
+        source_id="left-acme-resolution",
+    )
+    worker = ConsolidationWorker(manager)
+
+    confirmed = worker.confirm_strong_invalidation(
+        target_entry_id=acme.id,
+        signal_entry_id=signal.id,
+        new_value="I no longer work at ACME.",
+        ingress_handle_id="user-confirmed-strong-invalid",
+    )
+    assert confirmed is not None
+    assert confirmed.supersedes == acme.id
+    assert confirmed.confirmation_status == "user_confirmed"
+    assert confirmed.trust_band == "elevated"
+    assert manager.list_events(entry_id=confirmed.id, event_type="strong_invalidation_confirmed")
+
+    reject_target = _write_entry(
+        manager,
+        entry_type="persona_fact",
+        key="work:globex",
+        value="I work at Globex.",
+        confidence=0.95,
+    )
+    assert worker.reject_strong_invalidation(
+        target_entry_id=reject_target.id,
+        signal_entry_id=signal.id,
+        ingress_handle_id="user-rejected-strong-invalid",
+    )
+    assert manager.list_events(
+        entry_id=reject_target.id,
+        event_type="strong_invalidation_rejected",
+    )
+    assert worker.expire_strong_invalidation(
+        target_entry_id=reject_target.id,
+        signal_entry_id=signal.id,
+    )
+    assert manager.list_events(entry_id=reject_target.id, event_type="strong_invalidation_expired")
+
+    extracted = worker.two_phase_extract(
+        "Decision: Use MemoryPack for recall. Todo: run release behavioral tests."
+    )
+    assert [item.phase for item in extracted] == ["cheap", "cheap"]
+    assert {item.entry_type for item in extracted} == {"decision", "todo"}
