@@ -5758,7 +5758,10 @@ class SessionImplMixin(HandlerMixinBase):
                     validated=validated,
                     response="Usage: /skill info <id>",
                 )
-            artifact = memory_manager.describe_skill(skill_id)
+            artifact = memory_manager.describe_skill(
+                skill_id,
+                include_pending_review=True,
+            )
             if artifact is None:
                 return self._skill_command_response(
                     validated=validated,
@@ -5768,11 +5771,21 @@ class SessionImplMixin(HandlerMixinBase):
                 f"Skill {artifact.id} [{artifact.entry_type}] {artifact.name}",
                 f"Trust band: {artifact.trust_band}",
                 f"Source origin: {artifact.source_origin}",
+                f"Confirmation status: {artifact.confirmation_status}",
                 f"Last used: {self._format_skill_last_used(artifact.last_used_at)}",
                 f"Size: {artifact.size_bytes} bytes",
-                "",
-                artifact.content,
             ]
+            if artifact.prior_entry_id:
+                lines.append(f"Current active version: {artifact.prior_entry_id}")
+            if artifact.diff_preview:
+                lines.extend(
+                    [
+                        "",
+                        "Diff preview:",
+                        artifact.diff_preview,
+                    ]
+                )
+            lines.extend(["", artifact.content])
             return self._skill_command_response(
                 validated=validated,
                 response="\n".join(lines),

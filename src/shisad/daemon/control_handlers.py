@@ -84,6 +84,7 @@ from shisad.core.api.schema import (
     MemoryMintIngressParams,
     MemoryMintIngressResult,
     MemoryPromoteIdentityCandidateParams,
+    MemoryPromoteSkillParams,
     MemoryReadOriginalParams,
     MemoryReadOriginalResult,
     MemoryRejectIdentityCandidateParams,
@@ -479,6 +480,13 @@ class DaemonControlHandlers:
         ctx: RequestContext,
     ) -> MemoryWriteResult:
         return await self._memory.handle_memory_promote_identity_candidate(params, ctx)
+
+    async def handle_memory_promote_skill(
+        self,
+        params: MemoryPromoteSkillParams,
+        ctx: RequestContext,
+    ) -> MemoryWriteResult:
+        return await self._memory.handle_memory_promote_skill(params, ctx)
 
     async def handle_memory_reject_identity_candidate(
         self,

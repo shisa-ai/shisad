@@ -417,6 +417,19 @@ class MemoryPromoteIdentityCandidateParams(_StrictParams):
         return self
 
 
+class MemoryPromoteSkillParams(_StrictParams):
+    ingress_context: str
+    entry_id: str
+
+    @model_validator(mode="after")
+    def _validate_entry_shape(self) -> MemoryPromoteSkillParams:
+        if not self.ingress_context.strip():
+            raise ValueError("ingress_context is required")
+        if not self.entry_id.strip():
+            raise ValueError("entry_id is required")
+        return self
+
+
 class MemoryRejectIdentityCandidateParams(_StrictParams):
     ingress_context: str
     candidate_id: str
@@ -586,6 +599,8 @@ class MemoryProceduralArtifactResult(BaseModel):
     last_used_at: datetime | str | None = None
     size_bytes: int = 0
     invocation_eligible: bool = False
+    prior_entry_id: str | None = None
+    diff_preview: str | None = None
 
 
 class MemoryInvokeSkillResult(BaseModel):

@@ -8,7 +8,7 @@ import pytest
 
 from shisad.daemon.handlers._impl_memory import MemoryImplMixin
 from shisad.memory.ingress import IngressContextRegistry
-from shisad.memory.manager import MemoryManager
+from shisad.memory.manager import MemoryManager, MemorySource
 from shisad.memory.remap import digest_memory_value
 from shisad.memory.trust import TrustGateViolation
 
@@ -224,6 +224,52 @@ async def test_memory_invoke_skill_routes_through_manager_and_forwards_rpc_peer(
             },
         },
     )
+
+
+@pytest.mark.asyncio
+async def test_memory_promote_skill_promotes_pending_review_candidate_from_handle(
+    tmp_path: Path,
+) -> None:
+    harness = _MemoryWriteHarness(tmp_path)
+    candidate = harness._memory_manager.write_with_provenance(
+        entry_type="skill",
+        key="skill:release-close",
+        value="Release close checklist\nCandidate version",
+        source=MemorySource(
+            origin="external",
+            source_id="review-candidate-1",
+            extraction_method="review.queue",
+        ),
+        source_origin="external_message",
+        channel_trust="shared_participant",
+        confirmation_status="pending_review",
+        source_id="review-candidate-1",
+        scope="user",
+        confidence=0.62,
+        confirmation_satisfied=True,
+    )
+    assert candidate.entry is not None
+    context = harness._memory_ingress_registry.mint(
+        source_origin="user_direct",
+        channel_trust="command",
+        confirmation_status="user_asserted",
+        scope="user",
+        source_id="turn-promote-1",
+        content="Release close checklist\nCandidate version",
+    )
+
+    result = await harness.do_memory_promote_skill(
+        {
+            "ingress_context": context.handle_id,
+            "entry_id": candidate.entry.id,
+        }
+    )
+
+    assert result["kind"] == "allow"
+    entry = result["entry"]
+    assert entry is not None
+    assert entry["supersedes"] == candidate.entry.id
+    assert entry["invocation_eligible"] is True
 
 
 @pytest.mark.asyncio

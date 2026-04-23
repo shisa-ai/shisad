@@ -218,6 +218,45 @@ async def test_m4_skill_info_command_returns_preview_metadata(tmp_path: Path) ->
 
 
 @pytest.mark.asyncio
+async def test_m4_skill_info_command_previews_pending_review_candidate(tmp_path: Path) -> None:
+    harness = _SkillCommandHarness(tmp_path)
+    current_id = _write_skill(
+        harness._memory_manager,
+        key="skill:release-close",
+        value="Release close checklist\nCurrent version",
+        invocation_eligible=True,
+    )
+    candidate = harness._memory_manager.write_with_provenance(
+        entry_type="skill",
+        key="skill:release-close",
+        value="Release close checklist\nCandidate version",
+        source=MemorySource(
+            origin="external",
+            source_id="review-candidate-5",
+            extraction_method="review.queue",
+        ),
+        source_origin="external_message",
+        channel_trust="shared_participant",
+        confirmation_status="pending_review",
+        source_id="review-candidate-5",
+        scope="user",
+        confidence=0.62,
+        confirmation_satisfied=True,
+    )
+    assert candidate.entry is not None
+
+    result = await SessionImplMixin.do_session_message(
+        harness,
+        {"session_id": "sess-skill-command", "content": f"/skill info {candidate.entry.id}"},
+    )  # type: ignore[arg-type]
+
+    assert current_id in str(result["response"])
+    assert "pending_review" in str(result["response"])
+    assert "Candidate version" in str(result["response"])
+    assert "Current version" in str(result["response"])
+
+
+@pytest.mark.asyncio
 async def test_m4_skill_commands_require_trusted_command_channel(tmp_path: Path) -> None:
     harness = _SkillCommandHarness(tmp_path, channel="discord")
     release_id = _write_skill(
@@ -241,6 +280,36 @@ async def test_m4_skill_commands_require_trusted_command_channel(tmp_path: Path)
         )
         == []
     )
+
+
+@pytest.mark.asyncio
+async def test_m4_pending_review_skill_refuses_invocation_until_promoted(tmp_path: Path) -> None:
+    harness = _SkillCommandHarness(tmp_path)
+    candidate = harness._memory_manager.write_with_provenance(
+        entry_type="skill",
+        key="skill:release-close",
+        value="Release close checklist\nCandidate version",
+        source=MemorySource(
+            origin="external",
+            source_id="review-candidate-6",
+            extraction_method="review.queue",
+        ),
+        source_origin="external_message",
+        channel_trust="shared_participant",
+        confirmation_status="pending_review",
+        source_id="review-candidate-6",
+        scope="user",
+        confidence=0.62,
+        confirmation_satisfied=True,
+    )
+    assert candidate.entry is not None
+
+    result = await SessionImplMixin.do_session_message(
+        harness,
+        {"session_id": "sess-skill-command", "content": f"/skill {candidate.entry.id}"},
+    )  # type: ignore[arg-type]
+
+    assert "is not invocable" in str(result["response"])
 
 
 @pytest.mark.asyncio

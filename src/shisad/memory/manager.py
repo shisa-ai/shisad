@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+import difflib
 import io
 import json
 import re
@@ -222,6 +223,7 @@ class MemoryManager:
         workflow_state: WorkflowState | None = None,
         invocation_eligible: bool = False,
         supersedes: str | None = None,
+        allow_trust_upgrade_without_confirmation: bool = False,
     ) -> MemoryWriteDecision:
         text_value = str(value)
         pending_review = confirmation_status == "pending_review"
@@ -341,7 +343,10 @@ class MemoryManager:
                 prior_entry.confirmation_status,
             )
             if _TRUST_BAND_ORDER[resolved_trust_band] > _TRUST_BAND_ORDER[prior_trust_band]:
-                if confirmation_status not in {"user_confirmed", "user_corrected"}:
+                if (
+                    not allow_trust_upgrade_without_confirmation
+                    and confirmation_status not in {"user_confirmed", "user_corrected"}
+                ):
                     return MemoryWriteDecision(
                         kind="reject",
                         reason="trust_upgrade_requires_user_confirmation",
@@ -590,11 +595,101 @@ class MemoryManager:
         ranked.sort(key=lambda item: item[0], reverse=True)
         return [summary for _timestamp, summary in ranked[:limit]]
 
-    def describe_skill(self, skill_id: str) -> ProceduralArtifact | None:
-        entry, _reason = self._resolve_procedural_entry(skill_id)
+    def describe_skill(
+        self,
+        skill_id: str,
+        *,
+        include_pending_review: bool = False,
+    ) -> ProceduralArtifact | None:
+        entry, _reason = self._resolve_procedural_entry(
+            skill_id,
+            include_pending_review=include_pending_review,
+        )
         if entry is None:
             return None
-        return build_procedural_artifact(entry)
+        artifact = build_procedural_artifact(entry)
+        prior_entry = self._find_active_procedural_predecessor(entry)
+        if prior_entry is not None:
+            artifact.prior_entry_id = prior_entry.id
+            prior_content = build_procedural_artifact(prior_entry).content.splitlines()
+            current_content = artifact.content.splitlines()
+            diff_lines = list(
+                difflib.unified_diff(
+                    prior_content,
+                    current_content,
+                    fromfile=prior_entry.id,
+                    tofile=entry.id,
+                    lineterm="",
+                )
+            )
+            artifact.diff_preview = "\n".join(diff_lines[:40]) if diff_lines else None
+        return artifact
+
+    def promote_to_skill(
+        self,
+        *,
+        entry_id: str,
+        source: MemorySource,
+        source_origin: SourceOrigin,
+        channel_trust: ChannelTrust,
+        confirmation_status: ConfirmationStatus,
+        source_id: str,
+        scope: str,
+        ingress_handle_id: str,
+        content_digest: str | None,
+        taint_labels: list[TaintLabel] | None = None,
+    ) -> MemoryWriteDecision:
+        candidate, reason = self._resolve_procedural_entry(
+            entry_id,
+            include_pending_review=True,
+        )
+        if candidate is None:
+            return MemoryWriteDecision(kind="reject", reason=reason)
+        if not self._is_pending_review(candidate):
+            return MemoryWriteDecision(kind="reject", reason="skill_not_pending_review")
+        if not is_invocation_eligible_triple(
+            source_origin,
+            channel_trust,
+            confirmation_status,
+        ):
+            return MemoryWriteDecision(
+                kind="reject",
+                reason="skill_promotion_requires_install_triple",
+            )
+        decision = self.write_with_provenance(
+            entry_type=candidate.entry_type,
+            key=candidate.key,
+            value=candidate.value,
+            predicate=candidate.predicate,
+            strength=candidate.strength,
+            source=source,
+            source_origin=source_origin,
+            channel_trust=channel_trust,
+            confirmation_status=confirmation_status,
+            source_id=source_id,
+            scope=scope,
+            confidence=max(candidate.confidence, 0.70),
+            confirmation_satisfied=True,
+            taint_labels=list(taint_labels or []),
+            ingress_handle_id=ingress_handle_id,
+            content_digest=content_digest,
+            invocation_eligible=True,
+            supersedes=candidate.id,
+            allow_trust_upgrade_without_confirmation=True,
+        )
+        if decision.kind != "allow" or decision.entry is None:
+            return decision
+        self._audit(
+            "memory.skill_promoted",
+            {
+                "entry_id": decision.entry.id,
+                "candidate_id": candidate.id,
+                "entry_type": str(decision.entry.entry_type),
+                "ingress_handle_id": ingress_handle_id,
+                "trust_band": str(decision.entry.trust_band),
+            },
+        )
+        return decision
 
     def invoke_skill(
         self,
@@ -603,7 +698,10 @@ class MemoryManager:
         audit_context: dict[str, Any] | None = None,
     ) -> ProceduralInvocation:
         caller_context = dict(audit_context or {})
-        entry, reason = self._resolve_procedural_entry(skill_id)
+        entry, reason = self._resolve_procedural_entry(
+            skill_id,
+            include_pending_review=True,
+        )
         if entry is None:
             self._audit(
                 "memory.skill_invoked",
@@ -1421,8 +1519,13 @@ class MemoryManager:
             return None, "candidate_entry_type_invalid"
         return candidate, ""
 
-    def _resolve_procedural_entry(self, skill_id: str) -> tuple[MemoryEntry | None, str]:
-        entry = self.get_entry(skill_id)
+    def _resolve_procedural_entry(
+        self,
+        skill_id: str,
+        *,
+        include_pending_review: bool = False,
+    ) -> tuple[MemoryEntry | None, str]:
+        entry = self.get_entry(skill_id, include_pending_review=include_pending_review)
         if entry is None:
             return None, "skill_not_found"
         if entry.entry_type not in PROCEDURAL_ENTRY_TYPES:
@@ -1430,6 +1533,21 @@ class MemoryManager:
         if entry.superseded_by is not None:
             return None, "skill_not_found"
         return entry, ""
+
+    def _find_active_procedural_predecessor(self, entry: MemoryEntry) -> MemoryEntry | None:
+        for candidate in self._entries.values():
+            if (
+                candidate.id == entry.id
+                or candidate.entry_type != entry.entry_type
+                or candidate.key != entry.key
+                or self._is_deleted(candidate)
+                or self._is_quarantined(candidate)
+                or self._is_pending_review(candidate)
+                or candidate.superseded_by is not None
+            ):
+                continue
+            return self._refresh_ttl(candidate)
+        return None
 
     def _identity_candidate_surface_count(self, candidate_id: str) -> int:
         return len(

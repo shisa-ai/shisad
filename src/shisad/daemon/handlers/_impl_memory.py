@@ -457,6 +457,8 @@ class MemoryImplMixin(HandlerMixinBase):
                 else None,
                 "size_bytes": result.artifact.size_bytes,
                 "invocation_eligible": result.artifact.invocation_eligible,
+                "prior_entry_id": result.artifact.prior_entry_id,
+                "diff_preview": result.artifact.diff_preview,
             }
         return {
             "skill_id": result.skill_id,
@@ -465,6 +467,52 @@ class MemoryImplMixin(HandlerMixinBase):
             "reason": result.reason,
             "artifact": artifact,
         }
+
+    async def do_memory_promote_skill(
+        self,
+        params: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        handle_id = str(params.get("ingress_context", "")).strip()
+        if not handle_id:
+            raise ValueError("ingress_context is required for memory.promote_to_skill")
+        entry_id = str(params.get("entry_id", "")).strip()
+        context = self._memory_ingress_registry.resolve(handle_id)
+        candidate = self._memory_manager.get_entry(
+            entry_id,
+            include_pending_review=True,
+            include_quarantined=True,
+        )
+        if candidate is None:
+            return {
+                "kind": "reject",
+                "reason": "skill_not_found",
+                "entry": None,
+            }
+        content_digest = str(params.get("content_digest", "")).strip() or None
+        if content_digest is None and not isinstance(candidate.value, (str, bytes)):
+            content_digest = digest_memory_value(candidate.value)
+        resolved_digest = self._memory_ingress_registry.validate_binding(
+            handle_id,
+            content=candidate.value if isinstance(candidate.value, (str, bytes)) else None,
+            content_digest=content_digest,
+        )
+        decision = self._memory_manager.promote_to_skill(
+            entry_id=entry_id,
+            source=MemorySource(
+                origin=legacy_source_view_origin(context.source_origin),
+                source_id=context.source_id,
+                extraction_method="skill.review.promote",
+            ),
+            source_origin=context.source_origin,
+            channel_trust=context.channel_trust,
+            confirmation_status=context.confirmation_status,
+            source_id=context.source_id,
+            scope=context.scope,
+            ingress_handle_id=context.handle_id,
+            content_digest=resolved_digest,
+            taint_labels=context.taint_labels,
+        )
+        return cast(dict[str, Any], decision.model_dump(mode="json"))
 
     async def do_memory_read_original(self, params: Mapping[str, Any]) -> dict[str, Any]:
         chunk_id = str(params.get("chunk_id", "")).strip()

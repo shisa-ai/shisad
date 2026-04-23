@@ -2928,6 +2928,108 @@ async def test_contract_skill_suggestion_waits_for_explicit_user_yes(
 
 
 @pytest.mark.asyncio
+async def test_contract_pending_review_skill_requires_promotion_before_invocation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seeded: dict[str, str] = {}
+
+    def _seed(config: DaemonConfig) -> None:
+        manager = MemoryManager(config.data_dir / "memory_entries")
+        current = manager.write_with_provenance(
+            entry_type="skill",
+            key="skill:release-close",
+            value="Release close checklist\nCurrent version",
+            source=MemorySource(
+                origin="user",
+                source_id="skill-promote-1",
+                extraction_method="manual",
+            ),
+            source_origin="user_direct",
+            channel_trust="command",
+            confirmation_status="user_asserted",
+            source_id="skill-promote-1",
+            scope="user",
+            confidence=0.95,
+            confirmation_satisfied=True,
+            invocation_eligible=True,
+        )
+        candidate = manager.write_with_provenance(
+            entry_type="skill",
+            key="skill:release-close",
+            value="Release close checklist\nCandidate version",
+            source=MemorySource(
+                origin="external",
+                source_id="skill-promote-2",
+                extraction_method="review.queue",
+            ),
+            source_origin="external_message",
+            channel_trust="shared_participant",
+            confirmation_status="pending_review",
+            source_id="skill-promote-2",
+            scope="user",
+            confidence=0.62,
+            confirmation_satisfied=True,
+        )
+        assert current.entry is not None
+        assert candidate.entry is not None
+        seeded["current_id"] = current.entry.id
+        seeded["candidate_id"] = candidate.entry.id
+        seeded["candidate_value"] = str(candidate.entry.value)
+
+    async with _contract_harness_context(tmp_path, monkeypatch, prestart=_seed) as harness:
+        sid = await _create_session(harness.client)
+        candidate_id = seeded["candidate_id"]
+
+        preview = await harness.client.call(
+            "session.message",
+            {"session_id": sid, "content": f"/skill info {candidate_id}"},
+        )
+        assert "pending_review" in str(preview.get("response", ""))
+        assert "Current version" in str(preview.get("response", ""))
+        assert "Candidate version" in str(preview.get("response", ""))
+
+        blocked = await harness.client.call(
+            "session.message",
+            {"session_id": sid, "content": f"/skill {candidate_id}"},
+        )
+        assert "is not invocable" in str(blocked.get("response", ""))
+
+        minted = await _mint_memory_ingress_context(
+            harness.client,
+            content=seeded["candidate_value"],
+            source_type="user",
+        )
+        promoted = await harness.client.call(
+            "memory.promote_to_skill",
+            {
+                "ingress_context": minted["ingress_context"],
+                "entry_id": candidate_id,
+            },
+        )
+        assert promoted.get("kind") == "allow"
+        entry = promoted.get("entry") or {}
+        promoted_id = str(entry.get("id", "")).strip()
+        assert promoted_id
+        assert entry.get("invocation_eligible") is True
+
+        review_queue = await harness.client.call("memory.list_review_queue", {"limit": 10})
+        queued_ids = {
+            str(item.get("id") or item.get("entry_id") or "").strip()
+            for item in review_queue.get("entries", [])
+            if isinstance(item, dict)
+        }
+        assert candidate_id not in queued_ids
+
+        invoked = await harness.client.call(
+            "session.message",
+            {"session_id": sid, "content": f"/skill {promoted_id}"},
+        )
+        assert "Loaded skill" in str(invoked.get("response", ""))
+        assert "Candidate version" in str(invoked.get("response", ""))
+
+
+@pytest.mark.asyncio
 async def test_contract_reminder_create_executes_and_due_run_delivers_without_lockdown(
     contract_harness: ContractHarness,
 ) -> None:

@@ -40,6 +40,8 @@ class ProceduralArtifact:
     last_used_at: datetime | None
     size_bytes: int
     invocation_eligible: bool
+    prior_entry_id: str | None = None
+    diff_preview: str | None = None
 
 
 @dataclass(slots=True)

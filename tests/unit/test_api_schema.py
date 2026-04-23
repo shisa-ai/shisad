@@ -30,6 +30,7 @@ from shisad.core.api.schema import (
     MemoryListParams,
     MemoryListResult,
     MemoryMintIngressParams,
+    MemoryPromoteSkillParams,
     MemoryReadOriginalParams,
     MemoryRetrieveResult,
     MemoryRotateKeyResult,
@@ -438,6 +439,20 @@ class TestApiSchemaValidation:
 
         with pytest.raises(ValidationError):
             MemoryInvokeSkillParams.model_validate({"skill_id": "   "})
+
+    def test_m4_memory_promote_skill_params_require_handle_and_entry_id(self) -> None:
+        params = MemoryPromoteSkillParams.model_validate(
+            {"ingress_context": "handle-1", "entry_id": "skill-1"}
+        )
+
+        assert params.ingress_context == "handle-1"
+        assert params.entry_id == "skill-1"
+
+        with pytest.raises(ValidationError):
+            MemoryPromoteSkillParams.model_validate({"entry_id": "skill-1"})
+
+        with pytest.raises(ValidationError):
+            MemoryPromoteSkillParams.model_validate({"ingress_context": "handle-1"})
 
     def test_m1_memory_write_params_require_ingress_context(self) -> None:
         with pytest.raises(ValidationError):

@@ -1315,6 +1315,146 @@ def test_m4_list_invocable_skills_filters_by_query_and_exposes_preview_metadata(
     assert preview.content.startswith("Release close checklist")
 
 
+def test_m4_describe_skill_can_preview_pending_review_candidate_and_diff(tmp_path: Path) -> None:
+    manager = MemoryManager(tmp_path / "memory")
+    current = manager.write_with_provenance(
+        entry_type="skill",
+        key="skill:release-close",
+        value="Release close checklist\nCurrent version",
+        source=MemorySource(origin="user", source_id="msg-skill-5", extraction_method="manual"),
+        source_origin="user_direct",
+        channel_trust="command",
+        confirmation_status="user_asserted",
+        source_id="msg-skill-5",
+        scope="user",
+        confidence=0.95,
+        confirmation_satisfied=True,
+        invocation_eligible=True,
+    )
+    candidate = manager.write_with_provenance(
+        entry_type="skill",
+        key="skill:release-close",
+        value="Release close checklist\nCandidate version",
+        source=MemorySource(
+            origin="external",
+            source_id="review-candidate-2",
+            extraction_method="review.queue",
+        ),
+        source_origin="external_message",
+        channel_trust="shared_participant",
+        confirmation_status="pending_review",
+        source_id="review-candidate-2",
+        scope="user",
+        confidence=0.62,
+        confirmation_satisfied=True,
+    )
+
+    assert current.entry is not None
+    assert candidate.entry is not None
+
+    preview = manager.describe_skill(candidate.entry.id, include_pending_review=True)
+
+    assert preview is not None
+    assert preview.confirmation_status == "pending_review"
+    assert preview.prior_entry_id == current.entry.id
+    assert preview.diff_preview is not None
+    assert "Current version" in preview.diff_preview
+    assert "Candidate version" in preview.diff_preview
+
+
+def test_m4_promote_to_skill_promotes_pending_review_entry_with_install_triple(
+    tmp_path: Path,
+) -> None:
+    audits: list[tuple[str, dict[str, object]]] = []
+    manager = MemoryManager(
+        tmp_path / "memory",
+        audit_hook=lambda action, data: audits.append((action, data)),
+    )
+    candidate = manager.write_with_provenance(
+        entry_type="skill",
+        key="skill:release-close",
+        value="Release close checklist\nCandidate version",
+        source=MemorySource(
+            origin="external",
+            source_id="review-candidate-3",
+            extraction_method="review.queue",
+        ),
+        source_origin="external_message",
+        channel_trust="shared_participant",
+        confirmation_status="pending_review",
+        source_id="review-candidate-3",
+        scope="user",
+        confidence=0.62,
+        confirmation_satisfied=True,
+    )
+
+    assert candidate.entry is not None
+    decision = manager.promote_to_skill(
+        entry_id=candidate.entry.id,
+        source=MemorySource(origin="user", source_id="turn-promote-2", extraction_method="manual"),
+        source_origin="user_direct",
+        channel_trust="command",
+        confirmation_status="user_asserted",
+        source_id="turn-promote-2",
+        scope="user",
+        ingress_handle_id="handle-promote-2",
+        content_digest="digest-promote-2",
+    )
+
+    assert decision.kind == "allow"
+    assert decision.entry is not None
+    assert decision.entry.supersedes == candidate.entry.id
+    assert decision.entry.invocation_eligible is True
+    assert decision.entry.trust_band == "elevated"
+    assert audits[-1] == (
+        "memory.skill_promoted",
+        {
+            "entry_id": decision.entry.id,
+            "candidate_id": candidate.entry.id,
+            "entry_type": "skill",
+            "ingress_handle_id": "handle-promote-2",
+            "trust_band": "elevated",
+        },
+    )
+
+
+def test_m4_promote_to_skill_rejects_non_install_triple(tmp_path: Path) -> None:
+    manager = MemoryManager(tmp_path / "memory")
+    candidate = manager.write_with_provenance(
+        entry_type="skill",
+        key="skill:release-close",
+        value="Release close checklist\nCandidate version",
+        source=MemorySource(
+            origin="external",
+            source_id="review-candidate-4",
+            extraction_method="review.queue",
+        ),
+        source_origin="external_message",
+        channel_trust="shared_participant",
+        confirmation_status="pending_review",
+        source_id="review-candidate-4",
+        scope="user",
+        confidence=0.62,
+        confirmation_satisfied=True,
+    )
+
+    assert candidate.entry is not None
+    rejected = manager.promote_to_skill(
+        entry_id=candidate.entry.id,
+        source=MemorySource(origin="external", source_id="web-2", extraction_method="fetch"),
+        source_origin="external_web",
+        channel_trust="web_passed",
+        confirmation_status="auto_accepted",
+        source_id="web-2",
+        scope="user",
+        ingress_handle_id="handle-promote-3",
+        content_digest="digest-promote-3",
+    )
+
+    assert rejected.kind == "reject"
+    assert rejected.reason == "skill_promotion_requires_install_triple"
+
+
 def test_m1_supersedes_creates_version_chain_and_forward_pointer(tmp_path: Path) -> None:
     audits: list[tuple[str, dict[str, object]]] = []
     manager = MemoryManager(

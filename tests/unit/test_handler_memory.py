@@ -12,6 +12,7 @@ from shisad.core.api.schema import (
     MemoryListParams,
     MemoryMintIngressParams,
     MemoryPromoteIdentityCandidateParams,
+    MemoryPromoteSkillParams,
     MemoryReadOriginalParams,
     MemoryRejectIdentityCandidateParams,
     MemoryReviewQueueParams,
@@ -29,6 +30,7 @@ class _StubImpl:
         self.last_memory_ingest_payload: dict[str, object] | None = None
         self.last_memory_supersede_payload: dict[str, object] | None = None
         self.last_memory_promote_identity_candidate_payload: dict[str, object] | None = None
+        self.last_memory_promote_skill_payload: dict[str, object] | None = None
         self.last_memory_reject_identity_candidate_payload: dict[str, object] | None = None
         self.last_memory_list_payload: dict[str, object] | None = None
         self.last_memory_invoke_skill_payload: dict[str, object] | None = None
@@ -78,6 +80,17 @@ class _StubImpl:
     ) -> dict[str, object]:
         self.last_memory_promote_identity_candidate_payload = payload
         return {"kind": "allow", "entry": {"id": "e3", "supersedes": str(payload["candidate_id"])}}
+
+    async def do_memory_promote_skill(self, payload: dict[str, object]) -> dict[str, object]:
+        self.last_memory_promote_skill_payload = payload
+        return {
+            "kind": "allow",
+            "entry": {
+                "id": "e4",
+                "supersedes": str(payload["entry_id"]),
+                "invocation_eligible": True,
+            },
+        }
 
     async def do_memory_reject_identity_candidate(
         self, payload: dict[str, object]
@@ -322,6 +335,25 @@ async def test_memory_invoke_skill_wrapper_forwards_rpc_peer() -> None:
         "host": "127.0.0.1",
         "port": 31337,
     }
+
+
+@pytest.mark.asyncio
+async def test_memory_promote_skill_wrapper_marks_authenticated_write() -> None:
+    impl = _StubImpl()
+    handlers = MemoryHandlers(impl, internal_ingress_marker=object())  # type: ignore[arg-type]
+
+    result = await handlers.handle_memory_promote_skill(
+        MemoryPromoteSkillParams(ingress_context="handle-1", entry_id="skill-1"),
+        RequestContext(),
+    )
+
+    assert result.kind == "allow"
+    assert result.entry is not None
+    assert result.entry["invocation_eligible"] is True
+    assert impl.last_memory_promote_skill_payload is not None
+    assert impl.last_memory_promote_skill_payload["ingress_context"] == "handle-1"
+    assert impl.last_memory_promote_skill_payload["entry_id"] == "skill-1"
+    assert impl.last_memory_promote_skill_payload["_control_api_authenticated_write"] is True
 
 
 @pytest.mark.asyncio

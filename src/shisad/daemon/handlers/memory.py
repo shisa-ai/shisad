@@ -20,6 +20,7 @@ from shisad.core.api.schema import (
     MemoryMintIngressParams,
     MemoryMintIngressResult,
     MemoryPromoteIdentityCandidateParams,
+    MemoryPromoteSkillParams,
     MemoryReadOriginalParams,
     MemoryReadOriginalResult,
     MemoryRejectIdentityCandidateParams,
@@ -150,6 +151,19 @@ class MemoryHandlers:
         return MemoryWriteResult.model_validate(
             await self._impl.do_memory_promote_identity_candidate(payload)
         )
+
+    async def handle_memory_promote_skill(
+        self,
+        params: MemoryPromoteSkillParams,
+        ctx: RequestContext,
+    ) -> MemoryWriteResult:
+        payload = build_params_payload(
+            params,
+            ctx,
+            internal_ingress_marker=self._internal_ingress_marker,
+        )
+        payload[_CONTROL_API_AUTHENTICATED_WRITE] = True
+        return MemoryWriteResult.model_validate(await self._impl.do_memory_promote_skill(payload))
 
     async def handle_memory_reject_identity_candidate(
         self,

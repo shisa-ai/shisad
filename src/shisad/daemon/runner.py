@@ -49,6 +49,7 @@ from shisad.core.api.schema import (
     MemoryListParams,
     MemoryMintIngressParams,
     MemoryPromoteIdentityCandidateParams,
+    MemoryPromoteSkillParams,
     MemoryReadOriginalParams,
     MemoryRejectIdentityCandidateParams,
     MemoryRetrieveParams,
@@ -227,6 +228,12 @@ def _method_specs(
             handlers.handle_memory_promote_identity_candidate,
             True,
             MemoryPromoteIdentityCandidateParams,
+        ),
+        (
+            "memory.promote_to_skill",
+            handlers.handle_memory_promote_skill,
+            True,
+            MemoryPromoteSkillParams,
         ),
         (
             "memory.reject_identity_candidate",
