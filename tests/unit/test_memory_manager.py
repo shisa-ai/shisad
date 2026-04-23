@@ -1991,6 +1991,47 @@ def test_m3_reject_identity_candidate_tombstones_entry_and_records_backoff(tmp_p
     ) in audits
 
 
+def test_m5_quarantined_identity_candidates_are_hidden_and_unresolvable(tmp_path: Path) -> None:
+    manager = MemoryManager(tmp_path / "memory")
+    visible = _write_pending_identity_candidate(manager)
+    quarantined = _write_pending_identity_candidate(
+        manager,
+        key="preference:coffee",
+        value="I prefer coffee over tea.",
+        predicate="likes(coffee)",
+    )
+
+    assert manager.quarantine(str(quarantined.id), reason="test_quarantine")
+
+    queued_ids = {entry.id for entry in manager.list_review_queue(limit=10)}
+    assert queued_ids == {str(visible.id)}
+    assert manager.note_identity_candidate_surface(str(quarantined.id)) == (False, 0)
+
+    decision = manager.promote_identity_candidate(
+        candidate_id=str(quarantined.id),
+        source=MemorySource(
+            origin="user",
+            source_id="cmd-quarantine-1",
+            extraction_method="identity.review.accept",
+        ),
+        source_origin="user_confirmed",
+        channel_trust="command",
+        confirmation_status="user_confirmed",
+        source_id="cmd-quarantine-1",
+        scope="user",
+        ingress_handle_id="handle-quarantine",
+        content_digest="digest-quarantine",
+        taint_labels=[],
+    )
+
+    assert decision.kind == "reject"
+    assert decision.reason == "candidate_not_found"
+    assert manager.reject_identity_candidate(
+        str(quarantined.id),
+        ingress_handle_id="handle-reject",
+    ) == (False, "candidate_not_found")
+
+
 def test_m3_note_identity_candidate_surface_records_event_and_count(tmp_path: Path) -> None:
     audits: list[tuple[str, dict[str, object]]] = []
     manager = MemoryManager(

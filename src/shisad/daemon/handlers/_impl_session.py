@@ -5982,7 +5982,6 @@ class SessionImplMixin(HandlerMixinBase):
         candidate = memory_manager.get_entry(
             candidate_id,
             include_pending_review=True,
-            include_quarantined=True,
         )
         if command in {"accept", "edit"}:
             if candidate is None:
@@ -6042,11 +6041,16 @@ class SessionImplMixin(HandlerMixinBase):
             )
 
         if command == "reject":
+            if candidate is None:
+                return self._identity_command_response(
+                    validated=validated,
+                    response=f"Identity candidate {candidate_id} was not found.",
+                )
             ingress_context = self._mint_identity_command_context(
                 validated=validated,
                 source_origin="user_confirmed",
                 confirmation_status="user_confirmed",
-                content=candidate.value if candidate is not None else candidate_id,
+                content=candidate.value,
             )
             if ingress_context is None:
                 return self._identity_command_response(

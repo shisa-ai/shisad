@@ -1247,6 +1247,28 @@ async def test_m3_finalize_response_surfaces_pending_identity_candidate_on_cli(
 
 
 @pytest.mark.asyncio
+async def test_m5_finalize_response_does_not_surface_quarantined_identity_candidate(
+    tmp_path: Path,
+) -> None:
+    harness = _FinalizeEvidenceHarness()
+    harness._memory_manager = MemoryManager(tmp_path / "memory")
+    candidate_id = _write_pending_identity_candidate(harness._memory_manager)
+    assert harness._memory_manager.quarantine(candidate_id, reason="test_quarantine")
+    execution = _finalize_execution_result(tool_outputs=[], assistant_response="Planner reply")
+
+    response = await SessionImplMixin._finalize_response(harness, execution)
+
+    assert candidate_id not in str(response["response"])
+    assert "/identity accept" not in str(response["response"])
+    assert harness._memory_manager.list_events(
+        entry_id=candidate_id,
+        event_type="candidate_surfaced",
+        limit=10,
+    ) == []
+    assert harness._memory_manager.list_review_queue(limit=10) == []
+
+
+@pytest.mark.asyncio
 async def test_m5_finalize_response_surfaces_strong_invalidation_candidate_on_cli(
     tmp_path: Path,
 ) -> None:

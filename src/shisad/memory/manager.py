@@ -538,6 +538,7 @@ class MemoryManager:
             for entry in self._entries.values()
             if (
                 not self._is_deleted(entry)
+                and not self._is_quarantined(entry)
                 and self._is_pending_review(entry)
                 and entry.superseded_by is None
             )
@@ -1755,9 +1756,10 @@ class MemoryManager:
         candidate = self.get_entry(
             candidate_id,
             include_pending_review=True,
-            include_quarantined=True,
         )
         if candidate is None:
+            return None, "candidate_not_found"
+        if self._is_quarantined(candidate):
             return None, "candidate_not_found"
         if self._is_deleted(candidate):
             return None, "candidate_not_found"

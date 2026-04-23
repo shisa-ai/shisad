@@ -163,6 +163,30 @@ async def test_m3_identity_review_command_lists_pending_candidates(tmp_path: Pat
 
 
 @pytest.mark.asyncio
+async def test_m5_identity_commands_hide_quarantined_candidates_from_cli(tmp_path: Path) -> None:
+    harness = _IdentityCommandHarness(tmp_path)
+    candidate_id = _write_pending_identity_candidate(harness._memory_manager)
+    assert harness._memory_manager.quarantine(candidate_id, reason="test_quarantine")
+
+    review = await SessionImplMixin.do_session_message(
+        harness,
+        {"session_id": "sess-identity-observed", "content": "/identity review"},
+    )  # type: ignore[arg-type]
+    accept = await SessionImplMixin.do_session_message(
+        harness,
+        {"session_id": "sess-identity-observed", "content": f"/identity accept {candidate_id}"},
+    )  # type: ignore[arg-type]
+    reject = await SessionImplMixin.do_session_message(
+        harness,
+        {"session_id": "sess-identity-observed", "content": f"/identity reject {candidate_id}"},
+    )  # type: ignore[arg-type]
+
+    assert review["response"] == "No pending identity candidates."
+    assert accept["response"] == f"Identity candidate {candidate_id} was not found."
+    assert reject["response"] == f"Identity candidate {candidate_id} was not found."
+
+
+@pytest.mark.asyncio
 async def test_m3_identity_accept_command_promotes_pending_candidate_from_cli(
     tmp_path: Path,
 ) -> None:
