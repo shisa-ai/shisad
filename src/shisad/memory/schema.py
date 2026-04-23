@@ -97,6 +97,7 @@ class MemoryEntry(BaseModel):
     invocation_eligible: bool = False
     ingress_handle_id: str | None = None
     content_digest: str | None = None
+    conflict_entry_ids: list[str] = Field(default_factory=list)
 
     # Legacy compatibility fields kept while the handler/API surface is still v0.6-shaped.
     user_verified: bool = False

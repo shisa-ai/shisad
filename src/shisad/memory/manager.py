@@ -1062,6 +1062,123 @@ class MemoryManager:
         self._audit("memory.verify", {"entry_id": entry_id})
         return True
 
+    def update_decay_score(
+        self,
+        entry_id: str,
+        decay_score: float,
+        *,
+        ingress_handle_id: str | None = None,
+        reason: str = "consolidation_recompute",
+    ) -> bool:
+        entry = self._entries.get(entry_id)
+        if entry is None or self._is_deleted(entry):
+            return False
+        previous = entry.decay_score
+        entry.decay_score = max(0.0, min(1.0, float(decay_score)))
+        self._persist_entry(entry)
+        self._record_event(
+            entry=entry,
+            event_type="score_recomputed",
+            ingress_handle_id=ingress_handle_id or entry.ingress_handle_id,
+            metadata={"old_value": previous, "new_value": entry.decay_score, "reason": reason},
+        )
+        self._audit(
+            "memory.score_recomputed",
+            {"entry_id": entry_id, "old_value": previous, "new_value": entry.decay_score},
+        )
+        return True
+
+    def update_confidence(
+        self,
+        entry_id: str,
+        confidence: float,
+        *,
+        event_type: str,
+        reference_entry_ids: list[str],
+        ingress_handle_id: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> bool:
+        entry = self._entries.get(entry_id)
+        if entry is None or self._is_deleted(entry):
+            return False
+        previous = entry.confidence
+        entry.confidence = max(0.0, min(0.99, float(confidence)))
+        self._persist_entry(entry)
+        payload = dict(metadata or {})
+        payload.update(
+            {
+                "old_value": previous,
+                "new_value": entry.confidence,
+                "reference_entry_ids": list(reference_entry_ids),
+            }
+        )
+        self._record_event(
+            entry=entry,
+            event_type=event_type,
+            ingress_handle_id=ingress_handle_id or entry.ingress_handle_id,
+            metadata=payload,
+        )
+        self._audit(
+            f"memory.{event_type}",
+            {
+                "entry_id": entry_id,
+                "old_value": previous,
+                "new_value": entry.confidence,
+                "reference_entry_ids": list(reference_entry_ids),
+            },
+        )
+        return True
+
+    def mark_conflict(
+        self,
+        entry_id: str,
+        conflicting_entry_id: str,
+        *,
+        ingress_handle_id: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> bool:
+        entry = self._entries.get(entry_id)
+        if entry is None or self._is_deleted(entry):
+            return False
+        if conflicting_entry_id not in entry.conflict_entry_ids:
+            entry.conflict_entry_ids.append(conflicting_entry_id)
+            entry.conflict_entry_ids.sort()
+            self._persist_entry(entry)
+        payload = dict(metadata or {})
+        payload["conflicting_entry_id"] = conflicting_entry_id
+        payload["conflict_entry_ids"] = list(entry.conflict_entry_ids)
+        self._record_event(
+            entry=entry,
+            event_type="contradicted",
+            ingress_handle_id=ingress_handle_id or entry.ingress_handle_id,
+            metadata=payload,
+        )
+        self._audit(
+            "memory.contradicted",
+            {"entry_id": entry_id, "conflicting_entry_id": conflicting_entry_id},
+        )
+        return True
+
+    def record_consolidation_event(
+        self,
+        entry_id: str,
+        event_type: str,
+        *,
+        ingress_handle_id: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> bool:
+        entry = self._entries.get(entry_id)
+        if entry is None or self._is_deleted(entry):
+            return False
+        self._record_event(
+            entry=entry,
+            event_type=event_type,
+            ingress_handle_id=ingress_handle_id or entry.ingress_handle_id,
+            metadata=dict(metadata or {}),
+        )
+        self._audit(f"memory.{event_type}", {"entry_id": entry_id, **dict(metadata or {})})
+        return True
+
     def export(self, *, fmt: str = "json") -> str:
         items = [entry.model_dump(mode="json") for entry in self.list_entries(include_deleted=True)]
         for item in items:
@@ -1248,6 +1365,7 @@ class MemoryManager:
                     invocation_eligible,
                     ingress_handle_id,
                     content_digest,
+                    conflict_entry_ids_json,
                     user_verified,
                     deleted_at,
                     quarantined
@@ -1290,6 +1408,9 @@ class MemoryManager:
                         "invocation_eligible": bool(row["invocation_eligible"]),
                         "ingress_handle_id": row["ingress_handle_id"],
                         "content_digest": row["content_digest"],
+                        "conflict_entry_ids": json.loads(
+                            str(row["conflict_entry_ids_json"] or "[]")
+                        ),
                         "user_verified": bool(row["user_verified"]),
                         "deleted_at": row["deleted_at"],
                         "quarantined": bool(row["quarantined"]),
@@ -1356,6 +1477,7 @@ class MemoryManager:
                     invocation_eligible INTEGER NOT NULL,
                     ingress_handle_id TEXT,
                     content_digest TEXT,
+                    conflict_entry_ids_json TEXT NOT NULL DEFAULT '[]',
                     user_verified INTEGER NOT NULL,
                     deleted_at TEXT,
                     quarantined INTEGER NOT NULL
@@ -1369,6 +1491,11 @@ class MemoryManager:
                 conn.execute(
                     "ALTER TABLE memory_entries "
                     "ADD COLUMN strength TEXT NOT NULL DEFAULT 'moderate'"
+                )
+            if "conflict_entry_ids_json" not in columns:
+                conn.execute(
+                    "ALTER TABLE memory_entries "
+                    "ADD COLUMN conflict_entry_ids_json TEXT NOT NULL DEFAULT '[]'"
                 )
             conn.execute(
                 """
@@ -1469,12 +1596,13 @@ class MemoryManager:
                 invocation_eligible,
                 ingress_handle_id,
                 content_digest,
+                conflict_entry_ids_json,
                 user_verified,
                 deleted_at,
                 quarantined
             ) VALUES (
                 ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
             )
             """,
             (
@@ -1509,6 +1637,7 @@ class MemoryManager:
                 int(bool(payload["invocation_eligible"])),
                 payload["ingress_handle_id"],
                 payload["content_digest"],
+                json.dumps(payload["conflict_entry_ids"], sort_keys=True),
                 int(bool(payload["user_verified"])),
                 payload["deleted_at"],
                 int(bool(payload["quarantined"])),
