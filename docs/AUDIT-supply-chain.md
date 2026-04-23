@@ -1,9 +1,9 @@
 # shisad Supply Chain Audit
 
 *Created: 2026-03-31*  
-*Updated: 2026-04-20 (v0.6.7 candidate Ledger bridge Node subproject, Ledger SDK bump, and axios advisory exception recorded; v0.6.5 release-close MCP/A2A dependency-surface parity retained)*
+*Updated: 2026-04-23 (v0.7.0 candidate refresh: python-dotenv CVE-2026-28684 remediated, supply-chain parity rechecked, and optional Ledger bridge npm advisories revalidated)*
 *Status: In Progress*  
-*Snapshot basis: `v0.6.7` candidate on `pr/6-ledger-signer`*
+*Snapshot basis: `v0.7.0` candidate on `main`*
 
 ## Scope and Intent
 
@@ -38,6 +38,35 @@ Goals:
 - Accepted risk decision: Python interpreter version remains `>=3.12` and is not treated as a primary attack vector for this audit lane.
 
 ## Follow-up Worklog
+
+### 2026-04-23 — v0.7.0 candidate release-close parity refresh
+
+- Scope: refresh the dependency audit for the `v0.7.0` release-prepared
+  candidate on `main` after the memory-foundation line and release-prep
+  version bump.
+- Python audit result:
+  - `uv lock --check` passed on `/home/ubuntu/shisad`.
+  - `uvx pip-audit --require-hashes --disable-pip -r <(uv export --all-groups
+    --frozen --format requirements.txt --no-emit-project --directory
+    /home/ubuntu/shisad)` initially found `CVE-2026-28684` in transitive
+    `python-dotenv 1.2.1` via `pydantic-settings`; the candidate now pins
+    `python-dotenv>=1.2.2,<2` and refreshes `uv.lock`.
+  - `python3 /home/ubuntu/shisad-dev/scripts/audit_supply_chain_check.py --repo
+    /home/ubuntu/shisad` returned `Supply-chain audit parity: OK`.
+- Optional Node bridge audit refresh:
+  - `npm audit --json` in `contrib/ledger-bridge/` still reports 7 moderate /
+    0 high advisories through the Ledger dependency tree (`axios` SSRF/header
+    injection plus `uuid` buffer-bounds handling).
+  - The available npm "fix" paths remain semver-major downgrades or
+    incompatible Ledger package changes, not a drop-in clean resolution for the
+    current bridge tree.
+- Risk disposition:
+  - The base Python install is expected to be clean again after the
+    `python-dotenv` bump and lock refresh.
+  - The optional Ledger bridge remains disabled by default, loopback-only, and
+    bearer-token capable; its residual npm advisory exception remains
+    documented until Ledger publishes compatible fixed packages or the bridge
+    dependency tree changes.
 
 ### 2026-04-20 — v0.6.7 Ledger bridge subproject audit entry
 
@@ -252,7 +281,7 @@ New packages should meet a higher bar than upgrades:
 
 | ID | Rationale | Risk | Target milestone |
 |---|---|---|---|
-| SC-v0.6.7-ledger-axios | After bumping compatible direct Ledger packages, `@ledgerhq/device-management-kit@1.2.0` still pulls `axios@1.13.5` with npm advisories and no compatible clean fix in the accepted tree. The optional bridge is loopback-only, disabled by default, and can require bearer auth; upgrading blindly would risk breaking hardware signing. | A local optional Node subproject carries vulnerable transitive code until Ledger publishes compatible fixed packages. Current audit classification is 6 moderate / 0 high. | v0.6.7 M4 release-close: re-run `npm audit`, upgrade if compatible fixed Ledger packages are available, or refresh this documented exception before release. |
+| SC-v0.6.7-ledger-axios | After bumping compatible direct Ledger packages, `@ledgerhq/device-management-kit@1.2.0` still pulls npm-advised `axios` and `uuid` ranges with no compatible clean fix in the accepted bridge tree. The optional bridge is loopback-only, disabled by default, and can require bearer auth; upgrading blindly would risk breaking hardware signing. | A local optional Node subproject carries vulnerable transitive code until Ledger publishes compatible fixed packages. Current audit classification on the 2026-04-23 refresh is 7 moderate / 0 high. | Recheck during `v0.7.1` release close (or earlier if the bridge dependency tree changes) and drop the exception only when a compatible clean Ledger package set exists. |
 
 ## Immediate Hardening Applied (2026-03-31)
 
@@ -362,6 +391,7 @@ sed -n '1,140p' docs/DEPLOY.md
 | `loguru` | `>=0.7,<1` | `0.7.3` | Range in spec, exact in lock |
 | `pydantic` | `>=2.10,<3` | `2.12.5` | Range in spec, exact in lock |
 | `pydantic-settings` | `>=2.7,<3` | `2.12.0` | Range in spec, exact in lock |
+| `python-dotenv` | `>=1.2.2,<2` | `1.2.2` | Range in spec, exact in lock |
 | `qrcode` | `>=8.2,<9` | `8.2` | Range in spec, exact in lock |
 | `pyyaml` | `>=6.0,<7` | `6.0.3` | Range in spec, exact in lock |
 | `textguard[yara]` | `>=1.0,<2` | `1.0.0` | Range in spec, exact in lock |
@@ -493,7 +523,7 @@ pyjwt==2.12.1
 pytest==9.0.3
 pytest-asyncio==1.3.0
 pytest-cov==6.3.0
-python-dotenv==1.2.1
+python-dotenv==1.2.2
 python-multipart==0.0.26
 python-olm==3.2.16
 python-socks==2.8.0
@@ -810,7 +840,7 @@ pytest==9.0.3
     #   pytest-cov
 pytest-asyncio==1.3.0
 pytest-cov==6.3.0
-python-dotenv==1.2.1
+python-dotenv==1.2.2
     # via pydantic-settings
 python-multipart==0.0.26
     # via mcp

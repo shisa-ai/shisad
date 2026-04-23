@@ -343,10 +343,10 @@ class MemoryManager:
                 prior_entry.confirmation_status,
             )
             if _TRUST_BAND_ORDER[resolved_trust_band] > _TRUST_BAND_ORDER[prior_trust_band]:
-                if (
-                    not allow_trust_upgrade_without_confirmation
-                    and confirmation_status not in {"user_confirmed", "user_corrected"}
-                ):
+                if not allow_trust_upgrade_without_confirmation and confirmation_status not in {
+                    "user_confirmed",
+                    "user_corrected",
+                }:
                     return MemoryWriteDecision(
                         kind="reject",
                         reason="trust_upgrade_requires_user_confirmation",
@@ -1976,9 +1976,7 @@ class MemoryManager:
 
         tokens = [token.lower() for token in re.findall(r"[a-z0-9]+", lowered)]
         informative_tokens = [
-            token
-            for token in tokens
-            if len(token) >= 3 and token not in cls._LOW_SIGNAL_TOKENS
+            token for token in tokens if len(token) >= 3 and token not in cls._LOW_SIGNAL_TOKENS
         ]
         if len(informative_tokens) >= 2:
             return False

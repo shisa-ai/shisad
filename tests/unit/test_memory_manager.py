@@ -719,8 +719,7 @@ def test_m1_unquarantine_refuses_active_key_collisions(tmp_path: Path) -> None:
     assert current.status == "active"
     assert current.key == "note:collision"
     assert [
-        event.event_type
-        for event in manager.list_events(entry_id=original.entry.id, limit=10)
+        event.event_type for event in manager.list_events(entry_id=original.entry.id, limit=10)
     ] == ["created", "quarantined"]
 
 
@@ -1483,6 +1482,8 @@ def test_m4_promote_to_skill_promotes_pending_review_entry_with_install_triple(
             "trust_band": "elevated",
         },
     ) in audits
+
+
 def test_m4_promote_to_skill_rejects_non_install_triple(tmp_path: Path) -> None:
     manager = MemoryManager(tmp_path / "memory")
     candidate = manager.write_with_provenance(

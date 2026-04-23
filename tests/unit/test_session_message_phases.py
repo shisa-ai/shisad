@@ -726,8 +726,9 @@ def test_m1_explicit_memory_ingress_context_derives_channel_provenance(
 
 
 @pytest.mark.asyncio
-async def test_m1_evaluate_and_execute_actions_passes_channel_handle_for_explicit_note_create(
-) -> None:
+async def test_m1_evaluate_and_execute_actions_passes_channel_handle_for_explicit_note_create() -> (
+    None
+):
     session = Session(
         id=SessionId("sess-g1"),
         channel="discord",
@@ -1260,11 +1261,14 @@ async def test_m5_finalize_response_does_not_surface_quarantined_identity_candid
 
     assert candidate_id not in str(response["response"])
     assert "/identity accept" not in str(response["response"])
-    assert harness._memory_manager.list_events(
-        entry_id=candidate_id,
-        event_type="candidate_surfaced",
-        limit=10,
-    ) == []
+    assert (
+        harness._memory_manager.list_events(
+            entry_id=candidate_id,
+            event_type="candidate_surfaced",
+            limit=10,
+        )
+        == []
+    )
     assert harness._memory_manager.list_review_queue(limit=10) == []
 
 
@@ -1561,11 +1565,14 @@ async def test_m5_pending_strong_invalidation_no_rejects_superseded_signal(
 
     assert response is not None
     assert "no longer available" in str(response["response"])
-    assert harness._memory_manager.list_events(
-        entry_id=target_id,
-        event_type="strong_invalidation_rejected",
-        limit=10,
-    ) == []
+    assert (
+        harness._memory_manager.list_events(
+            entry_id=target_id,
+            event_type="strong_invalidation_rejected",
+            limit=10,
+        )
+        == []
+    )
 
 
 @pytest.mark.asyncio
@@ -1808,11 +1815,14 @@ async def test_m3_finalize_response_does_not_mark_candidate_surfaced_when_output
     response = await SessionImplMixin._finalize_response(harness, execution)
 
     assert response["response"] == "Response blocked by output policy."
-    assert harness._memory_manager.list_events(
-        entry_id=candidate_id,
-        event_type="candidate_surfaced",
-        limit=10,
-    ) == []
+    assert (
+        harness._memory_manager.list_events(
+            entry_id=candidate_id,
+            event_type="candidate_surfaced",
+            limit=10,
+        )
+        == []
+    )
     queued_ids = {entry.id for entry in harness._memory_manager.list_review_queue(limit=10)}
     assert candidate_id in queued_ids
 
@@ -1843,11 +1853,14 @@ async def test_m3_finalize_response_does_not_expire_candidate_when_output_blocke
     response = await SessionImplMixin._finalize_response(harness, execution)
 
     assert response["response"] == "Response blocked by output policy."
-    assert harness._memory_manager.list_events(
-        entry_id=candidate_id,
-        event_type="candidate_expired",
-        limit=10,
-    ) == []
+    assert (
+        harness._memory_manager.list_events(
+            entry_id=candidate_id,
+            event_type="candidate_expired",
+            limit=10,
+        )
+        == []
+    )
     queued_ids = {entry.id for entry in harness._memory_manager.list_review_queue(limit=10)}
     assert candidate_id in queued_ids
 

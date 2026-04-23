@@ -2010,6 +2010,7 @@ async def test_contract_cli_planner_context_filters_identity_and_active_attentio
         )
 
     async with _contract_harness_context(tmp_path, monkeypatch, prestart=_seed) as harness:
+
         async def _capture_complete(
             self: LocalPlannerProvider,
             messages: list[Message],
@@ -2129,6 +2130,7 @@ async def test_contract_discord_channel_context_binds_active_attention_to_curren
         assert other_channel_inbox.kind == "allow"
 
     async with _contract_harness_context(tmp_path, monkeypatch, prestart=_seed) as harness:
+
         async def _capture_complete(
             self: LocalPlannerProvider,
             messages: list[Message],
@@ -3264,10 +3266,7 @@ async def test_contract_graph_query_export_and_consolidation_run_via_control_api
         )
         assert graph.get("root_entity_id")
         assert graph.get("nodes")
-        assert any(
-            node.get("evidence_entry_ids")
-            for node in graph.get("nodes", [])
-        )
+        assert any(node.get("evidence_entry_ids") for node in graph.get("nodes", []))
         assert graph.get("edges")
 
         exported = await harness.client.call("graph.export", {"format": "md"})

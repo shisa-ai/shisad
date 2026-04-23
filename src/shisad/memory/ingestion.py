@@ -304,17 +304,21 @@ class IngestionPipeline:
         resolved_origin = source_origin or source_default_origin
         resolved_channel = channel_trust or source_default_channel
         resolved_confirmation = confirmation_status or source_default_confirmation
-        if source_type == "user" and resolved_collection != source_default_collection and (
-            source_origin is None
-            or (
-                resolved_origin,
-                resolved_channel,
-                resolved_confirmation,
-            )
-            == (
-                source_default_origin,
-                source_default_channel,
-                source_default_confirmation,
+        if (
+            source_type == "user"
+            and resolved_collection != source_default_collection
+            and (
+                source_origin is None
+                or (
+                    resolved_origin,
+                    resolved_channel,
+                    resolved_confirmation,
+                )
+                == (
+                    source_default_origin,
+                    source_default_channel,
+                    source_default_confirmation,
+                )
             )
         ):
             resolved_origin = default_origin
@@ -468,11 +472,14 @@ class IngestionPipeline:
                 (reference_time - record.created_at).total_seconds() / 86_400.0,
             )
             decay_score = self._decay_score_for_age(age_days)
-            confidence = default_confidence_for_triple(
-                record.source_origin,
-                record.channel_trust,
-                record.confirmation_status,
-            ) or _RECALL_CONFIDENCE_PRIOR[record.collection]
+            confidence = (
+                default_confidence_for_triple(
+                    record.source_origin,
+                    record.channel_trust,
+                    record.confirmation_status,
+                )
+                or _RECALL_CONFIDENCE_PRIOR[record.collection]
+            )
             importance_weight = _RECALL_IMPORTANCE_PRIOR[record.collection]
             archived = age_days >= _RECALL_ARCHIVE_AFTER_DAYS
             scored_record = record.model_copy(
@@ -822,9 +829,7 @@ class IngestionPipeline:
             include_quarantined=include_quarantined,
         )
         records = [
-            record
-            for row in rows
-            if (record := self._record_from_backend_row(row)) is not None
+            record for row in rows if (record := self._record_from_backend_row(row)) is not None
         ]
         records.sort(key=lambda item: item.created_at, reverse=True)
         return records[:limit]

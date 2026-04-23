@@ -32,6 +32,7 @@ Rather than ignoring the elephant in the room, our design targets the [lethal tr
 
 ## Features
 
+- **Structured long-term memory** — separate identity, active-attention, recall, procedural, and evidence surfaces share a versioned local store with review-gated writes and auditable provenance
 - **COMMAND/TASK orchestration runtime** — persistent COMMAND sessions hand off delegated work to isolated TASK sessions with taint-safe summaries, approval provenance, and explicit task envelopes
 - **Per-call policy enforcement** — 8-layer PEP pipeline (registry, schema, capability, DLP, resource authorization, egress allowlisting, credential scoping, taint sink enforcement) runs on every tool call, not just at session start
 - **Taint-aware content handling** — ingress/egress content firewalls track provenance of untrusted input through the execution path
@@ -50,13 +51,16 @@ Rather than ignoring the elephant in the room, our design targets the [lethal tr
 ## Status
 
 This repo is public and still pre-alpha. The latest published line is
-`v0.6.7` (GitHub Release and PyPI package). This release adds Ledger-backed
-signer approvals through the local bridge, conservative downgrade behavior for
-opaque or blind-signing device paths, and the macOS peer-credential fix needed
-for Unix-socket client identity checks on Darwin.
+`v0.6.7` (GitHub Release and PyPI package). The current release-prepared
+candidate is `v0.7.0`, which adds structured long-term memory with separate
+identity, active-attention, recall, procedural-skill, and evidence surfaces;
+review-gated memory writes; and derived graph/consolidation foundations. The
+published `v0.6.7` line remains the installable release until the explicit
+`v0.7.0` tag/publish closeout happens.
 
 | Version | Focus |
 |---------|-------|
+| **v0.7** | **Memory foundation + long-term memory surfaces (current release-prepared candidate: `v0.7.0`)** |
 | **v0.6** | **Orchestration foundation + tool-surface expansion (COMMAND/TASK runtime, credential scoping, web tools, browser baseline)** |
 | v0.5 | First public release — evidence references, repo split, zero-config SHISA provider |
 | v0.4 | Self-modification, coding-agent runtime, COMMAND/TASK isolation |

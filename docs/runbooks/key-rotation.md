@@ -17,6 +17,10 @@
 
 - Confirm low active write load if possible.
 - Pick an export destination outside the active data dir, for example `/var/backups/shisad/`.
+- Export artifacts contain raw memory entry values and metadata and may include
+  personal data, channel content, or secrets copied into memory. Write them
+  only to operator-controlled paths; anyone who can read the backup file can
+  read that content.
 
 ## 3. Export current memory
 

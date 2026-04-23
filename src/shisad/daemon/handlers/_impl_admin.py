@@ -1798,9 +1798,7 @@ class AdminImplMixin(HandlerMixinBase):
             session_message_payload["_explicit_memory_ingress_context"] = (
                 explicit_memory_ingress_context.handle_id
             )
-        response = await self.do_session_message(
-            session_message_payload
-        )
+        response = await self.do_session_message(session_message_payload)
         if proactive:
             marker = discord_decision.proactive_marker.strip() or "[proactive]"
             response_text = str(response.get("response", "")).strip()

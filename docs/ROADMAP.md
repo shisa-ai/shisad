@@ -1,7 +1,7 @@
 # shisad Roadmap
 
 *Created: 2026-02-26*
-*Updated: 2026-04-21*
+*Updated: 2026-04-23*
 *Status: Active*
 
 ## Goal
@@ -55,6 +55,11 @@ Reach a genuinely useful personal-assistant baseline while preserving the projec
   external pull request add EIP-712 `IntentEnvelope` signing through the local
   Ledger bridge, with conservative downgrade behavior when a device reports
   blind signing or an opaque review surface.
+- `v0.7.0` is release-prepared: the candidate adds structured long-term memory
+  with separate Identity, Active Attention, Recall, Procedural, and Evidence
+  surfaces; review-gated memory writes; and derived graph/consolidation
+  foundations. The latest published line remains `v0.6.7` until the explicit
+  tag/publish closeout runs.
 
 ## Milestones
 
@@ -252,10 +257,16 @@ TOTP entry remain deferred to `v0.8.0`.
 
 ### v0.7 — Memory foundation
 
-- Structured, versioned long-term memory
-- Knowledge-graph and consolidation foundations
-- Proposed-write path integrated with orchestration boundary
-- Memory write gating, quarantine, and audit path shipped end-to-end
+#### v0.7.0 — Structured long-term memory baseline
+
+- Status (2026-04-23): release-prepared candidate. The latest published line
+  remains `v0.6.7` until the explicit `v0.7.0` tag/publish action.
+- Five memory surfaces land together: Identity, Active Attention, Recall,
+  Procedural (manual invoke), and Evidence.
+- Memory writes are versioned, provenance-bearing, review-gated, and stored in
+  the SQLite-backed memory substrate.
+- Derived graph query/export and consolidation foundations land with explicit
+  user confirmation for promoted identity and strong-update paths.
 
 #### v0.7.1 — Memory hardening and benchmark closure
 

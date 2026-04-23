@@ -275,9 +275,7 @@ class ConsolidationWorker:
                 ):
                     continue
                 drop = (
-                    self._config.delta_contradict
-                    * _confidence_score(newer)
-                    * _source_weight(newer)
+                    self._config.delta_contradict * _confidence_score(newer) * _source_weight(newer)
                 )
                 if self._manager.update_confidence(
                     older.id,
@@ -590,9 +588,7 @@ class ConsolidationWorker:
                 metadata={
                     "evidence_entry_ids": evidence_ids,
                     "threshold": threshold,
-                    "threshold_category": self._identity_candidate_threshold_category(
-                        preference
-                    ),
+                    "threshold_category": self._identity_candidate_threshold_category(preference),
                     "candidate_ttl_activity_days": self._config.candidate_ttl_activity_days,
                 },
             )
@@ -631,9 +627,7 @@ class ConsolidationWorker:
     @staticmethod
     def _strong_invalidation_match_tokens(entry: MemoryEntry) -> set[str]:
         return {
-            token
-            for token in _tokens(entry)
-            if token not in _STRONG_INVALIDATION_GENERIC_TOKENS
+            token for token in _tokens(entry) if token not in _STRONG_INVALIDATION_GENERIC_TOKENS
         }
 
     def _contradiction_already_recorded(

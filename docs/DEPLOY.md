@@ -221,7 +221,7 @@ bash runner/harness.sh stop
 bash runner/harness.sh restart
 ```
 
-For full runner behavior, isolated instance patterns, and troubleshooting, see
+For full runner behavior, separate instance patterns, and troubleshooting, see
 `runner/RUNBOOK.md` and `runner/README.md`.
 
 ## Manual Daemon Start
@@ -299,7 +299,7 @@ SHISAD_DISCORD_DEFAULT_CHANNEL_ID=<channel-id>
 SHISAD_CHANNEL_IDENTITY_ALLOWLIST='{"discord":["<your-discord-user-id>"]}'
 ```
 
-**Verify:** Start the daemon, then `@mention` the bot in a guild channel (e.g., `@shisad hello`). The bot only responds to `@mentions` in guild channels; DMs are always processed without a mention.
+**Verify:** Start the daemon, then `@mention` the bot in a guild channel (e.g., `@shisad hello`). The bot only responds to `@mentions` in guild channels; DMs currently do not require a mention.
 
 **Optional public-channel policy:** Configure `SHISAD_DISCORD_CHANNEL_RULES` as
 JSON when the bot should also serve a shared Discord channel. Rules are

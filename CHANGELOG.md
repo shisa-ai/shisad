@@ -9,6 +9,57 @@ left unlinked until the tag exists. There is no standing "Unreleased" section.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Versioning follows semver (see `docs/PUBLISH.md` for policy and style guide).
 
+## 0.7.0 Release Content - 2026-04-23
+
+### Added
+
+- **Structured long-term memory now has separate surfaces for identity, active
+  work, recall, reusable skills, and evidence.** The assistant can keep
+  user-approved identity and preference memory available across sessions, track
+  active threads and waiting-on items, surface explicit source reads, and
+  expose reusable skills without mixing those surfaces together.
+
+- **The assistant can propose new memories and ask you to confirm them before
+  they become trusted memory.** Identity candidates, strong memory updates,
+  and queued skill suggestions now stay in review flows until you approve them
+  from a trusted context instead of silently entering live recall or
+  invocation.
+
+- **A derived knowledge graph and consolidation pass are available through the
+  live control surface.** Shisad can query and export the current graph view,
+  detect strong updates, flag contradictions, and record auditable merge,
+  quarantine, and confirmation events without turning the graph into
+  authoritative state.
+
+### Changed
+
+- **Memory now lives in a local SQLite backend with versioned entries and audit
+  events.** Existing memory callers keep the same public recall interface, but
+  the storage layer now records typed entry metadata, trust fields, review
+  state, workflow state, supersede history, and explicit ingress handles.
+
+- **Recall and active context are filtered more aggressively by trust, scope,
+  and workflow state.** Pending-review items stay out of normal recall,
+  identity only accepts trusted approved entries, and active-attention content
+  stays separate from the trusted metadata that selects it.
+
+### Security
+
+- **Every memory write records its ingress handle and trust tier.** When you
+  inspect a memory entry you can see whether it came from a trusted command,
+  an untrusted external channel, a tool result, or a consolidation pass, and
+  untrusted sources cannot silently write into elevated memory surfaces.
+
+- **Pending-review memories and skills stay out of default recall and
+  invocation paths.** Unconfirmed writes from public channels, external
+  content, or tool output no longer leak into trusted memory, active identity,
+  or skill invocation until you promote them explicitly.
+
+- **Consolidation can suggest changes but cannot silently promote trust.**
+  Duplicate cleanup, contradiction tracking, archive/quarantine decisions, and
+  strong-update proposals all remain auditable low-trust events until a user
+  confirmation path stamps the promoted result.
+
 ## [0.6.7.1] - 2026-04-23
 
 ### Fixed
@@ -239,11 +290,12 @@ request.
 
 - **Creating todos, notes, and reminders from the CLI no longer asks for
   unnecessary confirmation.** When PromptGuard content safety was enabled, its
-  injection-detection score (always slightly above zero for any input) caused
-  the system to treat even simple user commands like "create a todo" as
-  needing approval. The content safety classifier now skips the neural-net
-  check on direct user input — the user is the trust root, not an
-  attack surface. Pattern-based detection still runs for telemetry.
+  injection-detection score consistently came back slightly above zero on
+  direct user input, which caused the system to treat even simple user
+  commands like "create a todo" as needing approval. The content safety
+  classifier now skips the neural-net check on direct user input — the user is
+  the trust root, not an attack surface. Pattern-based detection still runs
+  for telemetry.
 - **Confirmation replies no longer create new actions.** Typing `confirm 1`,
   `y`, `yes`, a bare number, or `reject` is now recognized as a command
   instead of being sent to the planner as a new request.
@@ -349,7 +401,7 @@ request.
 ### Added
 
 - **Multi-step task orchestration.** The agent can now delegate work to
-  isolated task sessions with safe data handoffs, result validation, and
+  separate task sessions with safe data handoffs, result validation, and
   credential scoping — a long-running task can't leak context or credentials
   back to the main session.
 - **Session migration and archival.** Sessions survive daemon restarts with
@@ -384,10 +436,9 @@ request.
 - **Hardened browser isolation is on by default.** Wildcard browser scope
   entries are rejected because they can't be safely enforced.
 - **Evidence references persist across restarts and sessions**, keeping large
-  untrusted content isolated from the main conversation by default.
+  untrusted content out of the main conversation context by default.
 - **Skill authorization rejects modified or revoked artifacts** at runtime;
-  dynamic remote tool discovery is not yet supported and remains planned for a
-  future remote-tool interop lane.
+  dynamic remote tool discovery remains out of scope for this release line.
 
 ### Changed
 

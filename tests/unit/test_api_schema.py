@@ -606,6 +606,27 @@ class TestApiSchemaValidation:
         assert note.ingress_context == "handle-2"
         assert todo.ingress_context == "handle-3"
 
+        compat_note = NoteCreateParams.model_validate(
+            {
+                "key": "note:compat",
+                "content": "hello",
+                "source_id": "session-1",
+                "user_confirmed": True,
+            }
+        )
+        compat_todo = TodoCreateParams.model_validate(
+            {
+                "title": "task",
+                "source_id": "session-1",
+                "user_confirmed": True,
+            }
+        )
+
+        assert compat_note.source_id == "session-1"
+        assert compat_note.user_confirmed is True
+        assert compat_todo.source_id == "session-1"
+        assert compat_todo.user_confirmed is True
+
     def test_m1_memory_lifecycle_params_require_reason_and_valid_workflow_state(self) -> None:
         params = MemoryLifecycleParams.model_validate(
             {

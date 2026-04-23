@@ -260,9 +260,7 @@ async def test_memory_identity_candidate_wrappers_forward_authenticated_payload(
     assert impl.last_memory_promote_identity_candidate_payload is not None
     assert impl.last_memory_promote_identity_candidate_payload["candidate_id"] == "candidate-1"
     assert (
-        impl.last_memory_promote_identity_candidate_payload[
-            "_control_api_authenticated_write"
-        ]
+        impl.last_memory_promote_identity_candidate_payload["_control_api_authenticated_write"]
         is True
     )
 
@@ -271,9 +269,7 @@ async def test_memory_identity_candidate_wrappers_forward_authenticated_payload(
     assert impl.last_memory_reject_identity_candidate_payload is not None
     assert impl.last_memory_reject_identity_candidate_payload["candidate_id"] == "candidate-2"
     assert (
-        impl.last_memory_reject_identity_candidate_payload[
-            "_control_api_authenticated_write"
-        ]
+        impl.last_memory_reject_identity_candidate_payload["_control_api_authenticated_write"]
         is True
     )
 

@@ -177,8 +177,7 @@ def validate_trust_triple(
     rule = _VALID_TRUST_MATRIX.get((source_origin, channel_trust, confirmation_status))
     if rule is None:
         raise TrustGateViolation(
-            "invalid trust triple: "
-            f"{source_origin}/{channel_trust}/{confirmation_status}"
+            f"invalid trust triple: {source_origin}/{channel_trust}/{confirmation_status}"
         )
     if rule.trust_band == "observed" and not enable_observed:
         return replace(rule, trust_band="untrusted")

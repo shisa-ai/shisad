@@ -270,18 +270,24 @@ def test_m5_quarantined_entries_do_not_drive_or_resolve_strong_invalidations(
     assert [(proposal.target_entry_id, proposal.signal_entry_id) for proposal in proposals] == [
         (active_target.id, active_signal.id)
     ]
-    assert worker.confirm_strong_invalidation(
-        target_entry_id=quarantined_target.id,
-        signal_entry_id=active_signal.id,
-        new_value="I no longer work at Contoso.",
-        ingress_handle_id="test-ingress",
-    ) is None
-    assert worker.confirm_strong_invalidation(
-        target_entry_id=active_target.id,
-        signal_entry_id=quarantined_signal.id,
-        new_value="I no longer work at ACME.",
-        ingress_handle_id="test-ingress",
-    ) is None
+    assert (
+        worker.confirm_strong_invalidation(
+            target_entry_id=quarantined_target.id,
+            signal_entry_id=active_signal.id,
+            new_value="I no longer work at Contoso.",
+            ingress_handle_id="test-ingress",
+        )
+        is None
+    )
+    assert (
+        worker.confirm_strong_invalidation(
+            target_entry_id=active_target.id,
+            signal_entry_id=quarantined_signal.id,
+            new_value="I no longer work at ACME.",
+            ingress_handle_id="test-ingress",
+        )
+        is None
+    )
 
 
 def test_m5_superseded_entries_do_not_resolve_strong_invalidations(tmp_path: Path) -> None:
@@ -320,12 +326,15 @@ def test_m5_superseded_entries_do_not_resolve_strong_invalidations(tmp_path: Pat
         supersedes=signal.id,
     )
     assert superseded_signal.entry is not None
-    assert worker.confirm_strong_invalidation(
-        target_entry_id=target.id,
-        signal_entry_id=signal.id,
-        new_value="I no longer work at ACME.",
-        ingress_handle_id="test-ingress",
-    ) is None
+    assert (
+        worker.confirm_strong_invalidation(
+            target_entry_id=target.id,
+            signal_entry_id=signal.id,
+            new_value="I no longer work at ACME.",
+            ingress_handle_id="test-ingress",
+        )
+        is None
+    )
     assert not worker.reject_strong_invalidation(
         target_entry_id=target.id,
         signal_entry_id=signal.id,
@@ -355,12 +364,15 @@ def test_m5_superseded_entries_do_not_resolve_strong_invalidations(tmp_path: Pat
         supersedes=target.id,
     )
     assert superseded_target.entry is not None
-    assert worker.confirm_strong_invalidation(
-        target_entry_id=target.id,
-        signal_entry_id=fresh_signal.id,
-        new_value="I no longer work at ACME.",
-        ingress_handle_id="test-ingress",
-    ) is None
+    assert (
+        worker.confirm_strong_invalidation(
+            target_entry_id=target.id,
+            signal_entry_id=fresh_signal.id,
+            new_value="I no longer work at ACME.",
+            ingress_handle_id="test-ingress",
+        )
+        is None
+    )
     assert not worker.expire_strong_invalidation(
         target_entry_id=target.id,
         signal_entry_id=fresh_signal.id,
@@ -770,12 +782,15 @@ def test_m5_confirmed_strong_invalidations_are_not_reproposed_on_rerun(tmp_path:
     rerun = worker.run_once()
 
     assert rerun.strong_invalidations == []
-    assert len(
-        manager.list_events(
-            entry_id=acme.id,
-            event_type="strong_invalidation_proposed",
+    assert (
+        len(
+            manager.list_events(
+                entry_id=acme.id,
+                event_type="strong_invalidation_proposed",
+            )
         )
-    ) == 1
+        == 1
+    )
 
 
 class _ConsolidationHarness(MemoryImplMixin):

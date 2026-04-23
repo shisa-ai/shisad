@@ -2400,7 +2400,7 @@ wheels = [
 
 [[package]]
 name = "shisad"
-version = "0.6.7.1"
+version = "0.7.0"
 source = { editable = "." }
 dependencies = [
     { name = "agent-client-protocol" },
@@ -2410,6 +2410,7 @@ dependencies = [
     { name = "loguru" },
     { name = "pydantic" },
     { name = "pydantic-settings" },
+    { name = "python-dotenv" },
     { name = "pyyaml" },
     { name = "qrcode" },
     { name = "textguard", extra = ["yara"] },
@@ -2468,6 +2469,7 @@ requires-dist = [
     { name = "loguru", specifier = ">=0.7,<1" },
     { name = "pydantic", specifier = ">=2.10,<3" },
     { name = "pydantic-settings", specifier = ">=2.7,<3" },
+    { name = "python-dotenv", specifier = ">=1.2.2,<2" },
     { name = "pyyaml", specifier = ">=6.0,<7" },
     { name = "qrcode", specifier = ">=8.2,<9" },
     { name = "textguard", extras = ["yara"], specifier = ">=1.0,<2" },

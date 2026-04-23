@@ -3061,13 +3061,13 @@ def _build_planner_context_scaffold(
             session_id=session_id,
             session=session,
             trust_level=trust_level,
-        capabilities=capabilities,
-        policy_taints=policy_taints,
+            capabilities=capabilities,
+            policy_taints=policy_taints,
             episode_snapshot=episode_snapshot,
             task_ledger_snapshot=task_ledger_snapshot,
             identity_entries=identity_entries,
             active_attention_entries=active_attention_entries,
-    ),
+        ),
         internal_entries=internal_entries,
         untrusted_entries=untrusted_entries,
     )
@@ -4558,9 +4558,7 @@ class SessionImplMixin(HandlerMixinBase):
                 if active_attention_defaults is not None:
                     active_attention_pack = self._memory_manager.compile_active_attention(
                         scope_filter=set(active_attention_defaults.scope_filter),
-                        allowed_channel_trusts=set(
-                            active_attention_defaults.allowed_channel_trusts
-                        )
+                        allowed_channel_trusts=set(active_attention_defaults.allowed_channel_trusts)
                         if active_attention_defaults.allowed_channel_trusts is not None
                         else None,
                         channel_binding=active_attention_defaults.channel_binding,
@@ -5935,8 +5933,7 @@ class SessionImplMixin(HandlerMixinBase):
             return self._identity_command_response(
                 validated=validated,
                 response=(
-                    "Identity review commands are only available in the trusted "
-                    "command channel."
+                    "Identity review commands are only available in the trusted command channel."
                 ),
             )
 

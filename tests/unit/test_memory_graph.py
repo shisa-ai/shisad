@@ -99,9 +99,7 @@ def test_m5_knowledge_graph_current_view_excludes_superseded_entries(
     graph = build_knowledge_graph(manager.list_entries(limit=10))
     exported = json.loads(graph.export(format="json"))
     evidence_ids = {
-        evidence_id
-        for node in exported["nodes"]
-        for evidence_id in node["evidence_entry_ids"]
+        evidence_id for node in exported["nodes"] for evidence_id in node["evidence_entry_ids"]
     }
 
     assert stale.id not in evidence_ids

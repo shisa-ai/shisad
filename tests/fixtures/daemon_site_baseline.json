@@ -6,7 +6,8 @@
       "tests/integration/test_a2a_ingress.py": 1,
       "tests/integration/test_chat_confirmation_e2e.py": 6,
       "tests/integration/test_context_scaffold_degraded.py": 3,
-      "tests/unit/test_daemon_services.py": 24
+      "tests/unit/test_daemon_services.py": 24,
+      "tests/unit/test_session_memory_summarizer.py": 1
     },
     "run_daemon": {
       "tests/adversarial/test_adversarial_cleanroom.py": 1,
@@ -42,7 +43,7 @@
   },
   "tests_root": "tests",
   "totals": {
-    "DaemonServices.build": 38,
+    "DaemonServices.build": 39,
     "run_daemon": 96
   }
 }

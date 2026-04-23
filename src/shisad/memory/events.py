@@ -141,9 +141,7 @@ class MemoryEventStore:
             row = conn.execute(query, params).fetchone()
         return int(row["count"]) if row is not None else 0
 
-    def latest_entry_snapshots(
-        self, *, limit: int | None = None
-    ) -> builtins.list[dict[str, Any]]:
+    def latest_entry_snapshots(self, *, limit: int | None = None) -> builtins.list[dict[str, Any]]:
         if not self._path.exists():
             return []
         query = """

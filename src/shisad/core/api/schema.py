@@ -368,9 +368,7 @@ class MemoryRetrieveParams(_StrictParams):
     max_tokens: int | None = None
     as_of: datetime | None = None
     include_archived: bool = False
-    scope_filter: list[Literal["user", "project", "session", "channel", "workspace"]] | None = (
-        None
-    )
+    scope_filter: list[Literal["user", "project", "session", "channel", "workspace"]] | None = None
 
 
 class MemoryWriteParams(_StrictParams):
@@ -734,6 +732,8 @@ class MemoryRotateKeyResult(BaseModel):
 class NoteCreateParams(_StrictParams):
     key: str
     content: str
+    source_id: str | None = None
+    user_confirmed: bool = False
     ingress_context: str | None = None
     content_digest: str | None = None
     derivation_path: Literal["direct", "extracted", "summary"] = "direct"
@@ -804,6 +804,8 @@ class TodoCreateParams(_StrictParams):
     details: str = ""
     status: Literal["open", "in_progress", "done"] = "open"
     due_date: str = ""
+    source_id: str | None = None
+    user_confirmed: bool = False
     ingress_context: str | None = None
     content_digest: str | None = None
     derivation_path: Literal["direct", "extracted", "summary"] = "direct"

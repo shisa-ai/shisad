@@ -281,9 +281,7 @@ class DerivedKnowledgeGraph:
     @classmethod
     def from_entries(cls, entries: Iterable[MemoryEntry]) -> DerivedKnowledgeGraph:
         entry_list = [
-            entry
-            for entry in entries
-            if entry.status == "active" and entry.superseded_by is None
+            entry for entry in entries if entry.status == "active" and entry.superseded_by is None
         ]
         nodes: dict[str, GraphNode] = {}
         edges: dict[str, GraphEdge] = {}

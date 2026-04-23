@@ -92,4 +92,3 @@ def test_m1_memory_entry_backfills_confirmed_legacy_capture_conservatively() -> 
     assert entry.channel_trust == "command"
     assert entry.confirmation_status == "auto_accepted"
     assert entry.trust_band == "untrusted"
-

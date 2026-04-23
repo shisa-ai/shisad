@@ -49,12 +49,15 @@ def test_m1_trust_matrix_validates_every_canonical_non_pending_row() -> None:
         channel_trust,
         confirmation_status,
     ), expected in _VALID_TRUST_MATRIX.items():
-        assert validate_trust_triple(
-            source_origin,
-            channel_trust,
-            confirmation_status,
-            enable_observed=True,
-        ) == expected
+        assert (
+            validate_trust_triple(
+                source_origin,
+                channel_trust,
+                confirmation_status,
+                enable_observed=True,
+            )
+            == expected
+        )
 
 
 def test_m1_trust_matrix_rejects_every_unlisted_non_pending_triple() -> None:
@@ -77,10 +80,7 @@ def test_m1_trust_matrix_rejects_every_unlisted_non_pending_triple() -> None:
 
 
 def test_owner_observed_row_is_untrusted_in_v070_and_observed_when_enabled() -> None:
-    assert (
-        derive_trust_band("user_direct", "owner_observed", "auto_accepted")
-        == "untrusted"
-    )
+    assert derive_trust_band("user_direct", "owner_observed", "auto_accepted") == "untrusted"
     assert (
         derive_trust_band(
             "user_direct",
@@ -147,8 +147,7 @@ def test_invocation_eligibility_tracks_install_predicate(
     eligible: bool,
 ) -> None:
     assert (
-        is_invocation_eligible_triple(source_origin, channel_trust, confirmation_status)
-        is eligible
+        is_invocation_eligible_triple(source_origin, channel_trust, confirmation_status) is eligible
     )
 
 

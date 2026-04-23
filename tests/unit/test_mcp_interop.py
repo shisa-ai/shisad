@@ -22,6 +22,7 @@ from shisad.daemon.handlers._impl import HandlerImplementation
 from shisad.daemon.handlers._impl_session import _build_planner_tool_context
 from shisad.interop.mcp_client import McpClientManager
 from shisad.interop.mcp_tools import McpDiscoveredTool, mcp_tool_to_registry_entry
+from shisad.memory.ingress import IngressContextRegistry
 from shisad.security.control_plane.schema import ActionKind, ControlDecision, RiskTier
 from shisad.security.firewall import ContentFirewall
 from shisad.security.firewall.output import OutputFirewall
@@ -195,6 +196,7 @@ class _McpHarness:
         self._rate_limiter = _NoopRateLimiter()
         self._mcp_manager = _McpManagerStub(payload, startup_errors=startup_errors)
         self._firewall = ContentFirewall()
+        self._memory_ingress_registry = IngressContextRegistry()
         # MCP-M1: use the real OutputFirewall so tests can observe the
         # production sanitization/redaction logic on the MCP output path.
         # Previously a passthrough `SimpleNamespace(inspect=lambda ...)` made
@@ -1240,6 +1242,8 @@ async def test_i1_execute_approved_action_uses_upstream_mcp_tool_name() -> None:
 
     assert result.success is True
     assert result.tool_output is not None
+    assert result.tool_output.ingress_context
+    assert result.tool_output.content_digest
     payload = json.loads(result.tool_output.content)
     assert payload["structured_content"] == {"answer": "echo:roadmap"}
     assert harness._mcp_manager.calls == [("docs", "lookup-doc", {"query": "roadmap"})]

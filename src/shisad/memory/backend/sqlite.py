@@ -236,9 +236,7 @@ class SQLiteRetrievalBackend:
                             str(row["source_origin"]) if row["source_origin"] is not None else None
                         ),
                         channel_trust=(
-                            str(row["channel_trust"])
-                            if row["channel_trust"] is not None
-                            else None
+                            str(row["channel_trust"]) if row["channel_trust"] is not None else None
                         ),
                         confirmation_status=(
                             str(row["confirmation_status"])

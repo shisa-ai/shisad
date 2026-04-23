@@ -87,8 +87,7 @@ async def test_memory_ingest_preserves_handle_provenance_and_scope_for_recall(
         {
             "ingress_context": context.handle_id,
             "content": (
-                "Owner-observed recall items must keep their canonical scope "
-                "and trust fields."
+                "Owner-observed recall items must keep their canonical scope and trust fields."
             ),
         }
     )

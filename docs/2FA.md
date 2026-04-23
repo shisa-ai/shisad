@@ -33,7 +33,7 @@ injection, or a stolen token to authorize actions you did not intend.
 
 2FA is **opt-in**. If you do not enroll any factor, everything works exactly
 as before — approvals use the standard L0 software confirmation flow (click to
-approve). You only need to set up 2FA if you want stronger guarantees for
+approve). You only need to set up 2FA if you want stronger assurance for
 specific actions.
 
 ---
@@ -54,7 +54,7 @@ least this much proof."
 | L3 | `signed_authorization` | Registered credential signed a canonical description of the action (independently verifiable) | Enterprise KMS with approval workflow |
 | L4 | `trusted_display_authorization` | Same as L3, plus the user reviewed the action on an independent hardware display | Ledger Stax/Flex clear-signing when the local bridge is configured |
 
-**Higher is not always better.** L1 (TOTP) is simple and covers the most
+**Higher is not automatically better.** L1 (TOTP) is simple and covers the most
 common risk — someone else using your open session. L2 (passkey) is stronger
 but requires a browser. L3 (KMS) is for environments that need third-party
 audit trails. Use the level that matches the risk of the action.
@@ -829,8 +829,8 @@ require_capabilities:
 
 ### Implementing an L4 trusted-display backend
 
-L4 (`trusted_display_authorization`) is L3 plus the guarantee that the
-user reviewed the action on an independent tamper-resistant display (e.g.,
+L4 (`trusted_display_authorization`) is L3 plus evidence that the user
+reviewed the action on an independent tamper-resistant display (e.g.,
 Ledger Stax/Flex touchscreen, GridPlus Lattice1).
 
 To qualify for L4, a backend must:
