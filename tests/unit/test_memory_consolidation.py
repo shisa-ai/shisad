@@ -326,6 +326,10 @@ def test_m5_superseded_entries_do_not_resolve_strong_invalidations(tmp_path: Pat
         new_value="I no longer work at ACME.",
         ingress_handle_id="test-ingress",
     ) is None
+    assert not worker.reject_strong_invalidation(
+        target_entry_id=target.id,
+        signal_entry_id=signal.id,
+    )
 
     fresh_signal = _write_owner_observed_episode(
         manager,
@@ -357,6 +361,10 @@ def test_m5_superseded_entries_do_not_resolve_strong_invalidations(tmp_path: Pat
         new_value="I no longer work at ACME.",
         ingress_handle_id="test-ingress",
     ) is None
+    assert not worker.expire_strong_invalidation(
+        target_entry_id=target.id,
+        signal_entry_id=fresh_signal.id,
+    )
 
 
 def test_m5_strong_invalidation_requires_specific_entity_or_topic_match(

@@ -6120,21 +6120,6 @@ class SessionImplMixin(HandlerMixinBase):
                 validated=validated,
                 response=f"Memory update candidate for {target_entry_id} is no longer available.",
             )
-        if normalized_text in _CRC_NEGATIVE_PATTERNS:
-            if worker.reject_strong_invalidation(
-                target_entry_id=target_entry_id,
-                signal_entry_id=signal_entry_id,
-                ingress_handle_id=None,
-            ):
-                return self._identity_command_response(
-                    validated=validated,
-                    response=f"Rejected memory update candidate for {target_entry_id}.",
-                )
-            return self._identity_command_response(
-                validated=validated,
-                response=f"Memory update candidate for {target_entry_id} is no longer available.",
-            )
-
         target = memory_manager.get_entry(
             target_entry_id,
         )
@@ -6151,6 +6136,21 @@ class SessionImplMixin(HandlerMixinBase):
                 validated=validated,
                 response=f"Memory update candidate for {target_entry_id} is no longer available.",
             )
+        if normalized_text in _CRC_NEGATIVE_PATTERNS:
+            if worker.reject_strong_invalidation(
+                target_entry_id=target_entry_id,
+                signal_entry_id=signal_entry_id,
+                ingress_handle_id=None,
+            ):
+                return self._identity_command_response(
+                    validated=validated,
+                    response=f"Rejected memory update candidate for {target_entry_id}.",
+                )
+            return self._identity_command_response(
+                validated=validated,
+                response=f"Memory update candidate for {target_entry_id} is no longer available.",
+            )
+
         ingress_context = self._mint_identity_command_context(
             validated=validated,
             source_origin="user_confirmed",

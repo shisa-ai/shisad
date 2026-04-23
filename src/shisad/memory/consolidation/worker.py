@@ -731,6 +731,8 @@ class ConsolidationWorker:
         )
         if target is None or signal is None:
             return False
+        if target.superseded_by is not None or signal.superseded_by is not None:
+            return False
         return self._manager.record_consolidation_event(
             target.id,
             event_type,
