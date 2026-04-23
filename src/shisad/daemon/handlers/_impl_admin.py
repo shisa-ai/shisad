@@ -10,7 +10,7 @@ import uuid
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, ClassVar, cast
 from urllib.parse import unquote
 
 from shisad.channels.base import ChannelMessage, DeliveryTarget
@@ -181,6 +181,12 @@ def _migrated_channel_memory_key(
 
 
 class AdminImplMixin(HandlerMixinBase):
+    _KEYED_CHANNEL_STATE_ENTRY_TYPES: ClassVar[set[str]] = {
+        "channel_participation",
+        "person_note",
+        "channel_summary",
+    }
+
     def _channel_memory_owner_id(self, *, channel: str) -> str:
         trusted_users_attr = {
             "discord": "discord_trusted_users",
@@ -207,6 +213,23 @@ class AdminImplMixin(HandlerMixinBase):
             if entry.key == key and entry.superseded_by is None:
                 return entry
         return None
+
+    def _has_pending_review_memory_entry(self, *, entry_type: str, key: str) -> bool:
+        memory_manager = getattr(self, "_memory_manager", None)
+        if memory_manager is None:
+            return False
+        for entry in memory_manager.list_entries(
+            entry_type=entry_type,
+            include_pending_review=True,
+            limit=max(1, len(memory_manager._entries)),
+        ):
+            if (
+                entry.key == key
+                and entry.superseded_by is None
+                and str(entry.confirmation_status) == "pending_review"
+            ):
+                return True
+        return False
 
     def _migrate_legacy_channel_bindings(
         self,
@@ -338,13 +361,22 @@ class AdminImplMixin(HandlerMixinBase):
                 if isinstance(entry.value, Mapping):
                     updated_value = dict(entry.value)
                     updated_value["channel_id"] = structured_channel_id
-                    entry.value = normalize_structured_memory_value(entry.entry_type, updated_value)
-                    entry.key = _migrated_channel_memory_key(
+                    migrated_key = _migrated_channel_memory_key(
                         entry_type=entry.entry_type,
                         key=entry.key,
                         value=updated_value,
                         structured_channel_id=structured_channel_id,
                     )
+                    if (
+                        entry.entry_type in self._KEYED_CHANNEL_STATE_ENTRY_TYPES
+                        and self._has_pending_review_memory_entry(
+                            entry_type=entry.entry_type,
+                            key=migrated_key,
+                        )
+                    ):
+                        return None
+                    entry.value = normalize_structured_memory_value(entry.entry_type, updated_value)
+                    entry.key = migrated_key
                     memory_manager._persist_entry(entry)
                 return entry
         return None
@@ -481,114 +513,145 @@ class AdminImplMixin(HandlerMixinBase):
                 channel_id=structured_channel_id,
                 thread_id=thread_id or None,
             )
-            prior_participation = self._find_current_memory_entry(
+            if self._has_pending_review_memory_entry(
                 entry_type="channel_participation",
                 key=participation_key,
-            )
-            if prior_participation is None:
-                prior_participation = self._find_legacy_channel_memory_entry(
-                    entry_type="channel_participation",
-                    key=channel_participation_key(
-                        channel_id=channel_id,
-                        thread_id=thread_id or None,
-                    ),
-                    channel=message.channel,
-                    workspace_hint=message.workspace_hint,
-                    structured_channel_id=structured_channel_id,
-                )
-            if prior_participation is not None:
-                current_participation = ChannelParticipationStateValue.model_validate(
-                    prior_participation.value
+            ):
+                logger.warning(
+                    "Skipping structured channel memory write due to pending-review collision",
+                    extra={
+                        "entry_type": "channel_participation",
+                        "key": participation_key,
+                        "channel": message.channel,
+                    },
                 )
             else:
-                current_participation = ChannelParticipationStateValue(
-                    channel_id=structured_channel_id,
-                    guild_id=guild_id,
+                prior_participation = self._find_current_memory_entry(
+                    entry_type="channel_participation",
+                    key=participation_key,
                 )
-            participants: set[str] = set()
-            tracked_threads = list(current_participation.tracked_threads)
-            thread_binding = thread_id or channel_id
-            updated_threads: list[TrackedThreadState] = []
-            replaced = False
-            for tracked_thread in tracked_threads:
-                if tracked_thread.thread_id != thread_binding:
-                    updated_threads.append(tracked_thread)
-                    continue
-                participants.update(tracked_thread.participants)
-                participants.add(message.external_user_id)
-                updated_threads.append(
-                    tracked_thread.model_copy(
-                        update={
-                            "last_activity": message.received_at,
-                            "participants": sorted(participants),
-                        }
+                if prior_participation is None:
+                    prior_participation = self._find_legacy_channel_memory_entry(
+                        entry_type="channel_participation",
+                        key=channel_participation_key(
+                            channel_id=channel_id,
+                            thread_id=thread_id or None,
+                        ),
+                        channel=message.channel,
+                        workspace_hint=message.workspace_hint,
+                        structured_channel_id=structured_channel_id,
                     )
-                )
-                replaced = True
-            if not replaced:
-                participants.add(message.external_user_id)
-                updated_threads.append(
-                    TrackedThreadState(
-                        thread_id=thread_binding,
-                        last_activity=message.received_at,
-                        participants=sorted(participants),
+                if prior_participation is not None:
+                    current_participation = ChannelParticipationStateValue.model_validate(
+                        prior_participation.value
                     )
+                else:
+                    current_participation = ChannelParticipationStateValue(
+                        channel_id=structured_channel_id,
+                        guild_id=guild_id,
+                    )
+                participants: set[str] = set()
+                tracked_threads = list(current_participation.tracked_threads)
+                thread_binding = thread_id or channel_id
+                updated_threads: list[TrackedThreadState] = []
+                replaced = False
+                for tracked_thread in tracked_threads:
+                    if tracked_thread.thread_id != thread_binding:
+                        updated_threads.append(tracked_thread)
+                        continue
+                    participants.update(tracked_thread.participants)
+                    participants.add(message.external_user_id)
+                    updated_threads.append(
+                        tracked_thread.model_copy(
+                            update={
+                                "last_activity": message.received_at,
+                                "participants": sorted(participants),
+                            }
+                        )
+                    )
+                    replaced = True
+                if not replaced:
+                    participants.add(message.external_user_id)
+                    updated_threads.append(
+                        TrackedThreadState(
+                            thread_id=thread_binding,
+                            last_activity=message.received_at,
+                            participants=sorted(participants),
+                        )
+                    )
+                participation_value = current_participation.model_copy(
+                    update={
+                        "channel_id": structured_channel_id,
+                        "guild_id": guild_id,
+                        "tracked_threads": updated_threads,
+                    }
+                ).model_dump(mode="python")
+                persist_record(
+                    entry_type="channel_participation",
+                    key=participation_key,
+                    value=participation_value,
+                    scope="channel",
+                    supersedes=(
+                        prior_participation.id if prior_participation is not None else None
+                    ),
                 )
-            participation_value = current_participation.model_copy(
-                update={
-                    "channel_id": structured_channel_id,
-                    "guild_id": guild_id,
-                    "tracked_threads": updated_threads,
-                }
-            ).model_dump(mode="python")
-            persist_record(
-                entry_type="channel_participation",
-                key=participation_key,
-                value=participation_value,
-                scope="channel",
-                supersedes=prior_participation.id if prior_participation is not None else None,
-            )
 
         if channel_id and not owner_like:
             note_key = person_note_key(
                 channel_id=structured_channel_id,
                 external_user_id=message.external_user_id,
             )
-            prior_note = self._find_current_memory_entry(entry_type="person_note", key=note_key)
-            if prior_note is None:
-                prior_note = self._find_legacy_channel_memory_entry(
-                    entry_type="person_note",
-                    key=person_note_key(
-                        channel_id=channel_id,
-                        external_user_id=message.external_user_id,
-                    ),
-                    channel=message.channel,
-                    workspace_hint=message.workspace_hint,
-                    structured_channel_id=structured_channel_id,
-                )
-            if prior_note is not None:
-                current_note = PersonNoteValue.model_validate(prior_note.value)
-            else:
-                current_note = PersonNoteValue(
-                    external_user_id=message.external_user_id,
-                    display_name=sender_display_name or message.external_user_id,
-                    channel_id=structured_channel_id,
-                )
-            note_value = current_note.model_copy(
-                update={
-                    "display_name": sender_display_name or current_note.display_name,
-                    "total_interactions": current_note.total_interactions + 1,
-                    "last_interaction": message.received_at,
-                    "interaction_summary": sanitized_text[:240],
-                }
-            ).model_dump(mode="python")
-            persist_record(
+            if self._has_pending_review_memory_entry(
                 entry_type="person_note",
                 key=note_key,
-                value=note_value,
-                scope="channel",
-                supersedes=prior_note.id if prior_note is not None else None,
-            )
+            ):
+                logger.warning(
+                    "Skipping structured channel memory write due to pending-review collision",
+                    extra={
+                        "entry_type": "person_note",
+                        "key": note_key,
+                        "channel": message.channel,
+                    },
+                )
+            else:
+                prior_note = self._find_current_memory_entry(
+                    entry_type="person_note",
+                    key=note_key,
+                )
+                if prior_note is None:
+                    prior_note = self._find_legacy_channel_memory_entry(
+                        entry_type="person_note",
+                        key=person_note_key(
+                            channel_id=channel_id,
+                            external_user_id=message.external_user_id,
+                        ),
+                        channel=message.channel,
+                        workspace_hint=message.workspace_hint,
+                        structured_channel_id=structured_channel_id,
+                    )
+                if prior_note is not None:
+                    current_note = PersonNoteValue.model_validate(prior_note.value)
+                else:
+                    current_note = PersonNoteValue(
+                        external_user_id=message.external_user_id,
+                        display_name=sender_display_name or message.external_user_id,
+                        channel_id=structured_channel_id,
+                    )
+                note_value = current_note.model_copy(
+                    update={
+                        "display_name": sender_display_name or current_note.display_name,
+                        "total_interactions": current_note.total_interactions + 1,
+                        "last_interaction": message.received_at,
+                        "interaction_summary": sanitized_text[:240],
+                    }
+                ).model_dump(mode="python")
+                persist_record(
+                    entry_type="person_note",
+                    key=note_key,
+                    value=note_value,
+                    scope="channel",
+                    supersedes=prior_note.id if prior_note is not None else None,
+                )
 
         summary_text = str(metadata.get("summary_text") or "").strip()
         if channel_id and summary_text:
@@ -597,33 +660,46 @@ class AdminImplMixin(HandlerMixinBase):
                 channel_id=structured_channel_id,
                 summary_kind=summary_kind,
             )
-            prior_summary = self._find_current_memory_entry(
+            if self._has_pending_review_memory_entry(
                 entry_type="channel_summary",
                 key=summary_key,
-            )
-            if prior_summary is None:
-                prior_summary = self._find_legacy_channel_memory_entry(
-                    entry_type="channel_summary",
-                    key=channel_summary_key(channel_id=channel_id, summary_kind=summary_kind),
-                    channel=message.channel,
-                    workspace_hint=message.workspace_hint,
-                    structured_channel_id=structured_channel_id,
+            ):
+                logger.warning(
+                    "Skipping structured channel memory write due to pending-review collision",
+                    extra={
+                        "entry_type": "channel_summary",
+                        "key": summary_key,
+                        "channel": message.channel,
+                    },
                 )
-            summary_value = ChannelSummaryValue(
-                channel_id=structured_channel_id,
-                guild_id=guild_id,
-                summary_kind=summary_kind,
-                summary_text=summary_text,
-                window_end=message.received_at,
-                source_message_ids=[message.message_id] if message.message_id else [],
-            ).model_dump(mode="python")
-            persist_record(
-                entry_type="channel_summary",
-                key=summary_key,
-                value=summary_value,
-                scope="channel",
-                supersedes=prior_summary.id if prior_summary is not None else None,
-            )
+            else:
+                prior_summary = self._find_current_memory_entry(
+                    entry_type="channel_summary",
+                    key=summary_key,
+                )
+                if prior_summary is None:
+                    prior_summary = self._find_legacy_channel_memory_entry(
+                        entry_type="channel_summary",
+                        key=channel_summary_key(channel_id=channel_id, summary_kind=summary_kind),
+                        channel=message.channel,
+                        workspace_hint=message.workspace_hint,
+                        structured_channel_id=structured_channel_id,
+                    )
+                summary_value = ChannelSummaryValue(
+                    channel_id=structured_channel_id,
+                    guild_id=guild_id,
+                    summary_kind=summary_kind,
+                    summary_text=summary_text,
+                    window_end=message.received_at,
+                    source_message_ids=[message.message_id] if message.message_id else [],
+                ).model_dump(mode="python")
+                persist_record(
+                    entry_type="channel_summary",
+                    key=summary_key,
+                    value=summary_value,
+                    scope="channel",
+                    supersedes=prior_summary.id if prior_summary is not None else None,
+                )
 
         feedback_signal = str(metadata.get("feedback_signal") or "").strip().lower()
         feedback_target_message_id = str(

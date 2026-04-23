@@ -1116,3 +1116,280 @@ async def test_m3_channel_ingest_ignores_non_active_predecessors_for_keyed_state
     assert pending_review_entry is not None
     assert pending_review_entry.confirmation_status == "pending_review"
     assert pending_review_entry.superseded_by is None
+
+
+@pytest.mark.asyncio
+async def test_m3_channel_ingest_skips_keyed_state_when_canonical_pending_review_exists(
+    tmp_path: Path,
+) -> None:
+    harness = _AdminChannelIngressHarness(
+        tmp_path=tmp_path,
+        default_trust="public",
+        allowlisted_users={"guest-9"},
+    )
+    for session_id, message_id in (
+        ("sess-note-pending-current", "legacy-note-msg-current"),
+        ("sess-participation-pending-current", "legacy-participation-msg-current"),
+        ("sess-summary-pending-current", "legacy-summary-msg-current"),
+    ):
+        harness._transcript_store.append(
+            SessionId(session_id),
+            role="user",
+            content=f"legacy {message_id}",
+            taint_labels=set(),
+            metadata={
+                "channel_message_id": message_id,
+                "delivery_target": {
+                    "channel": "discord",
+                    "recipient": "chan-pending-current",
+                    "workspace_hint": "guild-1",
+                    "thread_id": "",
+                },
+            },
+        )
+
+    channel_binding = compose_channel_binding(
+        channel="discord",
+        workspace_hint="guild-1",
+        channel_id="chan-pending-current",
+    )
+
+    legacy_note = harness._memory_manager.write_with_provenance(
+        entry_type="person_note",
+        key=person_note_key(channel_id="chan-pending-current", external_user_id="guest-9"),
+        value={
+            "external_user_id": "guest-9",
+            "display_name": "Guest Nine",
+            "channel_id": "chan-pending-current",
+            "total_interactions": 4,
+            "interaction_summary": "Legacy note",
+        },
+        source=MemorySource(
+            origin="external",
+            source_id="discord:legacy-note-msg-current",
+            extraction_method="channel.ingest.structured",
+        ),
+        source_origin="external_message",
+        channel_trust="shared_participant",
+        confirmation_status="auto_accepted",
+        source_id="discord:legacy-note-msg-current",
+        scope="channel",
+        confidence=0.5,
+        confirmation_satisfied=True,
+    )
+    assert legacy_note.kind == "allow"
+    assert legacy_note.entry is not None
+
+    pending_review_note = harness._memory_manager.write_with_provenance(
+        entry_type="person_note",
+        key=person_note_key(channel_id=channel_binding, external_user_id="guest-9"),
+        value={
+            "external_user_id": "guest-9",
+            "display_name": "Guest Nine",
+            "channel_id": channel_binding,
+            "total_interactions": 8,
+            "interaction_summary": "Pending review note",
+        },
+        source=MemorySource(
+            origin="external",
+            source_id="discord:pending-note-msg-current",
+            extraction_method="channel.ingest.structured",
+        ),
+        source_origin="external_message",
+        channel_trust="shared_participant",
+        confirmation_status="pending_review",
+        source_id="discord:pending-note-msg-current",
+        scope="channel",
+        confidence=0.5,
+        confirmation_satisfied=False,
+    )
+    assert pending_review_note.kind == "allow"
+    assert pending_review_note.entry is not None
+
+    legacy_participation = harness._memory_manager.write_with_provenance(
+        entry_type="channel_participation",
+        key=channel_participation_key(channel_id="chan-pending-current"),
+        value={
+            "channel_id": "chan-pending-current",
+            "tracked_threads": [
+                {
+                    "thread_id": "chan-pending-current",
+                    "participants": ["guest-9"],
+                }
+            ],
+        },
+        source=MemorySource(
+            origin="external",
+            source_id="discord:legacy-participation-msg-current",
+            extraction_method="channel.ingest.structured",
+        ),
+        source_origin="external_message",
+        channel_trust="shared_participant",
+        confirmation_status="auto_accepted",
+        source_id="discord:legacy-participation-msg-current",
+        scope="channel",
+        confidence=0.5,
+        confirmation_satisfied=True,
+    )
+    assert legacy_participation.kind == "allow"
+    assert legacy_participation.entry is not None
+
+    pending_review_participation = harness._memory_manager.write_with_provenance(
+        entry_type="channel_participation",
+        key=channel_participation_key(channel_id=channel_binding),
+        value={
+            "channel_id": channel_binding,
+            "tracked_threads": [
+                {
+                    "thread_id": "chan-pending-current",
+                    "participants": ["guest-9", "guest-review"],
+                }
+            ],
+        },
+        source=MemorySource(
+            origin="external",
+            source_id="discord:pending-participation-msg-current",
+            extraction_method="channel.ingest.structured",
+        ),
+        source_origin="external_message",
+        channel_trust="shared_participant",
+        confirmation_status="pending_review",
+        source_id="discord:pending-participation-msg-current",
+        scope="channel",
+        confidence=0.5,
+        confirmation_satisfied=False,
+    )
+    assert pending_review_participation.kind == "allow"
+    assert pending_review_participation.entry is not None
+
+    legacy_summary = harness._memory_manager.write_with_provenance(
+        entry_type="channel_summary",
+        key=channel_summary_key(channel_id="chan-pending-current", summary_kind="digest"),
+        value={
+            "channel_id": "chan-pending-current",
+            "summary_kind": "digest",
+            "summary_text": "Legacy digest",
+        },
+        source=MemorySource(
+            origin="external",
+            source_id="discord:legacy-summary-msg-current",
+            extraction_method="channel.ingest.structured",
+        ),
+        source_origin="external_message",
+        channel_trust="shared_participant",
+        confirmation_status="auto_accepted",
+        source_id="discord:legacy-summary-msg-current",
+        scope="channel",
+        confidence=0.5,
+        confirmation_satisfied=True,
+    )
+    assert legacy_summary.kind == "allow"
+    assert legacy_summary.entry is not None
+
+    pending_review_summary = harness._memory_manager.write_with_provenance(
+        entry_type="channel_summary",
+        key=channel_summary_key(channel_id=channel_binding, summary_kind="digest"),
+        value={
+            "channel_id": channel_binding,
+            "summary_kind": "digest",
+            "summary_text": "Pending review digest",
+        },
+        source=MemorySource(
+            origin="external",
+            source_id="discord:pending-summary-msg-current",
+            extraction_method="channel.ingest.structured",
+        ),
+        source_origin="external_message",
+        channel_trust="shared_participant",
+        confirmation_status="pending_review",
+        source_id="discord:pending-summary-msg-current",
+        scope="channel",
+        confidence=0.5,
+        confirmation_satisfied=False,
+    )
+    assert pending_review_summary.kind == "allow"
+    assert pending_review_summary.entry is not None
+
+    await harness.do_channel_ingest(
+        {
+            "message": {
+                "channel": "discord",
+                "external_user_id": "guest-9",
+                "workspace_hint": "guild-1",
+                "reply_target": "chan-pending-current",
+                "message_id": "msg-119",
+                "content": "fresh active message with pending review collision",
+                "metadata": {
+                    "interaction_type": "direct",
+                    "display_name": "Guest Nine",
+                    "summary_kind": "digest",
+                    "summary_text": "Fresh digest",
+                },
+            }
+        }
+    )
+
+    current_entries = {
+        entry.key: entry
+        for entry in harness._memory_manager.list_entries(limit=30)
+        if entry.superseded_by is None
+    }
+
+    assert (
+        person_note_key(channel_id=channel_binding, external_user_id="guest-9")
+        not in current_entries
+    )
+    assert channel_participation_key(channel_id=channel_binding) not in current_entries
+    assert (
+        channel_summary_key(channel_id=channel_binding, summary_kind="digest")
+        not in current_entries
+    )
+
+    preserved_legacy_note = harness._memory_manager.get_entry(legacy_note.entry.id)
+    assert preserved_legacy_note is not None
+    assert preserved_legacy_note.key == person_note_key(
+        channel_id="chan-pending-current",
+        external_user_id="guest-9",
+    )
+    assert preserved_legacy_note.superseded_by is None
+
+    preserved_legacy_participation = harness._memory_manager.get_entry(
+        legacy_participation.entry.id
+    )
+    assert preserved_legacy_participation is not None
+    assert preserved_legacy_participation.key == channel_participation_key(
+        channel_id="chan-pending-current"
+    )
+    assert preserved_legacy_participation.superseded_by is None
+
+    preserved_legacy_summary = harness._memory_manager.get_entry(legacy_summary.entry.id)
+    assert preserved_legacy_summary is not None
+    assert preserved_legacy_summary.key == channel_summary_key(
+        channel_id="chan-pending-current",
+        summary_kind="digest",
+    )
+    assert preserved_legacy_summary.superseded_by is None
+
+    pending_note_entry = harness._memory_manager.get_entry(
+        pending_review_note.entry.id,
+        include_pending_review=True,
+    )
+    assert pending_note_entry is not None
+    assert pending_note_entry.confirmation_status == "pending_review"
+    assert pending_note_entry.superseded_by is None
+
+    pending_participation_entry = harness._memory_manager.get_entry(
+        pending_review_participation.entry.id,
+        include_pending_review=True,
+    )
+    assert pending_participation_entry is not None
+    assert pending_participation_entry.confirmation_status == "pending_review"
+    assert pending_participation_entry.superseded_by is None
+
+    pending_summary_entry = harness._memory_manager.get_entry(
+        pending_review_summary.entry.id,
+        include_pending_review=True,
+    )
+    assert pending_summary_entry is not None
+    assert pending_summary_entry.confirmation_status == "pending_review"
+    assert pending_summary_entry.superseded_by is None
