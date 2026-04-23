@@ -119,6 +119,28 @@ class MemoryEventStore:
                 continue
         return events
 
+    def count(
+        self,
+        *,
+        entry_id: str | None = None,
+        event_type: str | None = None,
+    ) -> int:
+        if not self._path.exists():
+            return 0
+        predicates: list[str] = []
+        params: list[Any] = []
+        if entry_id is not None:
+            predicates.append("entry_id = ?")
+            params.append(entry_id)
+        if event_type is not None:
+            predicates.append("event_type = ?")
+            params.append(event_type)
+        where = f"WHERE {' AND '.join(predicates)}" if predicates else ""
+        query = f"SELECT COUNT(*) AS count FROM memory_events {where}"
+        with self._connect() as conn:
+            row = conn.execute(query, params).fetchone()
+        return int(row["count"]) if row is not None else 0
+
     def latest_entry_snapshots(
         self, *, limit: int | None = None
     ) -> builtins.list[dict[str, Any]]:

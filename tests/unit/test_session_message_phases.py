@@ -1483,6 +1483,75 @@ async def test_m3_finalize_response_uses_configured_identity_candidate_surface_l
     assert len(expired) == 1
 
 
+def test_m3_identity_candidate_surface_count_tracks_beyond_ten(tmp_path: Path) -> None:
+    manager = MemoryManager(tmp_path / "memory")
+    candidate_id = _write_pending_identity_candidate(manager)
+
+    for expected in range(1, 13):
+        assert manager.note_identity_candidate_surface(candidate_id) == (True, expected)
+
+
+@pytest.mark.asyncio
+async def test_m3_finalize_response_expires_identity_candidate_when_surface_limit_exceeds_ten(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    harness = _FinalizeEvidenceHarness()
+    harness._memory_manager = MemoryManager(tmp_path / "memory")
+    candidate_id = _write_pending_identity_candidate(harness._memory_manager)
+    for expected in range(1, 12):
+        assert harness._memory_manager.note_identity_candidate_surface(candidate_id) == (
+            True,
+            expected,
+        )
+    monkeypatch.setattr(
+        "shisad.daemon.handlers._impl_session.ConsolidationConfig",
+        lambda: SimpleNamespace(surface_limit=11),
+    )
+    execution = _finalize_execution_result(tool_outputs=[], assistant_response="Planner reply")
+
+    response = await SessionImplMixin._finalize_response(harness, execution)
+
+    assert candidate_id not in str(response["response"])
+    expired = harness._memory_manager.list_events(
+        entry_id=candidate_id,
+        event_type="candidate_expired",
+        limit=10,
+    )
+    assert len(expired) == 1
+
+
+@pytest.mark.asyncio
+async def test_m5_finalize_response_expires_strong_invalidation_when_surface_limit_exceeds_twenty(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    harness = _FinalizeEvidenceHarness()
+    harness._memory_manager = MemoryManager(tmp_path / "memory")
+    target_id, signal_id = _write_strong_invalidation_proposal(harness._memory_manager)
+    for _ in range(21):
+        harness._memory_manager.record_consolidation_event(
+            target_id,
+            "strong_invalidation_surfaced",
+            metadata={"signal_entry_id": signal_id},
+        )
+    monkeypatch.setattr(
+        "shisad.daemon.handlers._impl_session.ConsolidationConfig",
+        lambda: SimpleNamespace(surface_limit=21),
+    )
+    execution = _finalize_execution_result(tool_outputs=[], assistant_response="Planner reply")
+
+    response = await SessionImplMixin._finalize_response(harness, execution)
+
+    assert "Memory update candidate" not in str(response["response"])
+    expired = harness._memory_manager.list_events(
+        entry_id=target_id,
+        event_type="strong_invalidation_expired",
+        limit=10,
+    )
+    assert len(expired) == 1
+
+
 @pytest.mark.asyncio
 async def test_m3_finalize_response_does_not_mark_candidate_surfaced_when_output_blocked(
     tmp_path: Path,

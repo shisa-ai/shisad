@@ -523,6 +523,14 @@ class MemoryManager:
     ) -> list[MemoryEvent]:
         return self._event_store.list(entry_id=entry_id, event_type=event_type, limit=limit)
 
+    def count_events(
+        self,
+        *,
+        entry_id: str | None = None,
+        event_type: str | None = None,
+    ) -> int:
+        return self._event_store.count(entry_id=entry_id, event_type=event_type)
+
     def list_review_queue(self, *, limit: int = 100) -> list[MemoryEntry]:
         self.purge_expired()
         rows = [
@@ -1876,12 +1884,9 @@ class MemoryManager:
         return latest
 
     def _identity_candidate_surface_count(self, candidate_id: str) -> int:
-        return len(
-            self.list_events(
-                entry_id=candidate_id,
-                event_type="candidate_surfaced",
-                limit=10,
-            )
+        return self.count_events(
+            entry_id=candidate_id,
+            event_type="candidate_surfaced",
         )
 
     @staticmethod

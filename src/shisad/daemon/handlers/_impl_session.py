@@ -7137,12 +7137,9 @@ class SessionImplMixin(HandlerMixinBase):
         for candidate in memory_manager.list_review_queue(limit=20):
             if candidate.entry_type not in {"persona_fact", "preference", "soft_constraint"}:
                 continue
-            surface_count = len(
-                memory_manager.list_events(
-                    entry_id=candidate.id,
-                    event_type="candidate_surfaced",
-                    limit=10,
-                )
+            surface_count = memory_manager.count_events(
+                entry_id=candidate.id,
+                event_type="candidate_surfaced",
             )
             if surface_count >= surface_limit:
                 expired_candidate_ids.append(candidate.id)
@@ -7290,12 +7287,19 @@ class SessionImplMixin(HandlerMixinBase):
         target_entry_id: str,
         signal_entry_id: str,
     ) -> int:
+        event_limit = max(
+            1,
+            memory_manager.count_events(
+                entry_id=target_entry_id,
+                event_type="strong_invalidation_surfaced",
+            ),
+        )
         return sum(
             1
             for event in memory_manager.list_events(
                 entry_id=target_entry_id,
                 event_type="strong_invalidation_surfaced",
-                limit=20,
+                limit=event_limit,
             )
             if event.metadata_json.get("signal_entry_id") == signal_entry_id
         )
