@@ -2866,6 +2866,68 @@ async def test_contract_untrusted_but_invocable_tool_skill_stays_out_of_identity
 
 
 @pytest.mark.asyncio
+async def test_contract_skill_suggestion_waits_for_explicit_user_yes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seeded: dict[str, str] = {}
+
+    def _seed(config: DaemonConfig) -> None:
+        manager = MemoryManager(config.data_dir / "memory_entries")
+        decision = manager.write_with_provenance(
+            entry_type="skill",
+            key="skill:release-close",
+            value="Release close checklist\nRun the behavioral bundle before release.",
+            source=MemorySource(
+                origin="user",
+                source_id="skill-suggest-1",
+                extraction_method="manual",
+            ),
+            source_origin="user_direct",
+            channel_trust="command",
+            confirmation_status="user_asserted",
+            source_id="skill-suggest-1",
+            scope="user",
+            confidence=0.95,
+            confirmation_satisfied=True,
+            invocation_eligible=True,
+        )
+        assert decision.entry is not None
+        seeded["skill_id"] = decision.entry.id
+
+    async with _contract_harness_context(tmp_path, monkeypatch, prestart=_seed) as harness:
+        sid = await _create_session(harness.client)
+        skill_id = seeded["skill_id"]
+
+        proposed = await harness.client.call(
+            "session.message",
+            {
+                "session_id": sid,
+                "content": "Can you use the release-close skill for this task?",
+            },
+        )
+        assert "Reply yes to load it" in str(proposed.get("response", ""))
+        assert f"/skill {skill_id}" in str(proposed.get("response", ""))
+
+        manager = MemoryManager(harness.config.data_dir / "memory_entries")
+        before = manager.get_entry(skill_id)
+        assert before is not None
+        assert before.citation_count == 0
+
+        approved = await harness.client.call(
+            "session.message",
+            {"session_id": sid, "content": "yes"},
+        )
+        assert "Loaded skill" in str(approved.get("response", ""))
+        assert "Release close checklist" in str(approved.get("response", ""))
+
+        manager = MemoryManager(harness.config.data_dir / "memory_entries")
+        after = manager.get_entry(skill_id)
+        assert after is not None
+        assert after.citation_count == 1
+
+
+@pytest.mark.asyncio
 async def test_contract_reminder_create_executes_and_due_run_delivers_without_lockdown(
     contract_harness: ContractHarness,
 ) -> None:

@@ -5,9 +5,13 @@ from typing import Any
 
 import pytest
 
-from shisad.core.session import Session
+from shisad.core.session import Session, SessionManager
 from shisad.core.types import SessionId, SessionMode, SessionState, UserId, WorkspaceId
-from shisad.daemon.handlers._impl_session import SessionImplMixin, SessionMessageValidationResult
+from shisad.daemon.handlers._impl_session import (
+    _PENDING_SKILL_SUGGESTION_ID_KEY,
+    SessionImplMixin,
+    SessionMessageValidationResult,
+)
 from shisad.memory.manager import MemoryManager
 from shisad.memory.schema import MemorySource
 from shisad.security.firewall import FirewallResult
@@ -59,6 +63,46 @@ class _SkillCommandHarness(SessionImplMixin):
             channel=self._channel,
             content=str(params.get("content", "")),
         )
+
+
+class _SuggestedSkillHarness(SessionImplMixin):
+    def __init__(self, tmp_path: Path) -> None:
+        self._memory_manager = MemoryManager(tmp_path / "memory")
+        self._session_manager = SessionManager()
+        self.session = self._session_manager.create(
+            channel="cli",
+            user_id=UserId("user-skill"),
+            workspace_id=WorkspaceId("workspace-skill"),
+        )
+
+    async def _validate_and_load_session(
+        self, params: dict[str, Any]
+    ) -> SessionMessageValidationResult:
+        content = str(params.get("content", ""))
+        session = self._session_manager.get(self.session.id)
+        assert session is not None
+        return SessionMessageValidationResult(
+            params={"session_id": session.id, "content": content},
+            sid=session.id,
+            content=content,
+            session=session,
+            session_mode=SessionMode.DEFAULT,
+            channel="cli",
+            user_id=session.user_id,
+            workspace_id=session.workspace_id,
+            trust_level="trusted",
+            trusted_input=True,
+            firewall_result=FirewallResult(
+                sanitized_text=content,
+                original_hash="0" * 64,
+            ),
+            incoming_taint_labels=set(),
+            is_internal_ingress=False,
+            channel_message_id="msg-skill-followup-1",
+        )
+
+    def _is_admin_rpc_peer(self, _params: dict[str, Any]) -> bool:
+        return False
 
 
 def _write_skill(
@@ -197,3 +241,24 @@ async def test_m4_skill_commands_require_trusted_command_channel(tmp_path: Path)
         )
         == []
     )
+
+
+@pytest.mark.asyncio
+async def test_m4_skill_suggestion_yes_followup_loads_pending_artifact(tmp_path: Path) -> None:
+    harness = _SuggestedSkillHarness(tmp_path)
+    release_id = _write_skill(
+        harness._memory_manager,
+        key="skill:release-close",
+        value="Release close checklist\nRun the behavioral bundle before release.",
+        invocation_eligible=True,
+    )
+    harness.session.metadata[_PENDING_SKILL_SUGGESTION_ID_KEY] = release_id
+
+    result = await SessionImplMixin.do_session_message(
+        harness,
+        {"session_id": str(harness.session.id), "content": "yes"},
+    )  # type: ignore[arg-type]
+
+    assert "Loaded skill" in str(result["response"])
+    assert "Release close checklist" in str(result["response"])
+    assert _PENDING_SKILL_SUGGESTION_ID_KEY not in harness.session.metadata

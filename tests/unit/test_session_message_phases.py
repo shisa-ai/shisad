@@ -37,6 +37,7 @@ from shisad.core.types import (
     WorkspaceId,
 )
 from shisad.daemon.handlers._impl_session import (
+    _PENDING_SKILL_SUGGESTION_ID_KEY,
     SessionImplMixin,
     SessionMessageExecutionResult,
     SessionMessagePlannerContextResult,
@@ -955,6 +956,29 @@ def _write_pending_identity_candidate(manager: MemoryManager) -> str:
     return decision.entry.id
 
 
+def _write_invocable_skill(manager: MemoryManager) -> str:
+    decision = manager.write_with_provenance(
+        entry_type="skill",
+        key="skill:release-close",
+        value="Release close checklist\nRun the behavioral bundle before release.",
+        source=MemorySource(
+            origin="user",
+            source_id="skill-finalize-1",
+            extraction_method="manual",
+        ),
+        source_origin="user_direct",
+        channel_trust="command",
+        confirmation_status="user_asserted",
+        source_id="skill-finalize-1",
+        scope="user",
+        confidence=0.95,
+        confirmation_satisfied=True,
+        invocation_eligible=True,
+    )
+    assert decision.entry is not None
+    return decision.entry.id
+
+
 class _PostToolSynthesisPlanner:
     def __init__(self, response_text: str) -> None:
         self.response_text = response_text
@@ -1176,6 +1200,27 @@ async def test_m3_finalize_response_surfaces_pending_identity_candidate_on_cli(
         limit=10,
     )
     assert len(surfaced) == 1
+
+
+@pytest.mark.asyncio
+async def test_m4_finalize_response_surfaces_matching_skill_suggestion_on_cli(
+    tmp_path: Path,
+) -> None:
+    harness = _FinalizeEvidenceHarness()
+    harness._memory_manager = MemoryManager(tmp_path / "memory")
+    harness._session_manager = SimpleNamespace(persist=lambda _sid: None)
+    skill_id = _write_invocable_skill(harness._memory_manager)
+    execution = _finalize_execution_result(
+        tool_outputs=[],
+        assistant_response="Planner reply",
+        content="Can you use the release-close skill for this task?",
+    )
+
+    response = await SessionImplMixin._finalize_response(harness, execution)
+
+    assert "Reply yes to load it" in str(response["response"])
+    session = execution.planner_dispatch.planner_context.validated.session
+    assert session.metadata[_PENDING_SKILL_SUGGESTION_ID_KEY] == skill_id
 
 
 @pytest.mark.asyncio

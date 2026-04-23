@@ -198,6 +198,7 @@ _COMMAND_CONTEXT_RECOVERY_CHECKPOINT_KEY = "command_context_recovery_checkpoint_
 _COMMAND_CONTEXT_PENDING_RECOVERY_CHECKPOINT_KEY = "command_context_pending_recovery_checkpoint_id"
 _COMMAND_CONTEXT_PENDING_RAW_HANDOFFS_KEY = "command_context_pending_raw_handoffs"
 _COMMAND_CONTEXT_REASON_KEY = "command_context_reason"
+_PENDING_SKILL_SUGGESTION_ID_KEY = "pending_skill_suggestion_id"
 _TASK_REPORTED_PATH_MAX_CHARS = 512
 _TASK_CLOSE_GATE_HEADER = "TASK CLOSE-GATE SELF-CHECK"
 _TASK_CLOSE_GATE_STATUS_COMPLETE = "complete"
@@ -336,6 +337,12 @@ class PreparedIdentityCandidateSuggestion:
     surfaced_candidate_id: str | None = None
     expired_candidate_ids: tuple[str, ...] = ()
     taint_labels: frozenset[TaintLabel] = frozenset()
+
+
+@dataclass(frozen=True, slots=True)
+class PreparedSkillSuggestion:
+    suggestion_text: str = ""
+    skill_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -5521,6 +5528,136 @@ class SessionImplMixin(HandlerMixinBase):
         return decision.entry.id
 
     @staticmethod
+    def _clear_pending_skill_suggestion(session: Session) -> bool:
+        if _PENDING_SKILL_SUGGESTION_ID_KEY not in session.metadata:
+            return False
+        session.metadata.pop(_PENDING_SKILL_SUGGESTION_ID_KEY, None)
+        return True
+
+    def _commit_skill_suggestion(
+        self,
+        *,
+        validated: SessionMessageValidationResult,
+        suggestion: PreparedSkillSuggestion,
+    ) -> None:
+        session = validated.session
+        changed = self._clear_pending_skill_suggestion(session)
+        if suggestion.skill_id is not None:
+            session.metadata[_PENDING_SKILL_SUGGESTION_ID_KEY] = suggestion.skill_id
+            changed = True
+        session_manager = getattr(self, "_session_manager", None)
+        if changed and session_manager is not None:
+            session_manager.persist(session.id)
+
+    def _prepare_skill_suggestion(
+        self,
+        *,
+        validated: SessionMessageValidationResult,
+        execution: SessionMessageExecutionResult,
+    ) -> PreparedSkillSuggestion:
+        memory_manager = cast(MemoryManager | None, getattr(self, "_memory_manager", None))
+        if memory_manager is None:
+            return PreparedSkillSuggestion()
+        normalized_channel = str(validated.channel or validated.session.channel).strip().lower()
+        if normalized_channel != "cli" or validated.session_mode != SessionMode.DEFAULT:
+            return PreparedSkillSuggestion()
+        if execution.pending_confirmation_ids:
+            return PreparedSkillSuggestion()
+        text = normalize_intent_text(validated.firewall_result.sanitized_text)
+        if not text or text.startswith("/"):
+            return PreparedSkillSuggestion()
+        for skill in memory_manager.list_invocable_skills(limit=20):
+            variants = {
+                str(skill.name).strip().lower(),
+                str(skill.name).strip().lower().replace("-", " "),
+                str(skill.name).strip().lower().replace("_", " "),
+            }
+            if not any(variant and variant in text for variant in variants):
+                continue
+            return PreparedSkillSuggestion(
+                suggestion_text=(
+                    "\n\nMatching skill available: "
+                    f"{skill.id} — {skill.name}\n"
+                    f"Reply yes to load it, or use /skill {skill.id}."
+                ),
+                skill_id=skill.id,
+            )
+        return PreparedSkillSuggestion()
+
+    async def _maybe_handle_pending_skill_suggestion(
+        self,
+        *,
+        validated: SessionMessageValidationResult,
+    ) -> dict[str, Any] | None:
+        memory_manager = cast(MemoryManager | None, getattr(self, "_memory_manager", None))
+        if memory_manager is None:
+            return None
+        pending_skill_id = str(
+            validated.session.metadata.get(_PENDING_SKILL_SUGGESTION_ID_KEY, "")
+        ).strip()
+        if not pending_skill_id:
+            return None
+        text = normalize_intent_text(
+            strip_optional_greeting_prefix(validated.firewall_result.sanitized_text)
+        )
+        session_manager = getattr(self, "_session_manager", None)
+        if text.startswith("/skill") or text.startswith("/skills"):
+            return None
+        if text in {"yes", "yes please", "load it", "use it", "ok", "okay"}:
+            if (
+                self._clear_pending_skill_suggestion(validated.session)
+                and session_manager is not None
+            ):
+                session_manager.persist(validated.session.id)
+            result = memory_manager.invoke_skill(
+                pending_skill_id,
+                audit_context={
+                    "method": "session.suggested_skill",
+                    "session_id": str(validated.sid),
+                    "command": "yes",
+                },
+            )
+            if not result.found:
+                return self._skill_command_response(
+                    validated=validated,
+                    response=f"Suggested skill {pending_skill_id} is no longer available.",
+                )
+            if not result.invoked or result.artifact is None:
+                return self._skill_command_response(
+                    validated=validated,
+                    response=(
+                        f"Suggested skill {pending_skill_id} is no longer invocable"
+                        + (f" ({result.reason})." if result.reason else ".")
+                    ),
+                )
+            lines = [
+                (
+                    f"Loaded skill {result.artifact.id} "
+                    f"[{result.artifact.entry_type}] {result.artifact.name}"
+                ),
+                f"Trust band: {result.artifact.trust_band}",
+                "",
+                result.artifact.content,
+            ]
+            return self._skill_command_response(
+                validated=validated,
+                response="\n".join(lines),
+            )
+        if text in {"no", "no thanks", "not now"}:
+            if (
+                self._clear_pending_skill_suggestion(validated.session)
+                and session_manager is not None
+            ):
+                session_manager.persist(validated.session.id)
+            return self._skill_command_response(
+                validated=validated,
+                response="Okay, I did not load that skill.",
+            )
+        if self._clear_pending_skill_suggestion(validated.session) and session_manager is not None:
+            session_manager.persist(validated.session.id)
+        return None
+
+    @staticmethod
     def _skill_command_response(
         *,
         validated: SessionMessageValidationResult,
@@ -5557,6 +5694,9 @@ class SessionImplMixin(HandlerMixinBase):
         text = validated.firewall_result.sanitized_text.strip()
         if not text.startswith("/skill") and not text.startswith("/skills"):
             return None
+        session_manager = getattr(self, "_session_manager", None)
+        if self._clear_pending_skill_suggestion(validated.session) and session_manager is not None:
+            session_manager.persist(validated.session.id)
         normalized_channel = str(validated.channel or validated.session.channel).strip().lower()
         if normalized_channel != "cli" or validated.session_mode != SessionMode.DEFAULT:
             return self._skill_command_response(
@@ -6140,6 +6280,10 @@ class SessionImplMixin(HandlerMixinBase):
             validated=validated,
             execution=execution,
         )
+        skill_suggestion = self._prepare_skill_suggestion(
+            validated=validated,
+            execution=execution,
+        )
         if candidate_suggestion.suggestion_text:
             response_text = (
                 f"{response_text}{candidate_suggestion.suggestion_text}"
@@ -6147,6 +6291,12 @@ class SessionImplMixin(HandlerMixinBase):
                 else candidate_suggestion.suggestion_text.strip()
             )
             response_taint_labels.update(candidate_suggestion.taint_labels)
+        if skill_suggestion.suggestion_text:
+            response_text = (
+                f"{response_text}{skill_suggestion.suggestion_text}"
+                if response_text.strip()
+                else skill_suggestion.suggestion_text.strip()
+            )
         public_sensitive_taints = (
             _public_channel_sensitive_taints(response_taint_labels)
             if _is_public_channel_level(validated.trust_level)
@@ -6167,6 +6317,7 @@ class SessionImplMixin(HandlerMixinBase):
                 response_text = f"[CONFIRMATION REQUIRED] {response_text}"
         if not public_sensitive_taints and not output_result.blocked:
             self._commit_identity_candidate_suggestion(candidate_suggestion)
+            self._commit_skill_suggestion(validated=validated, suggestion=skill_suggestion)
 
         lockdown_notice = self._lockdown_manager.user_notification(sid)
         if lockdown_notice:
@@ -7620,6 +7771,11 @@ class SessionImplMixin(HandlerMixinBase):
         validated = await self._validate_and_load_session(params)
         if validated.early_response is not None:
             return validated.early_response
+        pending_skill_response = await self._maybe_handle_pending_skill_suggestion(
+            validated=validated
+        )
+        if pending_skill_response is not None:
+            return pending_skill_response
         skill_command_response = await self._maybe_handle_skill_command(validated=validated)
         if skill_command_response is not None:
             return skill_command_response
