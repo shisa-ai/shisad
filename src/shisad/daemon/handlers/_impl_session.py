@@ -6111,6 +6111,15 @@ class SessionImplMixin(HandlerMixinBase):
             session_manager.persist(validated.session.id)
 
         worker = ConsolidationWorker(memory_manager)
+        if self._strong_invalidation_terminal_exists(
+            memory_manager=memory_manager,
+            target_entry_id=target_entry_id,
+            signal_entry_id=signal_entry_id,
+        ):
+            return self._identity_command_response(
+                validated=validated,
+                response=f"Memory update candidate for {target_entry_id} is no longer available.",
+            )
         if normalized_text in _CRC_NEGATIVE_PATTERNS:
             if worker.reject_strong_invalidation(
                 target_entry_id=target_entry_id,
@@ -7273,7 +7282,13 @@ class SessionImplMixin(HandlerMixinBase):
                 target_entry_id=target_entry_id,
                 signal_entry_id=signal_entry_id,
             )
+        pending = validated.session.metadata.get(_PENDING_STRONG_INVALIDATION_KEY)
         if suggestion.target_entry_id is None or suggestion.signal_entry_id is None:
+            if isinstance(pending, dict):
+                validated.session.metadata.pop(_PENDING_STRONG_INVALIDATION_KEY, None)
+                session_manager = getattr(self, "_session_manager", None)
+                if session_manager is not None:
+                    session_manager.persist(validated.session.id)
             return
         memory_manager.record_consolidation_event(
             suggestion.target_entry_id,
