@@ -35,6 +35,7 @@ from shisad.core.config import DaemonConfig
 from shisad.core.providers.base import Message, ProviderResponse
 from shisad.core.providers.local_planner import LocalPlannerProvider
 from shisad.daemon.runner import run_daemon
+from shisad.memory.ingestion import IngestionPipeline
 from shisad.memory.manager import MemoryManager
 from shisad.memory.participation import InboxItemValue, compose_channel_binding, inbox_item_key
 from shisad.memory.remap import legacy_source_view_origin
@@ -1739,9 +1740,20 @@ async def test_contract_pending_review_entries_are_isolated_to_review_queue(
         )
         assert decision.entry is not None
         seeded["entry_id"] = decision.entry.id
+        retrieval = IngestionPipeline(config.data_dir / "memory_entries").ingest(
+            source_id="msg-5-recall",
+            source_type="external",
+            content="Needs operator review",
+            source_origin="external_message",
+            channel_trust="shared_participant",
+            confirmation_status="pending_review",
+            scope="user",
+        )
+        seeded["chunk_id"] = retrieval.chunk_id
 
     async with _contract_harness_context(tmp_path, monkeypatch, prestart=_seed) as harness:
         entry_id = seeded["entry_id"]
+        chunk_id = seeded["chunk_id"]
 
         listing = await harness.client.call("memory.list", {"limit": 10})
         listed_ids = {
@@ -1759,11 +1771,11 @@ async def test_contract_pending_review_entries_are_isolated_to_review_queue(
             {"query": "operator review", "limit": 10},
         )
         retrieved_ids = {
-            str(item.get("id") or item.get("entry_id") or "").strip()
+            str(item.get("chunk_id") or "").strip()
             for item in retrieved.get("results", [])
             if isinstance(item, dict)
         }
-        assert entry_id not in retrieved_ids
+        assert chunk_id not in retrieved_ids
 
         review_queue = await harness.client.call("memory.list_review_queue", {"limit": 10})
         queued_ids = {

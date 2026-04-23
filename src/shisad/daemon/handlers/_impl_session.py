@@ -5703,11 +5703,17 @@ class SessionImplMixin(HandlerMixinBase):
                 validated=validated,
                 response="Skill commands are only available in the trusted command channel.",
             )
+        allowed_skill_scopes = {"user", "session"}
+        session_scope_id = str(validated.sid)
 
         if text == "/skills" or text.startswith("/skills "):
             body = text[len("/skills") :].strip()
             if not body:
-                skills = memory_manager.list_invocable_skills(limit=20)
+                skills = memory_manager.list_invocable_skills(
+                    limit=20,
+                    allowed_scopes=allowed_skill_scopes,
+                    session_scope_id=session_scope_id,
+                )
                 if not skills:
                     return self._skill_command_response(
                         validated=validated,
@@ -5731,7 +5737,12 @@ class SessionImplMixin(HandlerMixinBase):
                     validated=validated,
                     response="Usage: /skills search <query>",
                 )
-            matches = memory_manager.list_invocable_skills(query=query, limit=20)
+            matches = memory_manager.list_invocable_skills(
+                query=query,
+                limit=20,
+                allowed_scopes=allowed_skill_scopes,
+                session_scope_id=session_scope_id,
+            )
             if not matches:
                 return self._skill_command_response(
                     validated=validated,
@@ -5761,6 +5772,8 @@ class SessionImplMixin(HandlerMixinBase):
             artifact = memory_manager.describe_skill(
                 skill_id,
                 include_pending_review=True,
+                allowed_scopes=allowed_skill_scopes,
+                session_scope_id=session_scope_id,
             )
             if artifact is None:
                 return self._skill_command_response(
@@ -5798,6 +5811,8 @@ class SessionImplMixin(HandlerMixinBase):
                 "session_id": str(validated.sid),
                 "command": "/skill",
             },
+            allowed_scopes=allowed_skill_scopes,
+            session_scope_id=session_scope_id,
         )
         if not result.found:
             return self._skill_command_response(

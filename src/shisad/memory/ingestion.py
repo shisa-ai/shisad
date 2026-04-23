@@ -442,6 +442,8 @@ class IngestionPipeline:
             record = self._record_from_backend_row(row)
             if record is None:
                 continue
+            if record.confirmation_status == "pending_review":
+                continue
             if normalized_scopes is not None and record.scope not in normalized_scopes:
                 continue
             if as_of is not None and record.created_at > reference_time:

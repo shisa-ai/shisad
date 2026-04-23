@@ -572,10 +572,12 @@ class MemoryManager:
         *,
         query: str | None = None,
         limit: int = 100,
+        allowed_scopes: set[str] | None = None,
+        session_scope_id: str | None = None,
     ) -> list[ProceduralArtifactSummary]:
         self.purge_expired()
         normalized_query = (query or "").strip().lower()
-        ranked: list[tuple[datetime, ProceduralArtifactSummary]] = []
+        latest_by_group: dict[tuple[str, str, str, str], MemoryEntry] = {}
         for entry in self._entries.values():
             if (
                 entry.entry_type not in PROCEDURAL_ENTRY_TYPES
@@ -587,11 +589,30 @@ class MemoryManager:
             ):
                 continue
             refreshed = self._refresh_ttl(entry)
+            if not self._procedural_scope_visible(
+                refreshed,
+                allowed_scopes=allowed_scopes,
+                session_scope_id=session_scope_id,
+            ):
+                continue
             summary = build_procedural_summary(refreshed)
             haystack = f"{summary.name}\n{summary.description}".lower()
             if normalized_query and normalized_query not in haystack:
                 continue
-            ranked.append((refreshed.last_cited_at or refreshed.created_at, summary))
+            group_key = self._procedural_group_key(refreshed)
+            current = latest_by_group.get(group_key)
+            if current is None or self._procedural_sort_key(refreshed) > self._procedural_sort_key(
+                current
+            ):
+                latest_by_group[group_key] = refreshed
+        ranked: list[tuple[datetime, ProceduralArtifactSummary]] = []
+        for refreshed in latest_by_group.values():
+            ranked.append(
+                (
+                    refreshed.last_cited_at or refreshed.created_at,
+                    build_procedural_summary(refreshed),
+                )
+            )
         ranked.sort(key=lambda item: item[0], reverse=True)
         return [summary for _timestamp, summary in ranked[:limit]]
 
@@ -600,15 +621,23 @@ class MemoryManager:
         skill_id: str,
         *,
         include_pending_review: bool = False,
+        allowed_scopes: set[str] | None = None,
+        session_scope_id: str | None = None,
     ) -> ProceduralArtifact | None:
         entry, _reason = self._resolve_procedural_entry(
             skill_id,
             include_pending_review=include_pending_review,
+            allowed_scopes=allowed_scopes,
+            session_scope_id=session_scope_id,
         )
         if entry is None:
             return None
         artifact = build_procedural_artifact(entry)
-        prior_entry = self._find_active_procedural_predecessor(entry)
+        prior_entry = self._find_active_procedural_predecessor(
+            entry,
+            allowed_scopes=allowed_scopes,
+            session_scope_id=session_scope_id,
+        )
         if prior_entry is not None:
             artifact.prior_entry_id = prior_entry.id
             prior_content = build_procedural_artifact(prior_entry).content.splitlines()
@@ -647,6 +676,8 @@ class MemoryManager:
             return MemoryWriteDecision(kind="reject", reason=reason)
         if not self._is_pending_review(candidate):
             return MemoryWriteDecision(kind="reject", reason="skill_not_pending_review")
+        if scope != "user":
+            return MemoryWriteDecision(kind="reject", reason="skill_promotion_requires_user_scope")
         if not is_invocation_eligible_triple(
             source_origin,
             channel_trust,
@@ -656,6 +687,8 @@ class MemoryManager:
                 kind="reject",
                 reason="skill_promotion_requires_install_triple",
             )
+        prior_entry = self._find_active_procedural_predecessor(candidate)
+        supersedes_target = prior_entry.id if prior_entry is not None else candidate.id
         decision = self.write_with_provenance(
             entry_type=candidate.entry_type,
             key=candidate.key,
@@ -674,11 +707,14 @@ class MemoryManager:
             ingress_handle_id=ingress_handle_id,
             content_digest=content_digest,
             invocation_eligible=True,
-            supersedes=candidate.id,
+            supersedes=supersedes_target,
             allow_trust_upgrade_without_confirmation=True,
         )
         if decision.kind != "allow" or decision.entry is None:
             return decision
+        if candidate.id != supersedes_target:
+            candidate.superseded_by = decision.entry.id
+            self._persist_entry(candidate)
         self._audit(
             "memory.skill_promoted",
             {
@@ -696,11 +732,15 @@ class MemoryManager:
         skill_id: str,
         *,
         audit_context: dict[str, Any] | None = None,
+        allowed_scopes: set[str] | None = None,
+        session_scope_id: str | None = None,
     ) -> ProceduralInvocation:
         caller_context = dict(audit_context or {})
         entry, reason = self._resolve_procedural_entry(
             skill_id,
             include_pending_review=True,
+            allowed_scopes=allowed_scopes,
+            session_scope_id=session_scope_id,
         )
         if entry is None:
             self._audit(
@@ -1524,6 +1564,8 @@ class MemoryManager:
         skill_id: str,
         *,
         include_pending_review: bool = False,
+        allowed_scopes: set[str] | None = None,
+        session_scope_id: str | None = None,
     ) -> tuple[MemoryEntry | None, str]:
         entry = self.get_entry(skill_id, include_pending_review=include_pending_review)
         if entry is None:
@@ -1532,22 +1574,104 @@ class MemoryManager:
             return None, "skill_not_found"
         if entry.superseded_by is not None:
             return None, "skill_not_found"
-        return entry, ""
+        refreshed = self._refresh_ttl(entry)
+        if not self._procedural_scope_visible(
+            refreshed,
+            allowed_scopes=allowed_scopes,
+            session_scope_id=session_scope_id,
+        ):
+            return None, "skill_not_found"
+        if not self._is_pending_review(refreshed):
+            latest_active = self._find_latest_active_procedural_entry(
+                refreshed,
+                allowed_scopes=allowed_scopes,
+                session_scope_id=session_scope_id,
+            )
+            if latest_active is not None and latest_active.id != refreshed.id:
+                return None, "skill_not_found"
+        return refreshed, ""
 
-    def _find_active_procedural_predecessor(self, entry: MemoryEntry) -> MemoryEntry | None:
+    @staticmethod
+    def _procedural_sort_key(entry: MemoryEntry) -> tuple[int, datetime, str]:
+        return (entry.version, entry.created_at, entry.id)
+
+    @staticmethod
+    def _session_scope_binding(source_id: str) -> str:
+        normalized = str(source_id).strip()
+        if not normalized:
+            return ""
+        return normalized.split(":", 1)[0]
+
+    def _procedural_group_key(self, entry: MemoryEntry) -> tuple[str, str, str, str]:
+        session_binding = (
+            self._session_scope_binding(entry.source_id) if str(entry.scope) == "session" else ""
+        )
+        return (str(entry.scope), session_binding, str(entry.entry_type), str(entry.key))
+
+    def _procedural_scope_visible(
+        self,
+        entry: MemoryEntry,
+        *,
+        allowed_scopes: set[str] | None = None,
+        session_scope_id: str | None = None,
+    ) -> bool:
+        normalized_scopes = allowed_scopes or {"user"}
+        entry_scope = str(entry.scope)
+        if entry_scope not in normalized_scopes:
+            return False
+        if entry_scope != "session":
+            return True
+        normalized_session_scope_id = (session_scope_id or "").strip()
+        if not normalized_session_scope_id:
+            return False
+        return self._session_scope_binding(entry.source_id) == normalized_session_scope_id
+
+    def _find_latest_active_procedural_entry(
+        self,
+        entry: MemoryEntry,
+        *,
+        allowed_scopes: set[str] | None = None,
+        session_scope_id: str | None = None,
+    ) -> MemoryEntry | None:
+        group_key = self._procedural_group_key(entry)
+        latest: MemoryEntry | None = None
         for candidate in self._entries.values():
             if (
-                candidate.id == entry.id
-                or candidate.entry_type != entry.entry_type
-                or candidate.key != entry.key
+                self._procedural_group_key(candidate) != group_key
                 or self._is_deleted(candidate)
                 or self._is_quarantined(candidate)
                 or self._is_pending_review(candidate)
                 or candidate.superseded_by is not None
             ):
                 continue
-            return self._refresh_ttl(candidate)
-        return None
+            refreshed = self._refresh_ttl(candidate)
+            if not self._procedural_scope_visible(
+                refreshed,
+                allowed_scopes=allowed_scopes,
+                session_scope_id=session_scope_id,
+            ):
+                continue
+            if latest is None or self._procedural_sort_key(refreshed) > self._procedural_sort_key(
+                latest
+            ):
+                latest = refreshed
+        return latest
+
+    def _find_active_procedural_predecessor(
+        self,
+        entry: MemoryEntry,
+        *,
+        allowed_scopes: set[str] | None = None,
+        session_scope_id: str | None = None,
+    ) -> MemoryEntry | None:
+        latest = self._find_latest_active_procedural_entry(
+            entry,
+            allowed_scopes=allowed_scopes,
+            session_scope_id=session_scope_id,
+        )
+        if latest is None or latest.id == entry.id:
+            return None
+        return latest
 
     def _identity_candidate_surface_count(self, candidate_id: str) -> int:
         return len(

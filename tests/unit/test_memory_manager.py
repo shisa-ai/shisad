@@ -1370,6 +1370,20 @@ def test_m4_promote_to_skill_promotes_pending_review_entry_with_install_triple(
         tmp_path / "memory",
         audit_hook=lambda action, data: audits.append((action, data)),
     )
+    current = manager.write_with_provenance(
+        entry_type="skill",
+        key="skill:release-close",
+        value="Release close checklist\nCurrent version",
+        source=MemorySource(origin="user", source_id="current-skill-1", extraction_method="manual"),
+        source_origin="user_direct",
+        channel_trust="command",
+        confirmation_status="user_asserted",
+        source_id="current-skill-1",
+        scope="user",
+        confidence=0.95,
+        confirmation_satisfied=True,
+        invocation_eligible=True,
+    )
     candidate = manager.write_with_provenance(
         entry_type="skill",
         key="skill:release-close",
@@ -1388,6 +1402,7 @@ def test_m4_promote_to_skill_promotes_pending_review_entry_with_install_triple(
         confirmation_satisfied=True,
     )
 
+    assert current.entry is not None
     assert candidate.entry is not None
     decision = manager.promote_to_skill(
         entry_id=candidate.entry.id,
@@ -1403,10 +1418,21 @@ def test_m4_promote_to_skill_promotes_pending_review_entry_with_install_triple(
 
     assert decision.kind == "allow"
     assert decision.entry is not None
-    assert decision.entry.supersedes == candidate.entry.id
+    assert decision.entry.supersedes == current.entry.id
     assert decision.entry.invocation_eligible is True
     assert decision.entry.trust_band == "elevated"
-    assert audits[-1] == (
+    current_after = manager.get_entry(current.entry.id)
+    candidate_after = manager.get_entry(candidate.entry.id, include_pending_review=True)
+    assert current_after is not None
+    assert current_after.superseded_by == decision.entry.id
+    assert candidate_after is not None
+    assert candidate_after.superseded_by == decision.entry.id
+    listed_ids = [entry.id for entry in manager.list_invocable_skills()]
+    assert listed_ids == [decision.entry.id]
+    stale = manager.invoke_skill(current.entry.id)
+    assert stale.found is False
+    assert stale.reason == "skill_not_found"
+    assert (
         "memory.skill_promoted",
         {
             "entry_id": decision.entry.id,
@@ -1415,7 +1441,28 @@ def test_m4_promote_to_skill_promotes_pending_review_entry_with_install_triple(
             "ingress_handle_id": "handle-promote-2",
             "trust_band": "elevated",
         },
+    ) in audits
+
+
+def test_m2_compile_recall_excludes_pending_review_records(tmp_path: Path) -> None:
+    from shisad.memory.ingestion import IngestionPipeline
+
+    pipeline = IngestionPipeline(tmp_path / "memory")
+    stored = pipeline.ingest(
+        source_id="doc-pending-review",
+        source_type="external",
+        content="Pending-review recall content should stay out of compile_recall.",
+        source_origin="external_message",
+        channel_trust="shared_participant",
+        confirmation_status="pending_review",
+        scope="user",
     )
+
+    pack = pipeline.compile_recall("pending-review recall content", limit=5)
+
+    assert pack.results == []
+    assert pack.count == 0
+    assert stored.confirmation_status == "pending_review"
 
 
 def test_m4_promote_to_skill_rejects_non_install_triple(tmp_path: Path) -> None:
@@ -1453,6 +1500,86 @@ def test_m4_promote_to_skill_rejects_non_install_triple(tmp_path: Path) -> None:
 
     assert rejected.kind == "reject"
     assert rejected.reason == "skill_promotion_requires_install_triple"
+
+
+def test_m4_promote_to_skill_accepts_user_scoped_tool_install_triple(tmp_path: Path) -> None:
+    manager = MemoryManager(tmp_path / "memory")
+    candidate = manager.write_with_provenance(
+        entry_type="skill",
+        key="skill:tool-release-close",
+        value="Tool-installed release-close skill",
+        source=MemorySource(
+            origin="external",
+            source_id="review-candidate-tool-1",
+            extraction_method="review.queue",
+        ),
+        source_origin="external_message",
+        channel_trust="shared_participant",
+        confirmation_status="pending_review",
+        source_id="review-candidate-tool-1",
+        scope="user",
+        confidence=0.62,
+        confirmation_satisfied=True,
+    )
+
+    assert candidate.entry is not None
+    decision = manager.promote_to_skill(
+        entry_id=candidate.entry.id,
+        source=MemorySource(origin="external", source_id="tool-2", extraction_method="tool"),
+        source_origin="tool_output",
+        channel_trust="tool_passed",
+        confirmation_status="pep_approved",
+        source_id="tool-2",
+        scope="user",
+        ingress_handle_id="handle-promote-tool-1",
+        content_digest="digest-promote-tool-1",
+    )
+
+    assert decision.kind == "allow"
+    assert decision.entry is not None
+    assert decision.entry.trust_band == "untrusted"
+    assert decision.entry.invocation_eligible is True
+
+
+def test_m4_promote_to_skill_rejects_non_user_scope_install(tmp_path: Path) -> None:
+    manager = MemoryManager(tmp_path / "memory")
+    candidate = manager.write_with_provenance(
+        entry_type="skill",
+        key="skill:tool-release-close",
+        value="Tool-installed release-close skill",
+        source=MemorySource(
+            origin="external",
+            source_id="review-candidate-tool-2",
+            extraction_method="review.queue",
+        ),
+        source_origin="external_message",
+        channel_trust="shared_participant",
+        confirmation_status="pending_review",
+        source_id="review-candidate-tool-2",
+        scope="user",
+        confidence=0.62,
+        confirmation_satisfied=True,
+    )
+
+    assert candidate.entry is not None
+    rejected = manager.promote_to_skill(
+        entry_id=candidate.entry.id,
+        source=MemorySource(
+            origin="external",
+            source_id="session-1:tool-2",
+            extraction_method="tool",
+        ),
+        source_origin="tool_output",
+        channel_trust="tool_passed",
+        confirmation_status="pep_approved",
+        source_id="session-1:tool-2",
+        scope="session",
+        ingress_handle_id="handle-promote-tool-2",
+        content_digest="digest-promote-tool-2",
+    )
+
+    assert rejected.kind == "reject"
+    assert rejected.reason == "skill_promotion_requires_user_scope"
 
 
 def test_m1_supersedes_creates_version_chain_and_forward_pointer(tmp_path: Path) -> None:
