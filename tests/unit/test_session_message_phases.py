@@ -1458,6 +1458,32 @@ async def test_m3_finalize_response_expires_ignored_identity_candidate_without_b
 
 
 @pytest.mark.asyncio
+async def test_m3_finalize_response_uses_configured_identity_candidate_surface_limit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    harness = _FinalizeEvidenceHarness()
+    harness._memory_manager = MemoryManager(tmp_path / "memory")
+    candidate_id = _write_pending_identity_candidate(harness._memory_manager)
+    assert harness._memory_manager.note_identity_candidate_surface(candidate_id) == (True, 1)
+    monkeypatch.setattr(
+        "shisad.daemon.handlers._impl_session.ConsolidationConfig",
+        lambda: SimpleNamespace(surface_limit=1),
+    )
+    execution = _finalize_execution_result(tool_outputs=[], assistant_response="Planner reply")
+
+    response = await SessionImplMixin._finalize_response(harness, execution)
+
+    assert candidate_id not in str(response["response"])
+    expired = harness._memory_manager.list_events(
+        entry_id=candidate_id,
+        event_type="candidate_expired",
+        limit=10,
+    )
+    assert len(expired) == 1
+
+
+@pytest.mark.asyncio
 async def test_m3_finalize_response_does_not_mark_candidate_surfaced_when_output_blocked(
     tmp_path: Path,
 ) -> None:

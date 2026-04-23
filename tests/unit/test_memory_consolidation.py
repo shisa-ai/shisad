@@ -192,6 +192,29 @@ def test_m5_strong_invalidation_and_identity_candidate_accumulation(
     assert manager.list_events(entry_id=candidate.id, event_type="candidate_proposed")
 
 
+def test_m5_strong_invalidation_requires_specific_entity_or_topic_match(
+    tmp_path: Path,
+) -> None:
+    manager = MemoryManager(tmp_path / "memory")
+    _write_entry(
+        manager,
+        entry_type="persona_fact",
+        key="work:acme",
+        value="I work at ACME as VP Eng.",
+        confidence=0.95,
+    )
+    _write_owner_observed_episode(
+        manager,
+        value="I left work early today.",
+        source_id="generic-work-left",
+    )
+
+    proposals = ConsolidationWorker(manager).propose_strong_invalidations()
+
+    assert proposals == []
+    assert manager.list_events(event_type="strong_invalidation_proposed") == []
+
+
 def test_m5_identity_candidate_uses_per_pattern_threshold(tmp_path: Path) -> None:
     manager = MemoryManager(tmp_path / "memory")
     _write_owner_observed_episode(manager, value="I like ramen for lunch.", source_id="ramen-1")

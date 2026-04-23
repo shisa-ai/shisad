@@ -7133,6 +7133,7 @@ class SessionImplMixin(HandlerMixinBase):
             return PreparedIdentityCandidateSuggestion()
 
         expired_candidate_ids: list[str] = []
+        surface_limit = ConsolidationConfig().surface_limit
         for candidate in memory_manager.list_review_queue(limit=20):
             if candidate.entry_type not in {"persona_fact", "preference", "soft_constraint"}:
                 continue
@@ -7143,7 +7144,7 @@ class SessionImplMixin(HandlerMixinBase):
                     limit=10,
                 )
             )
-            if surface_count >= 2:
+            if surface_count >= surface_limit:
                 expired_candidate_ids.append(candidate.id)
                 continue
             suggestion = (

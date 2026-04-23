@@ -51,6 +51,29 @@ _MEDICAL_PREFERENCES = {
     "diabetes",
 }
 _STRONG_INVALIDATION_EVENT_LOOKBACK = 10_000
+_STRONG_INVALIDATION_GENERIC_TOKENS = {
+    "fact",
+    "note",
+    "episode",
+    "persona",
+    "preference",
+    "relationship",
+    "project",
+    "component",
+    "context",
+    "decision",
+    "todo",
+    "waiting",
+    "work",
+    "job",
+    "role",
+    "company",
+}
+_STRONG_INVALIDATION_GENERIC_TOKENS.update(
+    token.lower()
+    for pattern in ConsolidationConfig().strong_invalidation_patterns
+    for token in _TOKEN_RE.findall(pattern)
+)
 
 
 @dataclass(frozen=True)
@@ -383,7 +406,7 @@ class ConsolidationWorker:
                     },
                 ):
                     continue
-                overlap = signal_tokens & _tokens(target)
+                overlap = signal_tokens & self._strong_invalidation_match_tokens(target)
                 if not overlap:
                     continue
                 proposal = StrongInvalidationProposal(
@@ -605,6 +628,14 @@ class ConsolidationWorker:
             if pattern.strip() and pattern.lower() in text:
                 return pattern
         return None
+
+    @staticmethod
+    def _strong_invalidation_match_tokens(entry: MemoryEntry) -> set[str]:
+        return {
+            token
+            for token in _tokens(entry)
+            if token not in _STRONG_INVALIDATION_GENERIC_TOKENS
+        }
 
     def _contradiction_already_recorded(
         self,
