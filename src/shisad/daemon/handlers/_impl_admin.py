@@ -11,7 +11,6 @@ from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
-from urllib.parse import unquote
 
 from shisad.channels.base import ChannelMessage, DeliveryTarget
 from shisad.channels.discord_policy import DiscordChannelPolicy, DiscordChannelPolicyDecision
@@ -52,7 +51,6 @@ from shisad.memory.participation import (
     channel_summary_key,
     compose_channel_binding,
     inbox_item_key,
-    normalize_structured_memory_value,
     person_note_key,
     response_feedback_key,
 )
@@ -152,43 +150,6 @@ def _is_legacy_bare_channel_id(value: str) -> bool:
     )
 
 
-def _migrated_channel_memory_key(
-    *,
-    entry_type: str,
-    key: str,
-    value: Mapping[str, Any],
-    structured_channel_id: str,
-) -> str:
-    if entry_type == "inbox_item":
-        return key
-    if entry_type == "person_note":
-        return person_note_key(
-            channel_id=structured_channel_id,
-            external_user_id=str(value.get("external_user_id") or "").strip(),
-        )
-    if entry_type == "channel_summary":
-        return channel_summary_key(
-            channel_id=structured_channel_id,
-            summary_kind=str(value.get("summary_kind") or "topic").strip() or "topic",
-        )
-    if entry_type == "response_feedback":
-        return response_feedback_key(
-            channel_id=structured_channel_id,
-            message_id=str(value.get("target_message_id") or "").strip(),
-            actor_external_user_id=str(value.get("actor_external_user_id") or "").strip(),
-            signal=str(value.get("signal") or "").strip(),
-        )
-    if entry_type == "channel_participation":
-        prefix = "channel-participation:"
-        encoded_parts = key[len(prefix) :].split(":") if key.startswith(prefix) else []
-        thread_id = unquote(encoded_parts[1]).strip() if len(encoded_parts) > 1 else ""
-        return channel_participation_key(
-            channel_id=structured_channel_id,
-            thread_id=thread_id or None,
-        )
-    return key
-
-
 class AdminImplMixin(HandlerMixinBase):
     def _channel_memory_owner_id(self, *, channel: str) -> str:
         trusted_users_attr = {
@@ -232,43 +193,30 @@ class AdminImplMixin(HandlerMixinBase):
         if memory_manager is None or not legacy_channel_id or not structured_channel_id:
             return
         limit = max(1, len(memory_manager._entries))
-        for entry_type in (
-            "inbox_item",
-            "person_note",
-            "channel_summary",
-            "channel_participation",
-            "response_feedback",
+        for entry in memory_manager.list_entries(
+            entry_type="inbox_item",
+            include_deleted=True,
+            include_quarantined=True,
+            include_pending_review=True,
+            limit=limit,
         ):
-            for entry in memory_manager.list_entries(
-                entry_type=entry_type,
-                include_deleted=True,
-                include_quarantined=True,
-                include_pending_review=True,
-                limit=limit,
+            if entry.superseded_by is not None or not isinstance(entry.value, Mapping):
+                continue
+            raw_channel_id = str(entry.value.get("channel_id") or "").strip()
+            if raw_channel_id != legacy_channel_id or not _is_legacy_bare_channel_id(
+                raw_channel_id
             ):
-                if entry.superseded_by is not None or not isinstance(entry.value, Mapping):
-                    continue
-                raw_channel_id = str(entry.value.get("channel_id") or "").strip()
-                if raw_channel_id != legacy_channel_id or not _is_legacy_bare_channel_id(
-                    raw_channel_id
-                ):
-                    continue
-                recovered_workspace = self._legacy_channel_entry_workspace_hint(
-                    channel=channel,
-                    entry=entry,
-                )
-                if recovered_workspace != workspace_hint:
-                    continue
-                updated_value = dict(entry.value)
-                updated_value["channel_id"] = structured_channel_id
-                entry.value = normalize_structured_memory_value(entry.entry_type, updated_value)
-                entry.key = _migrated_channel_memory_key(
-                    entry_type=entry.entry_type,
-                    key=entry.key,
-                    value=updated_value,
-                    structured_channel_id=structured_channel_id,
-                )
-                memory_manager._persist_entry(entry)
+                continue
+            recovered_workspace = self._legacy_channel_entry_workspace_hint(
+                channel=channel,
+                entry=entry,
+            )
+            if recovered_workspace != workspace_hint:
+                continue
+            updated_value = dict(entry.value)
+            updated_value["channel_id"] = structured_channel_id
+            entry.value = InboxItemValue.model_validate(updated_value).model_dump(mode="python")
+            memory_manager._persist_entry(entry)
 
     def _legacy_channel_entry_workspace_hint(self, *, channel: str, entry: Any) -> str | None:
         source_id = str(getattr(entry, "source_id", "") or "").strip()
