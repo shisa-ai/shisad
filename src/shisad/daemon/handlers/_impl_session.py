@@ -7311,8 +7311,9 @@ class SessionImplMixin(HandlerMixinBase):
             "strong_invalidation_rejected",
             "strong_invalidation_expired",
         ):
+            entry_id = None if event_type == "strong_invalidation_confirmed" else target_entry_id
             for event in memory_manager.list_events(
-                entry_id=target_entry_id,
+                entry_id=entry_id,
                 event_type=event_type,
                 limit=1000,
             ):

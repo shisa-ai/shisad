@@ -234,6 +234,25 @@ def test_m5_strong_invalidations_do_not_cross_scopes(tmp_path: Path) -> None:
         source_id="left-acme-channel",
         scope="channel",
     )
+    _write_entry(
+        manager,
+        entry_type="persona_fact",
+        key="work:globex",
+        value="I work at Globex as VP Product.",
+        confidence=0.95,
+        scope="channel",
+    )
+    _write_entry(
+        manager,
+        entry_type="episode",
+        key="episode:left-globex",
+        value="I no longer work at Globex.",
+        source_origin="user_direct",
+        channel_trust="owner_observed",
+        confirmation_status="auto_accepted",
+        source_id="left-globex-channel",
+        scope="channel",
+    )
 
     proposals = ConsolidationWorker(
         manager,
@@ -242,6 +261,67 @@ def test_m5_strong_invalidations_do_not_cross_scopes(tmp_path: Path) -> None:
 
     assert proposals == []
     assert manager.list_events(event_type="strong_invalidation_proposed") == []
+
+
+def test_m5_dedup_and_identity_candidates_do_not_cross_scopes(tmp_path: Path) -> None:
+    manager = MemoryManager(tmp_path / "memory")
+    user_duplicate = _write_entry(
+        manager,
+        entry_type="fact",
+        key="fact:scoped-duplicate",
+        value="Scoped duplicate fact",
+        confidence=0.40,
+        source_origin="consolidation_derived",
+        channel_trust="consolidation",
+        confirmation_status="auto_accepted",
+        source_id="scoped-dup-user",
+        scope="user",
+    )
+    channel_duplicate = _write_entry(
+        manager,
+        entry_type="fact",
+        key="fact:scoped-duplicate",
+        value="Scoped duplicate fact",
+        confidence=0.55,
+        source_origin="consolidation_derived",
+        channel_trust="consolidation",
+        confirmation_status="auto_accepted",
+        source_id="scoped-dup-channel",
+        scope="channel",
+    )
+    _write_entry(
+        manager,
+        entry_type="episode",
+        key="episode:ramen-channel-1",
+        value="I like ramen for lunch.",
+        confidence=0.30,
+        source_origin="user_direct",
+        channel_trust="owner_observed",
+        confirmation_status="auto_accepted",
+        source_id="ramen-channel-1",
+        scope="channel",
+    )
+    _write_entry(
+        manager,
+        entry_type="episode",
+        key="episode:ramen-channel-2",
+        value="I prefer ramen when traveling.",
+        confidence=0.30,
+        source_origin="user_direct",
+        channel_trust="owner_observed",
+        confirmation_status="auto_accepted",
+        source_id="ramen-channel-2",
+        scope="channel",
+    )
+    worker = ConsolidationWorker(manager, scope_filter={"user", "channel"})
+
+    dedup = worker.deduplicate_entries()
+    candidates = worker.accumulate_identity_candidates()
+
+    assert dedup.merged_entry_ids == []
+    assert manager.get_entry(user_duplicate.id) is not None
+    assert manager.get_entry(channel_duplicate.id) is not None
+    assert candidates == []
 
 
 def test_m5_repeated_consolidation_is_idempotent_for_conflicts_and_proposals(

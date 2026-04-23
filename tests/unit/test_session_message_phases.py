@@ -1308,6 +1308,11 @@ async def test_m5_pending_strong_invalidation_yes_promotes_user_confirmed_versio
         event_type="strong_invalidation_confirmed",
         limit=10,
     )
+    assert SessionImplMixin._strong_invalidation_terminal_exists(
+        memory_manager=harness._memory_manager,
+        target_entry_id=target_id,
+        signal_entry_id=signal_id,
+    )
 
 
 @pytest.mark.asyncio

@@ -280,7 +280,7 @@ class ConsolidationWorker:
     def deduplicate_entries(self) -> ConsolidationRunResult:
         result = ConsolidationRunResult()
         entries = self._list_entries()
-        groups: dict[tuple[str, str, str], list[MemoryEntry]] = defaultdict(list)
+        groups: dict[tuple[str, str, str, str], list[MemoryEntry]] = defaultdict(list)
         for entry in entries:
             if (
                 entry.source_origin != "consolidation_derived"
@@ -289,7 +289,9 @@ class ConsolidationWorker:
                 or entry.superseded_by is not None
             ):
                 continue
-            groups[(entry.entry_type, entry.key, _dedup_value(entry.value))].append(entry)
+            groups[(entry.scope, entry.entry_type, entry.key, _dedup_value(entry.value))].append(
+                entry
+            )
 
         for group in groups.values():
             if len(group) < 2:
@@ -365,6 +367,8 @@ class ConsolidationWorker:
             signal_tokens = _tokens(signal)
             for target in targets:
                 if target.id == signal.id:
+                    continue
+                if target.scope != "user" or signal.scope != "user":
                     continue
                 if target.scope != signal.scope:
                     continue
@@ -512,6 +516,8 @@ class ConsolidationWorker:
         observations: dict[str, list[MemoryEntry]] = defaultdict(list)
         entries = self._list_entries(include_quarantined=True)
         for entry in entries:
+            if entry.scope != "user":
+                continue
             if entry.channel_trust != "owner_observed":
                 continue
             preference = self._extract_preference_object(_entry_text(entry))
@@ -523,7 +529,7 @@ class ConsolidationWorker:
         existing_predicates = {
             entry.predicate
             for entry in self._list_entries(include_pending_review=True)
-            if entry.entry_type == "preference"
+            if entry.entry_type == "preference" and entry.scope == "user"
         }
         for preference, evidence in observations.items():
             threshold = self._identity_candidate_threshold(preference)
