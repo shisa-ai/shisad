@@ -215,7 +215,7 @@ class ConsolidationWorker:
 
     def apply_confidence_updates(self) -> ConsolidationRunResult:
         result = ConsolidationRunResult()
-        entries = self._list_entries(include_quarantined=True)
+        entries = self._list_entries()
         preferences = [entry for entry in entries if entry.entry_type == "preference"]
         for preference in preferences:
             parts = _predicate_parts(preference)
@@ -374,7 +374,7 @@ class ConsolidationWorker:
         )
 
     def propose_strong_invalidations(self) -> list[StrongInvalidationProposal]:
-        entries = self._list_entries(include_quarantined=True)
+        entries = self._list_entries()
         targets = [
             entry
             for entry in entries
@@ -440,16 +440,8 @@ class ConsolidationWorker:
         new_value: str,
         ingress_handle_id: str,
     ) -> MemoryEntry | None:
-        target = self._manager.get_entry(
-            target_entry_id,
-            include_quarantined=True,
-            include_pending_review=True,
-        )
-        signal = self._manager.get_entry(
-            signal_entry_id,
-            include_quarantined=True,
-            include_pending_review=True,
-        )
+        target = self._manager.get_entry(target_entry_id)
+        signal = self._manager.get_entry(signal_entry_id)
         if target is None or signal is None:
             return None
         decision = self._manager.write_with_provenance(
@@ -537,7 +529,7 @@ class ConsolidationWorker:
 
     def accumulate_identity_candidates(self) -> list[MemoryEntry]:
         observations: dict[str, list[MemoryEntry]] = defaultdict(list)
-        entries = self._list_entries(include_quarantined=True)
+        entries = self._list_entries()
         for entry in entries:
             if entry.scope != "user":
                 continue

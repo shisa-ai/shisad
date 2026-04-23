@@ -142,6 +142,45 @@ def test_m5_corroboration_and_contradiction_update_confidence_with_events(
     assert manager.list_events(entry_id=coffee.id, event_type="contradicted")
 
 
+def test_m5_quarantined_entries_do_not_drive_confidence_updates_or_identity_candidates(
+    tmp_path: Path,
+) -> None:
+    manager = MemoryManager(tmp_path / "memory")
+    preference = _write_entry(
+        manager,
+        entry_type="preference",
+        key="pref:drink",
+        value="I prefer coffee.",
+        predicate="prefers(coffee)",
+        confidence=0.70,
+    )
+    support = _write_owner_observed_episode(
+        manager,
+        value="At breakfast I said I like coffee.",
+        source_id="support-coffee-quarantined",
+    )
+    ramen = _write_owner_observed_episode(
+        manager,
+        value="I like ramen for lunch.",
+        source_id="ramen-quarantined",
+    )
+    assert manager.quarantine(support.id, reason="test_quarantine")
+    assert manager.quarantine(ramen.id, reason="test_quarantine")
+
+    updates = ConsolidationWorker(manager).apply_confidence_updates()
+    candidates = ConsolidationWorker(
+        manager,
+        config=ConsolidationConfig(identity_candidate_threshold=1),
+    ).accumulate_identity_candidates()
+
+    refreshed = manager.get_entry(preference.id)
+    assert refreshed is not None
+    assert refreshed.confidence == preference.confidence
+    assert updates.corroborating_entry_ids == []
+    assert manager.list_events(entry_id=preference.id, event_type="corroborated") == []
+    assert candidates == []
+
+
 def test_m5_strong_invalidation_and_identity_candidate_accumulation(
     tmp_path: Path,
 ) -> None:
@@ -190,6 +229,59 @@ def test_m5_strong_invalidation_and_identity_candidate_accumulation(
     assert candidate.trust_band == "untrusted"
     assert {entry.id for entry in manager.list_review_queue()} == {candidate.id}
     assert manager.list_events(entry_id=candidate.id, event_type="candidate_proposed")
+
+
+def test_m5_quarantined_entries_do_not_drive_or_resolve_strong_invalidations(
+    tmp_path: Path,
+) -> None:
+    manager = MemoryManager(tmp_path / "memory")
+    active_target = _write_entry(
+        manager,
+        entry_type="persona_fact",
+        key="work:acme",
+        value="I work at ACME as VP Eng.",
+        confidence=0.95,
+        source_id="active-target",
+    )
+    quarantined_target = _write_entry(
+        manager,
+        entry_type="persona_fact",
+        key="work:contoso",
+        value="I work at Contoso as CTO.",
+        confidence=0.95,
+        source_id="quarantined-target",
+    )
+    active_signal = _write_owner_observed_episode(
+        manager,
+        value="I no longer work at ACME.",
+        source_id="active-signal",
+    )
+    quarantined_signal = _write_owner_observed_episode(
+        manager,
+        value="I no longer work at Contoso.",
+        source_id="quarantined-signal",
+    )
+    assert manager.quarantine(quarantined_target.id, reason="test_quarantine")
+    assert manager.quarantine(quarantined_signal.id, reason="test_quarantine")
+
+    worker = ConsolidationWorker(manager)
+    proposals = worker.propose_strong_invalidations()
+
+    assert [(proposal.target_entry_id, proposal.signal_entry_id) for proposal in proposals] == [
+        (active_target.id, active_signal.id)
+    ]
+    assert worker.confirm_strong_invalidation(
+        target_entry_id=quarantined_target.id,
+        signal_entry_id=active_signal.id,
+        new_value="I no longer work at Contoso.",
+        ingress_handle_id="test-ingress",
+    ) is None
+    assert worker.confirm_strong_invalidation(
+        target_entry_id=active_target.id,
+        signal_entry_id=quarantined_signal.id,
+        new_value="I no longer work at ACME.",
+        ingress_handle_id="test-ingress",
+    ) is None
 
 
 def test_m5_strong_invalidation_requires_specific_entity_or_topic_match(

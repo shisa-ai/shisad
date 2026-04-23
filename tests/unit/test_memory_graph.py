@@ -17,15 +17,23 @@ def _write_fact(
     entry_type: str = "fact",
     source_id: str = "graph-test",
     supersedes: str | None = None,
+    source_origin: str = "user_direct",
+    channel_trust: str = "command",
+    confirmation_status: str = "user_asserted",
 ) -> MemoryEntry:
+    source_type = "user"
+    if source_origin.startswith("external_"):
+        source_type = "external"
+    elif source_origin == "consolidation_derived":
+        source_type = "inferred"
     decision = manager.write_with_provenance(
         entry_type=entry_type,
         key=key,
         value=value,
-        source=MemorySource(origin="user", source_id=source_id, extraction_method="manual"),
-        source_origin="user_direct",
-        channel_trust="command",
-        confirmation_status="user_asserted",
+        source=MemorySource(origin=source_type, source_id=source_id, extraction_method="manual"),
+        source_origin=source_origin,  # type: ignore[arg-type]
+        channel_trust=channel_trust,  # type: ignore[arg-type]
+        confirmation_status=confirmation_status,  # type: ignore[arg-type]
         source_id=source_id,
         scope="user",
         confidence=0.95,
@@ -130,6 +138,46 @@ def test_m5_knowledge_graph_exports_lifecycle_and_provenance_metadata(
     assert node["trust_band"] == "elevated"
     assert node["source_ids"] == ["graph-metadata"]
     assert node["scopes"] == ["user"]
+
+
+def test_m5_knowledge_graph_aggregates_provenance_and_trust_conservatively(
+    tmp_path: Path,
+) -> None:
+    manager = MemoryManager(tmp_path / "memory")
+    _write_fact(
+        manager,
+        key="project:shisad",
+        value="Shisad uses MemoryPack for release recall.",
+        source_id="graph-provenance-elevated",
+        source_origin="user_direct",
+        channel_trust="command",
+        confirmation_status="user_asserted",
+    )
+    _write_fact(
+        manager,
+        key="component:memorypack",
+        value="MemoryPack supports Shisad release recall.",
+        source_id="graph-provenance-untrusted",
+        source_origin="consolidation_derived",
+        channel_trust="consolidation",
+        confirmation_status="auto_accepted",
+    )
+
+    graph = build_knowledge_graph(manager.list_entries(limit=10))
+    exported = json.loads(graph.export(format="json"))
+    shisad_id = graph.entity_id_for("Shisad")
+    memory_pack_id = graph.entity_id_for("MemoryPack")
+    node = next(item for item in exported["nodes"] if item["entity_id"] == shisad_id)
+    edge = next(
+        item
+        for item in exported["edges"]
+        if {item["source_id"], item["target_id"]} == {shisad_id, memory_pack_id}
+    )
+
+    assert node["source_origin"] == "mixed"
+    assert node["trust_band"] == "untrusted"
+    assert edge["source_origin"] == "mixed"
+    assert edge["trust_band"] == "untrusted"
 
 
 def test_m5_knowledge_graph_records_hub_and_three_axis_links(tmp_path: Path) -> None:

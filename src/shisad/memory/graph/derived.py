@@ -36,6 +36,7 @@ _STOPWORDS = {
     "uses",
     "with",
 }
+_TRUST_BAND_ORDER = {"untrusted": 0, "observed": 1, "elevated": 2}
 _TOKEN_RE = re.compile(r"[a-zA-Z][a-zA-Z0-9_:-]{1,80}")
 _CAMEL_OR_CAP_RE = re.compile(r"\b[A-Z][A-Za-z0-9_:-]{2,}\b")
 
@@ -206,6 +207,24 @@ def _add_entry_metadata(
         scopes.append(entry.scope)
 
 
+def _merge_source_origin(current: str, candidate: str) -> str:
+    if not current:
+        return candidate
+    if not candidate or current == candidate:
+        return current
+    return "mixed"
+
+
+def _merge_trust_band(current: str, candidate: str) -> str:
+    if not current:
+        return candidate
+    if not candidate:
+        return current
+    current_rank = _TRUST_BAND_ORDER.get(current, _TRUST_BAND_ORDER["untrusted"])
+    candidate_rank = _TRUST_BAND_ORDER.get(candidate, _TRUST_BAND_ORDER["untrusted"])
+    return current if current_rank <= candidate_rank else candidate
+
+
 def _infer_node_type(entry: MemoryEntry, entity_name: str) -> str:
     key_head = entry.key.split(":", 1)[0].strip().lower()
     if key_head in {"person", "org", "project", "component", "issue", "process", "meeting"}:
@@ -297,6 +316,8 @@ class DerivedKnowledgeGraph:
                     scopes=node.scopes,
                     entry=entry,
                 )
+                node.source_origin = _merge_source_origin(node.source_origin, entry.source_origin)
+                node.trust_band = _merge_trust_band(node.trust_band, entry.trust_band)
                 node.created_at = _min_timestamp(node.created_at, _iso_timestamp(entry.created_at))
                 node.valid_from = _min_timestamp(node.valid_from, _iso_timestamp(entry.valid_from))
                 node.valid_to = _max_timestamp(node.valid_to, _iso_timestamp(entry.valid_to))
@@ -329,6 +350,8 @@ class DerivedKnowledgeGraph:
                     scopes=edge.scopes,
                     entry=entry,
                 )
+                edge.source_origin = _merge_source_origin(edge.source_origin, entry.source_origin)
+                edge.trust_band = _merge_trust_band(edge.trust_band, entry.trust_band)
                 edge.created_at = _min_timestamp(edge.created_at, _iso_timestamp(entry.created_at))
                 edge.valid_from = _min_timestamp(edge.valid_from, _iso_timestamp(entry.valid_from))
                 edge.valid_to = _max_timestamp(edge.valid_to, _iso_timestamp(entry.valid_to))

@@ -1369,6 +1369,46 @@ async def test_m5_finalize_response_expires_ignored_strong_invalidation_candidat
 
 
 @pytest.mark.asyncio
+async def test_m5_finalize_response_does_not_surface_quarantined_strong_invalidation_entries(
+    tmp_path: Path,
+) -> None:
+    harness = _FinalizeEvidenceHarness()
+    harness._memory_manager = MemoryManager(tmp_path / "memory")
+    _target_id, signal_id = _write_strong_invalidation_proposal(harness._memory_manager)
+    assert harness._memory_manager.quarantine(signal_id, reason="test_quarantine")
+    execution = _finalize_execution_result(tool_outputs=[], assistant_response="Planner reply")
+
+    response = await SessionImplMixin._finalize_response(harness, execution)
+
+    assert "Memory update candidate" not in str(response["response"])
+
+
+@pytest.mark.asyncio
+async def test_m5_pending_strong_invalidation_yes_rejects_quarantined_signal(
+    tmp_path: Path,
+) -> None:
+    harness = _FinalizeEvidenceHarness()
+    harness._memory_manager = MemoryManager(tmp_path / "memory")
+    harness._memory_ingress_registry = IngressContextRegistry()
+    harness._session_manager = SimpleNamespace(persist=lambda _sid: None)
+    target_id, signal_id = _write_strong_invalidation_proposal(harness._memory_manager)
+    assert harness._memory_manager.quarantine(signal_id, reason="test_quarantine")
+    validated = _validation_result(params={"session_id": "sess-g1", "content": "yes"})
+    validated.session.metadata[_PENDING_STRONG_INVALIDATION_KEY] = {
+        "target_entry_id": target_id,
+        "signal_entry_id": signal_id,
+    }
+
+    response = await SessionImplMixin._maybe_handle_pending_strong_invalidation(
+        harness,
+        validated=validated,
+    )
+
+    assert response is not None
+    assert "no longer available" in str(response["response"])
+
+
+@pytest.mark.asyncio
 async def test_m4_finalize_response_surfaces_matching_skill_suggestion_on_cli(
     tmp_path: Path,
 ) -> None:

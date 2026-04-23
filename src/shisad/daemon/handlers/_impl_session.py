@@ -6124,8 +6124,6 @@ class SessionImplMixin(HandlerMixinBase):
 
         signal = memory_manager.get_entry(
             signal_entry_id,
-            include_pending_review=True,
-            include_quarantined=True,
         )
         if signal is None:
             return self._identity_command_response(
@@ -7209,13 +7207,9 @@ class SessionImplMixin(HandlerMixinBase):
                 continue
             target = memory_manager.get_entry(
                 target_entry_id,
-                include_pending_review=True,
-                include_quarantined=True,
             )
             signal = memory_manager.get_entry(
                 signal_entry_id,
-                include_pending_review=True,
-                include_quarantined=True,
             )
             if (
                 target is None
@@ -7230,6 +7224,7 @@ class SessionImplMixin(HandlerMixinBase):
                 memory_manager=memory_manager,
                 target_entry_id=target_entry_id,
                 signal_entry_id=signal_entry_id,
+                stop_after=surface_limit,
             )
             if surfaced >= surface_limit:
                 expired_pairs.append((target_entry_id, signal_entry_id))
@@ -7286,6 +7281,7 @@ class SessionImplMixin(HandlerMixinBase):
         memory_manager: MemoryManager,
         target_entry_id: str,
         signal_entry_id: str,
+        stop_after: int | None = None,
     ) -> int:
         event_limit = max(
             1,
@@ -7294,15 +7290,20 @@ class SessionImplMixin(HandlerMixinBase):
                 event_type="strong_invalidation_surfaced",
             ),
         )
-        return sum(
-            1
-            for event in memory_manager.list_events(
+        surfaced = 0
+        for event in reversed(
+            memory_manager.list_events(
                 entry_id=target_entry_id,
                 event_type="strong_invalidation_surfaced",
                 limit=event_limit,
             )
-            if event.metadata_json.get("signal_entry_id") == signal_entry_id
-        )
+        ):
+            if event.metadata_json.get("signal_entry_id") != signal_entry_id:
+                continue
+            surfaced += 1
+            if stop_after is not None and surfaced >= stop_after:
+                return surfaced
+        return surfaced
 
     @staticmethod
     def _strong_invalidation_terminal_exists(
