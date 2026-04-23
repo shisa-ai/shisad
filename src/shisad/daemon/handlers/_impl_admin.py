@@ -11,6 +11,7 @@ from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
+from urllib.parse import unquote
 
 from shisad.channels.base import ChannelMessage, DeliveryTarget
 from shisad.channels.discord_policy import DiscordChannelPolicy, DiscordChannelPolicyDecision
@@ -51,6 +52,7 @@ from shisad.memory.participation import (
     channel_summary_key,
     compose_channel_binding,
     inbox_item_key,
+    normalize_structured_memory_value,
     person_note_key,
     response_feedback_key,
 )
@@ -140,6 +142,53 @@ def _review_findings_from_summary(summary: str) -> list[str]:
     return findings
 
 
+def _is_legacy_bare_channel_id(value: str) -> bool:
+    normalized = str(value).strip()
+    return (
+        bool(normalized)
+        and ":" not in normalized
+        and "/" not in normalized
+        and "\\" not in normalized
+    )
+
+
+def _migrated_channel_memory_key(
+    *,
+    entry_type: str,
+    key: str,
+    value: Mapping[str, Any],
+    structured_channel_id: str,
+) -> str:
+    if entry_type == "inbox_item":
+        return key
+    if entry_type == "person_note":
+        return person_note_key(
+            channel_id=structured_channel_id,
+            external_user_id=str(value.get("external_user_id") or "").strip(),
+        )
+    if entry_type == "channel_summary":
+        return channel_summary_key(
+            channel_id=structured_channel_id,
+            summary_kind=str(value.get("summary_kind") or "topic").strip() or "topic",
+        )
+    if entry_type == "response_feedback":
+        return response_feedback_key(
+            channel_id=structured_channel_id,
+            message_id=str(value.get("target_message_id") or "").strip(),
+            actor_external_user_id=str(value.get("actor_external_user_id") or "").strip(),
+            signal=str(value.get("signal") or "").strip(),
+        )
+    if entry_type == "channel_participation":
+        prefix = "channel-participation:"
+        encoded_parts = key[len(prefix) :].split(":") if key.startswith(prefix) else []
+        thread_id = unquote(encoded_parts[1]).strip() if len(encoded_parts) > 1 else ""
+        return channel_participation_key(
+            channel_id=structured_channel_id,
+            thread_id=thread_id or None,
+        )
+    return key
+
+
 class AdminImplMixin(HandlerMixinBase):
     def _channel_memory_owner_id(self, *, channel: str) -> str:
         trusted_users_attr = {
@@ -171,6 +220,126 @@ class AdminImplMixin(HandlerMixinBase):
                 return entry
         return None
 
+    def _migrate_legacy_channel_bindings(
+        self,
+        *,
+        channel: str,
+        workspace_hint: str,
+        legacy_channel_id: str,
+        structured_channel_id: str,
+    ) -> None:
+        memory_manager = getattr(self, "_memory_manager", None)
+        if memory_manager is None or not legacy_channel_id or not structured_channel_id:
+            return
+        limit = max(1, len(memory_manager._entries))
+        for entry_type in (
+            "inbox_item",
+            "person_note",
+            "channel_summary",
+            "channel_participation",
+            "response_feedback",
+        ):
+            for entry in memory_manager.list_entries(
+                entry_type=entry_type,
+                include_deleted=True,
+                include_quarantined=True,
+                include_pending_review=True,
+                limit=limit,
+            ):
+                if entry.superseded_by is not None or not isinstance(entry.value, Mapping):
+                    continue
+                raw_channel_id = str(entry.value.get("channel_id") or "").strip()
+                if raw_channel_id != legacy_channel_id or not _is_legacy_bare_channel_id(
+                    raw_channel_id
+                ):
+                    continue
+                recovered_workspace = self._legacy_channel_entry_workspace_hint(
+                    channel=channel,
+                    entry=entry,
+                )
+                if recovered_workspace != workspace_hint:
+                    continue
+                updated_value = dict(entry.value)
+                updated_value["channel_id"] = structured_channel_id
+                entry.value = normalize_structured_memory_value(entry.entry_type, updated_value)
+                entry.key = _migrated_channel_memory_key(
+                    entry_type=entry.entry_type,
+                    key=entry.key,
+                    value=updated_value,
+                    structured_channel_id=structured_channel_id,
+                )
+                memory_manager._persist_entry(entry)
+
+    def _legacy_channel_entry_workspace_hint(self, *, channel: str, entry: Any) -> str | None:
+        source_id = str(getattr(entry, "source_id", "") or "").strip()
+        normalized_channel = channel.strip().lower()
+        prefix = f"{normalized_channel}:"
+        if not source_id.lower().startswith(prefix):
+            return None
+        message_id = source_id[len(prefix) :].strip()
+        if not message_id:
+            return None
+        return self._workspace_hint_for_channel_message(
+            channel=normalized_channel,
+            message_id=message_id,
+        )
+
+    def _workspace_hint_for_channel_message(self, *, channel: str, message_id: str) -> str | None:
+        transcript_store = getattr(self, "_transcript_store", None)
+        if transcript_store is None or not message_id:
+            return None
+
+        stub_entries = getattr(transcript_store, "entries", None)
+        if isinstance(stub_entries, list):
+            for row in stub_entries:
+                if not isinstance(row, Mapping):
+                    continue
+                metadata = row.get("metadata", {})
+                if not isinstance(metadata, Mapping):
+                    continue
+                if str(metadata.get("channel_message_id") or "").strip() != message_id:
+                    continue
+                delivery_target = metadata.get("delivery_target", {})
+                if not isinstance(delivery_target, Mapping):
+                    continue
+                if str(delivery_target.get("channel") or "").strip().lower() != channel:
+                    continue
+                workspace_hint = str(delivery_target.get("workspace_hint") or "").strip()
+                if workspace_hint:
+                    return workspace_hint
+
+        transcript_dir = getattr(transcript_store, "_transcript_dir", None)
+        if not isinstance(transcript_dir, Path) or not transcript_dir.exists():
+            return None
+        for path in transcript_dir.glob("*.jsonl"):
+            try:
+                lines = path.read_text(encoding="utf-8").splitlines()
+            except OSError:
+                continue
+            for line in lines:
+                if not line.strip():
+                    continue
+                try:
+                    payload = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(payload, Mapping):
+                    continue
+                metadata = payload.get("metadata", {})
+                if not isinstance(metadata, Mapping):
+                    continue
+                if str(metadata.get("channel_message_id") or "").strip() != message_id:
+                    continue
+                delivery_target = metadata.get("delivery_target", {})
+                if not isinstance(delivery_target, Mapping):
+                    continue
+                if str(delivery_target.get("channel") or "").strip().lower() != channel:
+                    continue
+                workspace_hint = str(delivery_target.get("workspace_hint") or "").strip()
+                if workspace_hint:
+                    return workspace_hint
+        return None
+
     def _persist_channel_memory_records(
         self,
         *,
@@ -200,6 +369,12 @@ class AdminImplMixin(HandlerMixinBase):
             )
             if channel_id
             else ""
+        )
+        self._migrate_legacy_channel_bindings(
+            channel=message.channel,
+            workspace_hint=message.workspace_hint,
+            legacy_channel_id=channel_id,
+            structured_channel_id=structured_channel_id,
         )
         sender_display_name = (
             str(metadata.get("display_name") or metadata.get("author_display_name") or "").strip()

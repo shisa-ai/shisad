@@ -21,6 +21,7 @@ from shisad.memory.participation import (
     person_note_key,
     response_feedback_key,
 )
+from shisad.memory.schema import MemorySource
 from shisad.security.firewall import FirewallResult
 
 
@@ -339,3 +340,130 @@ async def test_m3_channel_ingest_observation_updates_participation_without_inbox
     assert channel_participation_key(channel_id=channel_binding) in keys
     assert person_note_key(channel_id=channel_binding, external_user_id="guest-3") in keys
     assert inbox_item_key(owner_id="owner-user", item_id="msg-44") not in keys
+
+
+@pytest.mark.asyncio
+async def test_m3_channel_ingest_migrates_legacy_bare_inbox_bindings(
+    tmp_path: Path,
+) -> None:
+    harness = _AdminChannelIngressHarness(
+        tmp_path=tmp_path,
+        default_trust="public",
+        allowlisted_users={"guest-4"},
+    )
+    harness._transcript_store.append(
+        SessionId("sess-legacy-1"),
+        role="user",
+        content="legacy workspace one",
+        taint_labels=set(),
+        metadata={
+            "channel_message_id": "legacy-msg-1",
+            "delivery_target": {
+                "channel": "discord",
+                "recipient": "chan-legacy",
+                "workspace_hint": "guild-1",
+                "thread_id": "",
+            },
+        },
+    )
+    harness._transcript_store.append(
+        SessionId("sess-legacy-2"),
+        role="user",
+        content="legacy workspace two",
+        taint_labels=set(),
+        metadata={
+            "channel_message_id": "legacy-msg-2",
+            "delivery_target": {
+                "channel": "discord",
+                "recipient": "chan-legacy",
+                "workspace_hint": "guild-2",
+                "thread_id": "",
+            },
+        },
+    )
+    legacy = harness._memory_manager.write_with_provenance(
+        entry_type="inbox_item",
+        key=inbox_item_key(owner_id="owner-user", item_id="legacy-1"),
+        value={
+            "owner_id": "owner-user",
+            "sender_id": "guest-4",
+            "channel_id": "chan-legacy",
+            "body": "Legacy bare channel binding.",
+        },
+        source=MemorySource(
+            origin="external",
+            source_id="discord:legacy-msg-1",
+            extraction_method="channel.ingest.structured",
+        ),
+        source_origin="external_message",
+        channel_trust="shared_participant",
+        confirmation_status="auto_accepted",
+        source_id="discord:legacy-msg-1",
+        scope="user",
+        confidence=0.5,
+        confirmation_satisfied=True,
+    )
+    assert legacy.kind == "allow"
+    assert legacy.entry is not None
+    other_workspace = harness._memory_manager.write_with_provenance(
+        entry_type="inbox_item",
+        key=inbox_item_key(owner_id="owner-user", item_id="legacy-2"),
+        value={
+            "owner_id": "owner-user",
+            "sender_id": "guest-4",
+            "channel_id": "chan-legacy",
+            "body": "Legacy bare channel binding from another workspace.",
+        },
+        source=MemorySource(
+            origin="external",
+            source_id="legacy-msg-2",
+            extraction_method="channel.ingest.structured",
+        ),
+        source_origin="external_message",
+        channel_trust="shared_participant",
+        confirmation_status="auto_accepted",
+        source_id="discord:legacy-msg-2",
+        scope="user",
+        confidence=0.5,
+        confirmation_satisfied=True,
+    )
+    assert other_workspace.kind == "allow"
+    assert other_workspace.entry is not None
+
+    await harness.do_channel_ingest(
+        {
+            "message": {
+                "channel": "discord",
+                "external_user_id": "guest-4",
+                "workspace_hint": "guild-1",
+                "reply_target": "chan-legacy",
+                "message_id": "msg-55",
+                "content": "fresh message on the same channel",
+                "metadata": {"interaction_type": "direct"},
+            }
+        }
+    )
+
+    legacy_entry = harness._memory_manager.get_entry(legacy.entry.id)
+    assert legacy_entry is not None
+    assert isinstance(legacy_entry.value, dict)
+    other_workspace_entry = harness._memory_manager.get_entry(other_workspace.entry.id)
+    assert other_workspace_entry is not None
+    assert isinstance(other_workspace_entry.value, dict)
+    channel_binding = compose_channel_binding(
+        channel="discord",
+        workspace_hint="guild-1",
+        channel_id="chan-legacy",
+    )
+    assert legacy_entry.value["channel_id"] == channel_binding
+    assert other_workspace_entry.value["channel_id"] == "chan-legacy"
+
+    pack = harness._memory_manager.compile_active_attention(
+        max_tokens=256,
+        scope_filter={"user"},
+        channel_binding=channel_binding,
+    )
+
+    surfaced_ids = {entry.id for entry in pack.entries}
+    assert legacy.entry.id in surfaced_ids
+    assert other_workspace.entry.id not in surfaced_ids

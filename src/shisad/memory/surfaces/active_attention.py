@@ -144,27 +144,7 @@ def _channel_bindings_match(entry_binding: str, channel_binding: str) -> bool:
     normalized_current = channel_binding.strip().lower()
     if not normalized_entry or not normalized_current:
         return False
-    if normalized_entry == normalized_current:
-        return True
-    legacy_current = _legacy_channel_binding(normalized_current)
-    return _is_legacy_bare_channel_binding(normalized_entry) and normalized_entry == legacy_current
-
-
-def _is_legacy_bare_channel_binding(binding: str) -> bool:
-    return ":" not in binding and "/" not in binding and "\\" not in binding
-
-
-def _legacy_channel_binding(binding: str) -> str | None:
-    normalized = binding.replace("\\", "/").strip().lower()
-    if not normalized:
-        return None
-    if "/" in normalized:
-        candidate = normalized.rsplit("/", 1)[-1].strip()
-        return candidate or None
-    if ":" in normalized:
-        candidate = normalized.rsplit(":", 1)[-1].strip()
-        return candidate or None
-    return None
+    return normalized_entry == normalized_current
 
 
 def _class_balance_attention_entries(entries: list[MemoryEntry]) -> list[MemoryEntry]:
