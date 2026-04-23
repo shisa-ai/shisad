@@ -417,6 +417,41 @@ def test_m3_compile_active_attention_channel_binding_filters_user_scoped_inbox_i
     }
 
 
+def test_m3_compile_active_attention_reads_legacy_bare_channel_bindings(
+    tmp_path: Path,
+) -> None:
+    manager = MemoryManager(tmp_path / "memory")
+    legacy_inbox = _write_entry(
+        manager,
+        entry_type="inbox_item",
+        key=inbox_item_key(owner_id="owner-1", item_id="msg-legacy"),
+        value=InboxItemValue(
+            owner_id="owner-1",
+            sender_id="guest-1",
+            channel_id="chan-1",
+            body="Legacy bare channel ids should still match the current channel.",
+        ).model_dump(mode="python"),
+        source_legacy_origin="external",
+        source_origin="external_message",
+        channel_trust="shared_participant",
+        confirmation_status="auto_accepted",
+        scope="user",
+        confirmation_satisfied=True,
+    )
+
+    pack = manager.compile_active_attention(
+        max_tokens=128,
+        scope_filter={"user"},
+        channel_binding=compose_channel_binding(
+            channel="discord",
+            workspace_hint="guild-1",
+            channel_id="chan-1",
+        ),
+    )
+
+    assert [entry.id for entry in pack.entries] == [legacy_inbox.id]
+
+
 def test_m3_compile_active_attention_excludes_superseded_entries(tmp_path: Path) -> None:
     manager = MemoryManager(tmp_path / "memory")
     original = _write_entry(
