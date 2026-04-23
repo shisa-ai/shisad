@@ -636,6 +636,56 @@ def test_m1_unquarantine_refuses_active_key_collisions(tmp_path: Path) -> None:
     ] == ["created", "quarantined"]
 
 
+def test_m1_unquarantine_refuses_pending_review_key_collisions(tmp_path: Path) -> None:
+    manager = MemoryManager(tmp_path / "memory")
+    original = manager.write_with_provenance(
+        entry_type="note",
+        key="note:pending-collision",
+        value="Original note",
+        source=MemorySource(origin="user", source_id="msg-p1", extraction_method="manual"),
+        source_origin="user_direct",
+        channel_trust="command",
+        confirmation_status="user_asserted",
+        source_id="msg-p1",
+        scope="user",
+        confidence=0.8,
+        confirmation_satisfied=True,
+    )
+
+    assert original.entry is not None
+    assert manager.quarantine(original.entry.id, reason="manual-review")
+
+    pending = manager.write_with_provenance(
+        entry_type="note",
+        key="note:pending-collision",
+        value="Pending replacement note",
+        source=MemorySource(origin="external", source_id="msg-p2", extraction_method="manual"),
+        source_origin="external_message",
+        channel_trust="shared_participant",
+        confirmation_status="pending_review",
+        source_id="msg-p2",
+        scope="user",
+        confidence=0.5,
+        confirmation_satisfied=False,
+    )
+
+    assert pending.kind == "allow"
+    assert pending.entry is not None
+    assert manager.unquarantine(original.entry.id, reason="review-cleared") is False
+
+    quarantined = manager.get_entry(original.entry.id, include_quarantined=True)
+    assert quarantined is not None
+    assert quarantined.status == "quarantined"
+
+    pending_entry = manager.get_entry(
+        pending.entry.id,
+        include_pending_review=True,
+    )
+    assert pending_entry is not None
+    assert pending_entry.confirmation_status == "pending_review"
+    assert pending_entry.superseded_by is None
+
+
 def test_m1_set_workflow_state_preserves_status_and_records_event(tmp_path: Path) -> None:
     manager = MemoryManager(tmp_path / "memory")
     decision = manager.write_with_provenance(

@@ -1321,9 +1321,15 @@ class MemoryManager:
     def _has_active_key_collision(self, entry: MemoryEntry) -> bool:
         for candidate in self.list_entries(
             entry_type=entry.entry_type,
+            include_pending_review=True,
             limit=max(1, len(self._entries)),
         ):
-            if candidate.id == entry.id or candidate.superseded_by is not None:
+            if (
+                candidate.id == entry.id
+                or candidate.superseded_by is not None
+                or self._is_quarantined(candidate)
+                or self._is_deleted(candidate)
+            ):
                 continue
             if candidate.key == entry.key:
                 return True
