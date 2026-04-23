@@ -202,9 +202,6 @@ class AdminImplMixin(HandlerMixinBase):
             return None
         for entry in memory_manager.list_entries(
             entry_type=entry_type,
-            include_deleted=True,
-            include_quarantined=True,
-            include_pending_review=True,
             limit=max(1, len(memory_manager._entries)),
         ):
             if entry.key == key and entry.superseded_by is None:
@@ -225,9 +222,6 @@ class AdminImplMixin(HandlerMixinBase):
         limit = max(1, len(memory_manager._entries))
         for entry in memory_manager.list_entries(
             entry_type="inbox_item",
-            include_deleted=True,
-            include_quarantined=True,
-            include_pending_review=True,
             limit=limit,
         ):
             if entry.superseded_by is not None or not isinstance(entry.value, Mapping):
@@ -282,6 +276,8 @@ class AdminImplMixin(HandlerMixinBase):
                     continue
                 if str(delivery_target.get("channel") or "").strip().lower() != channel:
                     continue
+                if "workspace_hint" not in delivery_target:
+                    return None
                 return str(delivery_target.get("workspace_hint") or "").strip()
 
         transcript_dir = getattr(transcript_store, "_transcript_dir", None)
@@ -311,6 +307,8 @@ class AdminImplMixin(HandlerMixinBase):
                     continue
                 if str(delivery_target.get("channel") or "").strip().lower() != channel:
                     continue
+                if "workspace_hint" not in delivery_target:
+                    return None
                 return str(delivery_target.get("workspace_hint") or "").strip()
         return None
 
@@ -328,9 +326,6 @@ class AdminImplMixin(HandlerMixinBase):
             return None
         for entry in memory_manager.list_entries(
             entry_type=entry_type,
-            include_deleted=True,
-            include_quarantined=True,
-            include_pending_review=True,
             limit=max(1, len(memory_manager._entries)),
         ):
             if entry.key != key or entry.superseded_by is not None:

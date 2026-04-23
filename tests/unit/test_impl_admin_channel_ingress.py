@@ -878,3 +878,231 @@ async def test_m3_channel_ingest_carries_forward_legacy_keyed_state_without_work
         channel_summary_key(channel_id=channel_binding, summary_kind="digest")
     ]
     assert current_summary.supersedes == legacy_summary.entry.id
+
+
+@pytest.mark.asyncio
+async def test_m3_channel_ingest_requires_explicit_blank_workspace_hint_for_legacy_carry_forward(
+    tmp_path: Path,
+) -> None:
+    harness = _AdminChannelIngressHarness(
+        tmp_path=tmp_path,
+        default_trust="public",
+        allowlisted_users={"guest-7"},
+    )
+    harness._transcript_store.append(
+        SessionId("sess-note-missing-workspace"),
+        role="user",
+        content="legacy note without workspace hint",
+        taint_labels=set(),
+        metadata={
+            "channel_message_id": "legacy-note-msg-missing-workspace",
+            "delivery_target": {
+                "channel": "discord",
+                "recipient": "chan-missing-workspace",
+                "thread_id": "",
+            },
+        },
+    )
+
+    legacy_note = harness._memory_manager.write_with_provenance(
+        entry_type="person_note",
+        key=person_note_key(
+            channel_id="chan-missing-workspace",
+            external_user_id="guest-7",
+        ),
+        value={
+            "external_user_id": "guest-7",
+            "display_name": "Guest Seven",
+            "channel_id": "chan-missing-workspace",
+            "total_interactions": 6,
+            "interaction_summary": "Missing workspace note",
+        },
+        source=MemorySource(
+            origin="external",
+            source_id="discord:legacy-note-msg-missing-workspace",
+            extraction_method="channel.ingest.structured",
+        ),
+        source_origin="external_message",
+        channel_trust="shared_participant",
+        confirmation_status="auto_accepted",
+        source_id="discord:legacy-note-msg-missing-workspace",
+        scope="channel",
+        confidence=0.5,
+        confirmation_satisfied=True,
+    )
+    assert legacy_note.kind == "allow"
+    assert legacy_note.entry is not None
+
+    await harness.do_channel_ingest(
+        {
+            "message": {
+                "channel": "discord",
+                "external_user_id": "guest-7",
+                "workspace_hint": "",
+                "reply_target": "chan-missing-workspace",
+                "message_id": "msg-99",
+                "content": "fresh blank-workspace message",
+                "metadata": {
+                    "interaction_type": "direct",
+                    "display_name": "Guest Seven",
+                },
+            }
+        }
+    )
+
+    channel_binding = compose_channel_binding(
+        channel="discord",
+        workspace_hint="",
+        channel_id="chan-missing-workspace",
+    )
+    current_entries = {
+        entry.key: entry
+        for entry in harness._memory_manager.list_entries(limit=20)
+        if entry.superseded_by is None
+    }
+
+    current_note = current_entries[
+        person_note_key(channel_id=channel_binding, external_user_id="guest-7")
+    ]
+    assert current_note.supersedes is None
+    assert current_note.value["total_interactions"] == 1
+
+    preserved_legacy = harness._memory_manager.get_entry(legacy_note.entry.id)
+    assert preserved_legacy is not None
+    assert preserved_legacy.key == person_note_key(
+        channel_id="chan-missing-workspace",
+        external_user_id="guest-7",
+    )
+    assert preserved_legacy.superseded_by is None
+
+
+@pytest.mark.asyncio
+async def test_m3_channel_ingest_ignores_non_active_predecessors_for_keyed_state(
+    tmp_path: Path,
+) -> None:
+    harness = _AdminChannelIngressHarness(
+        tmp_path=tmp_path,
+        default_trust="public",
+        allowlisted_users={"guest-8"},
+    )
+    harness._transcript_store.append(
+        SessionId("sess-note-pending-review"),
+        role="user",
+        content="legacy note pending review",
+        taint_labels=set(),
+        metadata={
+            "channel_message_id": "legacy-note-msg-pending-review",
+            "delivery_target": {
+                "channel": "discord",
+                "recipient": "chan-review-state",
+                "workspace_hint": "guild-1",
+                "thread_id": "",
+            },
+        },
+    )
+
+    channel_binding = compose_channel_binding(
+        channel="discord",
+        workspace_hint="guild-1",
+        channel_id="chan-review-state",
+    )
+    current_quarantined = harness._memory_manager.write_with_provenance(
+        entry_type="person_note",
+        key=person_note_key(channel_id=channel_binding, external_user_id="guest-8"),
+        value={
+            "external_user_id": "guest-8",
+            "display_name": "Guest Eight",
+            "channel_id": channel_binding,
+            "total_interactions": 9,
+            "interaction_summary": "Quarantined canonical note",
+        },
+        source=MemorySource(
+            origin="external",
+            source_id="discord:canonical-note-msg",
+            extraction_method="channel.ingest.structured",
+        ),
+        source_origin="external_message",
+        channel_trust="shared_participant",
+        confirmation_status="auto_accepted",
+        source_id="discord:canonical-note-msg",
+        scope="channel",
+        confidence=0.5,
+        confirmation_satisfied=True,
+    )
+    assert current_quarantined.kind == "allow"
+    assert current_quarantined.entry is not None
+    assert harness._memory_manager.quarantine(
+        current_quarantined.entry.id,
+        reason="manual-review",
+    )
+
+    pending_review_legacy = harness._memory_manager.write_with_provenance(
+        entry_type="person_note",
+        key=person_note_key(channel_id="chan-review-state", external_user_id="guest-8"),
+        value={
+            "external_user_id": "guest-8",
+            "display_name": "Guest Eight",
+            "channel_id": "chan-review-state",
+            "total_interactions": 4,
+            "interaction_summary": "Pending review legacy note",
+        },
+        source=MemorySource(
+            origin="external",
+            source_id="discord:legacy-note-msg-pending-review",
+            extraction_method="channel.ingest.structured",
+        ),
+        source_origin="external_message",
+        channel_trust="shared_participant",
+        confirmation_status="pending_review",
+        source_id="discord:legacy-note-msg-pending-review",
+        scope="channel",
+        confidence=0.5,
+        confirmation_satisfied=False,
+    )
+    assert pending_review_legacy.kind == "allow"
+    assert pending_review_legacy.entry is not None
+
+    await harness.do_channel_ingest(
+        {
+            "message": {
+                "channel": "discord",
+                "external_user_id": "guest-8",
+                "workspace_hint": "guild-1",
+                "reply_target": "chan-review-state",
+                "message_id": "msg-109",
+                "content": "fresh active message",
+                "metadata": {
+                    "interaction_type": "direct",
+                    "display_name": "Guest Eight",
+                },
+            }
+        }
+    )
+
+    current_entries = {
+        entry.key: entry
+        for entry in harness._memory_manager.list_entries(limit=20)
+        if entry.superseded_by is None
+    }
+
+    current_note = current_entries[
+        person_note_key(channel_id=channel_binding, external_user_id="guest-8")
+    ]
+    assert current_note.supersedes is None
+    assert current_note.value["total_interactions"] == 1
+
+    quarantined_entry = harness._memory_manager.get_entry(
+        current_quarantined.entry.id,
+        include_quarantined=True,
+    )
+    assert quarantined_entry is not None
+    assert quarantined_entry.status == "quarantined"
+    assert quarantined_entry.superseded_by is None
+
+    pending_review_entry = harness._memory_manager.get_entry(
+        pending_review_legacy.entry.id,
+        include_pending_review=True,
+    )
+    assert pending_review_entry is not None
+    assert pending_review_entry.confirmation_status == "pending_review"
+    assert pending_review_entry.superseded_by is None
