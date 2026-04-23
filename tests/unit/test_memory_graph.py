@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
 from pathlib import Path
 
 from shisad.memory.graph import build_knowledge_graph
@@ -63,6 +64,38 @@ def test_m5_knowledge_graph_rebuilds_with_stable_evidence_ids(tmp_path: Path) ->
     assert exported["derived"] is True
     assert any(node["entity_id"] == shisad_id for node in exported["nodes"])
     assert "Evidence" in graph.export(format="md")
+
+
+def test_m5_knowledge_graph_exports_lifecycle_and_provenance_metadata(
+    tmp_path: Path,
+) -> None:
+    manager = MemoryManager(tmp_path / "memory")
+    entry = _write_fact(
+        manager,
+        key="project:shisad",
+        value="Shisad uses MemoryPack for release recall.",
+        source_id="graph-metadata",
+    )
+    entry.valid_from = datetime(2026, 4, 1, tzinfo=UTC)
+    entry.valid_to = datetime(2026, 5, 1, tzinfo=UTC)
+    entry.decay_score = 0.72
+    entry.importance_weight = 1.4
+    manager._persist_entry(entry)
+
+    graph = build_knowledge_graph(manager.list_entries(limit=10))
+    exported = json.loads(graph.export(format="json"))
+    shisad_id = graph.entity_id_for("Shisad")
+    node = next(item for item in exported["nodes"] if item["entity_id"] == shisad_id)
+
+    assert node["created_at"] == entry.created_at.isoformat()
+    assert node["valid_from"] == entry.valid_from.isoformat()
+    assert node["valid_to"] == entry.valid_to.isoformat()
+    assert node["decay_score"] == 0.72
+    assert node["importance_weight"] == 1.4
+    assert node["source_origin"] == "user_direct"
+    assert node["trust_band"] == "elevated"
+    assert node["source_ids"] == ["graph-metadata"]
+    assert node["scopes"] == ["user"]
 
 
 def test_m5_knowledge_graph_records_hub_and_three_axis_links(tmp_path: Path) -> None:

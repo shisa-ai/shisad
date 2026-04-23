@@ -46,6 +46,11 @@ class GraphNode:
     name: str
     node_type: str = "concept"
     evidence_entry_ids: list[str] = field(default_factory=list)
+    source_ids: list[str] = field(default_factory=list)
+    scopes: list[str] = field(default_factory=list)
+    created_at: str | None = None
+    valid_from: str | None = None
+    valid_to: str | None = None
     decay_score: float = 1.0
     importance_weight: float = 1.0
     source_origin: str = ""
@@ -58,6 +63,11 @@ class GraphNode:
             "name": self.name,
             "node_type": self.node_type,
             "evidence_entry_ids": list(self.evidence_entry_ids),
+            "source_ids": list(self.source_ids),
+            "scopes": list(self.scopes),
+            "created_at": self.created_at,
+            "valid_from": self.valid_from,
+            "valid_to": self.valid_to,
             "decay_score": self.decay_score,
             "importance_weight": self.importance_weight,
             "source_origin": self.source_origin,
@@ -74,6 +84,11 @@ class GraphEdge:
     relation: str = "related_to"
     evidence_entry_ids: list[str] = field(default_factory=list)
     axes: list[str] = field(default_factory=list)
+    source_ids: list[str] = field(default_factory=list)
+    scopes: list[str] = field(default_factory=list)
+    created_at: str | None = None
+    valid_from: str | None = None
+    valid_to: str | None = None
     confidence: float = 0.0
     decay_score: float = 1.0
     importance_weight: float = 1.0
@@ -88,6 +103,11 @@ class GraphEdge:
             "relation": self.relation,
             "evidence_entry_ids": list(self.evidence_entry_ids),
             "axes": list(self.axes),
+            "source_ids": list(self.source_ids),
+            "scopes": list(self.scopes),
+            "created_at": self.created_at,
+            "valid_from": self.valid_from,
+            "valid_to": self.valid_to,
             "confidence": self.confidence,
             "decay_score": self.decay_score,
             "importance_weight": self.importance_weight,
@@ -145,6 +165,45 @@ def _entry_text(entry: MemoryEntry) -> str:
         else str(entry.value)
     )
     return f"{entry.key}\n{entry.predicate or ''}\n{value}"
+
+
+def _iso_timestamp(value: object) -> str | None:
+    if value is None:
+        return None
+    if hasattr(value, "isoformat"):
+        return str(value.isoformat())
+    return str(value)
+
+
+def _min_timestamp(current: str | None, candidate: str | None) -> str | None:
+    if candidate is None:
+        return current
+    if current is None:
+        return candidate
+    return min(current, candidate)
+
+
+def _max_timestamp(current: str | None, candidate: str | None) -> str | None:
+    if candidate is None:
+        return current
+    if current is None:
+        return candidate
+    return max(current, candidate)
+
+
+def _add_entry_metadata(
+    *,
+    evidence_entry_ids: list[str],
+    source_ids: list[str],
+    scopes: list[str],
+    entry: MemoryEntry,
+) -> None:
+    if entry.id not in evidence_entry_ids:
+        evidence_entry_ids.append(entry.id)
+    if entry.source_id and entry.source_id not in source_ids:
+        source_ids.append(entry.source_id)
+    if entry.scope and entry.scope not in scopes:
+        scopes.append(entry.scope)
 
 
 def _infer_node_type(entry: MemoryEntry, entity_name: str) -> str:
@@ -223,10 +282,20 @@ class DerivedKnowledgeGraph:
                         node_type=_infer_node_type(entry, name),
                         source_origin=entry.source_origin,
                         trust_band=entry.trust_band,
+                        created_at=_iso_timestamp(entry.created_at),
+                        valid_from=_iso_timestamp(entry.valid_from),
+                        valid_to=_iso_timestamp(entry.valid_to),
                     )
                     nodes[entity_id] = node
-                if entry.id not in node.evidence_entry_ids:
-                    node.evidence_entry_ids.append(entry.id)
+                _add_entry_metadata(
+                    evidence_entry_ids=node.evidence_entry_ids,
+                    source_ids=node.source_ids,
+                    scopes=node.scopes,
+                    entry=entry,
+                )
+                node.created_at = _min_timestamp(node.created_at, _iso_timestamp(entry.created_at))
+                node.valid_from = _min_timestamp(node.valid_from, _iso_timestamp(entry.valid_from))
+                node.valid_to = _max_timestamp(node.valid_to, _iso_timestamp(entry.valid_to))
                 node.decay_score = min(node.decay_score, entry.decay_score)
                 node.importance_weight = max(node.importance_weight, entry.importance_weight)
             entry_entities[entry.id] = entity_ids
@@ -245,10 +314,20 @@ class DerivedKnowledgeGraph:
                         axes=["entity_cooccurrence"],
                         source_origin=entry.source_origin,
                         trust_band=entry.trust_band,
+                        created_at=_iso_timestamp(entry.created_at),
+                        valid_from=_iso_timestamp(entry.valid_from),
+                        valid_to=_iso_timestamp(entry.valid_to),
                     )
                     edges[edge_id] = edge
-                if entry.id not in edge.evidence_entry_ids:
-                    edge.evidence_entry_ids.append(entry.id)
+                _add_entry_metadata(
+                    evidence_entry_ids=edge.evidence_entry_ids,
+                    source_ids=edge.source_ids,
+                    scopes=edge.scopes,
+                    entry=entry,
+                )
+                edge.created_at = _min_timestamp(edge.created_at, _iso_timestamp(entry.created_at))
+                edge.valid_from = _min_timestamp(edge.valid_from, _iso_timestamp(entry.valid_from))
+                edge.valid_to = _max_timestamp(edge.valid_to, _iso_timestamp(entry.valid_to))
                 edge.confidence = min(0.99, max(edge.confidence, entry.confidence))
                 edge.decay_score = min(edge.decay_score, entry.decay_score)
                 edge.importance_weight = max(edge.importance_weight, entry.importance_weight)
