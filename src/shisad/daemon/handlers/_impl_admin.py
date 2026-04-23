@@ -282,9 +282,7 @@ class AdminImplMixin(HandlerMixinBase):
                     continue
                 if str(delivery_target.get("channel") or "").strip().lower() != channel:
                     continue
-                workspace_hint = str(delivery_target.get("workspace_hint") or "").strip()
-                if workspace_hint:
-                    return workspace_hint
+                return str(delivery_target.get("workspace_hint") or "").strip()
 
         transcript_dir = getattr(transcript_store, "_transcript_dir", None)
         if not isinstance(transcript_dir, Path) or not transcript_dir.exists():
@@ -313,9 +311,7 @@ class AdminImplMixin(HandlerMixinBase):
                     continue
                 if str(delivery_target.get("channel") or "").strip().lower() != channel:
                     continue
-                workspace_hint = str(delivery_target.get("workspace_hint") or "").strip()
-                if workspace_hint:
-                    return workspace_hint
+                return str(delivery_target.get("workspace_hint") or "").strip()
         return None
 
     def _find_legacy_channel_memory_entry(
