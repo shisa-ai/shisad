@@ -273,6 +273,64 @@ async def test_memory_promote_skill_promotes_pending_review_candidate_from_handl
 
 
 @pytest.mark.asyncio
+async def test_memory_promote_skill_derives_tool_install_context_from_tool_output_handle(
+    tmp_path: Path,
+) -> None:
+    harness = _MemoryWriteHarness(tmp_path)
+    skill_body = "Release close checklist\nTool-installed candidate"
+    candidate = harness._memory_manager.write_with_provenance(
+        entry_type="skill",
+        key="skill:tool-release-close",
+        value=skill_body,
+        source=MemorySource(
+            origin="external",
+            source_id="review-candidate-tool-1",
+            extraction_method="review.queue",
+        ),
+        source_origin="external_message",
+        channel_trust="shared_participant",
+        confirmation_status="pending_review",
+        source_id="review-candidate-tool-1",
+        scope="user",
+        confidence=0.62,
+        confirmation_satisfied=True,
+    )
+    assert candidate.entry is not None
+    tool_context = harness._memory_ingress_registry.mint(
+        source_origin="tool_output",
+        channel_trust="tool_passed",
+        confirmation_status="auto_accepted",
+        scope="session",
+        source_id="session-1:skill.install",
+        content=skill_body,
+    )
+
+    result = await harness.do_memory_promote_skill(
+        {
+            "ingress_context": tool_context.handle_id,
+            "entry_id": candidate.entry.id,
+            "_control_api_authenticated_write": True,
+        }
+    )
+
+    assert result["kind"] == "allow"
+    entry = result["entry"]
+    assert entry is not None
+    assert entry["source_origin"] == "tool_output"
+    assert entry["channel_trust"] == "tool_passed"
+    assert entry["confirmation_status"] == "pep_approved"
+    assert entry["scope"] == "user"
+    assert entry["invocation_eligible"] is True
+    assert entry["ingress_handle_id"] != tool_context.handle_id
+    promoted = harness._memory_manager.get_entry(str(entry["id"]))
+    assert promoted is not None
+    assert promoted.trust_band == "untrusted"
+    install_context = harness._memory_ingress_registry.resolve(str(entry["ingress_handle_id"]))
+    assert install_context.confirmation_status == "pep_approved"
+    assert install_context.scope == "user"
+
+
+@pytest.mark.asyncio
 async def test_note_create_accepts_handle_bound_extracted_payload(tmp_path: Path) -> None:
     harness = _MemoryWriteHarness(tmp_path)
     context = harness._memory_ingress_registry.mint(

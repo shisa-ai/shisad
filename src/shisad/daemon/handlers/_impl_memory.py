@@ -10,7 +10,7 @@ from typing import Any, cast
 from shisad.core.types import Capability
 from shisad.daemon.handlers._csv import render_csv_row
 from shisad.daemon.handlers._mixin_typing import HandlerMixinBase
-from shisad.memory.ingress import DerivationPath
+from shisad.memory.ingress import DerivationPath, IngressContext
 from shisad.memory.remap import (
     digest_memory_value,
     legacy_source_view_origin,
@@ -204,6 +204,40 @@ class MemoryImplMixin(HandlerMixinBase):
             supersedes=str(params.get("supersedes", "")).strip() or None,
         )
         return cast(dict[str, Any], decision.model_dump(mode="json"))
+
+    def _resolve_skill_promotion_ingress(
+        self,
+        params: Mapping[str, Any],
+        *,
+        candidate_value: Any,
+    ) -> tuple[IngressContext, str]:
+        handle_id = str(params.get("ingress_context", "")).strip()
+        context = self._memory_ingress_registry.resolve(handle_id)
+        content_digest = str(params.get("content_digest", "")).strip() or None
+        if content_digest is None and not isinstance(candidate_value, (str, bytes)):
+            content_digest = digest_memory_value(candidate_value)
+        resolved_digest = self._memory_ingress_registry.validate_binding(
+            handle_id,
+            content=candidate_value if isinstance(candidate_value, (str, bytes)) else None,
+            content_digest=content_digest,
+        )
+        if (
+            bool(params.get(_CONTROL_API_AUTHENTICATED_WRITE, False))
+            and context.source_origin == "tool_output"
+            and context.channel_trust == "tool_passed"
+            and context.confirmation_status == "auto_accepted"
+        ):
+            install_context = self._memory_ingress_registry.mint(
+                source_origin="tool_output",
+                channel_trust="tool_passed",
+                confirmation_status="pep_approved",
+                scope="user",
+                source_id=context.source_id,
+                content=self._canonical_ingress_content(candidate_value),
+                taint_labels=context.taint_labels,
+            )
+            return install_context, install_context.content_digest
+        return context, resolved_digest
 
     async def do_memory_mint_ingress_context(self, params: Mapping[str, Any]) -> dict[str, Any]:
         is_internal_ingress = self._is_internal_ingress_request(params)
@@ -476,7 +510,6 @@ class MemoryImplMixin(HandlerMixinBase):
         if not handle_id:
             raise ValueError("ingress_context is required for memory.promote_to_skill")
         entry_id = str(params.get("entry_id", "")).strip()
-        context = self._memory_ingress_registry.resolve(handle_id)
         candidate = self._memory_manager.get_entry(
             entry_id,
             include_pending_review=True,
@@ -488,13 +521,9 @@ class MemoryImplMixin(HandlerMixinBase):
                 "reason": "skill_not_found",
                 "entry": None,
             }
-        content_digest = str(params.get("content_digest", "")).strip() or None
-        if content_digest is None and not isinstance(candidate.value, (str, bytes)):
-            content_digest = digest_memory_value(candidate.value)
-        resolved_digest = self._memory_ingress_registry.validate_binding(
-            handle_id,
-            content=candidate.value if isinstance(candidate.value, (str, bytes)) else None,
-            content_digest=content_digest,
+        context, resolved_digest = self._resolve_skill_promotion_ingress(
+            params,
+            candidate_value=candidate.value,
         )
         decision = self._memory_manager.promote_to_skill(
             entry_id=entry_id,
