@@ -432,7 +432,6 @@ class MemoryImplMixin(HandlerMixinBase):
             candidate = self._memory_manager.get_entry(
                 candidate_id,
                 include_pending_review=True,
-                include_quarantined=True,
             )
             promoted_value = candidate.value if candidate is not None else None
         if promoted_value is None:
@@ -548,7 +547,6 @@ class MemoryImplMixin(HandlerMixinBase):
         candidate = self._memory_manager.get_entry(
             entry_id,
             include_pending_review=True,
-            include_quarantined=True,
         )
         if candidate is None:
             return {

@@ -331,6 +331,101 @@ async def test_memory_promote_skill_derives_tool_install_context_from_tool_outpu
 
 
 @pytest.mark.asyncio
+async def test_memory_promote_identity_candidate_rejects_quarantined_candidate_before_binding_check(
+    tmp_path: Path,
+) -> None:
+    harness = _MemoryWriteHarness(tmp_path)
+    candidate = harness._memory_manager.write_with_provenance(
+        entry_type="preference",
+        key="preference:tea",
+        value="I prefer tea over coffee.",
+        predicate="likes(tea)",
+        source=MemorySource(
+            origin="external",
+            source_id="candidate-promote-quarantine-1",
+            extraction_method="identity.candidate",
+        ),
+        source_origin="external_message",
+        channel_trust="shared_participant",
+        confirmation_status="pending_review",
+        source_id="candidate-promote-quarantine-1",
+        scope="user",
+        confidence=0.62,
+        confirmation_satisfied=True,
+    )
+    assert candidate.entry is not None
+    assert harness._memory_manager.quarantine(candidate.entry.id, reason="test_quarantine")
+    context = harness._memory_ingress_registry.mint(
+        source_origin="user_direct",
+        channel_trust="command",
+        confirmation_status="user_asserted",
+        scope="user",
+        source_id="turn-promote-quarantine-1",
+        content="mismatched promotion payload",
+    )
+
+    result = await harness.do_memory_promote_identity_candidate(
+        {
+            "ingress_context": context.handle_id,
+            "candidate_id": candidate.entry.id,
+        }
+    )
+
+    assert result == {
+        "kind": "reject",
+        "reason": "candidate_not_found",
+        "entry": None,
+    }
+
+
+@pytest.mark.asyncio
+async def test_memory_promote_skill_rejects_quarantined_candidate_before_binding_check(
+    tmp_path: Path,
+) -> None:
+    harness = _MemoryWriteHarness(tmp_path)
+    candidate = harness._memory_manager.write_with_provenance(
+        entry_type="skill",
+        key="skill:release-close",
+        value="Release close checklist\nQuarantined candidate",
+        source=MemorySource(
+            origin="external",
+            source_id="skill-promote-quarantine-1",
+            extraction_method="review.queue",
+        ),
+        source_origin="external_message",
+        channel_trust="shared_participant",
+        confirmation_status="pending_review",
+        source_id="skill-promote-quarantine-1",
+        scope="user",
+        confidence=0.62,
+        confirmation_satisfied=True,
+    )
+    assert candidate.entry is not None
+    assert harness._memory_manager.quarantine(candidate.entry.id, reason="test_quarantine")
+    context = harness._memory_ingress_registry.mint(
+        source_origin="user_direct",
+        channel_trust="command",
+        confirmation_status="user_asserted",
+        scope="user",
+        source_id="turn-skill-quarantine-1",
+        content="mismatched skill promotion payload",
+    )
+
+    result = await harness.do_memory_promote_skill(
+        {
+            "ingress_context": context.handle_id,
+            "entry_id": candidate.entry.id,
+        }
+    )
+
+    assert result == {
+        "kind": "reject",
+        "reason": "skill_not_found",
+        "entry": None,
+    }
+
+
+@pytest.mark.asyncio
 async def test_note_create_accepts_handle_bound_extracted_payload(tmp_path: Path) -> None:
     harness = _MemoryWriteHarness(tmp_path)
     context = harness._memory_ingress_registry.mint(

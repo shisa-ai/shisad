@@ -3092,6 +3092,87 @@ async def test_contract_pending_review_skill_requires_promotion_before_invocatio
 
 
 @pytest.mark.asyncio
+async def test_contract_quarantined_promotion_rpcs_fail_closed_without_binding_oracle(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seeded: dict[str, str] = {}
+
+    def _seed(config: DaemonConfig) -> None:
+        manager = MemoryManager(config.data_dir / "memory_entries")
+        identity = manager.write_with_provenance(
+            entry_type="preference",
+            key="preference:tea",
+            value="I prefer tea over coffee.",
+            predicate="likes(tea)",
+            source=MemorySource(
+                origin="external",
+                source_id="candidate-oracle-1",
+                extraction_method="identity.candidate",
+            ),
+            source_origin="external_message",
+            channel_trust="shared_participant",
+            confirmation_status="pending_review",
+            source_id="candidate-oracle-1",
+            scope="user",
+            confidence=0.62,
+            confirmation_satisfied=True,
+        )
+        skill = manager.write_with_provenance(
+            entry_type="skill",
+            key="skill:release-close",
+            value="Release close checklist\nQuarantined candidate",
+            source=MemorySource(
+                origin="external",
+                source_id="skill-oracle-1",
+                extraction_method="review.queue",
+            ),
+            source_origin="external_message",
+            channel_trust="shared_participant",
+            confirmation_status="pending_review",
+            source_id="skill-oracle-1",
+            scope="user",
+            confidence=0.62,
+            confirmation_satisfied=True,
+        )
+        assert identity.entry is not None
+        assert skill.entry is not None
+        assert manager.quarantine(identity.entry.id, reason="test_quarantine")
+        assert manager.quarantine(skill.entry.id, reason="test_quarantine")
+        seeded["identity_id"] = identity.entry.id
+        seeded["skill_id"] = skill.entry.id
+
+    async with _contract_harness_context(tmp_path, monkeypatch, prestart=_seed) as harness:
+        minted = await _mint_memory_ingress_context(
+            harness.client,
+            content="mismatched quarantined promotion payload",
+            source_type="user",
+        )
+
+        rejected_identity = await harness.client.call(
+            "memory.promote_identity_candidate",
+            {
+                "ingress_context": minted["ingress_context"],
+                "candidate_id": seeded["identity_id"],
+            },
+        )
+        assert rejected_identity.get("kind") == "reject"
+        assert rejected_identity.get("reason") == "candidate_not_found"
+        assert rejected_identity.get("entry") is None
+
+        rejected_skill = await harness.client.call(
+            "memory.promote_to_skill",
+            {
+                "ingress_context": minted["ingress_context"],
+                "entry_id": seeded["skill_id"],
+            },
+        )
+        assert rejected_skill.get("kind") == "reject"
+        assert rejected_skill.get("reason") == "skill_not_found"
+        assert rejected_skill.get("entry") is None
+
+
+@pytest.mark.asyncio
 async def test_contract_graph_query_export_and_consolidation_run_via_control_api(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
