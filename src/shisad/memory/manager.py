@@ -585,7 +585,6 @@ class MemoryManager:
                 or self._is_quarantined(entry)
                 or self._is_pending_review(entry)
                 or entry.superseded_by is not None
-                or not entry.invocation_eligible
             ):
                 continue
             refreshed = self._refresh_ttl(entry)
@@ -595,10 +594,6 @@ class MemoryManager:
                 session_scope_id=session_scope_id,
             ):
                 continue
-            summary = build_procedural_summary(refreshed)
-            haystack = f"{summary.name}\n{summary.description}".lower()
-            if normalized_query and normalized_query not in haystack:
-                continue
             group_key = self._procedural_group_key(refreshed)
             current = latest_by_group.get(group_key)
             if current is None or self._procedural_sort_key(refreshed) > self._procedural_sort_key(
@@ -607,6 +602,12 @@ class MemoryManager:
                 latest_by_group[group_key] = refreshed
         ranked: list[tuple[datetime, ProceduralArtifactSummary]] = []
         for refreshed in latest_by_group.values():
+            if not refreshed.invocation_eligible:
+                continue
+            summary = build_procedural_summary(refreshed)
+            haystack = f"{summary.name}\n{summary.description}".lower()
+            if normalized_query and normalized_query not in haystack:
+                continue
             ranked.append(
                 (
                     refreshed.last_cited_at or refreshed.created_at,

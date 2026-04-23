@@ -163,6 +163,50 @@ async def test_m4_skills_command_lists_and_searches_invocable_artifacts(tmp_path
 
 
 @pytest.mark.asyncio
+async def test_m4_skills_command_hides_stale_same_key_entries(tmp_path: Path) -> None:
+    harness = _SkillCommandHarness(tmp_path)
+    stale = _write_skill(
+        harness._memory_manager,
+        key="skill:release-close",
+        value="Legacy release close steps",
+        invocation_eligible=True,
+    )
+    latest = harness._memory_manager.write_with_provenance(
+        entry_type="skill",
+        key="skill:release-close",
+        value="Current release close steps",
+        source=MemorySource(
+            origin="user",
+            source_id="skill-latest-noninvocable",
+            extraction_method="manual",
+        ),
+        source_origin="user_direct",
+        channel_trust="command",
+        confirmation_status="user_asserted",
+        source_id="skill-latest-noninvocable",
+        scope="user",
+        confidence=0.95,
+        confirmation_satisfied=True,
+        invocation_eligible=False,
+    )
+    assert latest.entry is not None
+
+    listed = await SessionImplMixin.do_session_message(
+        harness,
+        {"session_id": "sess-skill-command", "content": "/skills"},
+    )  # type: ignore[arg-type]
+    searched = await SessionImplMixin.do_session_message(
+        harness,
+        {"session_id": "sess-skill-command", "content": "/skills search legacy"},
+    )  # type: ignore[arg-type]
+
+    assert stale not in str(listed["response"])
+    assert "No invocable skills are currently available." in str(listed["response"])
+    assert stale not in str(searched["response"])
+    assert "No invocable skills matched query: legacy" in str(searched["response"])
+
+
+@pytest.mark.asyncio
 async def test_m4_skill_command_requires_exact_id_and_records_invocation(tmp_path: Path) -> None:
     harness = _SkillCommandHarness(tmp_path)
     release_id = _write_skill(
@@ -330,4 +374,38 @@ async def test_m4_skill_suggestion_yes_followup_loads_pending_artifact(tmp_path:
 
     assert "Loaded skill" in str(result["response"])
     assert "Release close checklist" in str(result["response"])
+    assert _PENDING_SKILL_SUGGESTION_ID_KEY not in harness.session.metadata
+
+
+@pytest.mark.asyncio
+async def test_m4_skill_suggestion_yes_followup_loads_same_session_skill(tmp_path: Path) -> None:
+    harness = _SuggestedSkillHarness(tmp_path)
+    decision = harness._memory_manager.write_with_provenance(
+        entry_type="skill",
+        key="skill:release-close",
+        value="Session-scoped release close checklist",
+        source=MemorySource(
+            origin="user",
+            source_id=f"{harness.session.id}:tool-skill",
+            extraction_method="manual",
+        ),
+        source_origin="user_direct",
+        channel_trust="command",
+        confirmation_status="user_asserted",
+        source_id=f"{harness.session.id}:tool-skill",
+        scope="session",
+        confidence=0.95,
+        confirmation_satisfied=True,
+        invocation_eligible=True,
+    )
+    assert decision.entry is not None
+    harness.session.metadata[_PENDING_SKILL_SUGGESTION_ID_KEY] = decision.entry.id
+
+    result = await SessionImplMixin.do_session_message(
+        harness,
+        {"session_id": str(harness.session.id), "content": "yes"},
+    )  # type: ignore[arg-type]
+
+    assert "Loaded skill" in str(result["response"])
+    assert "Session-scoped release close checklist" in str(result["response"])
     assert _PENDING_SKILL_SUGGESTION_ID_KEY not in harness.session.metadata

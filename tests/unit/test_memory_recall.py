@@ -317,6 +317,33 @@ def test_m2_compile_recall_marks_revision_churn_and_respects_max_tokens(tmp_path
     assert pack.results[0].revision_churn is True
 
 
+def test_m2_compile_recall_ignores_pending_review_siblings_for_revision_churn(
+    tmp_path: Path,
+) -> None:
+    pipeline = IngestionPipeline(tmp_path / "memory")
+    visible = pipeline.ingest(
+        source_id="doc-visible",
+        source_type="external",
+        collection="project_docs",
+        content="Visible release plan revision alpha beta gamma",
+    )
+    pipeline.ingest(
+        source_id="doc-visible",
+        source_type="external",
+        collection="project_docs",
+        content="Pending-review release plan revision delta epsilon zeta",
+        source_origin="external_message",
+        channel_trust="shared_participant",
+        confirmation_status="pending_review",
+        scope="user",
+    )
+
+    pack = pipeline.compile_recall("visible release plan revision", limit=5)
+
+    assert [item.chunk_id for item in pack.results] == [visible.chunk_id]
+    assert pack.results[0].revision_churn is False
+
+
 def test_m2_compile_recall_marks_conflicting_results(tmp_path: Path) -> None:
     pipeline = IngestionPipeline(tmp_path / "memory")
     pipeline.ingest(

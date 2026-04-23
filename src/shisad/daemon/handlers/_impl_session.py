@@ -5566,7 +5566,13 @@ class SessionImplMixin(HandlerMixinBase):
         text = normalize_intent_text(validated.firewall_result.sanitized_text)
         if not text or text.startswith("/"):
             return PreparedSkillSuggestion()
-        for skill in memory_manager.list_invocable_skills(limit=20):
+        allowed_skill_scopes = {"user", "session"}
+        session_scope_id = str(validated.sid)
+        for skill in memory_manager.list_invocable_skills(
+            limit=20,
+            allowed_scopes=allowed_skill_scopes,
+            session_scope_id=session_scope_id,
+        ):
             variants = {
                 str(skill.name).strip().lower(),
                 str(skill.name).strip().lower().replace("-", " "),
@@ -5609,6 +5615,8 @@ class SessionImplMixin(HandlerMixinBase):
                 and session_manager is not None
             ):
                 session_manager.persist(validated.session.id)
+            allowed_skill_scopes = {"user", "session"}
+            session_scope_id = str(validated.sid)
             result = memory_manager.invoke_skill(
                 pending_skill_id,
                 audit_context={
@@ -5616,6 +5624,8 @@ class SessionImplMixin(HandlerMixinBase):
                     "session_id": str(validated.sid),
                     "command": "yes",
                 },
+                allowed_scopes=allowed_skill_scopes,
+                session_scope_id=session_scope_id,
             )
             if not result.found:
                 return self._skill_command_response(

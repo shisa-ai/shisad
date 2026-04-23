@@ -431,13 +431,7 @@ class IngestionPipeline:
             include_quarantined=include_quarantined,
         )
         reference_time = as_of.astimezone(UTC) if as_of is not None else datetime.now(UTC)
-        revision_counts: dict[str, int] = {}
-        for row in rows:
-            revision_counts[row.source_id] = revision_counts.get(row.source_id, 0) + 1
-
-        active_scored: list[tuple[float, RetrievalResult]] = []
-        archived_scored: list[tuple[float, RetrievalResult]] = []
-
+        visible_rows: list[tuple[Any, RetrievalResult]] = []
         for row in rows:
             record = self._record_from_backend_row(row)
             if record is None:
@@ -448,7 +442,16 @@ class IngestionPipeline:
                 continue
             if as_of is not None and record.created_at > reference_time:
                 continue
+            visible_rows.append((row, record))
 
+        revision_counts: dict[str, int] = {}
+        for _row, record in visible_rows:
+            revision_counts[record.source_id] = revision_counts.get(record.source_id, 0) + 1
+
+        active_scored: list[tuple[float, RetrievalResult]] = []
+        archived_scored: list[tuple[float, RetrievalResult]] = []
+
+        for row, record in visible_rows:
             lexical = 0.0
             if row.chunk_id in lexical_matches:
                 text = row.content_sanitized.lower()

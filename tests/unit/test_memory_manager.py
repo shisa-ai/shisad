@@ -1315,6 +1315,47 @@ def test_m4_list_invocable_skills_filters_by_query_and_exposes_preview_metadata(
     assert preview.content.startswith("Release close checklist")
 
 
+def test_m4_list_invocable_skills_hides_stale_same_key_entries(tmp_path: Path) -> None:
+    manager = MemoryManager(tmp_path / "memory")
+    stale = manager.write_with_provenance(
+        entry_type="skill",
+        key="skill:release-close",
+        value="Legacy release close steps",
+        source=MemorySource(origin="user", source_id="msg-skill-stale", extraction_method="manual"),
+        source_origin="user_direct",
+        channel_trust="command",
+        confirmation_status="user_asserted",
+        source_id="msg-skill-stale",
+        scope="user",
+        confidence=0.95,
+        confirmation_satisfied=True,
+        invocation_eligible=True,
+    )
+    latest = manager.write_with_provenance(
+        entry_type="skill",
+        key="skill:release-close",
+        value="Current release close steps",
+        source=MemorySource(
+            origin="user",
+            source_id="msg-skill-latest",
+            extraction_method="manual",
+        ),
+        source_origin="user_direct",
+        channel_trust="command",
+        confirmation_status="user_asserted",
+        source_id="msg-skill-latest",
+        scope="user",
+        confidence=0.95,
+        confirmation_satisfied=True,
+        invocation_eligible=False,
+    )
+
+    assert stale.entry is not None
+    assert latest.entry is not None
+    assert manager.list_invocable_skills(limit=10) == []
+    assert manager.list_invocable_skills(query="legacy", limit=10) == []
+
+
 def test_m4_describe_skill_can_preview_pending_review_candidate_and_diff(tmp_path: Path) -> None:
     manager = MemoryManager(tmp_path / "memory")
     current = manager.write_with_provenance(
@@ -1442,29 +1483,6 @@ def test_m4_promote_to_skill_promotes_pending_review_entry_with_install_triple(
             "trust_band": "elevated",
         },
     ) in audits
-
-
-def test_m2_compile_recall_excludes_pending_review_records(tmp_path: Path) -> None:
-    from shisad.memory.ingestion import IngestionPipeline
-
-    pipeline = IngestionPipeline(tmp_path / "memory")
-    stored = pipeline.ingest(
-        source_id="doc-pending-review",
-        source_type="external",
-        content="Pending-review recall content should stay out of compile_recall.",
-        source_origin="external_message",
-        channel_trust="shared_participant",
-        confirmation_status="pending_review",
-        scope="user",
-    )
-
-    pack = pipeline.compile_recall("pending-review recall content", limit=5)
-
-    assert pack.results == []
-    assert pack.count == 0
-    assert stored.confirmation_status == "pending_review"
-
-
 def test_m4_promote_to_skill_rejects_non_install_triple(tmp_path: Path) -> None:
     manager = MemoryManager(tmp_path / "memory")
     candidate = manager.write_with_provenance(

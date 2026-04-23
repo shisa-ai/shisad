@@ -1224,6 +1224,45 @@ async def test_m4_finalize_response_surfaces_matching_skill_suggestion_on_cli(
 
 
 @pytest.mark.asyncio
+async def test_m4_finalize_response_surfaces_same_session_skill_suggestion_on_cli(
+    tmp_path: Path,
+) -> None:
+    harness = _FinalizeEvidenceHarness()
+    harness._memory_manager = MemoryManager(tmp_path / "memory")
+    harness._session_manager = SimpleNamespace(persist=lambda _sid: None)
+    decision = harness._memory_manager.write_with_provenance(
+        entry_type="skill",
+        key="skill:release-close",
+        value="Session-scoped release close checklist",
+        source=MemorySource(
+            origin="user",
+            source_id="sess-g1:tool-skill",
+            extraction_method="manual",
+        ),
+        source_origin="user_direct",
+        channel_trust="command",
+        confirmation_status="user_asserted",
+        source_id="sess-g1:tool-skill",
+        scope="session",
+        confidence=0.95,
+        confirmation_satisfied=True,
+        invocation_eligible=True,
+    )
+    assert decision.entry is not None
+    execution = _finalize_execution_result(
+        tool_outputs=[],
+        assistant_response="Planner reply",
+        content="Can you use the release-close skill for this task?",
+    )
+
+    response = await SessionImplMixin._finalize_response(harness, execution)
+
+    assert "Reply yes to load it" in str(response["response"])
+    session = execution.planner_dispatch.planner_context.validated.session
+    assert session.metadata[_PENDING_SKILL_SUGGESTION_ID_KEY] == decision.entry.id
+
+
+@pytest.mark.asyncio
 async def test_m3_finalize_response_expires_ignored_identity_candidate_without_backoff(
     tmp_path: Path,
 ) -> None:
