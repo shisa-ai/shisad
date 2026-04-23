@@ -1754,6 +1754,17 @@ async def test_contract_pending_review_entries_are_isolated_to_review_queue(
         fetched = await harness.client.call("memory.get", {"entry_id": entry_id})
         assert fetched.get("entry") is None
 
+        retrieved = await harness.client.call(
+            "memory.retrieve",
+            {"query": "operator review", "limit": 10},
+        )
+        retrieved_ids = {
+            str(item.get("id") or item.get("entry_id") or "").strip()
+            for item in retrieved.get("results", [])
+            if isinstance(item, dict)
+        }
+        assert entry_id not in retrieved_ids
+
         review_queue = await harness.client.call("memory.list_review_queue", {"limit": 10})
         queued_ids = {
             str(item.get("id") or item.get("entry_id") or "").strip()
@@ -1840,6 +1851,23 @@ async def test_contract_cli_planner_context_filters_identity_and_active_attentio
             confidence=0.4,
             confirmation_satisfied=True,
         )
+        pending_review_identity = manager.write_with_provenance(
+            entry_type="persona_fact",
+            key="persona:pending-review",
+            value="Pending-review persona fact should not enter Identity.",
+            source=MemorySource(
+                origin="external",
+                source_id="identity-pending-review",
+                extraction_method="manual",
+            ),
+            source_origin="external_message",
+            channel_trust="shared_participant",
+            confirmation_status="pending_review",
+            source_id="identity-pending-review",
+            scope="user",
+            confidence=0.4,
+            confirmation_satisfied=True,
+        )
         owner_observed_attention = manager.write_with_provenance(
             entry_type="waiting_on",
             key="thread:owner-observed",
@@ -1916,6 +1944,24 @@ async def test_contract_cli_planner_context_filters_identity_and_active_attentio
             confidence=0.5,
             confirmation_satisfied=True,
         )
+        pending_review_attention = manager.write_with_provenance(
+            entry_type="open_thread",
+            key="thread:pending-review",
+            value="Pending-review agenda item should stay out of active attention.",
+            source=MemorySource(
+                origin="external",
+                source_id="attention-pending-review",
+                extraction_method="manual",
+            ),
+            source_origin="external_message",
+            channel_trust="shared_participant",
+            confirmation_status="pending_review",
+            source_id="attention-pending-review",
+            scope="session",
+            workflow_state="active",
+            confidence=0.5,
+            confirmation_satisfied=True,
+        )
         closed_thread = manager.write_with_provenance(
             entry_type="open_thread",
             key="thread:closed",
@@ -1941,10 +1987,12 @@ async def test_contract_cli_planner_context_filters_identity_and_active_attentio
                 leaked_external,
                 leaked_tool,
                 leaked_consolidation,
+                pending_review_identity,
                 owner_observed_attention,
                 cli_inbox,
                 shared_noise,
                 incoming_noise,
+                pending_review_attention,
                 closed_thread,
             )
         )
@@ -1976,11 +2024,13 @@ async def test_contract_cli_planner_context_filters_identity_and_active_attentio
     assert "persona:leak-external" not in trusted_section
     assert "persona:leak-tool" not in trusted_section
     assert "persona:leak-consolidation" not in trusted_section
+    assert "persona:pending-review" not in trusted_section
 
     assert "thread:owner-observed" in trusted_section
     assert "inbox:owner-1:msg-general" in trusted_section
     assert "thread:shared-noise" not in trusted_section
     assert "thread:incoming-noise" not in trusted_section
+    assert "thread:pending-review" not in trusted_section
     assert "thread:closed" not in trusted_section
 
     owner_attention_text = "Owner-observed channel follow-up should surface in CLI attention."
