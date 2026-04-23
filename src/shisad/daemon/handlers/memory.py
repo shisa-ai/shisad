@@ -18,6 +18,8 @@ from shisad.core.api.schema import (
     MemoryMintIngressParams,
     MemoryMintIngressResult,
     MemoryPromoteIdentityCandidateParams,
+    MemoryReadOriginalParams,
+    MemoryReadOriginalResult,
     MemoryRejectIdentityCandidateParams,
     MemoryRetrieveParams,
     MemoryRetrieveResult,
@@ -186,6 +188,20 @@ class MemoryHandlers:
         )
         return MemoryListResult.model_validate(
             await self._impl.do_memory_list_review_queue(payload)
+        )
+
+    async def handle_memory_read_original(
+        self,
+        params: MemoryReadOriginalParams,
+        ctx: RequestContext,
+    ) -> MemoryReadOriginalResult:
+        payload = build_params_payload(
+            params,
+            ctx,
+            internal_ingress_marker=self._internal_ingress_marker,
+        )
+        return MemoryReadOriginalResult.model_validate(
+            await self._impl.do_memory_read_original(payload)
         )
 
     async def handle_memory_get(

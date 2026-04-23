@@ -16,8 +16,8 @@ from shisad.memory.trust import TrustGateViolation
 
 
 class _MemoryIngestHarness(MemoryImplMixin):
-    def __init__(self, tmp_path: Path) -> None:
-        self._ingestion = IngestionPipeline(tmp_path / "retrieval")
+    def __init__(self, tmp_path: Path, *, audit_hook=None) -> None:
+        self._ingestion = IngestionPipeline(tmp_path / "retrieval", audit_hook=audit_hook)
         self._memory_ingress_registry = IngressContextRegistry()
 
 
@@ -311,3 +311,46 @@ async def test_m2_memory_retrieve_citation_failures_do_not_break_response(
 
     assert result["count"] == 1
     assert result["results"][0]["chunk_id"] == stored.chunk_id
+
+
+@pytest.mark.asyncio
+async def test_memory_read_original_returns_content_and_forwards_rpc_peer(
+    tmp_path: Path,
+) -> None:
+    audits: list[tuple[str, dict[str, object]]] = []
+
+    def _audit(action: str, payload: dict[str, object]) -> None:
+        audits.append((action, payload))
+
+    harness = _MemoryIngestHarness(tmp_path, audit_hook=_audit)
+    stored = harness._ingestion.ingest(
+        source_id="doc-read-original",
+        source_type="external",
+        content="Original retrieval payload for explicit inspection.",
+    )
+
+    result = await harness.do_memory_read_original(
+        {
+            "chunk_id": stored.chunk_id,
+            "_rpc_peer": {"host": "127.0.0.1", "port": 4100},
+        }
+    )
+
+    assert result == {
+        "chunk_id": stored.chunk_id,
+        "found": True,
+        "content": "Original retrieval payload for explicit inspection.",
+    }
+    assert audits == [
+        (
+            "memory.evidence_read",
+            {
+                "chunk_id": stored.chunk_id,
+                "found": True,
+                "caller_context": {
+                    "method": "memory.read_original",
+                    "rpc_peer": {"host": "127.0.0.1", "port": 4100},
+                },
+            },
+        )
+    ]

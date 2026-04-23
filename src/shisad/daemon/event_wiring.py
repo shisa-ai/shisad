@@ -18,6 +18,7 @@ from shisad.core.events import (
     LockdownChanged,
     MemoryEntryDeleted,
     MemoryEntryStored,
+    MemoryEvidenceRead,
     OutputFirewallAlert,
     RateLimitTriggered,
     SessionArchiveExported,
@@ -190,6 +191,19 @@ class DaemonEventWiring:
                     memory_id=str(data.get("entry_id", "")),
                     key=str(data.get("key", "")),
                     source_origin=str(data.get("source_origin", "")),
+                )
+            )
+            return
+        if action == "memory.evidence_read":
+            self.publish_async(
+                MemoryEvidenceRead(
+                    session_id=None,
+                    actor=str(data.get("caller_context", {}).get("method", "memory.read_original")),
+                    chunk_id=str(data.get("chunk_id", "")),
+                    found=bool(data.get("found", False)),
+                    caller_context=dict(data.get("caller_context", {}))
+                    if isinstance(data.get("caller_context"), dict)
+                    else {},
                 )
             )
             return

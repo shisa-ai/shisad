@@ -352,6 +352,14 @@ class MemoryEntryDeleted(BaseEvent):
     memory_id: str = ""
 
 
+class MemoryEvidenceRead(BaseEvent):
+    """Explicit original-evidence read recorded."""
+
+    chunk_id: str = ""
+    found: bool = False
+    caller_context: dict[str, Any] = Field(default_factory=dict)
+
+
 class SkillReviewRequested(BaseEvent):
     """Skill review request completed with static findings."""
 
@@ -670,6 +678,7 @@ type AnyEvent = (
     | A2aIngressEvaluated
     | MemoryEntryStored
     | MemoryEntryDeleted
+    | MemoryEvidenceRead
     | SkillReviewRequested
     | SkillInstalled
     | SkillProfiled
@@ -724,6 +733,7 @@ EVENT_TYPES: dict[str, type[BaseEvent]] = {
     "A2aIngressEvaluated": A2aIngressEvaluated,
     "MemoryEntryStored": MemoryEntryStored,
     "MemoryEntryDeleted": MemoryEntryDeleted,
+    "MemoryEvidenceRead": MemoryEvidenceRead,
     "SkillReviewRequested": SkillReviewRequested,
     "SkillInstalled": SkillInstalled,
     "SkillProfiled": SkillProfiled,

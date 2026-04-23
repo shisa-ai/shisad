@@ -432,6 +432,19 @@ class MemoryImplMixin(HandlerMixinBase):
         rows = self._memory_manager.list_review_queue(limit=int(params.get("limit", 100)))
         return {"entries": [entry.model_dump(mode="json") for entry in rows], "count": len(rows)}
 
+    async def do_memory_read_original(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        chunk_id = str(params.get("chunk_id", "")).strip()
+        caller_context: dict[str, Any] = {"method": "memory.read_original"}
+        rpc_peer = params.get("_rpc_peer")
+        if isinstance(rpc_peer, Mapping):
+            caller_context["rpc_peer"] = dict(rpc_peer)
+        content = self._ingestion.read_original(chunk_id, audit_context=caller_context)
+        return {
+            "chunk_id": chunk_id,
+            "found": content is not None,
+            "content": content,
+        }
+
     async def do_memory_get(self, params: Mapping[str, Any]) -> dict[str, Any]:
         if params.get("include_quarantined") and not params.get("confirmed"):
             raise ValueError("confirmed is required when include_quarantined is true")

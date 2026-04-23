@@ -24,6 +24,7 @@ from pydantic import BaseModel, Field, ValidationError, model_validator
 from shisad.core.tools.schema import ToolDefinition, ToolParameter
 from shisad.core.types import Capability, TaintLabel, ToolName
 from shisad.memory.backend import RetrievalBackendRow, SQLiteRetrievalBackend
+from shisad.memory.events import MemoryEvent, MemoryEventStore
 from shisad.memory.schema import MemoryScope
 from shisad.memory.surfaces import RecallPack, build_recall_pack
 from shisad.memory.trust import (
@@ -239,6 +240,10 @@ class IngestionPipeline:
         self._legacy_storage_dir = legacy_storage_dir
         self._db_path = self._storage_dir / "memory.sqlite3"
         self._backend = SQLiteRetrievalBackend(self._db_path)
+        self._event_store = MemoryEventStore(
+            self._db_path,
+            legacy_jsonl_path=self._storage_dir / "memory_events.jsonl",
+        )
         self._firewall = firewall or ContentFirewall()
         self._embedding_fingerprint = embedding_fingerprint or EmbeddingFingerprint(
             model_id="text-embedding-3-small",
@@ -707,10 +712,24 @@ class IngestionPipeline:
             )
             return 0
 
-    def read_original(self, chunk_id: str) -> str | None:
+    def read_original(
+        self,
+        chunk_id: str,
+        *,
+        audit_context: dict[str, Any] | None = None,
+    ) -> str | None:
         """Return decrypted original content for explicit user inspection."""
+        caller_context = dict(audit_context or {})
         payload = self._backend.read_original_payload(chunk_id)
         if payload is None:
+            self._audit(
+                "memory.evidence_read",
+                {
+                    "chunk_id": chunk_id,
+                    "found": False,
+                    "caller_context": caller_context,
+                },
+            )
             return None
         try:
             decrypted = self._decrypt_payload(payload, chunk_id=chunk_id)
@@ -719,7 +738,34 @@ class IngestionPipeline:
                 "memory.original_read_failed",
                 {"chunk_id": chunk_id, "reason": "decrypt_failed"},
             )
+            self._audit(
+                "memory.evidence_read",
+                {
+                    "chunk_id": chunk_id,
+                    "found": False,
+                    "caller_context": caller_context,
+                },
+            )
             return None
+        self._event_store.append(
+            MemoryEvent(
+                entry_id=f"chunk:{chunk_id}",
+                event_type="evidence_read",
+                actor=str(caller_context.get("method", "memory.read_original")),
+                metadata_json={
+                    "chunk_id": chunk_id,
+                    "caller_context": caller_context,
+                },
+            )
+        )
+        self._audit(
+            "memory.evidence_read",
+            {
+                "chunk_id": chunk_id,
+                "found": True,
+                "caller_context": caller_context,
+            },
+        )
         return decrypted.decode("utf-8", errors="replace")
 
     def rotate_data_key(self, *, reencrypt_existing: bool = True) -> str:

@@ -29,6 +29,7 @@ from shisad.core.api.schema import (
     MemoryListParams,
     MemoryListResult,
     MemoryMintIngressParams,
+    MemoryReadOriginalParams,
     MemoryRetrieveResult,
     MemoryRotateKeyResult,
     MemorySupersedeParams,
@@ -414,6 +415,17 @@ class TestApiSchemaValidation:
                     "content": "hello",
                 }
             )
+
+    def test_m4_memory_read_original_params_require_chunk_id(self) -> None:
+        params = MemoryReadOriginalParams.model_validate({"chunk_id": "chunk-1"})
+
+        assert params.chunk_id == "chunk-1"
+
+        with pytest.raises(ValidationError):
+            MemoryReadOriginalParams.model_validate({})
+
+        with pytest.raises(ValidationError):
+            MemoryReadOriginalParams.model_validate({"chunk_id": "   "})
 
     def test_m1_memory_write_params_require_ingress_context(self) -> None:
         with pytest.raises(ValidationError):

@@ -12,6 +12,7 @@ from pathlib import Path
 import pytest
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
+from shisad.memory.events import MemoryEventStore
 from shisad.memory.ingestion import IngestionPipeline, RetrievalResult
 from shisad.memory.manager import MemoryManager
 from shisad.memory.participation import InboxItemValue, inbox_item_key
@@ -103,6 +104,93 @@ def test_m2_t19_authenticated_encryption_detects_tampering(tmp_path: Path) -> No
         )
 
     assert pipeline.read_original(stored.chunk_id) is None
+
+
+def test_m4_read_original_emits_audit_and_event_trail(tmp_path: Path) -> None:
+    storage = tmp_path / "memory"
+    audits: list[tuple[str, dict[str, object]]] = []
+
+    def _audit(action: str, payload: dict[str, object]) -> None:
+        audits.append((action, payload))
+
+    pipeline = IngestionPipeline(storage, audit_hook=_audit)
+    stored = pipeline.ingest(
+        source_id="doc-evidence",
+        source_type="external",
+        content="Explicit original payload for audit coverage.",
+    )
+
+    assert (
+        pipeline.read_original(
+            stored.chunk_id,
+            audit_context={
+                "method": "memory.read_original",
+                "rpc_peer": {"host": "127.0.0.1", "port": 31337},
+            },
+        )
+        == "Explicit original payload for audit coverage."
+    )
+    assert audits == [
+        (
+            "memory.evidence_read",
+            {
+                "chunk_id": stored.chunk_id,
+                "found": True,
+                "caller_context": {
+                    "method": "memory.read_original",
+                    "rpc_peer": {"host": "127.0.0.1", "port": 31337},
+                },
+            },
+        )
+    ]
+
+    events = MemoryEventStore(storage / "memory.sqlite3").list(
+        entry_id=f"chunk:{stored.chunk_id}",
+        event_type="evidence_read",
+        limit=10,
+    )
+    assert len(events) == 1
+    assert events[0].actor == "memory.read_original"
+    assert events[0].metadata_json["chunk_id"] == stored.chunk_id
+    assert events[0].metadata_json["caller_context"] == {
+        "method": "memory.read_original",
+        "rpc_peer": {"host": "127.0.0.1", "port": 31337},
+    }
+
+
+def test_m4_read_original_miss_audits_without_event_row(tmp_path: Path) -> None:
+    storage = tmp_path / "memory"
+    audits: list[tuple[str, dict[str, object]]] = []
+
+    def _audit(action: str, payload: dict[str, object]) -> None:
+        audits.append((action, payload))
+
+    pipeline = IngestionPipeline(storage, audit_hook=_audit)
+
+    assert (
+        pipeline.read_original(
+            "missing-chunk",
+            audit_context={"method": "memory.read_original"},
+        )
+        is None
+    )
+    assert audits == [
+        (
+            "memory.evidence_read",
+            {
+                "chunk_id": "missing-chunk",
+                "found": False,
+                "caller_context": {"method": "memory.read_original"},
+            },
+        )
+    ]
+    assert (
+        MemoryEventStore(storage / "memory.sqlite3").list(
+            event_type="evidence_read",
+            limit=10,
+        )
+        == []
+    )
 
 
 def test_m2_t19_key_manifest_is_wrapped_and_rotation_preserves_reads(tmp_path: Path) -> None:

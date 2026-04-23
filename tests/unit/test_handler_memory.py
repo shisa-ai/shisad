@@ -11,6 +11,7 @@ from shisad.core.api.schema import (
     MemoryListParams,
     MemoryMintIngressParams,
     MemoryPromoteIdentityCandidateParams,
+    MemoryReadOriginalParams,
     MemoryRejectIdentityCandidateParams,
     MemoryReviewQueueParams,
     MemoryRotateKeyParams,
@@ -29,6 +30,7 @@ class _StubImpl:
         self.last_memory_promote_identity_candidate_payload: dict[str, object] | None = None
         self.last_memory_reject_identity_candidate_payload: dict[str, object] | None = None
         self.last_memory_list_payload: dict[str, object] | None = None
+        self.last_memory_read_original_payload: dict[str, object] | None = None
         self.last_memory_get_payload: dict[str, object] | None = None
         self.last_memory_quarantine_payload: dict[str, object] | None = None
         self.last_memory_unquarantine_payload: dict[str, object] | None = None
@@ -91,6 +93,14 @@ class _StubImpl:
 
     async def do_memory_list_review_queue(self, _payload: dict[str, object]) -> dict[str, object]:
         return {"entries": [{"entry_id": "review-1"}], "count": 1}
+
+    async def do_memory_read_original(self, payload: dict[str, object]) -> dict[str, object]:
+        self.last_memory_read_original_payload = payload
+        return {
+            "chunk_id": str(payload["chunk_id"]),
+            "found": True,
+            "content": "original retrieval payload",
+        }
 
     async def do_memory_get(self, payload: dict[str, object]) -> dict[str, object]:
         self.last_memory_get_payload = payload
@@ -245,6 +255,27 @@ async def test_memory_verify_and_rotate_wrappers() -> None:
     )
     assert verify.verified is True
     assert rotated.active_key_id == "k1"
+
+
+@pytest.mark.asyncio
+async def test_memory_read_original_wrapper_forwards_rpc_peer() -> None:
+    impl = _StubImpl()
+    handlers = MemoryHandlers(impl, internal_ingress_marker=object())  # type: ignore[arg-type]
+
+    result = await handlers.handle_memory_read_original(
+        MemoryReadOriginalParams(chunk_id="chunk-1"),
+        RequestContext(rpc_peer={"host": "127.0.0.1", "port": 31337}),
+    )
+
+    assert result.found is True
+    assert result.chunk_id == "chunk-1"
+    assert result.content == "original retrieval payload"
+    assert impl.last_memory_read_original_payload is not None
+    assert impl.last_memory_read_original_payload["chunk_id"] == "chunk-1"
+    assert impl.last_memory_read_original_payload["_rpc_peer"] == {
+        "host": "127.0.0.1",
+        "port": 31337,
+    }
 
 
 @pytest.mark.asyncio

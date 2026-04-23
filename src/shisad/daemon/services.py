@@ -700,6 +700,7 @@ class DaemonServices:
                 ),
                 embeddings_provider=embeddings_adapter,
                 legacy_storage_dir=config.data_dir / "memory",
+                audit_hook=event_wiring.audit_memory_event,
             )
             memory_manager = MemoryManager(
                 memory_storage_root,

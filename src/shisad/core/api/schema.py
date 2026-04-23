@@ -457,6 +457,16 @@ class MemoryReviewQueueParams(_StrictParams):
     limit: int = 100
 
 
+class MemoryReadOriginalParams(_StrictParams):
+    chunk_id: str
+
+    @model_validator(mode="after")
+    def _validate_chunk_id(self) -> MemoryReadOriginalParams:
+        if not self.chunk_id.strip():
+            raise ValueError("chunk_id is required")
+        return self
+
+
 class MemoryEntryParams(_StrictParams):
     entry_id: str
     include_deleted: bool = False
@@ -544,6 +554,12 @@ class MemoryRetrieveResult(BaseModel):
     max_tokens: int | None = None
     as_of: datetime | str | None = None
     include_archived: bool = False
+
+
+class MemoryReadOriginalResult(BaseModel):
+    chunk_id: str
+    found: bool = False
+    content: str | None = None
 
 
 class MemoryWriteResult(BaseModel):

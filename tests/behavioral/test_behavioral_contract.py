@@ -2636,6 +2636,52 @@ async def test_contract_user_authored_skill_write_sets_invocation_eligible(
 
 
 @pytest.mark.asyncio
+async def test_contract_memory_read_original_is_explicit_and_audited(
+    contract_harness: ContractHarness,
+) -> None:
+    original = "Original evidence payload marker m4-read-original."
+    minted = await _mint_memory_ingress_context(
+        contract_harness.client,
+        content=original,
+        source_type="external",
+        source_id="evidence-doc-1",
+    )
+    stored = await contract_harness.client.call(
+        "memory.ingest",
+        {
+            "ingress_context": minted["ingress_context"],
+            "content": original,
+            "collection": "external_web",
+        },
+    )
+    chunk_id = str(stored.get("chunk_id", "")).strip()
+    assert chunk_id
+
+    retrieved = await contract_harness.client.call(
+        "memory.retrieve",
+        {"query": "m4-read-original", "limit": 5},
+    )
+    results = list(retrieved.get("results") or [])
+    matching = next(item for item in results if str(item.get("chunk_id", "")).strip() == chunk_id)
+    assert "content" not in matching
+    assert "original_content" not in matching
+
+    reread = await contract_harness.client.call(
+        "memory.read_original",
+        {"chunk_id": chunk_id},
+    )
+    assert reread.get("found") is True
+    assert reread.get("content") == original
+
+    event = await _wait_for_audit_event(
+        contract_harness.client,
+        event_type="MemoryEvidenceRead",
+        predicate=lambda item: str(item.get("data", {}).get("chunk_id", "")).strip() == chunk_id,
+    )
+    assert event.get("data", {}).get("caller_context", {}).get("method") == "memory.read_original"
+
+
+@pytest.mark.asyncio
 async def test_contract_reminder_create_executes_and_due_run_delivers_without_lockdown(
     contract_harness: ContractHarness,
 ) -> None:

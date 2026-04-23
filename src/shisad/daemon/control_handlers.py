@@ -82,6 +82,8 @@ from shisad.core.api.schema import (
     MemoryMintIngressParams,
     MemoryMintIngressResult,
     MemoryPromoteIdentityCandidateParams,
+    MemoryReadOriginalParams,
+    MemoryReadOriginalResult,
     MemoryRejectIdentityCandidateParams,
     MemoryRetrieveParams,
     MemoryRetrieveResult,
@@ -492,6 +494,11 @@ class DaemonControlHandlers:
         self, params: MemoryReviewQueueParams, ctx: RequestContext
     ) -> MemoryListResult:
         return await self._memory.handle_memory_list_review_queue(params, ctx)
+
+    async def handle_memory_read_original(
+        self, params: MemoryReadOriginalParams, ctx: RequestContext
+    ) -> MemoryReadOriginalResult:
+        return await self._memory.handle_memory_read_original(params, ctx)
 
     async def handle_memory_get(
         self, params: MemoryEntryParams, ctx: RequestContext
