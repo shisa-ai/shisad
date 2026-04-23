@@ -584,6 +584,58 @@ def test_m1_quarantine_cycle_preserves_workflow_state(tmp_path: Path) -> None:
     assert included.workflow_state == "waiting"
 
 
+def test_m1_unquarantine_refuses_active_key_collisions(tmp_path: Path) -> None:
+    manager = MemoryManager(tmp_path / "memory")
+    original = manager.write_with_provenance(
+        entry_type="note",
+        key="note:collision",
+        value="Original note",
+        source=MemorySource(origin="user", source_id="msg-c1", extraction_method="manual"),
+        source_origin="user_direct",
+        channel_trust="command",
+        confirmation_status="user_asserted",
+        source_id="msg-c1",
+        scope="user",
+        confidence=0.8,
+        confirmation_satisfied=True,
+    )
+
+    assert original.entry is not None
+    assert manager.quarantine(original.entry.id, reason="manual-review")
+
+    replacement = manager.write_with_provenance(
+        entry_type="note",
+        key="note:collision",
+        value="Replacement note",
+        source=MemorySource(origin="user", source_id="msg-c2", extraction_method="manual"),
+        source_origin="user_direct",
+        channel_trust="command",
+        confirmation_status="user_asserted",
+        source_id="msg-c2",
+        scope="user",
+        confidence=0.8,
+        confirmation_satisfied=True,
+    )
+
+    assert replacement.kind == "allow"
+    assert replacement.entry is not None
+    assert manager.unquarantine(original.entry.id, reason="review-cleared") is False
+
+    quarantined = manager.get_entry(original.entry.id, include_quarantined=True)
+    assert quarantined is not None
+    assert quarantined.status == "quarantined"
+    assert quarantined.superseded_by is None
+
+    current = manager.get_entry(replacement.entry.id)
+    assert current is not None
+    assert current.status == "active"
+    assert current.key == "note:collision"
+    assert [
+        event.event_type
+        for event in manager.list_events(entry_id=original.entry.id, limit=10)
+    ] == ["created", "quarantined"]
+
+
 def test_m1_set_workflow_state_preserves_status_and_records_event(tmp_path: Path) -> None:
     manager = MemoryManager(tmp_path / "memory")
     decision = manager.write_with_provenance(

@@ -873,6 +873,16 @@ class MemoryManager:
             return False
         if not self._is_quarantined(entry):
             return True
+        if entry.superseded_by is not None or self._has_active_key_collision(entry):
+            self._audit(
+                "memory.unquarantine_blocked",
+                {
+                    "entry_id": entry_id,
+                    "reason": reason,
+                    "superseded_by": entry.superseded_by,
+                },
+            )
+            return False
         entry.quarantined = False
         entry.status = "active"
         self._persist_entry(entry)
@@ -1307,6 +1317,17 @@ class MemoryManager:
     @staticmethod
     def _is_pending_review(entry: MemoryEntry) -> bool:
         return entry.confirmation_status == "pending_review"
+
+    def _has_active_key_collision(self, entry: MemoryEntry) -> bool:
+        for candidate in self.list_entries(
+            entry_type=entry.entry_type,
+            limit=max(1, len(self._entries)),
+        ):
+            if candidate.id == entry.id or candidate.superseded_by is not None:
+                continue
+            if candidate.key == entry.key:
+                return True
+        return False
 
     def _audit(self, action: str, payload: dict[str, Any]) -> None:
         if self._audit_hook is not None:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -889,20 +890,29 @@ async def test_m3_channel_ingest_requires_explicit_blank_workspace_hint_for_lega
         default_trust="public",
         allowlisted_users={"guest-7"},
     )
-    harness._transcript_store.append(
-        SessionId("sess-note-missing-workspace"),
-        role="user",
-        content="legacy note without workspace hint",
-        taint_labels=set(),
-        metadata={
-            "channel_message_id": "legacy-note-msg-missing-workspace",
-            "delivery_target": {
-                "channel": "discord",
-                "recipient": "chan-missing-workspace",
-                "thread_id": "",
-            },
-        },
+    transcript_dir = tmp_path / "transcripts"
+    transcript_dir.mkdir()
+    (transcript_dir / "channel.jsonl").write_text(
+        json.dumps(
+            {
+                "session_id": "sess-note-missing-workspace",
+                "role": "user",
+                "content": "legacy note without workspace hint",
+                "metadata": {
+                    "channel_message_id": "legacy-note-msg-missing-workspace",
+                    "delivery_target": {
+                        "channel": "discord",
+                        "recipient": "chan-missing-workspace",
+                        "thread_id": "",
+                    },
+                },
+            }
+        )
+        + "\n",
+        encoding="utf-8",
     )
+    harness._transcript_store.entries = None
+    harness._transcript_store._transcript_dir = transcript_dir
 
     legacy_note = harness._memory_manager.write_with_provenance(
         entry_type="person_note",
