@@ -16,6 +16,7 @@ def _write_fact(
     value: str,
     entry_type: str = "fact",
     source_id: str = "graph-test",
+    supersedes: str | None = None,
 ) -> MemoryEntry:
     decision = manager.write_with_provenance(
         entry_type=entry_type,
@@ -29,6 +30,7 @@ def _write_fact(
         scope="user",
         confidence=0.95,
         confirmation_satisfied=True,
+        supersedes=supersedes,
     )
     assert decision.entry is not None
     return decision.entry
@@ -64,6 +66,38 @@ def test_m5_knowledge_graph_rebuilds_with_stable_evidence_ids(tmp_path: Path) ->
     assert exported["derived"] is True
     assert any(node["entity_id"] == shisad_id for node in exported["nodes"])
     assert "Evidence" in graph.export(format="md")
+
+
+def test_m5_knowledge_graph_current_view_excludes_superseded_entries(
+    tmp_path: Path,
+) -> None:
+    manager = MemoryManager(tmp_path / "memory")
+    stale = _write_fact(
+        manager,
+        key="work:acme",
+        value="I work at ACME as VP Eng.",
+        entry_type="persona_fact",
+        source_id="graph-superseded-old",
+    )
+    replacement = _write_fact(
+        manager,
+        key="work:acme",
+        value="I no longer work at ACME.",
+        entry_type="persona_fact",
+        source_id="graph-superseded-new",
+        supersedes=stale.id,
+    )
+
+    graph = build_knowledge_graph(manager.list_entries(limit=10))
+    exported = json.loads(graph.export(format="json"))
+    evidence_ids = {
+        evidence_id
+        for node in exported["nodes"]
+        for evidence_id in node["evidence_entry_ids"]
+    }
+
+    assert stale.id not in evidence_ids
+    assert replacement.id in evidence_ids
 
 
 def test_m5_knowledge_graph_exports_lifecycle_and_provenance_metadata(

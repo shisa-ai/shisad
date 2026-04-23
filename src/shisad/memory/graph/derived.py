@@ -261,7 +261,11 @@ class DerivedKnowledgeGraph:
 
     @classmethod
     def from_entries(cls, entries: Iterable[MemoryEntry]) -> DerivedKnowledgeGraph:
-        entry_list = [entry for entry in entries if entry.status == "active"]
+        entry_list = [
+            entry
+            for entry in entries
+            if entry.status == "active" and entry.superseded_by is None
+        ]
         nodes: dict[str, GraphNode] = {}
         edges: dict[str, GraphEdge] = {}
         entry_entities: dict[str, set[str]] = {}
@@ -382,9 +386,19 @@ class DerivedKnowledgeGraph:
                 break
         nodes = [self.nodes[node_id] for node_id in node_ids if node_id in self.nodes]
         nodes.sort(key=lambda node: (node.entity_id != root_id, -node.degree, node.name.lower()))
+        nodes = nodes[:limit]
+        limited_node_ids = {node.entity_id for node in nodes}
         unique_edges = {edge.edge_id: edge for edge in selected_edges}
-        edges = sorted(unique_edges.values(), key=lambda edge: (-edge.confidence, edge.edge_id))
-        return GraphQueryResult(root_entity_id=root_id, nodes=nodes[:limit], edges=edges[:limit])
+        sorted_edges = sorted(
+            unique_edges.values(),
+            key=lambda edge: (-edge.confidence, edge.edge_id),
+        )
+        edges = [
+            edge
+            for edge in sorted_edges
+            if edge.source_id in limited_node_ids and edge.target_id in limited_node_ids
+        ]
+        return GraphQueryResult(root_entity_id=root_id, nodes=nodes, edges=edges[:limit])
 
     def hub_nodes(self, *, limit: int = 10) -> list[GraphNode]:
         ranked = sorted(
@@ -399,9 +413,24 @@ class DerivedKnowledgeGraph:
             return json.dumps(
                 {
                     "derived": True,
-                    "nodes": [node.to_dict() for node in self.nodes.values()],
-                    "edges": [edge.to_dict() for edge in self.edges.values()],
-                    "entry_links": [link.to_dict() for link in self.entry_links],
+                    "nodes": [
+                        node.to_dict()
+                        for node in sorted(
+                            self.nodes.values(),
+                            key=lambda item: (item.name.lower(), item.entity_id),
+                        )
+                    ],
+                    "edges": [
+                        edge.to_dict()
+                        for edge in sorted(self.edges.values(), key=lambda item: item.edge_id)
+                    ],
+                    "entry_links": [
+                        link.to_dict()
+                        for link in sorted(
+                            self.entry_links,
+                            key=lambda item: (item.entry_id, item.other_entry_id),
+                        )
+                    ],
                 },
                 indent=2,
                 sort_keys=True,

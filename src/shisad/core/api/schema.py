@@ -22,6 +22,11 @@ from shisad.memory.schema import MemoryEntryType
 
 
 JsonRpcId = StrictStr | StrictInt
+MemoryScope = Literal["user", "project", "session", "channel", "workspace"]
+
+
+def _default_user_scope_filter() -> list[MemoryScope]:
+    return ["user"]
 
 
 class JsonRpcRequest(BaseModel):
@@ -527,6 +532,7 @@ class GraphQueryParams(_StrictParams):
     entity: str
     depth: int = 1
     limit: int = 20
+    scope_filter: list[MemoryScope] = Field(default_factory=_default_user_scope_filter)
 
     @model_validator(mode="after")
     def _validate_graph_query(self) -> GraphQueryParams:
@@ -539,6 +545,7 @@ class GraphQueryParams(_StrictParams):
 
 class GraphExportParams(_StrictParams):
     format: Literal["json", "md"] = "json"
+    scope_filter: list[MemoryScope] = Field(default_factory=_default_user_scope_filter)
 
 
 class MemoryConsolidateParams(_StrictParams):
@@ -546,6 +553,7 @@ class MemoryConsolidateParams(_StrictParams):
     apply_confidence_updates: bool = True
     propose_strong_invalidations: bool = True
     accumulate_identity_candidates: bool = True
+    scope_filter: list[MemoryScope] = Field(default_factory=_default_user_scope_filter)
 
 
 class MemoryRotateKeyParams(_StrictParams):
@@ -702,6 +710,9 @@ class MemoryConsolidateResult(BaseModel):
     updated_entry_ids: list[str] = Field(default_factory=list)
     corroborating_entry_ids: list[str] = Field(default_factory=list)
     contradicted_entry_ids: list[str] = Field(default_factory=list)
+    merged_entry_ids: list[str] = Field(default_factory=list)
+    archive_candidate_ids: list[str] = Field(default_factory=list)
+    quarantined_entry_ids: list[str] = Field(default_factory=list)
     strong_invalidation_count: int = 0
     identity_candidate_count: int = 0
     strong_invalidations: list[dict[str, Any]] = Field(default_factory=list)

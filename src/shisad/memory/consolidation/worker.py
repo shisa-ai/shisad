@@ -27,6 +27,30 @@ _EXTRACTION_RE = re.compile(
     r"\b(?P<label>Decision|Todo|Fact|Note):\s*(?P<body>.*?)(?=\s+\b(?:Decision|Todo|Fact|Note):|$)",
     re.IGNORECASE,
 )
+_DIETARY_PREFERENCES = {
+    "ramen",
+    "sushi",
+    "coffee",
+    "tea",
+    "pizza",
+    "vegetarian",
+    "vegan",
+    "gluten",
+    "dairy",
+    "peanut",
+    "peanuts",
+    "shellfish",
+}
+_MEDICAL_PREFERENCES = {
+    "insulin",
+    "medication",
+    "medicine",
+    "allergy",
+    "allergies",
+    "asthma",
+    "diabetes",
+}
+_STRONG_INVALIDATION_EVENT_LOOKBACK = 10_000
 
 
 @dataclass(frozen=True)
@@ -114,9 +138,28 @@ class ConsolidationWorker:
         manager: MemoryManager,
         *,
         config: ConsolidationConfig | None = None,
+        scope_filter: set[str] | frozenset[str] | None = None,
     ) -> None:
         self._manager = manager
         self._config = config or ConsolidationConfig()
+        self._scope_filter = frozenset(scope_filter) if scope_filter is not None else None
+
+    def _list_entries(
+        self,
+        *,
+        entry_type: str | None = None,
+        include_quarantined: bool = False,
+        include_pending_review: bool = False,
+    ) -> list[MemoryEntry]:
+        entries = self._manager.list_entries(
+            entry_type=entry_type,
+            limit=max(1, len(self._manager._entries)),
+            include_quarantined=include_quarantined,
+            include_pending_review=include_pending_review,
+        )
+        if self._scope_filter is None:
+            return entries
+        return [entry for entry in entries if entry.scope in self._scope_filter]
 
     def run_once(self, *, now: datetime | None = None) -> ConsolidationRunResult:
         result = ConsolidationRunResult()
@@ -138,10 +181,7 @@ class ConsolidationWorker:
     def recompute_decay_scores(self, *, now: datetime | None = None) -> ConsolidationRunResult:
         current = now or datetime.now(UTC)
         result = ConsolidationRunResult()
-        entries = self._manager.list_entries(
-            limit=max(1, len(self._manager._entries)),
-            include_quarantined=True,
-        )
+        entries = self._list_entries(include_quarantined=True)
         for entry in entries:
             score = self._decay_score(entry, now=current)
             if abs(score - entry.decay_score) < 0.001:
@@ -152,10 +192,7 @@ class ConsolidationWorker:
 
     def apply_confidence_updates(self) -> ConsolidationRunResult:
         result = ConsolidationRunResult()
-        entries = self._manager.list_entries(
-            limit=max(1, len(self._manager._entries)),
-            include_quarantined=True,
-        )
+        entries = self._list_entries(include_quarantined=True)
         preferences = [entry for entry in entries if entry.entry_type == "preference"]
         for preference in preferences:
             parts = _predicate_parts(preference)
@@ -173,6 +210,12 @@ class ConsolidationWorker:
                     continue
                 support_ids.append(candidate.id)
             if support_ids:
+                support_ids = [
+                    support_id
+                    for support_id in support_ids
+                    if not self._corroboration_already_recorded(preference.id, support_id)
+                ]
+            if support_ids:
                 previous = preference.confidence
                 delta = self._config.delta_corroborate / math.sqrt(len(support_ids))
                 target = min(0.99, preference.confidence + delta)
@@ -186,10 +229,7 @@ class ConsolidationWorker:
                     result.updated_entry_ids.append(preference.id)
                     result.corroborating_entry_ids.extend(support_ids)
 
-        preferences = self._manager.list_entries(
-            entry_type="preference",
-            limit=max(1, len(self._manager._entries)),
-        )
+        preferences = self._list_entries(entry_type="preference")
         for left_index, left in enumerate(preferences):
             left_parts = _predicate_parts(left)
             if left_parts is None:
@@ -205,6 +245,12 @@ class ConsolidationWorker:
                 older, newer = (
                     (left, right) if left.created_at <= right.created_at else (right, left)
                 )
+                if self._contradiction_already_recorded(
+                    older,
+                    newer,
+                    predicate=left_parts[0],
+                ):
+                    continue
                 drop = (
                     self._config.delta_contradict
                     * _confidence_score(newer)
@@ -233,7 +279,7 @@ class ConsolidationWorker:
 
     def deduplicate_entries(self) -> ConsolidationRunResult:
         result = ConsolidationRunResult()
-        entries = self._manager.list_entries(limit=max(1, len(self._manager._entries)))
+        entries = self._list_entries()
         groups: dict[tuple[str, str, str], list[MemoryEntry]] = defaultdict(list)
         for entry in entries:
             if (
@@ -267,11 +313,7 @@ class ConsolidationWorker:
     def enforce_retention(self, *, now: datetime | None = None) -> ConsolidationRunResult:
         current = now or datetime.now(UTC)
         result = ConsolidationRunResult()
-        entries = self._manager.list_entries(
-            limit=max(1, len(self._manager._entries)),
-            include_quarantined=True,
-            include_pending_review=True,
-        )
+        entries = self._list_entries(include_quarantined=True, include_pending_review=True)
         for entry in entries:
             if entry.superseded_by is not None:
                 continue
@@ -307,10 +349,7 @@ class ConsolidationWorker:
         )
 
     def propose_strong_invalidations(self) -> list[StrongInvalidationProposal]:
-        entries = self._manager.list_entries(
-            limit=max(1, len(self._manager._entries)),
-            include_quarantined=True,
-        )
+        entries = self._list_entries(include_quarantined=True)
         targets = [
             entry
             for entry in entries
@@ -326,6 +365,19 @@ class ConsolidationWorker:
             signal_tokens = _tokens(signal)
             for target in targets:
                 if target.id == signal.id:
+                    continue
+                if target.scope != signal.scope:
+                    continue
+                if self._strong_invalidation_event_exists(
+                    target_entry_id=target.id,
+                    signal_entry_id=signal.id,
+                    event_types={
+                        "strong_invalidation_confirmed",
+                        "strong_invalidation_rejected",
+                        "strong_invalidation_expired",
+                        "strong_invalidation_proposed",
+                    },
+                ):
                     continue
                 overlap = signal_tokens & _tokens(target)
                 if not overlap:
@@ -458,10 +510,7 @@ class ConsolidationWorker:
 
     def accumulate_identity_candidates(self) -> list[MemoryEntry]:
         observations: dict[str, list[MemoryEntry]] = defaultdict(list)
-        entries = self._manager.list_entries(
-            limit=max(1, len(self._manager._entries)),
-            include_quarantined=True,
-        )
+        entries = self._list_entries(include_quarantined=True)
         for entry in entries:
             if entry.channel_trust != "owner_observed":
                 continue
@@ -473,14 +522,11 @@ class ConsolidationWorker:
         created: list[MemoryEntry] = []
         existing_predicates = {
             entry.predicate
-            for entry in self._manager.list_entries(
-                limit=max(1, len(self._manager._entries)),
-                include_pending_review=True,
-            )
+            for entry in self._list_entries(include_pending_review=True)
             if entry.entry_type == "preference"
         }
         for preference, evidence in observations.items():
-            threshold = self._config.identity_candidate_threshold
+            threshold = self._identity_candidate_threshold(preference)
             if len({entry.source_id for entry in evidence}) < threshold:
                 continue
             predicate = f"prefers({preference})"
@@ -516,6 +562,9 @@ class ConsolidationWorker:
                 metadata={
                     "evidence_entry_ids": evidence_ids,
                     "threshold": threshold,
+                    "threshold_category": self._identity_candidate_threshold_category(
+                        preference
+                    ),
                     "candidate_ttl_activity_days": self._config.candidate_ttl_activity_days,
                 },
             )
@@ -549,6 +598,81 @@ class ConsolidationWorker:
         for pattern in self._config.strong_invalidation_patterns:
             if pattern.strip() and pattern.lower() in text:
                 return pattern
+        return None
+
+    def _contradiction_already_recorded(
+        self,
+        older: MemoryEntry,
+        newer: MemoryEntry,
+        *,
+        predicate: str,
+    ) -> bool:
+        if newer.id in older.conflict_entry_ids and older.id in newer.conflict_entry_ids:
+            return True
+        for event in self._manager.list_events(
+            entry_id=older.id,
+            event_type="contradicted",
+            limit=_STRONG_INVALIDATION_EVENT_LOOKBACK,
+        ):
+            metadata = event.metadata_json
+            if str(metadata.get("predicate", "")) != predicate:
+                continue
+            if str(metadata.get("conflicting_entry_id", "")) == newer.id:
+                return True
+            references = metadata.get("reference_entry_ids", [])
+            if isinstance(references, list) and newer.id in {str(item) for item in references}:
+                return True
+        return False
+
+    def _corroboration_already_recorded(self, entry_id: str, support_id: str) -> bool:
+        for event in self._manager.list_events(
+            entry_id=entry_id,
+            event_type="corroborated",
+            limit=_STRONG_INVALIDATION_EVENT_LOOKBACK,
+        ):
+            references = event.metadata_json.get("reference_entry_ids", [])
+            if isinstance(references, list) and support_id in {str(item) for item in references}:
+                return True
+        return False
+
+    def _strong_invalidation_event_exists(
+        self,
+        *,
+        target_entry_id: str,
+        signal_entry_id: str,
+        event_types: set[str],
+    ) -> bool:
+        for event_type in event_types:
+            for event in self._manager.list_events(
+                entry_id=target_entry_id,
+                event_type=event_type,
+                limit=_STRONG_INVALIDATION_EVENT_LOOKBACK,
+            ):
+                if str(event.metadata_json.get("signal_entry_id", "")).strip() == signal_entry_id:
+                    return True
+        return False
+
+    def _identity_candidate_threshold(self, preference: str) -> int:
+        category = self._identity_candidate_threshold_category(preference)
+        if category is None:
+            return self._config.identity_candidate_threshold
+        return max(
+            1,
+            int(
+                self._config.per_pattern_candidate_thresholds.get(
+                    category,
+                    self._config.identity_candidate_threshold,
+                )
+            ),
+        )
+
+    @staticmethod
+    def _identity_candidate_threshold_category(preference: str) -> str | None:
+        normalized = preference.strip().lower()
+        if normalized in _DIETARY_PREFERENCES:
+            return "dietary"
+        if normalized in _MEDICAL_PREFERENCES:
+            return "medical"
         return None
 
     def _record_strong_invalidation_resolution(

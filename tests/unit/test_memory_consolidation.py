@@ -3,6 +3,9 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+import pytest
+
+from shisad.daemon.handlers._impl_memory import MemoryImplMixin
 from shisad.memory.consolidation import ConsolidationConfig, ConsolidationWorker
 from shisad.memory.manager import MemoryManager
 from shisad.memory.schema import MemoryEntry, MemorySource
@@ -20,6 +23,7 @@ def _write_entry(
     channel_trust: str = "command",
     confirmation_status: str = "user_asserted",
     source_id: str = "consolidation-test",
+    scope: str = "user",
 ) -> MemoryEntry:
     decision = manager.write_with_provenance(
         entry_type=entry_type,
@@ -31,7 +35,7 @@ def _write_entry(
         channel_trust=channel_trust,  # type: ignore[arg-type]
         confirmation_status=confirmation_status,  # type: ignore[arg-type]
         source_id=source_id,
-        scope="user",
+        scope=scope,
         confidence=confidence,
         confirmation_satisfied=True,
     )
@@ -102,6 +106,11 @@ def test_m5_corroboration_and_contradiction_update_confidence_with_events(
         value="I prefer coffee.",
         predicate="prefers(coffee)",
         confidence=0.70,
+    )
+    _write_owner_observed_episode(
+        manager,
+        value="At breakfast I said I like coffee.",
+        source_id="support-coffee-repeat",
     )
     support = _write_owner_observed_episode(
         manager,
@@ -181,6 +190,113 @@ def test_m5_strong_invalidation_and_identity_candidate_accumulation(
     assert candidate.trust_band == "untrusted"
     assert {entry.id for entry in manager.list_review_queue()} == {candidate.id}
     assert manager.list_events(entry_id=candidate.id, event_type="candidate_proposed")
+
+
+def test_m5_identity_candidate_uses_per_pattern_threshold(tmp_path: Path) -> None:
+    manager = MemoryManager(tmp_path / "memory")
+    _write_owner_observed_episode(manager, value="I like ramen for lunch.", source_id="ramen-1")
+    _write_owner_observed_episode(
+        manager,
+        value="I prefer ramen when traveling.",
+        source_id="ramen-2",
+    )
+
+    candidates = ConsolidationWorker(
+        manager,
+        config=ConsolidationConfig(identity_candidate_threshold=3),
+    ).accumulate_identity_candidates()
+
+    assert len(candidates) == 1
+    assert candidates[0].predicate == "prefers(ramen)"
+    proposed = manager.list_events(entry_id=candidates[0].id, event_type="candidate_proposed")
+    assert proposed[-1].metadata_json["threshold"] == 2
+    assert proposed[-1].metadata_json["threshold_category"] == "dietary"
+
+
+def test_m5_strong_invalidations_do_not_cross_scopes(tmp_path: Path) -> None:
+    manager = MemoryManager(tmp_path / "memory")
+    _write_entry(
+        manager,
+        entry_type="persona_fact",
+        key="work:acme",
+        value="I work at ACME as VP Eng.",
+        confidence=0.95,
+        scope="user",
+    )
+    _write_entry(
+        manager,
+        entry_type="episode",
+        key="episode:left-acme",
+        value="I no longer work at ACME.",
+        source_origin="user_direct",
+        channel_trust="owner_observed",
+        confirmation_status="auto_accepted",
+        source_id="left-acme-channel",
+        scope="channel",
+    )
+
+    proposals = ConsolidationWorker(
+        manager,
+        scope_filter={"user", "channel"},
+    ).propose_strong_invalidations()
+
+    assert proposals == []
+    assert manager.list_events(event_type="strong_invalidation_proposed") == []
+
+
+def test_m5_repeated_consolidation_is_idempotent_for_conflicts_and_proposals(
+    tmp_path: Path,
+) -> None:
+    manager = MemoryManager(tmp_path / "memory")
+    coffee = _write_entry(
+        manager,
+        entry_type="preference",
+        key="pref:drink",
+        value="I prefer coffee.",
+        predicate="prefers(coffee)",
+        confidence=0.70,
+    )
+    _write_entry(
+        manager,
+        entry_type="preference",
+        key="pref:drink",
+        value="I prefer tea now.",
+        predicate="prefers(tea)",
+        confidence=0.80,
+    )
+    acme = _write_entry(
+        manager,
+        entry_type="persona_fact",
+        key="work:acme",
+        value="I work at ACME as VP Eng.",
+        confidence=0.95,
+    )
+    _write_owner_observed_episode(
+        manager,
+        value="I no longer work at ACME.",
+        source_id="left-acme-repeat",
+    )
+    worker = ConsolidationWorker(manager)
+
+    worker.run_once()
+    after_first = manager.get_entry(coffee.id)
+    assert after_first is not None
+    first_confidence = after_first.confidence
+    first_proposals = manager.list_events(
+        entry_id=acme.id,
+        event_type="strong_invalidation_proposed",
+    )
+    assert len(first_proposals) == 1
+
+    worker.run_once()
+    after_second = manager.get_entry(coffee.id)
+    assert after_second is not None
+    second_proposals = manager.list_events(
+        entry_id=acme.id,
+        event_type="strong_invalidation_proposed",
+    )
+    assert after_second.confidence == first_confidence
+    assert len(second_proposals) == 1
 
 
 def test_m5_dedup_merge_retention_and_reverification_paths(tmp_path: Path) -> None:
@@ -343,3 +459,62 @@ def test_m5_strong_invalidation_resolution_and_two_phase_extraction(tmp_path: Pa
     )
     assert [item.phase for item in extracted] == ["cheap", "cheap"]
     assert {item.entry_type for item in extracted} == {"decision", "todo"}
+
+
+class _ConsolidationHarness(MemoryImplMixin):
+    def __init__(self, manager: MemoryManager) -> None:
+        self._memory_manager = manager
+
+
+@pytest.mark.asyncio
+async def test_m5_partial_consolidation_flags_keep_dedup_and_retention(
+    tmp_path: Path,
+) -> None:
+    manager = MemoryManager(tmp_path / "memory")
+    now = datetime(2026, 4, 23, tzinfo=UTC)
+    duplicate_a = _write_entry(
+        manager,
+        entry_type="fact",
+        key="fact:partial-duplicate",
+        value="Partial duplicate fact",
+        confidence=0.40,
+        source_origin="consolidation_derived",
+        channel_trust="consolidation",
+        confirmation_status="auto_accepted",
+        source_id="partial-dup-a",
+    )
+    duplicate_b = _write_entry(
+        manager,
+        entry_type="fact",
+        key="fact:partial-duplicate",
+        value="Partial duplicate fact",
+        confidence=0.55,
+        source_origin="consolidation_derived",
+        channel_trust="consolidation",
+        confirmation_status="auto_accepted",
+        source_id="partial-dup-b",
+    )
+    stale = _write_entry(
+        manager,
+        entry_type="fact",
+        key="fact:partial-stale",
+        value="Stale partial derived fact",
+        confidence=0.35,
+        source_origin="consolidation_derived",
+        channel_trust="consolidation",
+        confirmation_status="auto_accepted",
+        source_id="partial-stale",
+    )
+    stale.created_at = now - timedelta(days=400)
+    stale.decay_score = 0.01
+    manager._persist_entry(stale)
+
+    result = await _ConsolidationHarness(manager).do_memory_consolidate(
+        {"propose_strong_invalidations": False}
+    )
+
+    assert set(result["merged_entry_ids"]) == {duplicate_a.id} or set(
+        result["merged_entry_ids"]
+    ) == {duplicate_b.id}
+    assert stale.id in result["archive_candidate_ids"]
+    assert stale.id in result["quarantined_entry_ids"]

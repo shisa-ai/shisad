@@ -22,6 +22,7 @@ from shisad.memory.schema import MemorySource
 from shisad.memory.trust import backfill_legacy_triple
 
 _CONTROL_API_AUTHENTICATED_WRITE = "_control_api_authenticated_write"
+_DEFAULT_MEMORY_GRAPH_SCOPES = frozenset({"user"})
 
 
 class MemoryImplMixin(HandlerMixinBase):
@@ -63,6 +64,38 @@ class MemoryImplMixin(HandlerMixinBase):
         if not isinstance(taints, list):
             return []
         return [item for item in taints if isinstance(item, str)]
+
+    @staticmethod
+    def _scope_filter_from_params(
+        params: Mapping[str, Any],
+        *,
+        default: frozenset[str] | None = _DEFAULT_MEMORY_GRAPH_SCOPES,
+    ) -> set[str] | None:
+        raw = params.get("scope_filter")
+        if raw is None:
+            return set(default) if default is not None else None
+        if not isinstance(raw, list):
+            return set()
+        return {str(item).strip() for item in raw if str(item).strip()}
+
+    def _list_memory_entries_for_scope(
+        self,
+        *,
+        scope_filter: set[str] | None,
+        include_quarantined: bool = False,
+        include_pending_review: bool = False,
+    ) -> list[Any]:
+        entries = cast(
+            list[Any],
+            self._memory_manager.list_entries(
+                limit=max(1, len(getattr(self._memory_manager, "_entries", {}))),
+                include_quarantined=include_quarantined,
+                include_pending_review=include_pending_review,
+            ),
+        )
+        if scope_filter is None:
+            return entries
+        return [entry for entry in entries if entry.scope in scope_filter]
 
     @staticmethod
     def _legacy_confirmation_satisfied(params: Mapping[str, Any], context: Any) -> bool:
@@ -562,8 +595,9 @@ class MemoryImplMixin(HandlerMixinBase):
         entity = str(params.get("entity", "")).strip()
         depth = max(1, min(3, int(params.get("depth", 1))))
         limit = max(1, min(100, int(params.get("limit", 20))))
-        entries = self._memory_manager.list_entries(
-            limit=max(1, len(getattr(self._memory_manager, "_entries", {}))),
+        scope_filter = self._scope_filter_from_params(params)
+        entries = self._list_memory_entries_for_scope(
+            scope_filter=scope_filter,
             include_quarantined=False,
         )
         graph = build_knowledge_graph(entries)
@@ -576,15 +610,17 @@ class MemoryImplMixin(HandlerMixinBase):
 
     async def do_graph_export(self, params: Mapping[str, Any]) -> dict[str, Any]:
         fmt = str(params.get("format", "json")).strip().lower() or "json"
-        entries = self._memory_manager.list_entries(
-            limit=max(1, len(getattr(self._memory_manager, "_entries", {}))),
+        scope_filter = self._scope_filter_from_params(params)
+        entries = self._list_memory_entries_for_scope(
+            scope_filter=scope_filter,
             include_quarantined=False,
         )
         graph = build_knowledge_graph(entries)
         return {"format": fmt, "data": graph.export(format=fmt)}
 
     async def do_memory_consolidate(self, params: Mapping[str, Any]) -> dict[str, Any]:
-        worker = ConsolidationWorker(self._memory_manager)
+        scope_filter = self._scope_filter_from_params(params)
+        worker = ConsolidationWorker(self._memory_manager, scope_filter=scope_filter)
         result = None
         if (
             bool(params.get("recompute_scores", True))
@@ -603,6 +639,11 @@ class MemoryImplMixin(HandlerMixinBase):
                 result.updated_entry_ids.extend(confidence.updated_entry_ids)
                 result.corroborating_entry_ids.extend(confidence.corroborating_entry_ids)
                 result.contradicted_entry_ids.extend(confidence.contradicted_entry_ids)
+            dedup = worker.deduplicate_entries()
+            retention = worker.enforce_retention()
+            result.merged_entry_ids.extend(dedup.merged_entry_ids)
+            result.archive_candidate_ids.extend(retention.archive_candidate_ids)
+            result.quarantined_entry_ids.extend(retention.quarantined_entry_ids)
             if bool(params.get("propose_strong_invalidations", True)):
                 result.strong_invalidations.extend(worker.propose_strong_invalidations())
             if bool(params.get("accumulate_identity_candidates", True)):
@@ -611,6 +652,9 @@ class MemoryImplMixin(HandlerMixinBase):
             "updated_entry_ids": sorted(set(result.updated_entry_ids)),
             "corroborating_entry_ids": sorted(set(result.corroborating_entry_ids)),
             "contradicted_entry_ids": sorted(set(result.contradicted_entry_ids)),
+            "merged_entry_ids": sorted(set(result.merged_entry_ids)),
+            "archive_candidate_ids": sorted(set(result.archive_candidate_ids)),
+            "quarantined_entry_ids": sorted(set(result.quarantined_entry_ids)),
             "strong_invalidation_count": len(result.strong_invalidations),
             "identity_candidate_count": len(result.identity_candidates),
             "strong_invalidations": [

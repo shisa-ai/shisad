@@ -7196,7 +7196,7 @@ class SessionImplMixin(HandlerMixinBase):
         surface_limit = ConsolidationConfig().surface_limit
         proposals = memory_manager.list_events(
             event_type="strong_invalidation_proposed",
-            limit=20,
+            limit=1000,
         )
         for event in reversed(proposals):
             target_entry_id = event.entry_id
@@ -7219,7 +7219,14 @@ class SessionImplMixin(HandlerMixinBase):
                 include_pending_review=True,
                 include_quarantined=True,
             )
-            if target is None or signal is None or target.superseded_by is not None:
+            if (
+                target is None
+                or signal is None
+                or target.superseded_by is not None
+                or target.scope != "user"
+                or signal.scope != "user"
+                or target.scope != signal.scope
+            ):
                 continue
             surfaced = self._strong_invalidation_surface_count(
                 memory_manager=memory_manager,
@@ -7304,7 +7311,11 @@ class SessionImplMixin(HandlerMixinBase):
             "strong_invalidation_rejected",
             "strong_invalidation_expired",
         ):
-            for event in memory_manager.list_events(event_type=event_type, limit=100):
+            for event in memory_manager.list_events(
+                entry_id=target_entry_id,
+                event_type=event_type,
+                limit=1000,
+            ):
                 metadata = event.metadata_json
                 event_target = str(metadata.get("target_entry_id") or event.entry_id)
                 event_signal = str(metadata.get("signal_entry_id", ""))
