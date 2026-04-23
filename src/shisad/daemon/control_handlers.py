@@ -65,8 +65,14 @@ from shisad.core.api.schema import (
     GitLogResult,
     GitStatusParams,
     GitStatusResult,
+    GraphExportParams,
+    GraphExportResult,
+    GraphQueryParams,
+    GraphQueryResult,
     LockdownSetParams,
     LockdownSetResult,
+    MemoryConsolidateParams,
+    MemoryConsolidateResult,
     MemoryDeleteResult,
     MemoryEntryParams,
     MemoryExportParams,
@@ -446,6 +452,21 @@ class DaemonControlHandlers:
         ctx: RequestContext,
     ) -> SignerRevokeResult:
         return await self._confirmation.handle_signer_revoke(params, ctx)
+
+    async def handle_graph_query(
+        self, params: GraphQueryParams, ctx: RequestContext
+    ) -> GraphQueryResult:
+        return await self._memory.handle_graph_query(params, ctx)
+
+    async def handle_graph_export(
+        self, params: GraphExportParams, ctx: RequestContext
+    ) -> GraphExportResult:
+        return await self._memory.handle_graph_export(params, ctx)
+
+    async def handle_memory_consolidate(
+        self, params: MemoryConsolidateParams, ctx: RequestContext
+    ) -> MemoryConsolidateResult:
+        return await self._memory.handle_memory_consolidate(params, ctx)
 
     async def handle_memory_ingest(
         self, params: MemoryIngestParams, ctx: RequestContext

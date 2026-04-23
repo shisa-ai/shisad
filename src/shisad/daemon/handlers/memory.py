@@ -3,6 +3,12 @@
 from __future__ import annotations
 
 from shisad.core.api.schema import (
+    GraphExportParams,
+    GraphExportResult,
+    GraphQueryParams,
+    GraphQueryResult,
+    MemoryConsolidateParams,
+    MemoryConsolidateResult,
     MemoryDeleteResult,
     MemoryEntryParams,
     MemoryExportParams,
@@ -71,6 +77,45 @@ class MemoryHandlers:
     def __init__(self, impl: HandlerImplementation, *, internal_ingress_marker: object) -> None:
         self._impl = impl
         self._internal_ingress_marker = internal_ingress_marker
+
+    async def handle_graph_query(
+        self,
+        params: GraphQueryParams,
+        ctx: RequestContext,
+    ) -> GraphQueryResult:
+        payload = build_params_payload(
+            params,
+            ctx,
+            internal_ingress_marker=self._internal_ingress_marker,
+        )
+        return GraphQueryResult.model_validate(await self._impl.do_graph_query(payload))
+
+    async def handle_graph_export(
+        self,
+        params: GraphExportParams,
+        ctx: RequestContext,
+    ) -> GraphExportResult:
+        payload = build_params_payload(
+            params,
+            ctx,
+            internal_ingress_marker=self._internal_ingress_marker,
+        )
+        return GraphExportResult.model_validate(await self._impl.do_graph_export(payload))
+
+    async def handle_memory_consolidate(
+        self,
+        params: MemoryConsolidateParams,
+        ctx: RequestContext,
+    ) -> MemoryConsolidateResult:
+        payload = build_params_payload(
+            params,
+            ctx,
+            internal_ingress_marker=self._internal_ingress_marker,
+        )
+        payload[_CONTROL_API_AUTHENTICATED_WRITE] = True
+        return MemoryConsolidateResult.model_validate(
+            await self._impl.do_memory_consolidate(payload)
+        )
 
     async def handle_memory_ingest(
         self,

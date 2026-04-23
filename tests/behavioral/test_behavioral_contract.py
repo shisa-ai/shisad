@@ -3092,6 +3092,107 @@ async def test_contract_pending_review_skill_requires_promotion_before_invocatio
 
 
 @pytest.mark.asyncio
+async def test_contract_graph_query_export_and_consolidation_run_via_control_api(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def _seed(config: DaemonConfig) -> None:
+        manager = MemoryManager(config.data_dir / "memory_entries")
+
+        def _write(
+            *,
+            entry_type: str,
+            key: str,
+            value: str,
+            source_id: str,
+            source_origin: str = "user_direct",
+            channel_trust: str = "command",
+            confirmation_status: str = "user_asserted",
+            confidence: float = 0.95,
+        ) -> None:
+            decision = manager.write_with_provenance(
+                entry_type=entry_type,
+                key=key,
+                value=value,
+                source=MemorySource(
+                    origin="user",
+                    source_id=source_id,
+                    extraction_method="manual",
+                ),
+                source_origin=source_origin,  # type: ignore[arg-type]
+                channel_trust=channel_trust,  # type: ignore[arg-type]
+                confirmation_status=confirmation_status,  # type: ignore[arg-type]
+                source_id=source_id,
+                scope="user",
+                confidence=confidence,
+                confirmation_satisfied=True,
+            )
+            assert decision.entry is not None
+
+        _write(
+            entry_type="fact",
+            key="project:shisad",
+            value="Shisad uses MemoryPack recall for release planning.",
+            source_id="graph-live-1",
+        )
+        _write(
+            entry_type="fact",
+            key="component:memorypack",
+            value="MemoryPack recall supports Shisad release workflows.",
+            source_id="graph-live-2",
+        )
+        for index, value in enumerate(
+            [
+                "I like ramen for lunch.",
+                "I prefer ramen when traveling.",
+                "Ramen is my favorite comfort food.",
+            ],
+            start=1,
+        ):
+            _write(
+                entry_type="episode",
+                key=f"episode:ramen-{index}",
+                value=value,
+                source_id=f"ramen-live-{index}",
+                source_origin="user_direct",
+                channel_trust="owner_observed",
+                confirmation_status="auto_accepted",
+                confidence=0.30,
+            )
+
+    async with _contract_harness_context(tmp_path, monkeypatch, prestart=_seed) as harness:
+        graph = await harness.client.call(
+            "graph.query",
+            {"entity": "Shisad", "depth": 1, "limit": 10},
+        )
+        assert graph.get("root_entity_id")
+        assert graph.get("nodes")
+        assert any(
+            node.get("evidence_entry_ids")
+            for node in graph.get("nodes", [])
+        )
+        assert graph.get("edges")
+
+        exported = await harness.client.call("graph.export", {"format": "md"})
+        assert exported.get("format") == "md"
+        assert "Derived Knowledge Graph" in str(exported.get("data", ""))
+        assert "Evidence" in str(exported.get("data", ""))
+
+        consolidated = await harness.client.call("memory.consolidate", {})
+        assert consolidated.get("identity_candidate_count") == 1
+        assert consolidated.get("capability_scope", {}).get("network") is False
+        assert consolidated.get("capability_scope", {}).get("tool_recursion") is False
+
+        review_queue = await harness.client.call("memory.list_review_queue", {"limit": 10})
+        predicates = {
+            str(item.get("predicate", "")).strip()
+            for item in review_queue.get("entries", [])
+            if isinstance(item, dict)
+        }
+        assert "prefers(ramen)" in predicates
+
+
+@pytest.mark.asyncio
 async def test_contract_reminder_create_executes_and_due_run_delivers_without_lockdown(
     contract_harness: ContractHarness,
 ) -> None:

@@ -523,6 +523,31 @@ class MemoryExportParams(_StrictParams):
     format: str = "json"
 
 
+class GraphQueryParams(_StrictParams):
+    entity: str
+    depth: int = 1
+    limit: int = 20
+
+    @model_validator(mode="after")
+    def _validate_graph_query(self) -> GraphQueryParams:
+        if not self.entity.strip():
+            raise ValueError("entity is required")
+        self.depth = max(1, min(3, int(self.depth)))
+        self.limit = max(1, min(100, int(self.limit)))
+        return self
+
+
+class GraphExportParams(_StrictParams):
+    format: Literal["json", "md"] = "json"
+
+
+class MemoryConsolidateParams(_StrictParams):
+    recompute_scores: bool = True
+    apply_confidence_updates: bool = True
+    propose_strong_invalidations: bool = True
+    accumulate_identity_candidates: bool = True
+
+
 class MemoryRotateKeyParams(_StrictParams):
     reencrypt_existing: bool = True
 
@@ -660,6 +685,28 @@ class MemoryWorkflowStateResult(BaseModel):
 class MemoryExportResult(BaseModel):
     format: str
     data: Any = None
+
+
+class GraphQueryResult(BaseModel):
+    root_entity_id: str = ""
+    nodes: list[dict[str, Any]] = Field(default_factory=list)
+    edges: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class GraphExportResult(BaseModel):
+    format: str
+    data: Any = None
+
+
+class MemoryConsolidateResult(BaseModel):
+    updated_entry_ids: list[str] = Field(default_factory=list)
+    corroborating_entry_ids: list[str] = Field(default_factory=list)
+    contradicted_entry_ids: list[str] = Field(default_factory=list)
+    strong_invalidation_count: int = 0
+    identity_candidate_count: int = 0
+    strong_invalidations: list[dict[str, Any]] = Field(default_factory=list)
+    identity_candidate_ids: list[str] = Field(default_factory=list)
+    capability_scope: dict[str, Any] = Field(default_factory=dict)
 
 
 class MemoryVerifyResult(BaseModel):

@@ -10,6 +10,8 @@ from typing import Any, cast
 from shisad.core.types import Capability
 from shisad.daemon.handlers._csv import render_csv_row
 from shisad.daemon.handlers._mixin_typing import HandlerMixinBase
+from shisad.memory.consolidation import ConsolidationRunResult, ConsolidationWorker
+from shisad.memory.graph import build_knowledge_graph
 from shisad.memory.ingress import DerivationPath, IngressContext
 from shisad.memory.remap import (
     digest_memory_value,
@@ -554,6 +556,79 @@ class MemoryImplMixin(HandlerMixinBase):
             "chunk_id": chunk_id,
             "found": content is not None,
             "content": content,
+        }
+
+    async def do_graph_query(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        entity = str(params.get("entity", "")).strip()
+        depth = max(1, min(3, int(params.get("depth", 1))))
+        limit = max(1, min(100, int(params.get("limit", 20))))
+        entries = self._memory_manager.list_entries(
+            limit=max(1, len(getattr(self._memory_manager, "_entries", {}))),
+            include_quarantined=False,
+        )
+        graph = build_knowledge_graph(entries)
+        result = graph.query(entity, depth=depth, limit=limit)
+        return {
+            "root_entity_id": result.root_entity_id,
+            "nodes": [node.to_dict() for node in result.nodes],
+            "edges": [edge.to_dict() for edge in result.edges],
+        }
+
+    async def do_graph_export(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        fmt = str(params.get("format", "json")).strip().lower() or "json"
+        entries = self._memory_manager.list_entries(
+            limit=max(1, len(getattr(self._memory_manager, "_entries", {}))),
+            include_quarantined=False,
+        )
+        graph = build_knowledge_graph(entries)
+        return {"format": fmt, "data": graph.export(format=fmt)}
+
+    async def do_memory_consolidate(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        worker = ConsolidationWorker(self._memory_manager)
+        result = None
+        if (
+            bool(params.get("recompute_scores", True))
+            and bool(params.get("apply_confidence_updates", True))
+            and bool(params.get("propose_strong_invalidations", True))
+            and bool(params.get("accumulate_identity_candidates", True))
+        ):
+            result = worker.run_once()
+        else:
+            result = ConsolidationRunResult()
+            if bool(params.get("recompute_scores", True)):
+                decay = worker.recompute_decay_scores()
+                result.updated_entry_ids.extend(decay.updated_entry_ids)
+            if bool(params.get("apply_confidence_updates", True)):
+                confidence = worker.apply_confidence_updates()
+                result.updated_entry_ids.extend(confidence.updated_entry_ids)
+                result.corroborating_entry_ids.extend(confidence.corroborating_entry_ids)
+                result.contradicted_entry_ids.extend(confidence.contradicted_entry_ids)
+            if bool(params.get("propose_strong_invalidations", True)):
+                result.strong_invalidations.extend(worker.propose_strong_invalidations())
+            if bool(params.get("accumulate_identity_candidates", True)):
+                result.identity_candidates.extend(worker.accumulate_identity_candidates())
+        return {
+            "updated_entry_ids": sorted(set(result.updated_entry_ids)),
+            "corroborating_entry_ids": sorted(set(result.corroborating_entry_ids)),
+            "contradicted_entry_ids": sorted(set(result.contradicted_entry_ids)),
+            "strong_invalidation_count": len(result.strong_invalidations),
+            "identity_candidate_count": len(result.identity_candidates),
+            "strong_invalidations": [
+                {
+                    "target_entry_id": item.target_entry_id,
+                    "signal_entry_id": item.signal_entry_id,
+                    "pattern": item.pattern,
+                    "message": item.message,
+                }
+                for item in result.strong_invalidations
+            ],
+            "identity_candidate_ids": [entry.id for entry in result.identity_candidates],
+            "capability_scope": {
+                "network": worker.capability_scope.network,
+                "tool_recursion": worker.capability_scope.tool_recursion,
+                "self_invocation": worker.capability_scope.self_invocation,
+                "write_scope": worker.capability_scope.write_scope,
+            },
         }
 
     async def do_memory_get(self, params: Mapping[str, Any]) -> dict[str, Any]:
