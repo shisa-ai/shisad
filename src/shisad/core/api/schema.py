@@ -467,6 +467,16 @@ class MemoryReadOriginalParams(_StrictParams):
         return self
 
 
+class MemoryInvokeSkillParams(_StrictParams):
+    skill_id: str
+
+    @model_validator(mode="after")
+    def _validate_skill_id(self) -> MemoryInvokeSkillParams:
+        if not self.skill_id.strip():
+            raise ValueError("skill_id is required")
+        return self
+
+
 class MemoryEntryParams(_StrictParams):
     entry_id: str
     include_deleted: bool = False
@@ -560,6 +570,30 @@ class MemoryReadOriginalResult(BaseModel):
     chunk_id: str
     found: bool = False
     content: str | None = None
+
+
+class MemoryProceduralArtifactResult(BaseModel):
+    id: str = Field(default="", validation_alias=AliasChoices("id", "entry_id"))
+    entry_type: str = ""
+    key: str = ""
+    name: str = ""
+    description: str = ""
+    content: str = ""
+    trust_band: str = ""
+    source_origin: str = ""
+    channel_trust: str = ""
+    confirmation_status: str = ""
+    last_used_at: datetime | str | None = None
+    size_bytes: int = 0
+    invocation_eligible: bool = False
+
+
+class MemoryInvokeSkillResult(BaseModel):
+    skill_id: str
+    found: bool = False
+    invoked: bool = False
+    reason: str = ""
+    artifact: MemoryProceduralArtifactResult | None = None
 
 
 class MemoryWriteResult(BaseModel):

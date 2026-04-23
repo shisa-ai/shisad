@@ -14,8 +14,8 @@ from shisad.memory.trust import TrustGateViolation
 
 
 class _MemoryWriteHarness(MemoryImplMixin):
-    def __init__(self, tmp_path: Path) -> None:
-        self._memory_manager = MemoryManager(tmp_path / "memory")
+    def __init__(self, tmp_path: Path, *, audit_hook=None) -> None:
+        self._memory_manager = MemoryManager(tmp_path / "memory", audit_hook=audit_hook)
         self._memory_ingress_registry = IngressContextRegistry()
 
 
@@ -168,6 +168,62 @@ async def test_memory_write_handle_scope_and_source_id_override_are_ignored(
     assert entry["source_origin"] == "user_direct"
     assert entry["channel_trust"] == "command"
     assert entry["confirmation_status"] == "user_asserted"
+
+
+@pytest.mark.asyncio
+async def test_memory_invoke_skill_routes_through_manager_and_forwards_rpc_peer(
+    tmp_path: Path,
+) -> None:
+    audits: list[tuple[str, dict[str, object]]] = []
+    harness = _MemoryWriteHarness(
+        tmp_path,
+        audit_hook=lambda action, data: audits.append((action, data)),
+    )
+    context = harness._memory_ingress_registry.mint(
+        source_origin="user_direct",
+        channel_trust="command",
+        confirmation_status="user_asserted",
+        scope="user",
+        source_id="turn-skill-1",
+        content="Release close checklist\nRun behavioral validation before release close.",
+    )
+    written = await harness.do_memory_write(
+        {
+            "ingress_context": context.handle_id,
+            "entry_type": "skill",
+            "key": "skill:release-close",
+            "value": "Release close checklist\nRun behavioral validation before release close.",
+            "invocation_eligible": True,
+        }
+    )
+
+    result = await harness.do_memory_invoke_skill(
+        {
+            "skill_id": written["entry"]["id"],
+            "_rpc_peer": {"host": "127.0.0.1", "port": 31337},
+        }
+    )
+
+    assert result["found"] is True
+    assert result["invoked"] is True
+    assert result["artifact"]["id"] == written["entry"]["id"]
+    assert result["artifact"]["content"].startswith("Release close checklist")
+    assert audits[-1] == (
+        "memory.skill_invoked",
+        {
+            "skill_id": written["entry"]["id"],
+            "entry_id": written["entry"]["id"],
+            "entry_type": "skill",
+            "found": True,
+            "invoked": True,
+            "reason": "",
+            "trust_band": "elevated",
+            "caller_context": {
+                "method": "memory.invoke_skill",
+                "rpc_peer": {"host": "127.0.0.1", "port": 31337},
+            },
+        },
+    )
 
 
 @pytest.mark.asyncio

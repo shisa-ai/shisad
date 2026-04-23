@@ -7,6 +7,7 @@ import pytest
 from shisad.core.api.schema import (
     MemoryEntryParams,
     MemoryIngestParams,
+    MemoryInvokeSkillParams,
     MemoryLifecycleParams,
     MemoryListParams,
     MemoryMintIngressParams,
@@ -30,6 +31,7 @@ class _StubImpl:
         self.last_memory_promote_identity_candidate_payload: dict[str, object] | None = None
         self.last_memory_reject_identity_candidate_payload: dict[str, object] | None = None
         self.last_memory_list_payload: dict[str, object] | None = None
+        self.last_memory_invoke_skill_payload: dict[str, object] | None = None
         self.last_memory_read_original_payload: dict[str, object] | None = None
         self.last_memory_get_payload: dict[str, object] | None = None
         self.last_memory_quarantine_payload: dict[str, object] | None = None
@@ -93,6 +95,27 @@ class _StubImpl:
 
     async def do_memory_list_review_queue(self, _payload: dict[str, object]) -> dict[str, object]:
         return {"entries": [{"entry_id": "review-1"}], "count": 1}
+
+    async def do_memory_invoke_skill(self, payload: dict[str, object]) -> dict[str, object]:
+        self.last_memory_invoke_skill_payload = payload
+        return {
+            "skill_id": str(payload["skill_id"]),
+            "found": True,
+            "invoked": True,
+            "artifact": {
+                "id": str(payload["skill_id"]),
+                "entry_type": "skill",
+                "name": "release-close",
+                "description": "Release close checklist",
+                "content": "Run behavioral validation before release close.",
+                "trust_band": "elevated",
+                "source_origin": "user_direct",
+                "channel_trust": "command",
+                "confirmation_status": "user_asserted",
+                "size_bytes": 45,
+                "invocation_eligible": True,
+            },
+        }
 
     async def do_memory_read_original(self, payload: dict[str, object]) -> dict[str, object]:
         self.last_memory_read_original_payload = payload
@@ -273,6 +296,29 @@ async def test_memory_read_original_wrapper_forwards_rpc_peer() -> None:
     assert impl.last_memory_read_original_payload is not None
     assert impl.last_memory_read_original_payload["chunk_id"] == "chunk-1"
     assert impl.last_memory_read_original_payload["_rpc_peer"] == {
+        "host": "127.0.0.1",
+        "port": 31337,
+    }
+
+
+@pytest.mark.asyncio
+async def test_memory_invoke_skill_wrapper_forwards_rpc_peer() -> None:
+    impl = _StubImpl()
+    handlers = MemoryHandlers(impl, internal_ingress_marker=object())  # type: ignore[arg-type]
+
+    result = await handlers.handle_memory_invoke_skill(
+        MemoryInvokeSkillParams(skill_id="skill-1"),
+        RequestContext(rpc_peer={"host": "127.0.0.1", "port": 31337}),
+    )
+
+    assert result.found is True
+    assert result.invoked is True
+    assert result.skill_id == "skill-1"
+    assert result.artifact is not None
+    assert result.artifact.id == "skill-1"
+    assert impl.last_memory_invoke_skill_payload is not None
+    assert impl.last_memory_invoke_skill_payload["skill_id"] == "skill-1"
+    assert impl.last_memory_invoke_skill_payload["_rpc_peer"] == {
         "host": "127.0.0.1",
         "port": 31337,
     }

@@ -5521,6 +5521,159 @@ class SessionImplMixin(HandlerMixinBase):
         return decision.entry.id
 
     @staticmethod
+    def _skill_command_response(
+        *,
+        validated: SessionMessageValidationResult,
+        response: str,
+    ) -> dict[str, Any]:
+        return {
+            "session_id": str(validated.sid),
+            "response": response,
+        }
+
+    @staticmethod
+    def _format_skill_last_used(value: datetime | None) -> str:
+        if value is None:
+            return "never"
+        return value.isoformat()
+
+    @staticmethod
+    def _format_skill_summary_line(skill: Any) -> str:
+        return (
+            f"- {skill.id} [{skill.entry_type}] {skill.name} — {skill.description} "
+            f"(trust: {skill.trust_band}, last used: "
+            f"{SessionImplMixin._format_skill_last_used(skill.last_used_at)})"
+        )
+
+    async def _maybe_handle_skill_command(
+        self,
+        *,
+        validated: SessionMessageValidationResult,
+    ) -> dict[str, Any] | None:
+        memory_manager = cast(MemoryManager | None, getattr(self, "_memory_manager", None))
+        if memory_manager is None:
+            return None
+
+        text = validated.firewall_result.sanitized_text.strip()
+        if not text.startswith("/skill") and not text.startswith("/skills"):
+            return None
+        normalized_channel = str(validated.channel or validated.session.channel).strip().lower()
+        if normalized_channel != "cli" or validated.session_mode != SessionMode.DEFAULT:
+            return self._skill_command_response(
+                validated=validated,
+                response="Skill commands are only available in the trusted command channel.",
+            )
+
+        if text == "/skills" or text.startswith("/skills "):
+            body = text[len("/skills") :].strip()
+            if not body:
+                skills = memory_manager.list_invocable_skills(limit=20)
+                if not skills:
+                    return self._skill_command_response(
+                        validated=validated,
+                        response="No invocable skills are currently available.",
+                    )
+                lines = ["Available skills:"]
+                lines.extend(self._format_skill_summary_line(skill) for skill in skills)
+                return self._skill_command_response(
+                    validated=validated,
+                    response="\n".join(lines),
+                )
+            command, _, remainder = body.partition(" ")
+            if command.strip().lower() != "search":
+                return self._skill_command_response(
+                    validated=validated,
+                    response="Usage: /skills | /skills search <query>",
+                )
+            query = remainder.strip()
+            if not query:
+                return self._skill_command_response(
+                    validated=validated,
+                    response="Usage: /skills search <query>",
+                )
+            matches = memory_manager.list_invocable_skills(query=query, limit=20)
+            if not matches:
+                return self._skill_command_response(
+                    validated=validated,
+                    response=f"No invocable skills matched query: {query}",
+                )
+            lines = [f"Matching skills for {query}:"]
+            lines.extend(self._format_skill_summary_line(skill) for skill in matches)
+            return self._skill_command_response(
+                validated=validated,
+                response="\n".join(lines),
+            )
+
+        body = text[len("/skill") :].strip()
+        if not body:
+            return self._skill_command_response(
+                validated=validated,
+                response="Usage: /skill <id> | /skill info <id>",
+            )
+        command, _, remainder = body.partition(" ")
+        if command.strip().lower() == "info":
+            skill_id = remainder.strip()
+            if not skill_id:
+                return self._skill_command_response(
+                    validated=validated,
+                    response="Usage: /skill info <id>",
+                )
+            artifact = memory_manager.describe_skill(skill_id)
+            if artifact is None:
+                return self._skill_command_response(
+                    validated=validated,
+                    response=f"Skill {skill_id} was not found.",
+                )
+            lines = [
+                f"Skill {artifact.id} [{artifact.entry_type}] {artifact.name}",
+                f"Trust band: {artifact.trust_band}",
+                f"Source origin: {artifact.source_origin}",
+                f"Last used: {self._format_skill_last_used(artifact.last_used_at)}",
+                f"Size: {artifact.size_bytes} bytes",
+                "",
+                artifact.content,
+            ]
+            return self._skill_command_response(
+                validated=validated,
+                response="\n".join(lines),
+            )
+
+        result = memory_manager.invoke_skill(
+            body,
+            audit_context={
+                "method": "session.command.skill",
+                "session_id": str(validated.sid),
+                "command": "/skill",
+            },
+        )
+        if not result.found:
+            return self._skill_command_response(
+                validated=validated,
+                response=f"Skill {body} was not found.",
+            )
+        if not result.invoked or result.artifact is None:
+            return self._skill_command_response(
+                validated=validated,
+                response=(
+                    f"Skill {body} is not invocable"
+                    + (f" ({result.reason})." if result.reason else ".")
+                ),
+            )
+        lines = [
+            (
+                f"Loaded skill {result.artifact.id} "
+                f"[{result.artifact.entry_type}] {result.artifact.name}"
+            ),
+            f"Trust band: {result.artifact.trust_band}",
+            "",
+            result.artifact.content,
+        ]
+        return self._skill_command_response(
+            validated=validated,
+            response="\n".join(lines),
+        )
+
+    @staticmethod
     def _identity_command_response(
         *,
         validated: SessionMessageValidationResult,
@@ -7467,6 +7620,9 @@ class SessionImplMixin(HandlerMixinBase):
         validated = await self._validate_and_load_session(params)
         if validated.early_response is not None:
             return validated.early_response
+        skill_command_response = await self._maybe_handle_skill_command(validated=validated)
+        if skill_command_response is not None:
+            return skill_command_response
         identity_command_response = await self._maybe_handle_identity_candidate_command(
             validated=validated
         )

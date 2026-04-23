@@ -1126,6 +1126,195 @@ def test_m1_procedural_install_triples_control_invocation_eligibility(tmp_path: 
     assert rejected.reason == "invocation_eligible_requires_install_triple"
 
 
+def test_m4_invoke_skill_records_citation_audit_and_event_trail(tmp_path: Path) -> None:
+    audits: list[tuple[str, dict[str, object]]] = []
+    manager = MemoryManager(
+        tmp_path / "memory",
+        audit_hook=lambda action, data: audits.append((action, data)),
+    )
+    decision = manager.write_with_provenance(
+        entry_type="skill",
+        key="skill:release-close",
+        value="Release close checklist\nRun behavioral validation before release close.",
+        source=MemorySource(origin="user", source_id="msg-skill-1", extraction_method="manual"),
+        source_origin="user_direct",
+        channel_trust="command",
+        confirmation_status="user_asserted",
+        source_id="msg-skill-1",
+        scope="user",
+        confidence=0.95,
+        confirmation_satisfied=True,
+        invocation_eligible=True,
+    )
+
+    assert decision.entry is not None
+    result = manager.invoke_skill(
+        decision.entry.id,
+        audit_context={
+            "method": "memory.invoke_skill",
+            "rpc_peer": {"host": "127.0.0.1", "port": 31337},
+        },
+    )
+
+    assert result.found is True
+    assert result.invoked is True
+    assert result.reason == ""
+    assert result.artifact is not None
+    assert result.artifact.id == decision.entry.id
+    assert result.artifact.entry_type == "skill"
+    assert result.artifact.trust_band == "elevated"
+
+    refreshed = manager.get_entry(decision.entry.id)
+    assert refreshed is not None
+    assert refreshed.citation_count == 1
+    assert refreshed.last_cited_at is not None
+    assert audits[-1] == (
+        "memory.skill_invoked",
+        {
+            "skill_id": decision.entry.id,
+            "entry_id": decision.entry.id,
+            "entry_type": "skill",
+            "found": True,
+            "invoked": True,
+            "reason": "",
+            "trust_band": "elevated",
+            "caller_context": {
+                "method": "memory.invoke_skill",
+                "rpc_peer": {"host": "127.0.0.1", "port": 31337},
+            },
+        },
+    )
+
+    cited = manager.list_events(
+        entry_id=decision.entry.id,
+        event_type="cited",
+        limit=10,
+    )
+    invoked = manager.list_events(
+        entry_id=decision.entry.id,
+        event_type="skill_invoked",
+        limit=10,
+    )
+    assert len(cited) == 1
+    assert len(invoked) == 1
+    assert invoked[0].metadata_json["caller_context"] == {
+        "method": "memory.invoke_skill",
+        "rpc_peer": {"host": "127.0.0.1", "port": 31337},
+    }
+
+
+def test_m4_invoke_skill_denied_when_entry_is_not_invocation_eligible(tmp_path: Path) -> None:
+    audits: list[tuple[str, dict[str, object]]] = []
+    manager = MemoryManager(
+        tmp_path / "memory",
+        audit_hook=lambda action, data: audits.append((action, data)),
+    )
+    decision = manager.write_with_provenance(
+        entry_type="skill",
+        key="skill:draft-review",
+        value="Draft review skill contents",
+        source=MemorySource(origin="user", source_id="msg-skill-2", extraction_method="manual"),
+        source_origin="user_direct",
+        channel_trust="command",
+        confirmation_status="user_asserted",
+        source_id="msg-skill-2",
+        scope="user",
+        confidence=0.95,
+        confirmation_satisfied=True,
+        invocation_eligible=False,
+    )
+
+    assert decision.entry is not None
+    result = manager.invoke_skill(
+        decision.entry.id,
+        audit_context={"method": "memory.invoke_skill"},
+    )
+
+    assert result.found is True
+    assert result.invoked is False
+    assert result.reason == "skill_not_invocation_eligible"
+    assert result.artifact is None
+    assert audits[-1] == (
+        "memory.skill_invoked",
+        {
+            "skill_id": decision.entry.id,
+            "entry_id": decision.entry.id,
+            "entry_type": "skill",
+            "found": True,
+            "invoked": False,
+            "reason": "skill_not_invocation_eligible",
+            "trust_band": "elevated",
+            "caller_context": {"method": "memory.invoke_skill"},
+        },
+    )
+    refreshed = manager.get_entry(decision.entry.id)
+    assert refreshed is not None
+    assert refreshed.citation_count == 0
+    assert (
+        manager.list_events(
+            entry_id=decision.entry.id,
+            event_type="skill_invoked",
+            limit=10,
+        )
+        == []
+    )
+
+
+def test_m4_list_invocable_skills_filters_by_query_and_exposes_preview_metadata(
+    tmp_path: Path,
+) -> None:
+    manager = MemoryManager(tmp_path / "memory")
+    release = manager.write_with_provenance(
+        entry_type="skill",
+        key="skill:release-close",
+        value="Release close checklist\nRun the behavioral bundle before release.",
+        source=MemorySource(origin="user", source_id="msg-skill-3", extraction_method="manual"),
+        source_origin="user_direct",
+        channel_trust="command",
+        confirmation_status="user_asserted",
+        source_id="msg-skill-3",
+        scope="user",
+        confidence=0.95,
+        confirmation_satisfied=True,
+        invocation_eligible=True,
+    )
+    hidden = manager.write_with_provenance(
+        entry_type="skill",
+        key="skill:draft-only",
+        value="Draft skill that is not invocable yet.",
+        source=MemorySource(origin="user", source_id="msg-skill-4", extraction_method="manual"),
+        source_origin="user_direct",
+        channel_trust="command",
+        confirmation_status="user_asserted",
+        source_id="msg-skill-4",
+        scope="user",
+        confidence=0.95,
+        confirmation_satisfied=True,
+        invocation_eligible=False,
+    )
+
+    assert release.entry is not None
+    assert hidden.entry is not None
+
+    listed = manager.list_invocable_skills(limit=10)
+    assert [item.id for item in listed] == [release.entry.id]
+    assert listed[0].name == "release-close"
+    assert "Release close checklist" in listed[0].description
+    assert "behavioral bundle" in listed[0].description
+    assert listed[0].trust_band == "elevated"
+    assert listed[0].last_used_at is None
+
+    searched = manager.list_invocable_skills(query="behavioral", limit=10)
+    assert [item.id for item in searched] == [release.entry.id]
+
+    preview = manager.describe_skill(release.entry.id)
+    assert preview is not None
+    assert preview.id == release.entry.id
+    assert preview.entry_type == "skill"
+    assert preview.size_bytes > 0
+    assert preview.content.startswith("Release close checklist")
+
+
 def test_m1_supersedes_creates_version_chain_and_forward_pointer(tmp_path: Path) -> None:
     audits: list[tuple[str, dict[str, object]]] = []
     manager = MemoryManager(

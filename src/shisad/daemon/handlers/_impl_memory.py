@@ -432,6 +432,40 @@ class MemoryImplMixin(HandlerMixinBase):
         rows = self._memory_manager.list_review_queue(limit=int(params.get("limit", 100)))
         return {"entries": [entry.model_dump(mode="json") for entry in rows], "count": len(rows)}
 
+    async def do_memory_invoke_skill(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        skill_id = str(params.get("skill_id", "")).strip()
+        caller_context: dict[str, Any] = {"method": "memory.invoke_skill"}
+        rpc_peer = params.get("_rpc_peer")
+        if isinstance(rpc_peer, Mapping):
+            caller_context["rpc_peer"] = dict(rpc_peer)
+        result = self._memory_manager.invoke_skill(skill_id, audit_context=caller_context)
+        artifact = None
+        if result.artifact is not None:
+            artifact = {
+                "id": result.artifact.id,
+                "entry_type": result.artifact.entry_type,
+                "key": result.artifact.key,
+                "name": result.artifact.name,
+                "description": result.artifact.description,
+                "content": result.artifact.content,
+                "trust_band": result.artifact.trust_band,
+                "source_origin": result.artifact.source_origin,
+                "channel_trust": result.artifact.channel_trust,
+                "confirmation_status": result.artifact.confirmation_status,
+                "last_used_at": result.artifact.last_used_at.isoformat()
+                if result.artifact.last_used_at is not None
+                else None,
+                "size_bytes": result.artifact.size_bytes,
+                "invocation_eligible": result.artifact.invocation_eligible,
+            }
+        return {
+            "skill_id": result.skill_id,
+            "found": result.found,
+            "invoked": result.invoked,
+            "reason": result.reason,
+            "artifact": artifact,
+        }
+
     async def do_memory_read_original(self, params: Mapping[str, Any]) -> dict[str, Any]:
         chunk_id = str(params.get("chunk_id", "")).strip()
         caller_context: dict[str, Any] = {"method": "memory.read_original"}

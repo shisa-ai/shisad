@@ -25,8 +25,13 @@ from shisad.memory.schema import MemoryEntry, MemorySource, MemoryWriteDecision,
 from shisad.memory.surfaces import (
     ActiveAttentionPack,
     IdentityPack,
+    ProceduralArtifact,
+    ProceduralArtifactSummary,
+    ProceduralInvocation,
     build_active_attention_pack,
     build_identity_pack,
+    build_procedural_artifact,
+    build_procedural_summary,
 )
 from shisad.memory.trust import (
     ChannelTrust,
@@ -555,6 +560,125 @@ class MemoryManager:
             scope_filter=scope_filter,
             allowed_channel_trusts=allowed_channel_trusts,
             channel_binding=channel_binding,
+        )
+
+    def list_invocable_skills(
+        self,
+        *,
+        query: str | None = None,
+        limit: int = 100,
+    ) -> list[ProceduralArtifactSummary]:
+        self.purge_expired()
+        normalized_query = (query or "").strip().lower()
+        ranked: list[tuple[datetime, ProceduralArtifactSummary]] = []
+        for entry in self._entries.values():
+            if (
+                entry.entry_type not in PROCEDURAL_ENTRY_TYPES
+                or self._is_deleted(entry)
+                or self._is_quarantined(entry)
+                or self._is_pending_review(entry)
+                or entry.superseded_by is not None
+                or not entry.invocation_eligible
+            ):
+                continue
+            refreshed = self._refresh_ttl(entry)
+            summary = build_procedural_summary(refreshed)
+            haystack = f"{summary.name}\n{summary.description}".lower()
+            if normalized_query and normalized_query not in haystack:
+                continue
+            ranked.append((refreshed.last_cited_at or refreshed.created_at, summary))
+        ranked.sort(key=lambda item: item[0], reverse=True)
+        return [summary for _timestamp, summary in ranked[:limit]]
+
+    def describe_skill(self, skill_id: str) -> ProceduralArtifact | None:
+        entry, _reason = self._resolve_procedural_entry(skill_id)
+        if entry is None:
+            return None
+        return build_procedural_artifact(entry)
+
+    def invoke_skill(
+        self,
+        skill_id: str,
+        *,
+        audit_context: dict[str, Any] | None = None,
+    ) -> ProceduralInvocation:
+        caller_context = dict(audit_context or {})
+        entry, reason = self._resolve_procedural_entry(skill_id)
+        if entry is None:
+            self._audit(
+                "memory.skill_invoked",
+                {
+                    "skill_id": skill_id,
+                    "entry_id": "",
+                    "entry_type": "",
+                    "found": False,
+                    "invoked": False,
+                    "reason": reason,
+                    "trust_band": "",
+                    "caller_context": caller_context,
+                },
+            )
+            return ProceduralInvocation(
+                skill_id=skill_id,
+                found=False,
+                invoked=False,
+                reason=reason,
+            )
+        if not entry.invocation_eligible:
+            self._audit(
+                "memory.skill_invoked",
+                {
+                    "skill_id": skill_id,
+                    "entry_id": entry.id,
+                    "entry_type": str(entry.entry_type),
+                    "found": True,
+                    "invoked": False,
+                    "reason": "skill_not_invocation_eligible",
+                    "trust_band": str(entry.trust_band),
+                    "caller_context": caller_context,
+                },
+            )
+            return ProceduralInvocation(
+                skill_id=skill_id,
+                found=True,
+                invoked=False,
+                reason="skill_not_invocation_eligible",
+            )
+
+        timestamp = datetime.now(UTC)
+        self.record_citations([entry.id], cited_at=timestamp)
+        refreshed = self.get_entry(entry.id)
+        if refreshed is None:
+            refreshed = entry
+        self._record_event(
+            entry=refreshed,
+            event_type="skill_invoked",
+            ingress_handle_id=refreshed.ingress_handle_id,
+            metadata={
+                "skill_id": refreshed.id,
+                "invoked_at": timestamp.isoformat(),
+                "caller_context": caller_context,
+                "entry_type": str(refreshed.entry_type),
+            },
+        )
+        self._audit(
+            "memory.skill_invoked",
+            {
+                "skill_id": skill_id,
+                "entry_id": refreshed.id,
+                "entry_type": str(refreshed.entry_type),
+                "found": True,
+                "invoked": True,
+                "reason": "",
+                "trust_band": str(refreshed.trust_band),
+                "caller_context": caller_context,
+            },
+        )
+        return ProceduralInvocation(
+            skill_id=skill_id,
+            found=True,
+            invoked=True,
+            artifact=build_procedural_artifact(refreshed),
         )
 
     def record_citations(
@@ -1296,6 +1420,16 @@ class MemoryManager:
         if candidate.entry_type not in self._IDENTITY_ENTRY_TYPES:
             return None, "candidate_entry_type_invalid"
         return candidate, ""
+
+    def _resolve_procedural_entry(self, skill_id: str) -> tuple[MemoryEntry | None, str]:
+        entry = self.get_entry(skill_id)
+        if entry is None:
+            return None, "skill_not_found"
+        if entry.entry_type not in PROCEDURAL_ENTRY_TYPES:
+            return None, "skill_not_found"
+        if entry.superseded_by is not None:
+            return None, "skill_not_found"
+        return entry, ""
 
     def _identity_candidate_surface_count(self, candidate_id: str) -> int:
         return len(

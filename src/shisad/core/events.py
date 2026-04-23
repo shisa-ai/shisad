@@ -360,6 +360,18 @@ class MemoryEvidenceRead(BaseEvent):
     caller_context: dict[str, Any] = Field(default_factory=dict)
 
 
+class MemorySkillInvoked(BaseEvent):
+    """Explicit procedural artifact invocation recorded."""
+
+    skill_id: str = ""
+    entry_id: str = ""
+    found: bool = False
+    invoked: bool = False
+    reason: str = ""
+    trust_band: str = ""
+    caller_context: dict[str, Any] = Field(default_factory=dict)
+
+
 class SkillReviewRequested(BaseEvent):
     """Skill review request completed with static findings."""
 
@@ -679,6 +691,7 @@ type AnyEvent = (
     | MemoryEntryStored
     | MemoryEntryDeleted
     | MemoryEvidenceRead
+    | MemorySkillInvoked
     | SkillReviewRequested
     | SkillInstalled
     | SkillProfiled
@@ -734,6 +747,7 @@ EVENT_TYPES: dict[str, type[BaseEvent]] = {
     "MemoryEntryStored": MemoryEntryStored,
     "MemoryEntryDeleted": MemoryEntryDeleted,
     "MemoryEvidenceRead": MemoryEvidenceRead,
+    "MemorySkillInvoked": MemorySkillInvoked,
     "SkillReviewRequested": SkillReviewRequested,
     "SkillInstalled": SkillInstalled,
     "SkillProfiled": SkillProfiled,

@@ -25,6 +25,7 @@ from shisad.core.api.schema import (
     MemoryGetResult,
     MemoryIngestParams,
     MemoryIngestResult,
+    MemoryInvokeSkillParams,
     MemoryLifecycleParams,
     MemoryListParams,
     MemoryListResult,
@@ -426,6 +427,17 @@ class TestApiSchemaValidation:
 
         with pytest.raises(ValidationError):
             MemoryReadOriginalParams.model_validate({"chunk_id": "   "})
+
+    def test_m4_memory_invoke_skill_params_require_skill_id(self) -> None:
+        params = MemoryInvokeSkillParams.model_validate({"skill_id": "skill-1"})
+
+        assert params.skill_id == "skill-1"
+
+        with pytest.raises(ValidationError):
+            MemoryInvokeSkillParams.model_validate({})
+
+        with pytest.raises(ValidationError):
+            MemoryInvokeSkillParams.model_validate({"skill_id": "   "})
 
     def test_m1_memory_write_params_require_ingress_context(self) -> None:
         with pytest.raises(ValidationError):

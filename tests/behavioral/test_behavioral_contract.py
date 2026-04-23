@@ -2682,6 +2682,190 @@ async def test_contract_memory_read_original_is_explicit_and_audited(
 
 
 @pytest.mark.asyncio
+async def test_contract_skill_command_invokes_without_confirmation_and_emits_audit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seeded: dict[str, str] = {}
+
+    def _seed(config: DaemonConfig) -> None:
+        manager = MemoryManager(config.data_dir / "memory_entries")
+        decision = manager.write_with_provenance(
+            entry_type="skill",
+            key="skill:release-close",
+            value="Release close checklist\nRun the behavioral bundle before release.",
+            source=MemorySource(
+                origin="user",
+                source_id="skill-command-1",
+                extraction_method="manual",
+            ),
+            source_origin="user_direct",
+            channel_trust="command",
+            confirmation_status="user_asserted",
+            source_id="skill-command-1",
+            scope="user",
+            confidence=0.95,
+            confirmation_satisfied=True,
+            invocation_eligible=True,
+        )
+        assert decision.entry is not None
+        seeded["skill_id"] = decision.entry.id
+
+    async with _contract_harness_context(tmp_path, monkeypatch, prestart=_seed) as harness:
+        sid = await _create_session(harness.client)
+        skill_id = seeded["skill_id"]
+
+        invoked = await harness.client.call(
+            "session.message",
+            {"session_id": sid, "content": f"/skill {skill_id}"},
+        )
+        assert "Loaded skill" in str(invoked.get("response", ""))
+        assert "Release close checklist" in str(invoked.get("response", ""))
+
+        pending = await harness.client.call(
+            "action.pending",
+            {"status": "pending", "limit": 10},
+        )
+        assert int(pending.get("count", 0)) == 0
+
+        event = await _wait_for_audit_event(
+            harness.client,
+            event_type="MemorySkillInvoked",
+            predicate=lambda item: (
+                str(item.get("data", {}).get("skill_id", "")).strip() == skill_id
+                and bool(item.get("data", {}).get("invoked", False))
+            ),
+        )
+        assert event.get("data", {}).get("caller_context", {}).get("command") == "/skill"
+
+
+@pytest.mark.asyncio
+async def test_contract_skills_browse_search_and_info_surface_invocable_entries(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seeded: dict[str, str] = {}
+
+    def _seed(config: DaemonConfig) -> None:
+        manager = MemoryManager(config.data_dir / "memory_entries")
+        release = manager.write_with_provenance(
+            entry_type="skill",
+            key="skill:release-close",
+            value="Release close checklist\nRun the behavioral bundle before release.",
+            source=MemorySource(
+                origin="user",
+                source_id="skill-browse-1",
+                extraction_method="manual",
+            ),
+            source_origin="user_direct",
+            channel_trust="command",
+            confirmation_status="user_asserted",
+            source_id="skill-browse-1",
+            scope="user",
+            confidence=0.95,
+            confirmation_satisfied=True,
+            invocation_eligible=True,
+        )
+        hidden = manager.write_with_provenance(
+            entry_type="skill",
+            key="skill:draft-only",
+            value="Draft-only skill\nThis should not be invocable yet.",
+            source=MemorySource(
+                origin="user",
+                source_id="skill-browse-2",
+                extraction_method="manual",
+            ),
+            source_origin="user_direct",
+            channel_trust="command",
+            confirmation_status="user_asserted",
+            source_id="skill-browse-2",
+            scope="user",
+            confidence=0.95,
+            confirmation_satisfied=True,
+            invocation_eligible=False,
+        )
+        assert release.entry is not None
+        assert hidden.entry is not None
+        seeded["release_id"] = release.entry.id
+        seeded["hidden_id"] = hidden.entry.id
+
+    async with _contract_harness_context(tmp_path, monkeypatch, prestart=_seed) as harness:
+        sid = await _create_session(harness.client)
+        release_id = seeded["release_id"]
+        hidden_id = seeded["hidden_id"]
+
+        listed = await harness.client.call(
+            "session.message",
+            {"session_id": sid, "content": "/skills"},
+        )
+        assert release_id in str(listed.get("response", ""))
+        assert "release-close" in str(listed.get("response", ""))
+        assert hidden_id not in str(listed.get("response", ""))
+
+        searched = await harness.client.call(
+            "session.message",
+            {"session_id": sid, "content": "/skills search behavioral"},
+        )
+        assert release_id in str(searched.get("response", ""))
+        assert "behavioral bundle" in str(searched.get("response", ""))
+
+        preview = await harness.client.call(
+            "session.message",
+            {"session_id": sid, "content": f"/skill info {release_id}"},
+        )
+        assert "Trust band: elevated" in str(preview.get("response", ""))
+        assert "Source origin: user_direct" in str(preview.get("response", ""))
+        assert "Release close checklist" in str(preview.get("response", ""))
+
+
+@pytest.mark.asyncio
+async def test_contract_untrusted_but_invocable_tool_skill_stays_out_of_identity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seeded: dict[str, str] = {}
+
+    def _seed(config: DaemonConfig) -> None:
+        manager = MemoryManager(config.data_dir / "memory_entries")
+        decision = manager.write_with_provenance(
+            entry_type="skill",
+            key="skill:tool-release-close",
+            value="Tool-installed release-close skill",
+            source=MemorySource(
+                origin="external",
+                source_id="tool-skill-1",
+                extraction_method="tool",
+            ),
+            source_origin="tool_output",
+            channel_trust="tool_passed",
+            confirmation_status="pep_approved",
+            source_id="tool-skill-1",
+            scope="user",
+            confidence=0.70,
+            confirmation_satisfied=True,
+            invocation_eligible=True,
+        )
+        assert decision.entry is not None
+        seeded["skill_id"] = decision.entry.id
+
+    async with _contract_harness_context(tmp_path, monkeypatch, prestart=_seed) as harness:
+        skill_id = seeded["skill_id"]
+
+        invoked = await harness.client.call(
+            "memory.invoke_skill",
+            {"skill_id": skill_id},
+        )
+        assert invoked.get("found") is True
+        assert invoked.get("invoked") is True
+        artifact = invoked.get("artifact") or {}
+        assert artifact.get("trust_band") == "untrusted"
+
+        manager = MemoryManager(harness.config.data_dir / "memory_entries")
+        identity_ids = {entry.id for entry in manager.compile_identity(max_tokens=128).entries}
+        assert skill_id not in identity_ids
+
+
+@pytest.mark.asyncio
 async def test_contract_reminder_create_executes_and_due_run_delivers_without_lockdown(
     contract_harness: ContractHarness,
 ) -> None:

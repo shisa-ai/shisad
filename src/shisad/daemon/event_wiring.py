@@ -19,6 +19,7 @@ from shisad.core.events import (
     MemoryEntryDeleted,
     MemoryEntryStored,
     MemoryEvidenceRead,
+    MemorySkillInvoked,
     OutputFirewallAlert,
     RateLimitTriggered,
     SessionArchiveExported,
@@ -201,6 +202,23 @@ class DaemonEventWiring:
                     actor=str(data.get("caller_context", {}).get("method", "memory.read_original")),
                     chunk_id=str(data.get("chunk_id", "")),
                     found=bool(data.get("found", False)),
+                    caller_context=dict(data.get("caller_context", {}))
+                    if isinstance(data.get("caller_context"), dict)
+                    else {},
+                )
+            )
+            return
+        if action == "memory.skill_invoked":
+            self.publish_async(
+                MemorySkillInvoked(
+                    session_id=None,
+                    actor=str(data.get("caller_context", {}).get("method", "memory.invoke_skill")),
+                    skill_id=str(data.get("skill_id", "")),
+                    entry_id=str(data.get("entry_id", "")),
+                    found=bool(data.get("found", False)),
+                    invoked=bool(data.get("invoked", False)),
+                    reason=str(data.get("reason", "")),
+                    trust_band=str(data.get("trust_band", "")),
                     caller_context=dict(data.get("caller_context", {}))
                     if isinstance(data.get("caller_context"), dict)
                     else {},

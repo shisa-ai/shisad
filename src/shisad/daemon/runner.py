@@ -44,6 +44,7 @@ from shisad.core.api.schema import (
     MemoryEntryParams,
     MemoryExportParams,
     MemoryIngestParams,
+    MemoryInvokeSkillParams,
     MemoryLifecycleParams,
     MemoryListParams,
     MemoryMintIngressParams,
@@ -239,6 +240,12 @@ def _method_specs(
             handlers.handle_memory_list_review_queue,
             False,
             MemoryReviewQueueParams,
+        ),
+        (
+            "memory.invoke_skill",
+            handlers.handle_memory_invoke_skill,
+            False,
+            MemoryInvokeSkillParams,
         ),
         (
             "memory.read_original",

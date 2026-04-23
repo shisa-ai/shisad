@@ -11,6 +11,8 @@ from shisad.core.api.schema import (
     MemoryIdentityCandidateResult,
     MemoryIngestParams,
     MemoryIngestResult,
+    MemoryInvokeSkillParams,
+    MemoryInvokeSkillResult,
     MemoryLifecycleParams,
     MemoryLifecycleResult,
     MemoryListParams,
@@ -188,6 +190,20 @@ class MemoryHandlers:
         )
         return MemoryListResult.model_validate(
             await self._impl.do_memory_list_review_queue(payload)
+        )
+
+    async def handle_memory_invoke_skill(
+        self,
+        params: MemoryInvokeSkillParams,
+        ctx: RequestContext,
+    ) -> MemoryInvokeSkillResult:
+        payload = build_params_payload(
+            params,
+            ctx,
+            internal_ingress_marker=self._internal_ingress_marker,
+        )
+        return MemoryInvokeSkillResult.model_validate(
+            await self._impl.do_memory_invoke_skill(payload)
         )
 
     async def handle_memory_read_original(
