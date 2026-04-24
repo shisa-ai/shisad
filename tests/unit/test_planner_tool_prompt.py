@@ -136,6 +136,34 @@ async def test_m2_tool_prompt_fragment_is_not_injected_for_native_tool_routes() 
 
 
 @pytest.mark.asyncio
+async def test_m2_base_prompt_includes_web_search_and_multi_tool_guidance() -> None:
+    registry = _make_registry()
+    provider = _RecordingProvider()
+    pep = PEP(PolicyBundle(default_require_confirmation=False), registry)
+    planner = Planner(
+        provider,
+        pep,
+        max_retries=0,
+        capabilities=ProviderCapabilities(
+            supports_tool_calls=True,
+            supports_content_tool_calls=True,
+        ),
+        tool_registry=registry,
+    )
+
+    await planner.propose(
+        "read the readme and search the web for related projects",
+        PolicyContext(capabilities={Capability.FILE_READ, Capability.HTTP_REQUEST}),
+        tools=_tools_payload(registry, {"echo", "web.search"}),
+    )
+
+    system_prompt = provider.messages[0][0].content.lower()
+    assert "search or browse the web" in system_prompt
+    assert "multiple independent read-only tools" in system_prompt
+    assert "same turn" in system_prompt
+
+
+@pytest.mark.asyncio
 async def test_m2_tool_prompt_fragment_is_not_injected_when_content_fallback_disabled() -> None:
     registry = _make_registry()
     provider = _RecordingProvider()
