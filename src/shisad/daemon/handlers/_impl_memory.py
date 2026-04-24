@@ -26,6 +26,12 @@ _DEFAULT_MEMORY_GRAPH_SCOPES = frozenset({"user"})
 
 
 class MemoryImplMixin(HandlerMixinBase):
+    @staticmethod
+    def _coerce_source_id(value: Any) -> str:
+        if value is None:
+            return ""
+        return str(value).strip()
+
     def _is_internal_ingress_request(self, params: Mapping[str, Any]) -> bool:
         internal_marker = getattr(self, "_internal_ingress_marker", None)
         return (
@@ -49,10 +55,10 @@ class MemoryImplMixin(HandlerMixinBase):
     def _source_id_for_control_write(params: Mapping[str, Any]) -> str:
         source = params.get("source")
         if isinstance(source, Mapping):
-            source_id = str(source.get("source_id", "")).strip()
+            source_id = MemoryImplMixin._coerce_source_id(source.get("source_id"))
             if source_id:
                 return source_id
-        source_id = str(params.get("source_id", "")).strip()
+        source_id = MemoryImplMixin._coerce_source_id(params.get("source_id"))
         return source_id or "cli"
 
     @staticmethod
@@ -748,7 +754,7 @@ class MemoryImplMixin(HandlerMixinBase):
             )
         source = MemorySource(
             origin=str(params.get("origin", "user")),
-            source_id=str(params.get("source_id", "cli")),
+            source_id=self._coerce_source_id(params.get("source_id")) or "cli",
             extraction_method="note.create",
         )
         context = self._mint_legacy_compat_ingress(
@@ -872,7 +878,7 @@ class MemoryImplMixin(HandlerMixinBase):
             )
         source = MemorySource(
             origin=str(params.get("origin", "user")),
-            source_id=str(params.get("source_id", "cli")),
+            source_id=self._coerce_source_id(params.get("source_id")) or "cli",
             extraction_method="todo.create",
         )
         context = self._mint_legacy_compat_ingress(

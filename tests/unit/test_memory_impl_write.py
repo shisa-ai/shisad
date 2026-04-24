@@ -924,6 +924,27 @@ async def test_note_create_control_api_path_respects_user_confirmed_flag(tmp_pat
 
 
 @pytest.mark.asyncio
+async def test_note_create_control_api_path_normalizes_null_source_id_to_cli(
+    tmp_path: Path,
+) -> None:
+    harness = _MemoryWriteHarness(tmp_path)
+
+    result = await harness.do_note_create(
+        {
+            "_control_api_authenticated_write": True,
+            "key": "note:null-source",
+            "content": "note with explicit null source id",
+            "source_id": None,
+        }
+    )
+
+    assert result["kind"] == "allow"
+    entry = result["entry"]
+    assert entry is not None
+    assert entry["source_id"] == "cli"
+
+
+@pytest.mark.asyncio
 async def test_note_create_legacy_fallback_mints_compat_handle(tmp_path: Path) -> None:
     harness = _MemoryWriteHarness(tmp_path)
 
@@ -963,6 +984,29 @@ async def test_todo_create_control_api_path_mints_user_asserted_handle(tmp_path:
     assert entry["source_origin"] == "user_direct"
     assert entry["confirmation_status"] == "user_asserted"
     assert entry["ingress_handle_id"]
+
+
+@pytest.mark.asyncio
+async def test_todo_create_control_api_path_normalizes_null_source_id_to_cli(
+    tmp_path: Path,
+) -> None:
+    harness = _MemoryWriteHarness(tmp_path)
+
+    result = await harness.do_todo_create(
+        {
+            "_control_api_authenticated_write": True,
+            "title": "todo null source",
+            "details": "",
+            "status": "open",
+            "due_date": "",
+            "source_id": None,
+        }
+    )
+
+    assert result["kind"] == "allow"
+    entry = result["entry"]
+    assert entry is not None
+    assert entry["source_id"] == "cli"
 
 
 @pytest.mark.asyncio
