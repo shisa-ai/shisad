@@ -267,6 +267,60 @@ def test_m2_compile_recall_auto_widens_into_archive_with_annotations(tmp_path: P
     assert result.effective_score > 0.0
 
 
+def test_m2_compile_recall_excludes_archived_when_current_result_suffices(
+    tmp_path: Path,
+) -> None:
+    storage = tmp_path / "memory"
+    pipeline = IngestionPipeline(storage)
+    current = pipeline.ingest(
+        source_id="doc-current",
+        source_type="external",
+        collection="external_web",
+        content="Current nebula status note from this week.",
+    )
+    archived = pipeline.ingest(
+        source_id="doc-archived-strong",
+        source_type="external",
+        collection="external_web",
+        content=(
+            "Archived nebula status note with many nebula status note references "
+            "from a stale web snapshot."
+        ),
+    )
+
+    with sqlite3.connect(storage / "memory.sqlite3") as conn:
+        conn.execute(
+            "UPDATE retrieval_records SET created_at = ? WHERE chunk_id = ?",
+            ("2026-04-20T00:00:00+00:00", current.chunk_id),
+        )
+        conn.execute(
+            "UPDATE retrieval_records SET created_at = ? WHERE chunk_id = ?",
+            ("2025-01-01T00:00:00+00:00", archived.chunk_id),
+        )
+
+    default_pack = pipeline.compile_recall("nebula status note", limit=5)
+
+    assert default_pack.include_archived is False
+    assert [item.chunk_id for item in default_pack.results] == [current.chunk_id]
+    assert default_pack.results[0].archived is False
+
+    explicit_pack = pipeline.compile_recall(
+        "nebula status note",
+        limit=5,
+        include_archived=True,
+    )
+
+    assert explicit_pack.include_archived is True
+    assert {item.chunk_id for item in explicit_pack.results} == {
+        current.chunk_id,
+        archived.chunk_id,
+    }
+    assert any(
+        item.chunk_id == archived.chunk_id and item.archived
+        for item in explicit_pack.results
+    )
+
+
 def test_m2_compile_recall_default_class_budgets_preserve_user_curated_hits(tmp_path: Path) -> None:
     pipeline = IngestionPipeline(tmp_path / "memory")
     pipeline.ingest(

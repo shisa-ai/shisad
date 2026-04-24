@@ -11,7 +11,12 @@ from shisad.core.providers.base import Message, ProviderResponse
 from shisad.core.providers.capabilities import ProviderCapabilities
 from shisad.core.tools.names import canonical_tool_name
 from shisad.core.tools.registry import ToolRegistry
-from shisad.core.tools.schema import ToolDefinition, ToolParameter, tool_definitions_to_openai
+from shisad.core.tools.schema import (
+    ToolDefinition,
+    ToolParameter,
+    openai_function_name,
+    tool_definitions_to_openai,
+)
 from shisad.core.types import Capability, ToolName
 from shisad.security.pep import PEP, PolicyContext
 from shisad.security.policy import PolicyBundle
@@ -20,14 +25,15 @@ from shisad.security.policy import PolicyBundle
 class _RecordingProvider:
     def __init__(self) -> None:
         self.messages: list[list[Message]] = []
+        self.tools: list[list[dict[str, Any]]] = []
 
     async def complete(
         self,
         messages: list[Message],
         tools: list[dict[str, Any]] | None = None,
     ) -> ProviderResponse:
-        _ = tools
         self.messages.append(list(messages))
+        self.tools.append(list(tools or []))
         return ProviderResponse(message=Message(role="assistant", content="ok"), usage={})
 
 
@@ -43,10 +49,50 @@ def _make_registry() -> ToolRegistry:
     )
     registry.register(
         ToolDefinition(
+            name=ToolName("fs.read"),
+            description="Read a file from the configured workspace",
+            parameters=[ToolParameter(name="path", type="string", required=True)],
+            capabilities_required=[Capability.FILE_READ],
+        )
+    )
+    registry.register(
+        ToolDefinition(
             name=ToolName("web.search"),
             description="Search public web",
             parameters=[ToolParameter(name="query", type="string", required=True)],
             capabilities_required=[Capability.HTTP_REQUEST],
+        )
+    )
+    registry.register(
+        ToolDefinition(
+            name=ToolName("memory.retrieve"),
+            description="Compile recall context from long-term memory",
+            parameters=[ToolParameter(name="query", type="string", required=True)],
+            capabilities_required=[Capability.MEMORY_READ],
+        )
+    )
+    registry.register(
+        ToolDefinition(
+            name=ToolName("memory.invoke_skill"),
+            description="Invoke an installed procedural memory skill",
+            parameters=[ToolParameter(name="skill_id", type="string", required=True)],
+            capabilities_required=[Capability.MEMORY_READ],
+        )
+    )
+    registry.register(
+        ToolDefinition(
+            name=ToolName("memory.read_original"),
+            description="Read an audited original memory evidence payload",
+            parameters=[ToolParameter(name="chunk_id", type="string", required=True)],
+            capabilities_required=[Capability.MEMORY_READ],
+        )
+    )
+    registry.register(
+        ToolDefinition(
+            name=ToolName("graph.query"),
+            description="Query the derived memory knowledge graph",
+            parameters=[ToolParameter(name="entity", type="string", required=True)],
+            capabilities_required=[Capability.MEMORY_READ],
         )
     )
     return registry
@@ -69,11 +115,26 @@ def _mcp_registry() -> ToolRegistry:
 
 def _tools_payload(registry: ToolRegistry, names: set[str]) -> list[dict[str, Any]]:
     payload = tool_definitions_to_openai(registry.list_tools())
+    openai_names = {openai_function_name(name) for name in names}
     return [
         item
         for item in payload
-        if canonical_tool_name(str(item.get("function", {}).get("name", ""))) in names
+        if str(item.get("function", {}).get("name", "")) in openai_names
     ]
+
+
+def _canonical_payload_names(
+    payload: list[dict[str, Any]],
+    expected_names: set[str],
+) -> set[str]:
+    openai_to_canonical = {openai_function_name(name): name for name in expected_names}
+    return {
+        openai_to_canonical.get(
+            str(item.get("function", {}).get("name", "")),
+            canonical_tool_name(str(item.get("function", {}).get("name", ""))),
+        )
+        for item in payload
+    }
 
 
 @pytest.mark.asyncio
@@ -154,13 +215,56 @@ async def test_m2_base_prompt_includes_web_search_and_multi_tool_guidance() -> N
     await planner.propose(
         "read the readme and search the web for related projects",
         PolicyContext(capabilities={Capability.FILE_READ, Capability.HTTP_REQUEST}),
-        tools=_tools_payload(registry, {"echo", "web.search"}),
+        tools=_tools_payload(registry, {"fs.read", "web.search"}),
     )
 
     system_prompt = provider.messages[0][0].content.lower()
     assert "search or browse the web" in system_prompt
     assert "multiple independent read-only tools" in system_prompt
     assert "same turn" in system_prompt
+    tool_names = _canonical_payload_names(provider.tools[0], {"fs.read", "web.search"})
+    assert {"fs.read", "web.search"} <= tool_names
+
+
+@pytest.mark.asyncio
+async def test_m7_planner_payload_exposes_memory_graph_and_skill_surfaces() -> None:
+    registry = _make_registry()
+    provider = _RecordingProvider()
+    pep = PEP(PolicyBundle(default_require_confirmation=False), registry)
+    planner = Planner(
+        provider,
+        pep,
+        max_retries=0,
+        capabilities=ProviderCapabilities(
+            supports_tool_calls=True,
+            supports_content_tool_calls=True,
+        ),
+        tool_registry=registry,
+    )
+    expected_tools = {
+        "memory.retrieve",
+        "memory.invoke_skill",
+        "memory.read_original",
+        "graph.query",
+    }
+
+    await planner.propose(
+        "recall the release checklist, inspect the graph, and invoke the saved skill",
+        PolicyContext(capabilities={Capability.MEMORY_READ}),
+        tools=_tools_payload(registry, expected_tools),
+    )
+
+    tool_names = _canonical_payload_names(provider.tools[0], expected_tools)
+    assert expected_tools <= tool_names
+    openai_to_canonical = {openai_function_name(name): name for name in expected_tools}
+    schemas = {
+        openai_to_canonical.get(str(item["function"]["name"]), str(item["function"]["name"])): item
+        for item in provider.tools[0]
+    }
+    assert "query" in schemas["memory.retrieve"]["function"]["parameters"]["properties"]
+    assert "skill_id" in schemas["memory.invoke_skill"]["function"]["parameters"]["properties"]
+    assert "chunk_id" in schemas["memory.read_original"]["function"]["parameters"]["properties"]
+    assert "entity" in schemas["graph.query"]["function"]["parameters"]["properties"]
 
 
 @pytest.mark.asyncio

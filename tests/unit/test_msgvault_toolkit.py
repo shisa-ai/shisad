@@ -950,6 +950,75 @@ def test_msgvault_output_overflow_is_actionable(
     }
 
 
+def test_msgvault_nonzero_exit_redacts_stderr_from_error_payload(tmp_path: Path) -> None:
+    stderr_token = "stderr-secret-token"
+    query = "from:alice@example.com project-serpent"
+    script = tmp_path / "failing-msgvault.py"
+    script.write_text(
+        textwrap.dedent(
+            f"""
+            #!{sys.executable}
+            import sys
+            sys.stderr.write({stderr_token!r})
+            sys.exit(7)
+            """
+        ).lstrip(),
+        encoding="utf-8",
+    )
+    script.chmod(0o755)
+    toolkit = MsgvaultToolkit(
+        enabled=True,
+        command=str(script),
+        home=None,
+        timeout_seconds=2.0,
+        max_results=10,
+        max_body_bytes=1024,
+        account_allowlist=[],
+    )
+
+    payload = toolkit.search(query=query)
+
+    assert payload["ok"] is False
+    assert payload["error"] == "msgvault_failed"
+    assert payload["details"] == {"error": "msgvault_failed", "exit_code": 7}
+    assert stderr_token not in json.dumps(payload, sort_keys=True)
+    assert query not in payload["actionable"]
+    assert query not in json.dumps(payload["details"], sort_keys=True)
+
+
+def test_msgvault_timeout_is_actionable_without_echoing_query_details(tmp_path: Path) -> None:
+    query = "subject:confidential project-heron"
+    script = tmp_path / "slow-msgvault.py"
+    script.write_text(
+        textwrap.dedent(
+            f"""
+            #!{sys.executable}
+            import time
+            time.sleep(1.0)
+            """
+        ).lstrip(),
+        encoding="utf-8",
+    )
+    script.chmod(0o755)
+    toolkit = MsgvaultToolkit(
+        enabled=True,
+        command=str(script),
+        home=None,
+        timeout_seconds=0.1,
+        max_results=10,
+        max_body_bytes=1024,
+        account_allowlist=[],
+    )
+
+    payload = toolkit.search(query=query)
+
+    assert payload["ok"] is False
+    assert payload["error"] == "msgvault_timeout"
+    assert payload["details"] == {"error": "msgvault_timeout"}
+    assert query not in payload["actionable"]
+    assert query not in json.dumps(payload["details"], sort_keys=True)
+
+
 def test_msgvault_config_parses_home_and_account_allowlist(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

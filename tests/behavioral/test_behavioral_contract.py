@@ -3179,6 +3179,8 @@ async def test_contract_graph_query_export_and_consolidation_run_via_control_api
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    seeded: dict[str, str] = {}
+
     def _seed(config: DaemonConfig) -> None:
         manager = MemoryManager(config.data_dir / "memory_entries")
 
@@ -3192,13 +3194,19 @@ async def test_contract_graph_query_export_and_consolidation_run_via_control_api
             channel_trust: str = "command",
             confirmation_status: str = "user_asserted",
             confidence: float = 0.95,
-        ) -> None:
+            scope: str = "user",
+        ) -> str:
+            source_origin_kind = "user"
+            if source_origin.startswith("external_"):
+                source_origin_kind = "external"
+            elif source_origin == "consolidation_derived":
+                source_origin_kind = "inferred"
             decision = manager.write_with_provenance(
                 entry_type=entry_type,
                 key=key,
                 value=value,
                 source=MemorySource(
-                    origin="user",
+                    origin=source_origin_kind,
                     source_id=source_id,
                     extraction_method="manual",
                 ),
@@ -3206,11 +3214,12 @@ async def test_contract_graph_query_export_and_consolidation_run_via_control_api
                 channel_trust=channel_trust,  # type: ignore[arg-type]
                 confirmation_status=confirmation_status,  # type: ignore[arg-type]
                 source_id=source_id,
-                scope="user",
+                scope=scope,
                 confidence=confidence,
                 confirmation_satisfied=True,
             )
             assert decision.entry is not None
+            return decision.entry.id
 
         _write(
             entry_type="fact",
@@ -3225,12 +3234,29 @@ async def test_contract_graph_query_export_and_consolidation_run_via_control_api
             source_id="graph-live-2",
         )
         _write(
+            entry_type="fact",
+            key="project:shisad-derived",
+            value="Shisad and MemoryPack appeared together in a derived summary.",
+            source_id="graph-live-derived",
+            source_origin="consolidation_derived",
+            channel_trust="consolidation",
+            confirmation_status="auto_accepted",
+            confidence=0.40,
+        )
+        seeded["channel_distractor_id"] = _write(
+            entry_type="fact",
+            key="project:shisad-channel-distractor",
+            value="Shisad channel-only distractor should not enter the default graph.",
+            source_id="graph-live-channel-distractor",
+            scope="channel",
+        )
+        seeded["target_id"] = _write(
             entry_type="persona_fact",
             key="work:acme",
             value="I work at ACME as VP Eng.",
             source_id="strong-live-target",
         )
-        _write(
+        seeded["signal_id"] = _write(
             entry_type="episode",
             key="episode:left-acme",
             value="I no longer work at ACME.",
@@ -3268,6 +3294,27 @@ async def test_contract_graph_query_export_and_consolidation_run_via_control_api
         assert graph.get("nodes")
         assert any(node.get("evidence_entry_ids") for node in graph.get("nodes", []))
         assert graph.get("edges")
+        root_node = next(
+            node
+            for node in graph.get("nodes", [])
+            if isinstance(node, dict) and node.get("entity_id") == graph.get("root_entity_id")
+        )
+        assert root_node.get("source_origin") == "mixed"
+        assert root_node.get("trust_band") == "untrusted"
+        graph_evidence_ids = {
+            str(evidence_id)
+            for collection_name in ("nodes", "edges")
+            for item in graph.get(collection_name, [])
+            if isinstance(item, dict)
+            for evidence_id in item.get("evidence_entry_ids", [])
+        }
+        assert seeded["channel_distractor_id"] not in graph_evidence_ids
+        assert any(
+            isinstance(edge, dict)
+            and edge.get("source_origin") == "mixed"
+            and edge.get("trust_band") == "untrusted"
+            for edge in graph.get("edges", [])
+        )
 
         exported = await harness.client.call("graph.export", {"format": "md"})
         assert exported.get("format") == "md"
@@ -3318,6 +3365,10 @@ async def test_contract_graph_query_export_and_consolidation_run_via_control_api
             None,
         )
         assert isinstance(promoted, dict)
+        assert promoted.get("value") == "I no longer work at ACME."
+        assert promoted.get("supersedes") == seeded["target_id"]
+        assert promoted.get("source_id") == f"strong-invalidation:{seeded['signal_id']}"
+        assert str(promoted.get("ingress_handle_id", "")).strip()
 
 
 @pytest.mark.asyncio

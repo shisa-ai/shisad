@@ -402,6 +402,128 @@ def test_m5_strong_invalidation_requires_specific_entity_or_topic_match(
     assert manager.list_events(event_type="strong_invalidation_proposed") == []
 
 
+@pytest.mark.parametrize(
+    (
+        "entry_type",
+        "key",
+        "value",
+        "predicate",
+        "signal_value",
+        "expected_pattern",
+    ),
+    [
+        (
+            "persona_fact",
+            "work:acme",
+            "I work at ACME as VP Eng.",
+            None,
+            "I no longer work at ACME.",
+            "no longer",
+        ),
+        (
+            "persona_fact",
+            "home:boston",
+            "I live in Boston.",
+            None,
+            "I used to live in Boston.",
+            "used to",
+        ),
+        (
+            "persona_fact",
+            "home:boston",
+            "I live in Boston.",
+            None,
+            "I moved to Seattle from Boston.",
+            "moved to",
+        ),
+        (
+            "relationship",
+            "relationship:alex",
+            "I am dating Alex.",
+            None,
+            "I broke up with Alex.",
+            "broke up with",
+        ),
+        (
+            "persona_fact",
+            "work:acme",
+            "I work at ACME as VP Eng.",
+            None,
+            "I started at Globex after my ACME role ended.",
+            "started at",
+        ),
+        (
+            "preference",
+            "pref:drink",
+            "I prefer coffee.",
+            "prefers(coffee)",
+            "Actually I prefer tea over coffee.",
+            "actually i prefer",
+        ),
+    ],
+)
+def test_m5_strong_invalidation_patterns_cover_representative_vocabulary(
+    tmp_path: Path,
+    entry_type: str,
+    key: str,
+    value: str,
+    predicate: str | None,
+    signal_value: str,
+    expected_pattern: str,
+) -> None:
+    manager = MemoryManager(tmp_path / "memory")
+    target = _write_entry(
+        manager,
+        entry_type=entry_type,
+        key=key,
+        value=value,
+        predicate=predicate,
+        confidence=0.95,
+    )
+    signal = _write_owner_observed_episode(
+        manager,
+        value=signal_value,
+        source_id=f"signal-{expected_pattern.replace(' ', '-')}",
+    )
+
+    proposals = ConsolidationWorker(manager).propose_strong_invalidations()
+
+    assert [(item.target_entry_id, item.signal_entry_id, item.pattern) for item in proposals] == [
+        (target.id, signal.id, expected_pattern)
+    ]
+
+
+@pytest.mark.parametrize(
+    "signal_value",
+    [
+        "I left work early today.",
+        "I used to check email after standup.",
+        "The presenter moved to the next slide.",
+    ],
+)
+def test_m5_strong_invalidation_patterns_require_specific_overlap(
+    tmp_path: Path,
+    signal_value: str,
+) -> None:
+    manager = MemoryManager(tmp_path / "memory")
+    _write_entry(
+        manager,
+        entry_type="persona_fact",
+        key="work:acme",
+        value="I work at ACME as VP Eng.",
+        confidence=0.95,
+    )
+    _write_owner_observed_episode(
+        manager,
+        value=signal_value,
+        source_id="non-overlapping-signal",
+    )
+
+    proposals = ConsolidationWorker(manager).propose_strong_invalidations()
+
+    assert proposals == []
+    assert manager.list_events(event_type="strong_invalidation_proposed") == []
+
 def test_m5_identity_candidate_uses_per_pattern_threshold(tmp_path: Path) -> None:
     manager = MemoryManager(tmp_path / "memory")
     _write_owner_observed_episode(manager, value="I like ramen for lunch.", source_id="ramen-1")

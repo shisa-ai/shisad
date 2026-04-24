@@ -1327,13 +1327,24 @@ async def test_m5_pending_strong_invalidation_yes_promotes_user_confirmed_versio
     assert target.superseded_by is not None
     replacement = harness._memory_manager.get_entry(target.superseded_by)
     assert replacement is not None
+    assert replacement.value == "I no longer work at ACME."
+    assert replacement.supersedes == target_id
     assert replacement.confirmation_status == "user_confirmed"
     assert replacement.trust_band == "elevated"
-    assert harness._memory_manager.list_events(
+    assert replacement.source_id == f"strong-invalidation:{signal_id}"
+    assert replacement.ingress_handle_id
+    confirmed_events = harness._memory_manager.list_events(
         entry_id=replacement.id,
         event_type="strong_invalidation_confirmed",
         limit=10,
     )
+    assert len(confirmed_events) == 1
+    confirmed_metadata = confirmed_events[0].metadata_json
+    assert confirmed_metadata["target_entry_id"] == target_id
+    assert confirmed_metadata["signal_entry_id"] == signal_id
+    assert confirmed_metadata["old_value"] == "I work at ACME as VP Eng."
+    assert confirmed_metadata["new_value"] == "I no longer work at ACME."
+    assert confirmed_events[0].ingress_handle_id == replacement.ingress_handle_id
     assert SessionImplMixin._strong_invalidation_terminal_exists(
         memory_manager=harness._memory_manager,
         target_entry_id=target_id,
