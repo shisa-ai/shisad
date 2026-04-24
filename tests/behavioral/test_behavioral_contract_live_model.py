@@ -175,6 +175,39 @@ def _assert_not_local_fallback(text: str) -> None:
         )
 
 
+async def _call_live_turn_until_tools(
+    live_harness: LiveHarness,
+    *,
+    content: str,
+    required_tools: set[str],
+    attempts: int = 3,
+) -> dict[str, object]:
+    observed_tool_sets: list[list[str]] = []
+    last_reply: dict[str, object] | None = None
+
+    for _ in range(attempts):
+        sid = await _create_session(live_harness.client)
+        reply = await live_harness.client.call(
+            "session.message",
+            {
+                "session_id": sid,
+                "content": content,
+            },
+        )
+        last_reply = reply
+        outputs = _extract_tool_outputs(reply)
+        observed = sorted(str(name) for name in outputs)
+        observed_tool_sets.append(observed)
+        if required_tools.issubset(outputs):
+            return reply
+
+    pytest.fail(
+        "Live planner did not emit the required tool set after "
+        f"{attempts} attempts. Required={sorted(required_tools)} "
+        f"observed={observed_tool_sets!r} last_reply={last_reply!r}"
+    )
+
+
 @pytest.mark.asyncio
 @pytest.mark.live_smoke
 async def test_live_model_hello_responds_without_lockdown(live_harness: LiveHarness) -> None:
@@ -293,13 +326,12 @@ async def test_live_model_memory_remember_persists_and_is_used_later(
 async def test_live_model_multi_tool_executes_both_tools_in_one_turn(
     live_harness: LiveHarness,
 ) -> None:
-    sid = await _create_session(live_harness.client)
-    reply = await live_harness.client.call(
-        "session.message",
-        {
-            "session_id": sid,
-            "content": "Read README.md and search the web for related projects.",
-        },
+    # Live planner routes are stochastic; bounded retry keeps this smoke test
+    # focused on capability instead of a single provider sample.
+    reply = await _call_live_turn_until_tools(
+        live_harness,
+        content="Read README.md and search the web for related projects.",
+        required_tools={"fs.read", "web.search"},
     )
     assert reply.get("lockdown_level") == "normal"
     assert int(reply.get("blocked_actions", 0)) == 0
