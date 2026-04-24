@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import sys
 import time
 from collections.abc import Callable, Coroutine
@@ -52,7 +53,10 @@ from shisad.core.api.schema import (
     GitDiffResult,
     GitLogResult,
     GitStatusResult,
+    GraphExportResult,
+    GraphQueryResult,
     LockdownSetResult,
+    MemoryConsolidateResult,
     MemoryExportResult,
     MemoryListResult,
     MemoryMintIngressResult,
@@ -130,6 +134,67 @@ _MEMORY_WRITE_ENTRY_TYPES = (
     "template",
     "context",
 )
+
+
+_MEMORY_PREFERENCE_ENTRY_TYPES = {"preference", "soft_constraint"}
+_MEMORY_PREFERENCE_PREDICATE_RE = re.compile(r"^[a-z][a-z0-9_]*\([^()\n]{1,200}\)$")
+_MEMORY_DISALLOWED_PREFERENCE_PREFIXES = ("always", "never", "ignore", "prioritize")
+
+
+def _validate_memory_write_predicate(entry_type: str, predicate: str) -> str:
+    normalized = predicate.strip()
+    if entry_type in _MEMORY_PREFERENCE_ENTRY_TYPES:
+        if not normalized:
+            raise click.ClickException(
+                "--predicate is required for preference and soft_constraint entries. "
+                "Use function-call form, e.g. prefers(response_style)."
+            )
+        predicate_name = normalized.split("(", 1)[0].lower()
+        if (
+            not _MEMORY_PREFERENCE_PREDICATE_RE.match(normalized)
+            or predicate_name.startswith(_MEMORY_DISALLOWED_PREFERENCE_PREFIXES)
+        ):
+            raise click.ClickException(
+                "--predicate must use lowercase function-call form, "
+                "e.g. prefers(response_style)."
+            )
+        return normalized
+    if normalized:
+        raise click.ClickException(
+            "--predicate is only valid for preference and soft_constraint entries."
+        )
+    return ""
+
+
+def _memory_value_preview(value: object, *, max_chars: int = 80) -> str:
+    if value is None:
+        return "-"
+    if isinstance(value, (dict, list)):
+        text = json.dumps(value, sort_keys=True, default=str)
+    else:
+        text = str(value)
+    text = " ".join(text.split())
+    if not text:
+        return "-"
+    if len(text) > max_chars:
+        return f"{text[: max_chars - 3]}..."
+    return text
+
+
+def _memory_list_row(item: BaseModel) -> str:
+    data = item.model_dump(mode="json")
+    entry_id = str(data.get("id") or data.get("entry_id") or "")
+    entry_type = str(data.get("entry_type") or "")
+    key = str(data.get("key") or "")
+    version = data.get("version")
+    workflow_state = str(data.get("workflow_state") or "-")
+    status = str(data.get("status") or ("quarantined" if data.get("quarantined") else "active"))
+    value = data.get("value", data.get("value_json"))
+    return (
+        f"{entry_id} {entry_type} {key} "
+        f"v={version if version is not None else '-'} "
+        f"state={workflow_state} status={status} value={_memory_value_preview(value)}"
+    )
 
 
 def _get_config() -> DaemonConfig:
@@ -2348,11 +2413,20 @@ def memory() -> None:
 
 @memory.command("list")
 @click.option("--limit", default=100, help="Maximum entries")
-def memory_list(limit: int) -> None:
+@click.option(
+    "--json",
+    "as_json",
+    is_flag=True,
+    help="Print the full memory list response as JSON.",
+)
+def memory_list(limit: int, as_json: bool) -> None:
     config = _get_config()
     result = rpc_call(config, "memory.list", {"limit": limit}, response_model=MemoryListResult)
+    if as_json:
+        click.echo(_dump_model(result))
+        return
     for item in result.entries:
-        click.echo(f"{item.id} {item.entry_type} {item.key}")
+        click.echo(_memory_list_row(item))
 
 
 @memory.command("write")
@@ -2364,7 +2438,19 @@ def memory_list(limit: int) -> None:
 )
 @click.option("--key", required=True)
 @click.option("--value", required=True)
-@click.option("--predicate", default="", help="Optional explicit predicate for preference entries.")
+@click.option(
+    "--supersede",
+    default="",
+    help="Entry id this write should supersede (same type/key).",
+)
+@click.option(
+    "--predicate",
+    default="",
+    help=(
+        "Required for preference/soft_constraint entries; use function-call form, "
+        "e.g. prefers(response_style)."
+    ),
+)
 @click.option(
     "--strength",
     type=click.Choice(["weak", "moderate", "strong"]),
@@ -2376,9 +2462,11 @@ def memory_write(
     entry_type: str,
     key: str,
     value: str,
+    supersede: str,
     predicate: str,
     strength: str,
 ) -> None:
+    normalized_predicate = _validate_memory_write_predicate(entry_type, predicate)
     config = _get_config()
     ingress = rpc_call(
         config,
@@ -2392,8 +2480,10 @@ def memory_write(
         "key": key,
         "value": value,
     }
-    if predicate.strip():
-        payload["predicate"] = predicate.strip()
+    if supersede.strip():
+        payload["supersedes"] = supersede.strip()
+    if normalized_predicate:
+        payload["predicate"] = normalized_predicate
         payload["strength"] = strength
     result = rpc_call(
         config,
@@ -2420,6 +2510,100 @@ def memory_rotate_key(no_reencrypt: bool) -> None:
         response_model=MemoryRotateKeyResult,
     )
     click.echo(_dump_model(result))
+
+
+@memory.group("graph")
+def memory_graph() -> None:
+    """Inspect the derived memory knowledge graph."""
+
+
+@memory_graph.command("query")
+@click.argument("entity")
+@click.option("--depth", default=1, show_default=True, help="Traversal depth, clamped to 1-3.")
+@click.option(
+    "--limit",
+    default=20,
+    show_default=True,
+    help="Maximum graph rows, clamped to 1-100.",
+)
+@click.option(
+    "--json",
+    "as_json",
+    is_flag=True,
+    help="Print the full graph query response as JSON.",
+)
+def memory_graph_query(entity: str, depth: int, limit: int, as_json: bool) -> None:
+    config = _get_config()
+    result = rpc_call(
+        config,
+        "graph.query",
+        {"entity": entity, "depth": depth, "limit": limit},
+        response_model=GraphQueryResult,
+    )
+    if as_json:
+        click.echo(_dump_model(result))
+        return
+    click.echo(f"root={result.root_entity_id} nodes={len(result.nodes)} edges={len(result.edges)}")
+    for node in result.nodes:
+        click.echo(
+            "node "
+            f"{node.get('entity_id', '')} "
+            f"{node.get('name', '')} "
+            f"type={node.get('node_type', '')} "
+            f"degree={node.get('degree', 0)} "
+            f"trust={node.get('trust_band', '')}"
+        )
+    for edge in result.edges:
+        click.echo(
+            "edge "
+            f"{edge.get('source_id', '')}->{edge.get('target_id', '')} "
+            f"relation={edge.get('relation', '')} "
+            f"trust={edge.get('trust_band', '')}"
+        )
+
+
+@memory_graph.command("export")
+@click.option("--format", "fmt", default="md", show_default=True, type=click.Choice(["json", "md"]))
+def memory_graph_export(fmt: str) -> None:
+    """Export the current derived graph view."""
+    config = _get_config()
+    result = rpc_call(
+        config,
+        "graph.export",
+        {"format": fmt},
+        response_model=GraphExportResult,
+    )
+    click.echo(str(result.data))
+
+
+@memory.command("consolidate")
+@click.option(
+    "--json",
+    "as_json",
+    is_flag=True,
+    help="Print the full consolidation result as JSON.",
+)
+def memory_consolidate(as_json: bool) -> None:
+    """Run memory consolidation once and print a summary."""
+    config = _get_config()
+    result = rpc_call(config, "memory.consolidate", {}, response_model=MemoryConsolidateResult)
+    if as_json:
+        click.echo(_dump_model(result))
+        return
+    click.echo(
+        " ".join(
+            [
+                f"updated={len(result.updated_entry_ids)}",
+                f"corroborating={len(result.corroborating_entry_ids)}",
+                f"contradicted={len(result.contradicted_entry_ids)}",
+                f"merged={len(result.merged_entry_ids)}",
+                f"archive_candidates={len(result.archive_candidate_ids)}",
+                f"quarantined={len(result.quarantined_entry_ids)}",
+                f"strong_invalidations={result.strong_invalidation_count}",
+                f"identity_candidates={result.identity_candidate_count}",
+            ]
+        )
+    )
 
 
 @memory.command("export")

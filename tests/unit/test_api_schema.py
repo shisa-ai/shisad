@@ -223,6 +223,14 @@ class TestApiSchemaValidation:
             }
         )
         memory_write = MemoryWriteResult.model_validate({"kind": "allow", "entry": {"id": "e1"}})
+        memory_reject = MemoryWriteResult.model_validate(
+            {
+                "kind": "reject",
+                "reason": "preference_predicate_invalid",
+                "reason_detail": "Preference predicates must use function-call form.",
+                "hint": "Use prefers(response_style).",
+            }
+        )
         memory_list = MemoryListResult.model_validate(
             {"entries": [{"id": "e1", "entry_type": "fact", "key": "k1"}], "count": 1}
         )
@@ -324,6 +332,7 @@ class TestApiSchemaValidation:
         assert memory_ingest.chunk_id == "m1"
         assert memory_retrieve.count == 1
         assert memory_write.kind == "allow"
+        assert memory_reject.hint == "Use prefers(response_style)."
         assert memory_list.count == 1
         assert memory_list.entries[0].id == "e1"
         assert memory_get.entry == {"id": "e1"}

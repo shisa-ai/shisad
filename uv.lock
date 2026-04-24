@@ -2420,6 +2420,9 @@ dependencies = [
 chat = [
     { name = "textual" },
 ]
+promptguard = [
+    { name = "textguard", extra = ["promptguard"] },
+]
 
 [package.dev-dependencies]
 channels-runtime = [
@@ -2472,10 +2475,11 @@ requires-dist = [
     { name = "python-dotenv", specifier = ">=1.2.2,<2" },
     { name = "pyyaml", specifier = ">=6.0,<7" },
     { name = "qrcode", specifier = ">=8.2,<9" },
+    { name = "textguard", extras = ["promptguard"], marker = "extra == 'promptguard'", specifier = ">=1.0,<2" },
     { name = "textguard", extras = ["yara"], specifier = ">=1.0,<2" },
     { name = "textual", marker = "extra == 'chat'", specifier = ">=0.89,<1" },
 ]
-provides-extras = ["chat"]
+provides-extras = ["chat", "promptguard"]
 
 [package.metadata.requires-dev]
 channels-runtime = [

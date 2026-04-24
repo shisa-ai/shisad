@@ -199,9 +199,18 @@ def _warn_on_provider_route_gaps(router: ModelRouter) -> None:
     embeddings_route = router.route_for(ModelComponent.EMBEDDINGS)
     if not embeddings_route.remote_enabled:
         logger.warning(
-            "Embeddings route not configured - semantic retrieval will degrade to "
-            "deterministic local fallback embeddings."
+            "Embeddings route not configured; vector recall is off. "
+            "Recall will use deterministic local lexical fallback until an "
+            "embeddings route is configured."
         )
+
+
+def _promptguard_degraded_hint(reason: str) -> str:
+    if reason == "promptguard_runtime_missing":
+        return "install shisad[promptguard] to enable model-backed PromptGuard"
+    if reason == "promptguard_onnx_model_missing":
+        return "configure a PromptGuard model path or leave best_effort posture explicitly"
+    return "check PromptGuard configuration or set posture=best_effort intentionally"
 
 
 class _LazyBrowserSandbox:
@@ -573,9 +582,10 @@ class DaemonServices:
                 and semantic_status.reason != "model_path_unconfigured"
             ):
                 logger.warning(
-                    "PromptGuard degraded at startup; posture=%s reason_code=%s",
+                    "PromptGuard degraded at startup; posture=%s reason_code=%s hint=%s",
                     semantic_status.posture,
                     semantic_status.reason,
+                    _promptguard_degraded_hint(semantic_status.reason),
                 )
             firewall = ContentFirewall(
                 semantic_classifier=semantic_classifier,

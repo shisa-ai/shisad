@@ -23,6 +23,28 @@ from shisad.memory.trust import backfill_legacy_triple
 
 _CONTROL_API_AUTHENTICATED_WRITE = "_control_api_authenticated_write"
 _DEFAULT_MEMORY_GRAPH_SCOPES = frozenset({"user"})
+_MEMORY_WRITE_REJECT_HINTS: dict[str, tuple[str, str]] = {
+    "preference_predicate_required": (
+        "Preference and soft-constraint memory entries require a predicate.",
+        "Pass --predicate in function-call form, for example: prefers(response_style).",
+    ),
+    "preference_predicate_invalid": (
+        "Preference predicates must use function-call form and avoid policy-like names.",
+        "Use lowercase func(arg), for example: prefers(response_style) or avoids(food).",
+    ),
+    "predicate_requires_preference_entry_type": (
+        "Only preference and soft_constraint entries accept a predicate.",
+        "Remove --predicate or write the memory as --type preference/soft_constraint.",
+    ),
+    "supersedes_target_not_found": (
+        "The superseded memory entry was not found or is already deleted.",
+        "Run shisad memory list --json and pass an active entry id to --supersede.",
+    ),
+    "supersedes_target_mismatch": (
+        "The replacement must use the same entry type and key as the superseded entry.",
+        "Use the original entry's type/key or create a new memory entry instead.",
+    ),
+}
 
 
 class MemoryImplMixin(HandlerMixinBase):
@@ -162,6 +184,18 @@ class MemoryImplMixin(HandlerMixinBase):
             return ("user_confirmed", "command", "user_confirmed")
         return ("user_direct", "command", "user_asserted")
 
+    @staticmethod
+    def _with_memory_reject_hint(response: dict[str, Any]) -> dict[str, Any]:
+        if response.get("kind") != "reject":
+            return response
+        reason = str(response.get("reason", "")).strip()
+        detail, hint = _MEMORY_WRITE_REJECT_HINTS.get(reason, ("", ""))
+        if detail and not response.get("reason_detail"):
+            response["reason_detail"] = detail
+        if hint and not response.get("hint"):
+            response["hint"] = hint
+        return response
+
     def _write_control_api_authenticated_entry(
         self,
         params: Mapping[str, Any],
@@ -244,7 +278,7 @@ class MemoryImplMixin(HandlerMixinBase):
             invocation_eligible=bool(params.get("invocation_eligible", False)),
             supersedes=str(params.get("supersedes", "")).strip() or None,
         )
-        return cast(dict[str, Any], decision.model_dump(mode="json"))
+        return self._with_memory_reject_hint(cast(dict[str, Any], decision.model_dump(mode="json")))
 
     def _resolve_skill_promotion_ingress(
         self,

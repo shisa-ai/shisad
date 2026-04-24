@@ -34,6 +34,9 @@ shisad-approver = "shisad.approver.main:cli"
 chat = [
     "textual>=0.89,<1",
 ]
+promptguard = [
+    "textguard[promptguard]>=1.0,<2",
+]
 
 [build-system]
 requires = ["hatchling==1.29.0"]

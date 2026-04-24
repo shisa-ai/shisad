@@ -266,7 +266,8 @@ request.
 
 - **PromptGuard stays optional.** Base installs now include `textguard[yara]`,
   while local PromptGuard runtime checks remain opt-in through the
-  `security-runtime` dependency group.
+  `security-runtime` dependency group for source checkouts or the
+  `shisad[promptguard]` extra for package installs.
 - **Operator status reflects bundled-rule provenance explicitly.**
   `daemon.status` now reports that the old local security-asset copy is gone
   and that the runtime is using bundled rules.

@@ -107,6 +107,72 @@ async def test_openai_compatible_complete_forces_json_mode_when_enabled(
 
 
 @pytest.mark.asyncio
+async def test_openai_compatible_complete_omits_empty_tools_payload(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, Any] = {}
+
+    def fake_open(request: Any, timeout: float = 0.0) -> _FakeHttpResponse:
+        _ = timeout
+        captured["payload"] = json.loads(request.data.decode("utf-8"))
+        return _FakeHttpResponse(
+            {
+                "choices": [
+                    {
+                        "message": {"role": "assistant", "content": "hello"},
+                        "finish_reason": "stop",
+                    }
+                ],
+            }
+        )
+
+    monkeypatch.setattr("shisad.core.providers.base._open_no_redirect", fake_open)
+
+    provider = OpenAICompatibleProvider(
+        base_url="https://api.example.com/v1",
+        model_id="gpt-test",
+    )
+    await provider.complete([Message(role="user", content="Hi")], tools=[])
+
+    assert "tools" not in captured["payload"]
+
+
+@pytest.mark.asyncio
+async def test_openai_compatible_complete_preserves_non_empty_tools_payload(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, Any] = {}
+
+    def fake_open(request: Any, timeout: float = 0.0) -> _FakeHttpResponse:
+        _ = timeout
+        captured["payload"] = json.loads(request.data.decode("utf-8"))
+        return _FakeHttpResponse(
+            {
+                "choices": [
+                    {
+                        "message": {"role": "assistant", "content": "hello"},
+                        "finish_reason": "stop",
+                    }
+                ],
+            }
+        )
+
+    monkeypatch.setattr("shisad.core.providers.base._open_no_redirect", fake_open)
+
+    tool = {
+        "type": "function",
+        "function": {"name": "todo.create", "parameters": {"type": "object"}},
+    }
+    provider = OpenAICompatibleProvider(
+        base_url="https://api.example.com/v1",
+        model_id="gpt-test",
+    )
+    await provider.complete([Message(role="user", content="Hi")], tools=[tool])
+
+    assert captured["payload"]["tools"] == [tool]
+
+
+@pytest.mark.asyncio
 async def test_openai_compatible_embeddings_maps_openai_response(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

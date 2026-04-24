@@ -282,7 +282,17 @@ def test_cli_commands_route_through_rpc_wrapper(
         "dashboard.mark_false_positive": {"marked": True, "event_id": "evt-1", "reason": "manual"},
         "confirmation.metrics": {"metrics": [{"user_id": "alice"}], "count": 1},
         "memory.list": {
-            "entries": [{"id": "m-1", "entry_type": "fact", "key": "favorite_color"}],
+            "entries": [
+                {
+                    "id": "m-1",
+                    "entry_type": "fact",
+                    "key": "favorite_color",
+                    "value": "blue",
+                    "version": 2,
+                    "workflow_state": "active",
+                    "status": "active",
+                }
+            ],
             "count": 1,
         },
         "memory.export": {
@@ -303,6 +313,33 @@ def test_cli_commands_route_through_rpc_wrapper(
             "rotated": True,
             "active_key_id": "k-1",
             "reencrypt_existing": True,
+        },
+        "graph.query": {
+            "root_entity_id": "entity:favorite_color",
+            "nodes": [
+                {
+                    "entity_id": "entity:favorite_color",
+                    "name": "favorite_color",
+                    "node_type": "concept",
+                    "degree": 1,
+                    "trust_band": "elevated",
+                }
+            ],
+            "edges": [],
+        },
+        "graph.export": {"format": "md", "data": "# Memory Graph\n- favorite_color"},
+        "memory.consolidate": {
+            "updated_entry_ids": ["m-1"],
+            "corroborating_entry_ids": [],
+            "contradicted_entry_ids": [],
+            "merged_entry_ids": [],
+            "archive_candidate_ids": [],
+            "quarantined_entry_ids": [],
+            "strong_invalidation_count": 0,
+            "identity_candidate_count": 1,
+            "strong_invalidations": [],
+            "identity_candidate_ids": ["m-2"],
+            "capability_scope": {},
         },
         "note.create": {"kind": "allow", "entry": {"id": "n-1"}},
         "note.list": {
@@ -585,12 +622,16 @@ def test_cli_commands_route_through_rpc_wrapper(
     _invoke_ok(runner, ["dashboard", "mark-fp", "evt-1", "--reason", "manual"])
     _invoke_ok(runner, ["confirmation", "metrics", "--user", "alice", "--window", "120"])
     assert (
-        "m-1 fact favorite_color"
+        "m-1 fact favorite_color v=2 state=active status=active value=blue"
         in _invoke_ok(
             runner,
             ["memory", "list", "--limit", "1"],
         ).output
     )
+    assert '"workflow_state": "active"' in _invoke_ok(
+        runner,
+        ["memory", "list", "--limit", "1", "--json"],
+    ).output
     _invoke_ok(
         runner,
         [
@@ -636,6 +677,13 @@ def test_cli_commands_route_through_rpc_wrapper(
     )
     assert "favorite_color" in _invoke_ok(runner, ["memory", "export", "--format", "json"]).output
     _invoke_ok(runner, ["memory", "rotate-key"])
+    assert "root=entity:favorite_color" in _invoke_ok(
+        runner, ["memory", "graph", "query", "favorite_color"]
+    ).output
+    assert "# Memory Graph" in _invoke_ok(
+        runner, ["memory", "graph", "export", "--format", "md"]
+    ).output
+    assert "identity_candidates=1" in _invoke_ok(runner, ["memory", "consolidate"]).output
     _invoke_ok(runner, ["note", "create", "--key", "meeting", "--content", "prep"])
     assert "n-1 meeting" in _invoke_ok(runner, ["note", "list", "--limit", "5"]).output
     _invoke_ok(runner, ["note", "get", "n-1"])
@@ -763,6 +811,9 @@ def test_cli_commands_route_through_rpc_wrapper(
         },
     ) in calls
     assert ("memory.export", {"format": "json"}) in calls
+    assert ("graph.query", {"entity": "favorite_color", "depth": 1, "limit": 20}) in calls
+    assert ("graph.export", {"format": "md"}) in calls
+    assert ("memory.consolidate", {}) in calls
     assert ("note.create", {"key": "meeting", "content": "prep"}) in calls
     assert ("memory.rotate_key", {"reencrypt_existing": True}) in calls
     assert (
@@ -827,6 +878,138 @@ def test_cli_commands_route_through_rpc_wrapper(
     assert (
         "session.import",
         {"archive_path": "/tmp/s-1.shisad-session.zip"},
+    ) in calls
+
+
+def test_memory_write_preference_requires_predicate_before_rpc() -> None:
+    runner = CliRunner()
+
+    result = runner.invoke(
+        cli_main.cli,
+        [
+            "memory",
+            "write",
+            "--type",
+            "preference",
+            "--key",
+            "pref:response_style",
+            "--value",
+            "terse",
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "--predicate is required" in result.output
+    assert "prefers(response_style)" in result.output
+
+
+def test_memory_write_rejects_bad_predicate_shape_before_rpc() -> None:
+    runner = CliRunner()
+
+    result = runner.invoke(
+        cli_main.cli,
+        [
+            "memory",
+            "write",
+            "--type",
+            "preference",
+            "--key",
+            "pref:response_style",
+            "--value",
+            "terse",
+            "--predicate",
+            "prefers",
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "--predicate must use lowercase function-call form" in result.output
+
+
+def test_memory_write_rejects_predicate_for_non_preference_before_rpc() -> None:
+    runner = CliRunner()
+
+    result = runner.invoke(
+        cli_main.cli,
+        [
+            "memory",
+            "write",
+            "--type",
+            "fact",
+            "--key",
+            "profile.note",
+            "--value",
+            "remember this",
+            "--predicate",
+            "prefers(response_style)",
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "--predicate is only valid" in result.output
+
+
+def test_memory_write_supersede_forwards_entry_id(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _config(tmp_path)
+    monkeypatch.setattr(cli_main, "_get_config", lambda: config)
+    calls: list[tuple[str, dict[str, object] | None]] = []
+
+    def _fake_rpc_call(
+        _config: DaemonConfig,
+        method: str,
+        params: dict[str, object] | None = None,
+        *,
+        response_model: type[object] | None = None,
+    ) -> object:
+        calls.append((method, params))
+        if method == "memory.mint_ingress_context":
+            payload = {
+                "ingress_context": "handle-1",
+                "content_digest": "digest-1",
+                "source_origin": "user_direct",
+                "channel_trust": "command",
+                "confirmation_status": "user_asserted",
+                "scope": "user",
+                "source_id": "cli",
+            }
+        else:
+            payload = {"kind": "allow", "entry": {"id": "m-new", "supersedes": "m-old"}}
+        if response_model is None:
+            return payload
+        return response_model.model_validate(payload)  # type: ignore[attr-defined]
+
+    monkeypatch.setattr(cli_main, "rpc_call", _fake_rpc_call)
+    runner = CliRunner()
+
+    result = runner.invoke(
+        cli_main.cli,
+        [
+            "memory",
+            "write",
+            "--type",
+            "fact",
+            "--key",
+            "favorite_color",
+            "--value",
+            "green",
+            "--supersede",
+            "m-old",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert (
+        "memory.write",
+        {
+            "ingress_context": "handle-1",
+            "entry_type": "fact",
+            "key": "favorite_color",
+            "value": "green",
+            "supersedes": "m-old",
+        },
     ) in calls
 
 

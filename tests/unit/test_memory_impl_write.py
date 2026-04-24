@@ -113,6 +113,35 @@ async def test_memory_write_accepts_handle_bound_direct_payload(tmp_path: Path) 
 
 
 @pytest.mark.asyncio
+async def test_memory_write_rejects_preference_missing_predicate_with_hint(
+    tmp_path: Path,
+) -> None:
+    harness = _MemoryWriteHarness(tmp_path)
+    context = harness._memory_ingress_registry.mint(
+        source_origin="user_direct",
+        channel_trust="command",
+        confirmation_status="user_asserted",
+        scope="user",
+        source_id="turn-1",
+        content="prefers terse replies",
+    )
+
+    result = await harness.do_memory_write(
+        {
+            "ingress_context": context.handle_id,
+            "entry_type": "preference",
+            "key": "pref:response_style",
+            "value": "prefers terse replies",
+        }
+    )
+
+    assert result["kind"] == "reject"
+    assert result["reason"] == "preference_predicate_required"
+    assert "require a predicate" in str(result["reason_detail"])
+    assert "prefers(response_style)" in str(result["hint"])
+
+
+@pytest.mark.asyncio
 async def test_memory_write_rejects_mismatched_handle_binding(tmp_path: Path) -> None:
     harness = _MemoryWriteHarness(tmp_path)
     context = harness._memory_ingress_registry.mint(

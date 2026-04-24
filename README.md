@@ -88,16 +88,18 @@ uv sync --group dev --extra chat
 ```
 
 YARA-backed content scanning is included in the base install through
-`textguard[yara]`. For local PromptGuard runtime checks, add the security
-runtime dependency group:
+`textguard[yara]`. For local PromptGuard runtime checks from a source checkout,
+add the security runtime dependency group:
 
 ```bash
 uv sync --group security-runtime --group dev --extra chat
 ```
 
-`security-runtime` is a uv dependency group, not a pip extra; use `--group
-security-runtime`, not `--extra security-runtime`. The `chat` package set is
-the optional extra and uses `--extra chat`.
+For package installs, use the first-class PromptGuard extra, for example
+`uv pip install 'shisad[promptguard]'`. `security-runtime` is a uv dependency
+group, not a pip extra; use `--group security-runtime`, not
+`--extra security-runtime`. The `chat` and `promptguard` package sets are
+project optional extras and use `--extra chat` / `shisad[promptguard]`.
 
 ### Configuration
 

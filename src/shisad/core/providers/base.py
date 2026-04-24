@@ -120,7 +120,7 @@ class OpenAICompatibleProvider:
         payload.update(self._request_parameters.to_payload())
         if self._force_json_response:
             payload["response_format"] = {"type": "json_object"}
-        if tools is not None:
+        if tools:
             payload["tools"] = tools
 
         endpoint = self._build_endpoint("chat/completions")

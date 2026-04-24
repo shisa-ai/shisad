@@ -26,6 +26,7 @@ from shisad.daemon.services import (
     _key_gated_acceptance_matrix,
     _log_provider_route_summary,
     _normalize_tool_destination,
+    _promptguard_degraded_hint,
     _register_route_credentials,
     _validate_security_route_pins,
     _warn_on_evidence_kms_endpoint_config,
@@ -1522,10 +1523,12 @@ def test_u4_warn_on_provider_route_gaps_flags_missing_embeddings_route(
     with caplog.at_level("WARNING"):
         _warn_on_provider_route_gaps(ModelRouter(ModelConfig()))
 
-    assert (
-        "Embeddings route not configured - semantic retrieval will degrade to "
-        "deterministic local fallback embeddings."
-    ) in caplog.text
+    assert "Embeddings route not configured; vector recall is off." in caplog.text
+    assert "deterministic local lexical fallback" in caplog.text
+
+
+def test_m7_promptguard_runtime_missing_hint_names_supported_extra() -> None:
+    assert "shisad[promptguard]" in _promptguard_degraded_hint("promptguard_runtime_missing")
 
 
 def test_u4_warn_on_provider_route_gaps_skips_warning_when_embeddings_route_enabled(

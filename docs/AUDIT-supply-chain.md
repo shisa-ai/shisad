@@ -401,6 +401,7 @@ sed -n '1,140p' docs/DEPLOY.md
 | Extra | Direct packages in extra | Lock status |
 | --- | --- | --- |
 | `chat` | `textual` | Exact in lock (`0.89.1`); declared as range |
+| `promptguard` | `textguard[promptguard]` | Exact in lock through `textguard 1.0.0`; declared as range |
 
 #### Dependency groups (`[dependency-groups]`)
 

@@ -645,6 +645,8 @@ class MemoryInvokeSkillResult(BaseModel):
 class MemoryWriteResult(BaseModel):
     kind: str
     reason: str = ""
+    reason_detail: str = ""
+    hint: str = ""
     entry: dict[str, Any] | None = None
 
 

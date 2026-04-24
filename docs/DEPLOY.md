@@ -37,17 +37,19 @@ uv sync --group dev --extra chat
 ```
 
 YARA-backed content scanning is included in the base install through
-`textguard[yara]`. If you want local PromptGuard runtime checks in the daemon,
-include the security runtime dependency group:
+`textguard[yara]`. If you want local PromptGuard runtime checks in the daemon
+from a source checkout, include the security runtime dependency group:
 
 ```bash
 uv sync --group security-runtime --group dev --extra chat
 ```
 
-`security-runtime`, `security-build`, `interop`, `channels-runtime`, and
-`coverage` are uv dependency groups from `[dependency-groups]`; install them
-with `--group`. The chat UI dependencies are a project optional extra; install
-them with `--extra chat`.
+For package installs, use the first-class PromptGuard extra, for example
+`uv pip install 'shisad[promptguard]'`. `security-runtime`,
+`security-build`, `interop`, `channels-runtime`, and `coverage` are uv
+dependency groups from `[dependency-groups]`; install them with `--group`. The
+chat UI and package PromptGuard dependencies are project optional extras;
+install them with `--extra chat` or `shisad[promptguard]`.
 
 Optional groups:
 
@@ -431,7 +433,8 @@ Install channel runtime dependencies: `uv sync --group channels-runtime`.
 **`uv sync --extra security-runtime` fails:**
 `security-runtime` is a dependency group, not an optional extra. Use
 `uv sync --group security-runtime` or the combined source-checkout command
-`uv sync --group security-runtime --group dev --extra chat`.
+`uv sync --group security-runtime --group dev --extra chat`. For package
+installs, use `uv pip install 'shisad[promptguard]'`.
 
 **Startup logs say PyTorch was not found:**
 This is expected when only `security-runtime` is installed. The daemon runtime
