@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from enum import StrEnum
+from pathlib import PurePosixPath
 from typing import Any, ClassVar
 
 from pydantic import BaseModel, Field
@@ -91,12 +92,16 @@ class ActionMonitor:
                 reject_flags.append(f"{tool}:suspicious_argument_content")
                 continue
 
-            if tool == "shell.exec" and self._is_read_only_shell_file_discovery(
-                goal_text=goal_text,
-                arguments=getattr(action, "arguments", {}),
-            ):
-                suspicious_flags.append("read_only_file_discovery")
-                continue
+            if tool == "shell.exec":
+                if self._is_read_only_shell_file_discovery(
+                    goal_text=goal_text,
+                    arguments=getattr(action, "arguments", {}),
+                ):
+                    suspicious_flags.append("read_only_file_discovery")
+                    continue
+                if self._goal_mentions_file_discovery(goal_text):
+                    reject_flags.append(f"{tool}:file_discovery_not_read_only")
+                    continue
 
             if tool in self._HIGH_RISK_TOOLS and not self._goal_mentions_side_effect(goal_text):
                 reject_flags.append(f"{tool}:goal_misaligned_high_risk")
@@ -196,6 +201,55 @@ class ActionMonitor:
             cls._cue_matches(goal_text, cue) for cue in discovery_cues
         )
 
+    @staticmethod
+    def _workspace_relative_scope_value(value: str) -> bool:
+        text = value.strip()
+        if not text or "://" in text or "\\" in text or text.startswith(("~", "`")):
+            return False
+        path = PurePosixPath(text)
+        return not path.is_absolute() and ".." not in path.parts
+
+    @classmethod
+    def _shell_file_discovery_token_is_workspace_relative(cls, token: str) -> bool:
+        if token.startswith("-"):
+            if "=" not in token:
+                return "/" not in token and "\\" not in token
+            option, value = token.split("=", 1)
+            if "/" in option or "\\" in option:
+                return False
+            if "/" not in value and "\\" not in value and value not in {"..", "~"}:
+                return not value.startswith(("~", "`"))
+            return cls._workspace_relative_scope_value(value)
+        if "/" not in token and "\\" not in token:
+            return token not in {"..", "~"} and not token.startswith(("~", "`"))
+        return cls._workspace_relative_scope_value(token)
+
+    @classmethod
+    def _shell_file_discovery_scope_is_workspace_relative(
+        cls,
+        *,
+        arguments: dict[str, Any],
+        command: list[str],
+    ) -> bool:
+        cwd = arguments.get("cwd")
+        if cwd not in (None, "") and (
+            not isinstance(cwd, str) or not cls._workspace_relative_scope_value(cwd)
+        ):
+            return False
+        read_paths = arguments.get("read_paths")
+        if read_paths not in (None, "", [], (), {}):
+            if not isinstance(read_paths, list):
+                return False
+            for read_path in read_paths:
+                if not isinstance(read_path, str):
+                    return False
+                if not cls._workspace_relative_scope_value(read_path):
+                    return False
+        return all(
+            cls._shell_file_discovery_token_is_workspace_relative(token)
+            for token in command[1:]
+        )
+
     @classmethod
     def _is_read_only_shell_file_discovery(
         cls,
@@ -224,6 +278,11 @@ class ActionMonitor:
             command.append(stripped)
         command_name = command[0].rsplit("/", 1)[-1].lower()
         if command_name not in cls._READ_ONLY_FILE_DISCOVERY_SHELL_COMMANDS:
+            return False
+        if not cls._shell_file_discovery_scope_is_workspace_relative(
+            arguments=arguments,
+            command=command,
+        ):
             return False
         lowered_tokens = {token.lower() for token in command}
         has_forbidden_prefix = any(

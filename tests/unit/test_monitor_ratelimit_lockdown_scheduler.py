@@ -117,6 +117,66 @@ def test_gh12_action_monitor_still_rejects_destructive_shell_file_discovery() ->
     assert decision.kind == MonitorDecisionType.REJECT
 
 
+def test_gh12_action_monitor_rejects_destructive_shell_search_wording() -> None:
+    monitor = ActionMonitor()
+    decision = monitor.evaluate(
+        user_goal="search for a similar file",
+        actions=[
+            SimpleNamespace(
+                tool_name="shell.exec",
+                arguments={
+                    "command": ["rm", "-rf", "."],
+                    "read_paths": ["."],
+                    "write_paths": ["."],
+                },
+                reasoning="destructive command is not file discovery",
+            )
+        ],
+    )
+
+    assert decision.kind == MonitorDecisionType.REJECT
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        {
+            "command": ["find", ".", "-maxdepth", "2", "-iname", "*todo*"],
+            "cwd": "/etc",
+            "read_paths": ["."],
+        },
+        {
+            "command": ["find", "/etc", "-maxdepth", "2", "-iname", "*todo*"],
+            "read_paths": ["."],
+        },
+        {
+            "command": ["find", ".", "-maxdepth", "2", "-iname", "*todo*"],
+            "read_paths": ["/etc"],
+        },
+        {
+            "command": ["find", "../", "-maxdepth", "2", "-iname", "*todo*"],
+            "read_paths": ["."],
+        },
+    ],
+)
+def test_gh12_action_monitor_rejects_off_workspace_shell_file_discovery(
+    arguments: dict[str, object],
+) -> None:
+    monitor = ActionMonitor()
+    decision = monitor.evaluate(
+        user_goal="search for a similar file",
+        actions=[
+            SimpleNamespace(
+                tool_name="shell.exec",
+                arguments=arguments,
+                reasoning="file discovery must stay within the workspace",
+            )
+        ],
+    )
+
+    assert decision.kind == MonitorDecisionType.REJECT
+
+
 @pytest.mark.parametrize("flag", ["-fprint", "-fprint0", "-fprintf", "-fls"])
 def test_gh12_action_monitor_rejects_find_file_output_flags(flag: str) -> None:
     monitor = ActionMonitor()
