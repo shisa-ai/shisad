@@ -60,9 +60,12 @@ class ActionMonitor:
         "-fprintf",
         "-ok",
         "-okdir",
+        "-follow",
         "-x",
+        "--dereference",
         "--exec",
         "--exec-batch",
+        "--follow",
     }
     _FORBIDDEN_FILE_DISCOVERY_SHELL_TOKEN_PREFIXES: ClassVar[tuple[str, ...]] = (
         "--exec=",
@@ -224,13 +227,58 @@ class ActionMonitor:
             return token not in {"..", "~"} and not token.startswith(("~", "`"))
         return cls._workspace_relative_scope_value(token)
 
+    @staticmethod
+    def _is_current_directory_token(token: str) -> bool:
+        return token in {".", "./"}
+
+    @staticmethod
+    def _is_symlink_follow_token(token: str) -> bool:
+        lowered = token.lower()
+        return (
+            token.startswith(("-H", "-L"))
+            or lowered in {"-follow", "--dereference", "--follow"}
+        )
+
+    @classmethod
+    def _shell_file_discovery_targets_current_directory(
+        cls,
+        *,
+        command_name: str,
+        command: list[str],
+    ) -> bool:
+        operands = command[1:]
+        if command_name == "find":
+            roots: list[str] = []
+            for token in operands:
+                if token.startswith("-") or token in {"!", "(", ")"}:
+                    break
+                roots.append(token)
+            return all(cls._is_current_directory_token(root) for root in roots)
+        if command_name == "ls":
+            targets = [token for token in operands if not token.startswith("-")]
+            return all(cls._is_current_directory_token(target) for target in targets)
+        if command_name == "fd":
+            targets = [token for token in operands if not token.startswith("-")]
+            if len(targets) <= 1:
+                return True
+            return all(cls._is_current_directory_token(target) for target in targets[1:])
+        return False
+
     @classmethod
     def _shell_file_discovery_scope_is_workspace_relative(
         cls,
         *,
+        command_name: str,
         arguments: dict[str, Any],
         command: list[str],
     ) -> bool:
+        if any(cls._is_symlink_follow_token(token) for token in command[1:]):
+            return False
+        if not cls._shell_file_discovery_targets_current_directory(
+            command_name=command_name,
+            command=command,
+        ):
+            return False
         cwd = arguments.get("cwd")
         if cwd not in (None, "") and (
             not isinstance(cwd, str) or not cls._workspace_relative_scope_value(cwd)
@@ -280,6 +328,7 @@ class ActionMonitor:
         if command_name not in cls._READ_ONLY_FILE_DISCOVERY_SHELL_COMMANDS:
             return False
         if not cls._shell_file_discovery_scope_is_workspace_relative(
+            command_name=command_name,
             arguments=arguments,
             command=command,
         ):

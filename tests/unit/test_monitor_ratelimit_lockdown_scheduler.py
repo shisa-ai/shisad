@@ -157,6 +157,18 @@ def test_gh12_action_monitor_rejects_destructive_shell_search_wording() -> None:
             "command": ["find", "../", "-maxdepth", "2", "-iname", "*todo*"],
             "read_paths": ["."],
         },
+        {
+            "command": ["find", "-H", "cfg", "-maxdepth", "1", "-iname", "*todo*"],
+            "read_paths": ["."],
+        },
+        {
+            "command": ["ls", "cfg"],
+            "read_paths": ["."],
+        },
+        {
+            "command": ["fd", "todo", "cfg"],
+            "read_paths": ["."],
+        },
     ],
 )
 def test_gh12_action_monitor_rejects_off_workspace_shell_file_discovery(
