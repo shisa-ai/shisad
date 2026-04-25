@@ -36,6 +36,8 @@ async def test_prefill_memory_smoke(clean_harness: ContractHarness) -> None:
     rendered = str(listed).lower()
     assert "favorite_editor" in rendered
     assert "helix" in rendered
+    assert "structured_prefill" in rendered
+    assert "python" in rendered
 
 
 async def test_prefill_transcript_smoke(clean_harness: ContractHarness) -> None:

@@ -3,6 +3,12 @@ memory:
   - type: persona_fact
     key: user:favorite_editor
     value: helix
+  - type: fact
+    key: user:structured_prefill
+    value:
+      languages:
+        - python
+        - rust
 transcript:
   - role: user
     content: hello

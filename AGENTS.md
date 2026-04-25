@@ -263,7 +263,7 @@ test: add prompt injection test cases
 When asked to close a milestone, review remediation, or release-readiness pass:
 
 0. **Behavioral tests pass**: `uv run pytest tests/behavioral/ -q` — if these fail, the milestone is not closeable regardless of other test results
-- **First-principles gates pass for runtime-facing scope**:
+0p. **First-principles gates pass for runtime-facing scope**:
    `uv run pytest tests/behavioral/test_first_principles_gates.py -q`.
    These gates cover clean, accumulated-state, degraded-web,
    confirmation-followup, require-confirmation, and cross-session postures for
