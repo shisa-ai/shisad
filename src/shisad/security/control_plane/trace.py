@@ -111,7 +111,8 @@ _WORKSPACE_ROOT_MARKER = "workspace_root:"
 _WORKSPACE_ROOT_DIRECTORY_ACTION_RE = re.compile(
     r"\b(?:list|show|display|inspect|explore|open|read|check|look at|review)\b"
     r".{0,80}\b(?:current folder|current directory|working directory|"
-    r"folder you're in|directory you're in)\b",
+    r"folder you're in|directory you're in|this folder|this directory|"
+    r"the folder|the directory|here)\b",
     re.IGNORECASE,
 )
 _WORKSPACE_ROOT_GIT_ACTION_RE = re.compile(

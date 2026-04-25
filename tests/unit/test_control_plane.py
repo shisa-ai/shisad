@@ -763,14 +763,23 @@ def test_m5_rt9_command_filename_token_is_not_misclassified_as_egress() -> None:
     assert kind != ActionKind.EGRESS
 
 
+@pytest.mark.parametrize(
+    "goal",
+    [
+        "list the files in the folder you're in",
+        "list the files in the folder",
+        "show the directory here",
+    ],
+)
 def test_m5_rt10_trace_allows_fs_list_without_path_arguments_when_goal_points_at_workspace(
     tmp_path: Path,
+    goal: str,
 ) -> None:
     verifier = ExecutionTraceVerifier(workspace_roots=[tmp_path])
     origin = _origin("s-rt10")
     verifier.begin_precontent_plan(
         session_id=origin.session_id,
-        goal="list the files in the folder you're in",
+        goal=goal,
         origin=origin,
     )
     action = build_action(
@@ -1514,6 +1523,30 @@ async def test_m1_rr1_action_monitor_does_not_allow_negated_todo_completion() ->
 
 
 @pytest.mark.asyncio
+async def test_action_monitor_does_not_allow_negated_todo_create() -> None:
+    voter = ActionMonitorVoter()
+    action = build_action(
+        tool_name="todo.create",
+        arguments={"title": "review PRs"},
+        origin=_origin("s-action-monitor-negated-create"),
+    )
+    decision = await voter.cast_vote(
+        ConsensusInput(
+            action=action,
+            trace_result=PlanVerificationResult(allowed=True, reason_code="trace:allowed"),
+            metadata_payload={
+                "session_tainted": True,
+                "trusted_input": True,
+                "raw_user_text": "don't create a todo called review PRs",
+                "action_arguments": {"title": "review PRs"},
+            },
+        )
+    )
+    assert decision.decision == VoteKind.FLAG
+    assert "action_monitor:deterministic_intent_match" not in decision.reason_codes
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "raw_user_text",
     [
@@ -1523,7 +1556,7 @@ async def test_m1_rr1_action_monitor_does_not_allow_negated_todo_completion() ->
         "add todo: review PRs, read README.md",
     ],
 )
-async def test_m1_rr2_action_monitor_rejects_punctuation_separated_follow_on_commands(
+async def test_action_monitor_allows_explicit_todo_create_with_follow_on_commands(
     raw_user_text: str,
 ) -> None:
     voter = ActionMonitorVoter()
@@ -1544,8 +1577,34 @@ async def test_m1_rr2_action_monitor_rejects_punctuation_separated_follow_on_com
             },
         )
     )
-    assert decision.decision == VoteKind.FLAG
-    assert "action_monitor:deterministic_intent_match" not in decision.reason_codes
+    assert decision.decision == VoteKind.ALLOW
+    assert "action_monitor:deterministic_intent_match" in decision.reason_codes
+
+
+@pytest.mark.asyncio
+async def test_action_monitor_allows_trusted_cli_todo_create_in_multi_tool_turn() -> None:
+    voter = ActionMonitorVoter()
+    action = build_action(
+        tool_name="todo.create",
+        arguments={"title": "scan-complete"},
+        origin=_origin("s-action-monitor-multi-tool-todo-create"),
+    )
+    decision = await voter.cast_vote(
+        ConsensusInput(
+            action=action,
+            trace_result=PlanVerificationResult(allowed=True, reason_code="trace:allowed"),
+            metadata_payload={
+                "session_tainted": True,
+                "trusted_input": True,
+                "operator_owned_cli_input": True,
+                "raw_user_text": "list the files in /root and create a todo called scan-complete",
+                "action_arguments": {"title": "scan-complete"},
+            },
+        )
+    )
+    assert decision.decision == VoteKind.ALLOW
+    assert decision.risk_tier == RiskTier.LOW
+    assert "action_monitor:trusted_cli_current_turn_intent" in decision.reason_codes
 
 
 @pytest.mark.asyncio

@@ -919,8 +919,7 @@ def _resolve_chat_confirmation_indexes(
         return [intent.index - 1]
     if pending_count != 1:
         return []
-    if tainted_session:
-        return []
+    # A single pending item is unambiguous; taint only disables bulk shorthand.
     return [0]
 
 
@@ -3761,7 +3760,12 @@ class SessionImplMixin(HandlerMixinBase):
                 lines.append("Reply with 'reject N' or 'no to all' to deny pending items.")
             lines.extend(_chat_totp_guidance_lines(pending_rows=pending_rows))
         else:
-            lines.append("Reply with 'confirm N', 'reject N', 'yes to all', or 'no to all'.")
+            if len(pending_rows) == 1:
+                lines.append(
+                    "Reply with 'confirm', 'confirm N', 'reject N', 'yes to all', or 'no to all'."
+                )
+            else:
+                lines.append("Reply with 'confirm N', 'reject N', 'yes to all', or 'no to all'.")
         for idx, pending in enumerate(pending_rows, start=1):
             reason = str(pending.reason or "").strip()
             if not reason:
@@ -3987,6 +3991,7 @@ class SessionImplMixin(HandlerMixinBase):
             summary = _summarize_tool_outputs_for_chat(confirmed_tool_outputs)
             if not summary:
                 return text
+            summary = summary.replace("Tool results summary:", "Confirmed action result:", 1)
             return f"{text}\n\n{summary}" if text.strip() else summary
 
         if totp_submission is not None:

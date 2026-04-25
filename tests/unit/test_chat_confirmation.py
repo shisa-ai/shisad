@@ -95,16 +95,13 @@ def test_m6_crc_routing_clean_session_auto_confirms_single_pending() -> None:
     assert resolved == [0]
 
 
-def test_m6_crc_routing_requires_reference_for_tainted_or_multi_pending() -> None:
+def test_m6_crc_routing_allows_single_pending_even_when_tainted() -> None:
     intent = ChatConfirmationIntent(action="confirm", target="single", index=None)
-    assert (
-        _resolve_chat_confirmation_indexes(
-            intent=intent,
-            pending_count=1,
-            tainted_session=True,
-        )
-        == []
-    )
+    assert _resolve_chat_confirmation_indexes(
+        intent=intent,
+        pending_count=1,
+        tainted_session=True,
+    ) == [0]
     assert (
         _resolve_chat_confirmation_indexes(
             intent=intent,
@@ -140,6 +137,7 @@ def test_chat_pending_confirmation_summary_retains_bulk_guidance() -> None:
         tainted_session=False,
     )
 
+    assert "'confirm'" in summary.lower()
     assert "yes to all" in summary.lower()
     assert "no to all" in summary.lower()
 
@@ -254,6 +252,53 @@ async def test_h1_chat_confirmation_response_degrades_when_plan_hash_lookup_fail
     assert result["plan_hash"] == ""
     assert result["checkpoint_ids"] == []
     assert result["checkpoints_created"] == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("content", ["confirm", "go ahead"])
+async def test_chat_confirmation_accepts_single_pending_shorthand_in_tainted_session(
+    tmp_path,
+    content: str,
+) -> None:
+    harness = _ChatConfirmationHarness(tmp_path)
+
+    def _tainted(_sid: SessionId) -> bool:
+        return True
+
+    harness._session_has_tainted_history = _tainted  # type: ignore[method-assign]
+    pending = PendingAction(
+        confirmation_id="c-1",
+        decision_nonce="nonce-1",
+        session_id=SessionId("sess-chat"),
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws-1"),
+        tool_name=ToolName("web.search"),
+        arguments={"query": "hello"},
+        reason="manual",
+        capabilities={Capability.HTTP_REQUEST},
+        created_at=datetime.now(UTC),
+    )
+    harness._pending_actions[pending.confirmation_id] = pending
+
+    result = await SessionImplMixin._maybe_handle_chat_confirmation(
+        harness,
+        sid=SessionId("sess-chat"),
+        channel="cli",
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws-1"),
+        session_mode=SessionMode.DEFAULT,
+        trust_level="trusted",
+        trusted_input=True,
+        is_internal_ingress=False,
+        content=content,
+        firewall_result=FirewallResult(sanitized_text=content, original_hash="0" * 64),
+    )
+
+    assert result is not None
+    assert str(result["response"]).startswith("confirmed 1")
+    assert len(harness.confirm_calls) == 1
+    assert harness.confirm_calls[0]["confirmation_id"] == "c-1"
+    assert harness._pending_actions["c-1"].status == "approved"
 
 
 @pytest.mark.asyncio
@@ -403,7 +448,8 @@ async def test_chat_confirmation_reply_includes_confirmed_tool_output(tmp_path) 
     assert result is not None
     response = str(result["response"])
     assert response.startswith("confirmed 1")
-    assert "Tool results summary:" in response
+    assert "Confirmed action result:" in response
+    assert "Tool results summary:" not in response
     assert "fs.list" in response
     assert "entries=1" in response
     assert "path=/root" in response

@@ -318,6 +318,50 @@ class ActionMonitorVoter:
             expected=expected,
         )
 
+    @staticmethod
+    def _command_boundary_pattern() -> str:
+        return r"(?:^|[.;,]\s*|\b(?:and|then|also)\s+)(?:please\s+)?"
+
+    @staticmethod
+    def _command_stop_pattern() -> str:
+        command_verbs = (
+            r"read|list|show|search|find|fetch|open|create|add|save|remember|"
+            r"mark|complete|finish|remind"
+        )
+        return rf"(?=$|[.;,]|\s+(?:and|then|also)\s+(?:please\s+)?(?:{command_verbs})\b)"
+
+    @classmethod
+    def _iter_intent_values(cls, normalized_text: str, pattern: str) -> list[str]:
+        values: list[str] = []
+        for match in re.finditer(pattern, normalized_text, flags=re.IGNORECASE):
+            if not match.groups():
+                continue
+            value = cls._normalize_intent_text(match.group(1))
+            if value:
+                values.append(value.strip(" .;,"))
+        return values
+
+    @classmethod
+    def _any_expected_matches(
+        cls,
+        *,
+        normalized_text: str,
+        patterns: tuple[str, ...],
+        action_arguments: dict[str, Any],
+        action_argument_digests: dict[str, str],
+        field: str,
+    ) -> bool:
+        for pattern in patterns:
+            for expected in cls._iter_intent_values(normalized_text, pattern):
+                if cls._matches_argument_or_digest(
+                    action_arguments=action_arguments,
+                    action_argument_digests=action_argument_digests,
+                    field=field,
+                    expected=expected,
+                ):
+                    return True
+        return False
+
     @classmethod
     def _deterministic_memory_write_intent_match(
         cls,
@@ -329,75 +373,61 @@ class ActionMonitorVoter:
     ) -> bool:
         argument_digests = action_argument_digests or {}
         normalized = cls._strip_optional_greeting_prefix(user_text)
-        if not normalized or cls._has_follow_on_command(normalized):
+        if not normalized:
             return False
+        boundary = cls._command_boundary_pattern()
+        stop = cls._command_stop_pattern()
         if tool_name == "note.create":
-            note_match = re.match(
-                r"^(?:add|save) (?:a )?note:\s*(.+)$",
-                normalized,
-                flags=re.IGNORECASE,
-            )
-            if note_match is None:
-                note_match = re.match(
-                    r"^remember(?: that)?\s+(.+)$",
-                    normalized,
-                    flags=re.IGNORECASE,
-                )
-            if note_match is None:
-                return False
-            return cls._matches_argument_or_digest(
+            return cls._any_expected_matches(
+                normalized_text=normalized,
+                patterns=(
+                    rf"{boundary}(?:add|save)\s+(?:a\s+)?note:\s*(.+?){stop}",
+                    rf"{boundary}remember(?:\s+that)?\s+(.+?){stop}",
+                ),
                 action_arguments=action_arguments,
                 action_argument_digests=argument_digests,
                 field="content",
-                expected=note_match.group(1),
             )
         if tool_name == "todo.create":
-            todo_create_match = re.match(
-                r"^(?:add|create) (?:a )?(?:todo|task):\s*(.+)$",
-                normalized,
-                flags=re.IGNORECASE,
-            )
-            if todo_create_match is None:
-                return False
-            return cls._matches_argument_or_digest(
+            return cls._any_expected_matches(
+                normalized_text=normalized,
+                patterns=(
+                    rf"{boundary}(?:add|create)\s+(?:a\s+)?(?:todo|task)"
+                    rf"(?:\s+called|\s+named|:)?\s+(.+?){stop}",
+                ),
                 action_arguments=action_arguments,
                 action_argument_digests=argument_digests,
                 field="title",
-                expected=todo_create_match.group(1),
             )
         if tool_name == "todo.complete":
-            todo_complete_match = re.match(
-                r"^(?:mark|complete|finish)\s+(?:the\s+)?(.+?)(?:\s+todo)?\s+(?:complete|done)$",
-                normalized,
-                flags=re.IGNORECASE,
-            )
-            if todo_complete_match is None:
-                return False
-            return cls._matches_argument_or_digest(
+            return cls._any_expected_matches(
+                normalized_text=normalized,
+                patterns=(
+                    rf"{boundary}(?:mark|complete|finish)\s+(?:the\s+)?(.+?)"
+                    rf"(?:\s+todo)?\s+(?:complete|done){stop}",
+                ),
                 action_arguments=action_arguments,
                 action_argument_digests=argument_digests,
                 field="selector",
-                expected=todo_complete_match.group(1),
             )
         if tool_name == "reminder.create":
-            reminder_match = re.match(
-                r"^remind me(?: to)?\s+(.+?)\s+((?:in|at)\s+.+)$",
-                normalized,
-                flags=re.IGNORECASE,
-            )
-            if reminder_match is None:
-                return False
-            return cls._matches_argument_or_digest(
-                action_arguments=action_arguments,
-                action_argument_digests=argument_digests,
-                field="message",
-                expected=reminder_match.group(1),
-            ) and cls._matches_argument_or_digest(
-                action_arguments=action_arguments,
-                action_argument_digests=argument_digests,
-                field="when",
-                expected=reminder_match.group(2),
-            )
+            pattern = rf"{boundary}remind me(?:\s+to)?\s+(.+?)\s+((?:in|at)\s+.+?){stop}"
+            for match in re.finditer(pattern, normalized, flags=re.IGNORECASE):
+                message = cls._normalize_intent_text(match.group(1)).strip(" .;,")
+                when = cls._normalize_intent_text(match.group(2)).strip(" .;,")
+                if cls._matches_argument_or_digest(
+                    action_arguments=action_arguments,
+                    action_argument_digests=argument_digests,
+                    field="message",
+                    expected=message,
+                ) and cls._matches_argument_or_digest(
+                    action_arguments=action_arguments,
+                    action_argument_digests=argument_digests,
+                    field="when",
+                    expected=when,
+                ):
+                    return True
+            return False
         return False
 
     @classmethod

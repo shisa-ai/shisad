@@ -32,6 +32,13 @@ Versioning follows semver (see `docs/PUBLISH.md` for policy and style guide).
   instead of only DATA EVIDENCE, and cross-session note and identity memory are
   rendered to the planner through recall/trusted memory surfaces.
 
+- **Tainted-session confirmation and multi-tool cleanup flows are less brittle.**
+  Single pending confirmations now accept `confirm`/`go ahead` even when prior
+  context is tainted, confirmed chat replies label the result as a confirmed
+  action result instead of a generic tool summary, explicit trusted `todo`
+  writes in multi-tool turns can proceed from current-turn intent, and default
+  workspace listings are grounded for common “this/the folder” phrasing.
+
 ## [0.7.0] - 2026-04-25
 
 ### Added
