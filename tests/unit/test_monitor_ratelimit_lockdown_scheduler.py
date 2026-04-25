@@ -67,6 +67,36 @@ def test_gh12_action_monitor_confirms_read_only_shell_file_discovery() -> None:
     assert "read_only_file_discovery" in decision.flags
 
 
+@pytest.mark.parametrize(
+    "user_goal",
+    [
+        "can you find the logfile from yesterday?",
+        "can you locate the filepath for the install log?",
+        "show me the files in this folder",
+    ],
+)
+def test_gh12_action_monitor_confirms_common_file_discovery_phrasing(
+    user_goal: str,
+) -> None:
+    monitor = ActionMonitor()
+    decision = monitor.evaluate(
+        user_goal=user_goal,
+        actions=[
+            SimpleNamespace(
+                tool_name="shell.exec",
+                arguments={
+                    "command": ["find", ".", "-maxdepth", "2", "-iname", "*install*log*"],
+                    "read_paths": ["."],
+                },
+                reasoning="search filenames after the exact read failed",
+            )
+        ],
+    )
+
+    assert decision.kind == MonitorDecisionType.SUSPICIOUS
+    assert "read_only_file_discovery" in decision.flags
+
+
 def test_gh12_action_monitor_still_rejects_destructive_shell_file_discovery() -> None:
     monitor = ActionMonitor()
     decision = monitor.evaluate(
@@ -107,7 +137,10 @@ def test_gh12_action_monitor_rejects_find_file_output_flags(flag: str) -> None:
     assert decision.kind == MonitorDecisionType.REJECT
 
 
-@pytest.mark.parametrize("flag", ["-x", "-X", "--exec", "--exec-batch"])
+@pytest.mark.parametrize(
+    "flag",
+    ["-x", "-X", "--exec", "--exec-batch", "--exec=rm", "--exec-batch=rm"],
+)
 def test_gh12_action_monitor_rejects_fd_exec_flags(flag: str) -> None:
     monitor = ActionMonitor()
     decision = monitor.evaluate(

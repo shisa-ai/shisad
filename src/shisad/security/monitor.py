@@ -63,6 +63,10 @@ class ActionMonitor:
         "--exec",
         "--exec-batch",
     }
+    _FORBIDDEN_FILE_DISCOVERY_SHELL_TOKEN_PREFIXES: ClassVar[tuple[str, ...]] = (
+        "--exec=",
+        "--exec-batch=",
+    )
     _SUSPICIOUS_ARG_TOKENS: ClassVar[set[str]] = {
         "evil.com",
         "attacker",
@@ -165,11 +169,15 @@ class ActionMonitor:
             "directory",
             "file",
             "files",
+            "filepath",
+            "filepaths",
             "filename",
             "filenames",
             "folder",
             "folders",
             "log",
+            "logfile",
+            "logfiles",
             "logs",
             "path",
             "paths",
@@ -180,6 +188,7 @@ class ActionMonitor:
             "locate",
             "look for",
             "search",
+            "show",
             "similar",
             "where",
         )
@@ -217,7 +226,15 @@ class ActionMonitor:
         if command_name not in cls._READ_ONLY_FILE_DISCOVERY_SHELL_COMMANDS:
             return False
         lowered_tokens = {token.lower() for token in command}
-        if lowered_tokens.intersection(cls._FORBIDDEN_FILE_DISCOVERY_SHELL_TOKENS):
+        has_forbidden_prefix = any(
+            token.startswith(prefix)
+            for token in lowered_tokens
+            for prefix in cls._FORBIDDEN_FILE_DISCOVERY_SHELL_TOKEN_PREFIXES
+        )
+        if (
+            lowered_tokens.intersection(cls._FORBIDDEN_FILE_DISCOVERY_SHELL_TOKENS)
+            or has_forbidden_prefix
+        ):
             return False
         return not any("://" in token or token.startswith("`") for token in lowered_tokens)
 
