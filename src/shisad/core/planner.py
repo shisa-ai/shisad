@@ -40,6 +40,8 @@ BASE_SYSTEM_PROMPT = (
     "If the request clearly requires multiple independent read-only tools, emit "
     "all required tool calls in the same turn rather than stopping after the "
     "first tool. "
+    "When answering without a tool call, format readable responses in Markdown "
+    "and put list items on separate lines rather than inline numbered sentences. "
     "When using a tool, emit the tool call directly; do not narrate the intended "
     "tool call, do not wrap it in Markdown or XML, and do not say 'here is the "
     "function call'. "

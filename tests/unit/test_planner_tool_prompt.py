@@ -220,6 +220,8 @@ async def test_m2_base_prompt_includes_web_search_and_multi_tool_guidance() -> N
     assert "search or browse the web" in system_prompt
     assert "multiple independent read-only tools" in system_prompt
     assert "same turn" in system_prompt
+    assert "format readable responses in markdown" in system_prompt
+    assert "put list items on separate lines" in system_prompt
     tool_names = _canonical_payload_names(provider.tools[0], {"fs.read", "web.search"})
     assert {"fs.read", "web.search"} <= tool_names
 

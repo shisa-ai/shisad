@@ -9,6 +9,15 @@ left unlinked until the tag exists. There is no standing "Unreleased" section.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Versioning follows semver (see `docs/PUBLISH.md` for policy and style guide).
 
+## [0.7.1] - Unreleased
+
+### Fixed
+
+- **The chat TUI now renders assistant Markdown instead of showing Markdown
+  punctuation as plain text.** Assistant replies render with Markdown layout,
+  and the chat entry box wraps longer prompts, expands while drafting, and
+  collapses after submit.
+
 ## [0.7.0] - 2026-04-25
 
 ### Added

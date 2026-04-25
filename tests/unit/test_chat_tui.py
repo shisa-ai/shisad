@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock
 
 import pytest
+from textual.widgets import Markdown, TextArea
 
 from shisad.ui.chat import ChatApp, format_assistant_message, format_user_message
 
@@ -522,3 +523,58 @@ async def test_chat_app_subtitle_shows_connected_after_mount() -> None:
 
     assert app.sub_title == "connected"
     assert "ff0225da" not in app.sub_title
+
+
+@pytest.mark.asyncio
+async def test_chat_app_renders_assistant_turn_as_markdown_widget() -> None:
+    app = ChatApp(
+        socket_path=Path("/tmp/test.sock"),
+        user_id="ops",
+        workspace_id="default",
+    )
+    fake_client = AsyncMock()
+    app._connect = AsyncMock(return_value=fake_client)  # type: ignore[method-assign]
+    app._ensure_session = AsyncMock()  # type: ignore[method-assign]
+    markdown = "**Summary**\n\n1. First item\n2. Second item"
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app._append_assistant_message(markdown)
+        await pilot.pause()
+
+        assistant_turns = list(app.query(".assistant-turn"))
+        rendered_markdown = list(app.query(Markdown))
+        assert assistant_turns
+        assert len(rendered_markdown) == 1
+        assert rendered_markdown[0]._markdown == markdown
+
+
+@pytest.mark.asyncio
+async def test_chat_app_prompt_box_expands_and_collapses_after_submit() -> None:
+    app = ChatApp(
+        socket_path=Path("/tmp/test.sock"),
+        user_id="ops",
+        workspace_id="default",
+        session_id="sess-1",
+    )
+    fake_client = AsyncMock()
+    app._connect = AsyncMock(return_value=fake_client)  # type: ignore[method-assign]
+    app._ensure_session = AsyncMock()  # type: ignore[method-assign]
+    app._send_message = AsyncMock(return_value={"response": "ok"})  # type: ignore[method-assign]
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        prompt = app.query_one("#chat-input", TextArea)
+        prompt.load_text("please summarize " + ("this long prompt " * 20))
+        app._resize_prompt_input(prompt)
+        expanded_height = prompt.styles.height.value
+
+        await pilot.press("enter")
+        await pilot.pause()
+
+        assert expanded_height is not None
+        assert expanded_height > app.PROMPT_INPUT_MIN_HEIGHT
+        assert prompt.text == ""
+        assert prompt.styles.height.value == app.PROMPT_INPUT_MIN_HEIGHT
+
+    app._send_message.assert_awaited_once()

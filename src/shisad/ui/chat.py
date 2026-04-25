@@ -16,7 +16,8 @@ from typing import Any
 from textual import events
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.widgets import Footer, Header, Input, TextArea
+from textual.containers import Vertical, VerticalScroll
+from textual.widgets import Footer, Header, Markdown, Static, TextArea
 
 from shisad.ui.evidence import render_evidence_refs_for_terminal
 
@@ -33,14 +34,26 @@ def format_assistant_message(
     preserve_pending_preview_escapes: bool = False,
 ) -> str:
     """Format an assistant message for display in the chat log."""
-    text = content.strip()
-    if not text:
-        return "(no response)"
-    rendered = render_evidence_refs_for_terminal(
-        text,
+    rendered = _render_assistant_text(
+        content,
         preserve_pending_preview_escapes=preserve_pending_preview_escapes,
     )
     return f"shisad: {rendered}"
+
+
+def _render_assistant_text(
+    content: str,
+    *,
+    preserve_pending_preview_escapes: bool = False,
+) -> str:
+    """Render assistant content before display in terminal/TUI surfaces."""
+    text = content.strip()
+    if not text:
+        return "(no response)"
+    return render_evidence_refs_for_terminal(
+        text,
+        preserve_pending_preview_escapes=preserve_pending_preview_escapes,
+    )
 
 
 def _format_error(content: str) -> str:
@@ -79,6 +92,10 @@ class ChatApp(App[None]):
     """Interactive chat with the shisad daemon."""
 
     TITLE = "shisad chat"
+    PROMPT_INPUT_MIN_HEIGHT = 3
+    PROMPT_INPUT_MAX_HEIGHT = 8
+    PROMPT_INPUT_CHROME_ROWS = 2
+    PROMPT_INPUT_HORIZONTAL_CHROME = 4
 
     CSS = """
     Screen {
@@ -89,8 +106,19 @@ class ChatApp(App[None]):
         border: solid $panel;
         padding: 0 1;
     }
+    .chat-turn {
+        height: auto;
+        margin: 0 0 1 0;
+    }
+    .speaker {
+        text-style: bold;
+    }
+    .assistant-message {
+        height: auto;
+    }
     #chat-input {
         height: 3;
+        max-height: 8;
         margin: 0 0;
         border: solid $panel;
         padding: 0 1;
@@ -107,6 +135,7 @@ class ChatApp(App[None]):
         Binding("ctrl+c", "quit", "Quit", show=True),
         Binding("ctrl+d", "quit", "Quit", show=False),
         Binding("ctrl+n", "new_session", "New Session", show=True),
+        Binding("enter", "submit_prompt", show=False, priority=True),
         Binding("tab", "focus_next_pane", show=False),
         Binding("shift+tab", "focus_prev_pane", show=False),
     ]
@@ -133,8 +162,16 @@ class ChatApp(App[None]):
 
     def compose(self) -> ComposeResult:
         yield Header()
-        yield TextArea(id="chat-log", read_only=True, soft_wrap=True)
-        yield Input(id="chat-input", placeholder="Type a message...")
+        yield VerticalScroll(id="chat-log", can_focus=True)
+        prompt = TextArea(
+            id="chat-input",
+            soft_wrap=True,
+            tab_behavior="focus",
+            show_line_numbers=False,
+        )
+        prompt.border_title = "Message"
+        prompt.border_subtitle = "Enter sends"
+        yield prompt
         yield Footer()
 
     async def on_mount(self) -> None:
@@ -157,10 +194,15 @@ class ChatApp(App[None]):
         except (OSError, RuntimeError, TypeError, ValueError) as exc:
             self._append_history(_format_error(f"Could not connect to daemon: {exc}"))
             self._append_history("Is the daemon running? Try: shisad start --foreground")
-        self.query_one("#chat-input", Input).focus()
+        self.query_one("#chat-input", TextArea).focus()
 
-    def on_key(self, event: events.Key) -> None:
+    async def on_key(self, event: events.Key) -> None:
         """Support readline-like history navigation on the input widget."""
+        if event.key == "enter" and self._is_input_focused():
+            event.prevent_default()
+            event.stop()
+            await self.action_submit_prompt()
+            return
         if event.key == "up" and self._is_input_focused():
             self.action_history_prev()
             event.stop()
@@ -169,16 +211,28 @@ class ChatApp(App[None]):
             self.action_history_next()
             event.stop()
 
-    async def on_input_submitted(self, event: Input.Submitted) -> None:
-        content = event.value.strip()
+    def on_text_area_changed(self, event: TextArea.Changed) -> None:
+        """Resize the prompt box as drafted text wraps."""
+        if event.text_area.id == "chat-input":
+            self._resize_prompt_input(event.text_area)
+
+    async def action_submit_prompt(self) -> None:
+        """Submit the current prompt when Enter is pressed in the prompt box."""
+        if not self._is_input_focused():
+            return
+        await self._submit_prompt()
+
+    async def _submit_prompt(self) -> None:
+        input_widget = self.query_one("#chat-input", TextArea)
+        content = input_widget.text.strip()
         if not content:
             return
 
         self._record_prompt_history(content)
-        input_widget = self.query_one("#chat-input", Input)
-        input_widget.value = ""
+        input_widget.load_text("")
+        self._resize_prompt_input(input_widget)
 
-        self._append_history(format_user_message(content))
+        self._append_user_message(content)
 
         try:
             client = await self._connect()
@@ -191,11 +245,9 @@ class ChatApp(App[None]):
                     )
             finally:
                 await client.close()
-            self._append_history(
-                format_assistant_message(
-                    self._extract_response(result),
-                    preserve_pending_preview_escapes=self._preserve_pending_preview_escapes(result),
-                )
+            self._append_assistant_message(
+                self._extract_response(result),
+                preserve_pending_preview_escapes=self._preserve_pending_preview_escapes(result),
             )
         except (OSError, RuntimeError, TypeError, ValueError) as exc:
             self._append_history(_format_error(str(exc)))
@@ -320,22 +372,47 @@ class ChatApp(App[None]):
         )
 
     def _append_history(self, line: str) -> None:
-        """Append a single line to the history pane."""
-        history = self.query_one("#chat-log", TextArea)
-        history.move_cursor(history.document.end)
-        if history.text:
-            history.insert("\n")
-        history.insert(line)
-        history.move_cursor(history.document.end)
+        """Append a plain status/error line to the history pane."""
+        self._append_turn(
+            Static(line, markup=False, classes="status-message"), classes="status-turn"
+        )
+
+    def _append_user_message(self, content: str) -> None:
+        """Append a user message as literal text."""
+        self._append_turn(
+            Static(format_user_message(content), markup=False, classes="user-message"),
+            classes="user-turn",
+        )
+
+    def _append_assistant_message(
+        self,
+        content: str,
+        *,
+        preserve_pending_preview_escapes: bool = False,
+    ) -> None:
+        """Append an assistant message as Markdown content."""
+        rendered = _render_assistant_text(
+            content,
+            preserve_pending_preview_escapes=preserve_pending_preview_escapes,
+        )
+        self._append_turn(
+            Static("shisad:", markup=False, classes="speaker assistant-speaker"),
+            Markdown(rendered, classes="assistant-message"),
+            classes="assistant-turn",
+        )
+
+    def _append_turn(self, *widgets: Static | Markdown, classes: str) -> None:
+        history = self.query_one("#chat-log", VerticalScroll)
+        history.mount(Vertical(*widgets, classes=f"chat-turn {classes}"))
         history.scroll_end(animate=False)
 
     def action_focus_next_pane(self) -> None:
         """Move focus between history and input panes."""
         focused = self.focused
         if focused is not None and focused.id == "chat-input":
-            self.query_one("#chat-log", TextArea).focus()
+            self.query_one("#chat-log", VerticalScroll).focus()
             return
-        self.query_one("#chat-input", Input).focus()
+        self.query_one("#chat-input", TextArea).focus()
 
     def action_focus_prev_pane(self) -> None:
         """Move focus between history and input panes."""
@@ -345,21 +422,52 @@ class ChatApp(App[None]):
         """Recall the previous submitted prompt."""
         if not self._is_input_focused():
             return
-        input_widget = self.query_one("#chat-input", Input)
-        input_widget.value = self._recall_prompt_history(
-            direction=-1,
-            current_value=input_widget.value,
+        input_widget = self.query_one("#chat-input", TextArea)
+        self._set_prompt_text(
+            self._recall_prompt_history(
+                direction=-1,
+                current_value=input_widget.text,
+            )
         )
 
     def action_history_next(self) -> None:
         """Recall the next submitted prompt."""
         if not self._is_input_focused():
             return
-        input_widget = self.query_one("#chat-input", Input)
-        input_widget.value = self._recall_prompt_history(
-            direction=1,
-            current_value=input_widget.value,
+        input_widget = self.query_one("#chat-input", TextArea)
+        self._set_prompt_text(
+            self._recall_prompt_history(
+                direction=1,
+                current_value=input_widget.text,
+            )
         )
+
+    def _set_prompt_text(self, text: str) -> None:
+        input_widget = self.query_one("#chat-input", TextArea)
+        input_widget.load_text(text)
+        input_widget.move_cursor(input_widget.document.end)
+        self._resize_prompt_input(input_widget)
+
+    def _resize_prompt_input(self, input_widget: TextArea) -> None:
+        """Grow the prompt box for wrapped drafts, then cap it to keep history visible."""
+        width = max(int(input_widget.size.width or self.size.width or 80), 1)
+        available_width = max(width - self.PROMPT_INPUT_HORIZONTAL_CHROME, 20)
+        visual_lines = self._estimate_visual_line_count(input_widget.text, available_width)
+        height = min(
+            self.PROMPT_INPUT_MAX_HEIGHT,
+            max(self.PROMPT_INPUT_MIN_HEIGHT, visual_lines + self.PROMPT_INPUT_CHROME_ROWS),
+        )
+        input_widget.styles.height = height
+        input_widget.refresh(layout=True)
+
+    @staticmethod
+    def _estimate_visual_line_count(text: str, width: int) -> int:
+        lines = text.splitlines() or [""]
+        total = 0
+        for line in lines:
+            length = len(line.expandtabs(4))
+            total += max(1, (length + max(width, 1) - 1) // max(width, 1))
+        return total
 
     async def action_new_session(self) -> None:
         """Create and switch to a new session without restarting chat."""
@@ -378,7 +486,7 @@ class ChatApp(App[None]):
             self._session_id = old_session_id
             self._append_history(_format_error(f"Could not start new session: {exc}"))
             self._append_history("")
-        self.query_one("#chat-input", Input).focus()
+        self.query_one("#chat-input", TextArea).focus()
 
     def _is_input_focused(self) -> bool:
         focused = self.focused
