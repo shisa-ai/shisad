@@ -60,6 +60,16 @@ Versioning follows semver (see `docs/PUBLISH.md` for policy and style guide).
   strong-update proposals all remain auditable low-trust events until a user
   confirmation path stamps the promoted result.
 
+- **The Ledger bridge's transitive `axios` is pinned to `1.15.2`.** The
+  `contrib/ledger-bridge/` lockfile previously resolved `axios@1.13.5` through
+  `@ledgerhq/*`, which is affected by CVE-2025-62718 (`NO_PROXY` hostname
+  normalization bypass → SSRF) and CVE-2026-40175 (CRLF header injection →
+  IMDSv2 bypass when combined with prototype pollution). The bridge now uses an
+  npm `overrides` entry to force `axios@^1.15.2`, which also avoids the
+  compromised `axios@1.14.1` / `axios@0.30.4` publishes from the March 2026
+  maintainer-account takeover (both unpublished from npm; 1.15.x was released
+  under axios' new OIDC Trusted Publishing flow).
+
 ## [0.6.7.1] - 2026-04-23
 
 ### Fixed
