@@ -174,6 +174,10 @@ def test_gh12_action_monitor_rejects_destructive_shell_search_wording() -> None:
             "cwd": "cfg",
             "read_paths": ["."],
         },
+        {
+            "command": ["find", "-files0-from", "cfg/roots", "-iname", "*todo*"],
+            "read_paths": ["."],
+        },
     ],
 )
 def test_gh12_action_monitor_rejects_off_workspace_shell_file_discovery(

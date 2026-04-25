@@ -55,6 +55,7 @@ class ActionMonitor:
         "-exec",
         "-execdir",
         "-fls",
+        "-files0-from",
         "-fprint",
         "-fprint0",
         "-fprintf",
