@@ -281,7 +281,7 @@ class ActionMonitor:
             return False
         cwd = arguments.get("cwd")
         if cwd not in (None, "") and (
-            not isinstance(cwd, str) or not cls._workspace_relative_scope_value(cwd)
+            not isinstance(cwd, str) or not cls._is_current_directory_token(cwd)
         ):
             return False
         read_paths = arguments.get("read_paths")
@@ -291,7 +291,7 @@ class ActionMonitor:
             for read_path in read_paths:
                 if not isinstance(read_path, str):
                     return False
-                if not cls._workspace_relative_scope_value(read_path):
+                if not cls._is_current_directory_token(read_path):
                     return False
         return all(
             cls._shell_file_discovery_token_is_workspace_relative(token)
