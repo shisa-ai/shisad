@@ -643,23 +643,23 @@ verification flow that a backend must implement.
 ```
 Agent proposes action
     │
-    ▼
+    ▾
 PEP evaluates policy → required level: signed_authorization
     │
-    ▼
+    ▾
 Daemon builds IntentEnvelope (canonical signable payload)
     │
-    ▼
+    ▾
 Daemon sends IntentEnvelope to signer backend
     │
     ├── Enterprise KMS: HTTP POST to endpoint, human approval in provider UI
     ├── Consumer Ledger: display on trusted screen, user physically confirms
     └── Custom backend: your implementation here
     │
-    ▼
+    ▾
 Backend returns signature + metadata
     │
-    ▼
+    ▾
 Daemon verifies signature against registered public key
     │
     ├── Valid → execute action, record in audit trail

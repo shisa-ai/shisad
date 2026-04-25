@@ -19,7 +19,7 @@ Since LLMs won't separate instructions from data, the surrounding architecture m
 ```
                        ┌─────────────────┐
                        │   LLM (Planner) │
-   Untrusted ────────▶│   [tokens mix]  │─────────▶ Proposed
+   Untrusted ─────────►│   [tokens mix]  │─────────► Proposed
    Content             │                 │            Actions
                        └─────────────────┘
                                                        │
@@ -27,14 +27,14 @@ Since LLMs won't separate instructions from data, the surrounding architecture m
    ║               ARCHITECTURAL BOUNDARY                    ║
    ═══════════════════════════════════════════════════════════
                                                        │
-                                                       ▼
+                                                       ▾
                         ┌─────────────────┐     ┌─────────────┐
                         │ Trusted Config  │     │  Security   │
                         │ (policies,      │     │  Analyzers  │
                         │  goals)         │     │ (metadata   │
                         └─────────────────┘     │  only)      │
                                                 └──────┬──────┘
-                                                       ▼
+                                                       ▾
                                                 APPROVE / REJECT
 ```
 
@@ -114,7 +114,7 @@ These hold regardless of LLM behavior:
 ## Enforcement Architecture
 
 ```
-  Channels ──▶ Content Firewall ──▶ Context Builder ──▶ Planner LLM
+  Channels ──► Content Firewall ──► Context Builder ──► Planner LLM
   (Discord,    (sanitize, score,     (spotlighting:      (untrusted;
    Matrix,      taint-label)          trusted/untrusted    proposes only)
    Telegram,                          separation)
@@ -122,22 +122,22 @@ These hold regardless of LLM behavior:
                                                              │ proposals
               ┌──────────────────────────────────────────────┘
               │
-              ▼
-  Action Monitor ◀──▶ Policy Enforcement Point (PEP) ◀──▶ Confirmation UI
+              ▾
+  Action Monitor ◄──► Policy Enforcement Point (PEP) ◄──► Confirmation UI
   (guardrail;         (8-layer pipeline;                   (human-in-the-loop)
    detection only)      hard enforcement)
                               │
                               │ approved actions only
-                              ▼
-                        Tool Executors ──▶ Output Firewall ──▶ User
+                              ▾
+                        Tool Executors ──► Output Firewall ──► User
                         (sandboxed)       (DLP, secret/PII
                               │            redaction)
-                              ▼
+                              ▾
                         Memory Manager
                         (gated writes,
                          taint-preserved)
                               │
-                              ▼
+                              ▾
                          Audit Log
                         (append-only,
                          tamper-evident)
