@@ -222,6 +222,26 @@ async def _stub_complete(
             usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
         )
 
+    if "what was in that listing" in goal_lower or "what's the result" in goal_lower:
+        normalized_input = planner_input.replace("^", "").lower()
+        if "todo.log" in normalized_input or "install-2026.log" in normalized_input:
+            return ProviderResponse(
+                message=Message(role="assistant", content="The listing includes todo.log."),
+                model="behavioral-stub",
+                finish_reason="stop",
+                usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+            )
+        return ProviderResponse(
+            message=Message(
+                role="assistant",
+                content="I need to list the directory to answer.",
+                tool_calls=[_tool_call("fs.list", {}, call_id="t-followup-list")],
+            ),
+            model="behavioral-stub",
+            finish_reason="tool_calls",
+            usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+        )
+
     if "browser navigate" in goal_lower or "open the browser to" in goal_lower:
         url = _extract_browser_url(goal)
         return ProviderResponse(
@@ -425,6 +445,29 @@ async def _stub_complete(
         if ("read" in goal_lower and "readme" in goal_lower)
         else None
     )
+    missing_install_read_call = (
+        _tool_call(
+            "fs.read",
+            {
+                "path": "TODO.LOG" if "todo.log" in goal_lower else "INSTALL.LOG",
+                "max_bytes": 4096,
+            },
+            call_id="t-install-log",
+        )
+        if (
+            ("install.log" in goal_lower or "todo.log" in goal_lower)
+            and ("review" in goal_lower or "read" in goal_lower)
+        )
+        else None
+    )
+    similar_file_list_call = (
+        _tool_call("fs.list", {}, call_id="t-similar-file-list")
+        if (
+            ("look for" in goal_lower or "similar" in goal_lower)
+            and any(token in goal_lower for token in ("file", "filename"))
+        )
+        else None
+    )
     list_call = (
         _tool_call("fs.list", {}, call_id="t-list")
         if (
@@ -495,10 +538,14 @@ async def _stub_complete(
             tool_calls.extend([read_call, search_call])
         else:
             tool_calls.extend([search_call, read_call])
+    elif missing_install_read_call is not None:
+        tool_calls.append(missing_install_read_call)
     elif read_call is not None:
         tool_calls.append(read_call)
     elif search_call is not None:
         tool_calls.append(search_call)
+    elif similar_file_list_call is not None:
+        tool_calls.append(similar_file_list_call)
     elif list_call is not None:
         tool_calls.append(list_call)
     elif fetch_call is not None:
@@ -1085,6 +1132,69 @@ async def test_contract_fs_list_executes_and_returns_entries(
     assert isinstance(entries, list)
     assert int(payload.get("count", 0)) >= 1
     assert any(str(item.get("path", "")).strip() for item in entries)
+
+
+@pytest.mark.asyncio
+async def test_contract_confirmed_fs_list_result_is_usable_on_followup(
+    contract_harness: ContractHarness,
+) -> None:
+    (contract_harness.workspace_root / "todo.log").write_text(
+        "OPEN: verify confirmed result threading\n",
+        encoding="utf-8",
+    )
+    sid = await _create_session(contract_harness.client)
+    first = await contract_harness.client.call(
+        "session.message",
+        {
+            "session_id": sid,
+            "content": "review TODO.LOG and list only open items",
+        },
+    )
+    assert first.get("lockdown_level") == "normal"
+    assert int(first.get("blocked_actions", 0)) == 0
+    assert int(first.get("confirmation_required_actions", 0)) == 0
+    first_outputs = _extract_tool_outputs(first)
+    assert "fs.read" in first_outputs
+    assert first_outputs["fs.read"][0].get("ok") is False
+    assert first_outputs["fs.read"][0].get("error") == "path_not_found"
+
+    proposed = await contract_harness.client.call(
+        "session.message",
+        {
+            "session_id": sid,
+            "content": "can you look for the file? filename should be similar if it's not exact",
+        },
+    )
+    assert proposed.get("lockdown_level") == "normal"
+    assert int(proposed.get("blocked_actions", 0)) == 0
+    assert int(proposed.get("executed_actions", 0)) == 0
+    assert int(proposed.get("confirmation_required_actions", 0)) >= 1
+    pending_ids = proposed.get("pending_confirmation_ids")
+    assert isinstance(pending_ids, list)
+    assert pending_ids
+
+    confirmed = await contract_harness.client.call(
+        "session.message",
+        {"session_id": sid, "content": "confirm"},
+    )
+    assert confirmed.get("lockdown_level") == "normal"
+    assert int(confirmed.get("blocked_actions", 0)) == 0
+    assert int(confirmed.get("confirmation_required_actions", 0)) == 0
+    assert int(confirmed.get("executed_actions", 0)) == 1
+    confirmed_outputs = _extract_tool_outputs(confirmed)
+    assert "fs.list" in confirmed_outputs
+    assert "todo.log" in json.dumps(confirmed_outputs["fs.list"], ensure_ascii=True)
+    assert "todo.log" in str(confirmed.get("response", ""))
+
+    followup = await contract_harness.client.call(
+        "session.message",
+        {"session_id": sid, "content": "what was in that listing?"},
+    )
+    assert followup.get("lockdown_level") == "normal"
+    assert int(followup.get("blocked_actions", 0)) == 0
+    assert int(followup.get("confirmation_required_actions", 0)) == 0
+    assert followup.get("pending_confirmation_ids") == []
+    assert "todo.log" in str(followup.get("response", ""))
 
 
 @pytest.mark.asyncio

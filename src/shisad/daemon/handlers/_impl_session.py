@@ -3262,6 +3262,25 @@ def _find_tool_output_preview_text(payload_value: Any) -> str:
     return ""
 
 
+def _find_tool_entries_preview_text(payload: Mapping[str, Any]) -> str:
+    entries = payload.get("entries")
+    if not isinstance(entries, list):
+        return ""
+    preview_rows: list[str] = []
+    for item in entries[:_TOOL_OUTPUT_RESPONSE_PREVIEW_MAX_LINES]:
+        if isinstance(item, Mapping):
+            value = (
+                str(item.get("name", "")).strip()
+                or str(item.get("path", "")).strip()
+                or str(item.get("title", "")).strip()
+            )
+        else:
+            value = str(item).strip()
+        if value:
+            preview_rows.append(value)
+    return "\n".join(preview_rows)
+
+
 def _collect_tool_output_evidence_ref_ids(payload_value: Any) -> list[str]:
     ref_ids: list[str] = []
 
@@ -3424,6 +3443,15 @@ def _summarize_tool_outputs_for_chat(records: list[dict[str, Any]]) -> str:
                 if truncated:
                     lines.append("  ... (truncated)")
                 continue
+
+        entries_text = _find_tool_entries_preview_text(payload)
+        if entries_text:
+            preview_lines, truncated = _preview_multiline_output(entries_text)
+            if preview_lines:
+                lines.append("  entries:")
+                lines.extend(f"  {line}" for line in preview_lines)
+                if truncated:
+                    lines.append("  ... (truncated)")
 
         if summary_parts == [f"success={bool(record.get('success', False))}"]:
             compact = _compact_context_text(
@@ -3733,6 +3761,7 @@ class SessionImplMixin(HandlerMixinBase):
             blocked_actions: int,
             executed_actions: int,
             checkpoint_ids: list[str],
+            tool_outputs: Sequence[dict[str, Any]] | None = None,
             response_pending_confirmation_ids: Sequence[str] | None = None,
             system_generated_pending_confirmations: bool = False,
         ) -> dict[str, Any]:
@@ -3819,7 +3848,7 @@ class SessionImplMixin(HandlerMixinBase):
                 "pending_confirmation_ids": returned_pending_confirmation_ids,
                 "output_policy": output_result.model_dump(mode="json"),
                 "planner_error": "",
-                "tool_outputs": [],
+                "tool_outputs": list(tool_outputs or []),
             }
 
         if is_internal_ingress and totp_submission is None:
@@ -3847,6 +3876,22 @@ class SessionImplMixin(HandlerMixinBase):
                     )
                 return None
         system_generated_pending_confirmation_response = False
+        confirmed_tool_outputs: list[dict[str, Any]] = []
+
+        def _extend_confirmed_tool_outputs(result: Mapping[str, Any]) -> None:
+            raw_outputs = result.get("tool_outputs")
+            if not isinstance(raw_outputs, list):
+                return
+            confirmed_tool_outputs.extend(
+                dict(item) for item in raw_outputs if isinstance(item, dict)
+            )
+
+        def _append_confirmed_tool_output_summary(text: str) -> str:
+            summary = _summarize_tool_outputs_for_chat(confirmed_tool_outputs)
+            if not summary:
+                return text
+            return f"{text}\n\n{summary}" if text.strip() else summary
+
         if totp_submission is not None:
             executed_actions = 0
             blocked_actions = 0
@@ -3926,6 +3971,7 @@ class SessionImplMixin(HandlerMixinBase):
                     "reason": "chat_totp_confirmation",
                 }
                 result = await self.do_action_confirm(payload)
+                _extend_confirmed_tool_outputs(result)
                 confirmed = bool(result.get("confirmed", False))
                 if confirmed:
                     executed_actions += 1
@@ -3945,6 +3991,7 @@ class SessionImplMixin(HandlerMixinBase):
                         f"confirmation failed for {confirmation_label} "
                         f"({target_pending.tool_name}): {status}"
                     )
+                response_text = _append_confirmed_tool_output_summary(response_text)
                 remaining = self._pending_confirmations_for_binding(
                     session_id=sid,
                     user_id=user_id,
@@ -4044,6 +4091,7 @@ class SessionImplMixin(HandlerMixinBase):
                     }
                     if intent.action == "confirm":
                         result = await self.do_action_confirm(payload)
+                        _extend_confirmed_tool_outputs(result)
                         confirmed = bool(result.get("confirmed", False))
                         if confirmed:
                             executed_actions += 1
@@ -4080,6 +4128,7 @@ class SessionImplMixin(HandlerMixinBase):
                 )
                 visible_remaining = _visible_pending_rows(remaining)
                 response_text = "\n".join(outcome_lines)
+                response_text = _append_confirmed_tool_output_summary(response_text)
                 if skipped_totp_confirmation:
                     guidance = (
                         "TOTP-backed confirmations require the 6-digit code flow; "
@@ -4100,6 +4149,7 @@ class SessionImplMixin(HandlerMixinBase):
             blocked_actions=blocked_actions,
             executed_actions=executed_actions,
             checkpoint_ids=checkpoint_ids,
+            tool_outputs=confirmed_tool_outputs,
             system_generated_pending_confirmations=system_generated_pending_confirmation_response,
         )
 

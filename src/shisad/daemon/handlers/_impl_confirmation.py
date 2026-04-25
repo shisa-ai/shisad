@@ -74,6 +74,42 @@ def _confirmation_control_plane_reason(exc: ControlPlaneRpcError) -> str:
     return "control_plane_rejected"
 
 
+def _parse_confirmed_tool_output_payload(raw_content: str) -> dict[str, Any]:
+    text = raw_content.strip()
+    if not text:
+        return {"structured": False, "text": ""}
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        return {"structured": False, "text": text}
+    if isinstance(parsed, dict):
+        return parsed
+    return {"structured": True, "value": parsed}
+
+
+def _serialize_confirmed_tool_output(record: Any) -> dict[str, Any]:
+    taint_values_raw: Any = getattr(record, "taint_labels", set())
+    taint_values: list[str] = []
+    if isinstance(taint_values_raw, (set, frozenset, list, tuple)):
+        taint_values = sorted(
+            {
+                str(getattr(label, "value", label)).strip().lower()
+                for label in taint_values_raw
+                if str(getattr(label, "value", label)).strip()
+            }
+        )
+    ingress_context = str(getattr(record, "ingress_context", "") or "").strip()
+    content_digest = str(getattr(record, "content_digest", "") or "").strip()
+    return {
+        "tool_name": str(getattr(record, "tool_name", "")).strip() or "tool",
+        "success": bool(getattr(record, "success", False)),
+        "payload": _parse_confirmed_tool_output_payload(str(getattr(record, "content", ""))),
+        "taint_labels": taint_values,
+        **({"ingress_context": ingress_context} if ingress_context else {}),
+        **({"content_digest": content_digest} if content_digest else {}),
+    }
+
+
 @dataclass(slots=True)
 class PendingTwoFactorEnrollment:
     enrollment_id: str
@@ -91,6 +127,43 @@ class PendingTwoFactorEnrollment:
 
 
 class ConfirmationImplMixin(HandlerMixinBase):
+    def _append_confirmed_tool_output_transcript(
+        self,
+        *,
+        pending: Any,
+        tool_output: Any,
+        decision_timestamp: str,
+    ) -> None:
+        if str(getattr(pending, "tool_name", "")).strip() == "evidence.promote":
+            return
+        content = str(getattr(tool_output, "content", "") or "")
+        if not content.strip():
+            return
+        raw_taints: Any = getattr(tool_output, "taint_labels", set())
+        taint_labels: set[TaintLabel] = set(raw_taints) if isinstance(raw_taints, set) else set()
+        try:
+            self._transcript_store.append(
+                pending.session_id,
+                role="tool",
+                content=content,
+                taint_labels=taint_labels,
+                metadata={
+                    "channel": "confirmation",
+                    "actor": "human_confirmation",
+                    "confirmed_tool_output": True,
+                    "tool_name": str(getattr(pending, "tool_name", "")).strip(),
+                    "confirmation_id": str(getattr(pending, "confirmation_id", "")).strip(),
+                    "tool_success": bool(getattr(tool_output, "success", False)),
+                    "timestamp_utc": decision_timestamp,
+                },
+            )
+        except (OSError, RuntimeError, TypeError, ValueError):
+            logger.warning(
+                "Failed to append confirmed tool output to transcript for confirmation %s",
+                getattr(pending, "confirmation_id", ""),
+                exc_info=True,
+            )
+
     @staticmethod
     def _pending_confirmation_method_for_lockout(pending: Any) -> str:
         method = str(getattr(pending, "selected_backend_method", "") or "software").strip()
@@ -1526,6 +1599,15 @@ class ConfirmationImplMixin(HandlerMixinBase):
         success = execution_result.success
         checkpoint_id = execution_result.checkpoint_id
         tool_output = getattr(execution_result, "tool_output", None)
+        serialized_tool_outputs = (
+            [_serialize_confirmed_tool_output(tool_output)] if tool_output is not None else []
+        )
+        if tool_output is not None:
+            self._append_confirmed_tool_output_transcript(
+                pending=pending,
+                tool_output=tool_output,
+                decision_timestamp=decision_timestamp,
+            )
         promote_followup_reason = ""
         if success and tool_output is not None and str(pending.tool_name) == "evidence.promote":
             try:
@@ -1634,6 +1716,7 @@ class ConfirmationImplMixin(HandlerMixinBase):
                 if pending.confirmation_evidence is not None
                 else None
             ),
+            "tool_outputs": serialized_tool_outputs,
         }
 
     async def do_action_reject(self, params: Mapping[str, Any]) -> dict[str, Any]:

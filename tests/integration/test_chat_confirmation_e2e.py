@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import textwrap
 from contextlib import suppress
 from datetime import UTC, datetime, timedelta
@@ -96,6 +97,26 @@ def _totp_fs_read_policy() -> str:
                   level: reauthenticated
                   methods:
                     - totp
+            """
+        ).strip()
+        + "\n"
+    )
+
+
+def _software_fs_read_policy() -> str:
+    return (
+        textwrap.dedent(
+            """
+            version: "1"
+            default_require_confirmation: true
+            default_capabilities:
+              - file.read
+            tools:
+              fs.read:
+                capabilities_required:
+                  - file.read
+                confirmation:
+                  level: software
             """
         ).strip()
         + "\n"
@@ -706,6 +727,83 @@ async def test_u9_chat_totp_bare_code_confirms_single_pending_action(
             and str(event.get("data", {}).get("tool_name", "")) == "fs.read"
             for event in approved.get("events", [])
         )
+    finally:
+        with suppress(Exception):
+            await client.call("daemon.shutdown")
+        await client.close()
+        await asyncio.wait_for(daemon_task, timeout=3)
+
+
+@pytest.mark.asyncio
+async def test_chat_action_confirm_returns_and_persists_tool_output(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SHISAD_MODEL_BASE_URL", "https://api.example.com/v1")
+    monkeypatch.setenv("SHISAD_MODEL_PLANNER_BASE_URL", "https://planner.example.com/v1")
+    monkeypatch.setenv("SHISAD_MODEL_EMBEDDINGS_BASE_URL", "https://embed.example.com/v1")
+    monkeypatch.setenv("SHISAD_MODEL_MONITOR_BASE_URL", "https://monitor.example.com/v1")
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    target = workspace / "confirm-result.txt"
+    target.write_text("confirmed action transcript marker\n", encoding="utf-8")
+    _install_totp_fs_read_planner(monkeypatch, target_path=target, marker="software-output")
+
+    policy_path = tmp_path / "policy.yaml"
+    policy_path.write_text(_software_fs_read_policy(), encoding="utf-8")
+    config = DaemonConfig(
+        data_dir=tmp_path / "data",
+        socket_path=tmp_path / "control.sock",
+        policy_path=policy_path,
+        assistant_fs_roots=[workspace],
+        log_level="INFO",
+    )
+    daemon_task = asyncio.create_task(run_daemon(config))
+    client = ControlClient(config.socket_path)
+    transcript_store = TranscriptStore(config.data_dir / "sessions")
+    try:
+        await _wait_for_socket(config.socket_path)
+        await client.connect()
+        created = await client.call(
+            "session.create",
+            {"channel": "cli", "user_id": "alice", "workspace_id": "ws1"},
+        )
+        sid = str(created["session_id"])
+        first = await client.call(
+            "session.message",
+            {
+                "session_id": sid,
+                "channel": "cli",
+                "user_id": "alice",
+                "workspace_id": "ws1",
+                "content": "read the confirmed-output marker",
+            },
+        )
+        assert first["confirmation_required_actions"] >= 1
+        pending_ids = first["pending_confirmation_ids"]
+        assert pending_ids
+        pending = await client.call(
+            "action.pending",
+            {"confirmation_id": str(pending_ids[0])},
+        )
+        actions = pending.get("actions", [])
+        assert actions
+        nonce = str(actions[0].get("decision_nonce", "")).strip()
+        assert nonce
+
+        confirmed = await client.call(
+            "action.confirm",
+            {"confirmation_id": str(pending_ids[0]), "decision_nonce": nonce},
+        )
+
+        assert confirmed["confirmed"] is True
+        serialized = json.dumps(confirmed.get("tool_outputs", []), ensure_ascii=True)
+        assert "fs.read" in serialized
+        assert "confirmed action transcript marker" in serialized
+        transcript_text = "\n".join(
+            entry.content_preview for entry in transcript_store.list_entries(SessionId(sid))
+        )
+        assert "confirmed action transcript marker" in transcript_text
     finally:
         with suppress(Exception):
             await client.call("daemon.shutdown")

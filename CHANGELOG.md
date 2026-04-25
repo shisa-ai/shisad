@@ -18,6 +18,12 @@ Versioning follows semver (see `docs/PUBLISH.md` for policy and style guide).
   and the chat entry box wraps longer prompts, expands while drafting, and
   collapses after submit.
 
+- **Confirmed chat actions now surface their tool results and keep them in
+  conversation context.** Approving a pending action returns the serialized
+  tool output, chat confirmation replies include the result summary, and
+  follow-up turns can use the confirmed result instead of re-queueing the same
+  action.
+
 ## [0.7.0] - 2026-04-25
 
 ### Added

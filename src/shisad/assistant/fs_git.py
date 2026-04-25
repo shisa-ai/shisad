@@ -39,6 +39,7 @@ class FsGitToolkit:
                 continue
             rows.append(
                 {
+                    "name": candidate.name,
                     "path": str(candidate),
                     "type": "dir" if candidate.is_dir() else "file",
                     "size": stat.st_size,

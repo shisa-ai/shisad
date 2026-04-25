@@ -1271,6 +1271,7 @@ class ActionConfirmResult(BaseModel):
     retry_after_seconds: float | None = None
     approval_level: str | None = None
     approval_method: str | None = None
+    tool_outputs: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class ActionRejectResult(BaseModel):

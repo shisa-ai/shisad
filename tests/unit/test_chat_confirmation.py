@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 from types import SimpleNamespace
 
@@ -342,6 +343,72 @@ async def test_u5_chat_confirmation_accepts_clean_trusted_cli_default_session(tm
     assert result is not None
     assert result["response"].startswith("confirmed 1")
     assert harness.confirm_calls
+
+
+@pytest.mark.asyncio
+async def test_chat_confirmation_reply_includes_confirmed_tool_output(tmp_path) -> None:
+    harness = _ChatConfirmationHarness(tmp_path)
+    pending = PendingAction(
+        confirmation_id="c-1",
+        decision_nonce="nonce-1",
+        session_id=SessionId("sess-chat"),
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws-1"),
+        tool_name=ToolName("fs.list"),
+        arguments={"path": "/root", "recursive": False},
+        reason="manual",
+        capabilities={Capability.FILE_READ},
+        created_at=datetime.now(UTC),
+    )
+    harness._pending_actions[pending.confirmation_id] = pending
+    tool_output = {
+        "tool_name": "fs.list",
+        "success": True,
+        "payload": {
+            "ok": True,
+            "path": "/root",
+            "entries": [{"path": "/root/INSTALL-2026.LOG", "name": "INSTALL-2026.LOG"}],
+            "count": 1,
+        },
+        "taint_labels": [],
+    }
+
+    async def confirm_with_output(params: dict[str, object]) -> dict[str, object]:
+        harness.confirm_calls.append(dict(params))
+        confirmed = harness._pending_actions[str(params["confirmation_id"])]
+        confirmed.status = "approved"
+        confirmed.status_reason = "chat_confirmation"
+        return {
+            "confirmed": True,
+            "status": "approved",
+            "tool_outputs": [tool_output],
+        }
+
+    harness.do_action_confirm = confirm_with_output  # type: ignore[method-assign]
+
+    result = await SessionImplMixin._maybe_handle_chat_confirmation(
+        harness,
+        sid=SessionId("sess-chat"),
+        channel="cli",
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws-1"),
+        session_mode=SessionMode.DEFAULT,
+        trust_level="trusted_cli",
+        trusted_input=False,
+        is_internal_ingress=False,
+        content="confirm 1",
+        firewall_result=FirewallResult(sanitized_text="confirm 1", original_hash="0" * 64),
+    )
+
+    assert result is not None
+    response = str(result["response"])
+    assert response.startswith("confirmed 1")
+    assert "Tool results summary:" in response
+    assert "fs.list" in response
+    assert "entries=1" in response
+    assert "path=/root" in response
+    assert "INSTALL-2026.LOG" in json.dumps(result["tool_outputs"], ensure_ascii=True)
+    assert result["tool_outputs"] == [tool_output]
 
 
 @pytest.mark.asyncio
