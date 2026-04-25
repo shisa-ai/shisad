@@ -313,6 +313,19 @@ async def test_live_model_similar_file_recovery_reaches_confirmation_or_listing(
         )
         assert first.get("lockdown_level") == "normal"
         assert int(first.get("blocked_actions", 0)) == 0
+        if _mentions_todo_log(first):
+            return
+        if int(first.get("confirmation_required_actions", 0)) >= 1:
+            confirmed_first = await live_harness.client.call(
+                "session.message",
+                {"session_id": sid, "content": "confirm"},
+            )
+            assert confirmed_first.get("lockdown_level") == "normal"
+            assert int(confirmed_first.get("blocked_actions", 0)) == 0
+            if _mentions_todo_log(confirmed_first):
+                return
+            observed.append(confirmed_first)
+            continue
         first_outputs = _extract_tool_outputs(first)
         if first_outputs.get("fs.read", [{}])[0].get("error") != "path_not_found":
             observed.append(first)

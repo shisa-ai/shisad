@@ -87,6 +87,65 @@ def test_gh12_action_monitor_still_rejects_destructive_shell_file_discovery() ->
     assert decision.kind == MonitorDecisionType.REJECT
 
 
+@pytest.mark.parametrize("flag", ["-fprint", "-fprint0", "-fprintf", "-fls"])
+def test_gh12_action_monitor_rejects_find_file_output_flags(flag: str) -> None:
+    monitor = ActionMonitor()
+    decision = monitor.evaluate(
+        user_goal="can you look for the file? filename should be similar if it's not exact",
+        actions=[
+            SimpleNamespace(
+                tool_name="shell.exec",
+                arguments={
+                    "command": ["find", ".", "-iname", "*install*log*", flag, "/tmp/out"],
+                    "read_paths": ["."],
+                },
+                reasoning="find file-output flags can write files",
+            )
+        ],
+    )
+
+    assert decision.kind == MonitorDecisionType.REJECT
+
+
+@pytest.mark.parametrize("flag", ["-x", "-X", "--exec", "--exec-batch"])
+def test_gh12_action_monitor_rejects_fd_exec_flags(flag: str) -> None:
+    monitor = ActionMonitor()
+    decision = monitor.evaluate(
+        user_goal="can you look for the file? filename should be similar if it's not exact",
+        actions=[
+            SimpleNamespace(
+                tool_name="shell.exec",
+                arguments={
+                    "command": ["fd", "install", ".", flag, "rm", "{}"],
+                    "read_paths": ["."],
+                },
+                reasoning="fd exec flags can run arbitrary commands",
+            )
+        ],
+    )
+
+    assert decision.kind == MonitorDecisionType.REJECT
+
+
+def test_gh12_action_monitor_does_not_match_file_discovery_substrings() -> None:
+    monitor = ActionMonitor()
+    decision = monitor.evaluate(
+        user_goal="can you check whether the login works anywhere",
+        actions=[
+            SimpleNamespace(
+                tool_name="shell.exec",
+                arguments={
+                    "command": ["find", ".", "-iname", "*install*log*"],
+                    "read_paths": ["."],
+                },
+                reasoning="substring-only cues must not widen shell confirmation",
+            )
+        ],
+    )
+
+    assert decision.kind == MonitorDecisionType.REJECT
+
+
 def test_m6_action_monitor_allows_explicit_browser_navigation() -> None:
     monitor = ActionMonitor()
     decision = monitor.evaluate(

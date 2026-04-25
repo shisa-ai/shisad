@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from enum import StrEnum
 from typing import Any, ClassVar
 
@@ -52,8 +53,15 @@ class ActionMonitor:
         "-delete",
         "-exec",
         "-execdir",
+        "-fls",
+        "-fprint",
+        "-fprint0",
+        "-fprintf",
         "-ok",
         "-okdir",
+        "-x",
+        "--exec",
+        "--exec-batch",
     }
     _SUSPICIOUS_ARG_TOKENS: ClassVar[set[str]] = {
         "evil.com",
@@ -145,14 +153,26 @@ class ActionMonitor:
         return any(token in goal_text for token in cues)
 
     @staticmethod
-    def _goal_mentions_file_discovery(goal_text: str) -> bool:
+    def _cue_matches(goal_text: str, cue: str) -> bool:
+        escaped_parts = [re.escape(part) for part in cue.split()]
+        pattern = r"\b" + r"\s+".join(escaped_parts) + r"\b"
+        return bool(re.search(pattern, goal_text, flags=re.IGNORECASE))
+
+    @classmethod
+    def _goal_mentions_file_discovery(cls, goal_text: str) -> bool:
         file_cues = (
+            "directories",
             "directory",
             "file",
+            "files",
             "filename",
+            "filenames",
             "folder",
+            "folders",
             "log",
+            "logs",
             "path",
+            "paths",
         )
         discovery_cues = (
             "find",
@@ -163,8 +183,8 @@ class ActionMonitor:
             "similar",
             "where",
         )
-        return any(token in goal_text for token in file_cues) and any(
-            token in goal_text for token in discovery_cues
+        return any(cls._cue_matches(goal_text, cue) for cue in file_cues) and any(
+            cls._cue_matches(goal_text, cue) for cue in discovery_cues
         )
 
     @classmethod
