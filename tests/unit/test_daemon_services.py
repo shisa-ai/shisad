@@ -1272,6 +1272,31 @@ def test_s9_tool_registry_uses_dotted_canonical_runtime_ids_only() -> None:
     assert "web_fetch" not in names
 
 
+def test_gh12_tool_registry_steers_file_discovery_to_structured_fs_tools() -> None:
+    registry, _alarm = _build_tool_registry(
+        EventBus(),
+        realitycheck_surface_enabled=False,
+    )
+    fs_list = registry.get_tool(ToolName("fs.list"))
+    fs_read = registry.get_tool(ToolName("fs.read"))
+    shell_exec = registry.get_tool(ToolName("shell.exec"))
+
+    assert fs_list is not None
+    assert fs_read is not None
+    assert shell_exec is not None
+
+    fs_list_description = fs_list.planner_description().lower()
+    fs_read_description = fs_read.planner_description().lower()
+    shell_description = shell_exec.planner_description().lower()
+    assert "similar" in fs_list_description
+    assert "prefer" in fs_list_description
+    assert "fs.list" in fs_read_description
+    assert "do not use" in shell_description
+    assert "file discovery" in shell_description
+    assert "fs.list" in shell_description
+    assert "fs.read" in shell_description
+
+
 def test_m3_tool_registry_registers_realitycheck_tools_with_endpoint_caps() -> None:
     registry, _alarm = _build_tool_registry(
         EventBus(),

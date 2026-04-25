@@ -1602,7 +1602,11 @@ def _build_tool_registry(
     registry.register(
         ToolDefinition(
             name=ToolName("fs.list"),
-            description="Read-first filesystem listing primitive.",
+            description=(
+                "List allowlisted workspace directory contents for file discovery, "
+                "filename lookup, and similarly named file recovery. Prefer fs.list "
+                "over shell.exec for filesystem discovery."
+            ),
             parameters=[
                 ToolParameter(
                     name="path",
@@ -1620,7 +1624,11 @@ def _build_tool_registry(
     registry.register(
         ToolDefinition(
             name=ToolName("fs.read"),
-            description="Read-first filesystem read primitive.",
+            description=(
+                "Read an exact allowlisted workspace file. If the path may be wrong "
+                "or the user asks for a similarly named file, use fs.list to discover "
+                "candidate paths before retrying."
+            ),
             parameters=[
                 ToolParameter(
                     name="path",

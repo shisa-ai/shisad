@@ -37,6 +37,24 @@ class ActionMonitor:
         "file.write",
         "shell.exec",
     }
+    _READ_ONLY_FILE_DISCOVERY_SHELL_COMMANDS: ClassVar[set[str]] = {
+        "fd",
+        "find",
+        "ls",
+    }
+    _FORBIDDEN_FILE_DISCOVERY_SHELL_TOKENS: ClassVar[set[str]] = {
+        "&&",
+        "||",
+        ";",
+        "|",
+        ">",
+        ">>",
+        "-delete",
+        "-exec",
+        "-execdir",
+        "-ok",
+        "-okdir",
+    }
     _SUSPICIOUS_ARG_TOKENS: ClassVar[set[str]] = {
         "evil.com",
         "attacker",
@@ -59,6 +77,13 @@ class ActionMonitor:
             argument_text = self._flatten_arguments(getattr(action, "arguments", {}))
             if any(token in argument_text for token in self._SUSPICIOUS_ARG_TOKENS):
                 reject_flags.append(f"{tool}:suspicious_argument_content")
+                continue
+
+            if tool == "shell.exec" and self._is_read_only_shell_file_discovery(
+                goal_text=goal_text,
+                arguments=getattr(action, "arguments", {}),
+            ):
+                suspicious_flags.append("read_only_file_discovery")
                 continue
 
             if tool in self._HIGH_RISK_TOOLS and not self._goal_mentions_side_effect(goal_text):
@@ -118,6 +143,63 @@ class ActionMonitor:
             "navigate",
         )
         return any(token in goal_text for token in cues)
+
+    @staticmethod
+    def _goal_mentions_file_discovery(goal_text: str) -> bool:
+        file_cues = (
+            "directory",
+            "file",
+            "filename",
+            "folder",
+            "log",
+            "path",
+        )
+        discovery_cues = (
+            "find",
+            "list",
+            "locate",
+            "look for",
+            "search",
+            "similar",
+            "where",
+        )
+        return any(token in goal_text for token in file_cues) and any(
+            token in goal_text for token in discovery_cues
+        )
+
+    @classmethod
+    def _is_read_only_shell_file_discovery(
+        cls,
+        *,
+        goal_text: str,
+        arguments: Any,
+    ) -> bool:
+        if not cls._goal_mentions_file_discovery(goal_text):
+            return False
+        if not isinstance(arguments, dict):
+            return False
+        for risky_field in ("write_paths", "network_urls", "env"):
+            value = arguments.get(risky_field)
+            if value not in (None, "", [], {}, ()):
+                return False
+        command_raw = arguments.get("command")
+        if not isinstance(command_raw, list) or not command_raw:
+            return False
+        command: list[str] = []
+        for token in command_raw:
+            if not isinstance(token, str):
+                return False
+            stripped = token.strip()
+            if not stripped:
+                return False
+            command.append(stripped)
+        command_name = command[0].rsplit("/", 1)[-1].lower()
+        if command_name not in cls._READ_ONLY_FILE_DISCOVERY_SHELL_COMMANDS:
+            return False
+        lowered_tokens = {token.lower() for token in command}
+        if lowered_tokens.intersection(cls._FORBIDDEN_FILE_DISCOVERY_SHELL_TOKENS):
+            return False
+        return not any("://" in token or token.startswith("`") for token in lowered_tokens)
 
     @staticmethod
     def _flatten_arguments(arguments: Any) -> str:

@@ -47,6 +47,46 @@ def test_m4_action_monitor_rejects_goal_misaligned_dotted_runtime_tools() -> Non
     assert decision.kind == MonitorDecisionType.REJECT
 
 
+def test_gh12_action_monitor_confirms_read_only_shell_file_discovery() -> None:
+    monitor = ActionMonitor()
+    decision = monitor.evaluate(
+        user_goal="can you look for the file? filename should be similar if it's not exact",
+        actions=[
+            SimpleNamespace(
+                tool_name="shell.exec",
+                arguments={
+                    "command": ["find", ".", "-maxdepth", "2", "-iname", "*install*log*"],
+                    "read_paths": ["."],
+                },
+                reasoning="search filenames after the exact read failed",
+            )
+        ],
+    )
+
+    assert decision.kind == MonitorDecisionType.SUSPICIOUS
+    assert "read_only_file_discovery" in decision.flags
+
+
+def test_gh12_action_monitor_still_rejects_destructive_shell_file_discovery() -> None:
+    monitor = ActionMonitor()
+    decision = monitor.evaluate(
+        user_goal="can you look for the file? filename should be similar if it's not exact",
+        actions=[
+            SimpleNamespace(
+                tool_name="shell.exec",
+                arguments={
+                    "command": ["rm", "-rf", "."],
+                    "read_paths": ["."],
+                    "write_paths": ["."],
+                },
+                reasoning="destructive command is not file discovery",
+            )
+        ],
+    )
+
+    assert decision.kind == MonitorDecisionType.REJECT
+
+
 def test_m6_action_monitor_allows_explicit_browser_navigation() -> None:
     monitor = ActionMonitor()
     decision = monitor.evaluate(

@@ -49,10 +49,26 @@ def _make_registry() -> ToolRegistry:
     )
     registry.register(
         ToolDefinition(
+            name=ToolName("fs.list"),
+            description="List files in the configured workspace",
+            parameters=[ToolParameter(name="path", type="string", required=False)],
+            capabilities_required=[Capability.FILE_READ],
+        )
+    )
+    registry.register(
+        ToolDefinition(
             name=ToolName("fs.read"),
             description="Read a file from the configured workspace",
             parameters=[ToolParameter(name="path", type="string", required=True)],
             capabilities_required=[Capability.FILE_READ],
+        )
+    )
+    registry.register(
+        ToolDefinition(
+            name=ToolName("shell.exec"),
+            description="Execute a sandboxed shell command",
+            parameters=[ToolParameter(name="command", type="array", required=True)],
+            capabilities_required=[Capability.SHELL_EXEC],
         )
     )
     registry.register(
@@ -220,6 +236,9 @@ async def test_m2_base_prompt_includes_web_search_and_multi_tool_guidance() -> N
     assert "search or browse the web" in system_prompt
     assert "multiple independent read-only tools" in system_prompt
     assert "same turn" in system_prompt
+    assert "filesystem discovery" in system_prompt
+    assert "fs.list" in system_prompt
+    assert "shell.exec" in system_prompt
     assert "format readable responses in markdown" in system_prompt
     assert "put list items on separate lines" in system_prompt
     tool_names = _canonical_payload_names(provider.tools[0], {"fs.read", "web.search"})

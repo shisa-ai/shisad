@@ -286,6 +286,72 @@ async def test_live_model_fs_list_executes(live_harness: LiveHarness) -> None:
     assert len(entries) > 0
 
 
+def _mentions_todo_log(reply: dict[str, object]) -> bool:
+    return "todo.log" in json.dumps(reply, ensure_ascii=True).lower()
+
+
+@pytest.mark.asyncio
+@pytest.mark.live_smoke
+async def test_live_model_similar_file_recovery_reaches_confirmation_or_listing(
+    live_harness: LiveHarness,
+) -> None:
+    """LUS-8: typo'd file read followed by similar-file recovery must not lockdown."""
+    (live_harness.workspace_root / "todo.log").write_text(
+        "OPEN: verify live similar-file recovery\n",
+        encoding="utf-8",
+    )
+    observed: list[dict[str, object]] = []
+
+    for _ in range(3):
+        sid = await _create_session(live_harness.client)
+        first = await live_harness.client.call(
+            "session.message",
+            {
+                "session_id": sid,
+                "content": "Use fs.read to read TODO.LOG and tell me what's at the end",
+            },
+        )
+        assert first.get("lockdown_level") == "normal"
+        assert int(first.get("blocked_actions", 0)) == 0
+        first_outputs = _extract_tool_outputs(first)
+        if first_outputs.get("fs.read", [{}])[0].get("error") != "path_not_found":
+            observed.append(first)
+            continue
+
+        proposed = await live_harness.client.call(
+            "session.message",
+            {
+                "session_id": sid,
+                "content": (
+                    "can you look for the file? filename should be similar if it's not exact"
+                ),
+            },
+        )
+        observed.append(proposed)
+        assert proposed.get("lockdown_level") == "normal"
+        assert int(proposed.get("blocked_actions", 0)) == 0
+
+        if int(proposed.get("confirmation_required_actions", 0)) >= 1:
+            confirmed = await live_harness.client.call(
+                "session.message",
+                {"session_id": sid, "content": "confirm"},
+            )
+            assert confirmed.get("lockdown_level") == "normal"
+            assert int(confirmed.get("blocked_actions", 0)) == 0
+            if _mentions_todo_log(confirmed):
+                return
+            observed.append(confirmed)
+            continue
+
+        if _mentions_todo_log(proposed):
+            return
+
+    pytest.fail(
+        "Live planner similar-file recovery did not expose todo.log after bounded retries. "
+        f"observed={observed!r}"
+    )
+
+
 @pytest.mark.asyncio
 @pytest.mark.live_smoke
 async def test_live_model_memory_remember_persists_and_is_used_later(

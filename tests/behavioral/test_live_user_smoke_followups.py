@@ -154,3 +154,99 @@ async def test_lus_go_ahead_confirms_single_pending_action_in_tainted_recovery_f
     assert "Confirmed action result:" in str(confirmed.get("response", ""))
     assert "Tool results summary:" not in str(confirmed.get("response", ""))
     assert "fs.list" in _extract_tool_outputs(confirmed)
+
+
+@pytest.mark.asyncio
+async def test_lus_shell_file_discovery_routes_to_confirmation_without_lockdown(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def _seed(config: DaemonConfig) -> None:
+        _seed_accumulated_tool_recall(
+            config,
+            content=(
+                "Prior tool output mentioned TODO.LOG, INSTALL.LOG, and similar filename "
+                "recovery. The current user can still ask for local filesystem discovery."
+            ),
+        )
+
+    async with _contract_harness_context(tmp_path, monkeypatch, prestart=_seed) as harness:
+        (harness.workspace_root / "todo.log").write_text(
+            "OPEN: verify shell recovery is confirmable\n",
+            encoding="utf-8",
+        )
+
+        async def _shell_recovery_complete(
+            self: LocalPlannerProvider,
+            messages: list[Message],
+            tools: list[dict[str, Any]] | None = None,
+        ) -> ProviderResponse:
+            planner_input = messages[-1].content if messages else ""
+            lowered = planner_input.lower()
+            if (
+                "look for the file" in lowered
+                and "filename should be similar" in lowered
+            ):
+                return ProviderResponse(
+                    message=Message(
+                        role="assistant",
+                        content="I'll search for similarly named files.",
+                        tool_calls=[
+                            _tool_call(
+                                "shell.exec",
+                                {
+                                    "command": [
+                                        "find",
+                                        ".",
+                                        "-maxdepth",
+                                        "2",
+                                        "-iname",
+                                        "*todo*log*",
+                                    ],
+                                    "read_paths": ["."],
+                                },
+                                call_id="t-lus-shell-find",
+                            )
+                        ],
+                    ),
+                    model="behavioral-stub",
+                    finish_reason="tool_calls",
+                    usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+                )
+            return await _stub_complete(self, messages, tools)
+
+        monkeypatch.setattr(
+            LocalPlannerProvider,
+            "complete",
+            _shell_recovery_complete,
+            raising=True,
+        )
+        sid = await _create_session(harness.client)
+        first = await harness.client.call(
+            "session.message",
+            {
+                "session_id": sid,
+                "content": "review TODO.LOG and list only open items",
+            },
+        )
+        assert first.get("lockdown_level") == "normal"
+        assert int(first.get("blocked_actions", 0)) == 0
+        assert _extract_tool_outputs(first)["fs.read"][0].get("error") == "path_not_found"
+
+        proposed: dict[str, Any] = {}
+        for _ in range(3):
+            proposed = await harness.client.call(
+                "session.message",
+                {
+                    "session_id": sid,
+                    "content": (
+                        "can you look for the file? filename should be similar if it's not exact"
+                    ),
+                },
+            )
+            assert proposed.get("lockdown_level") == "normal"
+            assert int(proposed.get("blocked_actions", 0)) == 0
+            assert int(proposed.get("confirmation_required_actions", 0)) >= 1
+            assert proposed.get("pending_confirmation_ids")
+
+    assert "LOCKDOWN NOTICE" not in str(proposed.get("response", ""))

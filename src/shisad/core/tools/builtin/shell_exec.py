@@ -13,7 +13,12 @@ class ShellExecTool:
     def tool_definition() -> ToolDefinition:
         return ToolDefinition(
             name=ToolName("shell.exec"),
-            description="Execute a shell command via sandboxed executor runtime.",
+            description=(
+                "Execute an explicit shell command via sandboxed executor runtime. "
+                "Use only when the user asks to run a shell command or no structured "
+                "runtime tool covers the task. Do not use for file discovery, "
+                "directory listing, or file reads when fs.list or fs.read are available."
+            ),
             parameters=[
                 ToolParameter(
                     name="command",
