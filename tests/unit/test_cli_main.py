@@ -628,10 +628,13 @@ def test_cli_commands_route_through_rpc_wrapper(
             ["memory", "list", "--limit", "1"],
         ).output
     )
-    assert '"workflow_state": "active"' in _invoke_ok(
-        runner,
-        ["memory", "list", "--limit", "1", "--json"],
-    ).output
+    assert (
+        '"workflow_state": "active"'
+        in _invoke_ok(
+            runner,
+            ["memory", "list", "--limit", "1", "--json"],
+        ).output
+    )
     _invoke_ok(
         runner,
         [
@@ -677,12 +680,14 @@ def test_cli_commands_route_through_rpc_wrapper(
     )
     assert "favorite_color" in _invoke_ok(runner, ["memory", "export", "--format", "json"]).output
     _invoke_ok(runner, ["memory", "rotate-key"])
-    assert "root=entity:favorite_color" in _invoke_ok(
-        runner, ["memory", "graph", "query", "favorite_color"]
-    ).output
-    assert "# Memory Graph" in _invoke_ok(
-        runner, ["memory", "graph", "export", "--format", "md"]
-    ).output
+    assert (
+        "root=entity:favorite_color"
+        in _invoke_ok(runner, ["memory", "graph", "query", "favorite_color"]).output
+    )
+    assert (
+        "# Memory Graph"
+        in _invoke_ok(runner, ["memory", "graph", "export", "--format", "md"]).output
+    )
     assert "identity_candidates=1" in _invoke_ok(runner, ["memory", "consolidate"]).output
     _invoke_ok(runner, ["note", "create", "--key", "meeting", "--content", "prep"])
     assert "n-1 meeting" in _invoke_ok(runner, ["note", "list", "--limit", "5"]).output

@@ -150,13 +150,11 @@ def _validate_memory_write_predicate(entry_type: str, predicate: str) -> str:
                 "Use function-call form, e.g. prefers(response_style)."
             )
         predicate_name = normalized.split("(", 1)[0].lower()
-        if (
-            not _MEMORY_PREFERENCE_PREDICATE_RE.match(normalized)
-            or predicate_name.startswith(_MEMORY_DISALLOWED_PREFERENCE_PREFIXES)
+        if not _MEMORY_PREFERENCE_PREDICATE_RE.match(normalized) or predicate_name.startswith(
+            _MEMORY_DISALLOWED_PREFERENCE_PREFIXES
         ):
             raise click.ClickException(
-                "--predicate must use lowercase function-call form, "
-                "e.g. prefers(response_style)."
+                "--predicate must use lowercase function-call form, e.g. prefers(response_style)."
             )
         return normalized
     if normalized:

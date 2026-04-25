@@ -117,9 +117,7 @@ def _tools_payload(registry: ToolRegistry, names: set[str]) -> list[dict[str, An
     payload = tool_definitions_to_openai(registry.list_tools())
     openai_names = {openai_function_name(name) for name in names}
     return [
-        item
-        for item in payload
-        if str(item.get("function", {}).get("name", "")) in openai_names
+        item for item in payload if str(item.get("function", {}).get("name", "")) in openai_names
     ]
 
 

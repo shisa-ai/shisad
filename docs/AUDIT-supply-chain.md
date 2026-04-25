@@ -3,7 +3,7 @@
 *Created: 2026-03-31*  
 *Updated: 2026-04-25 (v0.7.0 candidate refresh: python-dotenv CVE-2026-28684 remediated, Ledger bridge axios advisories remediated through an npm override, and residual Ledger SDK uuid advisory documented)*
 *Status: In Progress*  
-*Snapshot basis: `v0.7.0` candidate on `main`*
+*Snapshot basis: `v0.7.0` release target on `main`*
 
 ## Scope and Intent
 

@@ -316,8 +316,7 @@ def test_m2_compile_recall_excludes_archived_when_current_result_suffices(
         archived.chunk_id,
     }
     assert any(
-        item.chunk_id == archived.chunk_id and item.archived
-        for item in explicit_pack.results
+        item.chunk_id == archived.chunk_id and item.archived for item in explicit_pack.results
     )
 
 

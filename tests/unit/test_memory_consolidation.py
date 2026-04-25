@@ -524,6 +524,7 @@ def test_m5_strong_invalidation_patterns_require_specific_overlap(
     assert proposals == []
     assert manager.list_events(event_type="strong_invalidation_proposed") == []
 
+
 def test_m5_identity_candidate_uses_per_pattern_threshold(tmp_path: Path) -> None:
     manager = MemoryManager(tmp_path / "memory")
     _write_owner_observed_episode(manager, value="I like ramen for lunch.", source_id="ramen-1")

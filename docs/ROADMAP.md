@@ -55,11 +55,9 @@ Reach a genuinely useful personal-assistant baseline while preserving the projec
   external pull request add EIP-712 `IntentEnvelope` signing through the local
   Ledger bridge, with conservative downgrade behavior when a device reports
   blind signing or an opaque review surface.
-- `v0.7.0` is release-prepared: the candidate adds structured long-term memory
-  with separate Identity, Active Attention, Recall, Procedural, and Evidence
-  surfaces; review-gated memory writes; and derived graph/consolidation
-  foundations. The latest published line remains `v0.6.7` until the explicit
-  tag/publish closeout runs.
+- `v0.7.0` is published: structured long-term memory adds separate Identity,
+  Active Attention, Recall, Procedural, and Evidence surfaces; review-gated
+  memory writes; and derived graph/consolidation foundations.
 
 ## Milestones
 
@@ -259,8 +257,7 @@ TOTP entry remain deferred to `v0.8.0`.
 
 #### v0.7.0 — Structured long-term memory baseline
 
-- Status (2026-04-23): release-prepared candidate. The latest published line
-  remains `v0.6.7` until the explicit `v0.7.0` tag/publish action.
+- Status (2026-04-25): published `v0.7.0` release line.
 - Five memory surfaces land together: Identity, Active Attention, Recall,
   Procedural (manual invoke), and Evidence.
 - Memory writes are versioned, provenance-bearing, review-gated, and stored in
