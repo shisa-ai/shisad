@@ -50,15 +50,15 @@ Rather than ignoring the elephant in the room, our design targets the [lethal tr
 
 ## Status
 
-This repo is public and still pre-alpha. The latest published line remains
-`v0.6.7` until the explicit `v0.7.0` tag/publish closeout completes. The
-`v0.7.0` release target adds structured long-term memory with separate identity,
-active-attention, recall, procedural-skill, and evidence surfaces; review-gated
-memory writes; and derived graph/consolidation foundations.
+This repo is public and still pre-alpha. The latest published line is `v0.7.0`
+on GitHub Releases and PyPI. The v0.7 line adds structured long-term memory
+with separate identity, active-attention, recall, procedural-skill, and evidence
+surfaces; review-gated memory writes; and derived graph/consolidation
+foundations.
 
 | Version | Focus |
 |---------|-------|
-| **v0.7** | **Memory foundation + long-term memory surfaces (current release target: `v0.7.0`)** |
+| **v0.7** | **Memory foundation + long-term memory surfaces (published: `v0.7.0`)** |
 | **v0.6** | **Orchestration foundation + tool-surface expansion (COMMAND/TASK runtime, credential scoping, web tools, browser baseline)** |
 | v0.5 | First public release — evidence references, repo split, zero-config SHISA provider |
 | v0.4 | Self-modification, coding-agent runtime, COMMAND/TASK isolation |
