@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import re
 from datetime import UTC, datetime
@@ -281,13 +282,52 @@ class ActionMonitorVoter:
         return bool(candidate) and candidate.casefold() == expected.casefold()
 
     @classmethod
+    def _intent_digest(cls, value: Any) -> str:
+        normalized = cls._normalize_intent_text(value).casefold()
+        return hashlib.sha256(normalized.encode("utf-8")).hexdigest() if normalized else ""
+
+    @classmethod
+    def _matches_argument_digest(
+        cls,
+        *,
+        action_argument_digests: dict[str, str],
+        field: str,
+        expected: str,
+    ) -> bool:
+        expected_digest = cls._intent_digest(expected)
+        return (
+            bool(expected_digest)
+            and action_argument_digests.get(f"{field}_sha256") == expected_digest
+        )
+
+    @classmethod
+    def _matches_argument_or_digest(
+        cls,
+        *,
+        action_arguments: dict[str, Any],
+        action_argument_digests: dict[str, str],
+        field: str,
+        expected: str,
+    ) -> bool:
+        return cls._matches_argument(
+            action_arguments.get(field),
+            expected,
+        ) or cls._matches_argument_digest(
+            action_argument_digests=action_argument_digests,
+            field=field,
+            expected=expected,
+        )
+
+    @classmethod
     def _deterministic_memory_write_intent_match(
         cls,
         *,
         user_text: str,
         tool_name: str,
         action_arguments: dict[str, Any],
+        action_argument_digests: dict[str, str] | None = None,
     ) -> bool:
+        argument_digests = action_argument_digests or {}
         normalized = cls._strip_optional_greeting_prefix(user_text)
         if not normalized or cls._has_follow_on_command(normalized):
             return False
@@ -305,7 +345,12 @@ class ActionMonitorVoter:
                 )
             if note_match is None:
                 return False
-            return cls._matches_argument(action_arguments.get("content"), note_match.group(1))
+            return cls._matches_argument_or_digest(
+                action_arguments=action_arguments,
+                action_argument_digests=argument_digests,
+                field="content",
+                expected=note_match.group(1),
+            )
         if tool_name == "todo.create":
             todo_create_match = re.match(
                 r"^(?:add|create) (?:a )?(?:todo|task):\s*(.+)$",
@@ -314,7 +359,12 @@ class ActionMonitorVoter:
             )
             if todo_create_match is None:
                 return False
-            return cls._matches_argument(action_arguments.get("title"), todo_create_match.group(1))
+            return cls._matches_argument_or_digest(
+                action_arguments=action_arguments,
+                action_argument_digests=argument_digests,
+                field="title",
+                expected=todo_create_match.group(1),
+            )
         if tool_name == "todo.complete":
             todo_complete_match = re.match(
                 r"^(?:mark|complete|finish)\s+(?:the\s+)?(.+?)(?:\s+todo)?\s+(?:complete|done)$",
@@ -323,9 +373,11 @@ class ActionMonitorVoter:
             )
             if todo_complete_match is None:
                 return False
-            return cls._matches_argument(
-                action_arguments.get("selector"),
-                todo_complete_match.group(1),
+            return cls._matches_argument_or_digest(
+                action_arguments=action_arguments,
+                action_argument_digests=argument_digests,
+                field="selector",
+                expected=todo_complete_match.group(1),
             )
         if tool_name == "reminder.create":
             reminder_match = re.match(
@@ -335,10 +387,59 @@ class ActionMonitorVoter:
             )
             if reminder_match is None:
                 return False
-            return cls._matches_argument(
-                action_arguments.get("message"),
-                reminder_match.group(1),
-            ) and cls._matches_argument(action_arguments.get("when"), reminder_match.group(2))
+            return cls._matches_argument_or_digest(
+                action_arguments=action_arguments,
+                action_argument_digests=argument_digests,
+                field="message",
+                expected=reminder_match.group(1),
+            ) and cls._matches_argument_or_digest(
+                action_arguments=action_arguments,
+                action_argument_digests=argument_digests,
+                field="when",
+                expected=reminder_match.group(2),
+            )
+        return False
+
+    @classmethod
+    def _deterministic_trusted_cli_intent_match(
+        cls,
+        *,
+        user_text: str,
+        tool_name: str,
+        action_arguments: dict[str, Any],
+        action_argument_digests: dict[str, str] | None = None,
+    ) -> bool:
+        normalized = cls._strip_optional_greeting_prefix(user_text)
+        if not normalized:
+            return False
+        if cls._deterministic_memory_write_intent_match(
+            user_text=user_text,
+            tool_name=tool_name,
+            action_arguments=action_arguments,
+            action_argument_digests=action_argument_digests,
+        ):
+            return True
+
+        normalized_lower = normalized.lower()
+        if tool_name == "web.search":
+            query = str(action_arguments.get("query", "")).strip()
+            if not query:
+                return False
+            return bool(
+                re.search(
+                    r"\b(search|look up|find|latest news|news)\b",
+                    normalized_lower,
+                )
+            )
+
+        if tool_name == "web.fetch":
+            url = str(action_arguments.get("url", "")).strip()
+            if not url:
+                return False
+            return url.lower() in normalized_lower and bool(
+                re.search(r"\b(fetch|open|read|get)\b", normalized_lower)
+            )
+
         return False
 
     @staticmethod
@@ -432,6 +533,31 @@ class ActionMonitorVoter:
             action_arguments = data.metadata_payload.get("action_arguments", {})
             if not isinstance(action_arguments, dict):
                 action_arguments = {}
+            action_argument_digests = data.metadata_payload.get("action_argument_digests", {})
+            if not isinstance(action_argument_digests, dict):
+                action_argument_digests = {}
+            action_argument_digests = {
+                str(key): str(value)
+                for key, value in action_argument_digests.items()
+                if str(key).strip() and str(value).strip()
+            }
+            if (
+                trusted_input
+                and operator_owned_cli_input
+                and user_text
+                and self._deterministic_trusted_cli_intent_match(
+                    user_text=user_text,
+                    tool_name=str(action.tool_name),
+                    action_arguments=action_arguments,
+                    action_argument_digests=action_argument_digests,
+                )
+            ):
+                return VoterDecision(
+                    voter="ActionMonitorVoter",
+                    decision=VoteKind.ALLOW,
+                    risk_tier=RiskTier.LOW,
+                    reason_codes=["action_monitor:trusted_cli_current_turn_intent"],
+                )
             if (
                 trusted_input
                 and action.action_kind == ActionKind.MEMORY_WRITE
@@ -440,6 +566,7 @@ class ActionMonitorVoter:
                     user_text=user_text,
                     tool_name=str(action.tool_name),
                     action_arguments=action_arguments,
+                    action_argument_digests=action_argument_digests,
                 )
             ):
                 return VoterDecision(

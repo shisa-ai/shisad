@@ -1415,6 +1415,32 @@ async def test_m1_rlc7_action_monitor_voter_flags_tainted_side_effect() -> None:
 
 
 @pytest.mark.asyncio
+async def test_action_monitor_allows_trusted_cli_search_intent_on_tainted_context() -> None:
+    voter = ActionMonitorVoter()
+    action = build_action(
+        tool_name="web.search",
+        arguments={"query": "shisa.ai", "limit": 3},
+        origin=_origin("s-action-monitor-cli-search"),
+    )
+    decision = await voter.cast_vote(
+        ConsensusInput(
+            action=action,
+            trace_result=PlanVerificationResult(allowed=True, reason_code="trace:allowed"),
+            metadata_payload={
+                "session_tainted": True,
+                "trusted_input": True,
+                "operator_owned_cli_input": True,
+                "raw_user_text": "search the web for shisa.ai and tell me what they do",
+                "action_arguments": {"query": "shisa.ai", "limit": 3},
+            },
+        )
+    )
+    assert decision.decision == VoteKind.ALLOW
+    assert decision.risk_tier == RiskTier.LOW
+    assert "action_monitor:trusted_cli_current_turn_intent" in decision.reason_codes
+
+
+@pytest.mark.asyncio
 async def test_m1_action_monitor_allows_explicit_tainted_memory_write() -> None:
     voter = ActionMonitorVoter()
     action = build_action(
@@ -1544,6 +1570,35 @@ async def test_m1_rr1_action_monitor_matches_only_primary_note_fields() -> None:
     )
     assert decision.decision == VoteKind.FLAG
     assert "action_monitor:deterministic_intent_match" not in decision.reason_codes
+
+
+@pytest.mark.asyncio
+async def test_action_monitor_allows_redacted_note_create_with_intent_digest() -> None:
+    voter = ActionMonitorVoter()
+    action = build_action(
+        tool_name="note.create",
+        arguments={"key": "note:groceries"},
+        origin=_origin("s-action-monitor-redacted-note"),
+    )
+    decision = await voter.cast_vote(
+        ConsensusInput(
+            action=action,
+            trace_result=PlanVerificationResult(allowed=True, reason_code="trace:allowed"),
+            metadata_payload={
+                "session_tainted": True,
+                "trusted_input": True,
+                "operator_owned_cli_input": True,
+                "raw_user_text": "remember that groceries",
+                "action_arguments": {"key": "note:groceries"},
+                "action_argument_digests": {
+                    "content_sha256": ActionMonitorVoter._intent_digest("groceries")
+                },
+            },
+        )
+    )
+    assert decision.decision == VoteKind.ALLOW
+    assert decision.risk_tier == RiskTier.LOW
+    assert "action_monitor:trusted_cli_current_turn_intent" in decision.reason_codes
 
 
 @pytest.mark.asyncio

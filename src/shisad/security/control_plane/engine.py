@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -45,6 +46,7 @@ from shisad.security.control_plane.sequence import (
     SequenceFinding,
 )
 from shisad.security.control_plane.trace import ExecutionTraceVerifier, PlanVerificationResult
+from shisad.security.intent_matching import normalize_intent_text
 
 
 class ControlPlaneEvaluation(BaseModel, frozen=True):
@@ -56,6 +58,12 @@ class ControlPlaneEvaluation(BaseModel, frozen=True):
 
 
 _AMV_METADATA_TEXT_MAX_CHARS = 256
+_INTENT_DIGEST_ARGUMENT_FIELDS: dict[str, tuple[str, ...]] = {
+    "note.create": ("content",),
+    "todo.create": ("title",),
+    "todo.complete": ("selector",),
+    "reminder.create": ("message", "when"),
+}
 
 
 def _normalize_voter_text(value: str) -> str:
@@ -73,6 +81,24 @@ def _normalize_voter_payload(value: Any) -> Any:
     if isinstance(value, list):
         return [_normalize_voter_payload(item) for item in value]
     return value
+
+
+def _intent_digest(value: Any) -> str:
+    normalized = normalize_intent_text(str(value)).casefold()
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest() if normalized else ""
+
+
+def _argument_intent_digests(tool_name: str, arguments: dict[str, Any]) -> dict[str, str]:
+    fields = _INTENT_DIGEST_ARGUMENT_FIELDS.get(tool_name.strip(), ())
+    digests: dict[str, str] = {}
+    for field in fields:
+        value = arguments.get(field)
+        if not isinstance(value, str):
+            continue
+        digest = _intent_digest(value)
+        if digest:
+            digests[f"{field}_sha256"] = digest
+    return digests
 
 
 class ControlPlaneEngine:
@@ -300,6 +326,10 @@ class ControlPlaneEngine:
                     "operator_owned_cli_input": operator_owned_cli_input,
                     "raw_user_text": raw_user_text_for_voter,
                     "action_arguments": metadata_arguments,
+                    "action_argument_digests": _argument_intent_digests(
+                        tool_name,
+                        arguments,
+                    ),
                     "action_kind": action.action_kind.value,
                     "resource_ids": list(action.resource_ids),
                     "network_hosts": list(action.network_hosts),

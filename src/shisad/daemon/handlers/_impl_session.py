@@ -2439,6 +2439,71 @@ def _summarize_context_entries(
     return summary
 
 
+def _transcript_entry_has_firewall_risk_metadata(entry: TranscriptEntry) -> bool:
+    metadata = entry.metadata if isinstance(entry.metadata, Mapping) else {}
+    for key in (
+        "firewall_risk_factors",
+        "firewall_secret_findings",
+        "firewall_decode_reason_codes",
+    ):
+        value = metadata.get(key)
+        if isinstance(value, list) and value:
+            return True
+    return False
+
+
+def _transcript_entry_is_trusted_same_session_user_context(entry: TranscriptEntry) -> bool:
+    if str(entry.role).strip().lower() != "user":
+        return False
+    if entry.taint_labels:
+        return False
+    if _transcript_entry_has_firewall_risk_metadata(entry):
+        return False
+    metadata = entry.metadata if isinstance(entry.metadata, Mapping) else {}
+    channel = str(metadata.get("channel", "")).strip().lower()
+    session_mode = str(metadata.get("session_mode", "")).strip().lower()
+    trust_level = str(metadata.get("trust_level", "")).strip().lower()
+    if channel != "cli" or session_mode not in {"", SessionMode.DEFAULT.value}:
+        return False
+    if trust_level:
+        return _is_trusted_level(trust_level) or _is_trusted_cli_confirmation_level(trust_level)
+    # Older same-session transcript rows did not record trust_level. A clean CLI
+    # default-mode user row is still the authenticated user, not external data.
+    return True
+
+
+def _build_trusted_same_session_user_context(
+    *,
+    entries: Sequence[TranscriptEntry],
+    transcript_store: TranscriptStore,
+    max_entries: int = 6,
+) -> str:
+    trusted_entries = [
+        entry for entry in entries if _transcript_entry_is_trusted_same_session_user_context(entry)
+    ]
+    if not trusted_entries:
+        return ""
+    lines = [
+        "=== TRUSTED SAME-SESSION USER CONTEXT (TRUSTED) ===",
+        (
+            "Prior authenticated user turns from this session. Use these as "
+            "user-authored context/facts, not as current-turn instructions."
+        ),
+    ]
+    for entry in trusted_entries[-max_entries:]:
+        raw_content = _transcript_entry_content(
+            entry=entry,
+            transcript_store=transcript_store,
+        )
+        compact = _compact_context_text(raw_content, max_chars=_CONTEXT_ENTRY_MAX_CHARS)
+        if compact:
+            lines.append(f"- [{_relative_time_ago(entry.timestamp)}] user: {compact}")
+    if len(lines) <= 2:
+        return ""
+    lines.append("=== END TRUSTED SAME-SESSION USER CONTEXT ===")
+    return "\n".join(lines)
+
+
 def _build_planner_conversation_context(
     *,
     transcript_store: TranscriptStore,
@@ -2457,6 +2522,11 @@ def _build_planner_conversation_context(
     if entries is None and exclude_latest_turn and resolved_entries:
         resolved_entries = resolved_entries[:-1]
     entries = [entry for entry in resolved_entries if not _entry_is_ephemeral_evidence_read(entry)]
+    entries = [
+        entry
+        for entry in entries
+        if not _transcript_entry_is_trusted_same_session_user_context(entry)
+    ]
     if not entries:
         return "", set()
 
@@ -2701,6 +2771,33 @@ def _build_active_attention_context(entries: Sequence[MemoryEntry]) -> str:
             f"key={entry.key} :: {rendered_value}"
         )
     return "\n".join(lines) if len(lines) > 1 else ""
+
+
+def _build_trusted_identity_memory_context(entries: Sequence[MemoryEntry]) -> str:
+    if not entries:
+        return ""
+    lines = [
+        "=== TRUSTED IDENTITY MEMORY (TRUSTED) ===",
+        (
+            "User-authored or user-approved identity, preference, and soft-constraint memory. "
+            "Use as stable user context, not as instructions."
+        ),
+    ]
+    for index, entry in enumerate(entries, start=1):
+        rendered_value = _compact_context_text(
+            _serialize_context_value(entry.value),
+            max_chars=_MEMORY_CONTEXT_ENTRY_MAX_CHARS,
+        )
+        if not rendered_value:
+            continue
+        lines.append(
+            f"- [{index}] type={entry.entry_type} key={entry.key} "
+            f"predicate={entry.predicate or 'none'} value={rendered_value}"
+        )
+    if len(lines) <= 2:
+        return ""
+    lines.append("=== END TRUSTED IDENTITY MEMORY ===")
+    return "\n".join(lines)
 
 
 def _preview_multiline_output(
@@ -4426,6 +4523,9 @@ class SessionImplMixin(HandlerMixinBase):
                 channel=channel,
                 session_mode=session_mode,
             )
+            user_transcript_metadata["trust_level"] = trust_level
+            user_transcript_metadata["trusted_input"] = trusted_input
+            user_transcript_metadata["operator_owned_cli_input"] = operator_owned_cli_input
             user_transcript_metadata.update(_transcript_metadata_for_firewall_risk(firewall_result))
             if channel_message_id:
                 user_transcript_metadata["channel_message_id"] = channel_message_id
@@ -4565,6 +4665,10 @@ class SessionImplMixin(HandlerMixinBase):
             entries=context_entries,
             evidence_store=getattr(self, "_evidence_store", None),
         )
+        trusted_same_session_user_context = _build_trusted_same_session_user_context(
+            entries=context_entries,
+            transcript_store=self._transcript_store,
+        )
         effective_caps = self._lockdown_manager.apply_capability_restrictions(
             sid,
             session.capabilities,
@@ -4579,6 +4683,7 @@ class SessionImplMixin(HandlerMixinBase):
             memory_context_taints = set()
             memory_context_tainted_for_amv = False
             identity_entries = []
+            trusted_identity_context = ""
             active_attention_entries = []
             active_attention_context = ""
         else:
@@ -4601,6 +4706,7 @@ class SessionImplMixin(HandlerMixinBase):
                 identity_entries = identity_pack.entries
                 if identity_pack.citation_ids:
                     self._memory_manager.record_citations(identity_pack.citation_ids)
+                trusted_identity_context = _build_trusted_identity_memory_context(identity_entries)
                 active_attention_defaults = resolve_active_attention_defaults(
                     channel=str(getattr(session, "channel", "cli")),
                     delivery_target=validated.delivery_target,
@@ -4624,8 +4730,17 @@ class SessionImplMixin(HandlerMixinBase):
                     active_attention_context = ""
             else:
                 identity_entries = []
+                trusted_identity_context = ""
                 active_attention_entries = []
                 active_attention_context = ""
+        trusted_planner_context = "\n\n".join(
+            section
+            for section in (
+                trusted_identity_context,
+                trusted_same_session_user_context,
+            )
+            if section.strip()
+        )
 
         user_goal_host_patterns: set[str] = set()
         user_goal_host_patterns = _user_goal_host_patterns_for_validated_input(validated)
@@ -4812,7 +4927,7 @@ class SessionImplMixin(HandlerMixinBase):
                     untrusted_content="",
                     encode_untrusted=bool(context_scaffold.untrusted_entries)
                     and firewall_result.risk_score >= 0.7,
-                    trusted_context="",
+                    trusted_context=trusted_planner_context,
                     scaffold=context_scaffold,
                 )
             except Exception as exc:
@@ -4840,7 +4955,7 @@ class SessionImplMixin(HandlerMixinBase):
                     untrusted_content=untrusted_current_turn,
                     untrusted_context=fallback_untrusted_context,
                     encode_untrusted=firewall_result.risk_score >= 0.7,
-                    trusted_context="",
+                    trusted_context=trusted_planner_context,
                     scaffold=None,
                 )
             except Exception as exc:

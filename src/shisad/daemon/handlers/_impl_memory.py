@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from typing import Any, cast
@@ -23,6 +24,7 @@ from shisad.memory.trust import backfill_legacy_triple
 
 _CONTROL_API_AUTHENTICATED_WRITE = "_control_api_authenticated_write"
 _DEFAULT_MEMORY_GRAPH_SCOPES = frozenset({"user"})
+logger = logging.getLogger(__name__)
 _MEMORY_WRITE_REJECT_HINTS: dict[str, tuple[str, str]] = {
     "preference_predicate_required": (
         "Preference and soft-constraint memory entries require a predicate.",
@@ -195,6 +197,35 @@ class MemoryImplMixin(HandlerMixinBase):
         if hint and not response.get("hint"):
             response["hint"] = hint
         return response
+
+    def _index_note_write_for_recall(self, result: dict[str, Any]) -> None:
+        if result.get("kind") != "allow":
+            return
+        ingestion = getattr(self, "_ingestion", None)
+        if ingestion is None:
+            return
+        entry = result.get("entry")
+        if not isinstance(entry, Mapping):
+            return
+        value = str(entry.get("value", "")).strip()
+        if not value:
+            return
+        key = str(entry.get("key", "")).strip()
+        content = f"{key}: {value}" if key else value
+        source_origin = str(entry.get("source_origin", "user_direct")).strip() or "user_direct"
+        try:
+            ingestion.ingest(
+                source_id=str(entry.get("id", "") or entry.get("source_id", "") or "note"),
+                source_type=self._retrieval_source_type_for_ingress(source_origin),
+                content=content,
+                source_origin=source_origin,
+                channel_trust=str(entry.get("channel_trust", "command")).strip() or "command",
+                confirmation_status=str(entry.get("confirmation_status", "user_asserted")).strip()
+                or "user_asserted",
+                scope=str(entry.get("scope", "user")).strip() or "user",
+            )
+        except Exception:
+            logger.warning("Failed to index note.create result for recall", exc_info=True)
 
     def _write_control_api_authenticated_entry(
         self,
@@ -771,21 +802,25 @@ class MemoryImplMixin(HandlerMixinBase):
 
     async def do_note_create(self, params: Mapping[str, Any]) -> dict[str, Any]:
         if params.get("ingress_context"):
-            return self._write_handle_bound_entry(
+            result = self._write_handle_bound_entry(
                 params,
                 entry_type="note",
                 key=str(params.get("key", "")),
                 value=str(params.get("content", "")),
                 confidence=float(params.get("confidence", 0.8)),
             )
+            self._index_note_write_for_recall(result)
+            return result
         if params.get(_CONTROL_API_AUTHENTICATED_WRITE):
-            return self._write_control_api_authenticated_entry(
+            result = self._write_control_api_authenticated_entry(
                 params,
                 entry_type="note",
                 key=str(params.get("key", "")),
                 value=str(params.get("content", "")),
                 confidence=float(params.get("confidence", 0.8)),
             )
+            self._index_note_write_for_recall(result)
+            return result
         source = MemorySource(
             origin=str(params.get("origin", "user")),
             source_id=self._coerce_source_id(params.get("source_id")) or "cli",
@@ -796,7 +831,7 @@ class MemoryImplMixin(HandlerMixinBase):
             source=source,
             value=str(params.get("content", "")),
         )
-        return self._write_handle_bound_entry(
+        result = self._write_handle_bound_entry(
             {
                 **dict(params),
                 "ingress_context": context.handle_id,
@@ -807,6 +842,8 @@ class MemoryImplMixin(HandlerMixinBase):
             value=str(params.get("content", "")),
             confidence=float(params.get("confidence", 0.8)),
         )
+        self._index_note_write_for_recall(result)
+        return result
 
     async def do_note_list(self, params: Mapping[str, Any]) -> dict[str, Any]:
         limit = max(1, int(params.get("limit", 100)))

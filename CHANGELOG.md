@@ -24,6 +24,14 @@ Versioning follows semver (see `docs/PUBLISH.md` for policy and style guide).
   follow-up turns can use the confirmed result instead of re-queueing the same
   action.
 
+- **Trusted user context and identity memory now remain usable in chat.**
+  Trusted CLI search requests no longer require confirmation just because prior
+  recall contains tainted data, trusted `remember ...` note writes can be
+  verified without leaking freeform action content into control-plane metadata,
+  same-session user statements are surfaced as trusted user-authored context
+  instead of only DATA EVIDENCE, and cross-session note and identity memory are
+  rendered to the planner through recall/trusted memory surfaces.
+
 ## [0.7.0] - 2026-04-25
 
 ### Added

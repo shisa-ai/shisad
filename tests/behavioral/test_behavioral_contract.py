@@ -88,6 +88,24 @@ def _extract_memory_context(planner_input: str) -> str:
     return tail
 
 
+def _extract_trusted_context_before_request(planner_input: str) -> str:
+    normalized = planner_input.replace("^", "")
+    return normalized.split("=== USER REQUEST ===", 1)[0]
+
+
+def _extract_data_evidence_context(planner_input: str) -> str:
+    normalized = planner_input.replace("^", "")
+    marker = "=== DATA EVIDENCE (UNTRUSTED) ==="
+    idx = normalized.find(marker)
+    if idx < 0:
+        return ""
+    tail = normalized[idx:]
+    stop = tail.find("=== END PAYLOAD ===")
+    if stop >= 0:
+        tail = tail[:stop]
+    return tail
+
+
 def _latest_user_request_planner_input(records: list[str]) -> str:
     for candidate in reversed(records):
         if "=== USER REQUEST ===" in candidate or "=== USER GOAL ===" in candidate:
@@ -121,6 +139,11 @@ def _extract_note_search_query(goal: str) -> str:
     if match:
         return match.group("query").strip()
     return goal.strip()
+
+
+def _extract_remembered_content(goal: str) -> str | None:
+    match = re.match(r"remember(?: that)?\s+(.+)$", goal.strip(), flags=re.IGNORECASE)
+    return match.group(1).strip() if match else None
 
 
 def _extract_todo_complete_selector(goal: str) -> str:
@@ -178,20 +201,47 @@ async def _stub_complete(
     goal = _extract_user_goal(planner_input)
     goal_lower = goal.lower()
 
-    if goal_lower.startswith("remember that"):
+    if "favorite color" in goal_lower:
+        memory_context = _extract_memory_context(planner_input).lower()
+        trusted_context = _extract_trusted_context_before_request(planner_input).lower()
+        response = (
+            "Your favorite color is blue."
+            if (
+                "favorite color is blue" in memory_context
+                or (
+                    "trusted same-session user context" in trusted_context
+                    and "favorite color is blue" in trusted_context
+                )
+            )
+            else "I don't know your favorite color yet."
+        )
         return ProviderResponse(
-            message=Message(role="assistant", content="Got it — I'll remember that."),
+            message=Message(role="assistant", content=response),
             model="behavioral-stub",
             finish_reason="stop",
             usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
         )
 
-    if "favorite color" in goal_lower:
+    if "favorite editor" in goal_lower:
+        trusted_context = _extract_trusted_context_before_request(planner_input).lower()
+        response = (
+            "Your favorite editor is helix."
+            if "trusted identity memory" in trusted_context and "helix" in trusted_context
+            else "I don't know your favorite editor yet."
+        )
+        return ProviderResponse(
+            message=Message(role="assistant", content=response),
+            model="behavioral-stub",
+            finish_reason="stop",
+            usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+        )
+
+    if "groceries" in goal_lower and "remember" in goal_lower:
         memory_context = _extract_memory_context(planner_input).lower()
         response = (
-            "Your favorite color is blue."
-            if "favorite color is blue" in memory_context
-            else "I don't know your favorite color yet."
+            "You asked me to remember to buy groceries."
+            if "groceries" in memory_context
+            else "I don't know what you asked me to remember about groceries."
         )
         return ProviderResponse(
             message=Message(role="assistant", content=response),
@@ -373,8 +423,9 @@ async def _stub_complete(
 
     tool_calls: list[dict[str, Any]] = []
     note_create_call = None
-    if "add a note" in goal_lower or goal_lower.startswith("note:"):
-        content = _extract_after_colon(goal)
+    remembered_content = _extract_remembered_content(goal)
+    if "add a note" in goal_lower or goal_lower.startswith("note:") or remembered_content:
+        content = remembered_content or _extract_after_colon(goal)
         note_create_call = _tool_call(
             "note.create",
             {"content": content, "key": _slugify_note_key(content)},
@@ -1219,6 +1270,168 @@ async def test_m3_long_clean_session_goal_not_truncated_for_planner(
 
 
 @pytest.mark.asyncio
+async def test_contract_trusted_cli_search_executes_with_accumulated_untrusted_recall(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def _seed(config: DaemonConfig) -> None:
+        retrieval = IngestionPipeline(config.data_dir / "memory_entries").ingest(
+            source_id="prior-tool-output",
+            source_type="tool",
+            collection="tool_outputs",
+            content=(
+                "Prior tool output mentioned latest world news and shisa.ai; it should not "
+                "make a later trusted user search require confirmation."
+            ),
+            source_origin="tool_output",
+            channel_trust="tool_passed",
+            confirmation_status="auto_accepted",
+            scope="user",
+        )
+        assert retrieval.chunk_id
+
+    async with _contract_harness_context(tmp_path, monkeypatch, prestart=_seed) as harness:
+        sid = await _create_session(harness.client)
+        reply = await harness.client.call(
+            "session.message",
+            {
+                "session_id": sid,
+                "content": "search the web for shisa.ai and tell me what they do",
+            },
+        )
+
+    assert reply.get("lockdown_level") == "normal"
+    assert int(reply.get("blocked_actions", 0)) == 0
+    assert int(reply.get("confirmation_required_actions", 0)) == 0
+    assert reply.get("pending_confirmation_ids") == []
+    assert int(reply.get("executed_actions", 0)) == 1
+    outputs = _extract_tool_outputs(reply)
+    assert "web.search" in outputs
+
+
+@pytest.mark.asyncio
+async def test_contract_trusted_cli_todo_create_executes_with_accumulated_untrusted_recall(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def _seed(config: DaemonConfig) -> None:
+        retrieval = IngestionPipeline(config.data_dir / "memory_entries").ingest(
+            source_id="prior-tool-output",
+            source_type="tool",
+            collection="tool_outputs",
+            content=(
+                "Prior tool output mentioned scan-complete and routine file listing. "
+                "This accumulated state should not make a later trusted todo write "
+                "require confirmation."
+            ),
+            source_origin="tool_output",
+            channel_trust="tool_passed",
+            confirmation_status="auto_accepted",
+            scope="user",
+        )
+        assert retrieval.chunk_id
+
+    async with _contract_harness_context(tmp_path, monkeypatch, prestart=_seed) as harness:
+        sid = await _create_session(harness.client)
+        reply = await harness.client.call(
+            "session.message",
+            {"session_id": sid, "content": "add todo: scan-complete"},
+        )
+
+    assert reply.get("lockdown_level") == "normal"
+    assert int(reply.get("blocked_actions", 0)) == 0
+    assert int(reply.get("confirmation_required_actions", 0)) == 0
+    assert reply.get("pending_confirmation_ids") == []
+    assert int(reply.get("executed_actions", 0)) == 1
+    outputs = _extract_tool_outputs(reply)
+    assert "todo.create" in outputs
+
+
+@pytest.mark.asyncio
+async def test_contract_first_principles_gates_survive_accumulated_state(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def _seed(config: DaemonConfig) -> None:
+        tool_recall = IngestionPipeline(config.data_dir / "memory_entries").ingest(
+            source_id="prior-tool-output",
+            source_type="tool",
+            collection="tool_outputs",
+            content=(
+                "Prior tool output mentioned latest world news, README.md, favorite color, "
+                "and related projects. This accumulated state should not make the first "
+                "principles gates require confirmation."
+            ),
+            source_origin="tool_output",
+            channel_trust="tool_passed",
+            confirmation_status="auto_accepted",
+            scope="user",
+        )
+        assert tool_recall.chunk_id
+
+    async with _contract_harness_context(tmp_path, monkeypatch, prestart=_seed) as harness:
+        sid = await _create_session(harness.client)
+
+        hello = await harness.client.call(
+            "session.message",
+            {"session_id": sid, "content": "hello"},
+        )
+        assert hello.get("lockdown_level") == "normal"
+        assert int(hello.get("blocked_actions", 0)) == 0
+        assert int(hello.get("confirmation_required_actions", 0)) == 0
+        assert str(hello.get("response", "")).strip()
+
+        search = await harness.client.call(
+            "session.message",
+            {"session_id": sid, "content": "search for the latest news"},
+        )
+        assert search.get("lockdown_level") == "normal"
+        assert int(search.get("blocked_actions", 0)) == 0
+        assert int(search.get("confirmation_required_actions", 0)) == 0
+        assert "web.search" in _extract_tool_outputs(search)
+
+        read = await harness.client.call(
+            "session.message",
+            {"session_id": sid, "content": "read README.md"},
+        )
+        assert read.get("lockdown_level") == "normal"
+        assert int(read.get("blocked_actions", 0)) == 0
+        assert int(read.get("confirmation_required_actions", 0)) == 0
+        assert "fs.read" in _extract_tool_outputs(read)
+
+        remember = await harness.client.call(
+            "session.message",
+            {"session_id": sid, "content": "remember that my favorite color is blue"},
+        )
+        assert remember.get("lockdown_level") == "normal"
+        assert int(remember.get("blocked_actions", 0)) == 0
+        assert int(remember.get("confirmation_required_actions", 0)) == 0
+        assert remember.get("pending_confirmation_ids") == []
+        assert "note.create" in _extract_tool_outputs(remember)
+
+        sid_later = await _create_session(harness.client)
+        recalled = await harness.client.call(
+            "session.message",
+            {"session_id": sid_later, "content": "what is my favorite color?"},
+        )
+        assert recalled.get("lockdown_level") == "normal"
+        assert int(recalled.get("blocked_actions", 0)) == 0
+        assert int(recalled.get("confirmation_required_actions", 0)) == 0
+        assert "blue" in str(recalled.get("response", "")).lower()
+
+        multi = await harness.client.call(
+            "session.message",
+            {"session_id": sid_later, "content": "read the README and search for related projects"},
+        )
+        assert multi.get("lockdown_level") == "normal"
+        assert int(multi.get("blocked_actions", 0)) == 0
+        assert int(multi.get("confirmation_required_actions", 0)) == 0
+        outputs = _extract_tool_outputs(multi)
+        assert "fs.read" in outputs
+        assert "web.search" in outputs
+
+
+@pytest.mark.asyncio
 async def test_contract_single_unknown_action_kind_does_not_immediately_lockdown(
     contract_harness: ContractHarness,
 ) -> None:
@@ -1257,6 +1470,9 @@ async def test_contract_memory_remember_persists_and_is_used_later(
     )
     assert remember.get("lockdown_level") == "normal"
     assert int(remember.get("blocked_actions", 0)) == 0
+    assert int(remember.get("confirmation_required_actions", 0)) == 0
+    assert remember.get("pending_confirmation_ids") == []
+    assert "note.create" in _extract_tool_outputs(remember)
 
     # Trigger summarization (default summarize_interval=10 entries; ~5 turns).
     for _ in range(4):
@@ -1280,6 +1496,141 @@ async def test_contract_memory_remember_persists_and_is_used_later(
     )
     assert reply.get("lockdown_level") == "normal"
     assert "blue" in str(reply.get("response", "")).lower()
+
+
+@pytest.mark.asyncio
+async def test_contract_same_session_trusted_user_fact_is_usable_immediately(
+    contract_harness: ContractHarness,
+) -> None:
+    sid = await _create_session(contract_harness.client)
+
+    remember = await contract_harness.client.call(
+        "session.message",
+        {"session_id": sid, "content": "remember that my favorite color is blue"},
+    )
+    assert remember.get("lockdown_level") == "normal"
+    assert int(remember.get("blocked_actions", 0)) == 0
+    assert int(remember.get("confirmation_required_actions", 0)) == 0
+    assert remember.get("pending_confirmation_ids") == []
+    assert "note.create" in _extract_tool_outputs(remember)
+
+    reply = await contract_harness.client.call(
+        "session.message",
+        {"session_id": sid, "content": "what is my favorite color?"},
+    )
+    assert reply.get("lockdown_level") == "normal"
+    assert int(reply.get("blocked_actions", 0)) == 0
+    assert int(reply.get("confirmation_required_actions", 0)) == 0
+    assert "blue" in str(reply.get("response", "")).lower()
+
+
+@pytest.mark.asyncio
+async def test_contract_same_session_trusted_user_fact_not_only_untrusted_evidence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured_inputs: list[str] = []
+
+    async with _contract_harness_context(tmp_path, monkeypatch) as harness:
+
+        async def _capture_complete(
+            self: LocalPlannerProvider,
+            messages: list[Message],
+            tools: list[dict[str, Any]] | None = None,
+        ) -> ProviderResponse:
+            if messages:
+                captured_inputs.append(str(messages[-1].content))
+            return await _stub_complete(self, messages, tools)
+
+        monkeypatch.setattr(LocalPlannerProvider, "complete", _capture_complete, raising=True)
+        sid = await _create_session(harness.client)
+        await harness.client.call(
+            "session.message",
+            {"session_id": sid, "content": "remember that my favorite color is blue"},
+        )
+        reply = await harness.client.call(
+            "session.message",
+            {"session_id": sid, "content": "what is my favorite color?"},
+        )
+        assert "blue" in str(reply.get("response", "")).lower()
+
+    planner_input = _latest_user_request_planner_input(captured_inputs)
+    trusted_section = _extract_trusted_context_before_request(planner_input).lower()
+    assert "trusted same-session user context" in trusted_section
+    assert "favorite color is blue" in trusted_section
+
+
+@pytest.mark.asyncio
+async def test_contract_cli_memory_write_surfaces_identity_in_new_session(
+    contract_harness: ContractHarness,
+) -> None:
+    written = await _run_contract_cli(
+        contract_harness.config,
+        "memory",
+        "write",
+        "--type",
+        "persona_fact",
+        "--key",
+        "user:editor",
+        "--value",
+        "helix",
+    )
+    assert written.returncode == 0, written.stderr or written.stdout
+
+    sid = await _create_session(contract_harness.client)
+    reply = await contract_harness.client.call(
+        "session.message",
+        {"session_id": sid, "content": "what is my favorite editor?"},
+    )
+    assert reply.get("lockdown_level") == "normal"
+    assert int(reply.get("blocked_actions", 0)) == 0
+    assert int(reply.get("confirmation_required_actions", 0)) == 0
+    assert "helix" in str(reply.get("response", "")).lower()
+
+
+@pytest.mark.asyncio
+async def test_contract_cli_memory_write_identity_context_is_explicitly_trusted(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured_inputs: list[str] = []
+
+    async with _contract_harness_context(tmp_path, monkeypatch) as harness:
+        written = await _run_contract_cli(
+            harness.config,
+            "memory",
+            "write",
+            "--type",
+            "persona_fact",
+            "--key",
+            "user:editor",
+            "--value",
+            "helix",
+        )
+        assert written.returncode == 0, written.stderr or written.stdout
+
+        async def _capture_complete(
+            self: LocalPlannerProvider,
+            messages: list[Message],
+            tools: list[dict[str, Any]] | None = None,
+        ) -> ProviderResponse:
+            if messages:
+                captured_inputs.append(str(messages[-1].content))
+            return await _stub_complete(self, messages, tools)
+
+        monkeypatch.setattr(LocalPlannerProvider, "complete", _capture_complete, raising=True)
+        sid = await _create_session(harness.client)
+        reply = await harness.client.call(
+            "session.message",
+            {"session_id": sid, "content": "what is my favorite editor?"},
+        )
+        assert "helix" in str(reply.get("response", "")).lower()
+
+    planner_input = _latest_user_request_planner_input(captured_inputs)
+    trusted_section = _extract_trusted_context_before_request(planner_input).lower()
+    assert "trusted identity memory" in trusted_section
+    assert "user:editor" in trusted_section
+    assert "helix" in trusted_section
 
 
 @pytest.mark.asyncio
@@ -1566,6 +1917,16 @@ async def test_contract_note_create_and_search_executes_without_lockdown(
         "groceries" in json.dumps(item, ensure_ascii=True).lower()
         for item in search_payload["entries"]
     )
+
+    sid_later = await _create_session(contract_harness.client)
+    recalled = await contract_harness.client.call(
+        "session.message",
+        {"session_id": sid_later, "content": "what did I ask you to remember about groceries?"},
+    )
+    assert recalled.get("lockdown_level") == "normal"
+    assert int(recalled.get("blocked_actions", 0)) == 0
+    assert int(recalled.get("confirmation_required_actions", 0)) == 0
+    assert "groceries" in str(recalled.get("response", "")).lower()
 
 
 @pytest.mark.asyncio
