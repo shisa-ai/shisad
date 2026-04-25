@@ -1,7 +1,7 @@
 # shisad Supply Chain Audit
 
 *Created: 2026-03-31*  
-*Updated: 2026-04-23 (v0.7.0 candidate refresh: python-dotenv CVE-2026-28684 remediated, supply-chain parity rechecked, and optional Ledger bridge npm advisories revalidated)*
+*Updated: 2026-04-25 (v0.7.0 candidate refresh: python-dotenv CVE-2026-28684 remediated, Ledger bridge axios advisories remediated through an npm override, and residual Ledger SDK uuid advisory documented)*
 *Status: In Progress*  
 *Snapshot basis: `v0.7.0` candidate on `main`*
 
@@ -25,7 +25,7 @@ Goals:
 | Lockfile | `uv.lock`; `contrib/ledger-bridge/package-lock.json` |
 | CI install path | `uv sync --exclude-newer P7D --frozen --dev` (coverage/security-runtime/channel jobs add focused groups) |
 | Release path | GitHub Actions workflow (`publish.yml`) via OIDC trusted publishing |
-| Current risk summary | Base Python install remains low risk; optional Ledger bridge has a documented axios transitive advisory exception pending upstream Ledger SDK fixes |
+| Current risk summary | Base Python install remains low risk; optional Ledger bridge resolves transitive axios to `1.15.2`; residual Ledger SDK npm advisory is the moderate `uuid <14` issue with no compatible upstream fix available today |
 
 ## Pre-analysis Notes
 
@@ -38,6 +38,36 @@ Goals:
 - Accepted risk decision: Python interpreter version remains `>=3.12` and is not treated as a primary attack vector for this audit lane.
 
 ## Follow-up Worklog
+
+### 2026-04-25 — v0.7.0 Ledger bridge axios override refresh
+
+- Scope: fold the approved Ledger bridge axios CVE remediation into the
+  `v0.7.0` release target after the full release-close validation bundle had
+  already passed on `shisad@6227022`.
+- Dependency remediation:
+  - Added a root npm `overrides` entry in `contrib/ledger-bridge/package.json`
+    requiring `axios@^1.15.2`.
+  - Refreshed `contrib/ledger-bridge/package-lock.json`; the committed lockfile
+    now resolves Ledger SDK axios paths to `axios@1.15.2` and
+    `proxy-from-env@2.1.0`.
+- Audit and test result:
+  - `npm install --package-lock-only --ignore-scripts` in
+    `contrib/ledger-bridge/` -> `up to date`; lockfile remains consistent.
+  - `npm ls axios proxy-from-env --all` -> both `@ledgerhq/context-module` and
+    `@ledgerhq/device-management-kit` resolve through `axios@1.15.2`, with
+    `proxy-from-env@2.1.0`.
+  - `npm test` -> `6 passed`.
+  - `npm audit --omit=dev --audit-level=high` -> exit 0.
+  - Residual npm audit output is the existing moderate `uuid <14` advisory
+    surfaced through Ledger SDK packages (`@ledgerhq/device-management-kit`,
+    `@ledgerhq/device-transport-kit-node-hid`, and dependents). npm reports no
+    compatible non-breaking fix through the current Ledger package set.
+- Risk disposition:
+  - The prior Ledger axios advisory exception is closed for `v0.7.0`.
+  - The remaining open exception is tracked as `SC-v0.7.0-ledger-uuid`.
+  - The bridge remains optional, disabled by default, loopback-only, and bearer
+    token capable; no core Python install path or default shisad runtime path
+    imports this Node dependency tree.
 
 ### 2026-04-23 — v0.7.0 candidate release-close parity refresh
 
@@ -53,20 +83,21 @@ Goals:
     `python-dotenv>=1.2.2,<2` and refreshes `uv.lock`.
   - `python3 /home/ubuntu/shisad-dev/scripts/audit_supply_chain_check.py --repo
     /home/ubuntu/shisad` returned `Supply-chain audit parity: OK`.
-- Optional Node bridge audit refresh:
-  - `npm audit --json` in `contrib/ledger-bridge/` still reports 7 moderate /
-    0 high advisories through the Ledger dependency tree (`axios` SSRF/header
-    injection plus `uuid` buffer-bounds handling).
+- Optional Node bridge audit refresh (historical; superseded for axios by the
+  2026-04-25 override refresh above):
+  - `npm audit --json` in `contrib/ledger-bridge/` reported 7 moderate /
+    0 high advisories through the Ledger dependency tree at that point (`axios`
+    SSRF/header injection plus `uuid` buffer-bounds handling).
   - The available npm "fix" paths remain semver-major downgrades or
     incompatible Ledger package changes, not a drop-in clean resolution for the
     current bridge tree.
-- Risk disposition:
+- Risk disposition at that point:
   - The base Python install is expected to be clean again after the
     `python-dotenv` bump and lock refresh.
   - The optional Ledger bridge remains disabled by default, loopback-only, and
-    bearer-token capable; its residual npm advisory exception remains
-    documented until Ledger publishes compatible fixed packages or the bridge
-    dependency tree changes.
+    bearer-token capable; its residual npm advisory exception remained
+    documented until the 2026-04-25 axios override refresh narrowed the open
+    exception to `uuid <14`.
 
 ### 2026-04-20 — v0.6.7 Ledger bridge subproject audit entry
 
@@ -82,20 +113,23 @@ Goals:
     `@ledgerhq/device-management-kit@1.2.0`,
     `@ledgerhq/device-signer-kit-ethereum@1.14.0`,
     `@ledgerhq/device-transport-kit-node-hid@1.0.1`, and `rxjs`.
-- Dependency remediation:
+- Dependency remediation (v0.6.7 state; superseded for axios by the 2026-04-25
+  override refresh above):
   - Bumped `@ledgerhq/context-module` from `1.14.1` to `1.16.0` and
     `@ledgerhq/device-signer-kit-ethereum` from `1.11.1` to `1.14.0`.
   - `npm test` and `npx tsc --noEmit` stayed green after the bump.
-  - The bump removed the high-severity audit classification, but residual
-    moderate axios-derived findings remain because
-    `@ledgerhq/device-management-kit@1.2.0` still depends on `axios@1.13.5`.
+  - The bump removed the high-severity audit classification, but at v0.6.7
+    release close residual moderate axios-derived findings remained because
+    `@ledgerhq/device-management-kit@1.2.0` still depended on `axios@1.13.5`.
+    The `v0.7.0` candidate later closes that axios exception with the 2026-04-25
+    override refresh.
 - Audit result:
   - `npm audit --json` in `contrib/ledger-bridge/` exited 1 with 6
     axios-related vulnerabilities (6 moderate, 0 high) through Ledger packages.
   - Advisories reported by npm for the vulnerable axios range include
     denial-of-service via `__proto__` prototype pollution, `NO_PROXY` SSRF, and
     metadata exfiltration via header injection.
-  - The current compatible Ledger dependency tree does not offer a clean
+  - At that point the compatible Ledger dependency tree did not offer a clean
     non-breaking resolution for `@ledgerhq/device-management-kit`,
     `@ledgerhq/device-transport-kit-node-hid`, or axios.
 - Risk disposition:
@@ -281,7 +315,7 @@ New packages should meet a higher bar than upgrades:
 
 | ID | Rationale | Risk | Target milestone |
 |---|---|---|---|
-| SC-v0.6.7-ledger-axios | After bumping compatible direct Ledger packages, `@ledgerhq/device-management-kit@1.2.0` still pulls npm-advised `axios` and `uuid` ranges with no compatible clean fix in the accepted bridge tree. The optional bridge is loopback-only, disabled by default, and can require bearer auth; upgrading blindly would risk breaking hardware signing. | A local optional Node subproject carries vulnerable transitive code until Ledger publishes compatible fixed packages. Current audit classification on the 2026-04-23 refresh is 7 moderate / 0 high. | Recheck during `v0.7.1` release close (or earlier if the bridge dependency tree changes) and drop the exception only when a compatible clean Ledger package set exists. |
+| SC-v0.7.0-ledger-uuid | After the `v0.7.0` axios override refresh, the optional Ledger bridge audit still reports the moderate `uuid <14` buffer-bounds advisory through Ledger SDK packages, and npm does not offer a compatible non-breaking fix for the accepted bridge tree. The optional bridge is loopback-only, disabled by default, and can require bearer auth; upgrading blindly would risk breaking hardware signing. | A local optional Node subproject carries residual moderate `uuid`-advised transitive code until Ledger publishes compatible fixed packages. Current high/critical audit gate is clean (`npm audit --omit=dev --audit-level=high` exits 0). | Recheck during `v0.7.1` release close (or earlier if the bridge dependency tree changes) and drop the exception only when a compatible clean Ledger package set exists. |
 
 ## Immediate Hardening Applied (2026-03-31)
 
