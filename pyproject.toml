@@ -51,6 +51,7 @@ asyncio_mode = "auto"
 markers = [
     "requires_cap_net_admin: tests that require CAP_NET_ADMIN capability",
     "live_smoke: minimal high-signal live-model behavioral coverage",
+    "first_principles: deterministic behavioral gates for product basics",
 ]
 
 [tool.ruff]

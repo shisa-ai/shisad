@@ -1,0 +1,22 @@
+user_id: alice
+memory:
+  - type: persona_fact
+    key: user:favorite_editor
+    value: helix
+  - type: preference
+    key: response_style
+    predicate: prefers(response_style)
+    strength: moderate
+    value: concise implementation notes with exact validation commands
+  - type: fact
+    key: project:codename
+    value: orion
+transcript:
+  - role: user
+    content: hello
+  - role: user
+    content: remember that my favorite color is blue
+  - role: user
+    content: search for the latest news
+pending_actions:
+  - content: can you look for the file? filename should be similar if it's not exact

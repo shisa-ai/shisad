@@ -20,6 +20,10 @@ When your implementation would break any of these behavioral requirements, stop 
 
 Quick check (before claiming done): `uv run pytest tests/behavioral/ -q`.
 
+For runtime-facing changes, run the named first-principles gate directly before
+the broader behavioral suite:
+`uv run pytest tests/behavioral/test_first_principles_gates.py -q`.
+
 Behavioral tests are the hard deterministic gate. For runtime-facing changes, also run a live verification pass via `runner/harness.sh` before claiming end-to-end completion.
 
 **If a security change breaks functionality, the security change is wrong — not the functionality.**
@@ -174,7 +178,10 @@ uv run pytest tests/integration/test_security_loop_defense.py -q
 uv run ruff check src/ tests/ scripts/
 uv run mypy src/shisad/
 
-# 3) Behavioral tests (MUST pass — these prove the product works)
+# 3) First-principles behavioral gates (MUST pass for runtime-facing changes)
+uv run pytest tests/behavioral/test_first_principles_gates.py -q
+
+# 3a) Behavioral tests (MUST pass — these prove the product works)
 uv run pytest tests/behavioral/ -q
 
 # 3b) Tool status check (review docs/TOOL-STATUS.md; regenerate with live daemon if available)
@@ -256,6 +263,11 @@ test: add prompt injection test cases
 When asked to close a milestone, review remediation, or release-readiness pass:
 
 0. **Behavioral tests pass**: `uv run pytest tests/behavioral/ -q` — if these fail, the milestone is not closeable regardless of other test results
+0fp. **First-principles gates pass for runtime-facing scope**:
+   `uv run pytest tests/behavioral/test_first_principles_gates.py -q`.
+   These gates cover clean, accumulated-state, degraded-web,
+   confirmation-followup, require-confirmation, and cross-session postures for
+   the basic product contract in `docs/DESIGN-PHILOSOPHY.md`.
 0a. **Release-close validation bundle recorded**: before any release-close/publish claim, run and record the full release bundle unless the human lead explicitly approves a narrower scope:
    - `uv run pytest tests/adversarial -q`
    - `uv run pytest tests/behavioral/ -q`

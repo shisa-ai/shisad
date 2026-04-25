@@ -1,0 +1,10 @@
+user_id: alice
+memory:
+  - type: persona_fact
+    key: user:favorite_editor
+    value: helix
+transcript:
+  - role: user
+    content: hello
+pending_actions:
+  - content: can you look for the file? filename should be similar if it's not exact
