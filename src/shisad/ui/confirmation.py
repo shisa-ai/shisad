@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import html
 import math
+import shlex
 from collections import defaultdict, deque
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -34,6 +35,12 @@ def _summarize_scalar(value: Any, *, max_len: int = 96) -> str:
     if len(raw) <= max_len:
         return raw
     return f"{raw[:max_len]}… [{len(raw)} chars]"
+
+
+def _summarize_shell_command(command: list[Any], *, max_len: int = 240) -> str | None:
+    if not command or not all(isinstance(item, str) for item in command):
+        return None
+    return _summarize_scalar(shlex.join(command), max_len=max_len)
 
 
 def _recipient_hint(arguments: dict[str, Any]) -> str:
@@ -80,6 +87,11 @@ def safe_summary(
             hidden.append(key)
             continue
         if isinstance(value, list):
+            if action == "shell.exec" and key == "command":
+                command_summary = _summarize_shell_command(value)
+                if command_summary is not None:
+                    params.append((key, command_summary))
+                    continue
             params.append((key, f"[{len(value)} items]"))
             if value and isinstance(value[0], str):
                 hidden.append(key)

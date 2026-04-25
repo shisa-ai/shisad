@@ -40,6 +40,21 @@ def test_m6_t2_structured_viewer_renders_action_correctly() -> None:
     assert "First-time recipient/destination" in rendered
 
 
+def test_gh12_shell_exec_confirmation_preview_includes_literal_command() -> None:
+    summary = safe_summary(
+        action="shell.exec",
+        risk_level="medium",
+        arguments={
+            "command": ["find", ".", "-maxdepth", "2", "-iname", "*install*log*"],
+            "read_paths": ["."],
+        },
+    )
+    rendered = render_structured_confirmation(summary)
+
+    assert "command: find . -maxdepth 2 -iname '*install*log*'" in rendered
+    assert "command: [6 items]" not in rendered
+
+
 def test_m6_t3_warning_generator_detects_first_time_recipient() -> None:
     generator = ConfirmationWarningGenerator()
     warnings = generator.generate(

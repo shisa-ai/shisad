@@ -286,8 +286,76 @@ async def test_live_model_fs_list_executes(live_harness: LiveHarness) -> None:
     assert len(entries) > 0
 
 
-def _mentions_todo_log(reply: dict[str, object]) -> bool:
-    return "todo.log" in json.dumps(reply, ensure_ascii=True).lower()
+def _reply_exposes_recovered_todo_log(reply: dict[str, object]) -> bool:
+    outputs = _extract_tool_outputs(reply)
+    for payload in outputs.get("fs.read", []):
+        if payload.get("ok") is not True:
+            continue
+        path = str(payload.get("path", "")).lower()
+        content = str(payload.get("content", "")).lower()
+        if path.endswith("/todo.log") or "open: verify live similar-file recovery" in content:
+            return True
+    for payload in outputs.get("fs.list", []):
+        if payload.get("ok") is not True:
+            continue
+        entries = payload.get("entries", [])
+        if not isinstance(entries, list):
+            continue
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            name = str(entry.get("name", "")).lower()
+            path = str(entry.get("path", "")).lower()
+            if name == "todo.log" or path.endswith("/todo.log"):
+                return True
+    for payload in outputs.get("shell.exec", []):
+        if payload.get("allowed") is not True:
+            continue
+        if "todo.log" in str(payload.get("stdout", "")).lower():
+            return True
+    return False
+
+
+def test_gh12_recovery_matcher_ignores_failed_read_path() -> None:
+    reply = {
+        "tool_outputs": [
+            {
+                "tool_name": "fs.read",
+                "payload": {
+                    "ok": False,
+                    "path": "/workspace/TODO.LOG",
+                    "error": "path_not_found",
+                },
+            }
+        ],
+    }
+
+    assert not _reply_exposes_recovered_todo_log(reply)
+
+
+def test_gh12_recovery_matcher_accepts_real_listing_or_shell_output() -> None:
+    listed = {
+        "tool_outputs": [
+            {
+                "tool_name": "fs.list",
+                "payload": {
+                    "ok": True,
+                    "entries": [{"name": "todo.log", "path": "/workspace/todo.log"}],
+                },
+            }
+        ],
+    }
+    shell = {
+        "tool_outputs": [
+            {
+                "tool_name": "shell.exec",
+                "payload": {"allowed": True, "stdout": "./todo.log\n"},
+            }
+        ],
+    }
+
+    assert _reply_exposes_recovered_todo_log(listed)
+    assert _reply_exposes_recovered_todo_log(shell)
 
 
 @pytest.mark.asyncio
@@ -313,7 +381,7 @@ async def test_live_model_similar_file_recovery_reaches_confirmation_or_listing(
         )
         assert first.get("lockdown_level") == "normal"
         assert int(first.get("blocked_actions", 0)) == 0
-        if _mentions_todo_log(first):
+        if _reply_exposes_recovered_todo_log(first):
             return
         if int(first.get("confirmation_required_actions", 0)) >= 1:
             confirmed_first = await live_harness.client.call(
@@ -322,7 +390,7 @@ async def test_live_model_similar_file_recovery_reaches_confirmation_or_listing(
             )
             assert confirmed_first.get("lockdown_level") == "normal"
             assert int(confirmed_first.get("blocked_actions", 0)) == 0
-            if _mentions_todo_log(confirmed_first):
+            if _reply_exposes_recovered_todo_log(confirmed_first):
                 return
             observed.append(confirmed_first)
             continue
@@ -351,12 +419,12 @@ async def test_live_model_similar_file_recovery_reaches_confirmation_or_listing(
             )
             assert confirmed.get("lockdown_level") == "normal"
             assert int(confirmed.get("blocked_actions", 0)) == 0
-            if _mentions_todo_log(confirmed):
+            if _reply_exposes_recovered_todo_log(confirmed):
                 return
             observed.append(confirmed)
             continue
 
-        if _mentions_todo_log(proposed):
+        if _reply_exposes_recovered_todo_log(proposed):
             return
 
     pytest.fail(
