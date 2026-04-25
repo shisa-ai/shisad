@@ -67,6 +67,7 @@ def contract_harness_factory(
         default_require_confirmation: bool = False,
         web_search_backend_configured: bool = True,
         policy_egress_allowed: bool = True,
+        browser_enabled: bool | None = None,
     ) -> AsyncIterator[ContractHarness]:
         tmp_path = tmp_path_factory.mktemp(name)
         async with _contract_harness_context(
@@ -76,6 +77,7 @@ def contract_harness_factory(
             default_require_confirmation=default_require_confirmation,
             web_search_backend_configured=web_search_backend_configured,
             policy_egress_allowed=policy_egress_allowed,
+            browser_enabled=browser_enabled,
         ) as harness:
             yield harness
 

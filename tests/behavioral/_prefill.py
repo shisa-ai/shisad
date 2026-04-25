@@ -8,6 +8,7 @@ helper and should assert the provenance they seeded.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Iterable, Mapping
 from pathlib import Path
 from typing import Any
@@ -43,10 +44,15 @@ async def prefill_memory(
     entry_ids: list[str] = []
     for index, raw_entry in enumerate(entries):
         value = raw_entry.get("value", raw_entry.get("content", ""))
+        ingress_content = (
+            value
+            if isinstance(value, (str, bytes))
+            else json.dumps(value, ensure_ascii=True, sort_keys=True)
+        )
         ingress = await client.call(
             "memory.mint_ingress_context",
             {
-                "content": value,
+                "content": ingress_content,
                 "source_type": "user",
                 "source_id": f"user:{user_id}",
             },

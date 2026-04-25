@@ -769,6 +769,7 @@ async def _contract_harness_context(
     default_require_confirmation: bool = False,
     web_search_backend_configured: bool = True,
     policy_egress_allowed: bool = True,
+    browser_enabled: bool | None = None,
 ) -> AsyncIterator[ContractHarness]:
     server: ThreadingHTTPServer | None = None
     thread: threading.Thread | None = None
@@ -817,7 +818,9 @@ async def _contract_harness_context(
         web_search_enabled=True,
         web_search_backend_url=backend_url,
         web_allowed_domains=["127.0.0.1", "localhost"],
-        browser_enabled=web_search_backend_configured,
+        browser_enabled=web_search_backend_configured
+        if browser_enabled is None
+        else browser_enabled,
         browser_command=(
             f"{sys.executable} "
             f"{Path(__file__).resolve().parents[1] / 'fixtures' / 'fake_playwright_cli.py'}"
@@ -4581,6 +4584,7 @@ async def contract_harness_no_policy_egress(
         tmp_path,
         monkeypatch,
         policy_egress_allowed=False,
+        browser_enabled=False,
     ) as harness:
         yield harness
 
