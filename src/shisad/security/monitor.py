@@ -77,6 +77,21 @@ class ActionMonitor:
         "--exec=",
         "--exec-batch=",
     )
+    _FORBIDDEN_CONTENT_SEARCH_SHELL_TOKENS: ClassVar[set[str]] = {
+        "&&",
+        "||",
+        ";",
+        "|",
+        ">",
+        ">>",
+        "--dereference-recursive",
+        "--files",
+        "--follow",
+        "--pre",
+    }
+    _FORBIDDEN_CONTENT_SEARCH_SHELL_TOKEN_PREFIXES: ClassVar[tuple[str, ...]] = (
+        "--pre=",
+    )
     _SUSPICIOUS_ARG_TOKENS: ClassVar[set[str]] = {
         "evil.com",
         "attacker",
@@ -249,6 +264,12 @@ class ActionMonitor:
             or lowered in {"-follow", "--dereference", "--follow"}
         )
 
+    @staticmethod
+    def _grep_token_dereferences_recursively(token: str) -> bool:
+        if token == "--dereference-recursive":
+            return True
+        return token.startswith("-") and not token.startswith("--") and "R" in token
+
     @classmethod
     def _shell_file_discovery_targets_current_directory(
         cls,
@@ -378,6 +399,21 @@ class ActionMonitor:
         command_name = command[0].rsplit("/", 1)[-1].lower()
         if command_name not in cls._READ_ONLY_FILE_CONTENT_SEARCH_SHELL_COMMANDS:
             return False
+        lowered_tokens = {token.lower() for token in command}
+        has_forbidden_prefix = any(
+            token.startswith(prefix)
+            for token in lowered_tokens
+            for prefix in cls._FORBIDDEN_CONTENT_SEARCH_SHELL_TOKEN_PREFIXES
+        )
+        if (
+            lowered_tokens.intersection(cls._FORBIDDEN_CONTENT_SEARCH_SHELL_TOKENS)
+            or has_forbidden_prefix
+        ):
+            return False
+        if command_name == "grep" and any(
+            cls._grep_token_dereferences_recursively(token) for token in command[1:]
+        ):
+            return False
         if any(cls._is_symlink_follow_token(token) for token in command[1:]):
             return False
         cwd = arguments.get("cwd")
@@ -395,11 +431,8 @@ class ActionMonitor:
                 if not cls._is_current_directory_token(read_path):
                     return False
         targets = [token for token in command[1:] if not token.startswith("-")]
-        if len(targets) > 1 and not all(
-            cls._is_current_directory_token(target) for target in targets[1:]
-        ):
+        if len(targets) != 2 or not cls._is_current_directory_token(targets[1]):
             return False
-        lowered_tokens = {token.lower() for token in command}
         return not any("://" in token or token.startswith("`") for token in lowered_tokens)
 
     @staticmethod

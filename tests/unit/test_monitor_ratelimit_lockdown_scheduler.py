@@ -137,7 +137,18 @@ def test_gh12_action_monitor_rejects_destructive_shell_search_wording() -> None:
     assert decision.kind == MonitorDecisionType.REJECT
 
 
-def test_gh12_action_monitor_allows_read_only_shell_content_search() -> None:
+@pytest.mark.parametrize(
+    "command",
+    [
+        ["grep", "-r", "error", "."],
+        ["grep", "--recursive", "error", "."],
+        ["rg", "error", "."],
+        ["rg", "-n", "error", "."],
+    ],
+)
+def test_gh12_action_monitor_allows_read_only_shell_content_search(
+    command: list[str],
+) -> None:
     monitor = ActionMonitor()
     decision = monitor.evaluate(
         user_goal="search logs for error",
@@ -145,7 +156,7 @@ def test_gh12_action_monitor_allows_read_only_shell_content_search() -> None:
             SimpleNamespace(
                 tool_name="shell.exec",
                 arguments={
-                    "command": ["grep", "-R", "error", "."],
+                    "command": command,
                     "read_paths": ["."],
                 },
                 reasoning="search file contents in workspace logs",
@@ -154,6 +165,41 @@ def test_gh12_action_monitor_allows_read_only_shell_content_search() -> None:
     )
 
     assert decision.kind != MonitorDecisionType.REJECT
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        ["grep", "-R", "error", "."],
+        ["grep", "-Rin", "error", "."],
+        ["grep", "--dereference-recursive", "error", "."],
+        ["rg", "--follow", "error", "."],
+        ["rg", "--files", "."],
+        ["rg", "--pre=cat", "error", "."],
+        ["rg", "--pre", "cat", "error", "."],
+        ["rg", "error"],
+        ["rg", "error", "cfg"],
+    ],
+)
+def test_gh12_action_monitor_rejects_unsafe_shell_content_search(
+    command: list[str],
+) -> None:
+    monitor = ActionMonitor()
+    decision = monitor.evaluate(
+        user_goal="search logs for error",
+        actions=[
+            SimpleNamespace(
+                tool_name="shell.exec",
+                arguments={
+                    "command": command,
+                    "read_paths": ["."],
+                },
+                reasoning="unsafe content search must not bypass file-discovery reject",
+            )
+        ],
+    )
+
+    assert decision.kind == MonitorDecisionType.REJECT
 
 
 @pytest.mark.parametrize(
