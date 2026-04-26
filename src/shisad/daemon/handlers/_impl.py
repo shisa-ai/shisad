@@ -170,6 +170,7 @@ _MONITOR_REJECT_THRESHOLD = 3
 _HIGH_RISK_CONFIRM_TOKENS: tuple[str, ...] = ("send", "share", "delete")
 _CONFIRMATION_ALERT_COOLDOWN_SECONDS = 600
 _CONTROL_API_AUTHENTICATED_WRITE = "_control_api_authenticated_write"
+_GH12_READ_ONLY_SHELL_COMMANDS = frozenset({"fd", "find", "grep", "ls", "rg"})
 
 
 class _EventPublisher:
@@ -1746,14 +1747,21 @@ class HandlerImplementation(
         write_paths = [_workspace_path(item) for item in params.get("write_paths", [])]
         cwd_raw = str(params.get("cwd", ""))
         cwd = _workspace_path(cwd_raw) if cwd_raw else (str(workspace) if workspace else "")
+        command = [str(token) for token in params.get("command", [])]
+        env = {str(k): str(v) for k, v in dict(params.get("env", {})).items()}
+        if HandlerImplementation._uses_gh12_read_only_shell_command(
+            tool_name=tool_name,
+            command=command,
+        ):
+            env["PATH"] = HandlerImplementation._trusted_shell_path_without_workspace(workspace)
         return SandboxConfig(
             session_id=str(sid),
             tool_name=str(tool_name),
-            command=[str(token) for token in params.get("command", [])],
+            command=command,
             read_paths=read_paths,
             write_paths=write_paths,
             network_urls=[str(item) for item in params.get("network_urls", [])],
-            env={str(k): str(v) for k, v in dict(params.get("env", {})).items()},
+            env=env,
             request_headers={
                 str(k): str(v) for k, v in dict(params.get("request_headers", {})).items()
             },
@@ -1769,6 +1777,40 @@ class HandlerImplementation(
             degraded_mode=merged_policy.degraded_mode,
             origin=origin.model_dump(mode="json"),
         )
+
+    @staticmethod
+    def _uses_gh12_read_only_shell_command(
+        *,
+        tool_name: ToolName | str,
+        command: list[str],
+    ) -> bool:
+        if str(tool_name) != "shell.exec" or not command:
+            return False
+        executable = command[0].strip()
+        if not executable or "/" in executable or "\\" in executable:
+            return False
+        return executable.lower() in _GH12_READ_ONLY_SHELL_COMMANDS
+
+    @staticmethod
+    def _trusted_shell_path_without_workspace(workspace: Path | None) -> str:
+        workspace_resolved = workspace.resolve(strict=False) if workspace else None
+        trusted_entries: list[str] = []
+        for raw_entry in os.environ.get("PATH", os.defpath).split(os.pathsep):
+            if not raw_entry:
+                continue
+            entry = Path(raw_entry).expanduser()
+            if not entry.is_absolute():
+                continue
+            resolved = entry.resolve(strict=False)
+            if workspace_resolved and (
+                resolved == workspace_resolved or workspace_resolved in resolved.parents
+            ):
+                continue
+            trusted_entries.append(str(resolved))
+        for raw_entry in os.defpath.split(os.pathsep):
+            entry = Path(raw_entry).resolve(strict=False)
+            trusted_entries.append(str(entry))
+        return os.pathsep.join(dict.fromkeys(trusted_entries))
 
     async def _publish_control_plane_evaluation(
         self,

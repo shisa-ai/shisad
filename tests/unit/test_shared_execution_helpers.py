@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 
 import pytest
 
@@ -165,6 +166,48 @@ def test_gh12_shell_sandbox_config_roots_relative_paths_in_workspace(tmp_path) -
 
     assert config.cwd == str(tmp_path.resolve())
     assert config.read_paths == [str(tmp_path.resolve())]
+
+
+def test_gh12_shell_sandbox_config_filters_workspace_path_for_read_only_commands(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    merged = _floor_policy()
+    workspace = tmp_path / "workspace"
+    workspace_bin = workspace / "bin"
+    workspace_bin.mkdir(parents=True)
+    monkeypatch.setenv(
+        "PATH",
+        os.pathsep.join([".", str(workspace_bin), "/usr/bin"]),
+    )
+    origin = Origin(
+        session_id="s-1",
+        user_id="alice",
+        workspace_id="ws-1",
+        actor="planner",
+        trust_level="trusted",
+        channel="cli",
+    )
+
+    config = HandlerImplementation._build_sandbox_config(
+        sid="s-1",
+        tool_name="shell.exec",
+        params={
+            "command": ["rg", "TODO", "."],
+            "read_paths": ["."],
+            "cwd": "",
+            "env": {"PATH": f"{workspace_bin}{os.pathsep}/usr/bin"},
+        },
+        merged_policy=merged,
+        origin=origin,
+        approved_by_pep=True,
+        workspace_root=workspace,
+    )
+
+    path_entries = config.env["PATH"].split(os.pathsep)
+    assert "." not in path_entries
+    assert str(workspace_bin.resolve()) not in path_entries
+    assert "/usr/bin" in path_entries
 
 
 @pytest.mark.asyncio
