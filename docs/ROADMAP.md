@@ -265,11 +265,34 @@ TOTP entry remain deferred to `v0.8.0`.
 - Derived graph query/export and consolidation foundations land with explicit
   user confirmation for promoted identity and strong-update paths.
 
-#### v0.7.1 — Memory hardening and benchmark closure
+#### v0.7.1 — Bug-fix point release
+
+- Trusted command-chat no-regex UX fix: pending confirmations become
+  planner context; confirmation/rejection uses a structured PEP-gated
+  `action.resolve` planner tool instead of daemon-side fuzzy/regex parsing.
+- Trusted command-chat lockdown recovery: `caution`-level session lockdown
+  recoverable from the chat surface via a PEP-gated `lockdown.resume`
+  planner tool; lockdown notice surfaces the in-chat and CLI recovery
+  paths with the session id.
+- Memory recall is `(user, workspace)`-scoped by default, with explicit
+  operator-driven widening; same-scope recall is not re-classified as
+  untrusted solely because it came from a prior session.
+- Operator preflight cleanup: harness and CLI quality-of-life fixes
+  surfaced during live verification.
+
+#### v0.7.2 — Memory hardening and benchmark closure
 
 - Benchmark adapters and oracle diagnostics
 - Retrieval/schema precision and telemetry hardening
 - Memory poisoning and persistence-policy regression closure
+
+#### v0.7.3 — Open threads + working-context UX
+
+- User-visible thread controls (list, pin, snooze, resume, close) on top of
+  the v0.7.0 Active Attention surface.
+- Proactive thread surfacing for waiting/blocked items.
+- Operator upgrade/admin UX: snapshot/backup and migration status/finalize
+  commands.
 
 ### v0.8 — UX overhaul
 
@@ -317,6 +340,9 @@ TOTP entry remain deferred to `v0.8.0`.
 | Local attachment ingest baseline | v0.6.6 |
 | Full attachment processing pipeline | v0.7+ |
 | Long-term memory | v0.7 |
+| Command-chat UX bug fixes (no-regex, lockdown recovery) | v0.7.1 |
+| Memory hardening + benchmark closure | v0.7.2 |
+| Open-threads UX + operator admin UX | v0.7.3 |
 | UX overhaul + operator web UI | v0.8 |
 | Security infrastructure consolidation | v0.9 |
 | Multitenant support | v0.10 |
@@ -332,9 +358,11 @@ TOTP entry remain deferred to `v0.8.0`.
 7. Remote-tool trust and interop (`v0.6.5`)
 8. High-value connectors on top of stable orchestration + interop (`v0.6.6`)
 9. Durable memory with gated writes (`v0.7`)
-10. UX overhaul and operator web UI (`v0.8`)
-11. Security infrastructure consolidation (`v0.9`)
-12. Multi-tenant support (`v0.10`)
+10. Command-chat bug-fix point release (`v0.7.1`)
+11. Memory hardening + benchmark closure (`v0.7.2`)
+12. UX overhaul and operator web UI (`v0.8`)
+13. Security infrastructure consolidation (`v0.9`)
+14. Multi-tenant support (`v0.10`)
 
 ## Public Announcement Criteria
 
