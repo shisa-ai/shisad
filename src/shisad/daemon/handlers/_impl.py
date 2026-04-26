@@ -1729,20 +1729,36 @@ class HandlerImplementation(
         merged_policy: ToolExecutionPolicy,
         origin: Origin,
         approved_by_pep: bool,
+        workspace_root: Path | None = None,
     ) -> SandboxConfig:
+        workspace = workspace_root.expanduser().resolve(strict=False) if workspace_root else None
+
+        def _workspace_path(value: Any) -> str:
+            text = str(value)
+            if workspace is None or not text:
+                return text
+            path = Path(text).expanduser()
+            if path.is_absolute():
+                return str(path)
+            return str((workspace / path).resolve(strict=False))
+
+        read_paths = [_workspace_path(item) for item in params.get("read_paths", [])]
+        write_paths = [_workspace_path(item) for item in params.get("write_paths", [])]
+        cwd_raw = str(params.get("cwd", ""))
+        cwd = _workspace_path(cwd_raw) if cwd_raw else (str(workspace) if workspace else "")
         return SandboxConfig(
             session_id=str(sid),
             tool_name=str(tool_name),
             command=[str(token) for token in params.get("command", [])],
-            read_paths=[str(item) for item in params.get("read_paths", [])],
-            write_paths=[str(item) for item in params.get("write_paths", [])],
+            read_paths=read_paths,
+            write_paths=write_paths,
             network_urls=[str(item) for item in params.get("network_urls", [])],
             env={str(k): str(v) for k, v in dict(params.get("env", {})).items()},
             request_headers={
                 str(k): str(v) for k, v in dict(params.get("request_headers", {})).items()
             },
             request_body=str(params.get("request_body", "")),
-            cwd=str(params.get("cwd", "")),
+            cwd=cwd,
             sandbox_type=merged_policy.sandbox_type,
             security_critical=merged_policy.security_critical,
             approved_by_pep=approved_by_pep,
@@ -3553,6 +3569,11 @@ class HandlerImplementation(
             merged_policy=merged_policy,
             origin=origin,
             approved_by_pep=approved_by_pep,
+            workspace_root=(
+                self._config.assistant_fs_roots[0]
+                if str(tool.name) == "shell.exec" and self._config.assistant_fs_roots
+                else None
+            ),
         )
         return await self._execute_sandbox_config(
             sid=sid,

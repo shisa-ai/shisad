@@ -69,6 +69,7 @@ class ActionMonitor:
         "--follow",
     }
     _FORBIDDEN_FILE_DISCOVERY_SHELL_TOKEN_PREFIXES: ClassVar[tuple[str, ...]] = (
+        "-files0-from=",
         "--exec=",
         "--exec-batch=",
     )

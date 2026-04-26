@@ -142,6 +142,31 @@ def test_m4_rf353_build_sandbox_config_keeps_runtime_parity_fields() -> None:
     assert config.model_dump(mode="json") == expected.model_dump(mode="json")
 
 
+def test_gh12_shell_sandbox_config_roots_relative_paths_in_workspace(tmp_path) -> None:
+    merged = _floor_policy()
+    origin = Origin(
+        session_id="s-1",
+        user_id="alice",
+        workspace_id="ws-1",
+        actor="planner",
+        trust_level="trusted",
+        channel="cli",
+    )
+
+    config = HandlerImplementation._build_sandbox_config(
+        sid="s-1",
+        tool_name="shell.exec",
+        params={"command": ["find", "."], "read_paths": ["."], "cwd": ""},
+        merged_policy=merged,
+        origin=origin,
+        approved_by_pep=True,
+        workspace_root=tmp_path,
+    )
+
+    assert config.cwd == str(tmp_path.resolve())
+    assert config.read_paths == [str(tmp_path.resolve())]
+
+
 @pytest.mark.asyncio
 async def test_h1_execute_structured_tool_awaits_async_record_execution_callback() -> None:
     events: list[object] = []
