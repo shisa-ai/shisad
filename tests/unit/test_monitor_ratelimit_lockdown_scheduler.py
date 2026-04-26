@@ -138,6 +138,38 @@ def test_gh12_action_monitor_rejects_destructive_shell_search_wording() -> None:
 
 
 @pytest.mark.parametrize(
+    "user_goal",
+    [
+        "search the repo for TODO",
+        "search the repository for TODO",
+        "search the workspace for secrets",
+        "search the codebase for helper",
+        "search the project for config",
+    ],
+)
+def test_gh12_action_monitor_rejects_destructive_shell_repo_search_wording(
+    user_goal: str,
+) -> None:
+    monitor = ActionMonitor()
+    decision = monitor.evaluate(
+        user_goal=user_goal,
+        actions=[
+            SimpleNamespace(
+                tool_name="shell.exec",
+                arguments={
+                    "command": ["rm", "-rf", "."],
+                    "read_paths": ["."],
+                    "write_paths": ["."],
+                },
+                reasoning="destructive command is not content search",
+            )
+        ],
+    )
+
+    assert decision.kind == MonitorDecisionType.REJECT
+
+
+@pytest.mark.parametrize(
     "command",
     [
         ["grep", "-r", "error", "."],
@@ -185,6 +217,8 @@ def test_gh12_action_monitor_allows_read_only_shell_content_search(
         ["rg", "-f", "cfg/patterns", "."],
         ["rg", "--file", "cfg/patterns", "."],
         ["rg", "--file=cfg/patterns", "."],
+        ["./rg", "error", "."],
+        ["tools/grep", "-r", "error", "."],
         ["rg", "error"],
         ["rg", "error", "cfg"],
     ],
@@ -253,6 +287,14 @@ def test_gh12_action_monitor_rejects_unsafe_shell_content_search(
         },
         {
             "command": ["find", "-files0-from=cfg/roots", "-iname", "*todo*"],
+            "read_paths": ["."],
+        },
+        {
+            "command": ["./find", ".", "-maxdepth", "2", "-iname", "*todo*"],
+            "read_paths": ["."],
+        },
+        {
+            "command": ["tools/find", ".", "-maxdepth", "2", "-iname", "*todo*"],
             "read_paths": ["."],
         },
     ],

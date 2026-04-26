@@ -249,6 +249,11 @@ class ActionMonitor:
             "logs",
             "path",
             "paths",
+            "codebase",
+            "project",
+            "repo",
+            "repository",
+            "workspace",
         )
         discovery_cues = (
             "find",
@@ -298,6 +303,12 @@ class ActionMonitor:
             token.startswith(("-H", "-L"))
             or lowered in {"-follow", "--dereference", "--follow"}
         )
+
+    @staticmethod
+    def _shell_command_name(token: str) -> str:
+        if "/" in token or "\\" in token:
+            return ""
+        return token.lower()
 
     @staticmethod
     def _grep_token_dereferences_recursively(token: str) -> bool:
@@ -427,7 +438,7 @@ class ActionMonitor:
             if not stripped:
                 return False
             command.append(stripped)
-        command_name = command[0].rsplit("/", 1)[-1].lower()
+        command_name = cls._shell_command_name(command[0])
         if command_name not in cls._READ_ONLY_FILE_DISCOVERY_SHELL_COMMANDS:
             return False
         if not cls._shell_file_discovery_scope_is_workspace_relative(
@@ -468,7 +479,7 @@ class ActionMonitor:
             if not stripped:
                 return False
             command.append(stripped)
-        command_name = command[0].rsplit("/", 1)[-1].lower()
+        command_name = cls._shell_command_name(command[0])
         if command_name not in cls._READ_ONLY_FILE_CONTENT_SEARCH_SHELL_COMMANDS:
             return False
         lowered_tokens = {token.lower() for token in command}
