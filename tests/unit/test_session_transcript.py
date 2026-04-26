@@ -142,6 +142,47 @@ def test_m1_transcript_store_backfills_legacy_entry_ids_deterministically(
     assert second[0].entry_id == first[0].entry_id
 
 
+def test_leak_source_scoping_limits_to_recent_user_entries(tmp_path: Path) -> None:
+    """`_session_source_text_by_id` must scope to the most recent N user
+    entries so the cross-thread leak detector does not widen its source
+    window as session history grows (v0.7.1 C2 finding #3).
+    """
+    from shisad.daemon.handlers._impl import HandlerImplementation
+
+    store = TranscriptStore(tmp_path / "sessions")
+    session_id = SessionId("s-recent-window")
+    window = HandlerImplementation._LEAK_SOURCE_RECENT_USER_ENTRIES
+    # Write window+5 distinct user entries so the older five must be dropped.
+    for index in range(window + 5):
+        store.append(
+            session_id,
+            role="user",
+            content=f"user turn {index}",
+        )
+    # Assistant entries must not count toward the window.
+    for index in range(3):
+        store.append(
+            session_id,
+            role="assistant",
+            content=f"assistant turn {index}",
+        )
+
+    class _Stub:
+        _transcript_store = store
+        _LEAK_SOURCE_RECENT_USER_ENTRIES = window
+
+    scoped = HandlerImplementation._session_source_text_by_id(
+        _Stub(),  # type: ignore[arg-type]
+        session_id,
+    )
+
+    assert len(scoped) == window
+    assert all("user turn" in preview for preview in scoped.values())
+    assert "user turn 0" not in set(scoped.values())
+    assert "user turn 4" not in set(scoped.values())
+    assert f"user turn {window + 4}" in set(scoped.values())
+
+
 def test_m6_transcript_store_writes_secure_permissions(tmp_path: Path) -> None:
     store = TranscriptStore(tmp_path / "sessions", blob_threshold_bytes=16)
     entry = store.append(
