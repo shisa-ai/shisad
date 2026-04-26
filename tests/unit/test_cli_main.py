@@ -2849,3 +2849,65 @@ def test_approval_setup_prints_tailscale_guidance(
     assert "Tailscale Guidance:" in result.output
     assert "Use https://ops-demo.ts.net as the HTTPS tailnet origin." in result.output
     assert "http://127.0.0.1:8787" in result.output
+
+
+def test_audit_query_reads_override_data_dir(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """--data-dir must let operators read a daemon's audit log without
+    having to also set SHISAD_DATA_DIR on the CLI side (finding #5 from
+    `review/LUS-9.md`).
+    """
+    default_dir = tmp_path / "default"
+    override_dir = tmp_path / "daemon-dir"
+    default_dir.mkdir()
+    override_dir.mkdir()
+    (override_dir / "audit.jsonl").write_text("")
+
+    config = DaemonConfig(
+        data_dir=default_dir,
+        socket_path=tmp_path / "control.sock",
+        policy_path=tmp_path / "policy.yaml",
+    )
+    monkeypatch.setattr(cli_main, "_get_config", lambda: config)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli_main.cli,
+        ["audit", "query", "--data-dir", str(override_dir)],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "No matching events" in result.output
+
+
+def test_audit_query_missing_log_reports_effective_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Empty-log diagnostic must name the directory it actually checked, so
+    an operator on a non-default data dir does not silently read the wrong
+    audit log (finding #5 from `review/LUS-9.md`).
+    """
+    default_dir = tmp_path / "default"
+    override_dir = tmp_path / "other"
+    default_dir.mkdir()
+    override_dir.mkdir()
+
+    config = DaemonConfig(
+        data_dir=default_dir,
+        socket_path=tmp_path / "control.sock",
+        policy_path=tmp_path / "policy.yaml",
+    )
+    monkeypatch.setattr(cli_main, "_get_config", lambda: config)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli_main.cli,
+        ["audit", "query", "--data-dir", str(override_dir)],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert str(override_dir) in result.output
+    assert "No audit log found" in result.output

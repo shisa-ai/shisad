@@ -1358,19 +1358,38 @@ def audit() -> None:
 @click.option("--session", "session_id", help="Filter by session ID")
 @click.option("--actor", "actor", help="Filter by actor")
 @click.option("--limit", default=100, help="Maximum results")
+@click.option(
+    "--data-dir",
+    "data_dir_override",
+    type=click.Path(path_type=Path),
+    default=None,
+    help=(
+        "Override the data directory to read the audit log from. "
+        "Defaults to $SHISAD_DATA_DIR or ~/.local/share/shisad. Use this when "
+        "querying a daemon that was started with a non-default data dir."
+    ),
+)
 def audit_query(
     since: str | None,
     event_type: str | None,
     session_id: str | None,
     actor: str | None,
     limit: int,
+    data_dir_override: Path | None,
 ) -> None:
-    """Query audit log entries."""
+    """Query audit log entries.
+
+    Reads from $SHISAD_DATA_DIR (default ~/.local/share/shisad) unless
+    --data-dir is passed. If you started the daemon with a non-default
+    data dir, set SHISAD_DATA_DIR or pass --data-dir to this command so you
+    do not silently query a different audit log.
+    """
     config = _get_config()
-    audit_path = config.data_dir / "audit.jsonl"
+    data_dir = data_dir_override if data_dir_override is not None else config.data_dir
+    audit_path = data_dir / "audit.jsonl"
 
     if not audit_path.exists():
-        click.echo("No audit log found")
+        click.echo(f"No audit log found at {audit_path}")
         return
 
     from shisad.core.audit import AuditLog
@@ -1402,13 +1421,24 @@ def audit_query(
 
 
 @audit.command("verify")
-def audit_verify() -> None:
+@click.option(
+    "--data-dir",
+    "data_dir_override",
+    type=click.Path(path_type=Path),
+    default=None,
+    help=(
+        "Override the data directory to verify the audit log from. "
+        "Defaults to $SHISAD_DATA_DIR or ~/.local/share/shisad."
+    ),
+)
+def audit_verify(data_dir_override: Path | None) -> None:
     """Verify audit log integrity."""
     config = _get_config()
-    audit_path = config.data_dir / "audit.jsonl"
+    data_dir = data_dir_override if data_dir_override is not None else config.data_dir
+    audit_path = data_dir / "audit.jsonl"
 
     if not audit_path.exists():
-        click.echo("No audit log found")
+        click.echo(f"No audit log found at {audit_path}")
         return
 
     from shisad.core.audit import AuditLog
