@@ -1801,6 +1801,11 @@ class HandlerImplementation(
             entry = Path(raw_entry).expanduser()
             if not entry.is_absolute():
                 continue
+            lexical = Path(os.path.normpath(str(entry)))
+            if workspace_resolved and (
+                lexical == workspace_resolved or workspace_resolved in lexical.parents
+            ):
+                continue
             resolved = entry.resolve(strict=False)
             if workspace_resolved and (
                 resolved == workspace_resolved or workspace_resolved in resolved.parents

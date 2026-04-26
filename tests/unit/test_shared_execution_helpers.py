@@ -176,9 +176,13 @@ def test_gh12_shell_sandbox_config_filters_workspace_path_for_read_only_commands
     workspace = tmp_path / "workspace"
     workspace_bin = workspace / "bin"
     workspace_bin.mkdir(parents=True)
+    external_bin = tmp_path / "external-bin"
+    external_bin.mkdir()
+    workspace_link = workspace / "linked-bin"
+    workspace_link.symlink_to(external_bin, target_is_directory=True)
     monkeypatch.setenv(
         "PATH",
-        os.pathsep.join([".", str(workspace_bin), "/usr/bin"]),
+        os.pathsep.join([".", str(workspace_bin), str(workspace_link), "/usr/bin"]),
     )
     origin = Origin(
         session_id="s-1",
@@ -207,6 +211,8 @@ def test_gh12_shell_sandbox_config_filters_workspace_path_for_read_only_commands
     path_entries = config.env["PATH"].split(os.pathsep)
     assert "." not in path_entries
     assert str(workspace_bin.resolve()) not in path_entries
+    assert str(workspace_link) not in path_entries
+    assert str(external_bin.resolve()) not in path_entries
     assert "/usr/bin" in path_entries
 
 
