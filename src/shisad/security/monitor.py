@@ -44,6 +44,10 @@ class ActionMonitor:
         "find",
         "ls",
     }
+    _READ_ONLY_FILE_CONTENT_SEARCH_SHELL_COMMANDS: ClassVar[set[str]] = {
+        "grep",
+        "rg",
+    }
     _FORBIDDEN_FILE_DISCOVERY_SHELL_TOKENS: ClassVar[set[str]] = {
         "&&",
         "||",
@@ -104,7 +108,11 @@ class ActionMonitor:
                 ):
                     suspicious_flags.append("read_only_file_discovery")
                     continue
-                if self._goal_mentions_file_discovery(goal_text):
+                if self._goal_mentions_file_discovery(
+                    goal_text
+                ) and not self._is_read_only_shell_content_search(
+                    getattr(action, "arguments", {})
+                ):
                     reject_flags.append(f"{tool}:file_discovery_not_read_only")
                     continue
 
@@ -346,6 +354,52 @@ class ActionMonitor:
             or has_forbidden_prefix
         ):
             return False
+        return not any("://" in token or token.startswith("`") for token in lowered_tokens)
+
+    @classmethod
+    def _is_read_only_shell_content_search(cls, arguments: Any) -> bool:
+        if not isinstance(arguments, dict):
+            return False
+        for risky_field in ("write_paths", "network_urls", "env"):
+            value = arguments.get(risky_field)
+            if value not in (None, "", [], {}, ()):
+                return False
+        command_raw = arguments.get("command")
+        if not isinstance(command_raw, list) or not command_raw:
+            return False
+        command: list[str] = []
+        for token in command_raw:
+            if not isinstance(token, str):
+                return False
+            stripped = token.strip()
+            if not stripped:
+                return False
+            command.append(stripped)
+        command_name = command[0].rsplit("/", 1)[-1].lower()
+        if command_name not in cls._READ_ONLY_FILE_CONTENT_SEARCH_SHELL_COMMANDS:
+            return False
+        if any(cls._is_symlink_follow_token(token) for token in command[1:]):
+            return False
+        cwd = arguments.get("cwd")
+        if cwd not in (None, "") and (
+            not isinstance(cwd, str) or not cls._is_current_directory_token(cwd)
+        ):
+            return False
+        read_paths = arguments.get("read_paths")
+        if read_paths not in (None, "", [], (), {}):
+            if not isinstance(read_paths, list):
+                return False
+            for read_path in read_paths:
+                if not isinstance(read_path, str):
+                    return False
+                if not cls._is_current_directory_token(read_path):
+                    return False
+        targets = [token for token in command[1:] if not token.startswith("-")]
+        if len(targets) > 1 and not all(
+            cls._is_current_directory_token(target) for target in targets[1:]
+        ):
+            return False
+        lowered_tokens = {token.lower() for token in command}
         return not any("://" in token or token.startswith("`") for token in lowered_tokens)
 
     @staticmethod

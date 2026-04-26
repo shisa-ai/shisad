@@ -137,6 +137,25 @@ def test_gh12_action_monitor_rejects_destructive_shell_search_wording() -> None:
     assert decision.kind == MonitorDecisionType.REJECT
 
 
+def test_gh12_action_monitor_allows_read_only_shell_content_search() -> None:
+    monitor = ActionMonitor()
+    decision = monitor.evaluate(
+        user_goal="search logs for error",
+        actions=[
+            SimpleNamespace(
+                tool_name="shell.exec",
+                arguments={
+                    "command": ["grep", "-R", "error", "."],
+                    "read_paths": ["."],
+                },
+                reasoning="search file contents in workspace logs",
+            )
+        ],
+    )
+
+    assert decision.kind != MonitorDecisionType.REJECT
+
+
 @pytest.mark.parametrize(
     "arguments",
     [
