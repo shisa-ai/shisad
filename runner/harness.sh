@@ -197,6 +197,9 @@ _preflight_planner_credential() {
     google_openai_default)
       required="GEMINI_API_KEY"
       ;;
+    anthropic_default)
+      required="ANTHROPIC_API_KEY"
+      ;;
     vllm_local_default)
       required=""
       ;;
@@ -236,10 +239,14 @@ _preflight_planner_credential() {
     fallback_key="OPENROUTER_API_KEY"
     fallback_preset="openrouter_default"
     fallback_model=""  # no default override; uses Python-side defaults
+  elif [[ -n "${ANTHROPIC_API_KEY:-}" ]]; then
+    fallback_key="ANTHROPIC_API_KEY"
+    fallback_preset="anthropic_default"
+    fallback_model="claude-sonnet-4-6"
   fi
 
   if [[ -z "${fallback_key}" ]]; then
-    _die "No API key found. Set SHISA_API_KEY, OPENAI_API_KEY, GEMINI_API_KEY, or OPENROUTER_API_KEY in your shell or runner/.env."
+    _die "No API key found. Set SHISA_API_KEY, OPENAI_API_KEY, GEMINI_API_KEY, OPENROUTER_API_KEY, or ANTHROPIC_API_KEY in your shell or runner/.env."
   fi
 
   _warn "SHISA_API_KEY not set; falling back to ${fallback_key} (preset: ${fallback_preset})"
