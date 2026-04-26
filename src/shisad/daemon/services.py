@@ -1450,6 +1450,42 @@ def _build_tool_registry(
     )
     registry.register(
         ToolDefinition(
+            name=ToolName("action.resolve"),
+            description=(
+                "Resolve a pending user-confirmation action in the current trusted "
+                "command session. Use only when the user clearly asks to confirm or "
+                "reject pending actions surfaced in the trusted pending-action context."
+            ),
+            parameters=[
+                ToolParameter(
+                    name="decision",
+                    type="string",
+                    description="Resolution decision for the pending action.",
+                    required=True,
+                    enum=["confirm", "reject"],
+                ),
+                ToolParameter(
+                    name="target",
+                    type="string",
+                    description=(
+                        "Visible pending ordinal such as '1', exact pending confirmation "
+                        "id, or 'all' when scope is all."
+                    ),
+                    required=True,
+                ),
+                ToolParameter(
+                    name="scope",
+                    type="string",
+                    description="Resolve one pending action or every surfaced pending action.",
+                    required=False,
+                    enum=["one", "all"],
+                ),
+            ],
+            require_confirmation=False,
+        )
+    )
+    registry.register(
+        ToolDefinition(
             name=ToolName("email.search"),
             description=(
                 "Search the local msgvault email archive. Use only for user-requested "

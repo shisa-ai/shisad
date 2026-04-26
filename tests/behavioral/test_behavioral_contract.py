@@ -200,6 +200,78 @@ async def _stub_complete(
     planner_input = messages[-1].content if messages else ""
     goal = _extract_user_goal(planner_input)
     goal_lower = goal.lower()
+    normalized_goal = " ".join(goal_lower.strip().split())
+    normalized_input = planner_input.replace("^", "").lower()
+
+    if "pending actions (trusted control state)" in normalized_input:
+        if normalized_goal in {"confirm", "approve", "yes", "go ahead", "confirm 1"}:
+            return ProviderResponse(
+                message=Message(
+                    role="assistant",
+                    content="Resolving the pending action.",
+                    tool_calls=[
+                        _tool_call(
+                            "action.resolve",
+                            {"decision": "confirm", "target": "1", "scope": "one"},
+                            call_id="t-action-resolve-confirm",
+                        )
+                    ],
+                ),
+                model="behavioral-stub",
+                finish_reason="tool_calls",
+                usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+            )
+        if normalized_goal in {"reject", "deny", "no", "reject 1"}:
+            return ProviderResponse(
+                message=Message(
+                    role="assistant",
+                    content="Resolving the pending action.",
+                    tool_calls=[
+                        _tool_call(
+                            "action.resolve",
+                            {"decision": "reject", "target": "1", "scope": "one"},
+                            call_id="t-action-resolve-reject",
+                        )
+                    ],
+                ),
+                model="behavioral-stub",
+                finish_reason="tool_calls",
+                usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+            )
+        if normalized_goal == "yes to all":
+            return ProviderResponse(
+                message=Message(
+                    role="assistant",
+                    content="Resolving all pending actions.",
+                    tool_calls=[
+                        _tool_call(
+                            "action.resolve",
+                            {"decision": "confirm", "target": "all", "scope": "all"},
+                            call_id="t-action-resolve-confirm-all",
+                        )
+                    ],
+                ),
+                model="behavioral-stub",
+                finish_reason="tool_calls",
+                usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+            )
+        if normalized_goal == "no to all":
+            return ProviderResponse(
+                message=Message(
+                    role="assistant",
+                    content="Resolving all pending actions.",
+                    tool_calls=[
+                        _tool_call(
+                            "action.resolve",
+                            {"decision": "reject", "target": "all", "scope": "all"},
+                            call_id="t-action-resolve-reject-all",
+                        )
+                    ],
+                ),
+                model="behavioral-stub",
+                finish_reason="tool_calls",
+                usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+            )
 
     if "favorite color" in goal_lower:
         memory_context = _extract_memory_context(planner_input).lower()

@@ -151,8 +151,9 @@ async def test_lus_go_ahead_confirms_single_pending_action_in_tainted_recovery_f
     assert int(confirmed.get("confirmation_required_actions", 0)) == 0
     assert confirmed.get("pending_confirmation_ids") == []
     assert int(confirmed.get("executed_actions", 0)) == 1
-    assert "Confirmed action result:" in str(confirmed.get("response", ""))
-    assert "Tool results summary:" not in str(confirmed.get("response", ""))
+    assert "Pending action resolution:" in str(confirmed.get("response", ""))
+    assert "Tool results summary:" in str(confirmed.get("response", ""))
+    assert "Confirmed action result:" not in str(confirmed.get("response", ""))
     assert "fs.list" in _extract_tool_outputs(confirmed)
 
 

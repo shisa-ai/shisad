@@ -51,6 +51,7 @@ from shisad.core.events import (
     TaskDelegationAdvisory,
     TaskSessionCompleted,
     TaskSessionStarted,
+    ToolExecuted,
     ToolProposed,
     ToolRejected,
 )
@@ -172,6 +173,7 @@ _ASSISTANT_FS_ROOT_TOOL_NAMES: frozenset[ToolName] = frozenset(
         "git.log",
     )
 )
+_ACTION_RESOLVE_TOOL_NAME = ToolName("action.resolve")
 _CONTEXT_ENTRY_MAX_CHARS = 280
 _CONTEXT_SUMMARY_MAX_CHARS = 600
 _CONTEXT_SUMMARY_SAMPLE_SIZE = 6
@@ -306,6 +308,7 @@ class SessionMessagePlannerContextResult:
     planner_tools_payload: list[dict[str, Any]]
     planner_input: str
     assistant_tone_override: AssistantTone | None
+    pending_action_binding_ids: tuple[str, ...] = ()
 
 
 @dataclass(slots=True)
@@ -330,7 +333,29 @@ class SessionMessageExecutionResult:
     executed_tool_outputs: list[Any] = field(default_factory=list)
     cleanroom_proposals: list[dict[str, Any]] = field(default_factory=list)
     cleanroom_block_reasons: list[str] = field(default_factory=list)
+    action_resolve_summaries: list[str] = field(default_factory=list)
     trace_tool_calls: list[TraceToolCall] = field(default_factory=list)
+
+
+@dataclass(slots=True)
+class PlannerActionResolveResult:
+    executed: int = 0
+    rejected: int = 0
+    rejection_reasons: list[str] = field(default_factory=list)
+    checkpoint_ids: list[str] = field(default_factory=list)
+    tool_outputs: list[Any] = field(default_factory=list)
+    success: bool = False
+    summary: str = ""
+
+
+@dataclass(slots=True)
+class SessionToolOutputRecord:
+    tool_name: str
+    content: str
+    success: bool = True
+    taint_labels: set[TaintLabel] = field(default_factory=set)
+    ingress_context: str | None = None
+    content_digest: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -449,7 +474,36 @@ _CRC_CONFIRM_ALL_PATTERNS = {"yes to all", "confirm all", "approve all"}
 _CRC_REJECT_ALL_PATTERNS = {"no to all", "reject all", "deny all", "cancel all"}
 _CRC_CONFIRM_INDEX_RE = re.compile(r"^(?:confirm|approve|yes)\s+(\d+)$")
 _CRC_REJECT_INDEX_RE = re.compile(r"^(?:reject|deny|no)\s+(\d+)$")
+_CRC_COMMAND_PREFIX_RE = r"^(?:(?:please|ok(?:ay)?)[,\s:]+)?"
+_CRC_NEGATED_ACTION_RESOLVE_RE = re.compile(
+    _CRC_COMMAND_PREFIX_RE
+    + r"(?:do\s+not|don't|dont|not)\s+"
+    r"(?:confirm|approve|yes|reject|deny|no)\b"
+)
+_CRC_CONFIRM_INDEX_PREFIX_RE = re.compile(
+    _CRC_COMMAND_PREFIX_RE + r"(?:confirm|approve|yes)\s+(\d{1,3})\b"
+)
+_CRC_REJECT_INDEX_PREFIX_RE = re.compile(
+    _CRC_COMMAND_PREFIX_RE + r"(?:reject|deny|no)\s+(\d{1,3})\b"
+)
+_CRC_CONFIRM_ALL_SEARCH_RE = re.compile(
+    _CRC_COMMAND_PREFIX_RE
+    + r"(?:yes\s+to\s+all|confirm\s+all|approve\s+all)(?:\s+pending)?\b"
+)
+_CRC_REJECT_ALL_SEARCH_RE = re.compile(
+    _CRC_COMMAND_PREFIX_RE
+    + r"(?:no\s+to\s+all|reject\s+all|deny\s+all|cancel\s+all)(?:\s+pending)?\b"
+)
+_CRC_CONFIRM_ID_RE = re.compile(_CRC_COMMAND_PREFIX_RE + r"(?:confirm|approve)\s+(\S+)$")
+_CRC_REJECT_ID_RE = re.compile(_CRC_COMMAND_PREFIX_RE + r"(?:reject|deny)\s+(\S+)$")
+_CRC_CONFIRM_ID_PREFIX_RE = re.compile(
+    _CRC_COMMAND_PREFIX_RE + r"(?:confirm|approve)\s+([^\s,.;:!?]+)(?=$|[\s,.;:!?])"
+)
+_CRC_REJECT_ID_PREFIX_RE = re.compile(
+    _CRC_COMMAND_PREFIX_RE + r"(?:reject|deny)\s+([^\s,.;:!?]+)(?=$|[\s,.;:!?])"
+)
 _CRC_BARE_INDEX_RE = re.compile(r"^(\d{1,3})$")
+_TRUSTED_PENDING_ARGUMENT_KEY_RE = re.compile(r"^[A-Za-z0-9_.-]{1,40}$")
 _CRC_CLI_NAMES = {"shisad", "shisactl"}
 _CRC_CLI_ACTION_OPTIONS = {
     "confirm": {
@@ -559,6 +613,121 @@ def _classify_chat_confirmation_intent(text: str) -> ChatConfirmationIntent:
     if normalized in _CRC_NEGATIVE_PATTERNS:
         return ChatConfirmationIntent(action="reject", target="single")
     return ChatConfirmationIntent(action="none", target="none")
+
+
+def _classify_action_resolve_current_turn_intent(
+    text: str,
+) -> tuple[ChatConfirmationIntent, str]:
+    normalized = " ".join(text.strip().lower().split())
+    if _CRC_NEGATED_ACTION_RESOLVE_RE.match(normalized):
+        return ChatConfirmationIntent(action="none", target="none"), ""
+    intent = _classify_chat_confirmation_intent(normalized)
+    if intent.action != "none":
+        return intent, ""
+    if (confirm_all_match := _CRC_CONFIRM_ALL_SEARCH_RE.match(normalized)) is not None:
+        if not _action_resolve_command_tail_is_clear(normalized[confirm_all_match.end() :]):
+            return ChatConfirmationIntent(action="none", target="none"), ""
+        return ChatConfirmationIntent(action="confirm", target="all"), ""
+    if (reject_all_match := _CRC_REJECT_ALL_SEARCH_RE.match(normalized)) is not None:
+        if not _action_resolve_command_tail_is_clear(normalized[reject_all_match.end() :]):
+            return ChatConfirmationIntent(action="none", target="none"), ""
+        return ChatConfirmationIntent(action="reject", target="all"), ""
+    confirm_index_match = _CRC_CONFIRM_INDEX_PREFIX_RE.match(normalized)
+    reject_index_match = _CRC_REJECT_INDEX_PREFIX_RE.match(normalized)
+    index_matches: list[tuple[int, ChatConfirmationIntent]] = []
+    if confirm_index_match is not None and _action_resolve_command_tail_is_clear(
+        normalized[confirm_index_match.end() :]
+    ):
+        index_matches.append(
+            (
+                confirm_index_match.start(),
+                ChatConfirmationIntent(
+                    action="confirm",
+                    target="index",
+                    index=int(confirm_index_match.group(1)),
+                ),
+            )
+        )
+    if reject_index_match is not None and _action_resolve_command_tail_is_clear(
+        normalized[reject_index_match.end() :]
+    ):
+        index_matches.append(
+            (
+                reject_index_match.start(),
+                ChatConfirmationIntent(
+                    action="reject",
+                    target="index",
+                    index=int(reject_index_match.group(1)),
+                ),
+            )
+        )
+    if index_matches:
+        return min(index_matches, key=lambda item: item[0])[1], ""
+    confirm_id_match = _CRC_CONFIRM_ID_RE.fullmatch(normalized)
+    if confirm_id_match is not None:
+        raw_target = confirm_id_match.group(1)
+        if "?" in raw_target:
+            return ChatConfirmationIntent(action="none", target="none"), ""
+        return (
+            ChatConfirmationIntent(action="confirm", target="id"),
+            raw_target.rstrip(".,;:!"),
+        )
+    confirm_id_prefix_match = _CRC_CONFIRM_ID_PREFIX_RE.match(normalized)
+    if confirm_id_prefix_match is not None and _action_resolve_command_tail_is_clear(
+        normalized[confirm_id_prefix_match.end() :]
+    ):
+        raw_target = confirm_id_prefix_match.group(1)
+        if "?" in raw_target:
+            return ChatConfirmationIntent(action="none", target="none"), ""
+        return (
+            ChatConfirmationIntent(action="confirm", target="id"),
+            raw_target.rstrip(".,;:!"),
+        )
+    reject_id_match = _CRC_REJECT_ID_RE.fullmatch(normalized)
+    if reject_id_match is not None:
+        raw_target = reject_id_match.group(1)
+        if "?" in raw_target:
+            return ChatConfirmationIntent(action="none", target="none"), ""
+        return (
+            ChatConfirmationIntent(action="reject", target="id"),
+            raw_target.rstrip(".,;:!"),
+        )
+    reject_id_prefix_match = _CRC_REJECT_ID_PREFIX_RE.match(normalized)
+    if reject_id_prefix_match is not None and _action_resolve_command_tail_is_clear(
+        normalized[reject_id_prefix_match.end() :]
+    ):
+        raw_target = reject_id_prefix_match.group(1)
+        if "?" in raw_target:
+            return ChatConfirmationIntent(action="none", target="none"), ""
+        return (
+            ChatConfirmationIntent(action="reject", target="id"),
+            raw_target.rstrip(".,;:!"),
+        )
+    return ChatConfirmationIntent(action="none", target="none"), ""
+
+
+def _action_resolve_command_tail_is_clear(tail: str) -> bool:
+    stripped = tail.strip()
+    if not stripped:
+        return True
+    if "?" in stripped:
+        return False
+    if not stripped.strip(".,;:!"):
+        return True
+    polite_tail = stripped.strip(".,;:! ").casefold()
+    if polite_tail in {"please", "thanks", "thank you"}:
+        return True
+    return stripped.startswith(
+        (
+            "and ",
+            "and then ",
+            "then ",
+            ", and ",
+            ", then ",
+            "; and ",
+            "; then ",
+        )
+    )
 
 
 def _levenshtein_distance_at_most(left: str, right: str, *, limit: int) -> int | None:
@@ -861,6 +1030,32 @@ def _visible_pending_rows_for_delivery_target(
     ]
 
 
+def _stored_delivery_target_from_session(session: Any) -> DeliveryTarget | None:
+    metadata = getattr(session, "metadata", None)
+    if not isinstance(metadata, Mapping):
+        return None
+    raw_stored_delivery_target = metadata.get("delivery_target")
+    if isinstance(raw_stored_delivery_target, dict):
+        try:
+            return DeliveryTarget.model_validate(raw_stored_delivery_target)
+        except ValidationError:
+            return None
+    return None
+
+
+def _visible_pending_rows_for_validated_turn(
+    *,
+    pending_rows: Sequence[Any],
+    validated: Any,
+) -> list[Any]:
+    return _visible_pending_rows_for_delivery_target(
+        pending_rows=pending_rows,
+        is_internal_ingress=bool(getattr(validated, "is_internal_ingress", False)),
+        delivery_target=getattr(validated, "delivery_target", None),
+        fallback_target=_stored_delivery_target_from_session(getattr(validated, "session", None)),
+    )
+
+
 def _checkpoint_id_from_action_result(result: Mapping[str, Any]) -> str:
     checkpoint_id = result.get("checkpoint_id")
     if checkpoint_id is None:
@@ -1106,6 +1301,19 @@ def _is_direct_trusted_cli_default_ingress(
         and channel == "cli"
         and session_mode == SessionMode.DEFAULT
         and (_is_trusted_cli_confirmation_level(trust_level) or _is_trusted_level(trust_level))
+    )
+
+
+def _is_trusted_command_chat_session(
+    *,
+    channel: str,
+    session_mode: SessionMode,
+    trust_level: str,
+) -> bool:
+    return (
+        channel == "cli"
+        and session_mode == SessionMode.DEFAULT
+        and (_is_trusted_level(trust_level) or _is_trusted_cli_confirmation_level(trust_level))
     )
 
 
@@ -1627,6 +1835,36 @@ def _planner_tool_allowlist_for_configured_resources(
         for tool_name in base_allowlist
         if canonical_tool_name_typed(str(tool_name)) not in _ASSISTANT_FS_ROOT_TOOL_NAMES
     }
+
+
+def _planner_tool_allowlist_with_action_resolve(
+    *,
+    registry_tools: list[ToolDefinition],
+    base_allowlist: set[ToolName] | None,
+    validated: SessionMessageValidationResult,
+    pending_action_binding_ids: Sequence[str],
+) -> set[ToolName] | None:
+    action_resolve_registered = any(
+        tool.name == _ACTION_RESOLVE_TOOL_NAME for tool in registry_tools
+    )
+    if not action_resolve_registered:
+        return base_allowlist
+    action_resolve_visible = (
+        any(str(confirmation_id).strip() for confirmation_id in pending_action_binding_ids)
+        and _is_trusted_command_chat_session(
+            channel=validated.channel,
+            session_mode=validated.session_mode,
+            trust_level=validated.trust_level,
+        )
+        and _has_clean_trusted_turn_privileges(validated)
+    )
+    if base_allowlist is None:
+        if action_resolve_visible:
+            return None
+        return {tool.name for tool in registry_tools if tool.name != _ACTION_RESOLVE_TOOL_NAME}
+    if action_resolve_visible:
+        return {*base_allowlist, _ACTION_RESOLVE_TOOL_NAME}
+    return {tool_name for tool_name in base_allowlist if tool_name != _ACTION_RESOLVE_TOOL_NAME}
 
 
 def _pending_pep_context_snapshot(context: PolicyContext) -> PendingPepContextSnapshot:
@@ -3215,6 +3453,33 @@ def _serialize_tool_outputs(records: list[Any]) -> list[dict[str, Any]]:
     return serialized
 
 
+def _tool_output_record_from_serialized_dict(item: Mapping[str, Any]) -> SessionToolOutputRecord:
+    tool_name = str(item.get("tool_name", "")).strip() or "action.resolve"
+    payload = item.get("payload")
+    content = json.dumps(
+        payload if payload is not None else dict(item),
+        ensure_ascii=True,
+        sort_keys=True,
+    )
+    taint_labels: set[TaintLabel] = set()
+    raw_labels = item.get("taint_labels", [])
+    if isinstance(raw_labels, (list, tuple, set, frozenset)):
+        for label in raw_labels:
+            label_text = str(getattr(label, "value", label)).strip().lower()
+            if not label_text:
+                continue
+            with suppress(ValueError):
+                taint_labels.add(TaintLabel(label_text))
+    return SessionToolOutputRecord(
+        tool_name=tool_name,
+        content=content,
+        success=bool(item.get("success", True)),
+        taint_labels=taint_labels,
+        ingress_context=str(item.get("ingress_context") or "").strip() or None,
+        content_digest=str(item.get("content_digest") or "").strip() or None,
+    )
+
+
 def _tool_output_evidence_source(tool_name: str, payload: Mapping[str, Any]) -> str:
     for key in ("url", "backend"):
         value = payload.get(key)
@@ -3782,6 +4047,97 @@ class SessionImplMixin(HandlerMixinBase):
                     break
         return "\n".join(lines)
 
+    @staticmethod
+    def _trusted_pending_action_summary(
+        *,
+        pending: Any,
+        tool_name: str,
+        approval_level: str,
+    ) -> str:
+        parts = [f"{tool_name} pending {approval_level} approval"]
+        arguments = getattr(pending, "arguments", None)
+        if isinstance(arguments, Mapping):
+            keys = sorted(
+                str(key)
+                for key in arguments
+                if _TRUSTED_PENDING_ARGUMENT_KEY_RE.fullmatch(str(key))
+            )
+            if keys:
+                visible_keys = ",".join(keys[:6])
+                if len(keys) > 6:
+                    visible_keys = f"{visible_keys},+{len(keys) - 6}"
+                parts.append(f"argument_keys={visible_keys}")
+        action_ref = str(getattr(pending, "approval_envelope_hash", "") or "").strip()
+        if action_ref:
+            parts.append(f"action_ref={action_ref[:12]}")
+        return "; ".join(parts)
+
+    @staticmethod
+    def _planner_pending_action_context(*, pending_rows: Sequence[Any]) -> str:
+        if not pending_rows:
+            return ""
+        lines = [
+            "=== PENDING ACTIONS (TRUSTED CONTROL STATE) ===",
+            (
+                "These are server-owned pending confirmations for this session. "
+                "Use them only to answer pending-action questions or to call "
+                "action.resolve when the user's intent is clear."
+            ),
+            (
+                "For new or unrelated questions, answer normally and leave these "
+                "pending actions queued."
+            ),
+            (
+                "Use target=<exact id> when the user names a pending id. "
+                "Use target=<ordinal> when the user names a visible ordinal. "
+                "Use target=all scope=all only when all items are intended."
+            ),
+        ]
+        for index, pending in enumerate(pending_rows, start=1):
+            confirmation_id = str(getattr(pending, "confirmation_id", "")).strip()
+            tool_name = str(getattr(pending, "tool_name", "")).strip() or "unknown"
+            status = str(getattr(pending, "status", "")).strip() or "pending"
+            reason = _compact_context_text(
+                str(getattr(pending, "reason", "") or "requires_confirmation"),
+                max_chars=160,
+            )
+            method = (
+                str(getattr(pending, "selected_backend_method", "") or "software").strip()
+                or "software"
+            )
+            required_level = getattr(pending, "required_level", "")
+            approval_level = str(getattr(required_level, "value", required_level)).strip()
+            if not approval_level:
+                approval_level = "software"
+            summary = SessionImplMixin._trusted_pending_action_summary(
+                pending=pending,
+                tool_name=tool_name,
+                approval_level=approval_level,
+            )
+            created_at = str(getattr(pending, "created_at", "") or "").strip()
+            expires_at = str(getattr(pending, "expires_at", "") or "").strip()
+            lines.extend(
+                [
+                    f"- ordinal: {index}",
+                    f"  id: {confirmation_id}",
+                    f"  tool: {tool_name}",
+                    f"  status: {status}",
+                    f"  approval_level: {approval_level}",
+                    f"  approval_method: {method}",
+                    f"  summary: {summary}",
+                    f"  reason: {reason}",
+                ]
+            )
+            if created_at:
+                lines.append(f"  created_at: {created_at}")
+            if expires_at and expires_at.lower() != "none":
+                lines.append(f"  expires_at: {expires_at}")
+            if any(str(item).strip() for item in (getattr(pending, "warnings", []) or [])):
+                lines.append("  warnings:")
+                lines.append("    - policy_warning")
+        lines.append("=== END PENDING ACTIONS ===")
+        return "\n".join(lines)
+
     async def _maybe_handle_chat_confirmation(
         self,
         *,
@@ -3838,6 +4194,15 @@ class SessionImplMixin(HandlerMixinBase):
         displayed_pending_rows = visible_pending_rows
         visible_totp_rows = _totp_pending_rows(visible_pending_rows)
         totp_submission = _parse_chat_totp_submission(content) if totp_rows else None
+        if (
+            _is_trusted_command_chat_session(
+                channel=channel,
+                session_mode=session_mode,
+                trust_level=trust_level,
+            )
+            and totp_submission is None
+        ):
+            return None
         intent: ChatConfirmationIntent | None = None
         if is_internal_ingress and totp_submission is None:
             intent = _classify_chat_confirmation_intent(content)
@@ -4674,6 +5039,34 @@ class SessionImplMixin(HandlerMixinBase):
             entries=context_entries,
             transcript_store=self._transcript_store,
         )
+        pending_action_context = ""
+        pending_action_binding_ids: tuple[str, ...] = ()
+        if (
+            not zero_context_session
+            and _is_trusted_command_chat_session(
+                channel=str(session.channel),
+                session_mode=session.mode,
+                trust_level=validated.trust_level,
+            )
+            and _has_clean_trusted_turn_privileges(validated)
+        ):
+            pending_action_rows = self._pending_confirmations_for_binding(
+                session_id=sid,
+                user_id=session.user_id,
+                workspace_id=session.workspace_id,
+            )
+            pending_action_rows = _visible_pending_rows_for_validated_turn(
+                pending_rows=pending_action_rows,
+                validated=validated,
+            )
+            pending_action_context = self._planner_pending_action_context(
+                pending_rows=pending_action_rows
+            )
+            pending_action_binding_ids = tuple(
+                str(getattr(pending, "confirmation_id", "")).strip()
+                for pending in pending_action_rows
+                if str(getattr(pending, "confirmation_id", "")).strip()
+            )
         effective_caps = self._lockdown_manager.apply_capability_restrictions(
             sid,
             session.capabilities,
@@ -4743,6 +5136,7 @@ class SessionImplMixin(HandlerMixinBase):
             for section in (
                 trusted_identity_context,
                 trusted_same_session_user_context,
+                pending_action_context,
             )
             if section.strip()
         )
@@ -4789,6 +5183,12 @@ class SessionImplMixin(HandlerMixinBase):
             config=self._config,
             session=session,
             task_envelope=task_envelope,
+        )
+        planner_tool_allowlist = _planner_tool_allowlist_with_action_resolve(
+            registry_tools=registry_tools,
+            base_allowlist=planner_tool_allowlist,
+            validated=validated,
+            pending_action_binding_ids=pending_action_binding_ids,
         )
         context = PolicyContext(
             capabilities=effective_caps,
@@ -5004,6 +5404,7 @@ class SessionImplMixin(HandlerMixinBase):
             planner_tools_payload=planner_tools_payload,
             planner_input=planner_input,
             assistant_tone_override=assistant_tone_override,
+            pending_action_binding_ids=pending_action_binding_ids,
         )
 
     async def _dispatch_to_planner(
@@ -5107,6 +5508,283 @@ class SessionImplMixin(HandlerMixinBase):
             trace_tool_calls=[],
         )
 
+    def _resolve_planner_action_resolve_targets(
+        self,
+        *,
+        validated: SessionMessageValidationResult,
+        arguments: Mapping[str, Any],
+        pending_action_binding_ids: Sequence[str],
+    ) -> tuple[list[Any], str]:
+        decision = str(arguments.get("decision", "")).strip().lower()
+        if decision not in {"confirm", "reject"}:
+            return [], "invalid_decision"
+        scope = str(arguments.get("scope", "one") or "one").strip().lower()
+        if scope not in {"one", "all"}:
+            return [], "invalid_scope"
+        target = str(arguments.get("target", "")).strip()
+        if not target:
+            return [], "missing_target"
+        snapshot_ids = [
+            str(confirmation_id).strip()
+            for confirmation_id in pending_action_binding_ids
+            if str(confirmation_id).strip()
+        ]
+        if not snapshot_ids:
+            return [], "no_pending_actions"
+        live_pending_rows = self._pending_confirmations_for_binding(
+            session_id=validated.sid,
+            user_id=validated.user_id,
+            workspace_id=validated.workspace_id,
+        )
+        live_pending_rows = _visible_pending_rows_for_validated_turn(
+            pending_rows=live_pending_rows,
+            validated=validated,
+        )
+        pending_by_id = {
+            str(getattr(pending, "confirmation_id", "")).strip(): pending
+            for pending in live_pending_rows
+            if str(getattr(pending, "confirmation_id", "")).strip()
+        }
+        pending_rows = [
+            pending_by_id[confirmation_id]
+            for confirmation_id in snapshot_ids
+            if confirmation_id in pending_by_id
+        ]
+        if not pending_rows:
+            return [], "no_pending_actions"
+        if scope == "all":
+            if target.casefold() not in {"all", "*"}:
+                return [], "all_scope_requires_all_target"
+            return list(pending_rows), ""
+        if target.casefold() in {"all", "*"}:
+            return [], "all_target_requires_all_scope"
+        if target.isdigit():
+            index = int(target)
+            if index < 1 or index > len(snapshot_ids):
+                return [], "target_not_pending"
+            pending = pending_by_id.get(snapshot_ids[index - 1])
+            if pending is None:
+                return [], "target_not_pending"
+            return [pending], ""
+        matching = [
+            confirmation_id
+            for confirmation_id in snapshot_ids
+            if confirmation_id.casefold() == target.casefold()
+        ]
+        if len(matching) == 1:
+            pending = pending_by_id.get(matching[0])
+            if pending is not None:
+                return [pending], ""
+        return [], "target_not_pending"
+
+    async def _execute_planner_action_resolve(
+        self,
+        *,
+        validated: SessionMessageValidationResult,
+        arguments: Mapping[str, Any],
+        pending_action_binding_ids: Sequence[str],
+        requires_explicit_current_turn_intent: bool,
+    ) -> PlannerActionResolveResult:
+        if not _is_trusted_command_chat_session(
+            channel=validated.channel,
+            session_mode=validated.session_mode,
+            trust_level=validated.trust_level,
+        ):
+            return PlannerActionResolveResult(
+                rejected=1,
+                rejection_reasons=["action_resolve_requires_trusted_command_chat"],
+                summary="action.resolve rejected: trusted command chat required",
+            )
+        if not _has_clean_trusted_turn_privileges(validated):
+            return PlannerActionResolveResult(
+                rejected=1,
+                rejection_reasons=["action_resolve_requires_clean_trusted_turn"],
+                summary="action.resolve rejected: clean trusted command turn required",
+            )
+
+        decision = str(arguments.get("decision", "")).strip().lower()
+        scope = str(arguments.get("scope", "one") or "one").strip().lower()
+        target = str(arguments.get("target", "")).strip()
+        if requires_explicit_current_turn_intent:
+            intent, explicit_target_id = _classify_action_resolve_current_turn_intent(
+                validated.firewall_result.sanitized_text
+            )
+            if intent.action != decision:
+                return PlannerActionResolveResult(
+                    rejected=1,
+                    rejection_reasons=["action_resolve_requires_explicit_current_turn_intent"],
+                    summary=(
+                        "action.resolve rejected: explicit current-turn confirmation "
+                        "intent required"
+                    ),
+                )
+            if intent.target == "all":
+                if scope != "all" or target.casefold() not in {"all", "*"}:
+                    return PlannerActionResolveResult(
+                        rejected=1,
+                        rejection_reasons=["action_resolve_current_turn_target_mismatch"],
+                        summary="action.resolve rejected: current-turn target mismatch",
+                    )
+            elif intent.target == "index":
+                ordinal_confirmation_id = ""
+                if intent.index is not None and intent.index >= 1:
+                    try:
+                        ordinal_confirmation_id = str(
+                            pending_action_binding_ids[intent.index - 1]
+                        ).strip()
+                    except IndexError:
+                        ordinal_confirmation_id = ""
+                target_matches_ordinal = target == str(intent.index)
+                target_matches_id = bool(
+                    ordinal_confirmation_id
+                    and target.casefold() == ordinal_confirmation_id.casefold()
+                )
+                if scope != "one" or not (target_matches_ordinal or target_matches_id):
+                    return PlannerActionResolveResult(
+                        rejected=1,
+                        rejection_reasons=["action_resolve_current_turn_target_mismatch"],
+                        summary="action.resolve rejected: current-turn target mismatch",
+                    )
+            elif intent.target == "id":
+                if (
+                    scope != "one"
+                    or not explicit_target_id
+                    or target.casefold() != explicit_target_id.casefold()
+                ):
+                    return PlannerActionResolveResult(
+                        rejected=1,
+                        rejection_reasons=["action_resolve_current_turn_target_mismatch"],
+                        summary="action.resolve rejected: current-turn target mismatch",
+                    )
+            elif intent.target == "single":
+                if scope != "one" or target.casefold() in {"all", "*"}:
+                    return PlannerActionResolveResult(
+                        rejected=1,
+                        rejection_reasons=["action_resolve_current_turn_target_mismatch"],
+                        summary="action.resolve rejected: current-turn target mismatch",
+                    )
+                if len([item for item in pending_action_binding_ids if str(item).strip()]) != 1:
+                    return PlannerActionResolveResult(
+                        rejected=1,
+                        rejection_reasons=["action_resolve_ambiguous_current_turn_intent"],
+                        summary="action.resolve rejected: ambiguous current-turn intent",
+                    )
+            else:
+                return PlannerActionResolveResult(
+                    rejected=1,
+                    rejection_reasons=["action_resolve_requires_explicit_current_turn_intent"],
+                    summary=(
+                        "action.resolve rejected: explicit current-turn confirmation "
+                        "intent required"
+                    ),
+                )
+        selected_rows, target_error = self._resolve_planner_action_resolve_targets(
+            validated=validated,
+            arguments=arguments,
+            pending_action_binding_ids=pending_action_binding_ids,
+        )
+        if target_error:
+            return PlannerActionResolveResult(
+                rejected=1,
+                rejection_reasons=[target_error],
+                summary=f"action.resolve rejected: {target_error}",
+            )
+
+        executed = 0
+        rejected = 0
+        rejection_reasons: list[str] = []
+        checkpoint_ids: list[str] = []
+        tool_outputs: list[Any] = []
+        outcome_lines: list[str] = []
+        now = datetime.now(UTC)
+
+        for pending in selected_rows:
+            confirmation_id = str(getattr(pending, "confirmation_id", "")).strip()
+            tool_name = str(getattr(pending, "tool_name", "")).strip() or "unknown"
+            expires_at = getattr(pending, "expires_at", None)
+            if expires_at is not None and expires_at <= now:
+                self._mark_stale_pending_action(pending, reason="approval_expired")
+                rejected += 1
+                rejection_reasons.append("approval_expired")
+                outcome_lines.append(f"{confirmation_id} ({tool_name}): approval_expired")
+                continue
+            if decision == "confirm" and _pending_uses_totp(pending):
+                rejected += 1
+                rejection_reasons.append("totp_code_required")
+                outcome_lines.append(f"{confirmation_id} ({tool_name}): totp_code_required")
+                outcome_lines.append(
+                    "TOTP in chat: if exactly one TOTP action is pending, reply with "
+                    "the 6-digit code."
+                )
+                outcome_lines.append(
+                    f"If multiple TOTP actions are pending, reply with "
+                    f"'confirm {confirmation_id} 123456'."
+                )
+                outcome_lines.append(
+                    f"CLI fallback: run '{_totp_cli_confirm_command(confirmation_id)}'."
+                )
+                continue
+
+            payload = {
+                "confirmation_id": confirmation_id,
+                "decision_nonce": str(getattr(pending, "decision_nonce", "")).strip(),
+                "reason": "planner_action_resolve",
+            }
+            if decision == "confirm":
+                result = await self.do_action_confirm(payload)
+                confirmed = bool(result.get("confirmed", False))
+                if confirmed:
+                    executed += 1
+                else:
+                    rejected += 1
+                    rejection_reasons.append(
+                        str(result.get("reason") or result.get("status_reason") or "failed")
+                    )
+                checkpoint_id = _checkpoint_id_from_action_result(result)
+                if checkpoint_id:
+                    checkpoint_ids.append(checkpoint_id)
+                raw_outputs = result.get("tool_outputs")
+                if isinstance(raw_outputs, list):
+                    tool_outputs.extend(
+                        _tool_output_record_from_serialized_dict(item)
+                        for item in raw_outputs
+                        if isinstance(item, dict)
+                    )
+                status = str(
+                    result.get("status")
+                    or result.get("status_reason")
+                    or result.get("reason")
+                    or ("confirmed" if confirmed else "failed")
+                ).strip()
+                outcome_lines.append(f"{confirmation_id} ({tool_name}): {status}")
+            else:
+                result = await self.do_action_reject(payload)
+                resolved = bool(result.get("rejected", False))
+                if resolved:
+                    executed += 1
+                else:
+                    rejected += 1
+                    rejection_reasons.append(
+                        str(result.get("reason") or result.get("status_reason") or "failed")
+                    )
+                status = str(
+                    result.get("status")
+                    or result.get("status_reason")
+                    or result.get("reason")
+                    or ("rejected" if resolved else "failed")
+                ).strip()
+                outcome_lines.append(f"{confirmation_id} ({tool_name}): {status}")
+
+        return PlannerActionResolveResult(
+            executed=executed,
+            rejected=rejected,
+            rejection_reasons=rejection_reasons,
+            checkpoint_ids=checkpoint_ids,
+            tool_outputs=tool_outputs,
+            success=executed > 0 and rejected == 0,
+            summary="\n".join(outcome_lines),
+        )
+
     async def _evaluate_and_execute_actions(
         self,
         planner_dispatch: SessionMessagePlannerDispatchResult,
@@ -5129,6 +5807,7 @@ class SessionImplMixin(HandlerMixinBase):
                 executed_tool_outputs=[],
                 cleanroom_proposals=[],
                 cleanroom_block_reasons=[],
+                action_resolve_summaries=[],
                 trace_tool_calls=trace_tool_calls,
             )
 
@@ -5141,13 +5820,15 @@ class SessionImplMixin(HandlerMixinBase):
         executed_tool_outputs: list[Any] = []
         cleanroom_proposals: list[dict[str, Any]] = []
         cleanroom_block_reasons: list[str] = []
-        # Use user-origin taint plus current-turn untrusted memory evidence for AMV gating.
-        # This preserves repeat-turn browsing UX (assistant tool output alone is ignored)
-        # while treating tainted retrieval context as risky for side-effect actions.
+        action_resolve_summaries: list[str] = []
+        # action.resolve is authorization state. The planner may interpret user
+        # language, but the server still requires a current-turn confirmation or
+        # rejection utterance before resolving a pending action.
         session_tainted = (
             self._session_has_tainted_user_history(sid)
             or planner_context.memory_context_tainted_for_amv
         )
+        action_resolve_requires_explicit_intent = True
         clean_trusted_input = _has_clean_trusted_turn_privileges(validated)
         operator_owned_cli_input = _is_clean_direct_trusted_cli_turn(validated)
         explicit_memory_ingress_context: IngressContext | None = None
@@ -5185,6 +5866,92 @@ class SessionImplMixin(HandlerMixinBase):
                 pep_arguments,
                 planner_context.context,
             )
+            if str(proposal.tool_name) == "action.resolve":
+                if pep_decision.kind.value != "allow":
+                    final_reason = (
+                        pep_decision.reason
+                        or pep_decision.reason_code.strip()
+                        or "pep_reject"
+                    )
+                    rejected += 1
+                    rejection_reasons_for_user.append(final_reason)
+                    action_resolve_summaries.append(f"action.resolve rejected: {final_reason}")
+                    await self._event_bus.publish(
+                        ToolRejected(
+                            session_id=sid,
+                            actor="policy_loop",
+                            tool_name=proposal.tool_name,
+                            reason=final_reason,
+                        )
+                    )
+                    if self._trace_recorder is not None:
+                        trace_tool_calls.append(
+                            TraceToolCall(
+                                tool_name=str(proposal.tool_name),
+                                arguments=dict(proposal_arguments),
+                                pep_decision=pep_decision.kind.value,
+                                monitor_decision="skipped:action_resolve",
+                                control_plane_decision="skipped:action_resolve",
+                                final_decision="reject",
+                                executed=False,
+                                execution_success=False,
+                            )
+                        )
+                    continue
+
+                resolve_result = await self._execute_planner_action_resolve(
+                    validated=validated,
+                    arguments=proposal_arguments,
+                    pending_action_binding_ids=planner_context.pending_action_binding_ids,
+                    requires_explicit_current_turn_intent=(
+                        action_resolve_requires_explicit_intent
+                    ),
+                )
+                executed += resolve_result.executed
+                rejected += resolve_result.rejected
+                checkpoint_ids.extend(resolve_result.checkpoint_ids)
+                executed_tool_outputs.extend(resolve_result.tool_outputs)
+                rejection_reasons_for_user.extend(resolve_result.rejection_reasons)
+                if resolve_result.summary.strip():
+                    action_resolve_summaries.append(resolve_result.summary.strip())
+                if resolve_result.executed > 0:
+                    await self._event_bus.publish(
+                        ToolExecuted(
+                            session_id=sid,
+                            actor="planner_action_resolve",
+                            tool_name=proposal.tool_name,
+                            success=resolve_result.success,
+                        )
+                    )
+                if resolve_result.rejected > 0:
+                    await self._event_bus.publish(
+                        ToolRejected(
+                            session_id=sid,
+                            actor="planner_action_resolve",
+                            tool_name=proposal.tool_name,
+                            reason=";".join(resolve_result.rejection_reasons)
+                            or "action_resolve_failed",
+                        )
+                    )
+                if self._trace_recorder is not None:
+                    trace_tool_calls.append(
+                        TraceToolCall(
+                            tool_name=str(proposal.tool_name),
+                            arguments=dict(proposal_arguments),
+                            pep_decision=pep_decision.kind.value,
+                            monitor_decision="skipped:action_resolve",
+                            control_plane_decision="skipped:action_resolve",
+                            final_decision=(
+                                "allow"
+                                if resolve_result.executed > 0
+                                and resolve_result.rejected == 0
+                                else "reject"
+                            ),
+                            executed=resolve_result.executed > 0,
+                            execution_success=resolve_result.success,
+                        )
+                    )
+                continue
 
             monitor_decision = self._monitor.evaluate(
                 user_goal=validated.firewall_result.sanitized_text,
@@ -5626,6 +6393,7 @@ class SessionImplMixin(HandlerMixinBase):
             executed_tool_outputs=executed_tool_outputs,
             cleanroom_proposals=cleanroom_proposals,
             cleanroom_block_reasons=cleanroom_block_reasons,
+            action_resolve_summaries=action_resolve_summaries,
             trace_tool_calls=trace_tool_calls,
         )
 
@@ -6468,6 +7236,33 @@ class SessionImplMixin(HandlerMixinBase):
         validated = planner_context.validated
         sid = validated.sid
 
+        def _current_visible_pending_confirmation_ids() -> list[str]:
+            pending_rows = self._pending_confirmations_for_binding(
+                session_id=sid,
+                user_id=validated.user_id,
+                workspace_id=validated.workspace_id,
+            )
+            stored_delivery_target = None
+            raw_stored_delivery_target = validated.session.metadata.get("delivery_target")
+            if isinstance(raw_stored_delivery_target, dict):
+                try:
+                    stored_delivery_target = DeliveryTarget.model_validate(
+                        raw_stored_delivery_target
+                    )
+                except ValidationError:
+                    stored_delivery_target = None
+            visible_pending_rows = _visible_pending_rows_for_delivery_target(
+                pending_rows=pending_rows,
+                is_internal_ingress=validated.is_internal_ingress,
+                delivery_target=validated.delivery_target,
+                fallback_target=stored_delivery_target,
+            )
+            return [
+                str(getattr(pending, "confirmation_id", "")).strip()
+                for pending in visible_pending_rows
+                if str(getattr(pending, "confirmation_id", "")).strip()
+            ]
+
         raw_serialized_tool_outputs = _serialize_tool_outputs(execution.executed_tool_outputs)
         chat_serialized_tool_outputs = deepcopy(raw_serialized_tool_outputs)
         evidence_ref_ids: list[str] = []
@@ -6491,6 +7286,14 @@ class SessionImplMixin(HandlerMixinBase):
             tool_output_summary = (
                 _summarize_tool_outputs_for_chat(chat_serialized_tool_outputs) or ""
             )
+        action_resolve_summary = "\n".join(
+            summary.strip() for summary in execution.action_resolve_summaries if summary.strip()
+        )
+        action_resolution_text = (
+            f"Pending action resolution:\n{action_resolve_summary}"
+            if action_resolve_summary
+            else ""
+        )
         post_tool_synthesis_result = PostToolSynthesisResult()
         system_generated_pending_confirmation_response = False
         if execution.pending_confirmation_ids:
@@ -6522,13 +7325,18 @@ class SessionImplMixin(HandlerMixinBase):
                 delivery_target=validated.delivery_target,
                 fallback_target=stored_delivery_target,
             )
+            visible_pending_confirmation_ids = [
+                str(getattr(pending, "confirmation_id", "")).strip()
+                for pending in visible_pending_rows
+                if str(getattr(pending, "confirmation_id", "")).strip()
+            ]
             pending_index_by_id = {
                 str(getattr(pending, "confirmation_id", "")).strip(): index
                 for index, pending in enumerate(visible_pending_rows, start=1)
                 if str(getattr(pending, "confirmation_id", "")).strip()
             }
             response_text = _daemon_pending_confirmation_response_text(
-                pending_confirmation_ids=execution.pending_confirmation_ids,
+                pending_confirmation_ids=visible_pending_confirmation_ids,
                 pending_actions=getattr(self, "_pending_actions", {}),
                 pending_index_by_id=pending_index_by_id,
                 binding_pending_rows=visible_pending_rows,
@@ -6537,10 +7345,19 @@ class SessionImplMixin(HandlerMixinBase):
             if fallback_notice:
                 response_text = f"{fallback_notice}\n\n{response_text}"
                 system_generated_pending_confirmation_response = False
+            if action_resolution_text:
+                response_text = f"{response_text}\n\n{action_resolution_text}"
+                system_generated_pending_confirmation_response = False
             if tool_output_summary:
                 response_text = f"{response_text}\n\nCompleted actions:\n{tool_output_summary}"
                 system_generated_pending_confirmation_response = False
         else:
+            if action_resolution_text:
+                response_text = (
+                    f"{response_text}\n\n{action_resolution_text}"
+                    if response_text.strip()
+                    else action_resolution_text
+                )
             if tool_output_summary:
                 if response_text.strip():
                     response_text = f"{response_text}\n\n{tool_output_summary}"
@@ -6656,6 +7473,8 @@ class SessionImplMixin(HandlerMixinBase):
         lockdown_notice = self._lockdown_manager.user_notification(sid)
         if lockdown_notice:
             response_text = f"{response_text}\n\n[LOCKDOWN NOTICE] {lockdown_notice}"
+
+        returned_pending_confirmation_ids = _current_visible_pending_confirmation_ids()
 
         if validated.delivery_target is not None and execution.pending_confirmation_ids:
             await self._send_chat_approval_link_notifications(
@@ -6793,7 +7612,7 @@ class SessionImplMixin(HandlerMixinBase):
                 else []
             ),
             "cleanroom_block_reasons": sorted(set(execution.cleanroom_block_reasons)),
-            "pending_confirmation_ids": execution.pending_confirmation_ids,
+            "pending_confirmation_ids": returned_pending_confirmation_ids,
             "output_policy": output_result.model_dump(mode="json"),
             "planner_error": planner_dispatch.planner_failure_code,
             "tool_outputs": raw_serialized_tool_outputs,
