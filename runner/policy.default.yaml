@@ -8,6 +8,23 @@
 
 version: "1"
 default_deny: false
+# default_require_confirmation applies to tools that do NOT set their own
+# `require_confirmation`. It is a floor, not a ceiling: per-tool
+# `require_confirmation: true` still requires confirmation when this default
+# is false.
+#
+# Trusted-CLI explicit-allow precedence:
+#   Per-tool `require_confirmation: true` queues a confirmation by default.
+#   However, when the trusted CLI/TUI operator's current-turn natural-language
+#   intent deterministically names the action (see
+#   `test_action_monitor_allows_explicit_todo_create_with_follow_on_commands`
+#   and the `action_monitor:trusted_cli_current_turn_intent` reason code), the
+#   ActionMonitor intentionally allows the tool call in the same turn without
+#   re-queueing a confirmation. This is the *operator owns intent* principle
+#   from `docs/DESIGN-PHILOSOPHY.md`: an authenticated operator typing their
+#   own action on the trusted surface has already expressed consent.
+#   Non-trusted channels (Discord/Matrix/Slack, subagents, untrusted evidence)
+#   do not take this path and still queue the confirmation.
 default_require_confirmation: false
 
 content_firewall:
