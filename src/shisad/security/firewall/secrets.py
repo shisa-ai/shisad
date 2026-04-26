@@ -12,7 +12,8 @@ class SecretPattern(NamedTuple):
 
 
 SECRET_PATTERNS: list[SecretPattern] = [
-    SecretPattern("openai_key", re.compile(r"\bsk-[A-Za-z0-9_-]{16,}\b")),
+    SecretPattern("anthropic_key", re.compile(r"\bsk-ant-[A-Za-z0-9_-]{16,}\b")),
+    SecretPattern("openai_key", re.compile(r"\bsk-(?!ant-)[A-Za-z0-9_-]{16,}\b")),
     SecretPattern("github_token", re.compile(r"\bgh[pousr]_[A-Za-z0-9]{20,}\b")),
     SecretPattern("aws_access_key", re.compile(r"\bAKIA[0-9A-Z]{16}\b")),
     SecretPattern("oauth_access_token", re.compile(r"\bya29\.[A-Za-z0-9._-]{20,}\b")),

@@ -190,6 +190,22 @@ def test_m1_t18_firewall_detects_and_redacts_ingress_credentials() -> None:
     assert TaintLabel.USER_CREDENTIALS in result.taint_labels
 
 
+def test_firewall_labels_anthropic_key_distinctly_from_openai() -> None:
+    """Anthropic keys (sk-ant-...) must not be misclassified as openai_key.
+
+    Regression for v0.7.1 C2 finding #7: LUS-9 observed an Anthropic key
+    redacted with label `openai_key`. The redaction fires correctly but the
+    label should identify the provider family.
+    """
+    firewall = ContentFirewall()
+    result = firewall.inspect(
+        "ANTHROPIC_API_KEY=sk-ant-api03-abc123def456ghi789jkl012"
+    )
+    assert "[REDACTED:anthropic_key]" in result.sanitized_text
+    assert "[REDACTED:openai_key]" not in result.sanitized_text
+    assert TaintLabel.USER_CREDENTIALS in result.taint_labels
+
+
 def test_m6_firewall_trusted_input_does_not_mark_untrusted() -> None:
     firewall = ContentFirewall()
     result = firewall.inspect("hello", trusted_input=True)
