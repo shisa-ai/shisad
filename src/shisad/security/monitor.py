@@ -92,6 +92,41 @@ class ActionMonitor:
     _FORBIDDEN_CONTENT_SEARCH_SHELL_TOKEN_PREFIXES: ClassVar[tuple[str, ...]] = (
         "--pre=",
     )
+    _GREP_CONTENT_SEARCH_SAFE_SHORT_FLAGS: ClassVar[frozenset[str]] = frozenset(
+        {"E", "F", "P", "i", "n", "q", "r", "s", "v", "w", "x"}
+    )
+    _RG_CONTENT_SEARCH_SAFE_SHORT_FLAGS: ClassVar[frozenset[str]] = frozenset(
+        {"F", "S", "i", "n", "s", "v", "w", "x"}
+    )
+    _GREP_CONTENT_SEARCH_SAFE_LONG_OPTIONS: ClassVar[frozenset[str]] = frozenset(
+        {
+            "--extended-regexp",
+            "--fixed-strings",
+            "--ignore-case",
+            "--line-number",
+            "--line-regexp",
+            "--no-messages",
+            "--perl-regexp",
+            "--quiet",
+            "--recursive",
+            "--word-regexp",
+        }
+    )
+    _RG_CONTENT_SEARCH_SAFE_LONG_OPTIONS: ClassVar[frozenset[str]] = frozenset(
+        {
+            "--case-sensitive",
+            "--fixed-strings",
+            "--ignore-case",
+            "--line-number",
+            "--line-regexp",
+            "--no-heading",
+            "--quiet",
+            "--smart-case",
+            "--vimgrep",
+            "--with-filename",
+            "--word-regexp",
+        }
+    )
     _SUSPICIOUS_ARG_TOKENS: ClassVar[set[str]] = {
         "evil.com",
         "attacker",
@@ -270,6 +305,43 @@ class ActionMonitor:
             return True
         return token.startswith("-") and not token.startswith("--") and "R" in token
 
+    @staticmethod
+    def _rg_token_follows_symlinks(token: str) -> bool:
+        return token == "--follow" or (
+            token.startswith("-") and not token.startswith("--") and "L" in token
+        )
+
+    @classmethod
+    def _content_search_options_are_safe(
+        cls,
+        *,
+        command_name: str,
+        command: list[str],
+    ) -> bool:
+        if command_name == "grep":
+            safe_short = cls._GREP_CONTENT_SEARCH_SAFE_SHORT_FLAGS
+            safe_long = cls._GREP_CONTENT_SEARCH_SAFE_LONG_OPTIONS
+        elif command_name == "rg":
+            safe_short = cls._RG_CONTENT_SEARCH_SAFE_SHORT_FLAGS
+            safe_long = cls._RG_CONTENT_SEARCH_SAFE_LONG_OPTIONS
+        else:
+            return False
+
+        for token in command[1:]:
+            if not token.startswith("-"):
+                continue
+            if token == "-":
+                return False
+            if token.startswith("--"):
+                if "=" in token:
+                    return False
+                if token.lower() not in safe_long:
+                    return False
+                continue
+            if any(flag not in safe_short for flag in token[1:]):
+                return False
+        return True
+
     @classmethod
     def _shell_file_discovery_targets_current_directory(
         cls,
@@ -412,6 +484,15 @@ class ActionMonitor:
             return False
         if command_name == "grep" and any(
             cls._grep_token_dereferences_recursively(token) for token in command[1:]
+        ):
+            return False
+        if command_name == "rg" and any(
+            cls._rg_token_follows_symlinks(token) for token in command[1:]
+        ):
+            return False
+        if not cls._content_search_options_are_safe(
+            command_name=command_name,
+            command=command,
         ):
             return False
         if any(cls._is_symlink_follow_token(token) for token in command[1:]):
