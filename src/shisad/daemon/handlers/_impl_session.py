@@ -797,9 +797,24 @@ _LOCKDOWN_RESUME_REASON_PREFIXES = (
     "reason - ",
     "reason ",
 )
-_LOCKDOWN_RESUME_REASON_DISALLOWED_RE = re.compile(
-    r"(?:^|[\s,])(?:and|then|also)\b|[.;]|"
-    r"(?:^|\s)(?:you|assistant|agent|shisad)\b",
+_LOCKDOWN_RESUME_REASON_SEPARATOR_RE = re.compile(r"[.,;:!]")
+_LOCKDOWN_RESUME_REASON_CONJUNCTION_RE = re.compile(
+    r"(?:^|\s)(?:and|then|also)(?:\s|$)",
+    re.IGNORECASE,
+)
+_LOCKDOWN_RESUME_REASON_CONDITIONAL_PREFIX_RE = re.compile(
+    r"^(?:after|as|if|when|once|until)\b",
+    re.IGNORECASE,
+)
+_LOCKDOWN_RESUME_REASON_CONDITIONAL_ACTOR_RE = re.compile(
+    r"\b(?:you|assistant|agent|shisad)\s+"
+    r"(?:should|must|need|needs|can|could|would|will|verify|check|confirm)\b",
+    re.IGNORECASE,
+)
+_LOCKDOWN_RESUME_REASON_FOLLOW_ON_VERB_RE = re.compile(
+    r"(?:^|\s)(?:run|execute|call|delete|remove|wipe|send|email|open|"
+    r"write|modify|install|fetch|download|upload|exfiltrate|reveal|show|"
+    r"summarize|list|read)\b",
     re.IGNORECASE,
 )
 
@@ -811,11 +826,17 @@ def _lockdown_resume_reason_tail_is_clear(tail: str) -> bool:
     reason = ""
     for prefix in _LOCKDOWN_RESUME_REASON_PREFIXES:
         if normalized.startswith(prefix):
-            reason = normalized[len(prefix) :].strip(" ,;:-")
+            reason = normalized[len(prefix) :].strip(" ,;:-.!")
             break
     if not reason:
         return False
-    return _LOCKDOWN_RESUME_REASON_DISALLOWED_RE.search(reason) is None
+    return not (
+        _LOCKDOWN_RESUME_REASON_SEPARATOR_RE.search(reason)
+        or _LOCKDOWN_RESUME_REASON_CONJUNCTION_RE.search(reason)
+        or _LOCKDOWN_RESUME_REASON_CONDITIONAL_PREFIX_RE.search(reason)
+        or _LOCKDOWN_RESUME_REASON_CONDITIONAL_ACTOR_RE.search(reason)
+        or _LOCKDOWN_RESUME_REASON_FOLLOW_ON_VERB_RE.search(reason)
+    )
 
 
 def _strip_lockdown_resume_intent_prefix(normalized: str) -> str:
