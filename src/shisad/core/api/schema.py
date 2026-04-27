@@ -33,7 +33,9 @@ def _normalize_owner_value(value: str | None) -> str | None:
     if value is None:
         return None
     normalized = value.strip()
-    return normalized or None
+    if not normalized:
+        raise ValueError("owner scope fields must not be blank")
+    return normalized
 
 
 def _validate_complete_owner_scope(model: Any) -> None:

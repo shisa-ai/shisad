@@ -326,6 +326,52 @@ async def test_c2_memory_retrieve_scopes_user_curated_results_to_owner_tuple(
 
 
 @pytest.mark.asyncio
+async def test_c2_memory_retrieve_blank_owner_tuple_fails_closed(
+    tmp_path: Path,
+) -> None:
+    harness = _MemoryIngestHarness(tmp_path)
+    blank_owner = harness._ingestion.ingest(
+        source_id="blank-owner-rpc",
+        source_type="user",
+        collection="user_curated",
+        content="C2 blank owner recall token blank-owner-blue.",
+        user_id="",
+        workspace_id="",
+    )
+    harness._ingestion.ingest(
+        source_id="explicit-owner-rpc",
+        source_type="user",
+        collection="user_curated",
+        content="C2 blank owner recall token explicit-owner-red.",
+        user_id="user-1",
+        workspace_id="ws-1",
+    )
+
+    blank_scoped = await harness.do_memory_retrieve(
+        {
+            "query": "blank owner recall token",
+            "limit": 10,
+            "user_id": "",
+            "workspace_id": "",
+        }
+    )
+    unscoped = await harness.do_memory_retrieve(
+        {
+            "query": "blank owner recall token",
+            "limit": 10,
+        }
+    )
+    unscoped_text = json.dumps(unscoped, sort_keys=True)
+
+    assert blank_owner.user_id is None
+    assert blank_owner.workspace_id is None
+    assert blank_scoped["count"] == 0
+    assert "blank-owner-blue" not in json.dumps(blank_scoped, sort_keys=True)
+    assert blank_owner.chunk_id in unscoped_text
+    assert "explicit-owner-red" in unscoped_text
+
+
+@pytest.mark.asyncio
 async def test_m2_memory_retrieve_records_citations(tmp_path: Path) -> None:
     harness = _MemoryIngestHarness(tmp_path)
     stored = harness._ingestion.ingest(

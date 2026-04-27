@@ -557,6 +557,49 @@ async def test_c2_execute_approved_action_retrieve_rag_scopes_user_curated_by_ow
 
 
 @pytest.mark.asyncio
+async def test_c2_execute_approved_action_retrieve_rag_blank_owner_fails_closed(
+    tmp_path: Path,
+) -> None:
+    harness = _RetrieveStructuredExecutionHarness(tmp_path / "memory")
+    harness._session.user_id = UserId("")
+    harness._session.workspace_id = WorkspaceId("")
+    harness._ingestion.ingest(
+        source_id="blank-owner-rag",
+        source_type="user",
+        collection="user_curated",
+        content="C2 retrieve rag blank owner token blank-owner-blue.",
+        user_id="",
+        workspace_id="",
+    )
+    harness._ingestion.ingest(
+        source_id="explicit-owner-rag",
+        source_type="user",
+        collection="user_curated",
+        content="C2 retrieve rag blank owner token explicit-owner-red.",
+        user_id="user-1",
+        workspace_id="ws-1",
+    )
+
+    result = await HandlerImplementation._execute_approved_action(
+        harness,  # type: ignore[arg-type]
+        sid=harness.session_id,
+        user_id=UserId(""),
+        tool_name=ToolName("retrieve_rag"),
+        arguments={"query": "retrieve rag blank owner token", "limit": 10},
+        capabilities={Capability.MEMORY_READ},
+        approval_actor="control_api",
+    )
+
+    assert result.success is True
+    assert result.tool_output is not None
+    preview_rows = json.loads(result.tool_output.content)
+    preview_text = json.dumps(preview_rows, sort_keys=True)
+    assert preview_rows == []
+    assert "blank-owner-blue" not in preview_text
+    assert "explicit-owner-red" not in preview_text
+
+
+@pytest.mark.asyncio
 async def test_c2_execute_approved_action_note_tools_scope_to_session_owner(
     tmp_path: Path,
 ) -> None:

@@ -611,6 +611,10 @@ class TestApiSchemaValidation:
             (MemoryRetrieveParams, {"query": "owner scoped recall", "workspace_id": "ws-1"}),
             (MemoryRetrieveParams, {"query": "owner scoped recall", "include_unowned": True}),
             (
+                MemoryRetrieveParams,
+                {"query": "owner scoped recall", "user_id": "", "workspace_id": ""},
+            ),
+            (
                 MemoryWriteParams,
                 {
                     "ingress_context": "handle-1",
@@ -620,13 +624,26 @@ class TestApiSchemaValidation:
                     "user_id": "user-1",
                 },
             ),
+            (
+                MemoryWriteParams,
+                {
+                    "ingress_context": "handle-1",
+                    "entry_type": "fact",
+                    "key": "fact:blank-owner",
+                    "value": "blue",
+                    "user_id": "",
+                    "workspace_id": "",
+                },
+            ),
             (NoteCreateParams, {"key": "note:1", "content": "hello", "workspace_id": "ws-1"}),
             (NoteListParams, {"user_id": "user-1"}),
+            (NoteListParams, {"user_id": "", "workspace_id": ""}),
             (NoteSearchParams, {"query": "hello", "workspace_id": "ws-1"}),
             (NoteEntryParams, {"entry_id": "entry-1", "user_id": "user-1"}),
             (NoteExportParams, {"format": "json", "include_unowned": True}),
             (TodoCreateParams, {"title": "task", "user_id": "user-1"}),
             (TodoListParams, {"workspace_id": "ws-1"}),
+            (TodoListParams, {"user_id": "", "workspace_id": ""}),
             (TodoEntryParams, {"entry_id": "entry-1", "user_id": "user-1"}),
             (TodoCompleteParams, {"selector": "task", "workspace_id": "ws-1"}),
             (TodoExportParams, {"format": "json", "include_unowned": True}),

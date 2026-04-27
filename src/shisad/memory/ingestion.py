@@ -356,6 +356,8 @@ class IngestionPipeline:
             trusted_input=trusted_input,
         )
         quarantined = inspection.risk_score >= self._quarantine_threshold
+        owner_user_id = self._normalize_owner_value(user_id)
+        owner_workspace_id = self._normalize_owner_value(workspace_id)
 
         result = RetrievalResult(
             chunk_id=chunk_id,
@@ -373,8 +375,8 @@ class IngestionPipeline:
             channel_trust=resolved_channel,
             confirmation_status=resolved_confirmation,
             scope=scope,
-            user_id=user_id,
-            workspace_id=workspace_id,
+            user_id=owner_user_id,
+            workspace_id=owner_workspace_id,
             taint_labels=list(inspection.taint_labels),
             quarantined=quarantined,
         )
@@ -421,11 +423,11 @@ class IngestionPipeline:
         collection rows with NULL owner (pre-migration legacy data) are
         excluded by default unless `include_unowned=True` — reserved for
         maintenance/diagnostic call sites only. If a caller provides only
-        one owner field, personal rows fail closed; partial owner filters
-        are not applied. When the caller leaves both `user_id` and
-        `workspace_id` as None the filter is a no-op, which preserves
-        pre-rework behavior for any call site that has not yet been
-        migrated to the scoped API.
+        one owner field, or blank owner fields that normalize away,
+        personal rows fail closed; partial/blank owner filters are not
+        applied. When the caller leaves both `user_id` and `workspace_id`
+        as None the filter is a no-op, which preserves pre-rework behavior
+        for any call site that has not yet been migrated to the scoped API.
         """
         if self._backend.count_records() == 0:
             return build_recall_pack(
@@ -479,8 +481,12 @@ class IngestionPipeline:
             include_quarantined=include_quarantined,
         )
         reference_time = as_of.astimezone(UTC) if as_of is not None else datetime.now(UTC)
-        owner_filter_requested = user_id is not None or workspace_id is not None
-        scope_by_owner = user_id is not None and workspace_id is not None
+        owner_filter_requested = (
+            user_id is not None or workspace_id is not None or include_unowned
+        )
+        owner_user_id = self._normalize_owner_value(user_id)
+        owner_workspace_id = self._normalize_owner_value(workspace_id)
+        scope_by_owner = owner_user_id is not None and owner_workspace_id is not None
         partial_owner_scope = owner_filter_requested and not scope_by_owner
         visible_rows: list[tuple[Any, RetrievalResult]] = []
         for row in rows:
@@ -494,9 +500,9 @@ class IngestionPipeline:
             if as_of is not None and record.created_at > reference_time:
                 continue
             # v0.7.1 C2: scope to (user, workspace) for personal
-            # collections only. Partial owner filters fail closed for
+            # collections only. Partial/blank owner filters fail closed for
             # personal rows so API-level callers cannot accidentally
-            # widen recall by providing only one half of the tuple.
+            # widen recall by providing an invalid tuple.
             if record.collection == "user_curated":
                 if partial_owner_scope:
                     continue
@@ -505,7 +511,8 @@ class IngestionPipeline:
                     if row_unowned and not include_unowned:
                         continue
                     if not row_unowned and (
-                        record.user_id != user_id or record.workspace_id != workspace_id
+                        record.user_id != owner_user_id
+                        or record.workspace_id != owner_workspace_id
                     ):
                         continue
             visible_rows.append((row, record))
@@ -1262,6 +1269,8 @@ class IngestionPipeline:
         embedding: list[float],
     ) -> RetrievalBackendRow:
         payload = record.model_dump(mode="json")
+        user_id = IngestionPipeline._normalize_owner_value(payload.get("user_id"))
+        workspace_id = IngestionPipeline._normalize_owner_value(payload.get("workspace_id"))
         return RetrievalBackendRow(
             chunk_id=str(payload["chunk_id"]),
             source_id=str(payload["source_id"]),
@@ -1276,10 +1285,8 @@ class IngestionPipeline:
             channel_trust=str(payload["channel_trust"]),
             confirmation_status=str(payload["confirmation_status"]),
             scope=str(payload["scope"]),
-            user_id=(str(payload["user_id"]) if payload.get("user_id") is not None else None),
-            workspace_id=(
-                str(payload["workspace_id"]) if payload.get("workspace_id") is not None else None
-            ),
+            user_id=user_id,
+            workspace_id=workspace_id,
             taint_labels_json=json.dumps(payload["taint_labels"], sort_keys=True),
             quarantined=bool(payload["quarantined"]),
             citation_count=int(payload.get("citation_count", 0)),
@@ -1288,6 +1295,13 @@ class IngestionPipeline:
             ),
             embedding=embedding,
         )
+
+    @staticmethod
+    def _normalize_owner_value(value: object | None) -> str | None:
+        if value is None:
+            return None
+        normalized = str(value).strip()
+        return normalized or None
 
     @staticmethod
     def _record_from_backend_row(row: RetrievalBackendRow) -> RetrievalResult | None:
@@ -1307,8 +1321,10 @@ class IngestionPipeline:
                     "channel_trust": row.channel_trust,
                     "confirmation_status": row.confirmation_status,
                     "scope": row.scope,
-                    "user_id": row.user_id,
-                    "workspace_id": row.workspace_id,
+                    "user_id": IngestionPipeline._normalize_owner_value(row.user_id),
+                    "workspace_id": IngestionPipeline._normalize_owner_value(
+                        row.workspace_id
+                    ),
                     "taint_labels": json.loads(row.taint_labels_json),
                     "quarantined": row.quarantined,
                     "citation_count": row.citation_count,
