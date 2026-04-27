@@ -12,7 +12,8 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from urllib.parse import urlparse
+
+from shisad.core.url_parsing import safe_url_hostname
 
 _URL_FIND_RE: re.Pattern[str] = re.compile(r"https?://[^\s<>()\"']+", re.IGNORECASE)
 _DOMAIN_TOKEN_FIND_RE: re.Pattern[str] = re.compile(
@@ -84,6 +85,8 @@ def extract_hosts_from_text(
 
     for match in _DOMAIN_TOKEN_FIND_RE.finditer(snippet):
         token = match.group(0).strip(_STRIP_PUNCTUATION)
+        if _followed_by_redacted_host_fragment(snippet, match.end()):
+            continue
         if "@" in token:
             continue
         if _looks_like_local_path_token(token):
@@ -114,13 +117,18 @@ def _host_from_token(token: str) -> str:
     value = token.strip().strip(_STRIP_PUNCTUATION)
     if not value:
         return ""
-    parsed = urlparse(value)
-    if parsed.hostname:
-        return parsed.hostname.lower().rstrip(".")
+    parsed_host = safe_url_hostname(value, strip_trailing_dot=True)
+    if parsed_host:
+        return parsed_host
     if _DOMAIN_TOKEN_FULL_RE.match(value):
         host = value.split(":", 1)[0]
         return host.lower().rstrip(".")
     return ""
+
+
+def _followed_by_redacted_host_fragment(text: str, end: int) -> bool:
+    suffix = text[end : end + 64].lower()
+    return suffix.startswith(".[redacted:") or suffix.startswith("[redacted:")
 
 
 def _looks_like_local_path_token(token: str) -> bool:

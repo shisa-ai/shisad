@@ -5,7 +5,6 @@ from __future__ import annotations
 import logging
 from collections.abc import Mapping
 from typing import Any, cast
-from urllib.parse import urlparse
 
 from shisad.core.approval import (
     ApprovalRoutingError,
@@ -16,6 +15,7 @@ from shisad.core.approval import (
 from shisad.core.events import PlanCancelled, PlanCommitted, ToolRejected
 from shisad.core.tools.names import canonical_tool_name
 from shisad.core.types import Capability, SessionId, TaintLabel, ToolName
+from shisad.core.url_parsing import safe_url_hostname
 from shisad.daemon.handlers._mixin_typing import (
     HandlerMixinBase,
 )
@@ -207,13 +207,13 @@ class ToolExecutionImplMixin(HandlerMixinBase):
                 token = str(raw).strip()
                 if not token:
                     continue
-                host = urlparse(token).hostname or ""
+                host = safe_url_hostname(token)
                 if host:
-                    network_hosts.append(host.lower())
+                    network_hosts.append(host)
             for token in params.get("command", []):
-                host = urlparse(str(token)).hostname or ""
+                host = safe_url_hostname(str(token))
                 if host:
-                    network_hosts.append(host.lower())
+                    network_hosts.append(host)
             runtime_decision = self._skill_manager.authorize_runtime(
                 skill_name=skill_name,
                 request=SkillExecutionRequest(

@@ -8,11 +8,11 @@ import re
 import socket
 from collections.abc import Callable
 from typing import Protocol
-from urllib.parse import urlparse
 
 from pydantic import BaseModel, Field
 
 from shisad.core.host_matching import host_matches
+from shisad.core.url_parsing import safe_parsed_hostname, safe_urlparse
 from shisad.security.credentials import CredentialStore, is_placeholder
 
 _PLACEHOLDER_RE = re.compile(r"SHISAD_SECRET_PLACEHOLDER_[A-Fa-f0-9]{32}")
@@ -85,10 +85,20 @@ class EgressProxy:
         expected_addresses: list[str] | None = None,
     ) -> ProxyDecision:
         """Authorize a request and inject credentials if allowed."""
-        parsed = urlparse(url)
+        parsed = safe_urlparse(url)
+        if parsed is None:
+            decision = ProxyDecision(
+                allowed=False,
+                reason="malformed_destination",
+                destination_host="",
+                destination_port=None,
+                resolved_addresses=[],
+            )
+            self._audit(tool_name=tool_name, url=url, decision=decision, body=body)
+            return decision
         protocol = (parsed.scheme or "").lower()
         try:
-            host = (parsed.hostname or "").lower()
+            host = safe_parsed_hostname(parsed)
             port = parsed.port
         except ValueError:
             decision = ProxyDecision(
@@ -208,10 +218,12 @@ class EgressProxy:
         policy: NetworkPolicy,
     ) -> list[str]:
         """Resolve literal allowlisted hosts for runtime network narrowing."""
-        parsed = urlparse(url)
+        parsed = safe_urlparse(url)
+        if parsed is None:
+            return []
         protocol = (parsed.scheme or "").lower()
         try:
-            host = (parsed.hostname or "").lower()
+            host = safe_parsed_hostname(parsed)
         except ValueError:
             return []
         if not policy.allow_network:
@@ -270,8 +282,8 @@ class EgressProxy:
             normalized = str(raw).strip().lower()
             if not normalized:
                 continue
-            parsed = urlparse(normalized if "://" in normalized else f"https://{normalized}")
-            candidate = (parsed.hostname or "").lower()
+            parsed = safe_urlparse(normalized if "://" in normalized else f"https://{normalized}")
+            candidate = safe_parsed_hostname(parsed)
             patterns.append(candidate or normalized)
         return any(host_matches(host, pattern) for pattern in patterns if pattern)
 

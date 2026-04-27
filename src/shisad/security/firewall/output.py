@@ -8,11 +8,12 @@ import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any, ClassVar
-from urllib.parse import unquote, urlparse
+from urllib.parse import unquote
 
 from pydantic import BaseModel, Field
 
 from shisad.core.host_matching import host_matches
+from shisad.core.url_parsing import safe_parsed_hostname, safe_urlparse
 from shisad.security.firewall.normalize import normalize_text
 from shisad.security.firewall.pii import PIIDetector
 
@@ -184,8 +185,19 @@ class OutputFirewall:
     def _inspect_urls(self, text: str) -> list[UrlFinding]:
         findings: list[UrlFinding] = []
         for matched in _URL_RE.findall(text):
-            parsed = urlparse(matched)
-            host = (parsed.hostname or "").lower()
+            parsed = safe_urlparse(matched)
+            if parsed is None:
+                findings.append(
+                    UrlFinding(
+                        url=matched,
+                        host="",
+                        allowed=False,
+                        suspicious=True,
+                        reason="malformed_url",
+                    )
+                )
+                continue
+            host = safe_parsed_hostname(parsed)
             allowed = any(host_matches(host, domain) for domain in self.safe_domains)
             suspicious_reason = self._suspicious_reason(parsed, host=host, allowed=allowed)
             suspicious = bool(suspicious_reason)

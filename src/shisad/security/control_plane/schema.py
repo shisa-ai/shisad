@@ -7,12 +7,12 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
 
 from pydantic import BaseModel, Field
 
 from shisad.core.tools.names import canonical_tool_name
 from shisad.core.types import Capability
+from shisad.core.url_parsing import safe_url_hostname
 
 
 class ActionKind(StrEnum):
@@ -586,9 +586,9 @@ def _host_from_token(token: str) -> str:
     value = token.strip()
     if not value:
         return ""
-    parsed = urlparse(value)
-    if parsed.hostname:
-        return parsed.hostname.lower()
+    parsed_host = safe_url_hostname(value)
+    if parsed_host:
+        return parsed_host
     if _DOMAIN_TOKEN_RE.match(value):
         host = value.split(":", 1)[0]
         return host.lower()

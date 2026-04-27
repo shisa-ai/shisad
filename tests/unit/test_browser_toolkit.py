@@ -728,6 +728,26 @@ async def test_m6_browser_toolkit_disabled_is_actionable(tmp_path: Path) -> None
 
 
 @pytest.mark.asyncio
+async def test_gh13_browser_toolkit_malformed_redacted_url_is_actionable(
+    tmp_path: Path,
+) -> None:
+    runner = _DirectRunner()
+    toolkit = _toolkit(tmp_path, runner=runner)
+
+    result = await toolkit.navigate(
+        session=_session(),
+        url="https://www.hareruyamtg.[REDACTED:high_entropy_secret]",
+    )
+
+    assert result == {
+        "ok": False,
+        "error": "browser_url_invalid",
+        "taint_labels": [],
+    }
+    assert runner.configs == []
+
+
+@pytest.mark.asyncio
 async def test_m6_browser_toolkit_hardened_wildcard_scope_is_actionable(tmp_path: Path) -> None:
     runner = _DirectRunner()
     toolkit = _toolkit(

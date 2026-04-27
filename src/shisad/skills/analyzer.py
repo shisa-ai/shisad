@@ -9,12 +9,12 @@ from collections.abc import Iterable
 from enum import StrEnum
 from pathlib import Path
 from typing import Any, Protocol
-from urllib.parse import urlparse
 
 from pydantic import BaseModel, Field
 
 from shisad.core.host_matching import host_matches
 from shisad.core.types import ThreatCategory
+from shisad.core.url_parsing import safe_url_hostname
 from shisad.security.firewall.classifier import PatternInjectionClassifier
 from shisad.skills.manifest import SkillManifest, parse_manifest
 
@@ -246,7 +246,7 @@ class ToolSurfaceAnalyzer:
                     )
             for destination in declared_tool.destinations:
                 normalized = destination.strip()
-                host = (urlparse(normalized).hostname or normalized).lower()
+                host = safe_url_hostname(normalized) or normalized.lower()
                 if not host:
                     continue
                 if declared_domains and any(host_matches(host, rule) for rule in declared_domains):

@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from urllib.parse import urlparse
 
 from pydantic import BaseModel, Field
 
+from shisad.core.url_parsing import safe_url_hostname
 from shisad.skills.manifest import SkillManifest
 
 _URL_RE = re.compile(r"https?://[^\s'\"<>`]+", re.IGNORECASE)
@@ -166,7 +166,7 @@ def _shell_command_matches(inferred: str, declared: str) -> bool:
 def _extract_url_hosts(value: str) -> set[str]:
     hosts: set[str] = set()
     for token in _URL_RE.findall(value):
-        host = urlparse(token).hostname
+        host = safe_url_hostname(token)
         if host:
-            hosts.add(host.lower())
+            hosts.add(host)
     return hosts

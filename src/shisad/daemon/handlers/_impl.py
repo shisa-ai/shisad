@@ -214,6 +214,9 @@ class _LazyBrowserToolkit:
     async def end_session(self, **kwargs: Any) -> dict[str, Any]:
         return dict(await self._load().end_session(**kwargs))
 
+    def current_state(self, **kwargs: Any) -> dict[str, Any]:
+        return dict(self._load().current_state(**kwargs))
+
 
 def _should_checkpoint(trigger: str, tool: ToolDefinition | None) -> bool:
     if trigger == "never":

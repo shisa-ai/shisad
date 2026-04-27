@@ -12,7 +12,6 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, ClassVar
-from urllib.parse import urlparse
 
 from shisad.core.approval import (
     ConfirmationLevel,
@@ -36,6 +35,7 @@ from shisad.core.types import (
     UserId,
     WorkspaceId,
 )
+from shisad.core.url_parsing import safe_parsed_hostname, safe_url_hostname, safe_urlparse
 from shisad.security.credentials import CredentialStore
 from shisad.security.policy import PolicyBundle
 from shisad.security.taint import sink_decision_for_tool
@@ -979,21 +979,24 @@ class PEP:
             if not isinstance(value, str) or not value:
                 continue
 
-            parsed = urlparse(value)
-            if parsed.hostname:
+            parsed = safe_urlparse(value)
+            if parsed is None:
+                raise ValueError("invalid_destination_url")
+            host = safe_parsed_hostname(parsed)
+            if host:
                 protocol = parsed.scheme.lower() if parsed.scheme else None
                 port = self._safe_url_port(parsed)
                 if port is None and protocol in {"http", "https"}:
                     port = 80 if protocol == "http" else 443
-                return EgressDestination(host=parsed.hostname, protocol=protocol, port=port)
+                return EgressDestination(host=host, protocol=protocol, port=port)
 
-        host = arguments.get("host")
-        if isinstance(host, str) and host:
+        host_value = arguments.get("host")
+        if isinstance(host_value, str) and host_value:
             protocol = arguments.get("protocol")
             protocol_value = protocol.lower() if isinstance(protocol, str) else None
             port = arguments.get("port")
             port_value = int(port) if isinstance(port, int | str) and str(port).isdigit() else None
-            return EgressDestination(host=host, protocol=protocol_value, port=port_value)
+            return EgressDestination(host=host_value, protocol=protocol_value, port=port_value)
 
         return None
 
@@ -1006,8 +1009,10 @@ class PEP:
         if not destination or any(token in destination for token in ("*", "?", "[", "]")):
             return None
         if "://" in destination:
-            parsed = urlparse(destination)
-            host = (parsed.hostname or "").lower()
+            parsed = safe_urlparse(destination)
+            if parsed is None:
+                return None
+            host = safe_parsed_hostname(parsed)
             if not host:
                 return None
             protocol = (parsed.scheme or "").lower() or None
@@ -1034,8 +1039,7 @@ class PEP:
         value = destination.strip().lower()
         if "://" not in value:
             return value
-        parsed = urlparse(value)
-        return (parsed.hostname or "").lower()
+        return safe_url_hostname(value)
 
     def _tool_destination_matches(self, *, destination: EgressDestination, tool: Any) -> bool:
         for raw_pattern in getattr(tool, "destinations", []):

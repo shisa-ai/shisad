@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from typing import Any, cast
-from urllib.parse import urlparse
 
 from shisad.core.approval import ApprovalRoutingError, ConfirmationRequirement
 from shisad.core.events import (
@@ -26,6 +25,7 @@ from shisad.core.types import (
     UserId,
     WorkspaceId,
 )
+from shisad.core.url_parsing import safe_url_hostname
 from shisad.daemon.handlers._mixin_typing import (
     HandlerMixinBase,
 )
@@ -56,12 +56,12 @@ def _recipient_domain(recipient: str) -> str:
     value = recipient.strip()
     if not value:
         return ""
-    parsed = urlparse(value)
-    if parsed.hostname:
-        return parsed.hostname.lower().strip()
-    fallback = urlparse(f"https://{value}")
-    if fallback.hostname:
-        return fallback.hostname.lower().strip()
+    parsed_host = safe_url_hostname(value)
+    if parsed_host:
+        return parsed_host
+    fallback_host = safe_url_hostname(f"https://{value}")
+    if fallback_host:
+        return fallback_host
     if "@" in value:
         _, _, domain = value.rpartition("@")
         return domain.lower().strip()

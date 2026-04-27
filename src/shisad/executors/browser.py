@@ -18,13 +18,14 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
 from typing import Any, Protocol
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urljoin
 
 from pydantic import BaseModel, Field
 
 from shisad.core.host_matching import host_matches
 from shisad.core.session import Session
 from shisad.core.types import TaintLabel
+from shisad.core.url_parsing import safe_url_hostname
 from shisad.executors.mounts import FilesystemPolicy
 from shisad.executors.proxy import NetworkPolicy
 from shisad.executors.sandbox import (
@@ -304,7 +305,7 @@ class BrowserToolkit:
         availability = self._availability_error()
         if availability is not None:
             return availability
-        if not (urlparse(normalized_url).hostname or "").strip():
+        if not safe_url_hostname(normalized_url):
             return self._error_payload("browser_url_invalid")
         opened = await self._ensure_session_open(session=session)
         if opened is not None:
@@ -551,6 +552,15 @@ class BrowserToolkit:
                         continue
         return {"ok": True, "closed": True, "taint_labels": [], "error": ""}
 
+    def current_state(self, *, session: Session) -> dict[str, Any]:
+        state = self._load_state(session)
+        current_url = str(state.get("current_url", "")).strip()
+        opened = bool(state.get("opened")) and bool(safe_url_hostname(current_url))
+        return {
+            "opened": opened,
+            "current_url": current_url if opened else "",
+        }
+
     def _availability_error(self) -> dict[str, Any] | None:
         if not self._enabled:
             return self._error_payload("browser_disabled")
@@ -723,7 +733,7 @@ class BrowserToolkit:
         allow_private_targets = self._allows_private_network_target(target_urls)
         hosts = list(self._allowed_domains)
         for url in target_urls:
-            host = (urlparse(url).hostname or "").lower()
+            host = safe_url_hostname(url)
             if host and host not in hosts:
                 hosts.append(host)
         return NetworkPolicy(
@@ -737,7 +747,7 @@ class BrowserToolkit:
         if not target_urls:
             return False
         for url in target_urls:
-            host = (urlparse(url).hostname or "").lower()
+            host = safe_url_hostname(url)
             if not self._is_private_network_host(host):
                 continue
             if self._browser_sandbox.policy.local_network == BrowserLocalNetworkMode.ALLOWED or any(
@@ -1038,8 +1048,9 @@ class BrowserToolkit:
         normalized = str(rule).strip().lower()
         if not normalized:
             return False
-        parsed = urlparse(normalized if "://" in normalized else f"https://{normalized}")
-        host = (parsed.hostname or normalized).lower()
+        host = safe_url_hostname(normalized if "://" in normalized else f"https://{normalized}")
+        if not host:
+            host = normalized
         return any(token in host for token in _WILDCARD_SCOPE_TOKENS)
 
     def _session_alias(self, session: Session) -> str:

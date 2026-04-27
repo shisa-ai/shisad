@@ -134,6 +134,23 @@ def test_pep_rejects_unattributed_unknown_destination() -> None:
     assert decision.kind == PEPDecisionKind.REJECT
 
 
+def test_gh13_pep_rejects_malformed_redacted_url_without_crashing() -> None:
+    pep = PEP(PolicyBundle(), _registry_with_web_fetch())
+    context = PolicyContext(
+        capabilities={Capability.HTTP_REQUEST},
+        trust_level="trusted",
+    )
+
+    decision = pep.evaluate(
+        ToolName("web.fetch"),
+        {"url": "https://www.hareruyamtg.[REDACTED:high_entropy_secret]"},
+        context,
+    )
+
+    assert decision.kind == PEPDecisionKind.REJECT
+    assert decision.reason_code == "pep:egress_malformed_destination"
+
+
 def test_pep_blocks_ip_literal_without_operator_allowlist_even_if_user_goal() -> None:
     pep = PEP(PolicyBundle(), _registry_with_web_fetch())
     context = PolicyContext(

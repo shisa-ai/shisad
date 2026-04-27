@@ -10,11 +10,11 @@ from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
 
 from pydantic import BaseModel, Field, ValidationError
 
 from shisad.core.types import Capability
+from shisad.core.url_parsing import safe_url_hostname
 from shisad.security.control_plane.schema import (
     ActionKind,
     ControlPlaneAction,
@@ -559,10 +559,7 @@ class ExecutionTraceVerifier:
         if not value:
             return ""
         if "://" in value:
-            parsed = urlparse(value)
-            if parsed.hostname:
-                return parsed.hostname.lower().rstrip(".")
-            return ""
+            return safe_url_hostname(value, strip_trailing_dot=True)
         if self._looks_like_path_resource(value) or self._looks_like_goal_path_token(value):
             return normalize_workspace_path(value, workspace_roots=self._workspace_roots)
         return value.lower()

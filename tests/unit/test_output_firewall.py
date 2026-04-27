@@ -29,6 +29,18 @@ def test_m2_t7_output_firewall_blocks_known_malicious_urls() -> None:
     assert "malicious_url" in result.reason_codes
 
 
+def test_gh13_output_firewall_treats_redacted_pseudo_url_as_malformed() -> None:
+    firewall = OutputFirewall(safe_domains=["hareruyamtg.com", "*.hareruyamtg.com"])
+
+    result = firewall.inspect("Detail: https://www.hareruyamtg.[REDACTED:high_entropy_secret]")
+
+    assert result.blocked is True
+    assert "malicious_url" in result.reason_codes
+    assert result.url_findings
+    assert result.url_findings[0].host == ""
+    assert result.url_findings[0].reason == "malformed_url"
+
+
 def test_m2_t8_markdown_sanitizer_disables_external_images() -> None:
     firewall = OutputFirewall(safe_domains=["api.good.com"])
     result = firewall.inspect("Screenshot: ![x](https://tracker.evil.com/pixel.png)")

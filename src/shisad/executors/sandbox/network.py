@@ -5,8 +5,8 @@ from __future__ import annotations
 import re
 from pathlib import Path
 from typing import Protocol
-from urllib.parse import urlparse
 
+from shisad.core.url_parsing import safe_parsed_hostname, safe_url_hostname, safe_urlparse
 from shisad.executors.proxy import EgressProxy, NetworkPolicy, ProxyDecision
 from shisad.security.credentials import is_placeholder
 
@@ -102,8 +102,7 @@ class SandboxNetworkManager:
             if _DOMAIN_TOKEN_RE.match(token):
                 host = token
                 if "://" in host:
-                    parsed = urlparse(host)
-                    host = parsed.hostname or ""
+                    host = safe_url_hostname(host)
                 if host:
                     targets.append(f"https://{host}/")
         if command and Path(command[0]).name in {"nslookup", "dig", "host"} and len(command) >= 2:
@@ -266,12 +265,14 @@ class SandboxNetworkManager:
         normalized = str(raw_scope).strip().lower()
         if not normalized:
             return ""
-        parsed = urlparse(normalized if "://" in normalized else f"https://{normalized}")
+        parsed = safe_urlparse(normalized if "://" in normalized else f"https://{normalized}")
+        if parsed is None:
+            return ""
         scheme = (parsed.scheme or "https").lower()
         if scheme not in {"http", "https"}:
             return ""
         try:
-            host = (parsed.hostname or "").lower()
+            host = safe_parsed_hostname(parsed)
             port = parsed.port
         except ValueError:
             return ""

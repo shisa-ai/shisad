@@ -80,6 +80,35 @@ def test_wrap_serialized_tool_outputs_replaces_untrusted_content_with_stub(tmp_p
     assert store.read(SessionId("sess-a"), ref_ids[0]) == "A" * 400
 
 
+def test_gh13_wrap_tool_outputs_handles_malformed_redacted_url_source(tmp_path) -> None:
+    store = EvidenceStore(tmp_path / "evidence", salt=b"a" * 32)
+    records = [
+        {
+            "tool_name": "browser.navigate",
+            "success": True,
+            "payload": {
+                "ok": True,
+                "url": "https://www.hareruyamtg.[REDACTED:high_entropy_secret]",
+                "content": "Browser content should still be stored as evidence.",
+            },
+            "taint_labels": ["untrusted"],
+        }
+    ]
+
+    ref_ids = _wrap_serialized_tool_outputs_with_evidence(
+        session_id=SessionId("sess-a"),
+        records=records,
+        evidence_store=store,
+        firewall=ContentFirewall(),
+    )
+
+    assert len(ref_ids) == 1
+    assert records[0]["payload"]["content"].startswith("[EVIDENCE ref=ev-")
+    ref = store.get_ref_metadata(SessionId("sess-a"), ref_ids[0])
+    assert ref is not None
+    assert ref.source == "browser.navigate"
+
+
 def test_wrap_serialized_tool_outputs_wraps_short_top_level_content(tmp_path) -> None:
     store = EvidenceStore(tmp_path / "evidence", salt=b"a" * 32)
     records = [

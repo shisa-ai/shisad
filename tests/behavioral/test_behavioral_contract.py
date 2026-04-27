@@ -413,6 +413,32 @@ async def _stub_complete(
             usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
         )
 
+    if "continue from the current browser session" in goal_lower:
+        normalized_input = planner_input.replace("^", "").lower()
+        if (
+            "browser session state" in normalized_input
+            and "/browser-events" in normalized_input
+            and "/browser-event-detail" in normalized_input
+        ):
+            return ProviderResponse(
+                message=Message(
+                    role="assistant",
+                    content="Continuing from the current browser page.",
+                    tool_calls=[
+                        _tool_call("browser.read_page", {}, call_id="t-browser-followup-read")
+                    ],
+                ),
+                model="behavioral-stub",
+                finish_reason="tool_calls",
+                usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+            )
+        return ProviderResponse(
+            message=Message(role="assistant", content="missing-browser-grounding"),
+            model="behavioral-stub",
+            finish_reason="stop",
+            usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+        )
+
     if "browser read page" in goal_lower or "read the browser page" in goal_lower:
         return ProviderResponse(
             message=Message(
@@ -754,6 +780,32 @@ class _StubSearchHandler(BaseHTTPRequestHandler):
             body = (
                 b"<html><head><title>Browser Next</title></head><body>"
                 b"You reached the next browser page."
+                b"</body></html>"
+            )
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        if parsed.path == "/browser-events":
+            body = (
+                b"<html><head><title>Browser Events</title></head><body>"
+                b"<h1>English Commander Gathering</h1>"
+                b"<p>Official detail path: /browser-event-detail</p>"
+                b"<a id='event-detail' href='/browser-event-detail'>Event detail</a>"
+                + b"</body></html>"
+            )
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        if parsed.path == "/browser-event-detail":
+            body = (
+                b"<html><head><title>Event Detail</title></head><body>"
+                b"Registration is in person at the venue."
                 b"</body></html>"
             )
             self.send_response(200)
@@ -4261,6 +4313,47 @@ async def test_contract_browser_read_page_executes_and_returns_page(
     assert payload.get("ok") is True
     assert payload.get("title") == "Browser Home"
     assert "Hello browser" in str(payload.get("content", ""))
+
+
+@pytest.mark.asyncio
+async def test_gh13_browser_followup_uses_current_session_and_prior_detail_link(
+    contract_harness: ContractHarness,
+) -> None:
+    sid = await _create_session(contract_harness.client)
+    opened = await contract_harness.client.call(
+        "session.message",
+        {
+            "session_id": sid,
+            "content": f"browser navigate {contract_harness.browser_base_url}/browser-events",
+        },
+    )
+    opened_outputs = _extract_tool_outputs(opened)
+    assert "browser.navigate" in opened_outputs
+    opened_payload = opened_outputs["browser.navigate"][0]
+    assert opened_payload.get("ok") is True
+    assert "/browser-event-detail" in str(opened_payload.get("content", ""))
+
+    reply = await contract_harness.client.call(
+        "session.message",
+        {
+            "session_id": sid,
+            "content": (
+                "continue from the current browser session, find the registration path, "
+                "and tell me what info you need from me"
+            ),
+        },
+    )
+
+    assert reply.get("lockdown_level") == "normal"
+    assert int(reply.get("blocked_actions", 0)) == 0
+    assert int(reply.get("confirmation_required_actions", 0)) == 0
+    assert int(reply.get("executed_actions", 0)) == 1
+    outputs = _extract_tool_outputs(reply)
+    assert "browser.read_page" in outputs
+    payload = outputs["browser.read_page"][0]
+    assert payload.get("ok") is True
+    assert payload.get("title") == "Browser Events"
+    assert "/browser-event-detail" in str(payload.get("content", ""))
 
 
 @pytest.mark.asyncio
