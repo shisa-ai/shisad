@@ -14,8 +14,9 @@ _FOLLOW_ON_COMMAND_FRAGMENT = (
 )
 _PUNCTUATION_FOLLOW_ON_VERB_FRAGMENT = (
     r"(?:(?:please\s+)?(?:add|create|read|open|view|list|show|check|inspect|search|"
-    r"find|fetch|get|look\s+up|browse|visit|write|send|message|email|run|execute|"
-    r"edit|update|delete|remove|summarize|explain)\b)"
+    r"find|fetch|get|look\s+up|browse|visit|write|send|message|email|call|run|"
+    r"execute|edit|update|modify|delete|remove|wipe|install|download|upload|"
+    r"exfiltrate|reveal|summarize|explain)\b)"
 )
 
 
@@ -52,11 +53,17 @@ def has_follow_on_command(text: str) -> bool:
 
 def has_follow_on_command_verb(text: str) -> bool:
     normalized = normalize_intent_text(text)
-    return (
-        re.search(
-            rf"(?<!the )\b(?:{_PUNCTUATION_FOLLOW_ON_VERB_FRAGMENT})",
-            normalized,
-            flags=re.IGNORECASE,
-        )
-        is not None
+    matches = re.finditer(
+        rf"\b(?:{_PUNCTUATION_FOLLOW_ON_VERB_FRAGMENT})",
+        normalized,
+        flags=re.IGNORECASE,
     )
+    for match in matches:
+        matched = match.group(0).casefold()
+        verb = matched.removeprefix("please ").split()[0]
+        previous_words = normalized[: match.start()].casefold().split()
+        previous = previous_words[-1] if previous_words else ""
+        if verb in {"check", "search"} and previous in {"the", "my", "web"}:
+            continue
+        return True
+    return False

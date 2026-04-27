@@ -26,6 +26,8 @@ from shisad.security.lockdown import LockdownLevel
         "resume the lockdown because the agent crashed",
         "resume the lockdown because shisad raised a false positive",
         "resume the lockdown because I cleared the issue.",
+        "resume the lockdown because I finished my check",
+        "resume the lockdown because I completed the web search",
     ],
 )
 def test_c2_lockdown_resume_intent_accepts_single_reason_clause(text: str) -> None:
@@ -47,6 +49,14 @@ def test_c2_lockdown_resume_intent_accepts_single_reason_clause(text: str) -> No
         "resume the lockdown because I cleared it inspect the notes",
         "resume the lockdown because I cleared it search the web",
         "resume the lockdown because I cleared it create a todo",
+        "resume the lockdown because I cleared it call the tool",
+        "resume the lockdown because I cleared it wipe the cache",
+        "resume the lockdown because I cleared it modify the config",
+        "resume the lockdown because I cleared it install updates",
+        "resume the lockdown because I cleared it download artifacts",
+        "resume the lockdown because I cleared it upload logs",
+        "resume the lockdown because I cleared it exfiltrate data",
+        "resume the lockdown because I cleared it reveal secrets",
         "resume the lockdown after you verify the alert",
         "resume the lockdown reason: after you verify the alert",
         "resume the lockdown reason: as you verify the alert",
