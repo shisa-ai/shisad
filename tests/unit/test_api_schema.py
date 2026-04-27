@@ -41,6 +41,10 @@ from shisad.core.api.schema import (
     MemoryWriteParams,
     MemoryWriteResult,
     NoteCreateParams,
+    NoteEntryParams,
+    NoteExportParams,
+    NoteListParams,
+    NoteSearchParams,
     PolicyExplainResult,
     RealityCheckReadResult,
     RealityCheckSearchResult,
@@ -61,7 +65,11 @@ from shisad.core.api.schema import (
     TaskListResult,
     TaskPendingConfirmationsResult,
     TaskTriggerEventResult,
+    TodoCompleteParams,
     TodoCreateParams,
+    TodoEntryParams,
+    TodoExportParams,
+    TodoListParams,
     ToolExecuteParams,
     ToolExecuteResult,
 )
@@ -596,6 +604,59 @@ class TestApiSchemaValidation:
                     "owner_id": "user-1",
                 }
             )
+
+    def test_c2_memory_note_todo_owner_params_require_complete_owner_tuple(self) -> None:
+        invalid_payloads = [
+            (MemoryRetrieveParams, {"query": "owner scoped recall", "user_id": "user-1"}),
+            (MemoryRetrieveParams, {"query": "owner scoped recall", "workspace_id": "ws-1"}),
+            (MemoryRetrieveParams, {"query": "owner scoped recall", "include_unowned": True}),
+            (
+                MemoryWriteParams,
+                {
+                    "ingress_context": "handle-1",
+                    "entry_type": "fact",
+                    "key": "fact:owner",
+                    "value": "blue",
+                    "user_id": "user-1",
+                },
+            ),
+            (NoteCreateParams, {"key": "note:1", "content": "hello", "workspace_id": "ws-1"}),
+            (NoteListParams, {"user_id": "user-1"}),
+            (NoteSearchParams, {"query": "hello", "workspace_id": "ws-1"}),
+            (NoteEntryParams, {"entry_id": "entry-1", "user_id": "user-1"}),
+            (NoteExportParams, {"format": "json", "include_unowned": True}),
+            (TodoCreateParams, {"title": "task", "user_id": "user-1"}),
+            (TodoListParams, {"workspace_id": "ws-1"}),
+            (TodoEntryParams, {"entry_id": "entry-1", "user_id": "user-1"}),
+            (TodoCompleteParams, {"selector": "task", "workspace_id": "ws-1"}),
+            (TodoExportParams, {"format": "json", "include_unowned": True}),
+        ]
+
+        for model_type, payload in invalid_payloads:
+            with pytest.raises(ValidationError):
+                model_type.model_validate(payload)
+
+        note = NoteExportParams.model_validate(
+            {
+                "format": "json",
+                "user_id": " user-1 ",
+                "workspace_id": " ws-1 ",
+                "include_unowned": True,
+            }
+        )
+        todo = TodoExportParams.model_validate(
+            {
+                "format": "csv",
+                "user_id": "user-1",
+                "workspace_id": "ws-1",
+            }
+        )
+
+        assert note.user_id == "user-1"
+        assert note.workspace_id == "ws-1"
+        assert note.include_unowned is True
+        assert todo.user_id == "user-1"
+        assert todo.workspace_id == "ws-1"
 
     def test_m1_note_and_todo_params_reject_legacy_trust_fields(self) -> None:
         with pytest.raises(ValidationError):

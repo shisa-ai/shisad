@@ -1000,6 +1000,7 @@ class MemoryImplMixin(HandlerMixinBase):
             entry_type="note",
             include_deleted=True,
             limit=2000,
+            **self._owner_scope_from_params(params),
         )
         notes = [entry.model_dump(mode="json") for entry in rows if str(entry.entry_type) == "note"]
         if fmt == "json":
@@ -1200,6 +1201,7 @@ class MemoryImplMixin(HandlerMixinBase):
             entry_type="todo",
             include_deleted=True,
             limit=2000,
+            **self._owner_scope_from_params(params),
         )
         todos = [entry.model_dump(mode="json") for entry in rows if str(entry.entry_type) == "todo"]
         if fmt == "json":

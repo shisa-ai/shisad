@@ -696,6 +696,69 @@ async def test_c2_execute_approved_action_todo_tools_scope_to_session_owner(
 
 
 @pytest.mark.asyncio
+async def test_c2_note_and_todo_exports_scope_to_requested_owner_tuple(tmp_path: Path) -> None:
+    handler = _MemoryStructuredHandler(tmp_path / "memory")
+    same_note = _write_owned_memory_entry(
+        handler._memory_manager,
+        entry_type="note",
+        key="note:same-owner-export",
+        value="C2 note export owner scope token same-owner-blue.",
+        user_id="user-1",
+        workspace_id="ws-1",
+    )
+    other_note = _write_owned_memory_entry(
+        handler._memory_manager,
+        entry_type="note",
+        key="note:other-owner-export",
+        value="C2 note export owner scope token other-owner-red.",
+        user_id="user-2",
+        workspace_id="ws-2",
+    )
+    same_todo = _write_owned_memory_entry(
+        handler._memory_manager,
+        entry_type="todo",
+        key="todo:same-owner-export",
+        value={
+            "title": "same owner export",
+            "details": "C2 todo export owner scope token same-owner-blue.",
+            "status": "open",
+            "due_date": "",
+        },
+        user_id="user-1",
+        workspace_id="ws-1",
+    )
+    other_todo = _write_owned_memory_entry(
+        handler._memory_manager,
+        entry_type="todo",
+        key="todo:other-owner-export",
+        value={
+            "title": "other owner export",
+            "details": "C2 todo export owner scope token other-owner-red.",
+            "status": "open",
+            "due_date": "",
+        },
+        user_id="user-2",
+        workspace_id="ws-2",
+    )
+
+    note_payload = await handler.do_note_export(
+        {"format": "json", "user_id": "user-1", "workspace_id": "ws-1"}
+    )
+    todo_payload = await handler.do_todo_export(
+        {"format": "json", "user_id": "user-1", "workspace_id": "ws-1"}
+    )
+
+    note_text = json.dumps(json.loads(note_payload["data"]), sort_keys=True)
+    todo_text = json.dumps(json.loads(todo_payload["data"]), sort_keys=True)
+    assert same_note.id in note_text
+    assert other_note.id not in note_text
+    assert "other-owner-red" not in note_text
+    assert same_todo.id in todo_text
+    assert other_todo.id not in todo_text
+    assert "other-owner-red" not in todo_text
+
+
+@pytest.mark.asyncio
 async def test_m2_execute_approved_action_retrieve_rag_records_citations(tmp_path: Path) -> None:
     storage = tmp_path / "memory"
     harness = _RetrieveStructuredExecutionHarness(storage)

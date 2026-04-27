@@ -29,6 +29,24 @@ def _default_user_scope_filter() -> list[MemoryScope]:
     return ["user"]
 
 
+def _normalize_owner_value(value: str | None) -> str | None:
+    if value is None:
+        return None
+    normalized = value.strip()
+    return normalized or None
+
+
+def _validate_complete_owner_scope(model: Any) -> None:
+    user_id = _normalize_owner_value(getattr(model, "user_id", None))
+    workspace_id = _normalize_owner_value(getattr(model, "workspace_id", None))
+    if bool(user_id) != bool(workspace_id):
+        raise ValueError("user_id and workspace_id must be provided together")
+    if bool(getattr(model, "include_unowned", False)) and user_id is None:
+        raise ValueError("include_unowned requires user_id and workspace_id")
+    model.user_id = user_id
+    model.workspace_id = workspace_id
+
+
 class JsonRpcRequest(BaseModel):
     """JSON-RPC 2.0 request."""
 
@@ -373,6 +391,11 @@ class MemoryRetrieveParams(_StrictParams):
     workspace_id: str | None = None
     include_unowned: bool = False
 
+    @model_validator(mode="after")
+    def _validate_owner_scope(self) -> MemoryRetrieveParams:
+        _validate_complete_owner_scope(self)
+        return self
+
 
 class MemoryWriteParams(_StrictParams):
     ingress_context: str
@@ -393,6 +416,7 @@ class MemoryWriteParams(_StrictParams):
 
     @model_validator(mode="after")
     def _validate_ingress_shape(self) -> MemoryWriteParams:
+        _validate_complete_owner_scope(self)
         if not self.ingress_context.strip():
             raise ValueError("ingress_context is required")
         return self
@@ -751,6 +775,7 @@ class NoteCreateParams(_StrictParams):
 
     @model_validator(mode="after")
     def _validate_ingress_shape(self) -> NoteCreateParams:
+        _validate_complete_owner_scope(self)
         if self.ingress_context is None:
             if self.content_digest is not None:
                 raise ValueError("content_digest requires ingress_context")
@@ -767,6 +792,11 @@ class NoteListParams(_StrictParams):
     workspace_id: str | None = None
     include_unowned: bool = False
 
+    @model_validator(mode="after")
+    def _validate_owner_scope(self) -> NoteListParams:
+        _validate_complete_owner_scope(self)
+        return self
+
 
 class NoteSearchParams(_StrictParams):
     query: str
@@ -775,6 +805,11 @@ class NoteSearchParams(_StrictParams):
     workspace_id: str | None = None
     include_unowned: bool = False
 
+    @model_validator(mode="after")
+    def _validate_owner_scope(self) -> NoteSearchParams:
+        _validate_complete_owner_scope(self)
+        return self
+
 
 class NoteEntryParams(_StrictParams):
     entry_id: str
@@ -782,9 +817,22 @@ class NoteEntryParams(_StrictParams):
     workspace_id: str | None = None
     include_unowned: bool = False
 
+    @model_validator(mode="after")
+    def _validate_owner_scope(self) -> NoteEntryParams:
+        _validate_complete_owner_scope(self)
+        return self
+
 
 class NoteExportParams(_StrictParams):
     format: str = "json"
+    user_id: str | None = None
+    workspace_id: str | None = None
+    include_unowned: bool = False
+
+    @model_validator(mode="after")
+    def _validate_owner_scope(self) -> NoteExportParams:
+        _validate_complete_owner_scope(self)
+        return self
 
 
 class NoteListResult(BaseModel):
@@ -834,6 +882,7 @@ class TodoCreateParams(_StrictParams):
 
     @model_validator(mode="after")
     def _validate_ingress_shape(self) -> TodoCreateParams:
+        _validate_complete_owner_scope(self)
         if self.ingress_context is None:
             if self.content_digest is not None:
                 raise ValueError("content_digest requires ingress_context")
@@ -850,12 +899,22 @@ class TodoListParams(_StrictParams):
     workspace_id: str | None = None
     include_unowned: bool = False
 
+    @model_validator(mode="after")
+    def _validate_owner_scope(self) -> TodoListParams:
+        _validate_complete_owner_scope(self)
+        return self
+
 
 class TodoEntryParams(_StrictParams):
     entry_id: str
     user_id: str | None = None
     workspace_id: str | None = None
     include_unowned: bool = False
+
+    @model_validator(mode="after")
+    def _validate_owner_scope(self) -> TodoEntryParams:
+        _validate_complete_owner_scope(self)
+        return self
 
 
 class TodoCompleteParams(_StrictParams):
@@ -864,9 +923,22 @@ class TodoCompleteParams(_StrictParams):
     workspace_id: str | None = None
     include_unowned: bool = False
 
+    @model_validator(mode="after")
+    def _validate_owner_scope(self) -> TodoCompleteParams:
+        _validate_complete_owner_scope(self)
+        return self
+
 
 class TodoExportParams(_StrictParams):
     format: str = "json"
+    user_id: str | None = None
+    workspace_id: str | None = None
+    include_unowned: bool = False
+
+    @model_validator(mode="after")
+    def _validate_owner_scope(self) -> TodoExportParams:
+        _validate_complete_owner_scope(self)
+        return self
 
 
 class TodoListResult(BaseModel):

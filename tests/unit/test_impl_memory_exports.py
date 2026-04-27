@@ -45,12 +45,22 @@ class _StubMemoryHandler(MemoryImplMixin):
 async def test_note_export_uses_type_aware_limit_query() -> None:
     handler = _StubMemoryHandler()
 
-    payload = await handler.do_note_export({"format": "json"})
+    payload = await handler.do_note_export(
+        {
+            "format": "json",
+            "user_id": "user-1",
+            "workspace_id": "ws-1",
+            "include_unowned": True,
+        }
+    )
 
     assert payload["format"] == "json"
     assert handler._memory_manager.calls[0]["entry_type"] == "note"
     assert handler._memory_manager.calls[0]["include_deleted"] is True
     assert handler._memory_manager.calls[0]["limit"] == 2000
+    assert handler._memory_manager.calls[0]["user_id"] == "user-1"
+    assert handler._memory_manager.calls[0]["workspace_id"] == "ws-1"
+    assert handler._memory_manager.calls[0]["include_unowned"] is True
 
     # HDL-L2: pin the output payload shape, not just the call arguments.
     # Previously a regression that returned an empty/malformed `data` field
@@ -68,12 +78,22 @@ async def test_note_export_uses_type_aware_limit_query() -> None:
 async def test_todo_export_uses_type_aware_limit_query() -> None:
     handler = _StubMemoryHandler()
 
-    payload = await handler.do_todo_export({"format": "json"})
+    payload = await handler.do_todo_export(
+        {
+            "format": "json",
+            "user_id": "user-1",
+            "workspace_id": "ws-1",
+            "include_unowned": True,
+        }
+    )
 
     assert payload["format"] == "json"
     assert handler._memory_manager.calls[0]["entry_type"] == "todo"
     assert handler._memory_manager.calls[0]["include_deleted"] is True
     assert handler._memory_manager.calls[0]["limit"] == 2000
+    assert handler._memory_manager.calls[0]["user_id"] == "user-1"
+    assert handler._memory_manager.calls[0]["workspace_id"] == "ws-1"
+    assert handler._memory_manager.calls[0]["include_unowned"] is True
 
     # HDL-L2: pin the output payload shape, not just the call arguments.
     assert isinstance(payload.get("data"), str)

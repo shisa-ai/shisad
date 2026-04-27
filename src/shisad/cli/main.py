@@ -164,6 +164,27 @@ def _validate_memory_write_predicate(entry_type: str, predicate: str) -> str:
     return ""
 
 
+def _owner_scope_payload(
+    user_id: str,
+    workspace_id: str,
+    *,
+    include_unowned: bool = False,
+) -> dict[str, object]:
+    owner_user_id = user_id.strip()
+    owner_workspace_id = workspace_id.strip()
+    if bool(owner_user_id) != bool(owner_workspace_id):
+        raise click.ClickException("--user and --workspace must be provided together.")
+    if include_unowned and not owner_user_id:
+        raise click.ClickException("--include-unowned requires --user and --workspace.")
+    payload: dict[str, object] = {}
+    if owner_user_id:
+        payload["user_id"] = owner_user_id
+        payload["workspace_id"] = owner_workspace_id
+    if include_unowned:
+        payload["include_unowned"] = True
+    return payload
+
+
 def _memory_value_preview(value: object, *, max_chars: int = 80) -> str:
     if value is None:
         return "-"
@@ -2504,10 +2525,7 @@ def memory_write(
     workspace_id: str,
 ) -> None:
     normalized_predicate = _validate_memory_write_predicate(entry_type, predicate)
-    owner_user_id = user_id.strip()
-    owner_workspace_id = workspace_id.strip()
-    if bool(owner_user_id) != bool(owner_workspace_id):
-        raise click.ClickException("--user and --workspace must be provided together.")
+    owner_scope = _owner_scope_payload(user_id, workspace_id)
     config = _get_config()
     ingress = rpc_call(
         config,
@@ -2526,9 +2544,7 @@ def memory_write(
     if normalized_predicate:
         payload["predicate"] = normalized_predicate
         payload["strength"] = strength
-    if owner_user_id:
-        payload["user_id"] = owner_user_id
-        payload["workspace_id"] = owner_workspace_id
+    payload.update(owner_scope)
     result = rpc_call(
         config,
         "memory.write",
@@ -2731,12 +2747,26 @@ def note_verify(entry_id: str) -> None:
 
 @note.command("export")
 @click.option("--format", "fmt", default="json", type=click.Choice(["json", "csv"]))
-def note_export(fmt: str) -> None:
+@click.option("--user", "user_id", default="", help="Owner user ID for personal notes.")
+@click.option(
+    "--workspace",
+    "workspace_id",
+    default="",
+    help="Owner workspace ID for personal notes.",
+)
+@click.option(
+    "--include-unowned",
+    is_flag=True,
+    help="Include legacy unowned notes with the selected owner.",
+)
+def note_export(fmt: str, user_id: str, workspace_id: str, include_unowned: bool) -> None:
     config = _get_config()
+    payload: dict[str, object] = {"format": fmt}
+    payload.update(_owner_scope_payload(user_id, workspace_id, include_unowned=include_unowned))
     result = rpc_call(
         config,
         "note.export",
-        {"format": fmt},
+        payload,
         response_model=NoteExportResult,
     )
     click.echo(str(result.data))
@@ -2825,12 +2855,26 @@ def todo_verify(entry_id: str) -> None:
 
 @todo.command("export")
 @click.option("--format", "fmt", default="json", type=click.Choice(["json", "csv"]))
-def todo_export(fmt: str) -> None:
+@click.option("--user", "user_id", default="", help="Owner user ID for personal todos.")
+@click.option(
+    "--workspace",
+    "workspace_id",
+    default="",
+    help="Owner workspace ID for personal todos.",
+)
+@click.option(
+    "--include-unowned",
+    is_flag=True,
+    help="Include legacy unowned todos with the selected owner.",
+)
+def todo_export(fmt: str, user_id: str, workspace_id: str, include_unowned: bool) -> None:
     config = _get_config()
+    payload: dict[str, object] = {"format": fmt}
+    payload.update(_owner_scope_payload(user_id, workspace_id, include_unowned=include_unowned))
     result = rpc_call(
         config,
         "todo.export",
-        {"format": fmt},
+        payload,
         response_model=TodoExportResult,
     )
     click.echo(str(result.data))

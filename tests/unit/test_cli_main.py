@@ -1088,6 +1088,92 @@ def test_memory_write_forwards_owner_scope_when_supplied(
     ) in calls
 
 
+def test_note_and_todo_exports_forward_owner_scope_when_supplied(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _config(tmp_path)
+    monkeypatch.setattr(cli_main, "_get_config", lambda: config)
+    calls: list[tuple[str, dict[str, object] | None]] = []
+
+    def _fake_rpc_call(
+        _config: DaemonConfig,
+        method: str,
+        params: dict[str, object] | None = None,
+        *,
+        response_model: type[object] | None = None,
+    ) -> object:
+        calls.append((method, params))
+        payload = {"format": "json", "data": "[]"}
+        if response_model is None:
+            return payload
+        return response_model.model_validate(payload)  # type: ignore[attr-defined]
+
+    monkeypatch.setattr(cli_main, "rpc_call", _fake_rpc_call)
+    runner = CliRunner()
+
+    note_result = runner.invoke(
+        cli_main.cli,
+        [
+            "note",
+            "export",
+            "--user",
+            "alice",
+            "--workspace",
+            "ws1",
+            "--include-unowned",
+        ],
+    )
+    todo_result = runner.invoke(
+        cli_main.cli,
+        [
+            "todo",
+            "export",
+            "--user",
+            "alice",
+            "--workspace",
+            "ws1",
+        ],
+    )
+
+    assert note_result.exit_code == 0, note_result.output
+    assert todo_result.exit_code == 0, todo_result.output
+    assert (
+        "note.export",
+        {
+            "format": "json",
+            "user_id": "alice",
+            "workspace_id": "ws1",
+            "include_unowned": True,
+        },
+    ) in calls
+    assert (
+        "todo.export",
+        {
+            "format": "json",
+            "user_id": "alice",
+            "workspace_id": "ws1",
+        },
+    ) in calls
+
+
+def test_note_export_rejects_partial_owner_scope(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _config(tmp_path)
+    monkeypatch.setattr(cli_main, "_get_config", lambda: config)
+    calls: list[tuple[str, dict[str, object] | None]] = []
+    monkeypatch.setattr(cli_main, "rpc_call", lambda *args, **kwargs: calls.append(args))
+    runner = CliRunner()
+
+    result = runner.invoke(cli_main.cli, ["note", "export", "--user", "alice"])
+
+    assert result.exit_code != 0
+    assert "--user and --workspace must be provided together." in result.output
+    assert calls == []
+
+
 def test_doctor_bare_invocation_defaults_to_all(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
