@@ -227,6 +227,15 @@ class MemoryManager:
         user_id: str | None = None,
         workspace_id: str | None = None,
     ) -> MemoryWriteDecision:
+        owner_scope_requested = user_id is not None or workspace_id is not None
+        owner_user_id = self._normalize_owner_value(user_id)
+        owner_workspace_id = self._normalize_owner_value(workspace_id)
+        if owner_scope_requested and (owner_user_id is None or owner_workspace_id is None):
+            return MemoryWriteDecision(
+                kind="reject",
+                reason="owner_scope_requires_user_and_workspace",
+            )
+
         text_value = str(value)
         pending_review = confirmation_status == "pending_review"
         if self._looks_instruction_like(text_value):
@@ -378,8 +387,8 @@ class MemoryManager:
             expires_at=expires_at,
             taint_labels=resolved_taints,
             scope=scope,
-            user_id=user_id,
-            workspace_id=workspace_id,
+            user_id=owner_user_id,
+            workspace_id=owner_workspace_id,
             ingress_handle_id=ingress_handle_id,
             content_digest=content_digest,
             workflow_state=resolved_workflow_state,

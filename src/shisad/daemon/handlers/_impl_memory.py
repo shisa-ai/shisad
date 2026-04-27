@@ -46,6 +46,11 @@ _MEMORY_WRITE_REJECT_HINTS: dict[str, tuple[str, str]] = {
         "The replacement must use the same entry type and key as the superseded entry.",
         "Use the original entry's type/key or create a new memory entry instead.",
     ),
+    "owner_scope_requires_user_and_workspace": (
+        "Owner-scoped personal memory writes require both user_id and workspace_id.",
+        "Retry from a session with a real owner scope, or omit both fields for an "
+        "explicit unowned maintenance write.",
+    ),
 }
 
 

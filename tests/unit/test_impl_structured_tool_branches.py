@@ -807,6 +807,50 @@ async def test_c2_blank_session_note_todo_reads_fail_closed(tmp_path: Path) -> N
 
 
 @pytest.mark.asyncio
+async def test_c2_blank_session_note_todo_writes_fail_closed(tmp_path: Path) -> None:
+    harness = _MemoryStructuredExecutionHarness(tmp_path / "memory")
+    harness._session.user_id = UserId("")
+    harness._session.workspace_id = WorkspaceId("")
+
+    note_result = await HandlerImplementation._execute_approved_action(
+        harness,  # type: ignore[arg-type]
+        sid=harness.session_id,
+        user_id=UserId(""),
+        tool_name=ToolName("note.create"),
+        arguments={"content": "blank owner note should not persist"},
+        capabilities={Capability.MEMORY_WRITE},
+        approval_actor="control_api",
+    )
+    todo_result = await HandlerImplementation._execute_approved_action(
+        harness,  # type: ignore[arg-type]
+        sid=harness.session_id,
+        user_id=UserId(""),
+        tool_name=ToolName("todo.create"),
+        arguments={"title": "blank owner todo should not persist"},
+        capabilities={Capability.MEMORY_WRITE},
+        approval_actor="control_api",
+    )
+
+    assert note_result.success is False
+    assert note_result.tool_output is not None
+    note_payload = json.loads(note_result.tool_output.content)
+    assert note_payload["kind"] == "reject"
+    assert note_payload["reason"] == "owner_scope_requires_user_and_workspace"
+
+    assert todo_result.success is False
+    assert todo_result.tool_output is not None
+    todo_payload = json.loads(todo_result.tool_output.content)
+    assert todo_payload["kind"] == "reject"
+    assert todo_payload["reason"] == "owner_scope_requires_user_and_workspace"
+
+    assert harness._memory_manager.list_entries(
+        include_deleted=True,
+        include_pending_review=True,
+        limit=10,
+    ) == []
+
+
+@pytest.mark.asyncio
 async def test_c2_note_and_todo_exports_scope_to_requested_owner_tuple(tmp_path: Path) -> None:
     handler = _MemoryStructuredHandler(tmp_path / "memory")
     same_note = _write_owned_memory_entry(

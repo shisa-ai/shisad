@@ -3,6 +3,8 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from pathlib import Path
 
+import pytest
+
 from shisad.memory.manager import MemoryManager
 from shisad.memory.participation import InboxItemValue, compose_channel_binding, inbox_item_key
 from shisad.memory.schema import MemoryEntry, MemorySource
@@ -265,6 +267,43 @@ def test_c2_memory_manager_owner_scope_filters_list_get_identity_and_attention(
         ).entries
         == []
     )
+
+
+@pytest.mark.parametrize(
+    ("user_id", "workspace_id"),
+    [
+        ("", ""),
+        ("user-1", None),
+        (None, "ws-1"),
+        ("user-1", ""),
+        ("", "ws-1"),
+    ],
+)
+def test_c2_memory_manager_rejects_blank_or_partial_owner_writes(
+    tmp_path: Path,
+    user_id: str | None,
+    workspace_id: str | None,
+) -> None:
+    manager = MemoryManager(tmp_path / "memory")
+    decision = manager.write_with_provenance(
+        entry_type="note",
+        key="note:blank-owner-write",
+        value="Blank-owner writes must not create personal rows.",
+        source=MemorySource(origin="user", source_id="blank-owner-write", extraction_method="test"),
+        source_origin="user_direct",
+        channel_trust="command",
+        confirmation_status="user_asserted",
+        source_id="blank-owner-write",
+        scope="user",
+        confidence=0.9,
+        confirmation_satisfied=True,
+        user_id=user_id,
+        workspace_id=workspace_id,
+    )
+
+    assert decision.kind == "reject"
+    assert decision.reason == "owner_scope_requires_user_and_workspace"
+    assert manager.list_entries(include_deleted=True, include_pending_review=True, limit=10) == []
 
 
 def test_m3_compile_active_attention_filters_scope_workflow_and_channel_trust(
