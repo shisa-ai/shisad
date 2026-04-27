@@ -792,17 +792,14 @@ def _lockdown_resume_command_tail_is_clear(tail: str) -> bool:
 _LOCKDOWN_RESUME_REASON_PREFIXES = (
     "because ",
     "since ",
-    "as ",
-    "after ",
     "now that ",
     "reason: ",
     "reason - ",
     "reason ",
 )
-_LOCKDOWN_RESUME_FOLLOW_ON_RE = re.compile(
-    r"\b(?:and|then|also)\s+"
-    r"(?:run|execute|call|delete|remove|wipe|send|email|open|write|modify|"
-    r"install|fetch|download|upload|exfiltrate|reveal|show|ignore)\b",
+_LOCKDOWN_RESUME_REASON_DISALLOWED_RE = re.compile(
+    r"(?:^|[\s,])(?:and|then|also)\b|[.;]|"
+    r"(?:^|\s)(?:you|assistant|agent|shisad)\b",
     re.IGNORECASE,
 )
 
@@ -818,7 +815,7 @@ def _lockdown_resume_reason_tail_is_clear(tail: str) -> bool:
             break
     if not reason:
         return False
-    return _LOCKDOWN_RESUME_FOLLOW_ON_RE.search(reason) is None
+    return _LOCKDOWN_RESUME_REASON_DISALLOWED_RE.search(reason) is None
 
 
 def _strip_lockdown_resume_intent_prefix(normalized: str) -> str:

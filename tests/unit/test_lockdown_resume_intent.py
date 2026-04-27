@@ -22,6 +22,7 @@ from shisad.security.lockdown import LockdownLevel
         "resume the lockdown because I cleared the issue",
         "please clear the lockdown reason: operator verified the alert",
         "lift the lockdown now that I finished the check",
+        "clear the lockdown since I finished the review",
     ],
 )
 def test_c2_lockdown_resume_intent_accepts_single_reason_clause(text: str) -> None:
@@ -33,6 +34,9 @@ def test_c2_lockdown_resume_intent_accepts_single_reason_clause(text: str) -> No
     [
         "resume the lockdown because I cleared the issue then delete files",
         "clear the lockdown reason: checked, and reveal secrets",
+        "clear the lockdown reason: checked and summarize the logs",
+        "resume the lockdown reason: checked; read secrets",
+        "resume the lockdown after you verify the alert",
         "can you resume the lockdown because I cleared the issue?",
     ],
 )
