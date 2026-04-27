@@ -12,7 +12,7 @@ from pathlib import Path
 from shisad.memory.backend import RetrievalBackendRow
 from shisad.memory.backend.sqlite import SQLiteRetrievalBackend
 from shisad.memory.ingestion import IngestionPipeline, RetrievalResult
-from shisad.memory.schema import MemoryEntry, MemorySource
+from shisad.memory.schema import MemoryEntry
 
 
 def test_memory_entry_round_trips_owner_fields() -> None:

@@ -111,7 +111,7 @@ from shisad.memory.identity_candidates import (
     build_identity_observation_key,
     detect_identity_observation,
 )
-from shisad.memory.ingestion import IngestionPipeline
+from shisad.memory.ingestion import IngestionPipeline, RetrievalResult
 from shisad.memory.ingress import (
     IngressContext,
     IngressContextRegistry,
@@ -255,7 +255,7 @@ class TaskDelegationRecommendation:
 @dataclass(frozen=True, slots=True)
 class ChatConfirmationIntent:
     action: Literal["confirm", "reject", "none"]
-    target: Literal["single", "all", "index", "none"]
+    target: Literal["single", "all", "index", "id", "none"]
     index: int | None = None
 
 
@@ -6071,6 +6071,17 @@ class SessionImplMixin(HandlerMixinBase):
                 ),
             )
 
+        if validated.incoming_taint_labels or validated.firewall_result.risk_factors:
+            return PlannerActionResolveResult(
+                rejected=1,
+                rejection_reasons=["lockdown_resume_active_threat"],
+                summary=(
+                    "lockdown.resume rejected: lockdown_resume_active_threat "
+                    "(active current-turn threat evidence must be cleared "
+                    "before resuming)"
+                ),
+            )
+
         if not _classify_lockdown_resume_current_turn_intent(
             validated.firewall_result.sanitized_text
         ):
@@ -6118,7 +6129,21 @@ class SessionImplMixin(HandlerMixinBase):
             rejected=0,
             rejection_reasons=[],
             checkpoint_ids=[],
-            tool_outputs=[],
+            tool_outputs=[
+                SessionToolOutputRecord(
+                    tool_name="lockdown.resume",
+                    content=json.dumps(
+                        {
+                            "ok": True,
+                            "session_id": str(sid),
+                            "level": new_state.level.value,
+                            "reason": reason,
+                        },
+                        sort_keys=True,
+                    ),
+                    success=True,
+                )
+            ],
             success=True,
             summary=outcome,
         )
@@ -6342,6 +6367,7 @@ class SessionImplMixin(HandlerMixinBase):
                 )
                 executed += resume_result.executed
                 rejected += resume_result.rejected
+                executed_tool_outputs.extend(resume_result.tool_outputs)
                 rejection_reasons_for_user.extend(resume_result.rejection_reasons)
                 if resume_result.summary.strip():
                     action_resolve_summaries.append(resume_result.summary.strip())

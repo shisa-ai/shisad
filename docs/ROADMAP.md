@@ -274,9 +274,11 @@ TOTP entry remain deferred to `v0.8.0`.
   recoverable from the chat surface via a PEP-gated `lockdown.resume`
   planner tool; lockdown notice surfaces the in-chat and CLI recovery
   paths with the session id.
-- Memory recall is `(user, workspace)`-scoped by default, with explicit
-  operator-driven widening; same-scope recall is not re-classified as
-  untrusted solely because it came from a prior session.
+- Personal `user_curated` recall is `(user, workspace)`-scoped by default;
+  public collections remain collection-level, and same-scope clean recall is
+  not classified as untrusted solely because it came from a prior session.
+  Legacy unowned personal rows stay excluded by default, with maintenance-only
+  opt-in.
 - Operator preflight cleanup: harness and CLI quality-of-life fixes
   surfaced during live verification.
 

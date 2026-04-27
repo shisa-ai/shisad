@@ -63,6 +63,12 @@ The allowlist is an **auto-approve list**, not a hard wall. It is a friction red
 
 Routine denial of user-requested actions (when a confirmation gate would safely resolve the ambiguity) is a product failure, not a security feature. Hard denial is reserved for explicit operator policy, known-bad/exfil patterns, or cases where the system cannot safely proceed even with confirmation.
 
+### Scoped Personal Recall
+
+Personal recall in the `user_curated` collection is scoped at recall time by the active session's `(user_id, workspace_id)`. Public or collection-level content such as `project_docs`, `external_web`, and `tool_outputs` can flow across sessions because those collections are not owner-private personal memory.
+
+Same-scope clean personal recall is framed as `MEMORY CONTEXT (same-scope recall; derived from this operator's own prior session memory)`, not as untrusted external evidence. Records that carry an injection taint label stay in the untrusted-data framing regardless of owner scope, and pre-migration personal rows with NULL owner fields are excluded from default recall; `include_unowned=True` is reserved for maintenance and diagnostic callers.
+
 ### The Test
 
 For any security mechanism, ask:

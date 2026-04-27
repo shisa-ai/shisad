@@ -40,6 +40,9 @@ Note:
 - Browser read-mostly tools (`browser.navigate`, `browser.read_page`, `browser.screenshot`, `browser.end_session`) are designed to work without confirmation when the destination is authorized. Browser write tools (`browser.click`, `browser.type_text`) are confirmation-gated in the live runtime.
 - With `SHISAD_BROWSER_REQUIRE_HARDENED_ISOLATION=1` (the default), browser scope entries must be literal hosts/URLs; wildcard browser allowlist patterns are rejected fail-closed because the hardened connect-path layer cannot enforce wildcard sibling hosts safely.
 - The browser rows remain live in the published `v0.7.0` release even though this point-in-time table intentionally omits them.
+- `tool.lockdown.resume` is a planner-driven structured control tool exposed only
+  to trusted command-chat sessions at `caution` lockdown level. It records the
+  audit actor chain `human_confirmation -> planner_lockdown_resume`.
 
 | Tool | Status | Detail |
 |------|--------|--------|
@@ -74,11 +77,12 @@ Note:
 | tool.evidence.read | DISABLED | no_evidence_ref_available |
 | tool.evidence.promote | DISABLED | no_evidence_ref_available |
 | tool.report_anomaly | GATED | consensus:veto:BehavioralSequenceAnalyzer |
+| tool.lockdown.resume | GATED | trusted command chat only; caution-level sessions only; audit actors human_confirmation -> planner_lockdown_resume |
 
 Summary:
 
 - `WORKS`: 13
-- `GATED`: 12
+- `GATED`: 13
 - `DISABLED`: 6
 - `FAIL`: 0
-- `TOTAL`: 31
+- `TOTAL`: 32
