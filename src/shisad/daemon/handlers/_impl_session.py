@@ -134,6 +134,7 @@ from shisad.security.firewall import FirewallResult
 from shisad.security.host_extraction import extract_hosts_from_text, host_patterns
 from shisad.security.intent_matching import (
     has_follow_on_command,
+    has_follow_on_command_verb,
     normalize_intent_text,
     strip_optional_greeting_prefix,
 )
@@ -811,13 +812,6 @@ _LOCKDOWN_RESUME_REASON_CONDITIONAL_ACTOR_RE = re.compile(
     r"(?:should|must|need|needs|can|could|would|will|verify|check|confirm)\b",
     re.IGNORECASE,
 )
-_LOCKDOWN_RESUME_REASON_FOLLOW_ON_VERB_RE = re.compile(
-    r"(?:^|\s)(?:run|execute|call|delete|remove|wipe|send|email|open|"
-    r"write|modify|install|fetch|download|upload|exfiltrate|reveal|show|"
-    r"summarize|list|read)\b",
-    re.IGNORECASE,
-)
-
 
 def _lockdown_resume_reason_tail_is_clear(tail: str) -> bool:
     normalized = tail.lstrip(" ,;:-").casefold()
@@ -835,7 +829,7 @@ def _lockdown_resume_reason_tail_is_clear(tail: str) -> bool:
         or _LOCKDOWN_RESUME_REASON_CONJUNCTION_RE.search(reason)
         or _LOCKDOWN_RESUME_REASON_CONDITIONAL_PREFIX_RE.search(reason)
         or _LOCKDOWN_RESUME_REASON_CONDITIONAL_ACTOR_RE.search(reason)
-        or _LOCKDOWN_RESUME_REASON_FOLLOW_ON_VERB_RE.search(reason)
+        or has_follow_on_command_verb(reason)
     )
 
 
