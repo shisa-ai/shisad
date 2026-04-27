@@ -1678,6 +1678,10 @@ async def test_contract_cli_memory_write_surfaces_identity_in_new_session(
         "user:editor",
         "--value",
         "helix",
+        "--user",
+        "alice",
+        "--workspace",
+        "ws1",
     )
     assert written.returncode == 0, written.stderr or written.stdout
 
@@ -1710,6 +1714,10 @@ async def test_contract_cli_memory_write_identity_context_is_explicitly_trusted(
             "user:editor",
             "--value",
             "helix",
+            "--user",
+            "alice",
+            "--workspace",
+            "ws1",
         )
         assert written.returncode == 0, written.stderr or written.stdout
 
@@ -2370,6 +2378,7 @@ async def test_contract_cli_planner_context_filters_identity_and_active_attentio
 
     def _seed(config: DaemonConfig) -> None:
         manager = MemoryManager(config.data_dir / "memory_entries")
+        owner_scope = {"user_id": "alice", "workspace_id": "ws1"}
         trusted_identity = manager.write_with_provenance(
             entry_type="persona_fact",
             key="persona:timezone",
@@ -2386,6 +2395,7 @@ async def test_contract_cli_planner_context_filters_identity_and_active_attentio
             scope="user",
             confidence=0.9,
             confirmation_satisfied=True,
+            **owner_scope,
         )
         leaked_external = manager.write_with_provenance(
             entry_type="persona_fact",
@@ -2403,6 +2413,7 @@ async def test_contract_cli_planner_context_filters_identity_and_active_attentio
             scope="user",
             confidence=0.4,
             confirmation_satisfied=True,
+            **owner_scope,
         )
         leaked_tool = manager.write_with_provenance(
             entry_type="persona_fact",
@@ -2420,6 +2431,7 @@ async def test_contract_cli_planner_context_filters_identity_and_active_attentio
             scope="user",
             confidence=0.4,
             confirmation_satisfied=True,
+            **owner_scope,
         )
         leaked_consolidation = manager.write_with_provenance(
             entry_type="persona_fact",
@@ -2437,6 +2449,7 @@ async def test_contract_cli_planner_context_filters_identity_and_active_attentio
             scope="user",
             confidence=0.4,
             confirmation_satisfied=True,
+            **owner_scope,
         )
         pending_review_identity = manager.write_with_provenance(
             entry_type="persona_fact",
@@ -2454,6 +2467,7 @@ async def test_contract_cli_planner_context_filters_identity_and_active_attentio
             scope="user",
             confidence=0.4,
             confirmation_satisfied=True,
+            **owner_scope,
         )
         owner_observed_attention = manager.write_with_provenance(
             entry_type="waiting_on",
@@ -2472,6 +2486,7 @@ async def test_contract_cli_planner_context_filters_identity_and_active_attentio
             workflow_state="waiting",
             confidence=0.5,
             confirmation_satisfied=True,
+            **owner_scope,
         )
         cli_inbox = manager.write_with_provenance(
             entry_type="inbox_item",
@@ -2494,6 +2509,7 @@ async def test_contract_cli_planner_context_filters_identity_and_active_attentio
             scope="user",
             confidence=0.5,
             confirmation_satisfied=True,
+            **owner_scope,
         )
         shared_noise = manager.write_with_provenance(
             entry_type="open_thread",
@@ -2512,6 +2528,7 @@ async def test_contract_cli_planner_context_filters_identity_and_active_attentio
             workflow_state="active",
             confidence=0.5,
             confirmation_satisfied=True,
+            **owner_scope,
         )
         incoming_noise = manager.write_with_provenance(
             entry_type="open_thread",
@@ -2530,6 +2547,7 @@ async def test_contract_cli_planner_context_filters_identity_and_active_attentio
             workflow_state="active",
             confidence=0.5,
             confirmation_satisfied=True,
+            **owner_scope,
         )
         pending_review_attention = manager.write_with_provenance(
             entry_type="open_thread",
@@ -2548,6 +2566,7 @@ async def test_contract_cli_planner_context_filters_identity_and_active_attentio
             workflow_state="active",
             confidence=0.5,
             confirmation_satisfied=True,
+            **owner_scope,
         )
         closed_thread = manager.write_with_provenance(
             entry_type="open_thread",
@@ -2566,6 +2585,7 @@ async def test_contract_cli_planner_context_filters_identity_and_active_attentio
             workflow_state="closed",
             confidence=0.5,
             confirmation_satisfied=True,
+            **owner_scope,
         )
         assert all(
             decision.kind == "allow"
@@ -2649,6 +2669,7 @@ async def test_contract_discord_channel_context_binds_active_attention_to_curren
     def _seed(config: DaemonConfig) -> None:
         config.channel_identity_allowlist = {"discord": ["guest-1"]}
         manager = MemoryManager(config.data_dir / "memory_entries")
+        owner_scope = {"user_id": "guest-1", "workspace_id": "guild-1"}
         current_channel_inbox = manager.write_with_provenance(
             entry_type="inbox_item",
             key=inbox_item_key(owner_id="owner-1", item_id="current"),
@@ -2674,6 +2695,7 @@ async def test_contract_discord_channel_context_binds_active_attention_to_curren
             scope="user",
             confidence=0.5,
             confirmation_satisfied=True,
+            **owner_scope,
         )
         other_channel_inbox = manager.write_with_provenance(
             entry_type="inbox_item",
@@ -2700,6 +2722,7 @@ async def test_contract_discord_channel_context_binds_active_attention_to_curren
             scope="user",
             confidence=0.5,
             confirmation_satisfied=True,
+            **owner_scope,
         )
         assert current_channel_inbox.kind == "allow"
         assert other_channel_inbox.kind == "allow"

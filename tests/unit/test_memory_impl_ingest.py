@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from pathlib import Path
 
@@ -263,6 +264,65 @@ async def test_m2_memory_retrieve_passes_scope_filter_to_recall_surface(
 
     assert calls == [("scoped recall", 1, {Capability.MEMORY_READ}, {"session"})]
     assert result["count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_c2_memory_retrieve_scopes_user_curated_results_to_owner_tuple(
+    tmp_path: Path,
+) -> None:
+    harness = _MemoryIngestHarness(tmp_path)
+    same_owner = harness._ingestion.ingest(
+        source_id="same-owner-rpc",
+        source_type="user",
+        collection="user_curated",
+        content="C2 memory retrieve owner scope token same-owner-blue.",
+        user_id="user-1",
+        workspace_id="ws-1",
+    )
+    harness._ingestion.ingest(
+        source_id="other-owner-rpc",
+        source_type="user",
+        collection="user_curated",
+        content="C2 memory retrieve owner scope token other-owner-red.",
+        user_id="user-2",
+        workspace_id="ws-2",
+    )
+    legacy_unowned = harness._ingestion.ingest(
+        source_id="legacy-unowned-rpc",
+        source_type="user",
+        collection="user_curated",
+        content="C2 memory retrieve owner scope token legacy-unowned-green.",
+    )
+
+    scoped = await harness.do_memory_retrieve(
+        {
+            "query": "memory retrieve owner scope token",
+            "limit": 10,
+            "user_id": "user-1",
+            "workspace_id": "ws-1",
+        }
+    )
+    scoped_text = json.dumps(scoped, sort_keys=True)
+
+    assert scoped["count"] == 1
+    assert same_owner.chunk_id in scoped_text
+    assert "same-owner-blue" in scoped_text
+    assert "other-owner-red" not in scoped_text
+    assert "legacy-unowned-green" not in scoped_text
+
+    scoped_with_legacy = await harness.do_memory_retrieve(
+        {
+            "query": "memory retrieve owner scope token",
+            "limit": 10,
+            "user_id": "user-1",
+            "workspace_id": "ws-1",
+            "include_unowned": True,
+        }
+    )
+    scoped_with_legacy_text = json.dumps(scoped_with_legacy, sort_keys=True)
+
+    assert legacy_unowned.chunk_id in scoped_with_legacy_text
+    assert "other-owner-red" not in scoped_with_legacy_text
 
 
 @pytest.mark.asyncio

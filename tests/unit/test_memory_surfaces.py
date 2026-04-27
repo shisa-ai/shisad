@@ -24,6 +24,8 @@ def _write_entry(
     workflow_state: str | None = None,
     confirmation_satisfied: bool = False,
     supersedes: str | None = None,
+    user_id: str | None = None,
+    workspace_id: str | None = None,
 ) -> MemoryEntry:
     source = MemorySource(origin=source_legacy_origin, source_id=key, extraction_method="manual")
     decision = manager.write_with_provenance(
@@ -40,6 +42,8 @@ def _write_entry(
         workflow_state=workflow_state,
         confirmation_satisfied=confirmation_satisfied,
         supersedes=supersedes,
+        user_id=user_id,
+        workspace_id=workspace_id,
     )
     assert decision.kind == "allow"
     assert decision.entry is not None
@@ -136,6 +140,112 @@ def test_m3_compile_identity_excludes_superseded_entries(tmp_path: Path) -> None
     pack = manager.compile_identity(max_tokens=64)
 
     assert [entry.id for entry in pack.entries] == [successor.id]
+
+
+def test_c2_memory_manager_owner_scope_filters_list_get_identity_and_attention(
+    tmp_path: Path,
+) -> None:
+    manager = MemoryManager(tmp_path / "memory")
+    same_identity = _write_entry(
+        manager,
+        entry_type="persona_fact",
+        key="persona:same-owner",
+        value="Same owner identity.",
+        user_id="user-1",
+        workspace_id="ws-1",
+    )
+    other_identity = _write_entry(
+        manager,
+        entry_type="persona_fact",
+        key="persona:other-owner",
+        value="Other owner identity.",
+        user_id="user-2",
+        workspace_id="ws-2",
+    )
+    legacy_identity = _write_entry(
+        manager,
+        entry_type="persona_fact",
+        key="persona:legacy-unowned",
+        value="Legacy unowned identity.",
+    )
+    same_attention = _write_entry(
+        manager,
+        entry_type="open_thread",
+        key="thread:same-owner",
+        value="Same owner thread.",
+        scope="user",
+        workflow_state="active",
+        user_id="user-1",
+        workspace_id="ws-1",
+    )
+    other_attention = _write_entry(
+        manager,
+        entry_type="open_thread",
+        key="thread:other-owner",
+        value="Other owner thread.",
+        scope="user",
+        workflow_state="active",
+        user_id="user-2",
+        workspace_id="ws-2",
+    )
+
+    scoped_ids = {
+        entry.id
+        for entry in manager.list_entries(
+            user_id="user-1",
+            workspace_id="ws-1",
+            limit=10,
+        )
+    }
+    assert same_identity.id in scoped_ids
+    assert same_attention.id in scoped_ids
+    assert other_identity.id not in scoped_ids
+    assert other_attention.id not in scoped_ids
+    assert legacy_identity.id not in scoped_ids
+
+    scoped_with_legacy_ids = {
+        entry.id
+        for entry in manager.list_entries(
+            user_id="user-1",
+            workspace_id="ws-1",
+            include_unowned=True,
+            limit=10,
+        )
+    }
+    assert legacy_identity.id in scoped_with_legacy_ids
+
+    assert (
+        manager.get_entry(
+            other_identity.id,
+            user_id="user-1",
+            workspace_id="ws-1",
+        )
+        is None
+    )
+    assert (
+        manager.get_entry(
+            same_identity.id,
+            user_id="user-1",
+            workspace_id="ws-1",
+        )
+        is not None
+    )
+    assert manager.list_entries(user_id="user-1", limit=10) == []
+
+    identity_pack = manager.compile_identity(
+        user_id="user-1",
+        workspace_id="ws-1",
+        max_tokens=128,
+    )
+    attention_pack = manager.compile_active_attention(
+        user_id="user-1",
+        workspace_id="ws-1",
+        max_tokens=128,
+        scope_filter={"user"},
+    )
+
+    assert [entry.id for entry in identity_pack.entries] == [same_identity.id]
+    assert [entry.id for entry in attention_pack.entries] == [same_attention.id]
 
 
 def test_m3_compile_active_attention_filters_scope_workflow_and_channel_trust(

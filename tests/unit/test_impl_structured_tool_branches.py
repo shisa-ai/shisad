@@ -35,6 +35,7 @@ from shisad.memory.ingestion import IngestionPipeline
 from shisad.memory.ingress import IngressContextRegistry, digest_content
 from shisad.memory.manager import MemoryManager
 from shisad.memory.remap import digest_memory_value
+from shisad.memory.schema import MemoryEntry, MemorySource
 from shisad.memory.surfaces.recall import build_recall_pack
 from shisad.security.control_plane.schema import Origin
 
@@ -390,6 +391,36 @@ class _MemoryStructuredExecutionHarness(_StructuredBranchHarness, MemoryImplMixi
         self._memory_ingress_registry = IngressContextRegistry()
 
 
+def _write_owned_memory_entry(
+    manager: MemoryManager,
+    *,
+    entry_type: str,
+    key: str,
+    value: object,
+    user_id: str,
+    workspace_id: str,
+) -> MemoryEntry:
+    decision = manager.write_with_provenance(
+        entry_type=entry_type,
+        key=key,
+        value=value,
+        source=MemorySource(origin="user", source_id=key, extraction_method="test"),
+        source_origin="user_direct",
+        channel_trust="command",
+        confirmation_status="user_asserted",
+        source_id=key,
+        scope="user",
+        confidence=0.9,
+        confirmation_satisfied=True,
+        workflow_state="active" if entry_type == "open_thread" else None,
+        user_id=user_id,
+        workspace_id=workspace_id,
+    )
+    assert decision.kind == "allow"
+    assert decision.entry is not None
+    return decision.entry
+
+
 class _RetrieveStructuredExecutionHarness(_StructuredBranchHarness):
     def __init__(self, storage_dir: Path) -> None:
         super().__init__(
@@ -523,6 +554,145 @@ async def test_c2_execute_approved_action_retrieve_rag_scopes_user_curated_by_ow
     assert "same-owner-blue" in preview_text
     assert "other-owner" not in preview_text
     assert "other-owner-red" not in preview_text
+
+
+@pytest.mark.asyncio
+async def test_c2_execute_approved_action_note_tools_scope_to_session_owner(
+    tmp_path: Path,
+) -> None:
+    harness = _MemoryStructuredExecutionHarness(tmp_path / "memory")
+    same_owner = _write_owned_memory_entry(
+        harness._memory_manager,
+        entry_type="note",
+        key="note:same-owner",
+        value="C2 note owner scope token same-owner-blue.",
+        user_id="user-1",
+        workspace_id="ws-1",
+    )
+    other_owner = _write_owned_memory_entry(
+        harness._memory_manager,
+        entry_type="note",
+        key="note:other-owner",
+        value="C2 note owner scope token other-owner-red.",
+        user_id="user-2",
+        workspace_id="ws-2",
+    )
+
+    listed = await HandlerImplementation._execute_approved_action(
+        harness,  # type: ignore[arg-type]
+        sid=harness.session_id,
+        user_id=UserId("user-1"),
+        tool_name=ToolName("note.list"),
+        arguments={"limit": 10},
+        capabilities={Capability.MEMORY_READ},
+        approval_actor="control_api",
+    )
+    searched = await HandlerImplementation._execute_approved_action(
+        harness,  # type: ignore[arg-type]
+        sid=harness.session_id,
+        user_id=UserId("user-1"),
+        tool_name=ToolName("note.search"),
+        arguments={"query": "owner scope token", "limit": 10},
+        capabilities={Capability.MEMORY_READ},
+        approval_actor="control_api",
+    )
+
+    assert listed.success is True
+    assert searched.success is True
+    assert listed.tool_output is not None
+    assert searched.tool_output is not None
+    list_payload = json.loads(listed.tool_output.content)
+    search_payload = json.loads(searched.tool_output.content)
+    list_text = json.dumps(list_payload, sort_keys=True)
+    search_text = json.dumps(search_payload, sort_keys=True)
+    assert same_owner.id in list_text
+    assert same_owner.id in search_text
+    assert other_owner.id not in list_text
+    assert other_owner.id not in search_text
+    assert "other-owner-red" not in list_text
+    assert "other-owner-red" not in search_text
+
+
+@pytest.mark.asyncio
+async def test_c2_execute_approved_action_todo_tools_scope_to_session_owner(
+    tmp_path: Path,
+) -> None:
+    harness = _MemoryStructuredExecutionHarness(tmp_path / "memory")
+    same_owner = _write_owned_memory_entry(
+        harness._memory_manager,
+        entry_type="todo",
+        key="todo:same-owner-review",
+        value={
+            "title": "same owner review",
+            "details": "C2 todo owner scope token same-owner-blue.",
+            "status": "open",
+            "due_date": "",
+        },
+        user_id="user-1",
+        workspace_id="ws-1",
+    )
+    other_owner = _write_owned_memory_entry(
+        harness._memory_manager,
+        entry_type="todo",
+        key="todo:other-owner-review",
+        value={
+            "title": "other owner review",
+            "details": "C2 todo owner scope token other-owner-red.",
+            "status": "open",
+            "due_date": "",
+        },
+        user_id="user-2",
+        workspace_id="ws-2",
+    )
+
+    listed = await HandlerImplementation._execute_approved_action(
+        harness,  # type: ignore[arg-type]
+        sid=harness.session_id,
+        user_id=UserId("user-1"),
+        tool_name=ToolName("todo.list"),
+        arguments={"limit": 10},
+        capabilities={Capability.MEMORY_READ},
+        approval_actor="control_api",
+    )
+    blocked_complete = await HandlerImplementation._execute_approved_action(
+        harness,  # type: ignore[arg-type]
+        sid=harness.session_id,
+        user_id=UserId("user-1"),
+        tool_name=ToolName("todo.complete"),
+        arguments={"selector": "other owner review"},
+        capabilities={Capability.MEMORY_WRITE},
+        approval_actor="control_api",
+    )
+    completed = await HandlerImplementation._execute_approved_action(
+        harness,  # type: ignore[arg-type]
+        sid=harness.session_id,
+        user_id=UserId("user-1"),
+        tool_name=ToolName("todo.complete"),
+        arguments={"selector": "same owner review"},
+        capabilities={Capability.MEMORY_WRITE},
+        approval_actor="control_api",
+    )
+
+    assert listed.success is True
+    assert listed.tool_output is not None
+    list_payload = json.loads(listed.tool_output.content)
+    list_text = json.dumps(list_payload, sort_keys=True)
+    assert same_owner.id in list_text
+    assert other_owner.id not in list_text
+    assert "other-owner-red" not in list_text
+
+    assert blocked_complete.success is False
+    assert blocked_complete.tool_output is not None
+    blocked_payload = json.loads(blocked_complete.tool_output.content)
+    assert blocked_payload["reason"] == "todo_not_found"
+    assert harness._memory_manager.get_entry(other_owner.id).value["status"] == "open"
+
+    assert completed.success is True
+    assert completed.tool_output is not None
+    completed_payload = json.loads(completed.tool_output.content)
+    assert completed_payload["completed"] is True
+    assert completed_payload["entry_id"] == same_owner.id
+    assert harness._memory_manager.get_entry(same_owner.id).value["status"] == "done"
 
 
 @pytest.mark.asyncio

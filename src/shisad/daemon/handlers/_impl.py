@@ -750,10 +750,14 @@ async def _structured_note_create(
 async def _structured_note_list(
     handler: Any,
     arguments: Mapping[str, Any],
-    _context: StructuredToolContext,
+    context: StructuredToolContext,
 ) -> Mapping[str, Any]:
     payload = await handler.do_note_list(
-        {"limit": _argument_int(arguments, "limit", default=20, minimum=1)}
+        {
+            "limit": _argument_int(arguments, "limit", default=20, minimum=1),
+            "user_id": str(context.user_id),
+            "workspace_id": str(context.workspace_id),
+        }
     )
     return _wrap_structured_payload(payload)
 
@@ -761,7 +765,7 @@ async def _structured_note_list(
 async def _structured_note_search(
     handler: Any,
     arguments: Mapping[str, Any],
-    _context: StructuredToolContext,
+    context: StructuredToolContext,
 ) -> Mapping[str, Any]:
     query = _argument_string(arguments, "query")
     if not query:
@@ -776,6 +780,8 @@ async def _structured_note_search(
         {
             "query": query,
             "limit": _argument_int(arguments, "limit", default=20, minimum=1),
+            "user_id": str(context.user_id),
+            "workspace_id": str(context.workspace_id),
         }
     )
     return _wrap_structured_payload(payload)
@@ -802,6 +808,8 @@ async def _structured_todo_create(
                 "content_digest": digest_memory_value({**todo_payload, "status": "open"}),
                 "derivation_path": "extracted",
                 "parent_digest": context.memory_ingress_context.content_digest,
+                "user_id": str(context.user_id),
+                "workspace_id": str(context.workspace_id),
             }
         )
         return _wrap_structured_payload(payload, ok=str(payload.get("kind", "")) == "allow")
@@ -811,6 +819,8 @@ async def _structured_todo_create(
             _CONTROL_API_AUTHENTICATED_WRITE: True,
             "source_id": str(context.session_id),
             "user_confirmed": context.user_confirmed,
+            "user_id": str(context.user_id),
+            "workspace_id": str(context.workspace_id),
         }
     )
     return _wrap_structured_payload(payload, ok=str(payload.get("kind", "")) == "allow")
@@ -819,10 +829,14 @@ async def _structured_todo_create(
 async def _structured_todo_list(
     handler: Any,
     arguments: Mapping[str, Any],
-    _context: StructuredToolContext,
+    context: StructuredToolContext,
 ) -> Mapping[str, Any]:
     payload = await handler.do_todo_list(
-        {"limit": _argument_int(arguments, "limit", default=20, minimum=1)}
+        {
+            "limit": _argument_int(arguments, "limit", default=20, minimum=1),
+            "user_id": str(context.user_id),
+            "workspace_id": str(context.workspace_id),
+        }
     )
     return _wrap_structured_payload(payload)
 
@@ -830,7 +844,7 @@ async def _structured_todo_list(
 async def _structured_todo_complete(
     handler: Any,
     arguments: Mapping[str, Any],
-    _context: StructuredToolContext,
+    context: StructuredToolContext,
 ) -> Mapping[str, Any]:
     selector = _argument_string(arguments, "selector")
     if not selector:
@@ -842,7 +856,13 @@ async def _structured_todo_complete(
             "reason": "todo_selector_required",
             "matches": [],
         }
-    payload = await handler.do_todo_complete({"selector": selector})
+    payload = await handler.do_todo_complete(
+        {
+            "selector": selector,
+            "user_id": str(context.user_id),
+            "workspace_id": str(context.workspace_id),
+        }
+    )
     return _wrap_structured_payload(payload, ok=bool(payload.get("completed", False)))
 
 

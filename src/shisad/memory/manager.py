@@ -480,10 +480,15 @@ class MemoryManager:
         include_deleted: bool = False,
         include_quarantined: bool = False,
         include_pending_review: bool = False,
+        user_id: str | None = None,
+        workspace_id: str | None = None,
+        include_unowned: bool = False,
         limit: int = 100,
     ) -> list[MemoryEntry]:
         self.purge_expired()
         selected_type = (entry_type or "").strip().lower()
+        owner_user_id = self._normalize_owner_value(user_id)
+        owner_workspace_id = self._normalize_owner_value(workspace_id)
         rows = []
         for entry in self._entries.values():
             if selected_type and str(entry.entry_type).lower() != selected_type:
@@ -493,6 +498,13 @@ class MemoryManager:
             if self._is_quarantined(entry) and not include_quarantined:
                 continue
             if self._is_pending_review(entry) and not include_pending_review:
+                continue
+            if not self._entry_matches_owner(
+                entry,
+                user_id=owner_user_id,
+                workspace_id=owner_workspace_id,
+                include_unowned=include_unowned,
+            ):
                 continue
             rows.append(self._refresh_ttl(entry))
         rows.sort(key=lambda item: item.created_at, reverse=True)
@@ -505,6 +517,9 @@ class MemoryManager:
         include_deleted: bool = False,
         include_quarantined: bool = False,
         include_pending_review: bool = False,
+        user_id: str | None = None,
+        workspace_id: str | None = None,
+        include_unowned: bool = False,
     ) -> MemoryEntry | None:
         self.purge_expired()
         entry = self._entries.get(entry_id)
@@ -515,6 +530,13 @@ class MemoryManager:
         if self._is_quarantined(entry) and not include_quarantined:
             return None
         if self._is_pending_review(entry) and not include_pending_review:
+            return None
+        if not self._entry_matches_owner(
+            entry,
+            user_id=self._normalize_owner_value(user_id),
+            workspace_id=self._normalize_owner_value(workspace_id),
+            include_unowned=include_unowned,
+        ):
             return None
         return self._refresh_ttl(entry)
 
@@ -559,8 +581,20 @@ class MemoryManager:
         )
         return selected
 
-    def compile_identity(self, *, max_tokens: int = 750) -> IdentityPack:
-        entries = self.list_entries(limit=max(1, len(self._entries)))
+    def compile_identity(
+        self,
+        *,
+        max_tokens: int = 750,
+        user_id: str | None = None,
+        workspace_id: str | None = None,
+        include_unowned: bool = False,
+    ) -> IdentityPack:
+        entries = self.list_entries(
+            limit=max(1, len(self._entries)),
+            user_id=user_id,
+            workspace_id=workspace_id,
+            include_unowned=include_unowned,
+        )
         return build_identity_pack(entries=entries, max_tokens=max_tokens)
 
     def compile_active_attention(
@@ -570,8 +604,16 @@ class MemoryManager:
         scope_filter: set[str] | None = None,
         allowed_channel_trusts: set[str] | None = None,
         channel_binding: str | None = None,
+        user_id: str | None = None,
+        workspace_id: str | None = None,
+        include_unowned: bool = False,
     ) -> ActiveAttentionPack:
-        entries = self.list_entries(limit=max(1, len(self._entries)))
+        entries = self.list_entries(
+            limit=max(1, len(self._entries)),
+            user_id=user_id,
+            workspace_id=workspace_id,
+            include_unowned=include_unowned,
+        )
         return build_active_attention_pack(
             entries=entries,
             max_tokens=max_tokens,
@@ -1894,6 +1936,32 @@ class MemoryManager:
             entry_id=candidate_id,
             event_type="candidate_surfaced",
         )
+
+    @staticmethod
+    def _normalize_owner_value(value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = str(value).strip()
+        return normalized or None
+
+    @staticmethod
+    def _entry_matches_owner(
+        entry: MemoryEntry,
+        *,
+        user_id: str | None,
+        workspace_id: str | None,
+        include_unowned: bool,
+    ) -> bool:
+        if user_id is None and workspace_id is None:
+            return True
+        if user_id is None or workspace_id is None:
+            return False
+        entry_user_id = MemoryManager._normalize_owner_value(entry.user_id)
+        entry_workspace_id = MemoryManager._normalize_owner_value(entry.workspace_id)
+        entry_unowned = entry_user_id is None and entry_workspace_id is None
+        if entry_unowned:
+            return include_unowned
+        return entry_user_id == user_id and entry_workspace_id == workspace_id
 
     @staticmethod
     def _is_deleted(entry: MemoryEntry) -> bool:

@@ -198,6 +198,22 @@ class MemoryImplMixin(HandlerMixinBase):
             response["hint"] = hint
         return response
 
+    @staticmethod
+    def _owner_scope_from_params(params: Mapping[str, Any]) -> dict[str, Any]:
+        return {
+            "user_id": (
+                str(params.get("user_id"))
+                if params.get("user_id") is not None
+                else None
+            ),
+            "workspace_id": (
+                str(params.get("workspace_id"))
+                if params.get("workspace_id") is not None
+                else None
+            ),
+            "include_unowned": bool(params.get("include_unowned", False)),
+        }
+
     def _index_note_write_for_recall(
         self,
         result: dict[str, Any],
@@ -914,7 +930,11 @@ class MemoryImplMixin(HandlerMixinBase):
 
     async def do_note_list(self, params: Mapping[str, Any]) -> dict[str, Any]:
         limit = max(1, int(params.get("limit", 100)))
-        rows = self._memory_manager.list_entries(entry_type="note", limit=limit)
+        rows = self._memory_manager.list_entries(
+            entry_type="note",
+            limit=limit,
+            **self._owner_scope_from_params(params),
+        )
         notes = [entry.model_dump(mode="json") for entry in rows]
         return {"entries": notes, "count": len(notes)}
 
@@ -922,7 +942,11 @@ class MemoryImplMixin(HandlerMixinBase):
         query = str(params.get("query", "")).strip()
         limit = max(1, int(params.get("limit", 20)))
         lowered_terms = [term for term in query.lower().split() if term]
-        rows = self._memory_manager.list_entries(entry_type="note", limit=200)
+        rows = self._memory_manager.list_entries(
+            entry_type="note",
+            limit=200,
+            **self._owner_scope_from_params(params),
+        )
         matches: list[dict[str, Any]] = []
         for entry in rows:
             haystack = " ".join(
@@ -940,14 +964,20 @@ class MemoryImplMixin(HandlerMixinBase):
         return {"query": query, "entries": matches, "count": len(matches)}
 
     async def do_note_get(self, params: Mapping[str, Any]) -> dict[str, Any]:
-        entry = self._memory_manager.get_entry(str(params.get("entry_id", "")))
+        entry = self._memory_manager.get_entry(
+            str(params.get("entry_id", "")),
+            **self._owner_scope_from_params(params),
+        )
         if entry is None or str(entry.entry_type) != "note":
             return {"entry": None}
         return {"entry": entry.model_dump(mode="json")}
 
     async def do_note_delete(self, params: Mapping[str, Any]) -> dict[str, Any]:
         entry_id = str(params.get("entry_id", ""))
-        entry = self._memory_manager.get_entry(entry_id)
+        entry = self._memory_manager.get_entry(
+            entry_id,
+            **self._owner_scope_from_params(params),
+        )
         if entry is None or str(entry.entry_type) != "note":
             return {"deleted": False, "entry_id": entry_id}
         deleted = self._memory_manager.delete(entry_id)
@@ -955,7 +985,10 @@ class MemoryImplMixin(HandlerMixinBase):
 
     async def do_note_verify(self, params: Mapping[str, Any]) -> dict[str, Any]:
         entry_id = str(params.get("entry_id", ""))
-        entry = self._memory_manager.get_entry(entry_id)
+        entry = self._memory_manager.get_entry(
+            entry_id,
+            **self._owner_scope_from_params(params),
+        )
         if entry is None or str(entry.entry_type) != "note":
             return {"verified": False, "entry_id": entry_id}
         verified = self._memory_manager.verify(entry_id)
@@ -1039,20 +1072,40 @@ class MemoryImplMixin(HandlerMixinBase):
 
     async def do_todo_list(self, params: Mapping[str, Any]) -> dict[str, Any]:
         limit = max(1, int(params.get("limit", 100)))
-        rows = self._memory_manager.list_entries(entry_type="todo", limit=limit)
+        rows = self._memory_manager.list_entries(
+            entry_type="todo",
+            limit=limit,
+            **self._owner_scope_from_params(params),
+        )
         todos = [entry.model_dump(mode="json") for entry in rows]
         return {"entries": todos, "count": len(todos)}
 
-    def _resolve_todo_matches(self, selector: str) -> list[Any]:
+    def _resolve_todo_matches(
+        self,
+        selector: str,
+        *,
+        user_id: str | None = None,
+        workspace_id: str | None = None,
+        include_unowned: bool = False,
+    ) -> list[Any]:
         normalized = selector.strip().lower()
         if not normalized:
             return []
-        direct = self._memory_manager.get_entry(selector)
+        owner_scope = {
+            "user_id": user_id,
+            "workspace_id": workspace_id,
+            "include_unowned": include_unowned,
+        }
+        direct = self._memory_manager.get_entry(selector, **owner_scope)
         if direct is not None and str(direct.entry_type) == "todo":
             return [direct]
         exact: list[Any] = []
         partial: list[Any] = []
-        for entry in self._memory_manager.list_entries(entry_type="todo", limit=200):
+        for entry in self._memory_manager.list_entries(
+            entry_type="todo",
+            limit=200,
+            **owner_scope,
+        ):
             value = entry.value if isinstance(entry.value, dict) else {}
             title = str(value.get("title", "")).strip()
             if normalized == entry.id.lower() or (title and normalized == title.lower()):
@@ -1065,7 +1118,10 @@ class MemoryImplMixin(HandlerMixinBase):
 
     async def do_todo_complete(self, params: Mapping[str, Any]) -> dict[str, Any]:
         selector = str(params.get("selector", "")).strip()
-        matches = self._resolve_todo_matches(selector)
+        matches = self._resolve_todo_matches(
+            selector,
+            **self._owner_scope_from_params(params),
+        )
         if not matches:
             return {
                 "completed": False,
@@ -1108,14 +1164,20 @@ class MemoryImplMixin(HandlerMixinBase):
         }
 
     async def do_todo_get(self, params: Mapping[str, Any]) -> dict[str, Any]:
-        entry = self._memory_manager.get_entry(str(params.get("entry_id", "")))
+        entry = self._memory_manager.get_entry(
+            str(params.get("entry_id", "")),
+            **self._owner_scope_from_params(params),
+        )
         if entry is None or str(entry.entry_type) != "todo":
             return {"entry": None}
         return {"entry": entry.model_dump(mode="json")}
 
     async def do_todo_delete(self, params: Mapping[str, Any]) -> dict[str, Any]:
         entry_id = str(params.get("entry_id", ""))
-        entry = self._memory_manager.get_entry(entry_id)
+        entry = self._memory_manager.get_entry(
+            entry_id,
+            **self._owner_scope_from_params(params),
+        )
         if entry is None or str(entry.entry_type) != "todo":
             return {"deleted": False, "entry_id": entry_id}
         deleted = self._memory_manager.delete(entry_id)
@@ -1123,7 +1185,10 @@ class MemoryImplMixin(HandlerMixinBase):
 
     async def do_todo_verify(self, params: Mapping[str, Any]) -> dict[str, Any]:
         entry_id = str(params.get("entry_id", ""))
-        entry = self._memory_manager.get_entry(entry_id)
+        entry = self._memory_manager.get_entry(
+            entry_id,
+            **self._owner_scope_from_params(params),
+        )
         if entry is None or str(entry.entry_type) != "todo":
             return {"verified": False, "entry_id": entry_id}
         verified = self._memory_manager.verify(entry_id)

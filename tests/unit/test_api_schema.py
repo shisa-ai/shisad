@@ -32,6 +32,7 @@ from shisad.core.api.schema import (
     MemoryMintIngressParams,
     MemoryPromoteSkillParams,
     MemoryReadOriginalParams,
+    MemoryRetrieveParams,
     MemoryRetrieveResult,
     MemoryRotateKeyResult,
     MemorySupersedeParams,
@@ -571,6 +572,28 @@ class TestApiSchemaValidation:
                     "key": "note:chain",
                     "value": "updated",
                     "supersedes": "",
+                }
+            )
+
+    def test_c2_memory_retrieve_params_accept_owner_scope_fields(self) -> None:
+        params = MemoryRetrieveParams.model_validate(
+            {
+                "query": "owner scoped recall",
+                "user_id": "user-1",
+                "workspace_id": "ws-1",
+                "include_unowned": True,
+            }
+        )
+
+        assert params.user_id == "user-1"
+        assert params.workspace_id == "ws-1"
+        assert params.include_unowned is True
+
+        with pytest.raises(ValidationError):
+            MemoryRetrieveParams.model_validate(
+                {
+                    "query": "owner scoped recall",
+                    "owner_id": "user-1",
                 }
             )
 

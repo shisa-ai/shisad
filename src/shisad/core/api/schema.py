@@ -369,6 +369,9 @@ class MemoryRetrieveParams(_StrictParams):
     as_of: datetime | None = None
     include_archived: bool = False
     scope_filter: list[Literal["user", "project", "session", "channel", "workspace"]] | None = None
+    user_id: str | None = None
+    workspace_id: str | None = None
+    include_unowned: bool = False
 
 
 class MemoryWriteParams(_StrictParams):
@@ -385,6 +388,8 @@ class MemoryWriteParams(_StrictParams):
     workflow_state: Literal["active", "waiting", "blocked", "stale", "closed"] | None = None
     invocation_eligible: bool = False
     supersedes: str | None = None
+    user_id: str | None = None
+    workspace_id: str | None = None
 
     @model_validator(mode="after")
     def _validate_ingress_shape(self) -> MemoryWriteParams:
@@ -736,6 +741,8 @@ class NoteCreateParams(_StrictParams):
     content: str
     source_id: str | None = None
     user_confirmed: bool = False
+    user_id: str | None = None
+    workspace_id: str | None = None
     ingress_context: str | None = None
     content_digest: str | None = None
     derivation_path: Literal["direct", "extracted", "summary"] = "direct"
@@ -756,15 +763,24 @@ class NoteCreateParams(_StrictParams):
 
 class NoteListParams(_StrictParams):
     limit: int = 100
+    user_id: str | None = None
+    workspace_id: str | None = None
+    include_unowned: bool = False
 
 
 class NoteSearchParams(_StrictParams):
     query: str
     limit: int = 20
+    user_id: str | None = None
+    workspace_id: str | None = None
+    include_unowned: bool = False
 
 
 class NoteEntryParams(_StrictParams):
     entry_id: str
+    user_id: str | None = None
+    workspace_id: str | None = None
+    include_unowned: bool = False
 
 
 class NoteExportParams(_StrictParams):
@@ -808,6 +824,8 @@ class TodoCreateParams(_StrictParams):
     due_date: str = ""
     source_id: str | None = None
     user_confirmed: bool = False
+    user_id: str | None = None
+    workspace_id: str | None = None
     ingress_context: str | None = None
     content_digest: str | None = None
     derivation_path: Literal["direct", "extracted", "summary"] = "direct"
@@ -828,14 +846,23 @@ class TodoCreateParams(_StrictParams):
 
 class TodoListParams(_StrictParams):
     limit: int = 100
+    user_id: str | None = None
+    workspace_id: str | None = None
+    include_unowned: bool = False
 
 
 class TodoEntryParams(_StrictParams):
     entry_id: str
+    user_id: str | None = None
+    workspace_id: str | None = None
+    include_unowned: bool = False
 
 
 class TodoCompleteParams(_StrictParams):
     selector: str
+    user_id: str | None = None
+    workspace_id: str | None = None
+    include_unowned: bool = False
 
 
 class TodoExportParams(_StrictParams):

@@ -5394,7 +5394,10 @@ class SessionImplMixin(HandlerMixinBase):
                 workspace_id=str(session.workspace_id),
             )
             if Capability.MEMORY_READ in effective_caps:
-                identity_pack = self._memory_manager.compile_identity()
+                identity_pack = self._memory_manager.compile_identity(
+                    user_id=str(session.user_id),
+                    workspace_id=str(session.workspace_id),
+                )
                 identity_entries = identity_pack.entries
                 if identity_pack.citation_ids:
                     self._memory_manager.record_citations(identity_pack.citation_ids)
@@ -5410,6 +5413,8 @@ class SessionImplMixin(HandlerMixinBase):
                         if active_attention_defaults.allowed_channel_trusts is not None
                         else None,
                         channel_binding=active_attention_defaults.channel_binding,
+                        user_id=str(session.user_id),
+                        workspace_id=str(session.workspace_id),
                     )
                     active_attention_entries = active_attention_pack.entries
                     if active_attention_pack.citation_ids:

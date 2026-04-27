@@ -2486,6 +2486,13 @@ def memory_list(limit: int, as_json: bool) -> None:
     show_default=True,
     help="Preference/soft-constraint strength.",
 )
+@click.option("--user", "user_id", default="", help="Owner user ID for personal memory.")
+@click.option(
+    "--workspace",
+    "workspace_id",
+    default="",
+    help="Owner workspace ID for personal memory.",
+)
 def memory_write(
     entry_type: str,
     key: str,
@@ -2493,8 +2500,14 @@ def memory_write(
     supersede: str,
     predicate: str,
     strength: str,
+    user_id: str,
+    workspace_id: str,
 ) -> None:
     normalized_predicate = _validate_memory_write_predicate(entry_type, predicate)
+    owner_user_id = user_id.strip()
+    owner_workspace_id = workspace_id.strip()
+    if bool(owner_user_id) != bool(owner_workspace_id):
+        raise click.ClickException("--user and --workspace must be provided together.")
     config = _get_config()
     ingress = rpc_call(
         config,
@@ -2513,6 +2526,9 @@ def memory_write(
     if normalized_predicate:
         payload["predicate"] = normalized_predicate
         payload["strength"] = strength
+    if owner_user_id:
+        payload["user_id"] = owner_user_id
+        payload["workspace_id"] = owner_workspace_id
     result = rpc_call(
         config,
         "memory.write",
