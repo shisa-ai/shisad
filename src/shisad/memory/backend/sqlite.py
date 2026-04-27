@@ -33,6 +33,11 @@ class RetrievalBackendRow:
     citation_count: int
     last_cited_at: str | None
     embedding: list[float]
+    # (user, workspace) ownership added in v0.7.1 C2 to close cross-session
+    # recall leakage. NULL for pre-migration rows; new writes populate both.
+    # See planning/PLAN-lockdown-no-deadend.md §4.4.
+    user_id: str | None = None
+    workspace_id: str | None = None
 
 
 class RetrievalBackend(Protocol):
@@ -123,12 +128,14 @@ class SQLiteRetrievalBackend:
                     channel_trust,
                     confirmation_status,
                     scope,
+                    user_id,
+                    workspace_id,
                     taint_labels_json,
                     quarantined,
                     citation_count,
                     last_cited_at,
                     original_payload
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     row.chunk_id,
@@ -144,6 +151,8 @@ class SQLiteRetrievalBackend:
                     row.channel_trust,
                     row.confirmation_status,
                     row.scope,
+                    row.user_id,
+                    row.workspace_id,
                     row.taint_labels_json,
                     int(row.quarantined),
                     row.citation_count,
@@ -194,6 +203,8 @@ class SQLiteRetrievalBackend:
                 r.channel_trust,
                 r.confirmation_status,
                 r.scope,
+                r.user_id,
+                r.workspace_id,
                 r.taint_labels_json,
                 r.quarantined,
                 r.citation_count,
@@ -244,6 +255,14 @@ class SQLiteRetrievalBackend:
                             else None
                         ),
                         scope=str(row["scope"]) if row["scope"] is not None else None,
+                        user_id=(
+                            str(row["user_id"]) if row["user_id"] is not None else None
+                        ),
+                        workspace_id=(
+                            str(row["workspace_id"])
+                            if row["workspace_id"] is not None
+                            else None
+                        ),
                         taint_labels_json=str(row["taint_labels_json"]),
                         quarantined=bool(row["quarantined"]),
                         citation_count=int(row["citation_count"]),
@@ -435,6 +454,8 @@ class SQLiteRetrievalBackend:
                 channel_trust TEXT,
                 confirmation_status TEXT,
                 scope TEXT,
+                user_id TEXT,
+                workspace_id TEXT,
                 taint_labels_json TEXT NOT NULL,
                 quarantined INTEGER NOT NULL,
                 citation_count INTEGER NOT NULL DEFAULT 0,
@@ -489,6 +510,23 @@ class SQLiteRetrievalBackend:
                 ADD COLUMN scope TEXT
                 """
             )
+        # v0.7.1 C2: (user, workspace) ownership migration. Pre-migration rows
+        # retain NULL owner and are excluded from recall by default (see
+        # planning/PLAN-lockdown-no-deadend.md §4.4).
+        if "user_id" not in columns:
+            conn.execute(
+                """
+                ALTER TABLE retrieval_records
+                ADD COLUMN user_id TEXT
+                """
+            )
+        if "workspace_id" not in columns:
+            conn.execute(
+                """
+                ALTER TABLE retrieval_records
+                ADD COLUMN workspace_id TEXT
+                """
+            )
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS retrieval_vectors (
@@ -519,5 +557,11 @@ class SQLiteRetrievalBackend:
             """
             CREATE INDEX IF NOT EXISTS idx_retrieval_records_quarantined
             ON retrieval_records (quarantined, created_at)
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_retrieval_records_owner
+            ON retrieval_records (user_id, workspace_id, created_at)
             """
         )

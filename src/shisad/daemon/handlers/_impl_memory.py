@@ -198,7 +198,13 @@ class MemoryImplMixin(HandlerMixinBase):
             response["hint"] = hint
         return response
 
-    def _index_note_write_for_recall(self, result: dict[str, Any]) -> None:
+    def _index_note_write_for_recall(
+        self,
+        result: dict[str, Any],
+        *,
+        user_id: str | None = None,
+        workspace_id: str | None = None,
+    ) -> None:
         if result.get("kind") != "allow":
             return
         ingestion = getattr(self, "_ingestion", None)
@@ -213,6 +219,18 @@ class MemoryImplMixin(HandlerMixinBase):
         key = str(entry.get("key", "")).strip()
         content = f"{key}: {value}" if key else value
         source_origin = str(entry.get("source_origin", "user_direct")).strip() or "user_direct"
+        # Prefer explicit user_id/workspace_id from the caller (threaded from
+        # the invoking session context). Fall back to any values on the
+        # persisted entry — these are present once the schema rework has
+        # propagated through ingress/write paths end-to-end.
+        effective_user_id = user_id or (
+            str(entry.get("user_id")) if entry.get("user_id") is not None else None
+        )
+        effective_workspace_id = workspace_id or (
+            str(entry.get("workspace_id"))
+            if entry.get("workspace_id") is not None
+            else None
+        )
         try:
             ingestion.ingest(
                 source_id=str(entry.get("id", "") or entry.get("source_id", "") or "note"),
@@ -223,6 +241,8 @@ class MemoryImplMixin(HandlerMixinBase):
                 confirmation_status=str(entry.get("confirmation_status", "user_asserted")).strip()
                 or "user_asserted",
                 scope=str(entry.get("scope", "user")).strip() or "user",
+                user_id=effective_user_id,
+                workspace_id=effective_workspace_id,
             )
         except Exception:
             logger.warning("Failed to index note.create result for recall", exc_info=True)
@@ -308,6 +328,16 @@ class MemoryImplMixin(HandlerMixinBase):
             workflow_state=params.get("workflow_state"),
             invocation_eligible=bool(params.get("invocation_eligible", False)),
             supersedes=str(params.get("supersedes", "")).strip() or None,
+            user_id=(
+                str(params.get("user_id"))
+                if params.get("user_id") is not None
+                else None
+            ),
+            workspace_id=(
+                str(params.get("workspace_id"))
+                if params.get("workspace_id") is not None
+                else None
+            ),
         )
         return self._with_memory_reject_hint(cast(dict[str, Any], decision.model_dump(mode="json")))
 
@@ -408,6 +438,16 @@ class MemoryImplMixin(HandlerMixinBase):
                 channel_trust=context.channel_trust,
                 confirmation_status=context.confirmation_status,
                 scope=context.scope,
+                user_id=(
+                    str(params.get("user_id"))
+                    if params.get("user_id") is not None
+                    else None
+                ),
+                workspace_id=(
+                    str(params.get("workspace_id"))
+                    if params.get("workspace_id") is not None
+                    else None
+                ),
             )
             return cast(dict[str, Any], result.model_dump(mode="json"))
         if params.get(_CONTROL_API_AUTHENTICATED_WRITE):
@@ -430,6 +470,8 @@ class MemoryImplMixin(HandlerMixinBase):
                     "ingress_context": context.handle_id,
                     "content": content,
                     "collection": params.get("collection"),
+                    "user_id": params.get("user_id"),
+                    "workspace_id": params.get("workspace_id"),
                 }
             )
         raise ValueError("ingress_context is required for memory.ingest")
@@ -460,6 +502,17 @@ class MemoryImplMixin(HandlerMixinBase):
             as_of=as_of,
             include_archived=bool(params.get("include_archived", False)),
             scope_filter=scope_filter,
+            user_id=(
+                str(params.get("user_id"))
+                if params.get("user_id") is not None
+                else None
+            ),
+            workspace_id=(
+                str(params.get("workspace_id"))
+                if params.get("workspace_id") is not None
+                else None
+            ),
+            include_unowned=bool(params.get("include_unowned", False)),
         )
         payload = cast(dict[str, Any], pack.legacy_payload())
         self._ingestion.record_citations([item.chunk_id for item in pack.results])
@@ -801,6 +854,14 @@ class MemoryImplMixin(HandlerMixinBase):
         }
 
     async def do_note_create(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        caller_user_id = (
+            str(params.get("user_id")) if params.get("user_id") is not None else None
+        )
+        caller_workspace_id = (
+            str(params.get("workspace_id"))
+            if params.get("workspace_id") is not None
+            else None
+        )
         if params.get("ingress_context"):
             result = self._write_handle_bound_entry(
                 params,
@@ -809,7 +870,9 @@ class MemoryImplMixin(HandlerMixinBase):
                 value=str(params.get("content", "")),
                 confidence=float(params.get("confidence", 0.8)),
             )
-            self._index_note_write_for_recall(result)
+            self._index_note_write_for_recall(
+                result, user_id=caller_user_id, workspace_id=caller_workspace_id
+            )
             return result
         if params.get(_CONTROL_API_AUTHENTICATED_WRITE):
             result = self._write_control_api_authenticated_entry(
@@ -819,7 +882,9 @@ class MemoryImplMixin(HandlerMixinBase):
                 value=str(params.get("content", "")),
                 confidence=float(params.get("confidence", 0.8)),
             )
-            self._index_note_write_for_recall(result)
+            self._index_note_write_for_recall(
+                result, user_id=caller_user_id, workspace_id=caller_workspace_id
+            )
             return result
         source = MemorySource(
             origin=str(params.get("origin", "user")),
@@ -842,7 +907,9 @@ class MemoryImplMixin(HandlerMixinBase):
             value=str(params.get("content", "")),
             confidence=float(params.get("confidence", 0.8)),
         )
-        self._index_note_write_for_recall(result)
+        self._index_note_write_for_recall(
+            result, user_id=caller_user_id, workspace_id=caller_workspace_id
+        )
         return result
 
     async def do_note_list(self, params: Mapping[str, Any]) -> dict[str, Any]:

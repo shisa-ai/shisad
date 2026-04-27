@@ -728,6 +728,8 @@ async def _structured_note_create(
                 "content_digest": digest_memory_value(content),
                 "derivation_path": "extracted",
                 "parent_digest": context.memory_ingress_context.content_digest,
+                "user_id": str(context.user_id),
+                "workspace_id": str(context.workspace_id),
             }
         )
         return _wrap_structured_payload(payload, ok=str(payload.get("kind", "")) == "allow")
@@ -738,6 +740,8 @@ async def _structured_note_create(
             _CONTROL_API_AUTHENTICATED_WRITE: True,
             "source_id": str(context.session_id),
             "user_confirmed": context.user_confirmed,
+            "user_id": str(context.user_id),
+            "workspace_id": str(context.workspace_id),
         }
     )
     return _wrap_structured_payload(payload, ok=str(payload.get("kind", "")) == "allow")

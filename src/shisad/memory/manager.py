@@ -224,6 +224,8 @@ class MemoryManager:
         invocation_eligible: bool = False,
         supersedes: str | None = None,
         allow_trust_upgrade_without_confirmation: bool = False,
+        user_id: str | None = None,
+        workspace_id: str | None = None,
     ) -> MemoryWriteDecision:
         text_value = str(value)
         pending_review = confirmation_status == "pending_review"
@@ -376,6 +378,8 @@ class MemoryManager:
             expires_at=expires_at,
             taint_labels=resolved_taints,
             scope=scope,
+            user_id=user_id,
+            workspace_id=workspace_id,
             ingress_handle_id=ingress_handle_id,
             content_digest=content_digest,
             workflow_state=resolved_workflow_state,

@@ -142,6 +142,12 @@ class RetrievalResult(BaseModel):
     channel_trust: ChannelTrust = "command"
     confirmation_status: ConfirmationStatus = "user_asserted"
     scope: MemoryScope = "user"
+    # (user, workspace) ownership mirror of the MemoryEntry fields; surfaced
+    # so call sites filtering recall results can see the owner without a
+    # second backend round-trip. Optional for legacy rows (see
+    # planning/PLAN-lockdown-no-deadend.md §4.4).
+    user_id: str | None = None
+    workspace_id: str | None = None
     taint_labels: list[TaintLabel] = Field(default_factory=list)
     trust_band: TrustBand = "elevated"
     trust_caveat: str | None = None
@@ -286,8 +292,20 @@ class IngestionPipeline:
         channel_trust: ChannelTrust | None = None,
         confirmation_status: ConfirmationStatus | None = None,
         scope: MemoryScope = "user",
+        user_id: str | None = None,
+        workspace_id: str | None = None,
     ) -> RetrievalResult:
-        """Process content through firewall and store retrieval record."""
+        """Process content through firewall and store retrieval record.
+
+        `user_id` and `workspace_id` tag the record with the owning
+        operator/workspace so later recall can scope by session identity.
+        See `planning/PLAN-lockdown-no-deadend.md §4.4` for the rework
+        rationale. Call sites that write memory from a session context
+        should pass `session.user_id` and `session.workspace_id`; sites
+        that have no session (e.g., legacy maintenance imports) may pass
+        None, in which case the row is written with NULL owner and
+        excluded from default recall.
+        """
         chunk_id = uuid.uuid4().hex
         resolved_collection = collection or self._default_collection(source_type)
         source_default_collection = self._default_collection(source_type)
@@ -355,6 +373,8 @@ class IngestionPipeline:
             channel_trust=resolved_channel,
             confirmation_status=resolved_confirmation,
             scope=scope,
+            user_id=user_id,
+            workspace_id=workspace_id,
             taint_labels=list(inspection.taint_labels),
             quarantined=quarantined,
         )
@@ -381,8 +401,30 @@ class IngestionPipeline:
         include_archived: bool = False,
         class_budgets: dict[RetrievalCollection, int] | None = None,
         scope_filter: set[str] | None = None,
+        user_id: str | None = None,
+        workspace_id: str | None = None,
+        include_unowned: bool = False,
     ) -> RecallPack:
-        """Compile the current Recall surface over retrieval storage."""
+        """Compile the current Recall surface over retrieval storage.
+
+        `user_id` / `workspace_id` scope recall to the session owner for
+        the **personal** collection (`user_curated`) only — that is the
+        collection where LUS-9 Phase C observed cross-user leakage (see
+        `planning/PLAN-lockdown-no-deadend.md §4.4`). Public collections
+        (`project_docs`, `external_web`, `tool_outputs`) are collection-
+        level content, not personal-to-a-user data, and continue to flow
+        across sessions under their existing trust labels.
+
+        When the scoping filter applies (owner set *and* collection is
+        personal), rows whose `record.user_id` / `record.workspace_id` do
+        not match are excluded, and personal-collection rows with NULL
+        owner (pre-migration legacy data) are excluded by default unless
+        `include_unowned=True` — reserved for maintenance/diagnostic call
+        sites only. When the caller leaves both `user_id` and
+        `workspace_id` as None the filter is a no-op, which preserves
+        pre-rework behavior for any call site that has not yet been
+        migrated to the scoped API.
+        """
         if self._backend.count_records() == 0:
             return build_recall_pack(
                 query=query,
@@ -435,6 +477,7 @@ class IngestionPipeline:
             include_quarantined=include_quarantined,
         )
         reference_time = as_of.astimezone(UTC) if as_of is not None else datetime.now(UTC)
+        scope_by_owner = user_id is not None or workspace_id is not None
         visible_rows: list[tuple[Any, RetrievalResult]] = []
         for row in rows:
             record = self._record_from_backend_row(row)
@@ -446,6 +489,24 @@ class IngestionPipeline:
                 continue
             if as_of is not None and record.created_at > reference_time:
                 continue
+            # v0.7.1 C2: scope to (user, workspace) when the caller provided
+            # either. The filter applies to *personal* collections only —
+            # user-curated notes and prior-session personal memory — where
+            # cross-user leakage is the bug LUS-9 Phase C exposed. Public
+            # collections (project_docs, external_web, tool_outputs) flow
+            # across sessions because they are collection-level content,
+            # not personal-to-a-user data. Legacy (pre-migration) rows in
+            # the personal collection are excluded unless include_unowned
+            # is set explicitly.
+            if scope_by_owner and record.collection == "user_curated":
+                row_unowned = record.user_id is None and record.workspace_id is None
+                if row_unowned and not include_unowned:
+                    continue
+                if not row_unowned:
+                    if user_id is not None and record.user_id != user_id:
+                        continue
+                    if workspace_id is not None and record.workspace_id != workspace_id:
+                        continue
             visible_rows.append((row, record))
 
         revision_counts: dict[str, int] = {}
@@ -1214,6 +1275,14 @@ class IngestionPipeline:
             channel_trust=str(payload["channel_trust"]),
             confirmation_status=str(payload["confirmation_status"]),
             scope=str(payload["scope"]),
+            user_id=(
+                str(payload["user_id"]) if payload.get("user_id") is not None else None
+            ),
+            workspace_id=(
+                str(payload["workspace_id"])
+                if payload.get("workspace_id") is not None
+                else None
+            ),
             taint_labels_json=json.dumps(payload["taint_labels"], sort_keys=True),
             quarantined=bool(payload["quarantined"]),
             citation_count=int(payload.get("citation_count", 0)),
@@ -1241,6 +1310,8 @@ class IngestionPipeline:
                     "channel_trust": row.channel_trust,
                     "confirmation_status": row.confirmation_status,
                     "scope": row.scope,
+                    "user_id": row.user_id,
+                    "workspace_id": row.workspace_id,
                     "taint_labels": json.loads(row.taint_labels_json),
                     "quarantined": row.quarantined,
                     "citation_count": row.citation_count,

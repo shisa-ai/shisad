@@ -94,6 +94,13 @@ class MemoryEntry(BaseModel):
     status: MemoryStatus = "active"
     workflow_state: WorkflowState | None = None
     scope: MemoryScope = "user"
+    # (user, workspace) ownership added in v0.7.1 C2 to close cross-session
+    # recall leakage (see planning/PLAN-lockdown-no-deadend.md §4.4). Kept
+    # optional so pre-migration rows and synthetic test fixtures remain
+    # constructible; the write paths populate both fields from session
+    # identity, and the read path excludes NULL-owner rows by default.
+    user_id: str | None = None
+    workspace_id: str | None = None
     invocation_eligible: bool = False
     ingress_handle_id: str | None = None
     content_digest: str | None = None
