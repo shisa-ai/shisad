@@ -64,8 +64,10 @@ def has_follow_on_command_verb(text: str) -> bool:
         previous_words = normalized[: match.start()].casefold().split()
         previous = previous_words[-1] if previous_words else ""
         tail = normalized[match.end() :].strip()
-        if verb == "search" and previous == "web" and not tail:
-            continue
+        if verb == "search" and previous == "web":
+            recent_words = set(previous_words[-5:])
+            if not tail or recent_words & {"completed", "finished", "performed"}:
+                continue
         if verb in {"call", "check", "search"} and previous in {"the", "my"}:
             continue
         return True
