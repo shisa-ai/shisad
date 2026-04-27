@@ -415,12 +415,14 @@ class IngestionPipeline:
         level content, not personal-to-a-user data, and continue to flow
         across sessions under their existing trust labels.
 
-        When the scoping filter applies (owner set *and* collection is
-        personal), rows whose `record.user_id` / `record.workspace_id` do
-        not match are excluded, and personal-collection rows with NULL
-        owner (pre-migration legacy data) are excluded by default unless
-        `include_unowned=True` — reserved for maintenance/diagnostic call
-        sites only. When the caller leaves both `user_id` and
+        When the scoping filter applies (complete owner tuple provided
+        *and* collection is personal), rows whose `record.user_id` /
+        `record.workspace_id` do not match are excluded, and personal-
+        collection rows with NULL owner (pre-migration legacy data) are
+        excluded by default unless `include_unowned=True` — reserved for
+        maintenance/diagnostic call sites only. If a caller provides only
+        one owner field, personal rows fail closed; partial owner filters
+        are not applied. When the caller leaves both `user_id` and
         `workspace_id` as None the filter is a no-op, which preserves
         pre-rework behavior for any call site that has not yet been
         migrated to the scoped API.
@@ -477,7 +479,9 @@ class IngestionPipeline:
             include_quarantined=include_quarantined,
         )
         reference_time = as_of.astimezone(UTC) if as_of is not None else datetime.now(UTC)
-        scope_by_owner = user_id is not None or workspace_id is not None
+        owner_filter_requested = user_id is not None or workspace_id is not None
+        scope_by_owner = user_id is not None and workspace_id is not None
+        partial_owner_scope = owner_filter_requested and not scope_by_owner
         visible_rows: list[tuple[Any, RetrievalResult]] = []
         for row in rows:
             record = self._record_from_backend_row(row)
@@ -489,23 +493,20 @@ class IngestionPipeline:
                 continue
             if as_of is not None and record.created_at > reference_time:
                 continue
-            # v0.7.1 C2: scope to (user, workspace) when the caller provided
-            # either. The filter applies to *personal* collections only —
-            # user-curated notes and prior-session personal memory — where
-            # cross-user leakage is the bug LUS-9 Phase C exposed. Public
-            # collections (project_docs, external_web, tool_outputs) flow
-            # across sessions because they are collection-level content,
-            # not personal-to-a-user data. Legacy (pre-migration) rows in
-            # the personal collection are excluded unless include_unowned
-            # is set explicitly.
-            if scope_by_owner and record.collection == "user_curated":
-                row_unowned = record.user_id is None and record.workspace_id is None
-                if row_unowned and not include_unowned:
+            # v0.7.1 C2: scope to (user, workspace) for personal
+            # collections only. Partial owner filters fail closed for
+            # personal rows so API-level callers cannot accidentally
+            # widen recall by providing only one half of the tuple.
+            if record.collection == "user_curated":
+                if partial_owner_scope:
                     continue
-                if not row_unowned:
-                    if user_id is not None and record.user_id != user_id:
+                if scope_by_owner:
+                    row_unowned = record.user_id is None and record.workspace_id is None
+                    if row_unowned and not include_unowned:
                         continue
-                    if workspace_id is not None and record.workspace_id != workspace_id:
+                    if not row_unowned and (
+                        record.user_id != user_id or record.workspace_id != workspace_id
+                    ):
                         continue
             visible_rows.append((row, record))
 
@@ -1275,13 +1276,9 @@ class IngestionPipeline:
             channel_trust=str(payload["channel_trust"]),
             confirmation_status=str(payload["confirmation_status"]),
             scope=str(payload["scope"]),
-            user_id=(
-                str(payload["user_id"]) if payload.get("user_id") is not None else None
-            ),
+            user_id=(str(payload["user_id"]) if payload.get("user_id") is not None else None),
             workspace_id=(
-                str(payload["workspace_id"])
-                if payload.get("workspace_id") is not None
-                else None
+                str(payload["workspace_id"]) if payload.get("workspace_id") is not None else None
             ),
             taint_labels_json=json.dumps(payload["taint_labels"], sort_keys=True),
             quarantined=bool(payload["quarantined"]),
@@ -1437,11 +1434,17 @@ class RetrieveRagTool:
         query: str,
         limit: int = 5,
         capabilities: set[Capability] | None = None,
+        user_id: str | None = None,
+        workspace_id: str | None = None,
+        include_unowned: bool = False,
     ) -> list[RetrievalResult]:
         pack = self._ingestion.compile_recall(
             query,
             limit=limit,
             capabilities=capabilities,
+            user_id=user_id,
+            workspace_id=workspace_id,
+            include_unowned=include_unowned,
         )
         results = pack.results
         self._ingestion.record_citations([item.chunk_id for item in results])

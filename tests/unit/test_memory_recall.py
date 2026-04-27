@@ -174,7 +174,7 @@ def test_m2_retrieve_rag_tool_executes_recall_surface(
         source_type="external",
         content="Runtime retrieve_rag calls should flow through compile_recall.",
     )
-    calls: list[tuple[str, int, set[Capability] | None]] = []
+    calls: list[tuple[str, int, set[Capability] | None, str | None, str | None]] = []
 
     def _fail_legacy_retrieve(*_args: object, **_kwargs: object) -> list[object]:
         raise AssertionError("RetrieveRagTool should not call the legacy retrieve alias")
@@ -184,9 +184,11 @@ def test_m2_retrieve_rag_tool_executes_recall_surface(
         *,
         limit: int = 5,
         capabilities: set[Capability] | None = None,
+        user_id: str | None = None,
+        workspace_id: str | None = None,
         **_kwargs: object,
     ) -> object:
-        calls.append((query, limit, capabilities))
+        calls.append((query, limit, capabilities, user_id, workspace_id))
         return build_recall_pack(query=query, results=[stored])
 
     monkeypatch.setattr(pipeline, "retrieve", _fail_legacy_retrieve)
@@ -196,10 +198,44 @@ def test_m2_retrieve_rag_tool_executes_recall_surface(
         query="runtime recall",
         limit=1,
         capabilities={Capability.MEMORY_READ},
+        user_id="user-1",
+        workspace_id="ws-1",
     )
 
-    assert calls == [("runtime recall", 1, {Capability.MEMORY_READ})]
+    assert calls == [("runtime recall", 1, {Capability.MEMORY_READ}, "user-1", "ws-1")]
     assert [item.chunk_id for item in results] == [stored.chunk_id]
+
+
+def test_c2_retrieve_rag_tool_scopes_user_curated_by_owner(tmp_path: Path) -> None:
+    pipeline = IngestionPipeline(tmp_path / "memory")
+    pipeline.ingest(
+        source_id="same-owner",
+        source_type="user",
+        collection="user_curated",
+        content="C2 retrieve rag facade scoped token same-owner-blue.",
+        user_id="user-1",
+        workspace_id="ws-1",
+    )
+    pipeline.ingest(
+        source_id="other-owner",
+        source_type="user",
+        collection="user_curated",
+        content="C2 retrieve rag facade scoped token other-owner-red.",
+        user_id="user-2",
+        workspace_id="ws-2",
+    )
+
+    results = RetrieveRagTool(pipeline).execute(
+        query="retrieve rag facade scoped token",
+        limit=10,
+        capabilities={Capability.MEMORY_READ},
+        user_id="user-1",
+        workspace_id="ws-1",
+    )
+
+    sources = {item.source_id for item in results}
+    assert "same-owner" in sources
+    assert "other-owner" not in sources
 
 
 def test_m2_compile_recall_supports_as_of_filtering(tmp_path: Path) -> None:

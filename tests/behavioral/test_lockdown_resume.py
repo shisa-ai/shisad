@@ -42,6 +42,8 @@ def _install_lockdown_resume_planner(
     *,
     planner_inputs: list[str],
     visible_toolsets: list[set[str]],
+    reason: str = "operator requested chat recovery",
+    emit_when_hidden: bool = False,
 ) -> None:
     async def _lockdown_resume_complete(
         self: LocalPlannerProvider,
@@ -53,7 +55,7 @@ def _install_lockdown_resume_planner(
         tool_names = _tool_function_names(tools)
         planner_inputs.append(planner_input)
         visible_toolsets.append(tool_names)
-        if tool_names & _LOCKDOWN_RESUME_TOOL_NAMES:
+        if (tool_names & _LOCKDOWN_RESUME_TOOL_NAMES) or emit_when_hidden:
             return ProviderResponse(
                 message=Message(
                     role="assistant",
@@ -61,7 +63,7 @@ def _install_lockdown_resume_planner(
                     tool_calls=[
                         _tool_call(
                             "lockdown.resume",
-                            {"reason": "operator requested chat recovery"},
+                            {"reason": reason},
                             call_id="t-c2-lockdown-resume",
                         )
                     ],
@@ -148,7 +150,10 @@ async def test_c2_lockdown_resume_trusted_chat_success_records_audit(
 
     reply = await clean_harness.client.call(
         "session.message",
-        {"session_id": sid, "content": "please resume the lockdown"},
+        {
+            "session_id": sid,
+            "content": "please resume the lockdown because I cleared the issue",
+        },
     )
 
     assert planner_inputs
@@ -197,9 +202,95 @@ async def test_c2_lockdown_resume_hidden_from_non_trusted_channel(
     assert not (visible_toolsets[-1] & _LOCKDOWN_RESUME_TOOL_NAMES)
     assert reply.get("lockdown_level") == "caution"
     assert int(reply.get("executed_actions", 0)) == 0
-    assert str(reply.get("response", "")).startswith(
-        "Lockdown resume is not available"
+    assert str(reply.get("response", "")).startswith("Lockdown resume is not available")
+
+
+async def test_c2_lockdown_resume_rejects_missing_reason(
+    clean_harness: ContractHarness,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    planner_inputs: list[str] = []
+    visible_toolsets: list[set[str]] = []
+    _install_lockdown_resume_planner(
+        monkeypatch,
+        planner_inputs=planner_inputs,
+        visible_toolsets=visible_toolsets,
+        reason="",
     )
+    sid = await _create_session(clean_harness.client)
+    await _set_caution_lockdown(clean_harness, sid)
+
+    reply = await clean_harness.client.call(
+        "session.message",
+        {"session_id": sid, "content": "please resume the lockdown"},
+    )
+
+    assert planner_inputs
+    assert visible_toolsets[-1] & _LOCKDOWN_RESUME_TOOL_NAMES
+    assert reply.get("lockdown_level") == "caution"
+    assert int(reply.get("executed_actions", 0)) == 0
+    assert int(reply.get("blocked_actions", 0)) == 1
+    tool_events = await _lockdown_tool_events(clean_harness, sid)
+    rejected = [event for event in tool_events if event.get("event_type") == "ToolRejected"]
+    assert rejected
+    assert "lockdown_resume_requires_reason" in _event_reason(rejected[-1])
+
+
+async def test_c2_lockdown_resume_requires_current_turn_intent(
+    clean_harness: ContractHarness,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    planner_inputs: list[str] = []
+    visible_toolsets: list[set[str]] = []
+    _install_lockdown_resume_planner(
+        monkeypatch,
+        planner_inputs=planner_inputs,
+        visible_toolsets=visible_toolsets,
+    )
+    sid = await _create_session(clean_harness.client)
+    await _set_caution_lockdown(clean_harness, sid)
+
+    reply = await clean_harness.client.call(
+        "session.message",
+        {"session_id": sid, "content": "what can I do about the current state?"},
+    )
+
+    assert planner_inputs
+    assert visible_toolsets[-1] & _LOCKDOWN_RESUME_TOOL_NAMES
+    assert reply.get("lockdown_level") == "caution"
+    assert int(reply.get("executed_actions", 0)) == 0
+    assert int(reply.get("blocked_actions", 0)) == 1
+    tool_events = await _lockdown_tool_events(clean_harness, sid)
+    rejected = [event for event in tool_events if event.get("event_type") == "ToolRejected"]
+    assert rejected
+    assert "lockdown_resume_requires_explicit_current_turn_intent" in _event_reason(rejected[-1])
+
+
+async def test_c2_lockdown_resume_rejects_non_caution_level(
+    clean_harness: ContractHarness,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    planner_inputs: list[str] = []
+    visible_toolsets: list[set[str]] = []
+    _install_lockdown_resume_planner(
+        monkeypatch,
+        planner_inputs=planner_inputs,
+        visible_toolsets=visible_toolsets,
+        emit_when_hidden=True,
+    )
+    sid = await _create_session(clean_harness.client)
+
+    reply = await clean_harness.client.call(
+        "session.message",
+        {"session_id": sid, "content": "please resume the lockdown"},
+    )
+
+    assert planner_inputs
+    assert not (visible_toolsets[-1] & _LOCKDOWN_RESUME_TOOL_NAMES)
+    assert reply.get("lockdown_level") == "normal"
+    assert int(reply.get("executed_actions", 0)) == 0
+    assert int(reply.get("blocked_actions", 0)) == 1
+    assert "not permitted by session/policy allowlist" in str(reply.get("response", ""))
 
 
 async def test_c2_lockdown_resume_rejects_active_threat_current_turn(
@@ -235,9 +326,7 @@ async def test_c2_lockdown_resume_rejects_active_threat_current_turn(
     assert "lockdown_resume_active_threat" in str(reply.get("response", ""))
 
     tool_events = await _lockdown_tool_events(clean_harness, sid)
-    rejected = [
-        event for event in tool_events if event.get("event_type") == "ToolRejected"
-    ]
+    rejected = [event for event in tool_events if event.get("event_type") == "ToolRejected"]
     assert rejected
     assert rejected[-1].get("actor") == "planner_lockdown_resume"
     assert "lockdown_resume_active_threat" in _event_reason(rejected[-1])
@@ -277,10 +366,7 @@ async def test_c2_lockdown_resume_emits_despite_tainted_same_scope_recall(
     )
 
     assert planner_inputs
-    assert (
-        datamark_text("Prior-session lockdown recovery marker")
-        in planner_inputs[-1]
-    )
+    assert datamark_text("Prior-session lockdown recovery marker") in planner_inputs[-1]
     assert visible_toolsets[-1] & _LOCKDOWN_RESUME_TOOL_NAMES
     assert reply.get("lockdown_level") == "normal"
     assert int(reply.get("executed_actions", 0)) == 1

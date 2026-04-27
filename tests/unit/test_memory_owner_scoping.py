@@ -65,8 +65,7 @@ def test_sqlite_migration_adds_owner_columns_idempotently(tmp_path: Path) -> Non
     SQLiteRetrievalBackend(db_path)
     with sqlite3.connect(db_path) as conn:
         columns_before = {
-            str(row[1])
-            for row in conn.execute("PRAGMA table_info(retrieval_records)").fetchall()
+            str(row[1]) for row in conn.execute("PRAGMA table_info(retrieval_records)").fetchall()
         }
     assert "user_id" in columns_before
     assert "workspace_id" in columns_before
@@ -75,8 +74,7 @@ def test_sqlite_migration_adds_owner_columns_idempotently(tmp_path: Path) -> Non
     SQLiteRetrievalBackend(db_path)
     with sqlite3.connect(db_path) as conn:
         columns_after = {
-            str(row[1])
-            for row in conn.execute("PRAGMA table_info(retrieval_records)").fetchall()
+            str(row[1]) for row in conn.execute("PRAGMA table_info(retrieval_records)").fetchall()
         }
     assert columns_after == columns_before
 
@@ -115,8 +113,7 @@ def test_sqlite_migration_adds_owner_columns_to_prerework_table(
     SQLiteRetrievalBackend(db_path)
     with sqlite3.connect(db_path) as conn:
         columns = {
-            str(row[1])
-            for row in conn.execute("PRAGMA table_info(retrieval_records)").fetchall()
+            str(row[1]) for row in conn.execute("PRAGMA table_info(retrieval_records)").fetchall()
         }
     assert "user_id" in columns
     assert "workspace_id" in columns
@@ -218,6 +215,32 @@ def test_compile_recall_without_owner_args_preserves_prerework_behavior(
     sources = {r.source_id for r in pack.results}
     assert "legacy" in sources
     assert "owned" in sources
+
+
+def test_compile_recall_partial_owner_scope_excludes_personal_rows(
+    tmp_path: Path,
+) -> None:
+    pipeline = IngestionPipeline(tmp_path / "memory")
+    pipeline.ingest(
+        source_id="owned",
+        source_type="user",
+        content="ops-scoped personal note about shells",
+        collection="user_curated",
+        user_id="ops",
+        workspace_id="default",
+    )
+    pipeline.ingest(
+        source_id="public",
+        source_type="external",
+        content="public project note about shells",
+        collection="project_docs",
+    )
+
+    pack = pipeline.compile_recall("shells", limit=5, user_id="ops")
+    sources = {r.source_id for r in pack.results}
+
+    assert "owned" not in sources
+    assert "public" in sources
 
 
 def test_retrieval_backend_row_round_trip_persists_owner(tmp_path: Path) -> None:

@@ -3051,6 +3051,8 @@ class HandlerImplementation(
                 query=str(arguments.get("query", "")),
                 limit=int(arguments.get("limit", 5)),
                 capabilities=capabilities,
+                user_id=str(session.user_id),
+                workspace_id=str(session.workspace_id),
             )
             records = pack.results
             self._ingestion.record_citations([item.chunk_id for item in records])

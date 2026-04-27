@@ -444,7 +444,7 @@ async def test_m2_execute_approved_action_retrieve_rag_uses_recall_surface(
         collection="project_docs",
         content="Approved retrieve_rag execution should route through compile_recall.",
     )
-    calls: list[tuple[str, int, set[Capability]]] = []
+    calls: list[tuple[str, int, set[Capability], str | None, str | None]] = []
 
     def _fail_legacy_retrieve(*_args: object, **_kwargs: object) -> list[object]:
         raise AssertionError("retrieve_rag runtime branch should not call retrieve")
@@ -454,9 +454,11 @@ async def test_m2_execute_approved_action_retrieve_rag_uses_recall_surface(
         *,
         limit: int = 5,
         capabilities: set[Capability] | None = None,
+        user_id: str | None = None,
+        workspace_id: str | None = None,
         **_kwargs: object,
     ) -> object:
-        calls.append((query, limit, set(capabilities or set())))
+        calls.append((query, limit, set(capabilities or set()), user_id, workspace_id))
         return build_recall_pack(query=query, results=[stored])
 
     monkeypatch.setattr(harness._ingestion, "retrieve", _fail_legacy_retrieve)
@@ -473,12 +475,54 @@ async def test_m2_execute_approved_action_retrieve_rag_uses_recall_surface(
     )
 
     assert result.success is True
-    assert calls == [("runtime recall", 1, {Capability.MEMORY_READ})]
+    assert calls == [("runtime recall", 1, {Capability.MEMORY_READ}, "user-1", "ws-1")]
     assert result.tool_output is not None
     assert result.tool_output.tool_name == "retrieve_rag"
     assert result.tool_output.taint_labels == {TaintLabel.UNTRUSTED}
     preview_rows = json.loads(result.tool_output.content)
     assert preview_rows[0]["chunk_id"] == stored.chunk_id
+
+
+@pytest.mark.asyncio
+async def test_c2_execute_approved_action_retrieve_rag_scopes_user_curated_by_owner(
+    tmp_path: Path,
+) -> None:
+    harness = _RetrieveStructuredExecutionHarness(tmp_path / "memory")
+    harness._ingestion.ingest(
+        source_id="same-owner",
+        source_type="user",
+        collection="user_curated",
+        content="C2 retrieve rag scoped token same-owner-blue.",
+        user_id="user-1",
+        workspace_id="ws-1",
+    )
+    harness._ingestion.ingest(
+        source_id="other-owner",
+        source_type="user",
+        collection="user_curated",
+        content="C2 retrieve rag scoped token other-owner-red.",
+        user_id="user-2",
+        workspace_id="ws-2",
+    )
+
+    result = await HandlerImplementation._execute_approved_action(
+        harness,  # type: ignore[arg-type]
+        sid=harness.session_id,
+        user_id=UserId("user-1"),
+        tool_name=ToolName("retrieve_rag"),
+        arguments={"query": "retrieve rag scoped token", "limit": 10},
+        capabilities={Capability.MEMORY_READ},
+        approval_actor="control_api",
+    )
+
+    assert result.success is True
+    assert result.tool_output is not None
+    preview_rows = json.loads(result.tool_output.content)
+    preview_text = json.dumps(preview_rows, sort_keys=True)
+    assert "same-owner" in preview_text
+    assert "same-owner-blue" in preview_text
+    assert "other-owner" not in preview_text
+    assert "other-owner-red" not in preview_text
 
 
 @pytest.mark.asyncio
