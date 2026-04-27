@@ -231,6 +231,15 @@ def test_c2_memory_manager_owner_scope_filters_list_get_identity_and_attention(
         is not None
     )
     assert manager.list_entries(user_id="user-1", limit=10) == []
+    assert manager.list_entries(user_id="", workspace_id="", limit=10) == []
+    assert (
+        manager.get_entry(
+            same_identity.id,
+            user_id="",
+            workspace_id="",
+        )
+        is None
+    )
 
     identity_pack = manager.compile_identity(
         user_id="user-1",
@@ -246,6 +255,16 @@ def test_c2_memory_manager_owner_scope_filters_list_get_identity_and_attention(
 
     assert [entry.id for entry in identity_pack.entries] == [same_identity.id]
     assert [entry.id for entry in attention_pack.entries] == [same_attention.id]
+    assert manager.compile_identity(user_id="", workspace_id="", max_tokens=128).entries == []
+    assert (
+        manager.compile_active_attention(
+            user_id="",
+            workspace_id="",
+            max_tokens=128,
+            scope_filter={"user"},
+        ).entries
+        == []
+    )
 
 
 def test_m3_compile_active_attention_filters_scope_workflow_and_channel_trust(

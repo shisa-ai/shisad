@@ -696,6 +696,74 @@ async def test_c2_execute_approved_action_todo_tools_scope_to_session_owner(
 
 
 @pytest.mark.asyncio
+async def test_c2_blank_session_note_todo_reads_fail_closed(tmp_path: Path) -> None:
+    harness = _MemoryStructuredExecutionHarness(tmp_path / "memory")
+    harness._session.user_id = UserId("")
+    harness._session.workspace_id = WorkspaceId("")
+    note = _write_owned_memory_entry(
+        harness._memory_manager,
+        entry_type="note",
+        key="note:explicit-owner",
+        value="C2 blank session should not read this note.",
+        user_id="user-1",
+        workspace_id="ws-1",
+    )
+    todo = _write_owned_memory_entry(
+        harness._memory_manager,
+        entry_type="todo",
+        key="todo:explicit-owner",
+        value={
+            "title": "explicit owner task",
+            "details": "C2 blank session should not read this todo.",
+            "status": "open",
+            "due_date": "",
+        },
+        user_id="user-1",
+        workspace_id="ws-1",
+    )
+
+    listed_notes = await HandlerImplementation._execute_approved_action(
+        harness,  # type: ignore[arg-type]
+        sid=harness.session_id,
+        user_id=UserId(""),
+        tool_name=ToolName("note.list"),
+        arguments={"limit": 10},
+        capabilities={Capability.MEMORY_READ},
+        approval_actor="control_api",
+    )
+    listed_todos = await HandlerImplementation._execute_approved_action(
+        harness,  # type: ignore[arg-type]
+        sid=harness.session_id,
+        user_id=UserId(""),
+        tool_name=ToolName("todo.list"),
+        arguments={"limit": 10},
+        capabilities={Capability.MEMORY_READ},
+        approval_actor="control_api",
+    )
+    blocked_complete = await HandlerImplementation._execute_approved_action(
+        harness,  # type: ignore[arg-type]
+        sid=harness.session_id,
+        user_id=UserId(""),
+        tool_name=ToolName("todo.complete"),
+        arguments={"selector": "explicit owner task"},
+        capabilities={Capability.MEMORY_WRITE},
+        approval_actor="control_api",
+    )
+
+    assert listed_notes.success is True
+    assert listed_notes.tool_output is not None
+    assert note.id not in json.dumps(json.loads(listed_notes.tool_output.content), sort_keys=True)
+    assert listed_todos.success is True
+    assert listed_todos.tool_output is not None
+    assert todo.id not in json.dumps(json.loads(listed_todos.tool_output.content), sort_keys=True)
+    assert blocked_complete.success is False
+    assert blocked_complete.tool_output is not None
+    blocked_payload = json.loads(blocked_complete.tool_output.content)
+    assert blocked_payload["reason"] == "todo_not_found"
+    assert harness._memory_manager.get_entry(todo.id).value["status"] == "open"
+
+
+@pytest.mark.asyncio
 async def test_c2_note_and_todo_exports_scope_to_requested_owner_tuple(tmp_path: Path) -> None:
     handler = _MemoryStructuredHandler(tmp_path / "memory")
     same_note = _write_owned_memory_entry(

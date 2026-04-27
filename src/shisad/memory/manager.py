@@ -487,8 +487,13 @@ class MemoryManager:
     ) -> list[MemoryEntry]:
         self.purge_expired()
         selected_type = (entry_type or "").strip().lower()
+        owner_filter_requested = (
+            user_id is not None or workspace_id is not None or include_unowned
+        )
         owner_user_id = self._normalize_owner_value(user_id)
         owner_workspace_id = self._normalize_owner_value(workspace_id)
+        if owner_filter_requested and (owner_user_id is None or owner_workspace_id is None):
+            return []
         rows = []
         for entry in self._entries.values():
             if selected_type and str(entry.entry_type).lower() != selected_type:
@@ -522,6 +527,13 @@ class MemoryManager:
         include_unowned: bool = False,
     ) -> MemoryEntry | None:
         self.purge_expired()
+        owner_filter_requested = (
+            user_id is not None or workspace_id is not None or include_unowned
+        )
+        owner_user_id = self._normalize_owner_value(user_id)
+        owner_workspace_id = self._normalize_owner_value(workspace_id)
+        if owner_filter_requested and (owner_user_id is None or owner_workspace_id is None):
+            return None
         entry = self._entries.get(entry_id)
         if entry is None:
             return None
@@ -533,8 +545,8 @@ class MemoryManager:
             return None
         if not self._entry_matches_owner(
             entry,
-            user_id=self._normalize_owner_value(user_id),
-            workspace_id=self._normalize_owner_value(workspace_id),
+            user_id=owner_user_id,
+            workspace_id=owner_workspace_id,
             include_unowned=include_unowned,
         ):
             return None
