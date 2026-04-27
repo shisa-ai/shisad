@@ -122,9 +122,17 @@ class LockdownManager:
         state = self.state_for(session_id)
         if state.level == LockdownLevel.NORMAL:
             return ""
+        # Operator-facing recovery guidance. Name both the in-chat path (the
+        # trusted operator can ask the agent to resume the lockdown once the
+        # cause is understood) and the out-of-band CLI path with the session
+        # id so single-surface operators always have a copy-pasteable
+        # command. See `review/LUS-9.md` Phase C for the dead-end this fixes.
+        recovery_cli = f"shisad lockdown resume {session_id} --reason <note>"
         return (
             f"Session is in {state.level.value} due to {state.trigger}: {state.reason}. "
-            "Review, escalate, resume, or terminate via control API."
+            f"To recover: ask the agent to resume the lockdown when ready, "
+            f"or run `{recovery_cli}` from the trusted CLI. "
+            f"Session id: {session_id}."
         )
 
     def snapshot(self, session_id: SessionId, *, include_default: bool = True) -> dict[str, object]:

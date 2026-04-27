@@ -471,6 +471,31 @@ def test_m2_t11_lockdown_supports_manual_deescalation_and_resume() -> None:
     assert manager.state_for(sid).level == LockdownLevel.NORMAL
 
 
+def test_c2_lockdown_notice_names_session_id_and_both_recovery_paths() -> None:
+    """v0.7.1 C2: the lockdown notice must name the in-chat option and the
+    CLI command (with session id) so single-surface operators can recover
+    from a `caution` lockdown without dropping out of band.
+
+    Regression for `review/LUS-9.md` Phase C finding #9.
+    """
+    manager = LockdownManager()
+    sid = SessionId("s-lockdown-notice")
+    manager.trigger(
+        sid,
+        trigger="monitor_reject",
+        reason="injection-shaped pattern",
+        recommended_action="caution",
+    )
+
+    notice = manager.user_notification(sid)
+
+    # Operator-facing recovery affordance is named twice: in-chat + CLI.
+    assert "ask the agent to resume" in notice.lower()
+    assert f"shisad lockdown resume {sid}" in notice
+    # Session id copy-pasteable without parsing diagnostic text.
+    assert f"Session id: {sid}" in notice
+
+
 def test_m2_t12_task_capability_snapshot_prevents_upgrade() -> None:
     scheduler = SchedulerManager()
     task = scheduler.create_task(
