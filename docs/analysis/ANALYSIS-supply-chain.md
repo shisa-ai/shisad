@@ -213,7 +213,8 @@ Assessment:
    `docs/runbooks/rollback.md` and `docs/runbooks/skill-revocation.md` already assume compromise and document containment.
 
 6. **Some high-risk npm surfaces are at least version-pinned.**
-   The Claude and Codex ACP adapters are pinned to exact versions in the coding-agent registry.
+   The Claude, Codex, and OpenCode ACP adapters are pinned to exact versions
+   in the coding-agent registry.
 
 ---
 
@@ -252,7 +253,8 @@ Assessment:
 
 - Do not rely on `npx` reaching the public npm registry at task execution time in production.
 - Preinstall ACP adapters in the build environment, pin exact versions, and preferably source them from an internal mirror or vendored artifact set.
-- Pin `opencode` the same way Claude and Codex are pinned.
+- Keep all ACP adapter pins under registry/test coverage while moving
+  production deployments away from live public-registry `npx` fetches.
 
 ### 3. Use trusted publishing for public releases
 
@@ -347,7 +349,9 @@ The LiteLLM incident matters not just because a package was poisoned, but becaus
 ## Practical Follow-Ons for shisad
 
 Short-term:
-- Exact-pin the `opencode` ACP adapter path.
+- Keep ACP adapter exact pins covered by registry tests while documenting
+  whether production installs use preinstalled adapters, an internal mirror, or
+  vendored artifacts.
 - Write down the intended release/install rule for Python dependencies: whether the project commits to lockfile-only release installs, exact direct pins, or both.
 - Document that production deployments should not rely on live public-registry `npx` fetches.
 - Document operator guidance for internal package proxies, short-lived credentials, and "no durable secrets on dev/build/publish hosts" posture.
