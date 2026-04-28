@@ -1,7 +1,7 @@
 # shisad Roadmap
 
 *Created: 2026-02-26*
-*Updated: 2026-04-25*
+*Updated: 2026-04-28*
 *Status: Active*
 
 ## Goal
@@ -275,11 +275,11 @@ TOTP entry remain deferred to `v0.8.0`.
   planner tool; lockdown notice surfaces the in-chat and CLI recovery
   paths with the session id.
 - Personal `user_curated` recall and session-derived / owner-bearing retrieval
-  rows are `(user, workspace)`-scoped by default; plain unowned public
-  collections remain collection-level, and same-scope clean recall is not
-  classified as untrusted solely because it came from a prior session. Legacy
-  unowned owner-private rows stay excluded by default, with maintenance-only
-  opt-in.
+  rows are `(user, workspace)`-scoped by default; direct retrieval without a
+  complete owner tuple returns public/unowned collection rows only. Same-scope
+  clean recall is not classified as untrusted solely because it came from a
+  prior session. Legacy unowned owner-private rows stay excluded by default,
+  with maintenance-only opt-in.
 - Operator preflight cleanup: harness and CLI quality-of-life fixes
   surfaced during live verification.
 

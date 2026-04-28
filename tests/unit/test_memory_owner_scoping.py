@@ -192,7 +192,7 @@ def test_compile_recall_excludes_legacy_null_owner_rows_by_default(
     assert maint_pack.results[0].source_id == "legacy"
 
 
-def test_compile_recall_without_owner_args_preserves_prerework_behavior(
+def test_compile_recall_without_owner_args_excludes_owner_private_rows(
     tmp_path: Path,
 ) -> None:
     pipeline = IngestionPipeline(tmp_path / "memory")
@@ -210,11 +210,17 @@ def test_compile_recall_without_owner_args_preserves_prerework_behavior(
         user_id="ops",
         workspace_id="default",
     )
-    # No owner args -> filter is a no-op; both rows surface.
+    pipeline.ingest(
+        source_id="public",
+        source_type="external",
+        content="public project note about shells",
+        collection="project_docs",
+    )
+
+    # No owner args still exposes public recall, but owner-private rows fail closed.
     pack = pipeline.compile_recall("shells", limit=5)
     sources = {r.source_id for r in pack.results}
-    assert "legacy" in sources
-    assert "owned" in sources
+    assert sources == {"public"}
 
 
 def test_compile_recall_partial_owner_scope_excludes_personal_rows(

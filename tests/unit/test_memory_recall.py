@@ -65,6 +65,8 @@ def test_m2_compile_recall_uses_canonical_trust_band_for_user_curated_hits(
         channel_trust="command",
         confirmation_status="user_asserted",
         scope="user",
+        user_id="user-1",
+        workspace_id="ws-1",
     )
     observed = pipeline.ingest(
         source_id="doc-user-observed",
@@ -74,9 +76,16 @@ def test_m2_compile_recall_uses_canonical_trust_band_for_user_curated_hits(
         channel_trust="owner_observed",
         confirmation_status="auto_accepted",
         scope="channel",
+        user_id="user-1",
+        workspace_id="ws-1",
     )
 
-    pack = pipeline.compile_recall("release owner handle shisa-ai", limit=2)
+    pack = pipeline.compile_recall(
+        "release owner handle shisa-ai",
+        limit=2,
+        user_id="user-1",
+        workspace_id="ws-1",
+    )
 
     assert [item.chunk_id for item in pack.results] == [elevated.chunk_id, observed.chunk_id]
     assert pack.results[0].trust_band == "elevated"
@@ -92,6 +101,8 @@ def test_m2_compile_recall_prioritizes_user_curated_over_untrusted_matches(tmp_p
         source_id="doc-user-ranked",
         source_type="user",
         content="The release codename is nebula and the user confirmed it directly.",
+        user_id="user-1",
+        workspace_id="ws-1",
     )
     pipeline.ingest(
         source_id="doc-web-ranked",
@@ -100,7 +111,12 @@ def test_m2_compile_recall_prioritizes_user_curated_over_untrusted_matches(tmp_p
         content="The release codename is nebula according to an untrusted web mirror.",
     )
 
-    pack = pipeline.compile_recall("release codename nebula", limit=2)
+    pack = pipeline.compile_recall(
+        "release codename nebula",
+        limit=2,
+        user_id="user-1",
+        workspace_id="ws-1",
+    )
 
     assert pack.count == 2
     assert pack.results[0].collection == "user_curated"
@@ -119,6 +135,8 @@ def test_m2_compile_recall_filters_by_scope(tmp_path: Path) -> None:
         channel_trust="command",
         confirmation_status="user_asserted",
         scope="session",
+        user_id="user-1",
+        workspace_id="ws-1",
     )
     pipeline.ingest(
         source_id="doc-user-scope",
@@ -128,12 +146,16 @@ def test_m2_compile_recall_filters_by_scope(tmp_path: Path) -> None:
         channel_trust="command",
         confirmation_status="user_asserted",
         scope="user",
+        user_id="user-1",
+        workspace_id="ws-1",
     )
 
     pack = pipeline.compile_recall(
         "deployment checklist item",
         limit=5,
         scope_filter={"session"},
+        user_id="user-1",
+        workspace_id="ws-1",
     )
 
     assert [item.chunk_id for item in pack.results] == [session_entry.chunk_id]
@@ -146,9 +168,16 @@ def test_m2_compile_recall_legacy_payload_matches_current_runtime_shape(tmp_path
         source_id="doc-shape",
         source_type="user",
         content="Recall payloads should keep the existing runtime fields.",
+        user_id="user-1",
+        workspace_id="ws-1",
     )
 
-    payload = pipeline.compile_recall("runtime fields", limit=5).legacy_payload()
+    payload = pipeline.compile_recall(
+        "runtime fields",
+        limit=5,
+        user_id="user-1",
+        workspace_id="ws-1",
+    ).legacy_payload()
 
     assert payload["count"] == 1
     result = payload["results"][0]
@@ -362,6 +391,8 @@ def test_m2_compile_recall_default_class_budgets_preserve_user_curated_hits(tmp_
         source_id="doc-user",
         source_type="user",
         content="My release checklist notebook mentions the canary rollout.",
+        user_id="user-1",
+        workspace_id="ws-1",
     )
     for idx in range(4):
         pipeline.ingest(
@@ -374,7 +405,12 @@ def test_m2_compile_recall_default_class_budgets_preserve_user_curated_hits(tmp_
             ),
         )
 
-    pack = pipeline.compile_recall("release checklist canary rollout", limit=2)
+    pack = pipeline.compile_recall(
+        "release checklist canary rollout",
+        limit=2,
+        user_id="user-1",
+        workspace_id="ws-1",
+    )
 
     assert pack.count == 2
     assert {item.collection for item in pack.results} == {"user_curated", "external_web"}

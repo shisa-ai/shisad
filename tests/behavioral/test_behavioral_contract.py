@@ -1140,6 +1140,25 @@ async def _run_contract_cli(config: DaemonConfig, *args: str) -> subprocess.Comp
     )
 
 
+def _set_retrieval_owner(
+    config: DaemonConfig,
+    *chunk_ids: str,
+    user_id: str = "alice",
+    workspace_id: str = "ws1",
+) -> None:
+    db_path = config.data_dir / "memory_entries" / "memory.sqlite3"
+    with sqlite3.connect(db_path) as conn:
+        for chunk_id in chunk_ids:
+            conn.execute(
+                """
+                UPDATE retrieval_records
+                SET user_id = ?, workspace_id = ?
+                WHERE chunk_id = ?
+                """,
+                (user_id, workspace_id, chunk_id),
+            )
+
+
 async def _wait_for_audit_event(
     client: ControlClient,
     *,
@@ -1639,11 +1658,22 @@ async def test_contract_memory_remember_persists_and_is_used_later(
 
     retrieved = await contract_harness.client.call(
         "memory.retrieve",
-        {"query": "favorite color", "limit": 5},
+        {
+            "query": "favorite color",
+            "limit": 5,
+            "user_id": "alice",
+            "workspace_id": "ws1",
+        },
     )
     rendered = json.dumps(retrieved, ensure_ascii=True).lower()
     assert "favorite color" in rendered
     assert "blue" in rendered
+
+    unscoped = await contract_harness.client.call(
+        "memory.retrieve",
+        {"query": "favorite color", "limit": 5},
+    )
+    assert "blue" not in json.dumps(unscoped, ensure_ascii=True).lower()
 
     # Turn 6: ensure the planner sees MEMORY CONTEXT and can answer from it.
     reply = await contract_harness.client.call(
@@ -1801,7 +1831,7 @@ async def test_contract_cli_memory_write_identity_context_is_explicitly_trusted(
 async def test_contract_memory_retrieve_prioritizes_user_curated_and_marks_untrusted(
     contract_harness: ContractHarness,
 ) -> None:
-    await ingest_memory_via_ingress(
+    user_row = await ingest_memory_via_ingress(
         contract_harness.client,
         source_type="user",
         source_id="user-ranked",
@@ -1814,10 +1844,16 @@ async def test_contract_memory_retrieve_prioritizes_user_curated_and_marks_untru
         collection="external_web",
         content="The release codename is nebula according to an untrusted web mirror.",
     )
+    _set_retrieval_owner(contract_harness.config, str(user_row["chunk_id"]))
 
     retrieved = await contract_harness.client.call(
         "memory.retrieve",
-        {"query": "release codename nebula", "limit": 2},
+        {
+            "query": "release codename nebula",
+            "limit": 2,
+            "user_id": "alice",
+            "workspace_id": "ws1",
+        },
     )
 
     results = list(retrieved.get("results") or [])
@@ -1846,6 +1882,11 @@ async def test_contract_memory_retrieve_uses_canonical_trust_band_for_user_curat
         source_id="user-observed",
         content="The release owner handle is shisa-ai from an owner-observed channel sync.",
     )
+    _set_retrieval_owner(
+        contract_harness.config,
+        str(elevated["chunk_id"]),
+        str(observed["chunk_id"]),
+    )
     db_path = contract_harness.config.data_dir / "memory_entries" / "memory.sqlite3"
     with sqlite3.connect(db_path) as conn:
         conn.execute(
@@ -1859,7 +1900,12 @@ async def test_contract_memory_retrieve_uses_canonical_trust_band_for_user_curat
 
     retrieved = await contract_harness.client.call(
         "memory.retrieve",
-        {"query": "release owner handle shisa-ai", "limit": 2},
+        {
+            "query": "release owner handle shisa-ai",
+            "limit": 2,
+            "user_id": "alice",
+            "workspace_id": "ws1",
+        },
     )
 
     results = list(retrieved.get("results") or [])
@@ -1892,6 +1938,7 @@ async def test_contract_memory_retrieve_scope_filter_limits_results(
         source_id="user-scope",
         content="Deployment checklist item for the long-term user profile.",
     )
+    _set_retrieval_owner(contract_harness.config, str(session_entry["chunk_id"]))
     db_path = contract_harness.config.data_dir / "memory_entries" / "memory.sqlite3"
     with sqlite3.connect(db_path) as conn:
         conn.execute(
@@ -1901,7 +1948,13 @@ async def test_contract_memory_retrieve_scope_filter_limits_results(
 
     retrieved = await contract_harness.client.call(
         "memory.retrieve",
-        {"query": "deployment checklist item", "limit": 5, "scope_filter": ["session"]},
+        {
+            "query": "deployment checklist item",
+            "limit": 5,
+            "scope_filter": ["session"],
+            "user_id": "alice",
+            "workspace_id": "ws1",
+        },
     )
 
     results = list(retrieved.get("results") or [])

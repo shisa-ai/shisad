@@ -346,6 +346,12 @@ async def test_c2_memory_retrieve_blank_owner_tuple_fails_closed(
         user_id="user-1",
         workspace_id="ws-1",
     )
+    public = harness._ingestion.ingest(
+        source_id="public-owner-rpc",
+        source_type="external",
+        collection="project_docs",
+        content="C2 blank owner recall token public-owner-green.",
+    )
 
     blank_scoped = await harness.do_memory_retrieve(
         {
@@ -365,10 +371,71 @@ async def test_c2_memory_retrieve_blank_owner_tuple_fails_closed(
 
     assert blank_owner.user_id is None
     assert blank_owner.workspace_id is None
-    assert blank_scoped["count"] == 0
-    assert "blank-owner-blue" not in json.dumps(blank_scoped, sort_keys=True)
-    assert blank_owner.chunk_id in unscoped_text
-    assert "explicit-owner-red" in unscoped_text
+    blank_scoped_text = json.dumps(blank_scoped, sort_keys=True)
+    assert blank_scoped["count"] == 1
+    assert "blank-owner-blue" not in blank_scoped_text
+    assert public.chunk_id in blank_scoped_text
+    assert blank_owner.chunk_id not in unscoped_text
+    assert "blank-owner-blue" not in unscoped_text
+    assert "explicit-owner-red" not in unscoped_text
+    assert public.chunk_id in unscoped_text
+    assert "public-owner-green" in unscoped_text
+
+
+@pytest.mark.asyncio
+async def test_c2_memory_retrieve_unscoped_excludes_session_derived_rows(
+    tmp_path: Path,
+) -> None:
+    harness = _MemoryIngestHarness(tmp_path)
+    owner_summary = harness._ingestion.ingest(
+        source_id="summary-owner-rpc",
+        source_type="tool",
+        collection="tool_outputs",
+        content="C2 direct retrieve session summary token owner-private-blue.",
+        source_origin="consolidation_derived",
+        channel_trust="consolidation",
+        user_id="user-1",
+        workspace_id="ws-1",
+    )
+    legacy_summary = harness._ingestion.ingest(
+        source_id="summary-legacy-rpc",
+        source_type="tool",
+        collection="tool_outputs",
+        content="C2 direct retrieve session summary token legacy-private-red.",
+        source_origin="consolidation_derived",
+        channel_trust="consolidation",
+    )
+    owner_public = harness._ingestion.ingest(
+        source_id="owned-public-rpc",
+        source_type="external",
+        collection="project_docs",
+        content="C2 direct retrieve session summary token owner-public-purple.",
+        user_id="user-1",
+        workspace_id="ws-1",
+    )
+    generic_tool = harness._ingestion.ingest(
+        source_id="generic-tool-rpc",
+        source_type="tool",
+        collection="tool_outputs",
+        content="C2 direct retrieve session summary token generic-tool-green.",
+    )
+
+    unscoped = await harness.do_memory_retrieve(
+        {
+            "query": "direct retrieve session summary token",
+            "limit": 10,
+        }
+    )
+    unscoped_text = json.dumps(unscoped, sort_keys=True)
+
+    assert owner_summary.chunk_id not in unscoped_text
+    assert legacy_summary.chunk_id not in unscoped_text
+    assert owner_public.chunk_id not in unscoped_text
+    assert "owner-private-blue" not in unscoped_text
+    assert "legacy-private-red" not in unscoped_text
+    assert "owner-public-purple" not in unscoped_text
+    assert generic_tool.chunk_id in unscoped_text
+    assert "generic-tool-green" in unscoped_text
 
 
 @pytest.mark.asyncio

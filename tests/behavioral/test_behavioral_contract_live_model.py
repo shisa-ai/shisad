@@ -455,7 +455,12 @@ async def test_live_model_memory_remember_persists_and_is_used_later(
 
     retrieved = await live_harness.client.call(
         "memory.retrieve",
-        {"query": "dog name", "limit": 5},
+        {
+            "query": "dog name",
+            "limit": 5,
+            "user_id": "alice",
+            "workspace_id": "ws1",
+        },
     )
     rendered = json.dumps(retrieved, ensure_ascii=True).lower()
     assert "woofie" in rendered
