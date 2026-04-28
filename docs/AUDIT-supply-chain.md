@@ -379,6 +379,32 @@ Security checks recorded for the proposed adapter set:
   returned no open alerts. Secret scanning is disabled on the repository, so no
   secret-scanning alert query was available.
 
+## Follow-up Codex ACP Refresh (2026-04-28)
+
+The Codex ACP adapter was refreshed again after GPT-5.5 reviewer lanes failed
+ACP negotiation through `@zed-industries/codex-acp@0.11.1` while direct
+`codex exec -m gpt-5.5` completed the same review target.
+
+1. Refreshed Codex ACP adapter within its active namespace:
+   - from `@zed-industries/codex-acp@0.11.1`
+   - to `@zed-industries/codex-acp@0.12.0`
+   - npm `dist.shasum`: `3dc3328f7f34085249ff490bec319e93f6500132`
+   - npm `dist.integrity`:
+     `sha512-0d7gRzOiYTgDmIyh783mCcq50h3mdOg/TtKdLfBIghOLushpQRwhuLjKK8Q9hxZfNlPL0Ua56DoPjnsW8amf8g==`
+   - published: `2026-04-24T13:47:02.567Z`
+   - rationale: the active Codex ACP namespace published a bridge compatible
+     with the current Codex CLI (`codex-cli 0.125.0`), and a default-registry
+     GPT-5.5 ACP smoke completed through the normal adapter path.
+
+Security checks recorded for the refreshed adapter set:
+
+- `npm audit --omit=dev --json` in a temporary npm project containing
+  `@agentclientprotocol/claude-agent-acp@0.29.2`,
+  `@zed-industries/codex-acp@0.12.0`, and `opencode-ai@1.3.10` reported
+  `0` vulnerabilities.
+- `npm audit signatures --json` for the installed temporary project reported
+  no invalid or missing signatures.
+
 ## Evidence and Commands (Snapshot Reproducibility)
 
 The audit findings below are based on these commands run against the working tree:

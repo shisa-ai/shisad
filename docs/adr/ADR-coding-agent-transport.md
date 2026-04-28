@@ -155,7 +155,7 @@ CodingAgentAdapter (shisad-owned interface)
 ```python
 ACP_AGENTS = {
     "claude": "npx -y @agentclientprotocol/claude-agent-acp@0.29.2",
-    "codex": "npx @zed-industries/codex-acp@0.11.1",
+    "codex": "npx @zed-industries/codex-acp@0.12.0",
     "opencode": "npx -y opencode-ai@1.3.10 acp",
     # Future: gemini, cursor, copilot, etc.
 }
