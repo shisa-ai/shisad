@@ -579,6 +579,61 @@ def test_c2_memory_context_cross_scope_leak_blocked(tmp_path: Path) -> None:
     assert rendered == ""
 
 
+def test_c2_memory_context_scopes_session_derived_tool_outputs(tmp_path: Path) -> None:
+    """Session-derived tool-output recall is not public evidence.
+
+    Conversation summarizer rows use the `tool_outputs` collection, but they
+    are still derived from one operator/workspace's session. They must not
+    appear in another session's planner DATA EVIDENCE.
+    """
+    ingestion = IngestionPipeline(tmp_path / "memory")
+    same_owner = ingestion.ingest(
+        source_id="summary-same-owner",
+        source_type="tool",
+        collection="tool_outputs",
+        content="C2 session-derived tool output scoped token same-owner-blue.",
+        source_origin="consolidation_derived",
+        channel_trust="consolidation",
+        confirmation_status="auto_accepted",
+        user_id="ops",
+        workspace_id="default",
+    )
+    ingestion.ingest(
+        source_id="summary-other-owner",
+        source_type="tool",
+        collection="tool_outputs",
+        content="C2 session-derived tool output scoped token other-owner-red.",
+        source_origin="consolidation_derived",
+        channel_trust="consolidation",
+        confirmation_status="auto_accepted",
+        user_id="lus9-eval-fresh",
+        workspace_id="local",
+    )
+    ingestion.ingest(
+        source_id="summary-legacy-unowned",
+        source_type="tool",
+        collection="tool_outputs",
+        content="C2 session-derived tool output scoped token legacy-unowned-green.",
+        source_origin="consolidation_derived",
+        channel_trust="consolidation",
+        confirmation_status="auto_accepted",
+    )
+
+    rendered, _taints, _amv_tainted = _build_planner_memory_context(
+        ingestion=ingestion,
+        query="session-derived tool output scoped token",
+        capabilities={Capability.MEMORY_READ},
+        top_k=10,
+        user_id="ops",
+        workspace_id="default",
+    )
+
+    assert same_owner.source_id in rendered
+    assert "same-owner-blue" in rendered
+    assert "other-owner-red" not in rendered
+    assert "legacy-unowned-green" not in rendered
+
+
 def test_c2_memory_context_same_scope_injection_stays_untrusted(
     tmp_path: Path,
 ) -> None:

@@ -557,6 +557,72 @@ async def test_c2_execute_approved_action_retrieve_rag_scopes_user_curated_by_ow
 
 
 @pytest.mark.asyncio
+async def test_c2_execute_approved_action_retrieve_rag_scopes_session_tool_outputs(
+    tmp_path: Path,
+) -> None:
+    harness = _RetrieveStructuredExecutionHarness(tmp_path / "memory")
+    harness._ingestion.ingest(
+        source_id="summary-same-owner",
+        source_type="tool",
+        collection="tool_outputs",
+        content="C2 retrieve rag session tool output token same-owner-blue.",
+        source_origin="consolidation_derived",
+        channel_trust="consolidation",
+        confirmation_status="auto_accepted",
+        user_id="user-1",
+        workspace_id="ws-1",
+    )
+    harness._ingestion.ingest(
+        source_id="summary-other-owner",
+        source_type="tool",
+        collection="tool_outputs",
+        content="C2 retrieve rag session tool output token other-owner-red.",
+        source_origin="consolidation_derived",
+        channel_trust="consolidation",
+        confirmation_status="auto_accepted",
+        user_id="user-2",
+        workspace_id="ws-2",
+    )
+    harness._ingestion.ingest(
+        source_id="summary-legacy-unowned",
+        source_type="tool",
+        collection="tool_outputs",
+        content="C2 retrieve rag session tool output token legacy-unowned-green.",
+        source_origin="consolidation_derived",
+        channel_trust="consolidation",
+        confirmation_status="auto_accepted",
+    )
+    harness._ingestion.ingest(
+        source_id="public-tool-output",
+        source_type="tool",
+        collection="tool_outputs",
+        content="C2 retrieve rag session tool output token public-yellow.",
+        source_origin="tool_output",
+        channel_trust="tool_passed",
+        confirmation_status="auto_accepted",
+    )
+
+    result = await HandlerImplementation._execute_approved_action(
+        harness,  # type: ignore[arg-type]
+        sid=harness.session_id,
+        user_id=UserId("user-1"),
+        tool_name=ToolName("retrieve_rag"),
+        arguments={"query": "retrieve rag session tool output token", "limit": 10},
+        capabilities={Capability.MEMORY_READ},
+        approval_actor="control_api",
+    )
+
+    assert result.success is True
+    assert result.tool_output is not None
+    preview_rows = json.loads(result.tool_output.content)
+    preview_text = json.dumps(preview_rows, sort_keys=True)
+    assert "same-owner-blue" in preview_text
+    assert "public-yellow" in preview_text
+    assert "other-owner-red" not in preview_text
+    assert "legacy-unowned-green" not in preview_text
+
+
+@pytest.mark.asyncio
 async def test_c2_execute_approved_action_retrieve_rag_blank_owner_fails_closed(
     tmp_path: Path,
 ) -> None:

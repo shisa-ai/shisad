@@ -9836,6 +9836,8 @@ class SessionImplMixin(HandlerMixinBase):
                 "key": proposal.key,
                 "value": proposal.value,
                 "confidence": float(proposal.confidence),
+                "user_id": str(session.user_id),
+                "workspace_id": str(session.workspace_id),
             }
             if not isinstance(proposal.value, (str, bytes)):
                 write_payload["content_digest"] = digest_memory_value(proposal.value)
@@ -9858,6 +9860,8 @@ class SessionImplMixin(HandlerMixinBase):
                         "ingress_context": ingest_context.handle_id,
                         "content": ingest_text,
                         "collection": "tool_outputs",
+                        "user_id": str(session.user_id),
+                        "workspace_id": str(session.workspace_id),
                     }
                 )
             elif decision.get("kind") == "require_confirmation":

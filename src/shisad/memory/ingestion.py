@@ -410,24 +410,25 @@ class IngestionPipeline:
         """Compile the current Recall surface over retrieval storage.
 
         `user_id` / `workspace_id` scope recall to the session owner for
-        the **personal** collection (`user_curated`) only — that is the
-        collection where LUS-9 Phase C observed cross-user leakage (see
-        `planning/PLAN-lockdown-no-deadend.md §4.4`). Public collections
-        (`project_docs`, `external_web`, `tool_outputs`) are collection-
-        level content, not personal-to-a-user data, and continue to flow
-        across sessions under their existing trust labels.
+        owner-private rows. That always includes `user_curated`. It also
+        includes session-derived retrieval rows such as consolidation /
+        summarizer output in `tool_outputs`, plus any public-collection row
+        that carries an explicit owner tuple. Plain unowned public
+        collections (`project_docs`, `external_web`, and generic unowned
+        `tool_outputs`) continue to flow across sessions under their existing
+        trust labels.
 
-        When the scoping filter applies (complete owner tuple provided
-        *and* collection is personal), rows whose `record.user_id` /
-        `record.workspace_id` do not match are excluded, and personal-
-        collection rows with NULL owner (pre-migration legacy data) are
+        When the scoping filter applies (complete owner tuple provided),
+        rows requiring owner scope whose `record.user_id` /
+        `record.workspace_id` do not match are excluded. NULL-owner
+        owner-private rows (`user_curated` and `consolidation_derived`) are
         excluded by default unless `include_unowned=True` — reserved for
-        maintenance/diagnostic call sites only. If a caller provides only
-        one owner field, or blank owner fields that normalize away,
-        personal rows fail closed; partial/blank owner filters are not
-        applied. When the caller leaves both `user_id` and `workspace_id`
-        as None the filter is a no-op, which preserves pre-rework behavior
-        for any call site that has not yet been migrated to the scoped API.
+        maintenance/diagnostic call sites only. If a caller provides only one
+        owner field, or blank owner fields that normalize away, owner-private
+        rows fail closed. When the caller leaves both `user_id` and
+        `workspace_id` as None the filter is a no-op, which preserves
+        pre-rework behavior for any call site that has not yet been migrated
+        to the scoped API.
         """
         if self._backend.count_records() == 0:
             return build_recall_pack(
@@ -488,6 +489,14 @@ class IngestionPipeline:
         owner_workspace_id = self._normalize_owner_value(workspace_id)
         scope_by_owner = owner_user_id is not None and owner_workspace_id is not None
         partial_owner_scope = owner_filter_requested and not scope_by_owner
+
+        def _requires_owner_scope(record: RetrievalResult) -> bool:
+            if record.collection == "user_curated":
+                return True
+            if record.source_origin == "consolidation_derived":
+                return True
+            return record.user_id is not None or record.workspace_id is not None
+
         visible_rows: list[tuple[Any, RetrievalResult]] = []
         for row in rows:
             record = self._record_from_backend_row(row)
@@ -499,20 +508,29 @@ class IngestionPipeline:
                 continue
             if as_of is not None and record.created_at > reference_time:
                 continue
-            # v0.7.1 C2: scope to (user, workspace) for personal
-            # collections only. Partial/blank owner filters fail closed for
-            # personal rows so API-level callers cannot accidentally
-            # widen recall by providing an invalid tuple.
-            if record.collection == "user_curated":
+            # v0.7.1 C2: scope owner-private retrieval rows to
+            # (user, workspace). Partial/blank owner filters fail closed for
+            # these rows so API-level callers cannot accidentally widen
+            # recall by providing an invalid tuple.
+            if _requires_owner_scope(record):
                 if partial_owner_scope:
                     continue
                 if scope_by_owner:
-                    row_unowned = record.user_id is None and record.workspace_id is None
-                    if row_unowned and not include_unowned:
+                    record_user_id = self._normalize_owner_value(record.user_id)
+                    record_workspace_id = self._normalize_owner_value(record.workspace_id)
+                    row_unowned = record_user_id is None and record_workspace_id is None
+                    owner_private_unowned = row_unowned and (
+                        record.collection == "user_curated"
+                        or record.source_origin == "consolidation_derived"
+                    )
+                    if owner_private_unowned and not include_unowned:
                         continue
-                    if not row_unowned and (
-                        record.user_id != owner_user_id
-                        or record.workspace_id != owner_workspace_id
+                    if row_unowned:
+                        visible_rows.append((row, record))
+                        continue
+                    if (
+                        record_user_id != owner_user_id
+                        or record_workspace_id != owner_workspace_id
                     ):
                         continue
             visible_rows.append((row, record))

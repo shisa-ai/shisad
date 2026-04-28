@@ -65,9 +65,9 @@ Routine denial of user-requested actions (when a confirmation gate would safely 
 
 ### Scoped Personal Recall
 
-Personal recall in the `user_curated` collection is scoped at recall time by the active session's `(user_id, workspace_id)`. Public or collection-level content such as `project_docs`, `external_web`, and `tool_outputs` can flow across sessions because those collections are not owner-private personal memory.
+Personal recall in the `user_curated` collection is scoped at recall time by the active session's `(user_id, workspace_id)`. Session-derived retrieval rows, including conversation summaries stored under `tool_outputs`, are also owner-scoped so one operator/workspace's prior session evidence does not become another operator's `DATA EVIDENCE`. Plain unowned public or collection-level content such as `project_docs`, `external_web`, and generic unowned `tool_outputs` can flow across sessions because those records are not owner-private personal memory.
 
-Same-scope clean personal recall is framed as `MEMORY CONTEXT (same-scope recall; derived from this operator's own prior session memory)`, not as untrusted external evidence. Records that carry an injection taint label stay in the untrusted-data framing regardless of owner scope, and pre-migration personal rows with NULL owner fields are excluded from default recall; `include_unowned=True` is reserved for maintenance and diagnostic callers.
+Same-scope clean personal recall is framed as `MEMORY CONTEXT (same-scope recall; derived from this operator's own prior session memory)`, not as untrusted external evidence. Records that carry an injection taint label stay in the untrusted-data framing regardless of owner scope, and pre-migration owner-private rows with NULL owner fields are excluded from default recall; `include_unowned=True` is reserved for maintenance and diagnostic callers.
 
 ### The Test
 

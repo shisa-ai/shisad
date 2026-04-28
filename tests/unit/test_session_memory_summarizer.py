@@ -93,6 +93,8 @@ async def test_m1_conversation_summarizer_mints_handles_for_memory_and_ingest(
         assert entry.ingress_handle_id
         assert entry.source_id.startswith("transcript-summary:")
         assert entry.taint_labels == [TaintLabel.UNTRUSTED]
+        assert entry.user_id == "alice"
+        assert entry.workspace_id == "ws1"
 
         summary_records = [
             record
@@ -102,9 +104,34 @@ async def test_m1_conversation_summarizer_mints_handles_for_memory_and_ingest(
         assert len(summary_records) == 1
         assert summary_records[0].source_type == "tool"
         assert summary_records[0].collection == "tool_outputs"
+        assert summary_records[0].user_id == "alice"
+        assert summary_records[0].workspace_id == "ws1"
         assert (
             summary_records[0].content_sanitized
             == "conversation.preference.communication: short replies"
+        )
+
+        alice_recall = services.ingestion.compile_recall(
+            "short replies",
+            limit=10,
+            capabilities={Capability.MEMORY_READ},
+            user_id="alice",
+            workspace_id="ws1",
+        )
+        bob_recall = services.ingestion.compile_recall(
+            "short replies",
+            limit=10,
+            capabilities={Capability.MEMORY_READ},
+            user_id="bob",
+            workspace_id="ws2",
+        )
+        assert any(
+            record.chunk_id == summary_records[0].chunk_id
+            for record in alice_recall.results
+        )
+        assert all(
+            record.chunk_id != summary_records[0].chunk_id
+            for record in bob_recall.results
         )
     finally:
         await services.shutdown()
