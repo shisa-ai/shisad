@@ -217,6 +217,8 @@ def test_m2_t20_hybrid_retrieval_prioritizes_trusted_evidence(tmp_path: Path) ->
         source_type="user",
         collection="user_curated",
         content="Roadmap milestone is M2 defense layers",
+        user_id="alice",
+        workspace_id="ws1",
     )
     pipeline.ingest(
         source_id="web-1",
@@ -224,7 +226,12 @@ def test_m2_t20_hybrid_retrieval_prioritizes_trusted_evidence(tmp_path: Path) ->
         collection="external_web",
         content="Random gossip about sports and celebrities",
     )
-    results = pipeline.retrieve("defense layers milestone", limit=2)
+    results = pipeline.retrieve(
+        "defense layers milestone",
+        limit=2,
+        user_id="alice",
+        workspace_id="ws1",
+    )
     assert results
     assert results[0].collection == "user_curated"
 
@@ -1577,6 +1584,7 @@ async def test_m2_restart_hydrates_memory_retrieval_and_tasks(
             client,
             source_id="doc-1",
             source_type="external",
+            collection="project_docs",
             content="Roadmap milestone includes defense layers",
         )
         await client.call(

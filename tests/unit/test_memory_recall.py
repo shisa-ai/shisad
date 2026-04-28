@@ -34,6 +34,44 @@ def test_m2_compile_recall_preserves_legacy_retrieve_results(tmp_path: Path) -> 
     assert payload["results"][0]["content_sanitized"] == stored.content_sanitized
 
 
+def test_c2_legacy_retrieve_alias_forwards_owner_scope(tmp_path: Path) -> None:
+    pipeline = IngestionPipeline(tmp_path / "memory")
+    same_owner = pipeline.ingest(
+        source_id="alias-same-owner",
+        source_type="user",
+        collection="user_curated",
+        content="Legacy retrieve alias owner scope token same-owner-blue.",
+        user_id="alice",
+        workspace_id="ws1",
+    )
+    pipeline.ingest(
+        source_id="alias-other-owner",
+        source_type="user",
+        collection="user_curated",
+        content="Legacy retrieve alias owner scope token other-owner-red.",
+        user_id="bob",
+        workspace_id="ws2",
+    )
+    public = pipeline.ingest(
+        source_id="alias-public",
+        source_type="external",
+        collection="project_docs",
+        content="Legacy retrieve alias owner scope token public-green.",
+    )
+
+    results = pipeline.retrieve(
+        "retrieve alias owner scope token",
+        limit=10,
+        user_id="alice",
+        workspace_id="ws1",
+    )
+
+    sources = {item.source_id for item in results}
+    assert same_owner.source_id in sources
+    assert public.source_id in sources
+    assert "alias-other-owner" not in sources
+
+
 def test_m2_compile_recall_preserves_capability_scoping(tmp_path: Path) -> None:
     pipeline = IngestionPipeline(tmp_path / "memory")
     pipeline.ingest(

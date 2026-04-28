@@ -153,6 +153,8 @@ def test_m2_a8_rag_poisoning_external_doc_cannot_outrank_user_doc(tmp_path: Path
         source_type="user",
         collection="user_curated",
         content="Project policy requires approval for outbound requests",
+        user_id="alice",
+        workspace_id="ws1",
     )
     pipeline.ingest(
         source_id="web-doc",
@@ -165,6 +167,8 @@ def test_m2_a8_rag_poisoning_external_doc_cannot_outrank_user_doc(tmp_path: Path
         "approval outbound requests",
         capabilities={Capability.EMAIL_SEND},
         limit=5,
+        user_id="alice",
+        workspace_id="ws1",
     )
     assert results
     assert all(result.collection != "external_web" for result in results)

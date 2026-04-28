@@ -771,6 +771,9 @@ class IngestionPipeline:
         allowed_collections: set[RetrievalCollection] | None = None,
         include_quarantined: bool = False,
         require_corroboration: bool = False,
+        user_id: str | None = None,
+        workspace_id: str | None = None,
+        include_unowned: bool = False,
     ) -> list[RetrievalResult]:
         """Backwards-compatible alias for the emerging Recall surface."""
 
@@ -781,6 +784,9 @@ class IngestionPipeline:
             allowed_collections=allowed_collections,
             include_quarantined=include_quarantined,
             require_corroboration=require_corroboration,
+            user_id=user_id,
+            workspace_id=workspace_id,
+            include_unowned=include_unowned,
         ).results
 
     def record_citations(
