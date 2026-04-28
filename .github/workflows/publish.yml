@@ -135,7 +135,7 @@ jobs:
       - name: Generate artifact attestations
         uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32 # v4.1.0
         with:
-          subject-path: dist/shisad-*.whl
+          subject-path: dist/shisad-*
 
       - name: Publish to PyPI (trusted publishing)
         uses: pypa/gh-action-pypi-publish@ed0c53931b1dc9bd32cbe73a98c7f6766f8a527e # v1.13.0
