@@ -128,7 +128,6 @@ Good:
 Gap:
 - The adapter code is still fetched via `npx` at runtime.
 - There is no `package-lock.json`, vendored adapter tarball, or internal npm mirror in this repo.
-- `opencode` is not exact-pinned.
 
 Assessment:
 - This is one of the clearest current supply-chain risks in the repo. In production terms, "run `npx` against the public registry at execution time" is not a strong trust model.
