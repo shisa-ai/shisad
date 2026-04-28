@@ -20,7 +20,7 @@ Related:
 - The LiteLLM incident is a publish-path compromise, not just a "bad dependency" story. The attacker got malicious packages onto PyPI outside the expected release path, and `litellm==1.82.8` escalated the impact by using a `.pth` file that executed on every Python startup.
 - As of **March 24, 2026**, LiteLLM maintainers said the compromise affected `1.82.7` and `1.82.8`, that those packages were removed, that maintainer accounts were rotated, and that their current attribution is compromise via the Trivy dependency used in their CI/CD scanning workflow. That attribution is still the maintainer team's evolving explanation, not an independently closed postmortem.
 - For shisad, the most important lesson is that "supply chain" is bigger than `pip install`: it includes Python packages, npm-delivered coding-agent adapters, CI actions, signed self-mod bundles, future container images, and any remote tool discovery path.
-- shisad already has some strong patterns in the skill and self-modification lanes: manifest validation, pinned dependency metadata, signature checks, review-on-update, rollback, and revocation. The main remaining gaps are release-pipeline provenance, exact direct dependency pinning policy, runtime `npx` fetches, and the lack of an immutable signed container-image path.
+- shisad already has some strong patterns in the skill and self-modification lanes: manifest validation, pinned dependency metadata, signature checks, review-on-update, rollback, revocation, and an OIDC/SBOM/attestation-based PyPI publish workflow. The main remaining gaps are external release-environment configuration audit, exact direct dependency pinning policy, runtime `npx` fetches, and the lack of an immutable signed container-image path.
 
 ---
 
@@ -127,7 +127,10 @@ Good:
 
 Gap:
 - The adapter code is still fetched via `npx` at runtime.
-- There is no `package-lock.json`, vendored adapter tarball, or internal npm mirror in this repo.
+- There is no lockfile, vendored adapter tarball, or internal npm mirror for
+  the runtime ACP adapter fetch path. The Ledger bridge has its own
+  `contrib/ledger-bridge/package-lock.json`, but that does not lock these
+  adapter packages.
 
 Assessment:
 - This is one of the clearest current supply-chain risks in the repo. In production terms, "run `npx` against the public registry at execution time" is not a strong trust model.
@@ -155,19 +158,31 @@ Assessment:
 ### 5. Release pipeline and publish provenance
 
 Current state:
-- The docs clearly want signed tags, trusted signers, and CI-based publish enforcement.
-- The actual enforcement is still largely procedural and future-tracked (`PF.42`, `PF.43`).
-- There is no in-repo `.github/workflows/` publish pipeline to review here.
+- `.github/workflows/publish.yml` is an in-repo, manually dispatched release
+  workflow that checks the tag/version match, verifies `uv.lock`, runs release
+  validation, builds artifacts, runs `twine check`, runs `pip-audit`, exports a
+  dependency snapshot, generates an SPDX SBOM, and uploads release artifacts.
+- The publish job uses the `pypi-publish` GitHub Environment with
+  `id-token: write` and `attestations: write`, generates build provenance via
+  `actions/attest-build-provenance`, and publishes through
+  `pypa/gh-action-pypi-publish`.
+- The publish workflow pins GitHub Actions by full commit SHA.
 
 Good:
-- The design direction is correct: signed releases, trust store, verification at release time.
+- OIDC trusted publishing, release SBOM generation, provenance attestation,
+  lockfile verification, and release validation are visible in-repo.
 
 Gap:
-- No current end-to-end attestation or trusted-publishing enforcement is visible in-repo.
-- No SBOM or signed-release artifact workflow is present.
+- GitHub Environment reviewer settings and PyPI trusted-publisher bindings are
+  external service configuration and must still be audited during release
+  close.
+- Hardware-backed release signing keys remain future work (`PF.42`).
 
 Assessment:
-- The release integrity model exists mostly on paper today.
+- The release integrity model now has an in-repo PyPI workflow with core
+  provenance controls. The remaining release-path risk is mostly external
+  service configuration, hardware-backed signing, and future container-image
+  provenance.
 
 ### 6. Container images
 
@@ -230,8 +245,10 @@ Assessment:
    Python dependency resolution uses a CI cooldown, but runtime `npx` adapter
    fetches do not yet have an equivalent in-repo age or mirror policy.
 
-4. **No visible trusted-publishing or release-attestation path yet.**
-   Signed-release ideas exist, but enforcement is not yet in-repo.
+4. **Release provenance still depends on external service configuration.**
+   The in-repo publish workflow uses OIDC trusted publishing, SBOM generation,
+   and build provenance attestations, but GitHub Environment and PyPI
+   trusted-publisher bindings remain outside the repository.
 
 5. **No immutable image workflow yet.**
    Once container deployment becomes real, digest pinning and image signing need to become mandatory, not aspirational.
@@ -357,7 +374,8 @@ Short-term:
 - Document operator guidance for internal package proxies, short-lived credentials, and "no durable secrets on dev/build/publish hosts" posture.
 
 Medium-term:
-- `PF.43`: CI-based release publishing enforcement
+- `PF.43` follow-up/audit: CI-based release publishing enforcement and
+  external GitHub/PyPI environment settings
 - `PF.42`: hardware-backed release signing keys
 - `PF.70`: tool-surface supply-chain hardening bundle
 - `PF.21`: no public skill marketplace until signed package policy, provenance attestation, allowlist governance, and rollback/revocation are concrete
