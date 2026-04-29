@@ -2697,14 +2697,15 @@ def _daemon_pending_confirmation_response_text(
         )
         if str(confirmation_id).strip()
     }
+    all_binding_totp_rows = _totp_pending_rows(binding_rows)
     binding_totp_rows = [
         row
-        for row in _totp_pending_rows(binding_rows)
+        for row in all_binding_totp_rows
         if str(getattr(row, "confirmation_id", "")).strip() in totp_guidance_ids
     ]
     single_totp_confirmation_id = (
         str(getattr(binding_totp_rows[0], "confirmation_id", "")).strip()
-        if len(binding_totp_rows) == 1
+        if len(all_binding_totp_rows) == 1 and len(binding_totp_rows) == 1
         else ""
     )
     lines = [
@@ -2734,8 +2735,9 @@ def _daemon_pending_confirmation_response_text(
                 lines.append(f"   CLI fallback: {_totp_cli_confirm_command(confirmation_id)}")
             else:
                 lines.append(
-                    "   TOTP approval pending: run shisad action list for approval instructions"
+                    f"   TOTP approval pending: reply with 'reject {pending_number}' to reject"
                 )
+                lines.append(f"   To approve: {_totp_cli_confirm_command(confirmation_id)}")
         else:
             lines.append(
                 f"   In chat: reply with 'confirm {pending_number}' or 'reject {pending_number}'"

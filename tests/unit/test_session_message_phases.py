@@ -2186,11 +2186,56 @@ async def test_finalize_response_hides_totp_code_path_for_new_non_totp_action() 
     assert "confirm 2" in text
     assert "TOTP approval pending" in text
     assert "confirm 1" not in text
-    assert "shisad action confirm c-old" not in text
+    assert "reject 1" in text
+    assert "shisad action confirm c-old --totp-code 123456" in text
     assert "6-digit code" not in text
-    assert "--totp-code" not in text
     assert "reject 2" in text
     assert "yes to all" not in text
+
+
+@pytest.mark.asyncio
+async def test_finalize_response_targets_new_totp_when_older_totp_is_visible() -> None:
+    harness = _FinalizeEvidenceHarness()
+    harness._pending_actions = {
+        "c-old": SimpleNamespace(
+            confirmation_id="c-old",
+            session_id=SessionId("sess-g1"),
+            user_id=UserId("user-g1"),
+            workspace_id=WorkspaceId("workspace-g1"),
+            created_at=1,
+            safe_preview="ACTION CONFIRMATION\nAction: fs.read",
+            reason="requires_confirmation",
+            decision_nonce="nonce-old",
+            status="pending",
+            selected_backend_method="totp",
+        ),
+        "c-new": SimpleNamespace(
+            confirmation_id="c-new",
+            session_id=SessionId("sess-g1"),
+            user_id=UserId("user-g1"),
+            workspace_id=WorkspaceId("workspace-g1"),
+            created_at=2,
+            safe_preview="ACTION CONFIRMATION\nAction: web.fetch",
+            reason="requires_confirmation",
+            decision_nonce="nonce-new",
+            status="pending",
+            selected_backend_method="totp",
+        ),
+    }
+    execution = _finalize_execution_result(
+        tool_outputs=[],
+        assistant_response="Queued it.",
+        pending_confirmation=1,
+        pending_confirmation_ids=["c-new"],
+    )
+
+    response = await SessionImplMixin._finalize_response(harness, execution)
+
+    text = str(response["response"])
+    assert "TOTP in chat: reply with 'confirm c-new 123456'" in text
+    assert "TOTP in chat: reply with the 6-digit code" not in text
+    assert "TOTP approval pending: reply with 'reject 1' to reject" in text
+    assert "shisad action confirm c-old --totp-code 123456" in text
 
 
 @pytest.mark.asyncio

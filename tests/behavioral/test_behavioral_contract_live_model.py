@@ -397,6 +397,7 @@ async def test_live_model_similar_file_recovery_reaches_confirmation_or_listing(
             )
             assert confirmed_first.get("lockdown_level") == "normal"
             assert int(confirmed_first.get("blocked_actions", 0)) == 0
+            _assert_no_legacy_or_shell_file_lookup(confirmed_first)
             if _reply_exposes_recovered_todo_log(confirmed_first):
                 return
             observed.append(confirmed_first)
