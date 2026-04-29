@@ -189,6 +189,16 @@ _POST_TOOL_SYNTHESIS_TIMEOUT_SEC = 30.0
 _POST_TOOL_SYNTHESIS_PAYLOAD_MAX_CHARS = 4200
 _POST_TOOL_SYNTHESIS_SUMMARY_MAX_CHARS = 2600
 _OUTPUT_URL_RE = re.compile(r"https?://[^\s)>]+")
+_INTERNAL_TOOL_NARRATION_MARKERS = (
+    "```xml",
+    "```json",
+    "function call",
+    "tool call",
+    "call report_anomaly",
+    "<tool_call",
+    "</tool_call>",
+    "content tool-calling runtime manifest",
+)
 _FRONTMATTER_VALUE_MAX_CHARS = 240
 _AMV_EXPLANATION_MAX_CHARS = 240
 _REJECTION_REASON_SPLITTER = ","
@@ -2604,6 +2614,105 @@ def _build_post_tool_synthesis_untrusted_content(
             ]
         )
     return "\n\n".join(evidence_blocks)
+
+
+def _response_exposes_internal_tool_narration(text: str) -> bool:
+    normalized = str(text or "").strip().lower()
+    return any(marker in normalized for marker in _INTERNAL_TOOL_NARRATION_MARKERS)
+
+
+def _response_exposes_structured_tool_syntax(text: str) -> bool:
+    normalized = str(text or "").strip().lower()
+    return any(
+        marker in normalized
+        for marker in (
+            "```xml",
+            "```json",
+            "<tool_call",
+            "</tool_call>",
+            "content tool-calling runtime manifest",
+        )
+    )
+
+
+def _safe_untrusted_pasted_content_summary(
+    *,
+    user_text: str,
+    risk_factors: Sequence[str],
+) -> str | None:
+    normalized = str(user_text or "").lower()
+    factors = {str(item).strip() for item in risk_factors if str(item).strip()}
+    if not factors and not any(
+        token in normalized
+        for token in (
+            "ignore",
+            "system prompt",
+            "hidden prompt",
+            "secret",
+            "credential",
+            "/etc/passwd",
+            "id_rsa",
+            "shell.exec",
+            "exfiltrate",
+            "send it to",
+            "attacker",
+        )
+    ):
+        return None
+
+    signals: list[str] = []
+    if factors.intersection({"instruction_override", "role_impersonation"}):
+        signals.append("override the user's or system's instructions")
+    if factors.intersection({"prompt_leak_request", "system_manipulation"}) or any(
+        token in normalized for token in ("system prompt", "hidden prompt")
+    ):
+        signals.append("reveal hidden or system prompt material")
+    if factors.intersection({"credential_harvest", "command_chain"}) or any(
+        token in normalized for token in ("secret", "credential", "/etc/passwd", "id_rsa")
+    ):
+        signals.append("access sensitive files or credentials")
+    if factors.intersection({"egress_lure", "data_exfiltration"}) or any(
+        token in normalized for token in ("exfiltrate", "send it to", "attacker")
+    ):
+        signals.append("exfiltrate data to an external destination")
+    if not signals:
+        signals.append("push the assistant outside the current request")
+
+    if len(signals) == 1:
+        signal_text = signals[0]
+    else:
+        signal_text = ", ".join(signals[:-1]) + f", and {signals[-1]}"
+    return (
+        "The pasted text is an instruction-injection attempt. It is trying to "
+        f"{signal_text}. I did not follow those instructions."
+    )
+
+
+def _coerce_internal_tool_narration_response_text(
+    *,
+    response_text: str,
+    user_text: str,
+    risk_factors: Sequence[str],
+    rejected: int,
+    pending_confirmation: int,
+    executed_tool_outputs: int,
+) -> str:
+    if rejected > 0 or pending_confirmation > 0 or executed_tool_outputs > 0:
+        return response_text
+    if not _response_exposes_internal_tool_narration(response_text):
+        return response_text
+    safe_summary = _safe_untrusted_pasted_content_summary(
+        user_text=user_text,
+        risk_factors=risk_factors,
+    )
+    if safe_summary is not None:
+        return safe_summary
+    if not _response_exposes_structured_tool_syntax(response_text):
+        return response_text
+    return (
+        "I could not produce a clean assistant response for that request because "
+        "the planner returned internal tool-call formatting. Please retry."
+    )
 
 
 def _task_close_gate_result_signals(
@@ -8081,6 +8190,14 @@ class SessionImplMixin(HandlerMixinBase):
             response_text = (
                 f"{response_text}\n\n{proposal_note}" if response_text.strip() else proposal_note
             )
+        response_text = _coerce_internal_tool_narration_response_text(
+            response_text=response_text,
+            user_text=validated.firewall_result.sanitized_text,
+            risk_factors=validated.firewall_result.risk_factors,
+            rejected=execution.rejected,
+            pending_confirmation=execution.pending_confirmation,
+            executed_tool_outputs=len(execution.executed_tool_outputs),
+        )
         if not response_text.strip():
             if execution.pending_confirmation > 0:
                 response_text = (
