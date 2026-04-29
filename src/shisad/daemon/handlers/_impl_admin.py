@@ -1391,14 +1391,27 @@ class AdminImplMixin(HandlerMixinBase):
         for raw_sid in session_ids:
             sid = SessionId(raw_sid)
             session = active_sessions.get(raw_sid)
+            stored_state = explicit_states.get(raw_sid)
             state = self._lockdown_manager.peek_state_for(sid)
+            state_has_explicit_transition = (
+                stored_state is not None
+                and (
+                    stored_state.level.value != "normal"
+                    or bool(stored_state.reason)
+                    or bool(stored_state.trigger)
+                )
+            )
             statuses.append(
                 {
                     "session_id": raw_sid,
                     "level": state.level.value,
                     "reason": state.reason,
                     "trigger": state.trigger,
-                    "updated_at": state.updated_at.isoformat(),
+                    "updated_at": (
+                        stored_state.updated_at.isoformat()
+                        if state_has_explicit_transition
+                        else None
+                    ),
                     "active": session is not None,
                     "user_id": str(session.user_id) if session is not None else "",
                     "workspace_id": str(session.workspace_id) if session is not None else "",

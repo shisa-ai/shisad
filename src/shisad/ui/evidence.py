@@ -29,6 +29,10 @@ _ANSI_OSC_RE = re.compile(r"\x1B\][^\x07\x1B\n]*(?:\x07|\x1B\\)?")
 _ANSI_STRING_RE = re.compile(r"\x1B(?:P|X|\^|_)[^\x1B\n]*(?:\x1B\\)?")
 _FIELD_CONTROL_CHARS_RE = re.compile(r"[\x00-\x1F\x7F-\x9F]+")
 _TEXT_CONTROL_CHARS_RE = re.compile(r"[\x00-\x08\x0B-\x1F\x7F-\x9F]+")
+_PENDING_FOOTERS = {
+    "Review all pending: shisad action list",
+    "Review all pending: shisad action pending",
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -202,7 +206,7 @@ def _sanitize_terminal_assistant_segment(
         if (
             preserve_pending_preview_escapes
             and in_pending_block
-            and line == "Review all pending: shisad action list"
+            and line in _PENDING_FOOTERS
         ):
             in_pending_block = False
             in_pending_preview = False

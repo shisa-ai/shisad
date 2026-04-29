@@ -2416,10 +2416,15 @@ def _normalize_context_role(role: str) -> str:
 _CONFIRMATION_REQUIRED_PREFIX = "[CONFIRMATION REQUIRED]"
 _PENDING_CONFIRMATIONS_HEADER = "[PENDING CONFIRMATIONS]"
 _PENDING_CONFIRMATIONS_FOOTER = "Review all pending: shisad action list"
+_LEGACY_PENDING_CONFIRMATIONS_FOOTER = "Review all pending: shisad action pending"
+_PENDING_CONFIRMATIONS_FOOTERS = (
+    _PENDING_CONFIRMATIONS_FOOTER,
+    _LEGACY_PENDING_CONFIRMATIONS_FOOTER,
+)
 _COMPLETED_ACTIONS_HEADER = "Completed actions:"
 _TOOL_RESULTS_SUMMARY_HEADER = "Tool results summary:"
 _PENDING_COMPLETED_ACTIONS_RE = re.compile(
-    rf"{re.escape(_PENDING_CONFIRMATIONS_FOOTER)}\s+"
+    rf"(?:{'|'.join(re.escape(footer) for footer in _PENDING_CONFIRMATIONS_FOOTERS)})\s+"
     rf"{re.escape(_COMPLETED_ACTIONS_HEADER)}\s+"
     rf"{re.escape(_TOOL_RESULTS_SUMMARY_HEADER)}\s+"
     r"-\s+[^:]{1,128}:\s+(?:success=(?:True|False)|completed\.)"

@@ -1381,6 +1381,8 @@ async def test_contract_confirmed_fs_list_result_is_usable_on_followup(
     assert int(first.get("confirmation_required_actions", 0)) == 0
     first_outputs = _extract_tool_outputs(first)
     assert "fs.read" in first_outputs
+    assert "file.read" not in first_outputs
+    assert "shell.exec" not in first_outputs
     assert first_outputs["fs.read"][0].get("ok") is False
     assert first_outputs["fs.read"][0].get("error") == "path_not_found"
 
@@ -1409,6 +1411,8 @@ async def test_contract_confirmed_fs_list_result_is_usable_on_followup(
     assert int(confirmed.get("executed_actions", 0)) == 1
     confirmed_outputs = _extract_tool_outputs(confirmed)
     assert "fs.list" in confirmed_outputs
+    assert "file.read" not in confirmed_outputs
+    assert "shell.exec" not in confirmed_outputs
     assert "todo.log" in json.dumps(confirmed_outputs["fs.list"], ensure_ascii=True)
     assert "todo.log" in str(confirmed.get("response", ""))
 

@@ -99,6 +99,9 @@ async def _assert_confirmation_recovery_gate(harness: ContractHarness) -> None:
         {"session_id": sid, "content": "review TODO.LOG and list only open items"},
     )
     _assert_normal_reply(first)
+    first_outputs = extract_tool_outputs(first)
+    assert "file.read" not in first_outputs
+    assert "shell.exec" not in first_outputs
     first_payload = _first_tool_payload(first, "fs.read")
     assert first_payload.get("ok") is False
     assert first_payload.get("error") == "path_not_found"
@@ -125,6 +128,9 @@ async def _assert_confirmation_recovery_gate(harness: ContractHarness) -> None:
         {"session_id": sid, "content": "confirm"},
     )
     _assert_normal_reply(confirmed, executed_actions=1)
+    confirmed_outputs = extract_tool_outputs(confirmed)
+    assert "file.read" not in confirmed_outputs
+    assert "shell.exec" not in confirmed_outputs
     confirmed_payload = _first_tool_payload(confirmed, "fs.list")
     assert "todo.log" in json.dumps(confirmed_payload, ensure_ascii=True)
     assert "todo.log" in str(confirmed.get("response", ""))

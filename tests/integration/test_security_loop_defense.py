@@ -481,6 +481,13 @@ async def test_m2_t18_lockdown_admin_resume_path(
             {"channel": "cli", "user_id": "alice", "workspace_id": "ws1"},
         )
         sid = created["session_id"]
+        initial_status = await client.call(
+            "lockdown.status",
+            {"session_id": sid},
+        )
+        assert initial_status["statuses"][0]["level"] == "normal"
+        assert initial_status["statuses"][0]["updated_at"] is None
+        assert initial_status["statuses"][0]["active"] is True
         await client.call(
             "lockdown.set",
             {"session_id": sid, "action": "quarantine", "reason": "incident"},

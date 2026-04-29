@@ -126,6 +126,37 @@ def test_lt2_mixed_pending_confirmation_context_stays_assistant(tmp_path: Path) 
     assert "system: [CONFIRMATION REQUIRED] [PENDING CONFIRMATIONS]" not in rendered_summary
 
 
+def test_c3_legacy_pending_footer_mixed_context_stays_assistant(tmp_path: Path) -> None:
+    store = TranscriptStore(tmp_path / "sessions", blob_threshold_bytes=80)
+    sid = SessionId("sess-c3-legacy-footer")
+    store.append(sid, role="user", content="create a todo and summarize it")
+    store.append(
+        sid,
+        role="assistant",
+        content=(
+            "[CONFIRMATION REQUIRED] [PENDING CONFIRMATIONS]\n"
+            "Queued for your approval:\n"
+            "1. c-1\n"
+            "   In chat: reply with 'confirm 1'\n\n" + "pending detail " * 30 + "\n\n"
+            "Review all pending: shisad action pending\n\n"
+            "Completed actions:\n"
+            "Tool results summary:\n"
+            "- todo.create: success=True"
+        ),
+        metadata={"system_generated_pending_confirmations": True},
+    )
+
+    rendered, _taints = _build_planner_conversation_context(
+        transcript_store=store,
+        session_id=sid,
+        context_window=10,
+        exclude_latest_turn=False,
+    )
+
+    assert "assistant: [CONFIRMATION REQUIRED] [PENDING CONFIRMATIONS]" in rendered
+    assert "system: [CONFIRMATION REQUIRED] [PENDING CONFIRMATIONS]" not in rendered
+
+
 def test_lt2_pending_confirmation_preview_completed_actions_stays_system(
     tmp_path: Path,
 ) -> None:
