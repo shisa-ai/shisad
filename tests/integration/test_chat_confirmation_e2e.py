@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import textwrap
 from contextlib import suppress
 from datetime import UTC, datetime, timedelta
@@ -39,6 +40,23 @@ from tests.helpers.daemon import wait_for_socket as _wait_for_socket
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 README_PATH = REPO_ROOT / "README.md"
+_USER_GOAL_RE = re.compile(
+    (
+        r"=== (?:USER GOAL|USER REQUEST) ===\n"
+        r".*?\n"
+        r"(.*?)\n\n"
+        r"=== (?:EXTERNAL CONTENT[^\n]*|DATA EVIDENCE[^\n]*|END CONTEXT|END PAYLOAD)"
+    ),
+    flags=re.DOTALL,
+)
+
+
+def _extract_user_goal(planner_input: str) -> str:
+    normalized = planner_input.replace("^", "")
+    match = _USER_GOAL_RE.search(normalized)
+    if match:
+        return match.group(1).strip()
+    return normalized.strip()
 
 
 def _install_totp_fs_read_planner(
@@ -143,7 +161,30 @@ def _software_retrieve_confirmation_policy() -> str:
     )
 
 
-def _install_lt2_retrieve_planner(
+def _resolve_arguments_for_chat_confirmation(content: str) -> dict[str, str] | None:
+    normalized = " ".join(content.strip().lower().split())
+    if normalized in {
+        "confirm",
+        "approve",
+        "yes",
+        "go ahead",
+        "confirm 1",
+        "confirm 1 please",
+        "1",
+    }:
+        return {"decision": "confirm", "target": "1", "scope": "one"}
+    if normalized in {"reject", "deny", "no", "reject 1"}:
+        return {"decision": "reject", "target": "1", "scope": "one"}
+    if normalized in {"yes to all", "confirm all"}:
+        return {"decision": "confirm", "target": "all", "scope": "all"}
+    if normalized in {"no to all", "reject all"}:
+        return {"decision": "reject", "target": "all", "scope": "all"}
+    if normalized == "confirm 2":
+        return {"decision": "confirm", "target": "2", "scope": "one"}
+    return None
+
+
+def _install_retrieve_action_resolve_planner(
     monkeypatch: pytest.MonkeyPatch,
     *,
     planner_calls: list[str],
@@ -158,6 +199,40 @@ def _install_lt2_retrieve_planner(
     ) -> PlannerResult:
         _ = (tools, persona_tone_override)
         planner_calls.append(user_content)
+        user_goal = _extract_user_goal(user_content)
+        if arguments := _resolve_arguments_for_chat_confirmation(user_goal):
+            proposal = ActionProposal(
+                action_id=f"lt2-action-resolve-{len(planner_calls)}",
+                tool_name=ToolName("action.resolve"),
+                arguments=arguments,
+                reasoning="exercise planner-owned chat confirmation routing",
+                data_sources=[],
+            )
+            decision = self._pep.evaluate(proposal.tool_name, proposal.arguments, context)
+            return PlannerResult(
+                output=PlannerOutput(
+                    assistant_response="resolving pending action",
+                    actions=[proposal],
+                ),
+                evaluated=[EvaluatedProposal(proposal=proposal, decision=decision)],
+                attempts=1,
+                provider_response=None,
+                messages_sent=(),
+            )
+
+        normalized = " ".join(user_goal.strip().lower().split())
+        if not (normalized.startswith("queue approval") or normalized.startswith("retrieve:")):
+            return PlannerResult(
+                output=PlannerOutput(
+                    assistant_response="No action was taken.",
+                    actions=[],
+                ),
+                evaluated=[],
+                attempts=1,
+                provider_response=None,
+                messages_sent=(),
+            )
+
         proposal = ActionProposal(
             action_id=f"lt2-retrieve-{len(planner_calls)}",
             tool_name=ToolName("retrieve_rag"),
@@ -184,7 +259,7 @@ def _install_lt2_retrieve_planner(
 
 
 @pytest.mark.asyncio
-async def test_lt2_session_message_confirmation_commands_do_not_reenter_planner(
+async def test_lt2_session_message_confirmation_commands_use_planner_action_resolve(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -193,7 +268,7 @@ async def test_lt2_session_message_confirmation_commands_do_not_reenter_planner(
     monkeypatch.setenv("SHISAD_MODEL_EMBEDDINGS_BASE_URL", "https://embed.example.com/v1")
     monkeypatch.setenv("SHISAD_MODEL_MONITOR_BASE_URL", "https://monitor.example.com/v1")
     planner_calls: list[str] = []
-    _install_lt2_retrieve_planner(monkeypatch, planner_calls=planner_calls)
+    _install_retrieve_action_resolve_planner(monkeypatch, planner_calls=planner_calls)
 
     policy_path = tmp_path / "policy.yaml"
     policy_path.write_text(_software_retrieve_confirmation_policy(), encoding="utf-8")
@@ -252,9 +327,8 @@ async def test_lt2_session_message_confirmation_commands_do_not_reenter_planner(
 
         before_calls = len(planner_calls)
         typo = await _send(sid, "comfirm 1")
-        assert len(planner_calls) == before_calls
+        assert len(planner_calls) == before_calls + 1
         typo_response = str(typo.get("response", "")).lower()
-        assert "did you mean 'confirm 1'" in typo_response
         assert "no action was taken" in typo_response
         assert "[lockdown notice]" not in typo_response
         assert typo["lockdown_level"] == "normal"
@@ -262,29 +336,29 @@ async def test_lt2_session_message_confirmation_commands_do_not_reenter_planner(
         assert entries[-1].metadata.get("system_generated_pending_confirmations") is not True
         assert await _pending_count(sid) == 1
 
+        before_calls = len(planner_calls)
         reject_typo = await _send(sid, "rejct 1")
-        assert len(planner_calls) == before_calls
+        assert len(planner_calls) == before_calls + 1
         reject_typo_response = str(reject_typo.get("response", "")).lower()
-        assert "did you mean 'reject 1'" in reject_typo_response
         assert "no action was taken" in reject_typo_response
         assert "[lockdown notice]" not in reject_typo_response
         assert reject_typo["lockdown_level"] == "normal"
         assert await _pending_count(sid) == 1
 
+        before_calls = len(planner_calls)
         single_word_typo = await _send(sid, "comfirm")
-        assert len(planner_calls) == before_calls
+        assert len(planner_calls) == before_calls + 1
         single_word_typo_response = str(single_word_typo.get("response", "")).lower()
-        assert "did you mean 'confirm'" in single_word_typo_response
         assert "no action was taken" in single_word_typo_response
         assert "[lockdown notice]" not in single_word_typo_response
         assert single_word_typo["lockdown_level"] == "normal"
         assert await _pending_count(sid) == 1
 
+        before_calls = len(planner_calls)
         bad_index = await _send(sid, "confirm 2")
-        assert len(planner_calls) == before_calls
+        assert len(planner_calls) == before_calls + 1
         bad_index_response = str(bad_index.get("response", "")).lower()
-        assert "confirmation index 2 is not pending" in bad_index_response
-        assert "no action was taken" in bad_index_response
+        assert "action.resolve rejected: target_not_pending" in bad_index_response
         assert "[lockdown notice]" not in bad_index_response
         assert bad_index["lockdown_level"] == "normal"
         entries = transcript_store.list_entries(SessionId(sid))
@@ -315,48 +389,34 @@ async def test_lt2_session_message_confirmation_commands_do_not_reenter_planner(
             "Review all pending: shisactl action list",
             confirmation_id,
         ):
+            before_calls = len(planner_calls)
             invalid = await _send(sid, invalid_command)
-            assert len(planner_calls) == before_calls
+            assert len(planner_calls) == before_calls + 1
             invalid_response = str(invalid.get("response", "")).lower()
             assert "no action was taken" in invalid_response
             assert "[lockdown notice]" not in invalid_response
             assert invalid["lockdown_level"] == "normal"
             assert await _pending_count(sid) == 1
 
-        question_before_calls = len(planner_calls)
-        command_question = await _send(
-            sid,
-            f'Should I run "shisad action reject {confirmation_id}" now?',
-        )
-        assert len(planner_calls) == question_before_calls + 1
-        assert command_question["lockdown_level"] == "normal"
-        assert int(command_question["confirmation_required_actions"]) >= 1
-        assert await _pending_count(sid) == 2
-
-        rejected_question_action = await _send(sid, "reject 2")
-        assert len(planner_calls) == question_before_calls + 1
-        rejected_question_response = str(rejected_question_action.get("response", "")).lower()
-        assert "rejected 2" in rejected_question_response
-        assert "[lockdown notice]" not in rejected_question_response
-        assert rejected_question_action["lockdown_level"] == "normal"
-        assert await _pending_count(sid) == 1
-
-        bare_index = await _send(sid, "1")
-        assert len(planner_calls) == question_before_calls + 1
-        bare_response = str(bare_index.get("response", "")).lower()
-        assert "confirmed 1" in bare_response
-        assert "[lockdown notice]" not in bare_response
-        assert bare_index["lockdown_level"] == "normal"
+        before_confirm_calls = len(planner_calls)
+        confirmed = await _send(sid, "confirm 1")
+        assert len(planner_calls) == before_confirm_calls + 1
+        confirm_response = str(confirmed.get("response", "")).lower()
+        assert "retrieve_rag" in confirm_response
+        assert "[lockdown notice]" not in confirm_response
+        assert confirmed["lockdown_level"] == "normal"
+        assert int(confirmed["executed_actions"]) == 1
         assert await _pending_count(sid) == 0
 
         await _queue_pending(sid, "queue approval two")
-        before_confirm_calls = len(planner_calls)
-        confirmed = await _send(sid, "confirm 1")
-        assert len(planner_calls) == before_confirm_calls
-        confirm_response = str(confirmed.get("response", "")).lower()
-        assert "confirmed 1" in confirm_response
-        assert "[lockdown notice]" not in confirm_response
-        assert confirmed["lockdown_level"] == "normal"
+        before_reject_calls = len(planner_calls)
+        rejected = await _send(sid, "reject 1")
+        assert len(planner_calls) == before_reject_calls + 1
+        reject_response = str(rejected.get("response", "")).lower()
+        assert "rejected" in reject_response
+        assert "[lockdown notice]" not in reject_response
+        assert rejected["lockdown_level"] == "normal"
+        assert int(rejected["executed_actions"]) == 1
         assert await _pending_count(sid) == 0
     finally:
         with suppress(Exception):
@@ -374,6 +434,8 @@ async def test_m6_crc_chat_yes_resolves_pending_confirmation(
     monkeypatch.setenv("SHISAD_MODEL_PLANNER_BASE_URL", "https://planner.example.com/v1")
     monkeypatch.setenv("SHISAD_MODEL_EMBEDDINGS_BASE_URL", "https://embed.example.com/v1")
     monkeypatch.setenv("SHISAD_MODEL_MONITOR_BASE_URL", "https://monitor.example.com/v1")
+    planner_calls: list[str] = []
+    _install_retrieve_action_resolve_planner(monkeypatch, planner_calls=planner_calls)
 
     policy_path = tmp_path / "policy.yaml"
     policy_path.write_text(
@@ -461,6 +523,8 @@ async def test_m6_crc_chat_reject_resolves_pending_confirmation(
     monkeypatch.setenv("SHISAD_MODEL_PLANNER_BASE_URL", "https://planner.example.com/v1")
     monkeypatch.setenv("SHISAD_MODEL_EMBEDDINGS_BASE_URL", "https://embed.example.com/v1")
     monkeypatch.setenv("SHISAD_MODEL_MONITOR_BASE_URL", "https://monitor.example.com/v1")
+    planner_calls: list[str] = []
+    _install_retrieve_action_resolve_planner(monkeypatch, planner_calls=planner_calls)
 
     policy_path = tmp_path / "policy.yaml"
     policy_path.write_text(
@@ -520,7 +584,9 @@ async def test_m6_crc_chat_reject_resolves_pending_confirmation(
                 "content": "reject 1",
             },
         )
-        assert "rejected 1" in str(second.get("response", "")).lower()
+        response_text = str(second.get("response", "")).lower()
+        assert "retrieve_rag" in response_text
+        assert "rejected" in response_text
 
         pending = await client.call(
             "action.pending",
