@@ -15,6 +15,7 @@ from shisad.core.tools.schema import ToolDefinition, ToolParameter
 from shisad.core.types import Capability, PEPDecision, PEPDecisionKind, ToolName
 from shisad.daemon.handlers._impl_session import (
     _build_explicit_memory_intent_proposal,
+    _build_explicit_multi_intent_proposals,
     _rewrite_explicit_memory_intent_planner_result,
     _rewrite_plain_greeting_planner_result,
 )
@@ -81,6 +82,28 @@ def _memory_registry() -> ToolRegistry:
             capabilities_required=[Capability.MEMORY_READ],
         )
     )
+    registry.register(
+        ToolDefinition(
+            name=ToolName("fs.read"),
+            description="Read file",
+            parameters=[
+                ToolParameter(name="path", type="string", required=True),
+                ToolParameter(name="max_bytes", type="integer", required=False),
+            ],
+            capabilities_required=[Capability.FILE_READ],
+        )
+    )
+    registry.register(
+        ToolDefinition(
+            name=ToolName("web.search"),
+            description="Search web",
+            parameters=[
+                ToolParameter(name="query", type="string", required=True),
+                ToolParameter(name="limit", type="integer", required=False),
+            ],
+            capabilities_required=[Capability.HTTP_REQUEST],
+        )
+    )
     return registry
 
 
@@ -143,6 +166,16 @@ def _memory_registry() -> ToolRegistry:
             {"url": "https://example.org/page"},
         ),
         (
+            "search the web for recent AI agent security news",
+            "web.search",
+            {"query": "recent AI agent security news", "limit": 5},
+        ),
+        (
+            "search for the latest news",
+            "web.search",
+            {"query": "the latest news", "limit": 5},
+        ),
+        (
             "read evidence ev_test_123",
             "evidence.read",
             {"ref_id": "ev_test_123"},
@@ -157,6 +190,31 @@ def _memory_registry() -> ToolRegistry:
             "evidence.read",
             {"ref_id": "ev_test_456"},
         ),
+        (
+            "read README.md",
+            "fs.read",
+            {"path": "README.md", "max_bytes": 1048576},
+        ),
+        (
+            "Please read /root/INSTALL.LOG and tell me what it says.",
+            "fs.read",
+            {"path": "/root/INSTALL.LOG", "max_bytes": 1048576},
+        ),
+        (
+            "can you find the similar file?",
+            "fs.list",
+            {"path": ".", "recursive": True, "limit": 25},
+        ),
+        (
+            "can you look for the file?",
+            "fs.list",
+            {"path": ".", "recursive": True, "limit": 25},
+        ),
+        (
+            "What is my favorite snack?",
+            "note.search",
+            {"query": "favorite snack"},
+        ),
     ],
 )
 def test_m1_explicit_memory_intent_parser_covers_weekend_sprint_commands(
@@ -169,6 +227,17 @@ def test_m1_explicit_memory_intent_parser_covers_weekend_sprint_commands(
     assert proposal is not None
     assert proposal.tool_name == ToolName(tool_name)
     assert proposal.arguments == arguments
+
+
+def test_rc_lus_explicit_multi_intent_parser_covers_read_and_search() -> None:
+    proposals = _build_explicit_multi_intent_proposals(
+        "Read README.md and search the web for related projects."
+    )
+
+    assert [(proposal.tool_name, proposal.arguments) for proposal in proposals] == [
+        (ToolName("fs.read"), {"path": "README.md", "max_bytes": 1048576}),
+        (ToolName("web.search"), {"query": "related projects", "limit": 5}),
+    ]
 
 
 def test_m1_explicit_memory_intent_rewrite_replaces_spurious_planner_actions() -> None:
@@ -211,6 +280,37 @@ def test_m1_explicit_memory_intent_rewrite_replaces_spurious_planner_actions() -
     assert len(rewritten.evaluated) == 1
     assert rewritten.evaluated[0].proposal.tool_name == ToolName("todo.create")
     assert rewritten.evaluated[0].proposal.arguments == {"title": "review PRs"}
+    assert rewritten.evaluated[0].decision.kind == PEPDecisionKind.ALLOW
+
+
+def test_rc_lus_explicit_file_intent_rewrite_replaces_tool_choice_prose() -> None:
+    registry = _memory_registry()
+    pep = PEP(PolicyBundle(default_require_confirmation=False), registry)
+    planner_result = PlannerResult(
+        output=PlannerOutput(
+            assistant_response="The appropriate tool to use is fs.read.",
+            actions=[],
+        ),
+        evaluated=[],
+        attempts=1,
+        provider_response=None,
+        messages_sent=(),
+    )
+
+    rewritten = _rewrite_explicit_memory_intent_planner_result(
+        user_text="read README.md",
+        planner_result=planner_result,
+        pep=pep,
+        context=PolicyContext(capabilities={Capability.FILE_READ}),
+    )
+
+    assert rewritten.output.assistant_response == ""
+    assert len(rewritten.evaluated) == 1
+    assert rewritten.evaluated[0].proposal.tool_name == ToolName("fs.read")
+    assert rewritten.evaluated[0].proposal.arguments == {
+        "path": "README.md",
+        "max_bytes": 1048576,
+    }
     assert rewritten.evaluated[0].decision.kind == PEPDecisionKind.ALLOW
 
 
@@ -275,6 +375,28 @@ def test_m1_plain_greeting_rewrite_preserves_existing_tool_free_response() -> No
     )
 
     assert rewritten is planner_result
+
+
+def test_rc_lus_plain_greeting_rewrite_replaces_planner_validation_fallback() -> None:
+    planner_result = PlannerResult(
+        output=PlannerOutput(
+            assistant_response="Assistant planner error (planner_output_invalid). Please retry.",
+            actions=[],
+        ),
+        evaluated=[],
+        attempts=0,
+        provider_response=None,
+        messages_sent=(),
+    )
+
+    rewritten = _rewrite_plain_greeting_planner_result(
+        user_text="hello",
+        planner_result=planner_result,
+    )
+
+    assert rewritten.output.actions == []
+    assert rewritten.evaluated == []
+    assert rewritten.output.assistant_response == "Hello. How can I help?"
 
 
 def test_m1_explicit_memory_intent_parser_allows_greeting_prefix_before_command() -> None:

@@ -1180,6 +1180,41 @@ async def test_finalize_response_synthesizes_after_tool_only_turn() -> None:
 
 
 @pytest.mark.asyncio
+async def test_rc_lus_finalize_response_renders_direct_fs_read_without_synthesis() -> None:
+    harness = _FinalizeEvidenceHarness()
+    synthesis = _PostToolSynthesisPlanner("Mutated file summary.")
+    harness._planner = synthesis
+    harness._evidence_store = None
+    execution = _finalize_execution_result(
+        tool_outputs=[
+            SimpleNamespace(
+                tool_name="fs.read",
+                success=True,
+                content=json.dumps(
+                    {
+                        "ok": True,
+                        "path": "README.md",
+                        "content": "# ShisaD\n\nSecurity-first daemon.",
+                    }
+                ),
+                taint_labels=set(),
+            )
+        ],
+        assistant_response="",
+        sanitized_text="read README.md",
+    )
+
+    response = await SessionImplMixin._finalize_response(harness, execution)
+
+    text = str(response["response"])
+    assert text.startswith("Completed action result:")
+    assert "fs.read read README.md" in text
+    assert "# ShisaD" in text
+    assert "Tool results summary:" not in text
+    assert synthesis.calls == []
+
+
+@pytest.mark.asyncio
 async def test_m75_finalize_response_blocks_sensitive_tool_taint_for_public_channel() -> None:
     harness = _FinalizeEvidenceHarness()
     execution = _finalize_execution_result(

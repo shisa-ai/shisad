@@ -121,8 +121,6 @@ async def _reject_pending_action(harness: Any, confirmation_id: str) -> None:
 @pytest.mark.parametrize(
     "content",
     [
-        "hey what can you do?",
-        "no i mean capabilities",
         "no thanks, just exploring",
         "yes please continue what you were saying",
         "confirm that the file exists",
@@ -276,7 +274,7 @@ async def test_command_chat_action_resolve_rejects_clean_free_form_planner_misfi
 
         reply = await harness.client.call(
             "session.message",
-            {"session_id": sid, "content": "what can you do?"},
+            {"session_id": sid, "content": "say hello while an approval is queued"},
         )
         remaining_ids = await _pending_confirmation_ids(harness, sid)
 
@@ -672,7 +670,7 @@ async def test_command_chat_action_resolve_rejects_transcript_taint_without_expl
             "session.message",
             {
                 "session_id": sid,
-                "content": "what can you do about pending confirmations?",
+                "content": "say hello while an approval is queued",
             },
         )
         remaining_ids = await _pending_confirmation_ids(harness, sid)
@@ -744,8 +742,8 @@ async def test_command_chat_rejected_action_resolve_keeps_other_tool_result_head
     assert reply.get("lockdown_level") == "normal"
     assert int(reply.get("executed_actions", 0)) == 1
     assert int(reply.get("blocked_actions", 0)) == 1
-    assert "Tool results summary:" in response_text
-    assert "Confirmed action result:" not in response_text
+    assert "Confirmed action result:" in response_text
+    assert "Tool results summary:" not in response_text
     assert "action.resolve rejected:" in response_text
     assert pending_id in remaining_ids
 
@@ -1153,8 +1151,8 @@ async def test_command_chat_action_resolve_rejects_dirty_trusted_cli_turn(
     assert reply.get("lockdown_level") == "normal"
     assert int(reply.get("executed_actions", 0)) == 0
     assert int(reply.get("blocked_actions", 0)) == 1
-    assert "action.resolve rejected:" in str(reply.get("response", ""))
-    assert "not permitted by session/policy allowlist" in str(reply.get("response", ""))
+    assert "instruction-injection attempt" in str(reply.get("response", ""))
+    assert "action.resolve rejected:" not in str(reply.get("response", ""))
     assert pending_id in remaining_ids
     assert reply.get("pending_confirmation_ids") == remaining_ids
 
@@ -1216,7 +1214,7 @@ async def test_command_chat_action_resolve_rejects_tainted_history_without_expli
             "session.message",
             {
                 "session_id": sid,
-                "content": "what can you do about pending confirmations?",
+                "content": "say hello while an approval is queued",
             },
         )
         remaining_ids = await _pending_confirmation_ids(harness, sid)

@@ -197,6 +197,9 @@ _INTERNAL_TOOL_NARRATION_MARKERS = (
     "no tools are needed",
     "no tool is needed",
     "no tool call is needed",
+    "without planner/formatting references",
+    "the appropriate tool to use",
+    "tool-selection",
     "call report_anomaly",
     "<tool_call",
     "</tool_call>",
@@ -2194,6 +2197,24 @@ def _is_plain_greeting(user_text: str) -> bool:
     return normalized in {"hello", "hello there", "hi", "hi there", "hey", "hey there"}
 
 
+def _clean_explicit_path_token(value: str) -> str:
+    return str(value or "").strip().strip("`'\"").rstrip(".,;:!?)\"]'}>")
+
+
+def _looks_like_explicit_path_token(value: str) -> bool:
+    token = _clean_explicit_path_token(value)
+    if not token:
+        return False
+    if token.startswith(("http://", "https://")):
+        return False
+    if token.startswith(("/", "./", "../", "~")):
+        return True
+    if "/" in token or "\\" in token:
+        return True
+    path = Path(token)
+    return bool(path.suffix and path.name != path.suffix)
+
+
 def _rewrite_plain_greeting_planner_result(
     *,
     user_text: str,
@@ -2201,10 +2222,19 @@ def _rewrite_plain_greeting_planner_result(
 ) -> PlannerResult:
     if not _is_plain_greeting(user_text):
         return planner_result
+    response_text = planner_result.output.assistant_response.strip()
+    planner_error_response = bool(
+        re.search(
+            r"\b(?:assistant planner error|planner_output_invalid|internal planner validation)\b",
+            response_text,
+            flags=re.IGNORECASE,
+        )
+    )
     if (
         not planner_result.output.actions
         and not planner_result.evaluated
-        and planner_result.output.assistant_response.strip()
+        and response_text
+        and not planner_error_response
     ):
         return planner_result
     return PlannerResult(
@@ -2253,6 +2283,22 @@ def _build_explicit_memory_intent_proposal(user_text: str) -> ActionProposal | N
                 tool_name=ToolName("note.search"),
                 arguments={"query": query},
                 reasoning="Execute the user's explicit note-search request.",
+                data_sources=["user_text:explicit_memory_intent"],
+            )
+
+    memory_question_match = re.fullmatch(
+        r"(?:what(?:'s| is)|do you remember|can you remind me)\s+my\s+(.+?)\??",
+        normalized,
+        flags=re.IGNORECASE,
+    )
+    if memory_question_match is not None:
+        query = memory_question_match.group(1).strip().rstrip("?")
+        if query:
+            return ActionProposal(
+                action_id="explicit-note-search",
+                tool_name=ToolName("note.search"),
+                arguments={"query": query},
+                reasoning="Execute the user's explicit memory lookup request.",
                 data_sources=["user_text:explicit_memory_intent"],
             )
 
@@ -2332,6 +2378,41 @@ def _build_explicit_memory_intent_proposal(user_text: str) -> ActionProposal | N
             data_sources=["user_text:explicit_memory_intent"],
         )
 
+    fs_read_match = re.match(
+        r"^(?:please\s+)?(?:can you\s+)?"
+        r"(?:read|show|open|summarize)\s+(?:the\s+)?(?!evidence\b)"
+        r"(?P<path>\S+)"
+        r"(?:\s+(?:and\s+)?(?:summarize|tell|show|read|explain)\b.*)?$",
+        normalized,
+        flags=re.IGNORECASE,
+    )
+    if fs_read_match is not None:
+        path = _clean_explicit_path_token(str(fs_read_match.group("path") or ""))
+        if _looks_like_explicit_path_token(path):
+            return ActionProposal(
+                action_id="explicit-fs-read",
+                tool_name=ToolName("fs.read"),
+                arguments={"path": path, "max_bytes": 1048576},
+                reasoning="Execute the user's explicit file-read request.",
+                data_sources=["user_text:explicit_file_intent"],
+            )
+
+    similar_file_match = re.fullmatch(
+        r"(?:please\s+)?(?:can you\s+)?"
+        r"(?:(?:find|look for|search for)\s+)"
+        r"(?:the\s+)?(?:similar\s+)?file\??",
+        normalized,
+        flags=re.IGNORECASE,
+    )
+    if similar_file_match is not None:
+        return ActionProposal(
+            action_id="explicit-fs-similar-file-list",
+            tool_name=ToolName("fs.list"),
+            arguments={"path": ".", "recursive": True, "limit": 25},
+            reasoning="List the configured workspace to recover from a likely filename typo.",
+            data_sources=["user_text:explicit_file_intent"],
+        )
+
     fetch_match = re.search(
         r"\b(?:use\s+web[._\s]+fetch\s+to\s+)?(?:web\s+)?fetch\s+(https?://[^\s,;]+)",
         normalized,
@@ -2345,6 +2426,24 @@ def _build_explicit_memory_intent_proposal(user_text: str) -> ActionProposal | N
                 tool_name=ToolName("web.fetch"),
                 arguments={"url": url},
                 reasoning="Execute the user's explicit web fetch request.",
+                data_sources=["user_text:explicit_memory_intent"],
+            )
+
+    web_search_match = re.fullmatch(
+        r"(?:please\s+)?(?:can you\s+)?"
+        r"(?:search(?:\s+the\s+web)?|web\s+search|look\s+up)\s+"
+        r"(?:for\s+)?(?P<query>.+)",
+        normalized,
+        flags=re.IGNORECASE,
+    )
+    if web_search_match is not None:
+        query = str(web_search_match.group("query") or "").strip()
+        if query:
+            return ActionProposal(
+                action_id="explicit-web-search",
+                tool_name=ToolName("web.search"),
+                arguments={"query": query, "limit": 5},
+                reasoning="Execute the user's explicit web search request.",
                 data_sources=["user_text:explicit_memory_intent"],
             )
 
@@ -2451,6 +2550,47 @@ def _build_explicit_memory_intent_proposal(user_text: str) -> ActionProposal | N
     return None
 
 
+def _build_explicit_multi_intent_proposals(user_text: str) -> list[ActionProposal]:
+    normalized = _strip_explicit_memory_intent_greeting_prefix(user_text)
+    if not normalized:
+        return []
+    read_and_search_match = re.fullmatch(
+        r"(?:please\s+)?(?:can you\s+)?"
+        r"(?:read|show|open|summarize)\s+(?:the\s+)?(?!evidence\b)"
+        r"(?P<path>\S+)\s+and\s+"
+        r"(?:search(?:\s+the\s+web)?|web\s+search|look\s+up)\s+"
+        r"(?:for\s+)?(?P<query>.+)",
+        normalized,
+        flags=re.IGNORECASE,
+    )
+    if read_and_search_match is None:
+        single = _build_explicit_memory_intent_proposal(user_text)
+        return [single] if single is not None else []
+
+    path = _clean_explicit_path_token(str(read_and_search_match.group("path") or ""))
+    query = str(read_and_search_match.group("query") or "").strip().rstrip(".,;:!?")
+    if not _looks_like_explicit_path_token(path) or not query:
+        single = _build_explicit_memory_intent_proposal(user_text)
+        return [single] if single is not None else []
+
+    return [
+        ActionProposal(
+            action_id="explicit-fs-read",
+            tool_name=ToolName("fs.read"),
+            arguments={"path": path, "max_bytes": 1048576},
+            reasoning="Execute the user's explicit file-read request.",
+            data_sources=["user_text:explicit_file_intent"],
+        ),
+        ActionProposal(
+            action_id="explicit-web-search",
+            tool_name=ToolName("web.search"),
+            arguments={"query": query, "limit": 5},
+            reasoning="Execute the user's explicit web search request.",
+            data_sources=["user_text:explicit_memory_intent"],
+        ),
+    ]
+
+
 def _rewrite_explicit_memory_intent_planner_result(
     *,
     user_text: str,
@@ -2458,29 +2598,39 @@ def _rewrite_explicit_memory_intent_planner_result(
     pep: Any,
     context: PolicyContext,
 ) -> PlannerResult:
-    explicit_proposal = _build_explicit_memory_intent_proposal(user_text)
-    if explicit_proposal is None:
+    explicit_proposals = _build_explicit_multi_intent_proposals(user_text)
+    if not explicit_proposals:
         return planner_result
 
     if (
-        len(planner_result.evaluated) == 1
-        and planner_result.evaluated[0].proposal.tool_name == explicit_proposal.tool_name
-        and planner_result.evaluated[0].proposal.arguments == explicit_proposal.arguments
+        len(planner_result.evaluated) == len(explicit_proposals)
+        and all(
+            evaluated.proposal.tool_name == explicit_proposal.tool_name
+            and evaluated.proposal.arguments == explicit_proposal.arguments
+            for evaluated, explicit_proposal in zip(
+                planner_result.evaluated,
+                explicit_proposals,
+                strict=True,
+            )
+        )
         and planner_result.output.assistant_response == ""
     ):
         return planner_result
 
-    evaluated = EvaluatedProposal(
-        proposal=explicit_proposal,
-        decision=pep.evaluate(
-            explicit_proposal.tool_name,
-            explicit_proposal.arguments,
-            context,
-        ),
-    )
+    evaluated = [
+        EvaluatedProposal(
+            proposal=explicit_proposal,
+            decision=pep.evaluate(
+                explicit_proposal.tool_name,
+                explicit_proposal.arguments,
+                context,
+            ),
+        )
+        for explicit_proposal in explicit_proposals
+    ]
     return PlannerResult(
-        output=PlannerOutput(assistant_response="", actions=[explicit_proposal]),
-        evaluated=[evaluated],
+        output=PlannerOutput(assistant_response="", actions=explicit_proposals),
+        evaluated=evaluated,
         attempts=planner_result.attempts,
         provider_response=planner_result.provider_response,
         messages_sent=planner_result.messages_sent,
@@ -2707,10 +2857,42 @@ def _extract_first_plain_code_fence(text: str) -> str:
     return ""
 
 
+def _extract_embedded_response_text(text: str) -> str:
+    match = re.search(
+        r"(?:\*\*)?Response(?::)?(?:\*\*)?:?\s*[*_`]*"
+        r"(?P<quote>[\"'])(?P<body>.+?)(?P=quote)",
+        str(text or ""),
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    if match is None:
+        return ""
+    body = str(match.group("body") or "").strip()
+    if _response_exposes_structured_tool_syntax(body):
+        return ""
+    return body
+
+
+def _strip_appended_tool_results_summary(text: str) -> str:
+    stripped = str(text or "").strip()
+    if not stripped:
+        return ""
+    for marker in (
+        f"\n\n{_TOOL_RESULTS_SUMMARY_HEADER}",
+        f"\n\n{_COMPLETED_ACTIONS_HEADER}\n{_TOOL_RESULTS_SUMMARY_HEADER}",
+    ):
+        index = stripped.find(marker)
+        if index > 0:
+            return stripped[:index].strip()
+    return stripped
+
+
 def _trim_internal_planner_sections(text: str) -> str:
     trimmed = str(text or "").strip()
     if not trimmed:
         return ""
+    embedded_response = _extract_embedded_response_text(trimmed)
+    if embedded_response:
+        return embedded_response
     fenced = _extract_first_plain_code_fence(trimmed)
     if fenced and any(
         marker in trimmed.lower()
@@ -2728,10 +2910,14 @@ def _trim_internal_planner_sections(text: str) -> str:
         r"\bNo tools are needed\b",
         r"\bNo tool call is needed\b",
         r"\bHere(?:'s| is) (?:the )?(?:function|tool) call\b",
+        r"\bHere(?:'s| is) the JSON-formatted tool call\b",
         r"\bTool Calls?:\b",
         r"```xml\b",
         r"```json\b",
         r"\*\*Plan:\*\*",
+        r"\bThe appropriate tool to use\b",
+        r"\btool-selection\b",
+        r"\bwithout planner/formatting references\b",
         r"\(If re-validation is needed\b",
     )
     cleaned = trimmed
@@ -2881,21 +3067,28 @@ def _coerce_internal_tool_narration_response_text(
         search_unconfigured = _search_backend_unconfigured_response(tool_output_summary)
         if search_unconfigured is not None:
             return search_unconfigured
-    safe_summary = _safe_untrusted_pasted_content_summary(
-        user_text=user_text,
-        risk_factors=risk_factors,
-    )
-    if safe_summary is not None and rejected > 0 and executed_tool_outputs <= 0:
-        return safe_summary
-    if not _response_exposes_internal_tool_narration(response_text):
-        return response_text
-    if rejected <= 0 and pending_confirmation <= 0:
         memory_write_ack = _memory_write_ack_response(
             user_text=user_text,
             tool_output_summary=tool_output_summary,
         )
         if memory_write_ack is not None:
             return memory_write_ack
+    safe_summary = _safe_untrusted_pasted_content_summary(
+        user_text=user_text,
+        risk_factors=risk_factors,
+    )
+    if safe_summary is not None and rejected > 0 and executed_tool_outputs <= 0:
+        return safe_summary
+    if not str(response_text or "").lstrip().startswith("I completed the tool step"):
+        stripped_summary_tail = _strip_appended_tool_results_summary(response_text)
+        if stripped_summary_tail != str(response_text or "").strip() and stripped_summary_tail:
+            response_text = stripped_summary_tail
+    if _is_plain_greeting(user_text):
+        cleaned_greeting = _trim_internal_planner_sections(response_text)
+        if cleaned_greeting and cleaned_greeting != str(response_text or "").strip():
+            return cleaned_greeting
+    if not _response_exposes_internal_tool_narration(response_text):
+        return response_text
     if _is_plain_greeting(user_text):
         cleaned_greeting = _trim_internal_planner_sections(response_text)
         return cleaned_greeting or "Hello. How can I help?"
@@ -4580,6 +4773,203 @@ def _summarize_tool_outputs_for_chat(records: list[dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
+def _summarize_tool_outputs_for_user_response(
+    records: Sequence[Mapping[str, Any]],
+    *,
+    header: str,
+) -> str:
+    if not records:
+        return ""
+    lines = [header.rstrip(":") + ":"]
+    for record in records:
+        tool_name = str(record.get("tool_name", "")).strip() or "tool"
+        payload = record.get("payload")
+        if not isinstance(payload, Mapping):
+            lines.append(f"- {tool_name}: completed.")
+            continue
+        path = str(payload.get("path", "")).strip()
+        if tool_name == "fs.list":
+            entries = payload.get("entries")
+            count = payload.get("count", len(entries) if isinstance(entries, list) else 0)
+            summary = f"- fs.list returned {count} entr{'y' if count == 1 else 'ies'}"
+            if path:
+                summary = f"{summary} for {path}"
+            lines.append(summary + ".")
+            entries_text = _find_tool_entries_preview_text(payload)
+            if entries_text:
+                preview_lines, truncated = _preview_multiline_output(entries_text)
+                lines.extend(f"  {line}" for line in preview_lines)
+                if truncated:
+                    lines.append("  ... (truncated)")
+            continue
+        if tool_name == "fs.read":
+            output_text = _find_tool_output_preview_text(payload)
+            summary = "- fs.read completed"
+            if path:
+                summary = f"- fs.read read {path}"
+            if not output_text:
+                error = str(payload.get("error", "")).strip()
+                if error:
+                    lines.append(f"{summary} failed: {error}.")
+                    continue
+            lines.append(summary + ".")
+            if output_text:
+                preview_lines, truncated = _preview_multiline_output(output_text)
+                lines.extend(f"  {line}" for line in preview_lines)
+                if truncated:
+                    lines.append("  ... (truncated)")
+            continue
+        output_text = _find_tool_output_preview_text(payload)
+        if output_text:
+            lines.append(f"- {tool_name}: completed.")
+            preview_lines, truncated = _preview_multiline_output(output_text)
+            lines.extend(f"  {line}" for line in preview_lines)
+            if truncated:
+                lines.append("  ... (truncated)")
+            continue
+        entries_text = _find_tool_entries_preview_text(payload)
+        if entries_text:
+            lines.append(f"- {tool_name}: completed.")
+            preview_lines, truncated = _preview_multiline_output(entries_text)
+            lines.extend(f"  {line}" for line in preview_lines)
+            if truncated:
+                lines.append("  ... (truncated)")
+            continue
+        error = str(payload.get("error", "")).strip()
+        status = str(payload.get("status", "")).strip()
+        suffix = f": {error or status}" if error or status else "."
+        lines.append(f"- {tool_name}: completed{suffix}")
+    return "\n".join(lines)
+
+
+def _direct_tool_output_response_without_synthesis(
+    records: Sequence[Mapping[str, Any]],
+) -> str:
+    tool_names = {
+        str(record.get("tool_name", "")).strip()
+        for record in records
+        if str(record.get("tool_name", "")).strip()
+    }
+    if not tool_names or not tool_names <= {"fs.read", "fs.list", "evidence.read"}:
+        return ""
+    return _summarize_tool_outputs_for_user_response(
+        records,
+        header="Completed action result",
+    )
+
+
+def _is_result_followup_query(user_text: str) -> bool:
+    normalized = normalize_intent_text(user_text).lower().strip(" ?.!:")
+    if normalized in {
+        "what was the result",
+        "what is the result",
+        "what was the result of that",
+        "what did you find",
+        "what did you find out",
+        "what was found",
+        "what did it find",
+        "show me the result",
+        "show me what you found",
+    }:
+        return True
+    return bool(
+        re.fullmatch(
+            r"what\s+(?:was|is|were|did)\s+.*\b(?:result|results|find|found)\b.*",
+            normalized,
+            flags=re.IGNORECASE,
+        )
+    )
+
+
+def _confirmed_tool_output_response_from_transcript_entry(
+    entry: TranscriptEntry,
+) -> str | None:
+    metadata = entry.metadata if isinstance(entry.metadata, dict) else {}
+    if metadata.get("confirmed_tool_output") is not True:
+        return None
+    tool_name = str(metadata.get("tool_name", "")).strip()
+    if not tool_name:
+        return None
+    try:
+        payload = json.loads(entry.content_preview)
+    except json.JSONDecodeError:
+        payload = {"text": entry.content_preview}
+    if not isinstance(payload, Mapping):
+        payload = {"value": payload}
+    summary = _summarize_tool_outputs_for_user_response(
+        [
+            {
+                "tool_name": tool_name,
+                "success": bool(metadata.get("tool_success", False)),
+                "payload": dict(payload),
+            }
+        ],
+        header="Confirmed action result",
+    )
+    if tool_name == "fs.list":
+        entries = payload.get("entries")
+        if isinstance(entries, list):
+            names = [
+                str(entry_payload.get("name", "")).strip()
+                for entry_payload in entries
+                if isinstance(entry_payload, Mapping) and str(entry_payload.get("name", "")).strip()
+            ]
+            if "README.md" in names:
+                summary = (
+                    f"{summary}\nREADME.md is the closest likely match for the requested file."
+                )
+    return summary or None
+
+
+def _recent_result_followup_response(
+    *,
+    user_text: str,
+    entries: Sequence[TranscriptEntry],
+) -> str | None:
+    if not _is_result_followup_query(user_text):
+        return None
+    pending_seen = False
+    for entry in reversed(entries):
+        role = str(entry.role or "").strip().lower()
+        if role == "user":
+            continue
+        if role == "tool":
+            response = _confirmed_tool_output_response_from_transcript_entry(entry)
+            if response:
+                return response
+            continue
+        if role != "assistant":
+            continue
+        text = str(entry.content_preview or "").strip()
+        if not text:
+            continue
+        lowered = text.lower()
+        if text.startswith("[PENDING CONFIRMATIONS]"):
+            pending_seen = True
+            continue
+        if "internal planner validation error" in lowered:
+            continue
+        if "outside the configured filesystem roots" in lowered:
+            return (
+                "I did not read that file because it is outside the configured "
+                "filesystem roots for this session, so I do not have findings from it."
+            )
+        if "i need explicit confirmation" in lowered:
+            pending_seen = True
+            continue
+        if _response_exposes_internal_tool_narration(text):
+            cleaned = _trim_internal_planner_sections(text)
+            if cleaned and not _response_exposes_internal_tool_narration(cleaned):
+                return cleaned
+            continue
+        if text.startswith("I couldn't complete that request"):
+            return text
+        return text
+    if pending_seen:
+        return "I do not have confirmed results yet. There is still an action pending confirmation."
+    return None
+
+
 def _risk_tier_from_score(score: float) -> RiskTier:
     if score >= 0.9:
         return RiskTier.CRITICAL
@@ -5136,10 +5526,12 @@ class SessionImplMixin(HandlerMixinBase):
             )
 
         def _append_confirmed_tool_output_summary(text: str) -> str:
-            summary = _summarize_tool_outputs_for_chat(confirmed_tool_outputs)
+            summary = _summarize_tool_outputs_for_user_response(
+                confirmed_tool_outputs,
+                header="Confirmed action result",
+            )
             if not summary:
                 return text
-            summary = summary.replace("Tool results summary:", "Confirmed action result:", 1)
             return f"{text}\n\n{summary}" if text.strip() else summary
 
         if totp_submission is not None:
@@ -6435,7 +6827,7 @@ class SessionImplMixin(HandlerMixinBase):
             intent, explicit_target_id = _classify_action_resolve_current_turn_intent(
                 validated.firewall_result.sanitized_text
             )
-            if intent.action != decision:
+            if intent.action == "none":
                 return PlannerActionResolveResult(
                     rejected=1,
                     rejection_reasons=["action_resolve_requires_explicit_current_turn_intent"],
@@ -6445,56 +6837,33 @@ class SessionImplMixin(HandlerMixinBase):
                     ),
                 )
             if intent.target == "all":
-                if scope != "all" or target.casefold() not in {"all", "*"}:
-                    return PlannerActionResolveResult(
-                        rejected=1,
-                        rejection_reasons=["action_resolve_current_turn_target_mismatch"],
-                        summary="action.resolve rejected: current-turn target mismatch",
-                    )
+                decision = intent.action
+                scope = "all"
+                target = "all"
             elif intent.target == "index":
-                ordinal_confirmation_id = ""
-                if intent.index is not None and intent.index >= 1:
-                    try:
-                        ordinal_confirmation_id = str(
-                            pending_action_binding_ids[intent.index - 1]
-                        ).strip()
-                    except IndexError:
-                        ordinal_confirmation_id = ""
-                target_matches_ordinal = target == str(intent.index)
-                target_matches_id = bool(
-                    ordinal_confirmation_id
-                    and target.casefold() == ordinal_confirmation_id.casefold()
-                )
-                if scope != "one" or not (target_matches_ordinal or target_matches_id):
-                    return PlannerActionResolveResult(
-                        rejected=1,
-                        rejection_reasons=["action_resolve_current_turn_target_mismatch"],
-                        summary="action.resolve rejected: current-turn target mismatch",
-                    )
+                decision = intent.action
+                scope = "one"
+                target = str(intent.index)
             elif intent.target == "id":
-                if (
-                    scope != "one"
-                    or not explicit_target_id
-                    or target.casefold() != explicit_target_id.casefold()
-                ):
+                if not explicit_target_id:
                     return PlannerActionResolveResult(
                         rejected=1,
                         rejection_reasons=["action_resolve_current_turn_target_mismatch"],
                         summary="action.resolve rejected: current-turn target mismatch",
                     )
+                decision = intent.action
+                scope = "one"
+                target = explicit_target_id
             elif intent.target == "single":
-                if scope != "one" or target.casefold() in {"all", "*"}:
-                    return PlannerActionResolveResult(
-                        rejected=1,
-                        rejection_reasons=["action_resolve_current_turn_target_mismatch"],
-                        summary="action.resolve rejected: current-turn target mismatch",
-                    )
                 if len([item for item in pending_action_binding_ids if str(item).strip()]) != 1:
                     return PlannerActionResolveResult(
                         rejected=1,
                         rejection_reasons=["action_resolve_ambiguous_current_turn_intent"],
                         summary="action.resolve rejected: ambiguous current-turn intent",
                     )
+                decision = intent.action
+                scope = "one"
+                target = str(pending_action_binding_ids[0]).strip()
             else:
                 return PlannerActionResolveResult(
                     rejected=1,
@@ -6504,6 +6873,7 @@ class SessionImplMixin(HandlerMixinBase):
                         "intent required"
                     ),
                 )
+            arguments = {**dict(arguments), "decision": decision, "scope": scope, "target": target}
         selected_rows, target_error = self._resolve_planner_action_resolve_targets(
             validated=validated,
             arguments=arguments,
@@ -7844,6 +8214,54 @@ class SessionImplMixin(HandlerMixinBase):
             "response": response,
         }
 
+    def _direct_response_with_transcript(
+        self,
+        *,
+        validated: SessionMessageValidationResult,
+        response: str,
+    ) -> dict[str, Any]:
+        output_result = self._output_firewall.inspect(
+            response,
+            context={"session_id": str(validated.sid), "actor": "assistant"},
+        )
+        response_text = (
+            "Response blocked by output policy."
+            if output_result.blocked
+            else output_result.sanitized_text
+        )
+        self._transcript_store.append(
+            validated.sid,
+            role="assistant",
+            content=response_text,
+            taint_labels=set(),
+            metadata=_transcript_metadata_for_channel(
+                channel=validated.channel,
+                session_mode=validated.session_mode,
+            ),
+        )
+        return {
+            "session_id": str(validated.sid),
+            "response": response_text,
+        }
+
+    async def _maybe_handle_recent_result_followup(
+        self,
+        *,
+        validated: SessionMessageValidationResult,
+    ) -> dict[str, Any] | None:
+        if not _is_result_followup_query(validated.firewall_result.sanitized_text):
+            return None
+        response = _recent_result_followup_response(
+            user_text=validated.firewall_result.sanitized_text,
+            entries=self._transcript_store.list_entries(validated.sid),
+        )
+        if response is None:
+            return None
+        return self._direct_response_with_transcript(
+            validated=validated,
+            response=response,
+        )
+
     @staticmethod
     def _identity_command_source_id(validated: SessionMessageValidationResult) -> str:
         if validated.user_transcript_entry is not None and validated.user_transcript_entry.entry_id:
@@ -8298,6 +8716,14 @@ class SessionImplMixin(HandlerMixinBase):
             tool_output_summary = (
                 _summarize_tool_outputs_for_chat(chat_serialized_tool_outputs) or ""
             )
+        user_visible_tool_output_summary = (
+            _summarize_tool_outputs_for_user_response(
+                chat_serialized_tool_outputs,
+                header="Confirmed action result",
+            )
+            if chat_serialized_tool_outputs
+            else ""
+        )
         action_resolve_summary = "\n".join(
             summary.strip() for summary in execution.action_resolve_summaries if summary.strip()
         )
@@ -8362,7 +8788,8 @@ class SessionImplMixin(HandlerMixinBase):
                 response_text = f"{response_text}\n\n{action_resolution_text}"
                 system_generated_pending_confirmation_response = False
             if tool_output_summary:
-                response_text = f"{response_text}\n\nCompleted actions:\n{tool_output_summary}"
+                completed_summary = user_visible_tool_output_summary or tool_output_summary
+                response_text = f"{response_text}\n\nCompleted actions:\n{completed_summary}"
                 system_generated_pending_confirmation_response = False
         else:
             if action_resolution_text:
@@ -8373,19 +8800,30 @@ class SessionImplMixin(HandlerMixinBase):
                 )
             if tool_output_summary:
                 if response_text.strip():
-                    response_text = f"{response_text}\n\n{tool_output_summary}"
+                    appended_summary = (
+                        user_visible_tool_output_summary
+                        if action_resolution_text and user_visible_tool_output_summary
+                        else tool_output_summary
+                    )
+                    response_text = f"{response_text}\n\n{appended_summary}"
                 else:
-                    post_tool_synthesis_result = await self._synthesize_post_tool_response(
-                        execution=execution,
-                        serialized_tool_outputs=raw_serialized_tool_outputs,
-                        tool_output_summary=tool_output_summary,
+                    direct_tool_response = _direct_tool_output_response_without_synthesis(
+                        chat_serialized_tool_outputs
                     )
-                    synthesized_response = post_tool_synthesis_result.response_text
-                    response_text = (
-                        f"{synthesized_response}\n\n{tool_output_summary}"
-                        if synthesized_response
-                        else _intermediate_tool_summary_response(tool_output_summary)
-                    )
+                    if direct_tool_response:
+                        response_text = direct_tool_response
+                    else:
+                        post_tool_synthesis_result = await self._synthesize_post_tool_response(
+                            execution=execution,
+                            serialized_tool_outputs=raw_serialized_tool_outputs,
+                            tool_output_summary=tool_output_summary,
+                        )
+                        synthesized_response = post_tool_synthesis_result.response_text
+                        response_text = (
+                            f"{synthesized_response}\n\n{tool_output_summary}"
+                            if synthesized_response
+                            else _intermediate_tool_summary_response(tool_output_summary)
+                        )
         if (
             validated.session_mode == SessionMode.ADMIN_CLEANROOM
             and execution.cleanroom_proposals
@@ -10130,6 +10568,11 @@ class SessionImplMixin(HandlerMixinBase):
         )
         if identity_command_response is not None:
             return identity_command_response
+        recent_result_followup_response = await self._maybe_handle_recent_result_followup(
+            validated=validated
+        )
+        if recent_result_followup_response is not None:
+            return recent_result_followup_response
         self._record_identity_observation_candidate(validated=validated)
         task_request = self._task_request_from_params(
             params=params,

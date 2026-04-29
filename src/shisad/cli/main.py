@@ -1726,6 +1726,101 @@ def _synthetic_pending_confirm_result(row: ActionPendingEntry) -> ActionConfirmR
     )
 
 
+def _preview_cli_text(value: object, *, max_chars: int = 1600, max_lines: int = 24) -> str:
+    text = sanitize_terminal_text(str(value or "")).strip()
+    if not text:
+        return ""
+    lines = text.splitlines()
+    truncated = len(lines) > max_lines or len(text) > max_chars
+    preview = "\n".join(lines[:max_lines])
+    if len(preview) > max_chars:
+        preview = preview[:max_chars].rstrip()
+    if truncated:
+        preview = f"{preview}\n... (truncated)"
+    return preview
+
+
+def _render_confirmed_tool_output(record: dict[str, Any]) -> list[str]:
+    tool_name = sanitize_terminal_field(str(record.get("tool_name", "")).strip() or "tool")
+    payload = record.get("payload")
+    if not isinstance(payload, dict):
+        return [f"{tool_name}: completed."]
+    path = sanitize_terminal_field(str(payload.get("path", "")).strip())
+    ok_value = payload.get("ok")
+    ok_suffix = "" if ok_value in ("", None) else f" ok={bool(ok_value)}"
+    if tool_name == "fs.list":
+        entries = payload.get("entries")
+        count = payload.get("count", len(entries) if isinstance(entries, list) else 0)
+        header = f"fs.list returned {count} entr{'y' if count == 1 else 'ies'}"
+        if path:
+            header = f"{header} for {path}"
+        lines = [f"{header}."]
+        if isinstance(entries, list) and entries:
+            names: list[str] = []
+            for entry in entries[:12]:
+                if isinstance(entry, dict):
+                    name = str(entry.get("name") or entry.get("path") or "").strip()
+                else:
+                    name = str(entry).strip()
+                if name:
+                    names.append(sanitize_terminal_field(name))
+            if names:
+                lines.append("Entries: " + ", ".join(names))
+                if len(entries) > len(names):
+                    lines.append(f"... ({len(entries) - len(names)} more)")
+        return lines
+    if tool_name == "fs.read":
+        content = str(payload.get("content", "") or "")
+        header = "fs.read completed"
+        if path:
+            header = f"fs.read read {path}"
+        if content:
+            header = f"{header} ({len(content)} chars)."
+            preview = _preview_cli_text(content)
+            return [header, preview] if preview else [header]
+        return [f"{header}{ok_suffix}."]
+    if tool_name == "web.fetch":
+        url = sanitize_terminal_field(str(payload.get("url", "")).strip())
+        title = sanitize_terminal_field(str(payload.get("title", "")).strip())
+        content = str(payload.get("content", "") or payload.get("text", "") or "")
+        header = "web.fetch completed"
+        if url:
+            header = f"web.fetch fetched {url}"
+        if title:
+            header = f"{header}: {title}"
+        preview = _preview_cli_text(content, max_chars=1000, max_lines=12)
+        return [f"{header}.", preview] if preview else [f"{header}{ok_suffix}."]
+    if tool_name.startswith("note."):
+        return [f"{tool_name}: completed{ok_suffix}."]
+    summary_parts = [f"{tool_name}: completed{ok_suffix}."]
+    for key in ("status", "count", "error"):
+        value = payload.get(key)
+        if value not in ("", None, [], {}):
+            summary_parts.append(f"{key}={sanitize_terminal_field(str(value))}")
+    return [" ".join(summary_parts)]
+
+
+def _render_action_confirm_result(result: ActionConfirmResult) -> str:
+    confirmation_id = sanitize_terminal_field(result.confirmation_id)
+    status = sanitize_terminal_field(
+        str(result.status or result.status_reason or result.reason or "").strip()
+    )
+    if result.confirmed:
+        first = f"Confirmed {confirmation_id}"
+        if status:
+            first = f"{first}: {status}"
+    else:
+        first = f"Confirmation failed for {confirmation_id}"
+        if status:
+            first = f"{first}: {status}"
+    lines = [first]
+    if result.checkpoint_id:
+        lines.append(f"checkpoint={sanitize_terminal_field(result.checkpoint_id)}")
+    for record in result.tool_outputs:
+        lines.extend(_render_confirmed_tool_output(record))
+    return "\n".join(line for line in lines if str(line).strip())
+
+
 def _wait_for_pending_action_resolution(
     *,
     config: DaemonConfig,
@@ -1818,6 +1913,7 @@ def _resolved_approval_setup_config(
 @click.option("--totp-code", default="", help="TOTP code for reauthenticated approvals.")
 @click.option("--recovery-code", default="", help="Single-use recovery code for L1 approvals.")
 @click.option("--no-open", is_flag=True, help="Print the browser URL but do not auto-open it.")
+@click.option("--json", "output_json", is_flag=True, help="Emit JSON.")
 @click.option(
     "--wait-timeout",
     default=180.0,
@@ -1835,6 +1931,7 @@ def action_confirm(
     totp_code: str,
     recovery_code: str,
     no_open: bool,
+    output_json: bool,
     wait_timeout: float,
 ) -> None:
     """Approve one pending confirmation."""
@@ -1855,7 +1952,12 @@ def action_confirm(
             include_ui=False,
         )
         if existing_row is not None and existing_row.status.lower() != "pending":
-            click.echo(_dump_model(_synthetic_pending_confirm_result(existing_row)))
+            synthetic_result = _synthetic_pending_confirm_result(existing_row)
+            click.echo(
+                _dump_model(synthetic_result)
+                if output_json
+                else _render_action_confirm_result(synthetic_result)
+            )
             return
         raise click.ClickException(
             "Decision nonce not found for confirmation_id; run 'shisad action list' and retry "
@@ -1921,7 +2023,7 @@ def action_confirm(
         payload,
         response_model=ActionConfirmResult,
     )
-    click.echo(_dump_model(result))
+    click.echo(_dump_model(result) if output_json else _render_action_confirm_result(result))
 
 
 @action.command("reject")

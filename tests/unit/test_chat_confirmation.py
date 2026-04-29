@@ -1878,6 +1878,59 @@ async def test_u9_action_resolve_totp_confirm_returns_code_guidance(tmp_path) ->
     assert harness._pending_actions["c-1"].status == "pending"
 
 
+@pytest.mark.asyncio
+async def test_rc_lus_action_resolve_uses_current_turn_intent_over_bad_planner_decision(
+    tmp_path,
+) -> None:
+    harness = _ChatConfirmationHarness(tmp_path)
+    pending = PendingAction(
+        confirmation_id="c-1",
+        decision_nonce="nonce-1",
+        session_id=SessionId("sess-chat"),
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws-1"),
+        tool_name=ToolName("fs.read"),
+        arguments={"path": "README.md"},
+        reason="manual",
+        capabilities={Capability.FILE_READ},
+        created_at=datetime.now(UTC),
+    )
+    harness._pending_actions[pending.confirmation_id] = pending
+    validated = SimpleNamespace(
+        sid=SessionId("sess-chat"),
+        channel="cli",
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws-1"),
+        session_mode=SessionMode.DEFAULT,
+        trust_level="trusted",
+        trusted_input=True,
+        operator_owned_cli_input=False,
+        incoming_taint_labels=set(),
+        firewall_result=FirewallResult(sanitized_text="confirm 1", original_hash="0" * 64),
+    )
+
+    result = await SessionImplMixin._execute_planner_action_resolve(
+        harness,
+        validated=validated,
+        arguments={"decision": "reject", "target": "1", "scope": "one"},
+        pending_action_binding_ids=("c-1",),
+        requires_explicit_current_turn_intent=True,
+    )
+
+    assert result.success is True
+    assert result.executed == 1
+    assert result.rejected == 0
+    assert harness.confirm_calls == [
+        {
+            "confirmation_id": "c-1",
+            "decision_nonce": "nonce-1",
+            "reason": "planner_action_resolve",
+        }
+    ]
+    assert harness.reject_calls == []
+    assert harness._pending_actions["c-1"].status == "approved"
+
+
 def test_u9_action_resolve_pending_context_filters_totp_by_delivery_target() -> None:
     current_target = DeliveryTarget(channel="discord", recipient="chan-2")
     other_target = DeliveryTarget(channel="discord", recipient="chan-1")

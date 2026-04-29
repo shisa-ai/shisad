@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 
 from shisad.core.tools.schema import ToolDefinition, ToolParameter
+from shisad.core.transcript import TranscriptEntry
 from shisad.core.types import Capability, ToolName
 from shisad.daemon.handlers._impl_session import (
     _action_monitor_explanation_from_votes,
@@ -13,8 +15,10 @@ from shisad.daemon.handlers._impl_session import (
     _build_post_tool_synthesis_untrusted_content,
     _coerce_blocked_action_response_text,
     _coerce_internal_tool_narration_response_text,
+    _recent_result_followup_response,
     _should_prefix_output_confirmation,
     _summarize_tool_outputs_for_chat,
+    _summarize_tool_outputs_for_user_response,
 )
 from shisad.security.firewall.output import OutputFirewallResult, UrlFinding
 
@@ -379,6 +383,38 @@ def test_rc_lus_coerces_plain_greeting_internal_narration() -> None:
     assert response == "Hello! I'm ready when you are."
 
 
+def test_rc_lus_extracts_embedded_plain_response_for_greeting() -> None:
+    response = _coerce_internal_tool_narration_response_text(
+        response_text=(
+            "Understood, here's a natural, direct response without planner/formatting "
+            'references:\n\n**Response:** "Welcome! Let me know how I can assist you."'
+        ),
+        user_text="hello",
+        risk_factors=[],
+        rejected=0,
+        pending_confirmation=0,
+        executed_tool_outputs=0,
+    )
+
+    assert response == "Welcome! Let me know how I can assist you."
+
+
+def test_rc_lus_extracts_italic_embedded_plain_response_for_greeting() -> None:
+    response = _coerce_internal_tool_narration_response_text(
+        response_text=(
+            'Understood. Here is a direct response: **Response:** *"Hello! '
+            'How can I help you today?"*'
+        ),
+        user_text="hello",
+        risk_factors=[],
+        rejected=0,
+        pending_confirmation=0,
+        executed_tool_outputs=0,
+    )
+
+    assert response == "Hello! How can I help you today?"
+
+
 def test_rc_lus_coerces_web_search_backend_unconfigured_summary() -> None:
     response = _coerce_internal_tool_narration_response_text(
         response_text="Here is the function call for web_search.",
@@ -421,10 +457,129 @@ def test_rc_lus_coerces_noninternal_web_search_backend_failure() -> None:
     assert "search returned no direct comparisons" not in response
 
 
+def _transcript_entry(
+    role: str,
+    content: str,
+    *,
+    metadata: dict[str, object] | None = None,
+) -> TranscriptEntry:
+    return TranscriptEntry(
+        role=role,
+        content_hash="0" * 64,
+        content_preview=content,
+        metadata=metadata or {},
+    )
+
+
+def test_rc_lus_result_followup_reuses_recent_assistant_answer() -> None:
+    response = _recent_result_followup_response(
+        user_text="what was the result?",
+        entries=[
+            _transcript_entry(
+                "assistant",
+                "Example.com is a placeholder site used for documentation examples.",
+            ),
+            _transcript_entry("user", "what was the result?"),
+        ],
+    )
+
+    assert response == "Example.com is a placeholder site used for documentation examples."
+
+
+def test_rc_lus_result_followup_reuses_confirmed_tool_output() -> None:
+    response = _recent_result_followup_response(
+        user_text="what did you find?",
+        entries=[
+            _transcript_entry(
+                "tool",
+                json.dumps(
+                    {
+                        "ok": True,
+                        "path": "/workspace",
+                        "entries": [
+                            {"name": "README.md", "path": "/workspace/README.md"},
+                            {"name": "tests", "path": "/workspace/tests"},
+                        ],
+                        "count": 2,
+                        "error": "",
+                    }
+                ),
+                metadata={
+                    "confirmed_tool_output": True,
+                    "tool_name": "fs.list",
+                    "tool_success": True,
+                },
+            ),
+            _transcript_entry("user", "what did you find?"),
+        ],
+    )
+
+    assert response is not None
+    assert "fs.list returned 2 entries" in response
+    assert "README.md is the closest likely match" in response
+
+
+def test_rc_lus_result_followup_does_not_hallucinate_after_outside_root_denial() -> None:
+    response = _recent_result_followup_response(
+        user_text="what did you find?",
+        entries=[
+            _transcript_entry(
+                "assistant",
+                (
+                    "I couldn't complete that request because the requested path is outside "
+                    "the configured filesystem roots for this session."
+                ),
+            ),
+            _transcript_entry("user", "what did you find?"),
+        ],
+    )
+
+    assert response is not None
+    assert "did not read that file" in response
+    assert "do not have findings" in response
+
+
+def test_rc_lus_fs_read_failure_summary_includes_error() -> None:
+    response = _summarize_tool_outputs_for_user_response(
+        [
+            {
+                "tool_name": "fs.read",
+                "success": False,
+                "payload": {
+                    "ok": False,
+                    "path": "/workspace/READMEE.md",
+                    "error": "path_not_found",
+                },
+            }
+        ],
+        header="Completed action result",
+    )
+
+    assert "fs.read read /workspace/READMEE.md failed: path_not_found" in response
+
+
 def test_rc_lus_coerces_memory_write_internal_narration() -> None:
     response = _coerce_internal_tool_narration_response_text(
         response_text="Here is the `tool_call` for this request: ```xml",
         user_text="Please remember that my project codename is blue lantern.",
+        risk_factors=[],
+        rejected=0,
+        pending_confirmation=0,
+        executed_tool_outputs=1,
+        tool_output_summary="Tool results summary:\n- note.create: success=True, ok=True",
+    )
+
+    assert response == "I've remembered that."
+
+
+def test_rc_lus_coerces_memory_write_noninternal_summary_tail() -> None:
+    response = _coerce_internal_tool_narration_response_text(
+        response_text=(
+            "Reminder set: your favorite snack is mango slices.\n\n"
+            "Tool results summary:\n"
+            "- note.create: success=True, ok=True"
+        ),
+        user_text="Remember that my favorite snack is mango slices.",
         risk_factors=[],
         rejected=0,
         pending_confirmation=0,
@@ -451,6 +606,26 @@ def test_rc_lus_exact_memory_answer_uses_note_search_summary() -> None:
     )
 
     assert response == "Your project codename is blue lantern."
+
+
+def test_rc_lus_strips_appended_tool_summary_after_clean_answer() -> None:
+    response = _coerce_internal_tool_narration_response_text(
+        response_text=(
+            "The page title is Example Domain.\n\n"
+            "Tool results summary:\n"
+            "- web.fetch: success=True, ok=True, url=https://example.com/"
+        ),
+        user_text="fetch https://example.com",
+        risk_factors=[],
+        rejected=0,
+        pending_confirmation=0,
+        executed_tool_outputs=1,
+        tool_output_summary=(
+            "Tool results summary:\n- web.fetch: success=True, ok=True, url=https://example.com/"
+        ),
+    )
+
+    assert response == "The page title is Example Domain."
 
 
 def test_rc_lus_trims_internal_plan_tail_for_clarification() -> None:
