@@ -111,6 +111,14 @@ jobs:
         with:
           artifact-name: sbom-shisad-${{ steps.meta.outputs.version }}
           output-file: dist/sbom-shisad-${{ steps.meta.outputs.version }}.spdx.json
+          upload-artifact: false
+          upload-release-assets: false
+
+      - name: Upload SBOM artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: sbom-shisad-${{ steps.meta.outputs.version }}
+          path: dist/sbom-shisad-${{ steps.meta.outputs.version }}.spdx.json
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

@@ -167,7 +167,8 @@ Current state:
 - `.github/workflows/publish.yml` is an in-repo, manually dispatched release
   workflow that checks the tag/version match, verifies `uv.lock`, runs release
   validation, builds artifacts, runs `twine check`, runs `pip-audit`, exports a
-  dependency snapshot, generates an SPDX SBOM, and uploads release artifacts.
+  dependency snapshot, generates an SPDX SBOM, uploads the SBOM as an explicit
+  workflow artifact, and uploads release artifacts.
 - The publish job uses the `pypi-publish` GitHub Environment with
   `id-token: write` and `attestations: write`, generates build provenance via
   `actions/attest-build-provenance`, and publishes through
@@ -175,8 +176,9 @@ Current state:
 - The publish workflow pins GitHub Actions by full commit SHA.
 
 Good:
-- OIDC trusted publishing, release SBOM generation, provenance attestation,
-  lockfile verification, and release validation are visible in-repo.
+- OIDC trusted publishing, release SBOM generation and workflow-artifact
+  upload, provenance attestation, lockfile verification, and release validation
+  are visible in-repo.
 
 Gap:
 - GitHub Environment reviewer settings and PyPI trusted-publisher bindings are
