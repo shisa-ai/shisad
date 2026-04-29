@@ -105,7 +105,7 @@ any time.
 | `shisad action confirm <ID> --nonce <NONCE>` | Approve with an explicit decision nonce (from `action list` output) |
 | `shisad action reject <ID> --nonce <NONCE>` | Reject a pending action |
 | `shisad lockdown status --session <SID>` | Show the current lockdown level and reason for a session |
-| `shisad lockdown status --all --json` | Show active/stored lockdown state as JSON |
+| `shisad lockdown status --all --json` | Show active sessions and explicit lockdown states as JSON |
 | `shisad 2fa list` | List enrolled TOTP and passkey credentials |
 | `shisad signer list` | List enrolled signer keys |
 

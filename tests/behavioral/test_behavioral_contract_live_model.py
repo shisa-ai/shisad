@@ -361,8 +361,7 @@ def test_gh12_recovery_matcher_accepts_real_listing_or_shell_output() -> None:
 def _assert_no_legacy_or_shell_file_lookup(reply: dict[str, object]) -> None:
     outputs = _extract_tool_outputs(reply)
     assert "file.read" not in outputs
-    if "shell.exec" in outputs and not _reply_exposes_recovered_todo_log(reply):
-        pytest.fail(f"planner used shell.exec for file lookup without recovery evidence: {reply!r}")
+    assert "shell.exec" not in outputs
 
 
 @pytest.mark.asyncio

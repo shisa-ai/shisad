@@ -1377,7 +1377,11 @@ class AdminImplMixin(HandlerMixinBase):
         }
 
         if session_filter:
-            session_ids = [session_filter]
+            session_ids = (
+                [session_filter]
+                if session_filter in active_sessions or session_filter in explicit_states
+                else []
+            )
         elif include_all:
             session_ids = sorted(set(active_sessions) | set(explicit_states))
         else:

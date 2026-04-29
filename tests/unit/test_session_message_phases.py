@@ -2184,6 +2184,9 @@ async def test_finalize_response_hides_totp_code_path_for_new_non_totp_action() 
     text = str(response["response"])
     assert "2. c-new" in text
     assert "confirm 2" in text
+    assert "TOTP approval pending" in text
+    assert "confirm 1" not in text
+    assert "shisad action confirm c-old" not in text
     assert "6-digit code" not in text
     assert "--totp-code" not in text
     assert "reject 2" in text

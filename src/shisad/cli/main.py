@@ -2316,7 +2316,12 @@ def lockdown_set(session_id: str, action_name: str, reason: str) -> None:
 
 @lockdown.command("status")
 @click.option("--session", "session_id", default="", help="Show one session")
-@click.option("--all", "all_sessions", is_flag=True, help="Show all active or stored sessions")
+@click.option(
+    "--all",
+    "all_sessions",
+    is_flag=True,
+    help="Show all active sessions and explicit lockdown states",
+)
 @click.option("--json", "output_json", is_flag=True, help="Emit JSON")
 def lockdown_status(session_id: str, all_sessions: bool, output_json: bool) -> None:
     """Show current lockdown state."""

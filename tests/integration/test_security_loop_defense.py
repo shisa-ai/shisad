@@ -488,6 +488,12 @@ async def test_m2_t18_lockdown_admin_resume_path(
         assert initial_status["statuses"][0]["level"] == "normal"
         assert initial_status["statuses"][0]["updated_at"] is None
         assert initial_status["statuses"][0]["active"] is True
+        missing_status = await client.call(
+            "lockdown.status",
+            {"session_id": "missing-session"},
+        )
+        assert missing_status["count"] == 0
+        assert missing_status["statuses"] == []
         await client.call(
             "lockdown.set",
             {"session_id": sid, "action": "quarantine", "reason": "incident"},

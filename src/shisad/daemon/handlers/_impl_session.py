@@ -2722,17 +2722,20 @@ def _daemon_pending_confirmation_response_text(
             pending_number = pending_index_by_id.get(confirmation_id, pending_number)
         pending = pending_actions.get(confirmation_id) if pending_actions is not None else None
         lines.append(f"{pending_number}. {confirmation_id}")
-        if (
-            pending is not None
-            and confirmation_id in totp_guidance_ids
-            and _pending_uses_totp(pending)
-        ):
-            if single_totp_confirmation_id == confirmation_id:
-                lines.append("   TOTP in chat: reply with the 6-digit code")
+        if pending is not None and _pending_uses_totp(pending):
+            if confirmation_id in totp_guidance_ids:
+                if single_totp_confirmation_id == confirmation_id:
+                    lines.append("   TOTP in chat: reply with the 6-digit code")
+                else:
+                    lines.append(
+                        f"   TOTP in chat: reply with 'confirm {confirmation_id} 123456'"
+                    )
+                lines.append(f"   To reject in chat: reply with 'reject {pending_number}'")
+                lines.append(f"   CLI fallback: {_totp_cli_confirm_command(confirmation_id)}")
             else:
-                lines.append(f"   TOTP in chat: reply with 'confirm {confirmation_id} 123456'")
-            lines.append(f"   To reject in chat: reply with 'reject {pending_number}'")
-            lines.append(f"   CLI fallback: {_totp_cli_confirm_command(confirmation_id)}")
+                lines.append(
+                    "   TOTP approval pending: run shisad action list for approval instructions"
+                )
         else:
             lines.append(
                 f"   In chat: reply with 'confirm {pending_number}' or 'reject {pending_number}'"
