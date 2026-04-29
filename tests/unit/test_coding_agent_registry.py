@@ -23,6 +23,7 @@ def test_m3_default_agent_registry_contains_pinned_acp_commands() -> None:
     )
     assert registry["codex"].command == (
         "npx",
+        "-y",
         "@zed-industries/codex-acp@0.12.0",
     )
     assert registry["opencode"].command == (
@@ -63,6 +64,14 @@ def test_m3_default_agent_registry_pins_every_npx_package_to_an_explicit_version
                 assert semver_pin.search(part), (
                     f"{agent_name}: {part!r} is not pinned to an explicit semver"
                 )
+
+
+def test_m3_default_agent_registry_uses_noninteractive_npx() -> None:
+    registry = build_default_agent_registry()
+
+    for agent_name, spec in registry.items():
+        if spec.command[0] == "npx":
+            assert "-y" in spec.command, f"{agent_name}: npx command must be noninteractive"
 
 
 def test_m3_agent_selection_uses_fallback_chain_when_preferred_agent_unavailable() -> None:
