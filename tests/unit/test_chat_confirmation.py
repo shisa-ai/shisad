@@ -521,8 +521,6 @@ async def test_u5_chat_confirmation_ignores_clean_trusted_cli_default_session(tm
 @pytest.mark.parametrize(
     "content",
     [
-        "hey what can you do?",
-        "no i mean capabilities",
         "confirm that the file exists",
         "confirm 1",
     ],
@@ -558,6 +556,130 @@ async def test_command_chat_non_totp_text_falls_through_to_planner(
         is_internal_ingress=False,
         content=content,
         firewall_result=FirewallResult(sanitized_text=content, original_hash="0" * 64),
+    )
+
+    assert result is None
+    assert harness.confirm_calls == []
+    assert harness.reject_calls == []
+    assert harness._pending_actions["c-1"].status == "pending"
+
+
+@pytest.mark.asyncio
+async def test_rc_lus_cli_pending_question_returns_runtime_summary(tmp_path) -> None:
+    harness = _ChatConfirmationHarness(tmp_path)
+    pending = PendingAction(
+        confirmation_id="c-1",
+        decision_nonce="nonce-1",
+        session_id=SessionId("sess-chat"),
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws-1"),
+        tool_name=ToolName("fs.read"),
+        arguments={"path": "README.md"},
+        reason="requires_confirmation",
+        capabilities={Capability.FILE_READ},
+        created_at=datetime.now(UTC),
+    )
+    harness._pending_actions[pending.confirmation_id] = pending
+
+    result = await SessionImplMixin._maybe_handle_chat_confirmation(
+        harness,
+        sid=SessionId("sess-chat"),
+        channel="cli",
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws-1"),
+        session_mode=SessionMode.DEFAULT,
+        trust_level="trusted",
+        trusted_input=True,
+        is_internal_ingress=False,
+        content="what is pending?",
+        firewall_result=FirewallResult(sanitized_text="what is pending?", original_hash="0" * 64),
+    )
+
+    assert result is not None
+    response = str(result["response"]).lower()
+    assert "pending confirmations" in response
+    assert "fs.read" in response
+    assert "confirm" in response
+    assert harness.confirm_calls == []
+    assert harness._pending_actions["c-1"].status == "pending"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("content", ["hey what can you do?", "no i mean capabilities"])
+async def test_rc_lus_cli_capability_question_preserves_pending_queue(
+    tmp_path,
+    content: str,
+) -> None:
+    harness = _ChatConfirmationHarness(tmp_path)
+    pending = PendingAction(
+        confirmation_id="c-1",
+        decision_nonce="nonce-1",
+        session_id=SessionId("sess-chat"),
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws-1"),
+        tool_name=ToolName("fs.read"),
+        arguments={"path": "README.md"},
+        reason="requires_confirmation",
+        capabilities={Capability.FILE_READ},
+        created_at=datetime.now(UTC),
+    )
+    harness._pending_actions[pending.confirmation_id] = pending
+
+    result = await SessionImplMixin._maybe_handle_chat_confirmation(
+        harness,
+        sid=SessionId("sess-chat"),
+        channel="cli",
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws-1"),
+        session_mode=SessionMode.DEFAULT,
+        trust_level="trusted",
+        trusted_input=True,
+        is_internal_ingress=False,
+        content=content,
+        firewall_result=FirewallResult(sanitized_text=content, original_hash="0" * 64),
+    )
+
+    assert result is not None
+    response = str(result["response"]).lower()
+    assert "workspace roots" in response
+    assert "pending confirmations stay queued" in response
+    assert harness.confirm_calls == []
+    assert harness.reject_calls == []
+    assert harness._pending_actions["c-1"].status == "pending"
+
+
+@pytest.mark.asyncio
+async def test_rc_lus_cli_action_guidance_still_routes_to_planner(tmp_path) -> None:
+    harness = _ChatConfirmationHarness(tmp_path)
+    pending = PendingAction(
+        confirmation_id="c-1",
+        decision_nonce="nonce-1",
+        session_id=SessionId("sess-chat"),
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws-1"),
+        tool_name=ToolName("fs.read"),
+        arguments={"path": "README.md"},
+        reason="requires_confirmation",
+        capabilities={Capability.FILE_READ},
+        created_at=datetime.now(UTC),
+    )
+    harness._pending_actions[pending.confirmation_id] = pending
+
+    result = await SessionImplMixin._maybe_handle_chat_confirmation(
+        harness,
+        sid=SessionId("sess-chat"),
+        channel="cli",
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws-1"),
+        session_mode=SessionMode.DEFAULT,
+        trust_level="trusted",
+        trusted_input=True,
+        is_internal_ingress=False,
+        content="Review all pending: shisad action list",
+        firewall_result=FirewallResult(
+            sanitized_text="Review all pending: shisad action list",
+            original_hash="0" * 64,
+        ),
     )
 
     assert result is None

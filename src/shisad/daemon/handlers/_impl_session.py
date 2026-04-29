@@ -194,6 +194,9 @@ _INTERNAL_TOOL_NARRATION_MARKERS = (
     "```json",
     "function call",
     "tool call",
+    "no tools are needed",
+    "no tool is needed",
+    "no tool call is needed",
     "call report_anomaly",
     "<tool_call",
     "</tool_call>",
@@ -1104,6 +1107,55 @@ def _chat_confirmation_command_error_text(
         else:
             suggestion = f"{suggested_action} N"
     return f"Did you mean '{suggestion}'? No action was taken. {_confirmation_command_guidance()}"
+
+
+def _pending_confirmation_chat_status_response_text(
+    *,
+    text: str,
+    pending_summary: str,
+) -> str:
+    normalized = " ".join(str(text or "").strip().lower().split())
+    if not normalized or _looks_like_cli_action_command_or_guidance(normalized):
+        return ""
+    stripped = normalized.rstrip("?!., ")
+    pending_question = stripped in {
+        "any pending",
+        "any pending actions",
+        "do i have pending actions",
+        "do we have pending actions",
+        "list pending",
+        "list pending actions",
+        "show pending",
+        "show pending actions",
+        "what is pending",
+        "what's pending",
+        "what pending actions are there",
+    } or bool(
+        re.fullmatch(
+            r"(?:what|which)\s+(?:actions?|confirmations?)\s+"
+            r"(?:are\s+)?(?:pending|queued)",
+            stripped,
+        )
+    )
+    if pending_question:
+        return pending_summary
+
+    capability_question = (
+        "capabilities" in stripped
+        or "what can you do" in stripped
+        or "what tools do you have" in stripped
+        or "which tools do you have" in stripped
+        or "what are your tools" in stripped
+    )
+    if capability_question:
+        return (
+            "I can answer questions, read and write files inside configured "
+            "workspace roots, manage notes, todos, and reminders, fetch web "
+            "pages, search the web when configured, and help resolve pending "
+            "confirmations. Pending confirmations stay queued until you "
+            "explicitly confirm or reject them."
+        )
+    return ""
 
 
 def _internal_ingress_confirmation_approval_not_allowed_text() -> str:
@@ -2280,13 +2332,13 @@ def _build_explicit_memory_intent_proposal(user_text: str) -> ActionProposal | N
             data_sources=["user_text:explicit_memory_intent"],
         )
 
-    fetch_match = re.fullmatch(
-        r"(?:web\s+)?fetch\s+(https?://\S+)",
+    fetch_match = re.search(
+        r"\b(?:use\s+web[._\s]+fetch\s+to\s+)?(?:web\s+)?fetch\s+(https?://[^\s,;]+)",
         normalized,
         flags=re.IGNORECASE,
     )
     if fetch_match is not None:
-        url = fetch_match.group(1).strip()
+        url = fetch_match.group(1).strip().rstrip(".,;:!?)\"]'}>")
         if url:
             return ActionProposal(
                 action_id="explicit-web-fetch",
@@ -2492,6 +2544,7 @@ def _should_prefix_output_confirmation(
     *,
     output_result: Any,
     user_goal: str = "",
+    allow_unattributed_clean_urls: bool = False,
 ) -> bool:
     if not bool(getattr(output_result, "require_confirmation", False)):
         return False
@@ -2502,6 +2555,10 @@ def _should_prefix_output_confirmation(
     }
     url_findings = list(getattr(output_result, "url_findings", []) or [])
     if reason_codes and reason_codes <= {"unallowlisted_url"} and url_findings:
+        if allow_unattributed_clean_urls and all(
+            not bool(getattr(finding, "suspicious", False)) for finding in url_findings
+        ):
+            return False
         normalized_goal = _normalized_url_for_confirmation_match(user_goal)
         user_requested_urls = {
             _normalized_url_for_confirmation_match(match.group(0))
@@ -2635,6 +2692,122 @@ def _response_exposes_structured_tool_syntax(text: str) -> bool:
     )
 
 
+def _extract_first_plain_code_fence(text: str) -> str:
+    for match in re.finditer(
+        r"```(?P<language>[A-Za-z0-9_-]+)?[ \t]*(?:\r?\n)(?P<body>.*?)```",
+        text,
+        re.DOTALL,
+    ):
+        language = str(match.group("language") or "").strip().lower()
+        if language in {"xml", "json", "tool_call", "tool-call"}:
+            continue
+        body = str(match.group("body") or "").strip()
+        if body:
+            return body
+    return ""
+
+
+def _trim_internal_planner_sections(text: str) -> str:
+    trimmed = str(text or "").strip()
+    if not trimmed:
+        return ""
+    fenced = _extract_first_plain_code_fence(trimmed)
+    if fenced and any(
+        marker in trimmed.lower()
+        for marker in ("correct response", "simple acknowledgment", "no tools are needed")
+    ):
+        return fenced
+    leading_no_tool = re.match(
+        r"^(?:No tools? (?:are|were) needed|No tool call is needed)\.?\s*(?P<rest>.+)$",
+        trimmed,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    if leading_no_tool is not None:
+        return str(leading_no_tool.group("rest") or "").strip()
+    cut_patterns = (
+        r"\bNo tools are needed\b",
+        r"\bNo tool call is needed\b",
+        r"\bHere(?:'s| is) (?:the )?(?:function|tool) call\b",
+        r"\bTool Calls?:\b",
+        r"```xml\b",
+        r"```json\b",
+        r"\*\*Plan:\*\*",
+        r"\(If re-validation is needed\b",
+    )
+    cleaned = trimmed
+    for pattern in cut_patterns:
+        match = re.search(pattern, cleaned, flags=re.IGNORECASE)
+        if match is not None:
+            cleaned = cleaned[: match.start()].strip()
+    cleaned = re.sub(
+        r"^Apologies for the oversight\.\s*",
+        "",
+        cleaned,
+        flags=re.IGNORECASE,
+    )
+    cleaned = re.sub(
+        r"^Following your guidance,\s*",
+        "",
+        cleaned,
+        flags=re.IGNORECASE,
+    )
+    return cleaned.strip()
+
+
+def _search_backend_unconfigured_response(tool_output_summary: str) -> str | None:
+    if "web_search_backend_unconfigured" not in str(tool_output_summary):
+        return None
+    if "fs.read: success=True" in str(tool_output_summary):
+        return (
+            "I read the requested local file, but web search is not configured "
+            "for this daemon, so I can't complete the web-search portion right "
+            "now. Configure a web search backend and allowed domains, then retry "
+            "the search."
+        )
+    return (
+        "Web search is not configured for this daemon, so I can't search the web "
+        "right now. Configure a web search backend and allowed domains, then retry."
+    )
+
+
+def _memory_write_ack_response(
+    *,
+    user_text: str,
+    tool_output_summary: str,
+) -> str | None:
+    if "note.create: success=True" not in tool_output_summary:
+        return None
+    if not re.search(r"\b(?:remember|note|store|save)\b", user_text, flags=re.IGNORECASE):
+        return None
+    return "I've remembered that."
+
+
+def _exact_memory_answer_from_tool_summary(
+    *,
+    user_text: str,
+    tool_output_summary: str,
+) -> str | None:
+    if "note.search:" not in tool_output_summary and "retrieve_rag:" not in tool_output_summary:
+        return None
+    normalized_user = normalize_intent_text(user_text).lower()
+    if not re.search(r"\bwhat(?:'s| is)\s+my\b", normalized_user):
+        return None
+    for match in re.finditer(
+        r"\bmy\s+(?P<label>[A-Za-z0-9 _-]{2,80}?)\s+is\s+(?P<value>[^.\n]+)",
+        tool_output_summary,
+        flags=re.IGNORECASE,
+    ):
+        label = " ".join(str(match.group("label") or "").split()).strip(" :")
+        value = " ".join(str(match.group("value") or "").split()).strip(" :\"'")
+        if not label or not value:
+            continue
+        label_terms = {term for term in re.split(r"[^a-z0-9]+", label.lower()) if term}
+        user_terms = {term for term in re.split(r"[^a-z0-9]+", normalized_user) if term}
+        if label_terms and label_terms.issubset(user_terms):
+            return f"Your {label} is {value}."
+    return None
+
+
 def _safe_untrusted_pasted_content_summary(
     *,
     user_text: str,
@@ -2696,17 +2869,41 @@ def _coerce_internal_tool_narration_response_text(
     rejected: int,
     pending_confirmation: int,
     executed_tool_outputs: int,
+    tool_output_summary: str = "",
 ) -> str:
-    if rejected > 0 or pending_confirmation > 0 or executed_tool_outputs > 0:
-        return response_text
-    if not _response_exposes_internal_tool_narration(response_text):
-        return response_text
+    exact_memory_answer = _exact_memory_answer_from_tool_summary(
+        user_text=user_text,
+        tool_output_summary=tool_output_summary,
+    )
+    if exact_memory_answer is not None:
+        return exact_memory_answer
+    if rejected <= 0 and pending_confirmation <= 0:
+        search_unconfigured = _search_backend_unconfigured_response(tool_output_summary)
+        if search_unconfigured is not None:
+            return search_unconfigured
     safe_summary = _safe_untrusted_pasted_content_summary(
         user_text=user_text,
         risk_factors=risk_factors,
     )
+    if safe_summary is not None and rejected > 0 and executed_tool_outputs <= 0:
+        return safe_summary
+    if not _response_exposes_internal_tool_narration(response_text):
+        return response_text
+    if rejected <= 0 and pending_confirmation <= 0:
+        memory_write_ack = _memory_write_ack_response(
+            user_text=user_text,
+            tool_output_summary=tool_output_summary,
+        )
+        if memory_write_ack is not None:
+            return memory_write_ack
+    if _is_plain_greeting(user_text):
+        cleaned_greeting = _trim_internal_planner_sections(response_text)
+        return cleaned_greeting or "Hello. How can I help?"
     if safe_summary is not None:
         return safe_summary
+    cleaned_response = _trim_internal_planner_sections(response_text)
+    if cleaned_response and cleaned_response != response_text.strip():
+        return cleaned_response
     if not _response_exposes_structured_tool_syntax(response_text):
         return response_text
     return (
@@ -4761,15 +4958,6 @@ class SessionImplMixin(HandlerMixinBase):
         displayed_pending_rows = visible_pending_rows
         visible_totp_rows = _totp_pending_rows(visible_pending_rows)
         totp_submission = _parse_chat_totp_submission(content) if totp_rows else None
-        if (
-            _is_trusted_command_chat_session(
-                channel=channel,
-                session_mode=session_mode,
-                trust_level=trust_level,
-            )
-            and totp_submission is None
-        ):
-            return None
         intent: ChatConfirmationIntent | None = None
         if is_internal_ingress and totp_submission is None:
             intent = _classify_chat_confirmation_intent(content)
@@ -4809,6 +4997,7 @@ class SessionImplMixin(HandlerMixinBase):
                 if _should_prefix_output_confirmation(
                     output_result=output_result,
                     user_goal=content,
+                    allow_unattributed_clean_urls=bool(tool_outputs),
                 ):
                     response_text = f"[CONFIRMATION REQUIRED] {response_text}"
             lockdown_notice = self._lockdown_manager.user_notification(sid)
@@ -4886,6 +5075,30 @@ class SessionImplMixin(HandlerMixinBase):
                 "planner_error": "",
                 "tool_outputs": list(tool_outputs or []),
             }
+
+        if (
+            _is_trusted_command_chat_session(
+                channel=channel,
+                session_mode=session_mode,
+                trust_level=trust_level,
+            )
+            and totp_submission is None
+        ):
+            pending_status_response = _pending_confirmation_chat_status_response_text(
+                text=content,
+                pending_summary=self._chat_pending_confirmation_summary(
+                    pending_rows=displayed_pending_rows,
+                    tainted_session=tainted_session,
+                ),
+            )
+            if pending_status_response:
+                return await _finalize_chat_confirmation_response(
+                    response_text=pending_status_response,
+                    blocked_actions=0,
+                    executed_actions=0,
+                    checkpoint_ids=[],
+                )
+            return None
 
         if is_internal_ingress and totp_submission is None:
             assert intent is not None
@@ -8197,6 +8410,7 @@ class SessionImplMixin(HandlerMixinBase):
             rejected=execution.rejected,
             pending_confirmation=execution.pending_confirmation,
             executed_tool_outputs=len(execution.executed_tool_outputs),
+            tool_output_summary=tool_output_summary,
         )
         if not response_text.strip():
             if execution.pending_confirmation > 0:
@@ -8271,6 +8485,7 @@ class SessionImplMixin(HandlerMixinBase):
             if _should_prefix_output_confirmation(
                 output_result=output_result,
                 user_goal=validated.firewall_result.sanitized_text,
+                allow_unattributed_clean_urls=bool(execution.executed_tool_outputs),
             ):
                 response_text = f"[CONFIRMATION REQUIRED] {response_text}"
         if not public_sensitive_taints and not output_result.blocked:

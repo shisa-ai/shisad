@@ -128,6 +128,21 @@ def _memory_registry() -> ToolRegistry:
             {"url": "https://example.com"},
         ),
         (
+            "fetch https://example.com/ and summarize it",
+            "web.fetch",
+            {"url": "https://example.com/"},
+        ),
+        (
+            "Use web.fetch to fetch https://example.com/ and tell me the title.",
+            "web.fetch",
+            {"url": "https://example.com/"},
+        ),
+        (
+            "Please web fetch https://example.org/page.",
+            "web.fetch",
+            {"url": "https://example.org/page"},
+        ),
+        (
             "read evidence ev_test_123",
             "evidence.read",
             {"ref_id": "ev_test_123"},
