@@ -61,8 +61,16 @@ class LockdownManager:
         return self._states.get(session_id) or LockdownState(session_id=session_id)
 
     def explicit_states(self) -> list[LockdownState]:
-        """Return lockdown states that have been explicitly stored."""
-        return list(self._states.values())
+        """Return states that represent an explicit lockdown transition."""
+        return [
+            state
+            for state in self._states.values()
+            if (
+                state.level != LockdownLevel.NORMAL
+                or bool(state.reason)
+                or bool(state.trigger)
+            )
+        ]
 
     def trigger(
         self,
