@@ -1,8 +1,10 @@
 # Supply Chain Analysis: LiteLLM, Adjacent Incidents, and shisad
 
 *Created: 2026-03-25*  
+*Updated: 2026-04-29 (v0.7.1 ACP/release-provenance refresh)*
 *Status: Draft*  
-*Snapshot date: 2026-03-25*
+*Snapshot basis: LiteLLM incident facts as of 2026-03-25; shisad current-state
+sections refreshed through the v0.7.1 C2 review-refresh target.*
 
 This note reviews the LiteLLM supply-chain compromise disclosed on March 24, 2026, maps the broader attack patterns that matter for AI-agent systems, and evaluates shisad's own supply-chain posture.
 

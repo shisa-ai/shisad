@@ -1,9 +1,9 @@
 # shisad Supply Chain Audit
 
 *Created: 2026-03-31*  
-*Updated: 2026-04-25 (v0.7.0 candidate refresh: python-dotenv CVE-2026-28684 remediated, Ledger bridge axios advisories remediated through an npm override, and residual Ledger SDK uuid advisory documented)*
+*Updated: 2026-04-29 (v0.7.1 ACP bridge and release-provenance docs refresh)*
 *Status: In Progress*  
-*Snapshot basis: `v0.7.0` release target on `main`*
+*Snapshot basis: v0.7.1 C2 review-refresh target on `main`; historical v0.7.0 release evidence is retained where explicitly labeled.*
 
 ## Scope and Intent
 
@@ -1117,7 +1117,8 @@ Current GitHub Actions coverage is useful but not complete for supply-chain assu
 1. Pin all third-party actions to immutable commit SHAs.
 2. Add a workflow guard that fails when lockfile or dependency policy drifts unexpectedly.
 3. Add dependency-review / advisories checks for dependency PRs.
-4. Add release-path checks (attestation/SBOM/signing) once release workflows are introduced.
+4. Maintain release-path checks (attestation/SBOM) and add hardware-backed or
+   container-image signing when those release surfaces are introduced.
 5. Add a periodic “supply-chain hygiene” job to emit inventory diffs and newly introduced package alerts.
 
 ## Findings
@@ -1164,8 +1165,8 @@ Current GitHub Actions coverage is useful but not complete for supply-chain assu
 
 ### Priority 2 (roadmap-aligned, medium term) — CLOSED (v0.5.3)
 
-1. ~~Move release publishing to trusted publishing + provenance attestations.~~ Done (OIDC trusted publisher + `publish.yml`).
-2. ~~Add release SBOM generation and signing.~~ Done (SPDX SBOM via anchore/sbom-action).
+1. ~~Move release publishing to trusted publishing + provenance attestations.~~ Done (OIDC trusted publisher + `publish.yml`; build provenance attestation covers `dist/shisad-*` as of the v0.7.1 review refresh).
+2. ~~Add release SBOM generation + build provenance attestation.~~ Done (SPDX SBOM via anchore/sbom-action; artifact attestation via actions/attest-build-provenance). Hardware-backed release signing remains future work (`PF.42`).
 3. When container images are introduced, require digest pinning and signature verification in release policy. (Future.)
 
 ## Suggested Policy Language (for future docs alignment)
