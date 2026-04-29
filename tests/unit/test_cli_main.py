@@ -923,6 +923,46 @@ def test_cli_commands_route_through_rpc_wrapper(
     ) in calls
 
 
+def test_action_list_empty_message_matches_requested_status(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _config(tmp_path)
+    config.socket_path.touch()
+    monkeypatch.setattr(cli_main, "_get_config", lambda: config)
+
+    calls: list[tuple[str, dict[str, object] | None]] = []
+
+    def fake_rpc_call(
+        _config: DaemonConfig,
+        method: str,
+        params: dict[str, object] | None = None,
+        *,
+        response_model: type[object] | None = None,
+    ) -> object:
+        calls.append((method, params))
+        assert response_model is not None
+        return response_model.model_validate({"actions": [], "count": 0})  # type: ignore[attr-defined]
+
+    monkeypatch.setattr(cli_main, "rpc_call", fake_rpc_call)
+    runner = CliRunner()
+
+    rejected = _invoke_ok(runner, ["action", "list", "--status", "rejected"]).output
+    all_statuses = _invoke_ok(runner, ["action", "list", "--status", "all"]).output
+
+    assert "No confirmations with status rejected" in rejected
+    assert "No pending confirmations" not in rejected
+    assert "No confirmations" in all_statuses
+    assert (
+        "action.pending",
+        {"session_id": None, "status": "rejected", "limit": 50, "include_ui": True},
+    ) in calls
+    assert (
+        "action.pending",
+        {"session_id": None, "status": None, "limit": 50, "include_ui": True},
+    ) in calls
+
+
 def test_memory_write_preference_requires_predicate_before_rpc() -> None:
     runner = CliRunner()
 

@@ -42,4 +42,5 @@ async def test_lockdown_status_all_omits_stale_default_rows() -> None:
     )
     assert explicit_row["active"] is False
     assert explicit_row["level"] == "quarantine"
+    assert explicit_row["mode"] == ""
     assert explicit_row["updated_at"] is not None

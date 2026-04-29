@@ -1405,22 +1405,23 @@ class AdminImplMixin(HandlerMixinBase):
                     or bool(stored_state.trigger)
                 )
             )
+            updated_at = (
+                stored_state.updated_at.isoformat()
+                if stored_state is not None and state_has_explicit_transition
+                else None
+            )
             statuses.append(
                 {
                     "session_id": raw_sid,
                     "level": state.level.value,
                     "reason": state.reason,
                     "trigger": state.trigger,
-                    "updated_at": (
-                        stored_state.updated_at.isoformat()
-                        if state_has_explicit_transition
-                        else None
-                    ),
+                    "updated_at": updated_at,
                     "active": session is not None,
                     "user_id": str(session.user_id) if session is not None else "",
                     "workspace_id": str(session.workspace_id) if session is not None else "",
                     "channel": str(session.channel) if session is not None else "",
-                    "mode": str(session.mode.value) if session is not None else "default",
+                    "mode": str(session.mode.value) if session is not None else "",
                 }
             )
         return {"statuses": statuses, "count": len(statuses)}

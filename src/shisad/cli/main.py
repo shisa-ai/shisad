@@ -1526,18 +1526,19 @@ def action() -> None:
 def action_pending(session_id: str, status: str, limit: int, raw: bool) -> None:
     """List pending confirmations."""
     config = _get_config()
+    status_filter = _action_status_filter(status)
     result = rpc_call(
         config,
         "action.pending",
         {
             "session_id": session_id or None,
-            "status": None if status.strip().lower() == "all" else (status or "pending"),
+            "status": status_filter,
             "limit": limit,
             "include_ui": not raw,
         },
         response_model=ActionPendingResult,
     )
-    _render_action_rows(result)
+    _render_action_rows(result, status_filter=status_filter)
 
 
 @action.command("list")
@@ -1555,12 +1556,13 @@ def action_list(
 ) -> None:
     """List confirmations with optional machine-readable output."""
     config = _get_config()
+    status_filter = _action_status_filter(status)
     result = rpc_call(
         config,
         "action.pending",
         {
             "session_id": session_id or None,
-            "status": None if status.strip().lower() == "all" else (status or "pending"),
+            "status": status_filter,
             "limit": limit,
             "include_ui": not raw,
         },
@@ -1569,13 +1571,30 @@ def action_list(
     if output_json:
         click.echo(_dump_model(result))
         return
-    _render_action_rows(result)
+    _render_action_rows(result, status_filter=status_filter)
 
 
-def _render_action_rows(result: ActionPendingResult) -> None:
+def _action_status_filter(status: str) -> str | None:
+    normalized = status.strip()
+    if normalized.lower() == "all":
+        return None
+    return normalized or "pending"
+
+
+def _render_action_rows(
+    result: ActionPendingResult,
+    *,
+    status_filter: str | None = "pending",
+) -> None:
     rows = result.actions
     if not rows:
-        _echo("No pending confirmations", fg="yellow")
+        if status_filter is None:
+            _echo("No confirmations", fg="yellow")
+        elif status_filter.strip().lower() == "pending":
+            _echo("No pending confirmations", fg="yellow")
+        else:
+            status_value = sanitize_terminal_field(status_filter)
+            _echo(f"No confirmations with status {status_value}", fg="yellow")
         return
     for row in rows:
         confirmation_id = sanitize_terminal_field(row.confirmation_id)

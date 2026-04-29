@@ -1745,7 +1745,7 @@ class LockdownStatusEntry(BaseModel):
     user_id: str = ""
     workspace_id: str = ""
     channel: str = ""
-    mode: str = "default"
+    mode: str = ""
 
 
 class LockdownStatusResult(BaseModel):

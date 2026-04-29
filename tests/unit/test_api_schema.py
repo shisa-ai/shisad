@@ -389,6 +389,10 @@ class TestApiSchemaValidation:
         assert policy_explain.tool_name == "shell_exec"
         assert lockdown.level == "caution"
         assert lockdown_status.statuses[0].active is True
+        inactive_status = LockdownStatusResult.model_validate(
+            {"statuses": [{"session_id": "inactive"}], "count": 1}
+        )
+        assert inactive_status.statuses[0].mode == ""
         assert risk.allowed is True
         assert ingest.ingress_risk == 0.1
         assert set_mode.mode == "admin_cleanroom"
