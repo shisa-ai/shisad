@@ -1197,6 +1197,8 @@ Current GitHub Actions coverage is useful but not complete for supply-chain assu
 
 This repo is **baseline-hardened with a small set of accepted operational
 risks**. The v0.5.3 hardening pass and the v0.6.0 release-close refresh closed
-the immediate CI/release-path gaps. Remaining open items (runtime `npx`
-lockdown, periodic audit job, internal mirror) are lower priority and have
+the immediate CI/release-path gaps. Remaining open items (periodic hygiene
+inventory diffs, internal package mirror/proxy, external GitHub/PyPI release
+environment audits, hardware-backed release signing, and future container-image
+signing) are lower priority or release-close/future-surface work with
 documented deferral targets.

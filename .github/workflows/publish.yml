@@ -29,11 +29,17 @@ jobs:
       - name: Set up Python 3.12
         run: uv python install 3.12
 
+      - name: Verify lockfile
+        run: uv lock --check
+
       - name: Extract version metadata
         id: meta
         run: |
-          version="$(uv run python -c 'import shisad; print(shisad.__version__)')"
+          version="$(uv run --frozen python -c 'import shisad; print(shisad.__version__)')"
           echo "version=${version}" >> "$GITHUB_OUTPUT"
+
+      - name: Ensure lockfile unchanged
+        run: git diff --exit-code -- uv.lock
 
       - name: Verify tag matches package version
         env:
@@ -45,9 +51,6 @@ jobs:
             echo "::error::Tag '${RELEASE_TAG}' does not match package version '${expected}'"
             exit 1
           fi
-
-      - name: Verify lockfile
-        run: uv lock --check
 
       - name: Run release validation
         run: |
