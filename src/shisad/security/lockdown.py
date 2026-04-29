@@ -65,11 +65,7 @@ class LockdownManager:
         return [
             state
             for state in self._states.values()
-            if (
-                state.level != LockdownLevel.NORMAL
-                or bool(state.reason)
-                or bool(state.trigger)
-            )
+            if (state.level != LockdownLevel.NORMAL or bool(state.reason) or bool(state.trigger))
         ]
 
     def trigger(

@@ -89,9 +89,7 @@ class ActionMonitor:
         "--follow",
         "--pre",
     }
-    _FORBIDDEN_CONTENT_SEARCH_SHELL_TOKEN_PREFIXES: ClassVar[tuple[str, ...]] = (
-        "--pre=",
-    )
+    _FORBIDDEN_CONTENT_SEARCH_SHELL_TOKEN_PREFIXES: ClassVar[tuple[str, ...]] = ("--pre=",)
     _GREP_CONTENT_SEARCH_SAFE_SHORT_FLAGS: ClassVar[frozenset[str]] = frozenset(
         {"E", "F", "P", "i", "n", "q", "r", "s", "v", "w", "x"}
     )
@@ -160,9 +158,7 @@ class ActionMonitor:
                     continue
                 if self._goal_mentions_file_discovery(
                     goal_text
-                ) and not self._is_read_only_shell_content_search(
-                    getattr(action, "arguments", {})
-                ):
+                ) and not self._is_read_only_shell_content_search(getattr(action, "arguments", {})):
                     reject_flags.append(f"{tool}:file_discovery_not_read_only")
                     continue
 
@@ -299,10 +295,7 @@ class ActionMonitor:
     @staticmethod
     def _is_symlink_follow_token(token: str) -> bool:
         lowered = token.lower()
-        return (
-            token.startswith(("-H", "-L"))
-            or lowered in {"-follow", "--dereference", "--follow"}
-        )
+        return token.startswith(("-H", "-L")) or lowered in {"-follow", "--dereference", "--follow"}
 
     @staticmethod
     def _shell_command_name(token: str) -> str:
@@ -408,8 +401,7 @@ class ActionMonitor:
                 if not cls._is_current_directory_token(read_path):
                     return False
         return all(
-            cls._shell_file_discovery_token_is_workspace_relative(token)
-            for token in command[1:]
+            cls._shell_file_discovery_token_is_workspace_relative(token) for token in command[1:]
         )
 
     @classmethod

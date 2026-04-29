@@ -909,11 +909,14 @@ async def test_c2_blank_session_note_todo_writes_fail_closed(tmp_path: Path) -> 
     assert todo_payload["kind"] == "reject"
     assert todo_payload["reason"] == "owner_scope_requires_user_and_workspace"
 
-    assert harness._memory_manager.list_entries(
-        include_deleted=True,
-        include_pending_review=True,
-        limit=10,
-    ) == []
+    assert (
+        harness._memory_manager.list_entries(
+            include_deleted=True,
+            include_pending_review=True,
+            limit=10,
+        )
+        == []
+    )
 
 
 @pytest.mark.asyncio

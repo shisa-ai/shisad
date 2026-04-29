@@ -52,6 +52,41 @@ def test_u5_planner_tool_context_shows_full_details_for_trusted_cli() -> None:
     assert "fs.write (native function: fs_write): Write files" in context
 
 
+def test_c3_planner_tool_context_hides_unavailable_fs_tool_ids_from_shell_description() -> None:
+    shell_tool = ToolDefinition(
+        name=ToolName("shell.exec"),
+        description=(
+            "Execute an explicit shell command. Do not use for file discovery, "
+            "directory listing, or file reads when fs.list or fs.read are available."
+        ),
+        parameters=[],
+        capabilities_required=[Capability.SHELL_EXEC],
+    )
+    legacy_file_tool = ToolDefinition(
+        name=ToolName("file.read"),
+        description=(
+            "Legacy low-level file read compatibility tool. "
+            "Do not use for user-facing file reads when fs.read is available."
+        ),
+        parameters=[],
+        capabilities_required=[Capability.FILE_READ],
+    )
+
+    context = _build_planner_tool_context(
+        registry_tools=[legacy_file_tool, shell_tool],
+        capabilities={Capability.FILE_READ, Capability.SHELL_EXEC},
+        tool_allowlist={ToolName("file.read"), ToolName("shell.exec")},
+        trust_level="trusted_cli",
+    )
+
+    assert "file.read" in context
+    assert "shell.exec" in context
+    assert "legacy compatibility" in context
+    assert "structured runtime tools" in context
+    assert "fs.list" not in context
+    assert "fs.read" not in context
+
+
 def test_cc19_planner_tool_context_documents_native_tool_aliases() -> None:
     tool = ToolDefinition(
         name=ToolName("fs.list"),

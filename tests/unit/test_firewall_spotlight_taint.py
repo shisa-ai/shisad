@@ -198,9 +198,7 @@ def test_firewall_labels_anthropic_key_distinctly_from_openai() -> None:
     label should identify the provider family.
     """
     firewall = ContentFirewall()
-    result = firewall.inspect(
-        "ANTHROPIC_API_KEY=sk-ant-api03-abc123def456ghi789jkl012"
-    )
+    result = firewall.inspect("ANTHROPIC_API_KEY=sk-ant-api03-abc123def456ghi789jkl012")
     assert "[REDACTED:anthropic_key]" in result.sanitized_text
     assert "[REDACTED:openai_key]" not in result.sanitized_text
     assert TaintLabel.USER_CREDENTIALS in result.taint_labels

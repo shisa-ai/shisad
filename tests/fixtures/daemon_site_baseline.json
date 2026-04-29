@@ -12,7 +12,7 @@
     "run_daemon": {
       "tests/adversarial/test_adversarial_cleanroom.py": 1,
       "tests/adversarial/test_pairing_artifact_parser.py": 3,
-      "tests/behavioral/test_behavioral_contract.py": 3,
+      "tests/behavioral/test_behavioral_contract.py": 1,
       "tests/behavioral/test_behavioral_contract_live_model.py": 1,
       "tests/behavioral/test_evidence_behavioral.py": 1,
       "tests/behavioral/test_no_model_configured_behavioral.py": 1,
@@ -20,7 +20,7 @@
       "tests/helpers/daemon.py": 1,
       "tests/integration/test_admin_selfmod.py": 1,
       "tests/integration/test_channel_pump.py": 6,
-      "tests/integration/test_chat_confirmation_e2e.py": 7,
+      "tests/integration/test_chat_confirmation_e2e.py": 8,
       "tests/integration/test_cleanroom_nonadmin.py": 1,
       "tests/integration/test_cleanroom_workflow.py": 1,
       "tests/integration/test_coding_agent_tasks.py": 1,
@@ -44,6 +44,6 @@
   "tests_root": "tests",
   "totals": {
     "DaemonServices.build": 39,
-    "run_daemon": 96
+    "run_daemon": 95
   }
 }

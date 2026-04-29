@@ -522,10 +522,7 @@ class IngestionPipeline:
                 if row_unowned:
                     visible_rows.append((row, record))
                     continue
-                if (
-                    record_user_id != owner_user_id
-                    or record_workspace_id != owner_workspace_id
-                ):
+                if record_user_id != owner_user_id or record_workspace_id != owner_workspace_id:
                     continue
             visible_rows.append((row, record))
 
@@ -1340,9 +1337,7 @@ class IngestionPipeline:
                     "confirmation_status": row.confirmation_status,
                     "scope": row.scope,
                     "user_id": IngestionPipeline._normalize_owner_value(row.user_id),
-                    "workspace_id": IngestionPipeline._normalize_owner_value(
-                        row.workspace_id
-                    ),
+                    "workspace_id": IngestionPipeline._normalize_owner_value(row.workspace_id),
                     "taint_labels": json.loads(row.taint_labels_json),
                     "quarantined": row.quarantined,
                     "citation_count": row.citation_count,

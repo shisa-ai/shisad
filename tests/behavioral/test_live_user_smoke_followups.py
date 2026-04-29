@@ -184,10 +184,7 @@ async def test_lus_shell_file_discovery_routes_to_confirmation_without_lockdown(
         ) -> ProviderResponse:
             planner_input = messages[-1].content if messages else ""
             lowered = planner_input.lower()
-            if (
-                "look for the file" in lowered
-                and "filename should be similar" in lowered
-            ):
+            if "look for the file" in lowered and "filename should be similar" in lowered:
                 return ProviderResponse(
                     message=Message(
                         role="assistant",

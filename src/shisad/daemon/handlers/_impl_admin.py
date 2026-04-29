@@ -1372,8 +1372,7 @@ class AdminImplMixin(HandlerMixinBase):
             str(session.id): session for session in self._session_manager.list_active()
         }
         explicit_states = {
-            str(state.session_id): state
-            for state in self._lockdown_manager.explicit_states()
+            str(state.session_id): state for state in self._lockdown_manager.explicit_states()
         }
 
         if session_filter:
@@ -1386,9 +1385,7 @@ class AdminImplMixin(HandlerMixinBase):
             session_ids = sorted(set(active_sessions) | set(explicit_states))
         else:
             session_ids = sorted(
-                sid
-                for sid, state in explicit_states.items()
-                if state.level.value != "normal"
+                sid for sid, state in explicit_states.items() if state.level.value != "normal"
             )
 
         statuses: list[dict[str, Any]] = []
@@ -1397,13 +1394,10 @@ class AdminImplMixin(HandlerMixinBase):
             session = active_sessions.get(raw_sid)
             stored_state = explicit_states.get(raw_sid)
             state = self._lockdown_manager.peek_state_for(sid)
-            state_has_explicit_transition = (
-                stored_state is not None
-                and (
-                    stored_state.level.value != "normal"
-                    or bool(stored_state.reason)
-                    or bool(stored_state.trigger)
-                )
+            state_has_explicit_transition = stored_state is not None and (
+                stored_state.level.value != "normal"
+                or bool(stored_state.reason)
+                or bool(stored_state.trigger)
             )
             updated_at = (
                 stored_state.updated_at.isoformat()

@@ -30,9 +30,7 @@ async def _create_session_for(
     return str(created["session_id"])
 
 
-async def _send(
-    harness: ContractHarness, sid: str, content: str
-) -> dict[str, Any]:
+async def _send(harness: ContractHarness, sid: str, content: str) -> dict[str, Any]:
     return dict(
         await harness.client.call(
             "session.message",
@@ -56,9 +54,7 @@ async def test_c2_cross_scope_memory_recall_does_not_leak(
         "remember that my favorite color is blue",
     )
 
-    bob_sid = await _create_session_for(
-        cross_session_harness, user_id="bob", workspace_id="ws2"
-    )
+    bob_sid = await _create_session_for(cross_session_harness, user_id="bob", workspace_id="ws2")
     reply = await _send(
         cross_session_harness,
         bob_sid,
@@ -76,18 +72,14 @@ async def test_c2_same_scope_memory_recall_still_surfaces(
     prior memory. The scoping fix must close leaks without breaking
     the legitimate case.
     """
-    first = await _create_session_for(
-        cross_session_harness, user_id="alice", workspace_id="ws1"
-    )
+    first = await _create_session_for(cross_session_harness, user_id="alice", workspace_id="ws1")
     await _send(
         cross_session_harness,
         first,
         "remember that my favorite color is blue",
     )
 
-    second = await _create_session_for(
-        cross_session_harness, user_id="alice", workspace_id="ws1"
-    )
+    second = await _create_session_for(cross_session_harness, user_id="alice", workspace_id="ws1")
     reply = await _send(
         cross_session_harness,
         second,

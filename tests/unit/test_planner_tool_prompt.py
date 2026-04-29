@@ -277,8 +277,8 @@ async def test_c3_base_prompt_steers_natural_file_lookup_to_structured_fs_tools(
 
     system_prompt = provider.messages[0][0].content.lower()
     assert "natural file-read requests" in system_prompt
-    assert "\"read <path>\"" in system_prompt
-    assert "\"look for the file\"" in system_prompt
+    assert '"read <path>"' in system_prompt
+    assert '"look for the file"' in system_prompt
     assert "fs.read first" in system_prompt
     assert "fs.list" in system_prompt
     assert "file.read" in system_prompt

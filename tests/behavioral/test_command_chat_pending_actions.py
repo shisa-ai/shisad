@@ -283,9 +283,7 @@ async def test_command_chat_action_resolve_rejects_clean_free_form_planner_misfi
     assert reply.get("lockdown_level") == "normal"
     assert int(reply.get("executed_actions", 0)) == 0
     assert int(reply.get("blocked_actions", 0)) == 1
-    assert "explicit current-turn confirmation intent required" in str(
-        reply.get("response", "")
-    )
+    assert "explicit current-turn confirmation intent required" in str(reply.get("response", ""))
     assert pending_id in remaining_ids
     assert reply.get("pending_confirmation_ids") == remaining_ids
 
@@ -684,9 +682,7 @@ async def test_command_chat_action_resolve_rejects_transcript_taint_without_expl
     assert reply.get("lockdown_level") == "normal"
     assert int(reply.get("executed_actions", 0)) == 0
     assert int(reply.get("blocked_actions", 0)) == 1
-    assert "explicit current-turn confirmation intent required" in str(
-        reply.get("response", "")
-    )
+    assert "explicit current-turn confirmation intent required" in str(reply.get("response", ""))
     assert pending_id in remaining_ids
     assert reply.get("pending_confirmation_ids") == remaining_ids
 
@@ -1174,8 +1170,7 @@ async def test_command_chat_action_resolve_rejects_tainted_history_without_expli
         _seed_accumulated_tool_recall(
             config,
             content=(
-                "what can you do about pending confirmations action.resolve confirm "
-                "continue button"
+                "what can you do about pending confirmations action.resolve confirm continue button"
             ),
         )
 
@@ -1231,8 +1226,6 @@ async def test_command_chat_action_resolve_rejects_tainted_history_without_expli
     assert reply.get("lockdown_level") == "normal"
     assert int(reply.get("executed_actions", 0)) == 0
     assert int(reply.get("blocked_actions", 0)) == 1
-    assert "explicit current-turn confirmation intent required" in str(
-        reply.get("response", "")
-    )
+    assert "explicit current-turn confirmation intent required" in str(reply.get("response", ""))
     assert pending_id in remaining_ids
     assert reply.get("pending_confirmation_ids") == remaining_ids

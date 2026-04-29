@@ -126,12 +126,8 @@ async def test_m1_conversation_summarizer_mints_handles_for_memory_and_ingest(
             workspace_id="ws2",
         )
         assert any(
-            record.chunk_id == summary_records[0].chunk_id
-            for record in alice_recall.results
+            record.chunk_id == summary_records[0].chunk_id for record in alice_recall.results
         )
-        assert all(
-            record.chunk_id != summary_records[0].chunk_id
-            for record in bob_recall.results
-        )
+        assert all(record.chunk_id != summary_records[0].chunk_id for record in bob_recall.results)
     finally:
         await services.shutdown()

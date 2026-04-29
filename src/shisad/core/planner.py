@@ -42,8 +42,8 @@ BASE_SYSTEM_PROMPT = (
     "asks to run a shell command or no structured runtime tool covers the task; "
     "do not use shell.exec for ordinary filesystem discovery, listing, or file "
     "reads when fs.list or fs.read can do it. "
-    "For natural file-read requests such as \"read <path>\", \"open <path>\", "
-    "\"review <path>\", or follow-ups like \"look for the file\", use fs.read first "
+    'For natural file-read requests such as "read <path>", "open <path>", '
+    '"review <path>", or follow-ups like "look for the file", use fs.read first '
     "for exact paths and fs.list for discovery or similar-file recovery. "
     "Treat file.read and file_read as legacy sandbox aliases; do not choose them for "
     "user-facing file reads when fs.read is available. "

@@ -1,7 +1,7 @@
 # shisad Roadmap
 
 *Created: 2026-02-26*
-*Updated: 2026-04-28*
+*Updated: 2026-04-29*
 *Status: Active*
 
 ## Goal
@@ -267,6 +267,7 @@ TOTP entry remain deferred to `v0.8.0`.
 
 #### v0.7.1 — Bug-fix point release
 
+- Status (2026-04-29): milestones closed; release-close validation pending.
 - Trusted command-chat no-regex UX fix: pending confirmations become
   planner context; confirmation/rejection uses a structured PEP-gated
   `action.resolve` planner tool instead of daemon-side fuzzy/regex parsing.
@@ -282,6 +283,10 @@ TOTP entry remain deferred to `v0.8.0`.
   with maintenance-only opt-in.
 - Operator preflight cleanup: harness and CLI quality-of-life fixes
   surfaced during live verification.
+- Natural file-lookup follow-ups are steered toward typed filesystem tools
+  rather than the deprecated `file.read` alias or shell fallback, and operators
+  can inspect pending actions and lockdown state with canonical `shisad action
+  list` and `shisad lockdown status` commands.
 
 #### v0.7.2 — Memory hardening and benchmark closure
 
@@ -343,7 +348,7 @@ TOTP entry remain deferred to `v0.8.0`.
 | Local attachment ingest baseline | v0.6.6 |
 | Full attachment processing pipeline | v0.7+ |
 | Long-term memory | v0.7 |
-| Command-chat UX bug fixes (no-regex, lockdown recovery) | v0.7.1 |
+| Command-chat UX bug fixes (no-regex, lockdown recovery, state inspection) | v0.7.1 |
 | Memory hardening + benchmark closure | v0.7.2 |
 | Open-threads UX + operator admin UX | v0.7.3 |
 | UX overhaul + operator web UI | v0.8 |

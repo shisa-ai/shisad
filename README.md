@@ -54,12 +54,13 @@ This repo is public and still pre-alpha. The latest published line is `v0.7.0`
 on GitHub Releases and PyPI. The v0.7 line adds structured long-term memory
 with separate identity, active-attention, recall, procedural-skill, and evidence
 surfaces; review-gated memory writes; and derived graph/consolidation
-foundations. Active development is on a v0.7.1 bug-fix point release covering
-command-chat UX regressions surfaced during live verification.
+foundations. The `v0.7.1` bug-fix point release is release-prepared locally and
+in release-close validation for command-chat, lockdown recovery, memory scoping,
+and state-inspection UX fixes.
 
 | Version | Focus |
 |---------|-------|
-| **v0.7** | **Memory foundation + long-term memory surfaces (published: `v0.7.0`; next: `v0.7.1` command-chat UX bug fixes, then `v0.7.2` memory hardening)** |
+| **v0.7** | **Memory foundation + long-term memory surfaces (published: `v0.7.0`; `v0.7.1` bug-fix point release is in release-close; next: `v0.7.2` memory hardening)** |
 | v0.6 | Orchestration foundation + tool-surface expansion (COMMAND/TASK runtime, credential scoping, web tools, browser baseline) |
 | v0.5 | First public release — evidence references, repo split, zero-config SHISA provider |
 | v0.4 | Self-modification, coding-agent runtime, COMMAND/TASK isolation |

@@ -11,6 +11,28 @@ Versioning follows semver (see `docs/PUBLISH.md` for policy and style guide).
 
 ## [0.7.1] - Unreleased
 
+### Added
+
+- **Trusted chat can recover a caution-level lockdown without leaving the
+  session.** When shisad enters a recoverable lockdown after suspicious
+  activity, the user-visible notice names the in-chat and CLI recovery paths,
+  and a trusted operator can ask the assistant to resume through a dedicated
+  `lockdown.resume` tool.
+
+- **Operators can inspect pending actions and lockdown state from the CLI.**
+  `shisad action list` shows pending confirmation state, and `shisad lockdown
+  status` shows current lockdown level, reason, and session context without
+  grepping audit JSONL. Raw and JSON output can include local pending-action
+  metadata and tool arguments, so treat it as operational data from the local
+  daemon.
+
+### Changed
+
+- **Release publishing is prepared with provenance and SBOM evidence.** The
+  release workflow builds and checks both distribution artifacts, records
+  build-provenance attestations, uploads an SPDX SBOM, and keeps PyPI
+  publishing on tag refs through GitHub trusted publishing.
+
 ### Fixed
 
 - **The chat TUI now renders assistant Markdown instead of showing Markdown
@@ -38,6 +60,53 @@ Versioning follows semver (see `docs/PUBLISH.md` for policy and style guide).
   action result instead of a generic tool summary, explicit trusted `todo`
   writes in multi-tool turns can proceed from current-turn intent, and default
   workspace listings are grounded for common “this/the folder” phrasing.
+
+- **Trusted command-chat no longer becomes a daemon-side regex parser when
+  confirmations are pending.** Free-form trusted chat keeps reaching the
+  planner, pending actions are surfaced as trusted control state, and explicit
+  confirmation or rejection resolves through the structured `action.resolve`
+  tool instead of fuzzy daemon-side text parsing.
+
+- **Natural file lookup is less likely to fall through to shell commands.**
+  Follow-ups such as "can you look for the file?" are steered toward
+  `fs.list` / `fs.read` and away from the deprecated `file.read` alias or
+  shell fallback.
+
+- **File discovery and shell searches stay inside the active workspace.**
+  Shell-based file searches run rooted in the configured workspace, reject
+  command masquerades and path escapes through symlinks or unusual shell
+  constructs, preserve common file-finding phrasing, and route unknown or risky
+  targets to confirmation with the exact command surfaced for review.
+
+- **Audit and startup diagnostics identify the runtime they are inspecting.**
+  `shisad audit query` and `shisad audit verify` show the active data
+  directory, and startup preflight accepts `ANTHROPIC_API_KEY` while reporting
+  Anthropic keys distinctly from `OPENAI_API_KEY`.
+
+- **The Codex coding-agent bridge installs its adapter noninteractively.**
+  First-run Codex sessions no longer stall on an interactive registry prompt,
+  and the bridge uses `@zed-industries/codex-acp@0.12.0`.
+
+- **Malformed browser URLs fail closed before egress.** Ambiguous or malformed
+  hostnames are rejected up front instead of reaching the browser/network
+  layer.
+
+### Security
+
+- **Personal memory is scoped per user and workspace.** Long-term memory writes
+  and recall carry owner scope, so personal notes and identity memory from one
+  workspace do not leak into another. Recall, export, and retrieval paths reject
+  blank private-owner scope instead of silently returning owner-private rows;
+  public/unowned collection rows remain available where intended.
+
+- **Same-scope personal recall is framed as trusted memory context when clean.**
+  The assistant no longer treats the operator's own prior-session memory as
+  untrusted DATA EVIDENCE solely because it was recalled later, while tainted or
+  cross-scope content keeps the untrusted framing.
+
+- **Cross-thread leak detection is limited to recent user-authored entries.**
+  The detector no longer compares against unrelated sessions, reducing false
+  positives without widening what can authorize actions.
 
 ## [0.7.0] - 2026-04-25
 
@@ -267,7 +336,7 @@ request.
   intents you have explicitly allowed. Omitting the allowlist means
   zero access until you add grants. Per-agent rate limits (default
   60/min, 600/hour) are enforced on the verified cryptographic identity to
-  prevent abuse.
+  limit repeated abuse.
 
 - **Every A2A ingress decision is audited.** Accepted requests, rejections,
   and rate-limit violations emit structured audit events with sender identity,

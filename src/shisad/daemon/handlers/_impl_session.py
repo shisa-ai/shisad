@@ -479,8 +479,7 @@ _CRC_CONFIRM_INDEX_RE = re.compile(r"^(?:confirm|approve|yes)\s+(\d+)$")
 _CRC_REJECT_INDEX_RE = re.compile(r"^(?:reject|deny|no)\s+(\d+)$")
 _CRC_COMMAND_PREFIX_RE = r"^(?:(?:please|ok(?:ay)?)[,\s:]+)?"
 _CRC_NEGATED_ACTION_RESOLVE_RE = re.compile(
-    _CRC_COMMAND_PREFIX_RE
-    + r"(?:do\s+not|don't|dont|not)\s+"
+    _CRC_COMMAND_PREFIX_RE + r"(?:do\s+not|don't|dont|not)\s+"
     r"(?:confirm|approve|yes|reject|deny|no)\b"
 )
 _CRC_CONFIRM_INDEX_PREFIX_RE = re.compile(
@@ -490,8 +489,7 @@ _CRC_REJECT_INDEX_PREFIX_RE = re.compile(
     _CRC_COMMAND_PREFIX_RE + r"(?:reject|deny|no)\s+(\d{1,3})\b"
 )
 _CRC_CONFIRM_ALL_SEARCH_RE = re.compile(
-    _CRC_COMMAND_PREFIX_RE
-    + r"(?:yes\s+to\s+all|confirm\s+all|approve\s+all)(?:\s+pending)?\b"
+    _CRC_COMMAND_PREFIX_RE + r"(?:yes\s+to\s+all|confirm\s+all|approve\s+all)(?:\s+pending)?\b"
 )
 _CRC_REJECT_ALL_SEARCH_RE = re.compile(
     _CRC_COMMAND_PREFIX_RE
@@ -820,6 +818,7 @@ _LOCKDOWN_RESUME_REASON_CONDITIONAL_ACTOR_RE = re.compile(
     r"(?:should|must|need|needs|can|could|would|will|verify|check|confirm)\b",
     re.IGNORECASE,
 )
+
 
 def _lockdown_resume_reason_tail_is_clear(tail: str) -> bool:
     normalized = tail.lstrip(" ,;:-").casefold()
@@ -1428,6 +1427,32 @@ def _planner_tool_display_name(tool: ToolDefinition) -> str:
     return display_name
 
 
+def _planner_context_description(
+    tool: ToolDefinition,
+    *,
+    enabled_tool_names: set[ToolName],
+) -> str:
+    description = tool.planner_description()
+    tool_name = canonical_tool_name_typed(str(tool.name), warn_on_alias=False)
+    if (
+        tool_name == ToolName("shell.exec")
+        and ToolName("fs.list") not in enabled_tool_names
+        and ToolName("fs.read") not in enabled_tool_names
+    ):
+        return description.replace(
+            "Do not use for file discovery, directory listing, or file reads "
+            "when fs.list or fs.read are available.",
+            "Prefer structured runtime tools over shell commands whenever a "
+            "structured tool covers the task.",
+        )
+    if tool_name == ToolName("file.read") and ToolName("fs.read") not in enabled_tool_names:
+        return description.replace(
+            "Do not use for user-facing file reads when fs.read is available.",
+            "Use only for legacy compatibility and sandbox policy testing.",
+        )
+    return description
+
+
 def _is_trusted_level(trust_level: str) -> bool:
     return trust_level.strip().lower() in {"trusted", "verified", "internal", "owner"}
 
@@ -1874,6 +1899,9 @@ def _build_planner_tool_context(
         ),
         f"Runtime tool catalog entries: {len(visible_tools)}",
     ]
+    enabled_tool_names = {
+        canonical_tool_name_typed(str(tool.name), warn_on_alias=False) for tool in enabled_tools
+    }
     if any(_planner_tool_source_note(tool) for tool in visible_tools):
         lines.append(
             "Entries marked [external/untrusted] come from configured MCP servers, "
@@ -1899,7 +1927,8 @@ def _build_planner_tool_context(
             caps = sorted(cap.value for cap in tool.capabilities_required)
             cap_suffix = f" (requires: {', '.join(caps)})" if caps else ""
             lines.append(
-                f"- {_planner_tool_display_name(tool)}: {tool.planner_description()}"
+                f"- {_planner_tool_display_name(tool)}: "
+                f"{_planner_context_description(tool, enabled_tool_names=enabled_tool_names)}"
                 f"{_planner_tool_source_note(tool)}{cap_suffix}"
             )
         if disabled_tools:
@@ -2061,14 +2090,10 @@ def _planner_tool_allowlist_with_lockdown_resume(
     if base_allowlist is None:
         if lockdown_resume_visible:
             return None
-        return {
-            tool.name for tool in registry_tools if tool.name != _LOCKDOWN_RESUME_TOOL_NAME
-        }
+        return {tool.name for tool in registry_tools if tool.name != _LOCKDOWN_RESUME_TOOL_NAME}
     if lockdown_resume_visible:
         return {*base_allowlist, _LOCKDOWN_RESUME_TOOL_NAME}
-    return {
-        tool_name for tool_name in base_allowlist if tool_name != _LOCKDOWN_RESUME_TOOL_NAME
-    }
+    return {tool_name for tool_name in base_allowlist if tool_name != _LOCKDOWN_RESUME_TOOL_NAME}
 
 
 def _pending_pep_context_snapshot(context: PolicyContext) -> PendingPepContextSnapshot:
@@ -2728,9 +2753,7 @@ def _daemon_pending_confirmation_response_text(
                 if single_totp_confirmation_id == confirmation_id:
                     lines.append("   TOTP in chat: reply with the 6-digit code")
                 else:
-                    lines.append(
-                        f"   TOTP in chat: reply with 'confirm {confirmation_id} 123456'"
-                    )
+                    lines.append(f"   TOTP in chat: reply with 'confirm {confirmation_id} 123456'")
                 lines.append(f"   To reject in chat: reply with 'reject {pending_number}'")
                 lines.append(f"   CLI fallback: {_totp_cli_confirm_command(confirmation_id)}")
             else:
@@ -3259,8 +3282,7 @@ def _build_planner_memory_context(
                 continue
             cited_chunk_ids.append(item.chunk_id)
             lines.append(
-                f"- [{index}] source={item.source_id} "
-                f"collection={item.collection} :: {snippet}"
+                f"- [{index}] source={item.source_id} collection={item.collection} :: {snippet}"
             )
 
     if untrusted_items:
@@ -3282,9 +3304,7 @@ def _build_planner_memory_context(
             if item.trust_band != "elevated" or bool(item.taint_labels):
                 amv_tainted = True
             cited_chunk_ids.append(item.chunk_id)
-            taint_value = (
-                ",".join(sorted(label.value for label in item_taints)) or "none"
-            )
+            taint_value = ",".join(sorted(label.value for label in item_taints)) or "none"
             lines.append(
                 f"- [{index}] source={item.source_id} "
                 f"collection={item.collection} taint={taint_value} :: {snippet}"
@@ -6233,13 +6253,8 @@ class SessionImplMixin(HandlerMixinBase):
         ):
             return PlannerActionResolveResult(
                 rejected=1,
-                rejection_reasons=[
-                    "lockdown_resume_requires_explicit_current_turn_intent"
-                ],
-                summary=(
-                    "lockdown.resume rejected: explicit current-turn resume intent "
-                    "required"
-                ),
+                rejection_reasons=["lockdown_resume_requires_explicit_current_turn_intent"],
+                summary=("lockdown.resume rejected: explicit current-turn resume intent required"),
             )
 
         reason = str(arguments.get("reason", "")).strip()
@@ -6378,9 +6393,7 @@ class SessionImplMixin(HandlerMixinBase):
             if str(proposal.tool_name) == "action.resolve":
                 if pep_decision.kind.value != "allow":
                     final_reason = (
-                        pep_decision.reason
-                        or pep_decision.reason_code.strip()
-                        or "pep_reject"
+                        pep_decision.reason or pep_decision.reason_code.strip() or "pep_reject"
                     )
                     rejected += 1
                     rejection_reasons_for_user.append(final_reason)
@@ -6412,9 +6425,7 @@ class SessionImplMixin(HandlerMixinBase):
                     validated=validated,
                     arguments=proposal_arguments,
                     pending_action_binding_ids=planner_context.pending_action_binding_ids,
-                    requires_explicit_current_turn_intent=(
-                        action_resolve_requires_explicit_intent
-                    ),
+                    requires_explicit_current_turn_intent=(action_resolve_requires_explicit_intent),
                 )
                 executed += resolve_result.executed
                 rejected += resolve_result.rejected
@@ -6452,8 +6463,7 @@ class SessionImplMixin(HandlerMixinBase):
                             control_plane_decision="skipped:action_resolve",
                             final_decision=(
                                 "allow"
-                                if resolve_result.executed > 0
-                                and resolve_result.rejected == 0
+                                if resolve_result.executed > 0 and resolve_result.rejected == 0
                                 else "reject"
                             ),
                             executed=resolve_result.executed > 0,
@@ -6475,15 +6485,11 @@ class SessionImplMixin(HandlerMixinBase):
                 # Every other tool remains monitored as usual.
                 if pep_decision.kind.value != "allow":
                     final_reason = (
-                        pep_decision.reason
-                        or pep_decision.reason_code.strip()
-                        or "pep_reject"
+                        pep_decision.reason or pep_decision.reason_code.strip() or "pep_reject"
                     )
                     rejected += 1
                     rejection_reasons_for_user.append(final_reason)
-                    action_resolve_summaries.append(
-                        f"lockdown.resume rejected: {final_reason}"
-                    )
+                    action_resolve_summaries.append(f"lockdown.resume rejected: {final_reason}")
                     await self._event_bus.publish(
                         ToolRejected(
                             session_id=sid,
@@ -6546,8 +6552,7 @@ class SessionImplMixin(HandlerMixinBase):
                             control_plane_decision="skipped:lockdown_resume",
                             final_decision=(
                                 "allow"
-                                if resume_result.executed > 0
-                                and resume_result.rejected == 0
+                                if resume_result.executed > 0 and resume_result.rejected == 0
                                 else "reject"
                             ),
                             executed=resume_result.executed > 0,

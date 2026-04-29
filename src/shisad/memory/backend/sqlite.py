@@ -255,13 +255,9 @@ class SQLiteRetrievalBackend:
                             else None
                         ),
                         scope=str(row["scope"]) if row["scope"] is not None else None,
-                        user_id=(
-                            str(row["user_id"]) if row["user_id"] is not None else None
-                        ),
+                        user_id=(str(row["user_id"]) if row["user_id"] is not None else None),
                         workspace_id=(
-                            str(row["workspace_id"])
-                            if row["workspace_id"] is not None
-                            else None
+                            str(row["workspace_id"]) if row["workspace_id"] is not None else None
                         ),
                         taint_labels_json=str(row["taint_labels_json"]),
                         quarantined=bool(row["quarantined"]),

@@ -206,15 +206,9 @@ class MemoryImplMixin(HandlerMixinBase):
     @staticmethod
     def _owner_scope_from_params(params: Mapping[str, Any]) -> dict[str, Any]:
         return {
-            "user_id": (
-                str(params.get("user_id"))
-                if params.get("user_id") is not None
-                else None
-            ),
+            "user_id": (str(params.get("user_id")) if params.get("user_id") is not None else None),
             "workspace_id": (
-                str(params.get("workspace_id"))
-                if params.get("workspace_id") is not None
-                else None
+                str(params.get("workspace_id")) if params.get("workspace_id") is not None else None
             ),
             "include_unowned": bool(params.get("include_unowned", False)),
         }
@@ -248,9 +242,7 @@ class MemoryImplMixin(HandlerMixinBase):
             str(entry.get("user_id")) if entry.get("user_id") is not None else None
         )
         effective_workspace_id = workspace_id or (
-            str(entry.get("workspace_id"))
-            if entry.get("workspace_id") is not None
-            else None
+            str(entry.get("workspace_id")) if entry.get("workspace_id") is not None else None
         )
         try:
             ingestion.ingest(
@@ -349,15 +341,9 @@ class MemoryImplMixin(HandlerMixinBase):
             workflow_state=params.get("workflow_state"),
             invocation_eligible=bool(params.get("invocation_eligible", False)),
             supersedes=str(params.get("supersedes", "")).strip() or None,
-            user_id=(
-                str(params.get("user_id"))
-                if params.get("user_id") is not None
-                else None
-            ),
+            user_id=(str(params.get("user_id")) if params.get("user_id") is not None else None),
             workspace_id=(
-                str(params.get("workspace_id"))
-                if params.get("workspace_id") is not None
-                else None
+                str(params.get("workspace_id")) if params.get("workspace_id") is not None else None
             ),
         )
         return self._with_memory_reject_hint(cast(dict[str, Any], decision.model_dump(mode="json")))
@@ -459,11 +445,7 @@ class MemoryImplMixin(HandlerMixinBase):
                 channel_trust=context.channel_trust,
                 confirmation_status=context.confirmation_status,
                 scope=context.scope,
-                user_id=(
-                    str(params.get("user_id"))
-                    if params.get("user_id") is not None
-                    else None
-                ),
+                user_id=(str(params.get("user_id")) if params.get("user_id") is not None else None),
                 workspace_id=(
                     str(params.get("workspace_id"))
                     if params.get("workspace_id") is not None
@@ -523,15 +505,9 @@ class MemoryImplMixin(HandlerMixinBase):
             as_of=as_of,
             include_archived=bool(params.get("include_archived", False)),
             scope_filter=scope_filter,
-            user_id=(
-                str(params.get("user_id"))
-                if params.get("user_id") is not None
-                else None
-            ),
+            user_id=(str(params.get("user_id")) if params.get("user_id") is not None else None),
             workspace_id=(
-                str(params.get("workspace_id"))
-                if params.get("workspace_id") is not None
-                else None
+                str(params.get("workspace_id")) if params.get("workspace_id") is not None else None
             ),
             include_unowned=bool(params.get("include_unowned", False)),
         )
@@ -875,13 +851,9 @@ class MemoryImplMixin(HandlerMixinBase):
         }
 
     async def do_note_create(self, params: Mapping[str, Any]) -> dict[str, Any]:
-        caller_user_id = (
-            str(params.get("user_id")) if params.get("user_id") is not None else None
-        )
+        caller_user_id = str(params.get("user_id")) if params.get("user_id") is not None else None
         caller_workspace_id = (
-            str(params.get("workspace_id"))
-            if params.get("workspace_id") is not None
-            else None
+            str(params.get("workspace_id")) if params.get("workspace_id") is not None else None
         )
         if params.get("ingress_context"):
             result = self._write_handle_bound_entry(
