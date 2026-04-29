@@ -4543,7 +4543,6 @@ class SessionImplMixin(HandlerMixinBase):
                 trust_level=trust_level,
             )
             and totp_submission is None
-            and not allow_direct_trusted_cli_confirmation
         ):
             return None
         intent: ChatConfirmationIntent | None = None
