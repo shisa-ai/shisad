@@ -485,11 +485,32 @@ async def test_m2_t18_lockdown_admin_resume_path(
             "lockdown.set",
             {"session_id": sid, "action": "quarantine", "reason": "incident"},
         )
+        quarantined_status = await client.call(
+            "lockdown.status",
+            {"session_id": sid},
+        )
+        assert quarantined_status["count"] == 1
+        assert quarantined_status["statuses"][0]["session_id"] == sid
+        assert quarantined_status["statuses"][0]["level"] == "quarantine"
+        assert quarantined_status["statuses"][0]["reason"] == "incident"
+        assert quarantined_status["statuses"][0]["active"] is True
+        assert quarantined_status["statuses"][0]["user_id"] == "alice"
+        assert quarantined_status["statuses"][0]["workspace_id"] == "ws1"
+
+        all_status = await client.call("lockdown.status", {"all": True})
+        assert any(row["session_id"] == sid for row in all_status["statuses"])
+
         resumed = await client.call(
             "lockdown.set",
             {"session_id": sid, "action": "resume", "reason": "resolved"},
         )
         assert resumed["level"] == "normal"
+        resumed_status = await client.call(
+            "lockdown.status",
+            {"session_id": sid},
+        )
+        assert resumed_status["statuses"][0]["level"] == "normal"
+        assert resumed_status["statuses"][0]["reason"] == "resolved"
     finally:
         with suppress(Exception):
             await client.call("daemon.shutdown")

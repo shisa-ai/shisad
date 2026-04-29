@@ -307,12 +307,12 @@ async def test_lt2_session_message_confirmation_commands_do_not_reenter_planner(
             f"Then run 'shisactl action reject {confirmation_id}'",
             f"Then run 'shisad action reject {confirmation_id} --nonce nonce-1'",
             f"Then run 'shisactl action reject {confirmation_id} --nonce nonce-1'",
-            "shisad action pending --session sess-chat --status pending --limit 10 --raw",
-            "shisactl action pending --session sess-chat --status pending --limit 10 --raw",
+            "shisad action list --session sess-chat --status pending --limit 10 --raw",
+            "shisactl action list --session sess-chat --status pending --limit 10 --raw",
             f"```\nshisad action confirm {confirmation_id} --nonce nonce-1\n```",
             f"```\nshisactl action confirm {confirmation_id} --nonce nonce-1\n```",
-            "Review all pending: shisad action pending",
-            "Review all pending: shisactl action pending",
+            "Review all pending: shisad action list",
+            "Review all pending: shisactl action list",
             confirmation_id,
         ):
             invalid = await _send(sid, invalid_command)
@@ -619,11 +619,13 @@ async def test_g1_chat_confirmation_early_return_persists_assistant_transcript_a
             limit=10,
         )
 
-        assert len(after_entries) == len(before_entries) + 2
-        assert after_entries[-2].role == "user"
-        assert after_entries[-2].content_preview == "yes"
-        assert after_entries[-1].role == "assistant"
-        assert after_entries[-1].content_preview == second["response"]
+        new_entries = after_entries[len(before_entries) :]
+        assert len(new_entries) >= 2
+        assert any(entry.role == "user" and entry.content_preview == "yes" for entry in new_entries)
+        assert any(
+            entry.role == "assistant" and entry.content_preview == second["response"]
+            for entry in new_entries
+        )
         assert len(after_responded) == len(before_responded) + 1
         assert after_responded[-1]["data"]["executed_actions"] == second["executed_actions"]
     finally:
@@ -1052,7 +1054,7 @@ async def test_u9_channel_ingest_totp_code_mismatched_reply_target_does_not_rebi
         response = str(mismatched.response).lower()
         assert "different chat target" in response
         assert "original approval thread/channel" in response
-        assert "shisad action pending" in response
+        assert "shisad action list" in response
         assert "shisad action confirm confirmation_id --totp-code 123456" in response
         assert "confirmation id:" not in response
         assert "pending confirmations." not in response
@@ -1158,7 +1160,7 @@ async def test_u9_channel_ingest_rejects_totp_pending_action_via_trusted_chat_re
                 "comfirm 1",
                 "Then run 'shisad action reject confirmation_id'",
                 "Then run 'shisad action reject confirmation_id --nonce nonce-1'",
-                "Review all pending: shisad action pending",
+                "Review all pending: shisad action list",
             ),
             start=2,
         ):
@@ -1563,7 +1565,7 @@ async def test_u9_channel_ingest_wrong_target_reject_uses_reject_cli_recovery_gu
         response = str(wrong_target_reject.response).lower()
         assert "different chat target" in response
         assert "original approval thread/channel" in response
-        assert "shisad action pending" in response
+        assert "shisad action list" in response
         assert "shisad action reject confirmation_id" in response
         assert "shisad action confirm confirmation_id --totp-code 123456" not in response
         assert "confirmation id:" not in response

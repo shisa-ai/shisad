@@ -120,6 +120,23 @@ def test_cli_commands_route_through_rpc_wrapper(
         "action.confirm": {"confirmed": True, "confirmation_id": "c-1"},
         "action.reject": {"rejected": True, "confirmation_id": "c-1"},
         "lockdown.set": {"session_id": "s-1", "level": "normal", "reason": "manual"},
+        "lockdown.status": {
+            "statuses": [
+                {
+                    "session_id": "s-1",
+                    "level": "quarantine",
+                    "reason": "incident",
+                    "trigger": "manual",
+                    "updated_at": "2026-03-01T00:00:00+00:00",
+                    "active": True,
+                    "user_id": "alice",
+                    "workspace_id": "ws-1",
+                    "channel": "cli",
+                    "mode": "default",
+                }
+            ],
+            "count": 1,
+        },
         "channel.pairing_propose": {
             "proposal_id": "proposal-1",
             "proposal_path": "/tmp/proposal-1.json",
@@ -497,6 +514,11 @@ def test_cli_commands_route_through_rpc_wrapper(
             ["action", "pending", "--session", "s-1", "--status", "pending", "--limit", "5"],
         ).output
     )
+    action_list = _invoke_ok(
+        runner,
+        ["action", "list", "--session", "s-1", "--status", "pending", "--limit", "5", "--json"],
+    ).output
+    assert '"confirmation_id": "c-1"' in action_list
     _invoke_ok(runner, ["action", "confirm", "c-1", "--reason", "ok"])
     _invoke_ok(runner, ["action", "reject", "c-1", "--reason", "deny"])
     _invoke_ok(runner, ["lockdown", "resume", "s-1", "--reason", "manual"])
@@ -504,6 +526,11 @@ def test_cli_commands_route_through_rpc_wrapper(
         runner,
         ["lockdown", "set", "s-1", "--action", "quarantine", "--reason", "manual"],
     )
+    lockdown_status = _invoke_ok(
+        runner,
+        ["lockdown", "status", "--session", "s-1", "--json"],
+    ).output
+    assert '"level": "quarantine"' in lockdown_status
     _invoke_ok(runner, ["channel", "pairing-propose", "--limit", "5"])
     assert (
         "selfmod-proposal-1"
@@ -774,6 +801,16 @@ def test_cli_commands_route_through_rpc_wrapper(
         "lockdown.set",
         {"session_id": "s-1", "action": "quarantine", "reason": "manual"},
     ) in calls
+    assert (
+        "action.pending",
+        {
+            "session_id": "s-1",
+            "status": "pending",
+            "limit": 5,
+            "include_ui": True,
+        },
+    ) in calls
+    assert ("lockdown.status", {"session_id": "s-1", "all": False}) in calls
     assert (
         "memory.mint_ingress_context",
         {"content": "blue"},
@@ -1258,7 +1295,7 @@ def test_session_message_command_preserves_pending_preview_linebreak_markers(
                     "1. c-1\n"
                     "   Preview:\n"
                     "     body: line1\\nline2\n\n"
-                    "Review all pending: shisad action pending"
+                    "Review all pending: shisad action list"
                 ),
                 "pending_confirmation_ids": ["c-1"],
             }

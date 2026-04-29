@@ -56,6 +56,7 @@ from shisad.core.api.schema import (
     GraphExportResult,
     GraphQueryResult,
     LockdownSetResult,
+    LockdownStatusResult,
     MemoryConsolidateResult,
     MemoryExportResult,
     MemoryListResult,
@@ -1536,6 +1537,42 @@ def action_pending(session_id: str, status: str, limit: int, raw: bool) -> None:
         },
         response_model=ActionPendingResult,
     )
+    _render_action_rows(result)
+
+
+@action.command("list")
+@click.option("--session", "session_id", default="", help="Filter by session id")
+@click.option("--status", default="", help="Filter by status")
+@click.option("--limit", default=50, help="Maximum rows")
+@click.option("--raw", is_flag=True, help="Disable UI preview payloads")
+@click.option("--json", "output_json", is_flag=True, help="Emit JSON")
+def action_list(
+    session_id: str,
+    status: str,
+    limit: int,
+    raw: bool,
+    output_json: bool,
+) -> None:
+    """List confirmations with optional machine-readable output."""
+    config = _get_config()
+    result = rpc_call(
+        config,
+        "action.pending",
+        {
+            "session_id": session_id or None,
+            "status": None if status.strip().lower() == "all" else (status or "pending"),
+            "limit": limit,
+            "include_ui": not raw,
+        },
+        response_model=ActionPendingResult,
+    )
+    if output_json:
+        click.echo(_dump_model(result))
+        return
+    _render_action_rows(result)
+
+
+def _render_action_rows(result: ActionPendingResult) -> None:
     rows = result.actions
     if not rows:
         _echo("No pending confirmations", fg="yellow")
@@ -1802,7 +1839,7 @@ def action_confirm(
             click.echo(_dump_model(_synthetic_pending_confirm_result(existing_row)))
             return
         raise click.ClickException(
-            "Decision nonce not found for confirmation_id; run 'shisad action pending' and retry "
+            "Decision nonce not found for confirmation_id; run 'shisad action list' and retry "
             "with --nonce."
         )
     if totp_code.strip() and recovery_code.strip():
@@ -1840,7 +1877,7 @@ def action_confirm(
         approval_url = (pending_row.approval_url or "").strip() if pending_row else ""
         if not approval_url:
             raise click.ClickException(
-                "WebAuthn approval URL unavailable; run 'shisad action pending' and retry."
+                "WebAuthn approval URL unavailable; run 'shisad action list' and retry."
             )
         click.echo(f"Open this approval URL in a system browser:\n{approval_url}")
         approval_qr_ascii = (pending_row.approval_qr_ascii or "").rstrip() if pending_row else ""
@@ -1883,7 +1920,7 @@ def action_reject(confirmation_id: str, nonce: str, reason: str) -> None:
         )
     if not decision_nonce:
         raise click.ClickException(
-            "Decision nonce not found for confirmation_id; run 'shisad action pending' and retry "
+            "Decision nonce not found for confirmation_id; run 'shisad action list' and retry "
             "with --nonce."
         )
     result = rpc_call(
@@ -2275,6 +2312,44 @@ def lockdown_set(session_id: str, action_name: str, reason: str) -> None:
         response_model=LockdownSetResult,
     )
     click.echo(_dump_model(result))
+
+
+@lockdown.command("status")
+@click.option("--session", "session_id", default="", help="Show one session")
+@click.option("--all", "all_sessions", is_flag=True, help="Show all active or stored sessions")
+@click.option("--json", "output_json", is_flag=True, help="Emit JSON")
+def lockdown_status(session_id: str, all_sessions: bool, output_json: bool) -> None:
+    """Show current lockdown state."""
+    if not session_id and not all_sessions:
+        raise click.ClickException("--session or --all is required.")
+    config = _get_config()
+    result = rpc_call(
+        config,
+        "lockdown.status",
+        {"session_id": session_id or None, "all": bool(all_sessions)},
+        response_model=LockdownStatusResult,
+    )
+    if output_json:
+        click.echo(_dump_model(result))
+        return
+    if not result.statuses:
+        _echo("No lockdown state", fg="yellow")
+        return
+    for row in result.statuses:
+        session_value = sanitize_terminal_field(row.session_id)
+        level_value = sanitize_terminal_field(row.level)
+        reason_value = sanitize_terminal_field(row.reason)
+        trigger_value = sanitize_terminal_field(row.trigger)
+        user_value = sanitize_terminal_field(row.user_id)
+        workspace_value = sanitize_terminal_field(row.workspace_id)
+        channel_value = sanitize_terminal_field(row.channel)
+        mode_value = sanitize_terminal_field(row.mode)
+        click.echo(
+            f"{session_value} level={level_value} reason={reason_value} "
+            f"trigger={trigger_value} active={str(row.active).lower()} "
+            f"user={user_value} workspace={workspace_value} "
+            f"channel={channel_value} mode={mode_value}"
+        )
 
 
 @cli.group()

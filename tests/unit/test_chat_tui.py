@@ -56,7 +56,7 @@ def test_format_assistant_message_preserves_pending_preview_linebreak_markers() 
         "1. c-1\n"
         "   Preview:\n"
         "     body: line1\\nline2\n\n"
-        "Review all pending: shisad action pending",
+        "Review all pending: shisad action list",
         preserve_pending_preview_escapes=True,
     )
 

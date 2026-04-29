@@ -202,7 +202,7 @@ def _sanitize_terminal_assistant_segment(
         if (
             preserve_pending_preview_escapes
             and in_pending_block
-            and line == "Review all pending: shisad action pending"
+            and line == "Review all pending: shisad action list"
         ):
             in_pending_block = False
             in_pending_preview = False

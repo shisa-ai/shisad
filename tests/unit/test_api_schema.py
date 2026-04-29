@@ -19,6 +19,7 @@ from shisad.core.api.schema import (
     DoctorCheckResult,
     JsonRpcRequest,
     LockdownSetResult,
+    LockdownStatusResult,
     MemoryDeleteResult,
     MemoryEntryParams,
     MemoryExportResult,
@@ -318,6 +319,20 @@ class TestApiSchemaValidation:
         lockdown = LockdownSetResult.model_validate(
             {"session_id": "s1", "level": "caution", "reason": "manual"}
         )
+        lockdown_status = LockdownStatusResult.model_validate(
+            {
+                "statuses": [
+                    {
+                        "session_id": "s1",
+                        "level": "caution",
+                        "reason": "manual",
+                        "trigger": "monitor",
+                        "active": True,
+                    }
+                ],
+                "count": 1,
+            }
+        )
         risk = ToolExecuteResult.model_validate(
             {"allowed": True, "exit_code": 0, "confirmation_required": False}
         )
@@ -373,6 +388,7 @@ class TestApiSchemaValidation:
         assert daemon_shutdown.status == "shutting_down"
         assert policy_explain.tool_name == "shell_exec"
         assert lockdown.level == "caution"
+        assert lockdown_status.statuses[0].active is True
         assert risk.allowed is True
         assert ingest.ingress_risk == 0.1
         assert set_mode.mode == "admin_cleanroom"

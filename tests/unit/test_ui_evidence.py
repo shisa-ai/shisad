@@ -149,7 +149,7 @@ def test_render_evidence_refs_for_terminal_limits_pending_preview_bypass_to_pend
         "1. c-1\n"
         "   Preview:\n"
         "     body: line1\\nline2\n\n"
-        "Review all pending: shisad action pending\n\n"
+        "Review all pending: shisad action list\n\n"
         "Completed actions:\n"
         "tool.run: ok=True\n"
         "   Preview:\n"

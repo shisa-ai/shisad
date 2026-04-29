@@ -49,6 +49,14 @@ def _make_registry() -> ToolRegistry:
     )
     registry.register(
         ToolDefinition(
+            name=ToolName("file.read"),
+            description="Legacy file read compatibility surface",
+            parameters=[ToolParameter(name="path", type="string", required=True)],
+            capabilities_required=[Capability.FILE_READ],
+        )
+    )
+    registry.register(
+        ToolDefinition(
             name=ToolName("fs.list"),
             description="List files in the configured workspace",
             parameters=[ToolParameter(name="path", type="string", required=False)],
@@ -243,6 +251,40 @@ async def test_m2_base_prompt_includes_web_search_and_multi_tool_guidance() -> N
     assert "put list items on separate lines" in system_prompt
     tool_names = _canonical_payload_names(provider.tools[0], {"fs.read", "web.search"})
     assert {"fs.read", "web.search"} <= tool_names
+
+
+@pytest.mark.asyncio
+async def test_c3_base_prompt_steers_natural_file_lookup_to_structured_fs_tools() -> None:
+    registry = _make_registry()
+    provider = _RecordingProvider()
+    pep = PEP(PolicyBundle(default_require_confirmation=False), registry)
+    planner = Planner(
+        provider,
+        pep,
+        max_retries=0,
+        capabilities=ProviderCapabilities(
+            supports_tool_calls=True,
+            supports_content_tool_calls=True,
+        ),
+        tool_registry=registry,
+    )
+
+    await planner.propose(
+        "read /root/INSTALL.LOG, then look for the file if that exact path is missing",
+        PolicyContext(capabilities={Capability.FILE_READ, Capability.SHELL_EXEC}),
+        tools=_tools_payload(registry, {"fs.read", "fs.list", "file.read", "shell.exec"}),
+    )
+
+    system_prompt = provider.messages[0][0].content.lower()
+    assert "natural file-read requests" in system_prompt
+    assert "\"read <path>\"" in system_prompt
+    assert "\"look for the file\"" in system_prompt
+    assert "fs.read first" in system_prompt
+    assert "fs.list" in system_prompt
+    assert "file.read" in system_prompt
+    assert "legacy" in system_prompt
+    assert "shell.exec" in system_prompt
+    assert "ordinary filesystem discovery" in system_prompt
 
 
 @pytest.mark.asyncio

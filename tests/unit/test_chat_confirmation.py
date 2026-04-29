@@ -783,18 +783,18 @@ async def test_channel_chat_confirmation_rejects_confirm_index_without_proof(
         "shisad action confirm c-1 --recovery-code abcd-1234",
         "shisad action reject c-1 --nonce nonce-1 --reason manual_reject",
         "shisactl action reject c-1 --nonce nonce-1 --reason manual_reject",
-        "shisad action pending --session sess-chat --status pending --limit 10 --raw",
-        "shisactl action pending --session sess-chat --status pending --limit 10 --raw",
+        "shisad action list --session sess-chat --status pending --limit 10 --raw",
+        "shisactl action list --session sess-chat --status pending --limit 10 --raw",
         "shisad action purge --status failed --session sess-chat --limit 10 --dry-run",
         "shisactl action purge --status failed --session sess-chat --limit 10 --dry-run",
         "shisad action purge --status pending --older-than-days 7",
         "shisactl action purge --status pending --older-than-days 7",
         "shisad action purge --help",
         "shisactl action purge --help",
-        "CLI fallback: run 'shisad action pending' to inspect pending approvals.",
-        "CLI fallback: run 'shisactl action pending' to inspect pending approvals.",
-        "```shisad action pending```",
-        "```shisactl action pending```",
+        "CLI fallback: run 'shisad action list' to inspect pending approvals.",
+        "CLI fallback: run 'shisactl action list' to inspect pending approvals.",
+        "```shisad action list```",
+        "```shisactl action list```",
         "```\nshisad action confirm c-1 --nonce nonce-1\n```",
         "```\nshisactl action confirm c-1 --nonce nonce-1\n```",
         "```text\nshisad action reject c-1 --nonce nonce-1\n```",
@@ -802,14 +802,14 @@ async def test_channel_chat_confirmation_rejects_confirm_index_without_proof(
         "shisactl action --help",
         "shisad action confirm --help",
         "shisactl action confirm --help",
-        "shisad action pending --help",
-        "shisactl action pending --help",
+        "shisad action list --help",
+        "shisactl action list --help",
         "run 'shisad action confirm c-1'",
         "run 'shisactl action confirm c-1'",
         "Then run 'shisad action reject c-1'",
         "Then run 'shisactl action reject c-1'",
-        "Review all pending: shisad action pending",
-        "Review all pending: shisactl action pending",
+        "Review all pending: shisad action list",
+        "Review all pending: shisactl action list",
         "c-1",
     ],
 )
@@ -854,13 +854,13 @@ async def test_h1_chat_confirmation_does_not_treat_cli_command_or_id_as_approval
 @pytest.mark.parametrize(
     "content",
     [
-        'What does "shisad action pending" show?',
+        'What does "shisad action list" show?',
         'Should I run "shisad action reject c-1" now?',
         "shisad action reject c-1 now?",
-        "shisad action pending --session sess-chat what does this show?",
+        "shisad action list --session sess-chat what does this show?",
         "shisad action confirm c-1 --reason approved now?",
         '"shisad action reject c-1" now?',
-        "`shisad action pending --session sess-chat` what does this show?",
+        "`shisad action list --session sess-chat` what does this show?",
     ],
 )
 async def test_h1_chat_confirmation_cli_command_mentions_still_reach_planner(
@@ -1037,7 +1037,7 @@ async def test_u9_chat_totp_internal_ingress_rejects_mismatched_stored_delivery_
     response = str(result["response"]).lower()
     assert "different chat target" in response
     assert "original approval thread/channel" in response
-    assert "shisad action pending" in response
+    assert "shisad action list" in response
     assert "shisad action confirm confirmation_id --totp-code 123456" in response
     assert "confirmation id: c-1" not in response
     assert "pending confirmations." not in response
@@ -1260,7 +1260,7 @@ async def test_u9_chat_totp_internal_ingress_mismatched_reject_intent_uses_rejec
     response = str(result["response"]).lower()
     assert "different chat target" in response
     assert "original approval thread/channel" in response
-    assert "shisad action pending" in response
+    assert "shisad action list" in response
     assert "shisad action reject confirmation_id" in response
     assert "shisad action confirm confirmation_id --totp-code 123456" not in response
     assert "confirmation id: c-1" not in response

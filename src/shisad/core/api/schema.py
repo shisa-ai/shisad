@@ -1243,6 +1243,11 @@ class LockdownSetParams(_StrictParams):
     reason: str = "manual"
 
 
+class LockdownStatusParams(_StrictParams):
+    session_id: str | None = None
+    all: bool = False
+
+
 class ChannelMessageParams(_StrictParams):
     channel: str
     external_user_id: str
@@ -1728,6 +1733,24 @@ class LockdownSetResult(BaseModel):
     session_id: str
     level: str
     reason: str
+
+
+class LockdownStatusEntry(BaseModel):
+    session_id: str
+    level: str = "normal"
+    reason: str = ""
+    trigger: str = ""
+    updated_at: datetime | str | None = None
+    active: bool = False
+    user_id: str = ""
+    workspace_id: str = ""
+    channel: str = ""
+    mode: str = "default"
+
+
+class LockdownStatusResult(BaseModel):
+    statuses: list[LockdownStatusEntry] = Field(default_factory=list)
+    count: int = 0
 
 
 class RiskCalibrateResult(BaseModel):

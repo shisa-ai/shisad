@@ -71,6 +71,8 @@ from shisad.core.api.schema import (
     GraphQueryResult,
     LockdownSetParams,
     LockdownSetResult,
+    LockdownStatusParams,
+    LockdownStatusResult,
     MemoryConsolidateParams,
     MemoryConsolidateResult,
     MemoryDeleteResult,
@@ -758,6 +760,11 @@ class DaemonControlHandlers:
         self, params: LockdownSetParams, ctx: RequestContext
     ) -> LockdownSetResult:
         return await self._admin.handle_lockdown_set(params, ctx)
+
+    async def handle_lockdown_status(
+        self, params: LockdownStatusParams, ctx: RequestContext
+    ) -> LockdownStatusResult:
+        return await self._admin.handle_lockdown_status(params, ctx)
 
     async def handle_risk_calibrate(
         self, params: NoParams, ctx: RequestContext

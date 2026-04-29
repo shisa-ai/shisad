@@ -1365,6 +1365,49 @@ class AdminImplMixin(HandlerMixinBase):
         state = self._lockdown_manager.state_for(sid)
         return {"session_id": sid, "level": state.level.value, "reason": state.reason}
 
+    async def do_lockdown_status(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        session_filter = str(params.get("session_id") or "").strip()
+        include_all = bool(params.get("all", False))
+        active_sessions = {
+            str(session.id): session for session in self._session_manager.list_active()
+        }
+        explicit_states = {
+            str(state.session_id): state
+            for state in self._lockdown_manager.explicit_states()
+        }
+
+        if session_filter:
+            session_ids = [session_filter]
+        elif include_all:
+            session_ids = sorted(set(active_sessions) | set(explicit_states))
+        else:
+            session_ids = sorted(
+                sid
+                for sid, state in explicit_states.items()
+                if state.level.value != "normal"
+            )
+
+        statuses: list[dict[str, Any]] = []
+        for raw_sid in session_ids:
+            sid = SessionId(raw_sid)
+            session = active_sessions.get(raw_sid)
+            state = self._lockdown_manager.peek_state_for(sid)
+            statuses.append(
+                {
+                    "session_id": raw_sid,
+                    "level": state.level.value,
+                    "reason": state.reason,
+                    "trigger": state.trigger,
+                    "updated_at": state.updated_at.isoformat(),
+                    "active": session is not None,
+                    "user_id": str(session.user_id) if session is not None else "",
+                    "workspace_id": str(session.workspace_id) if session is not None else "",
+                    "channel": str(session.channel) if session is not None else "",
+                    "mode": str(session.mode.value) if session is not None else "default",
+                }
+            )
+        return {"statuses": statuses, "count": len(statuses)}
+
     async def do_risk_calibrate(self, params: Mapping[str, Any]) -> dict[str, Any]:
         _ = params
         updated = self._risk_calibrator.calibrate()

@@ -1936,7 +1936,7 @@ async def test_finalize_response_replaces_planner_text_with_daemon_pending_summa
     assert "confirm 2" in text
     assert "yes to all" not in text
     assert "ACTION CONFIRMATION" in text
-    assert "shisad action pending" in text
+    assert "shisad action list" in text
     assert "nonce-1" not in text
     assert "nonce-2" not in text
 

@@ -43,6 +43,7 @@ from shisad.core.api.schema import (
     GraphExportParams,
     GraphQueryParams,
     LockdownSetParams,
+    LockdownStatusParams,
     MemoryConsolidateParams,
     MemoryEntryParams,
     MemoryExportParams,
@@ -357,6 +358,7 @@ def _method_specs(
         ("signer.list", handlers.handle_signer_list, True, SignerListParams),
         ("signer.revoke", handlers.handle_signer_revoke, True, SignerRevokeParams),
         ("lockdown.set", handlers.handle_lockdown_set, True, LockdownSetParams),
+        ("lockdown.status", handlers.handle_lockdown_status, True, LockdownStatusParams),
         ("risk.calibrate", handlers.handle_risk_calibrate, True, NoParams),
         ("channel.ingest", handlers.handle_channel_ingest, True, ChannelIngestParams),
         (

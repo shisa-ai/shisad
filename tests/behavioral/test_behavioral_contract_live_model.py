@@ -358,6 +358,13 @@ def test_gh12_recovery_matcher_accepts_real_listing_or_shell_output() -> None:
     assert _reply_exposes_recovered_todo_log(shell)
 
 
+def _assert_no_legacy_or_shell_file_lookup(reply: dict[str, object]) -> None:
+    outputs = _extract_tool_outputs(reply)
+    assert "file.read" not in outputs
+    if "shell.exec" in outputs and not _reply_exposes_recovered_todo_log(reply):
+        pytest.fail(f"planner used shell.exec for file lookup without recovery evidence: {reply!r}")
+
+
 @pytest.mark.asyncio
 @pytest.mark.live_smoke
 async def test_live_model_similar_file_recovery_reaches_confirmation_or_listing(
@@ -376,11 +383,12 @@ async def test_live_model_similar_file_recovery_reaches_confirmation_or_listing(
             "session.message",
             {
                 "session_id": sid,
-                "content": "Use fs.read to read TODO.LOG and tell me what's at the end",
+                "content": "read TODO.LOG and tell me what's at the end",
             },
         )
         assert first.get("lockdown_level") == "normal"
         assert int(first.get("blocked_actions", 0)) == 0
+        _assert_no_legacy_or_shell_file_lookup(first)
         if _reply_exposes_recovered_todo_log(first):
             return
         if int(first.get("confirmation_required_actions", 0)) >= 1:
@@ -411,6 +419,7 @@ async def test_live_model_similar_file_recovery_reaches_confirmation_or_listing(
         observed.append(proposed)
         assert proposed.get("lockdown_level") == "normal"
         assert int(proposed.get("blocked_actions", 0)) == 0
+        _assert_no_legacy_or_shell_file_lookup(proposed)
 
         if int(proposed.get("confirmation_required_actions", 0)) >= 1:
             confirmed = await live_harness.client.call(
@@ -419,6 +428,7 @@ async def test_live_model_similar_file_recovery_reaches_confirmation_or_listing(
             )
             assert confirmed.get("lockdown_level") == "normal"
             assert int(confirmed.get("blocked_actions", 0)) == 0
+            _assert_no_legacy_or_shell_file_lookup(confirmed)
             if _reply_exposes_recovered_todo_log(confirmed):
                 return
             observed.append(confirmed)

@@ -56,6 +56,14 @@ class LockdownManager:
             self._states[session_id] = state
         return state
 
+    def peek_state_for(self, session_id: SessionId) -> LockdownState:
+        """Return current state without creating a stored default."""
+        return self._states.get(session_id) or LockdownState(session_id=session_id)
+
+    def explicit_states(self) -> list[LockdownState]:
+        """Return lockdown states that have been explicitly stored."""
+        return list(self._states.values())
+
     def trigger(
         self,
         session_id: SessionId,

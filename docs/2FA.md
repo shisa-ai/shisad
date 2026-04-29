@@ -99,10 +99,13 @@ any time.
 
 | Command | What it does |
 |---|---|
-| `shisad action pending` | List actions waiting for your approval |
+| `shisad action list --session <SID>` | List actions waiting for your approval |
+| `shisad action list --session <SID> --json` | List pending actions as JSON for scripts or state inspection |
 | `shisad action confirm <ID>` | Approve a pending action (auto-resolves nonce from pending state) |
-| `shisad action confirm <ID> --nonce <NONCE>` | Approve with an explicit decision nonce (from `action pending` output) |
+| `shisad action confirm <ID> --nonce <NONCE>` | Approve with an explicit decision nonce (from `action list` output) |
 | `shisad action reject <ID> --nonce <NONCE>` | Reject a pending action |
+| `shisad lockdown status --session <SID>` | Show the current lockdown level and reason for a session |
+| `shisad lockdown status --all --json` | Show active/stored lockdown state as JSON |
 | `shisad 2fa list` | List enrolled TOTP and passkey credentials |
 | `shisad signer list` | List enrolled signer keys |
 
@@ -600,8 +603,8 @@ For L3+ signed approvals, the audit trail also includes:
 |---|---|---|
 | `approval_origin_not_configured` | Browser WebAuthn was requested but `SHISAD_APPROVAL_ORIGIN` is not set | Set the env var, or use the local helper / TOTP instead |
 | `local_helper_unavailable` | Local-helper backend not active in current daemon mode | Check daemon config; the helper backend activates when no approval origin is set |
-| `missing_decision_nonce` | CLI could not auto-resolve the nonce from pending state | Run `shisad action pending` and pass `--nonce` explicitly |
-| `confirmation_method_mismatch` | The proof you submitted does not match the pending action's required backend | Check `shisad action pending` for the required method |
+| `missing_decision_nonce` | CLI could not auto-resolve the nonce from pending state | Run `shisad action list` and pass `--nonce` explicitly |
+| `confirmation_method_mismatch` | The proof you submitted does not match the pending action's required backend | Check `shisad action list` for the required method |
 | `confirmation_method_locked_out` | Too many failed attempts | Wait for the `retry_after_seconds` period to expire, then re-queue the action and approve the new pending confirmation |
 | `signer_backend_invalid_response` | The KMS endpoint returned a malformed or invalid response | Check KMS endpoint logs; the daemon fails closed on invalid responses |
 

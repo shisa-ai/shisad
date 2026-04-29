@@ -4740,7 +4740,7 @@ async def test_contract_non_cli_fs_write_routes_to_confirmation_not_lockdown(
     response = str(reply.get("response", ""))
     assert "[PENDING CONFIRMATIONS]" in response
     assert f"shisad action confirm {pending_ids[0]}" in response
-    assert "shisad action pending" in response
+    assert "shisad action list" in response
     assert "ACTION CONFIRMATION" in response
     assert "I can proceed after confirmation" not in response
 
@@ -4764,7 +4764,7 @@ async def test_contract_web_fetch_confirmation_approve_executes_after_confirmati
     response = str(proposed.get("response", ""))
     assert "[PENDING CONFIRMATIONS]" in response
     assert f"shisad action confirm {pending_ids[0]}" in response
-    assert "shisad action pending" in response
+    assert "shisad action list" in response
 
     confirmed = await _confirm_pending_action(contract_harness.client, str(pending_ids[0]))
     assert confirmed.get("confirmed") is True

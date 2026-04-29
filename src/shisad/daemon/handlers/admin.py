@@ -32,6 +32,8 @@ from shisad.core.api.schema import (
     DoctorCheckResult,
     LockdownSetParams,
     LockdownSetResult,
+    LockdownStatusParams,
+    LockdownStatusResult,
     NoParams,
     PolicyExplainParams,
     PolicyExplainResult,
@@ -108,6 +110,18 @@ class AdminHandlers:
             internal_ingress_marker=self._internal_ingress_marker,
         )
         return LockdownSetResult.model_validate(await self._impl.do_lockdown_set(payload))
+
+    async def handle_lockdown_status(
+        self,
+        params: LockdownStatusParams,
+        ctx: RequestContext,
+    ) -> LockdownStatusResult:
+        payload = build_params_payload(
+            params,
+            ctx,
+            internal_ingress_marker=self._internal_ingress_marker,
+        )
+        return LockdownStatusResult.model_validate(await self._impl.do_lockdown_status(payload))
 
     async def handle_risk_calibrate(
         self,

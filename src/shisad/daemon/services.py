@@ -1372,7 +1372,10 @@ def _build_tool_registry(
     registry.register(
         ToolDefinition(
             name=ToolName("file.read"),
-            description="File read runtime tool for sandbox filesystem policy testing.",
+            description=(
+                "Legacy low-level file read compatibility tool for sandbox policy testing. "
+                "Do not use for user-facing file reads when fs.read is available."
+            ),
             parameters=[
                 ToolParameter(
                     name="command",
@@ -1666,7 +1669,7 @@ def _build_tool_registry(
             description=(
                 "List allowlisted workspace directory contents for file discovery, "
                 "filename lookup, and similarly named file recovery. Prefer fs.list "
-                "over shell.exec for filesystem discovery."
+                "over shell.exec for natural-language requests to look for a file."
             ),
             parameters=[
                 ToolParameter(
@@ -1686,9 +1689,10 @@ def _build_tool_registry(
         ToolDefinition(
             name=ToolName("fs.read"),
             description=(
-                "Read an exact allowlisted workspace file. If the path may be wrong "
-                "or the user asks for a similarly named file, use fs.list to discover "
-                "candidate paths before retrying."
+                "Read an exact allowlisted workspace file for natural-language requests "
+                "such as read/open/review a path. If the path may be wrong or the user asks "
+                "for a similarly named file, use fs.list to discover candidate paths before "
+                "retrying."
             ),
             parameters=[
                 ToolParameter(

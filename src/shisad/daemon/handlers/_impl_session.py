@@ -529,6 +529,14 @@ _CRC_CLI_ACTION_OPTIONS = {
         "--status": True,
         "--help": False,
     },
+    "list": {
+        "--json": False,
+        "--limit": True,
+        "--raw": False,
+        "--session": True,
+        "--status": True,
+        "--help": False,
+    },
     "purge": {
         "--dry-run": False,
         "--limit": True,
@@ -986,7 +994,7 @@ def _is_cli_action_command_candidate(candidate: str) -> bool:
         return True
 
     index = 3
-    confirmation_id_seen = action in {"pending", "purge"}
+    confirmation_id_seen = action in {"pending", "list", "purge"}
     while index < len(tokens):
         token = tokens[index]
         if token.startswith("--"):
@@ -1247,7 +1255,7 @@ def _wrong_target_totp_confirmation_text(*, action: str) -> str:
         [
             "This confirmation reply came from a different chat target than the pending approval.",
             "Reply from the original approval thread/channel.",
-            "CLI fallback: run 'shisad action pending' to inspect pending approvals.",
+            "CLI fallback: run 'shisad action list' to inspect pending approvals.",
             f"Then run '{command}'.",
         ]
     )
@@ -2407,7 +2415,7 @@ def _normalize_context_role(role: str) -> str:
 
 _CONFIRMATION_REQUIRED_PREFIX = "[CONFIRMATION REQUIRED]"
 _PENDING_CONFIRMATIONS_HEADER = "[PENDING CONFIRMATIONS]"
-_PENDING_CONFIRMATIONS_FOOTER = "Review all pending: shisad action pending"
+_PENDING_CONFIRMATIONS_FOOTER = "Review all pending: shisad action list"
 _COMPLETED_ACTIONS_HEADER = "Completed actions:"
 _TOOL_RESULTS_SUMMARY_HEADER = "Tool results summary:"
 _PENDING_COMPLETED_ACTIONS_RE = re.compile(
@@ -2672,9 +2680,23 @@ def _daemon_pending_confirmation_response_text(
     pending_actions: Mapping[str, Any] | None,
     pending_index_by_id: Mapping[str, int] | None = None,
     binding_pending_rows: Sequence[Any] | None = None,
+    totp_guidance_confirmation_ids: Sequence[str] | None = None,
 ) -> str:
     binding_rows = list(binding_pending_rows or ())
-    binding_totp_rows = _totp_pending_rows(binding_rows)
+    totp_guidance_ids = {
+        str(confirmation_id).strip()
+        for confirmation_id in (
+            pending_confirmation_ids
+            if totp_guidance_confirmation_ids is None
+            else totp_guidance_confirmation_ids
+        )
+        if str(confirmation_id).strip()
+    }
+    binding_totp_rows = [
+        row
+        for row in _totp_pending_rows(binding_rows)
+        if str(getattr(row, "confirmation_id", "")).strip() in totp_guidance_ids
+    ]
     single_totp_confirmation_id = (
         str(getattr(binding_totp_rows[0], "confirmation_id", "")).strip()
         if len(binding_totp_rows) == 1
@@ -2695,7 +2717,11 @@ def _daemon_pending_confirmation_response_text(
             pending_number = pending_index_by_id.get(confirmation_id, pending_number)
         pending = pending_actions.get(confirmation_id) if pending_actions is not None else None
         lines.append(f"{pending_number}. {confirmation_id}")
-        if pending is not None and _pending_uses_totp(pending):
+        if (
+            pending is not None
+            and confirmation_id in totp_guidance_ids
+            and _pending_uses_totp(pending)
+        ):
             if single_totp_confirmation_id == confirmation_id:
                 lines.append("   TOTP in chat: reply with the 6-digit code")
             else:
@@ -2715,7 +2741,7 @@ def _daemon_pending_confirmation_response_text(
         if preview:
             lines.append("   Preview:")
             lines.extend(f"     {line}" for line in preview.splitlines())
-    lines.extend(["", "Review all pending: shisad action pending"])
+    lines.extend(["", "Review all pending: shisad action list"])
     return "\n".join(lines).strip()
 
 
@@ -4460,6 +4486,13 @@ class SessionImplMixin(HandlerMixinBase):
             trust_level=trust_level,
             is_internal_ingress=is_internal_ingress,
         ) and _trusted_cli_firewall_result_is_clean(firewall_result)
+        if allow_direct_trusted_cli_confirmation:
+            session_manager = getattr(self, "_session_manager", None)
+            session = session_manager.get(sid) if session_manager is not None else None
+            metadata = getattr(session, "metadata", {}) if session is not None else {}
+            allow_direct_trusted_cli_confirmation = bool(
+                isinstance(metadata, Mapping) and metadata.get("operator_owned_cli") is True
+            )
         if not (trusted_input or allow_direct_trusted_cli_confirmation):
             return None
         if is_internal_ingress and not allow_channel_ingress_confirmation:
@@ -4500,6 +4533,7 @@ class SessionImplMixin(HandlerMixinBase):
                 trust_level=trust_level,
             )
             and totp_submission is None
+            and not allow_direct_trusted_cli_confirmation
         ):
             return None
         intent: ChatConfirmationIntent | None = None
@@ -7899,6 +7933,7 @@ class SessionImplMixin(HandlerMixinBase):
                 pending_actions=getattr(self, "_pending_actions", {}),
                 pending_index_by_id=pending_index_by_id,
                 binding_pending_rows=visible_pending_rows,
+                totp_guidance_confirmation_ids=execution.pending_confirmation_ids,
             )
             system_generated_pending_confirmation_response = True
             if fallback_notice:
