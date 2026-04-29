@@ -354,6 +354,28 @@ def test_m5_t3_resource_monitor_detects_credential_access() -> None:
     assert any(item.reason_code == "resource:sensitive_access" for item in findings)
 
 
+def test_rc_lus_resource_monitor_blocks_filesystem_paths_outside_workspace_root(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    history = SessionActionHistoryStore()
+    monitor = ResourceAccessMonitor(workspace_roots=[workspace])
+    action = build_action(
+        tool_name="fs.list",
+        arguments={"path": "/root"},
+        origin=_origin(),
+        workspace_roots=[workspace],
+    )
+
+    findings = monitor.analyze(history=history, candidate_action=action)
+
+    assert any(
+        item.reason_code == "resource:outside_workspace_root" and item.risk_tier == RiskTier.HIGH
+        for item in findings
+    )
+
+
 def test_m5_t4_resource_monitor_detects_enumeration_pattern() -> None:
     history = SessionActionHistoryStore()
     monitor = ResourceAccessMonitor()

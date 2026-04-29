@@ -195,7 +195,7 @@ class ControlPlaneEngine:
                 ),
             ]
         )
-        resource_monitor = ResourceAccessMonitor()
+        resource_monitor = ResourceAccessMonitor(workspace_roots=workspace_roots)
         baseline_db = BaselineDatabase(
             storage_path=str(control_plane_dir / "network_baseline.json"),
             learning_rate=baseline_learning_rate,

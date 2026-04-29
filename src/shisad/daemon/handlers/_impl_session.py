@@ -186,7 +186,9 @@ _MEMORY_QUERY_CONTEXT_MAX_CHARS = 400
 _TOOL_OUTPUT_RESPONSE_PREVIEW_MAX_CHARS = 800
 _TOOL_OUTPUT_RESPONSE_PREVIEW_MAX_LINES = 12
 _POST_TOOL_SYNTHESIS_TIMEOUT_SEC = 30.0
-_POST_TOOL_SYNTHESIS_EVIDENCE_MAX_CHARS = 12000
+_POST_TOOL_SYNTHESIS_PAYLOAD_MAX_CHARS = 4200
+_POST_TOOL_SYNTHESIS_SUMMARY_MAX_CHARS = 2600
+_OUTPUT_URL_RE = re.compile(r"https?://[^\s)>]+")
 _FRONTMATTER_VALUE_MAX_CHARS = 240
 _AMV_EXPLANATION_MAX_CHARS = 240
 _REJECTION_REASON_SPLITTER = ","
@@ -2471,6 +2473,40 @@ def _is_tool_results_summary_only_response(text: str) -> bool:
     return bool(stripped) and stripped.startswith(_TOOL_RESULTS_SUMMARY_HEADER)
 
 
+def _normalized_url_for_confirmation_match(value: str) -> str:
+    normalized = str(value or "").strip().rstrip(".,;:!?)\"]'}>")
+    return normalized.rstrip("/")
+
+
+def _should_prefix_output_confirmation(
+    *,
+    output_result: Any,
+    user_goal: str = "",
+) -> bool:
+    if not bool(getattr(output_result, "require_confirmation", False)):
+        return False
+    reason_codes = {
+        str(item).strip()
+        for item in getattr(output_result, "reason_codes", [])
+        if str(item).strip()
+    }
+    url_findings = list(getattr(output_result, "url_findings", []) or [])
+    if reason_codes and reason_codes <= {"unallowlisted_url"} and url_findings:
+        normalized_goal = _normalized_url_for_confirmation_match(user_goal)
+        user_requested_urls = {
+            _normalized_url_for_confirmation_match(match.group(0))
+            for match in _OUTPUT_URL_RE.finditer(normalized_goal)
+        }
+        if user_requested_urls and all(
+            not bool(getattr(finding, "suspicious", False))
+            and _normalized_url_for_confirmation_match(str(getattr(finding, "url", "")))
+            in user_requested_urls
+            for finding in url_findings
+        ):
+            return False
+    return True
+
+
 def _intermediate_tool_summary_response(tool_output_summary: str) -> str:
     summary = str(tool_output_summary or "").strip()
     if not summary:
@@ -2533,6 +2569,41 @@ def _truncate_close_gate_evidence_text(text: str, *, max_chars: int) -> str:
     if not truncated:
         return notice.lstrip("\n")
     return f"{truncated}{notice}"
+
+
+def _build_post_tool_synthesis_untrusted_content(
+    *,
+    serialized_tool_outputs: Sequence[dict[str, Any]],
+    tool_output_summary: str,
+) -> str:
+    serialized_payload = (
+        json.dumps(
+            list(serialized_tool_outputs),
+            ensure_ascii=True,
+            sort_keys=True,
+            indent=2,
+        )
+        if serialized_tool_outputs
+        else ""
+    )
+    evidence_blocks = [
+        "Tool outputs from the same turn (JSON):",
+        _truncate_close_gate_evidence_text(
+            serialized_payload or "(empty)",
+            max_chars=_POST_TOOL_SYNTHESIS_PAYLOAD_MAX_CHARS,
+        ),
+    ]
+    if tool_output_summary.strip():
+        evidence_blocks.extend(
+            [
+                "Tool output summary:",
+                _truncate_close_gate_evidence_text(
+                    tool_output_summary,
+                    max_chars=_POST_TOOL_SYNTHESIS_SUMMARY_MAX_CHARS,
+                ),
+            ]
+        )
+    return "\n\n".join(evidence_blocks)
 
 
 def _task_close_gate_result_signals(
@@ -2676,6 +2747,11 @@ def _blocked_action_feedback(reasons: list[str]) -> str:
             "I need explicit confirmation because the proposed read action was not "
             "grounded in the committed goal or a prior approved step."
         )
+    if any(code == "resource:outside_workspace_root" for code in codes):
+        return (
+            "I couldn't complete that request because the requested path is outside "
+            "the configured filesystem roots for this session."
+        )
     if any(code == "session_in_lockdown" for code in codes):
         return (
             "I couldn't complete that request because this session is in lockdown. "
@@ -2699,6 +2775,11 @@ def _coerce_blocked_action_response_text(
 ) -> str:
     if rejected <= 0 or pending_confirmation > 0 or executed_tool_outputs > 0:
         return response_text
+    codes = _flatten_rejection_reason_codes(rejection_reasons)
+    if any(code == "resource:outside_workspace_root" for code in codes):
+        return _blocked_action_feedback(rejection_reasons)
+    if "successfully" in response_text.lower():
+        return _blocked_action_feedback(rejection_reasons)
     if response_text.strip() != _GENERIC_BLOCKED_ACTION_MESSAGE:
         return response_text
     return _blocked_action_feedback(rejection_reasons)
@@ -3990,6 +4071,21 @@ def _find_tool_entries_preview_text(payload: Mapping[str, Any]) -> str:
                 or str(item.get("path", "")).strip()
                 or str(item.get("title", "")).strip()
             )
+            if not value and item.get("key") not in ("", None):
+                raw_memory_value = item.get("value")
+                if raw_memory_value in ("", None):
+                    raw_memory_value = item.get("value_json")
+                rendered_memory_value = _compact_context_text(
+                    json.dumps(raw_memory_value, ensure_ascii=True)
+                    if isinstance(raw_memory_value, (dict, list))
+                    else str(raw_memory_value),
+                    max_chars=180,
+                )
+                value = (
+                    f"{str(item.get('key')).strip()}: {rendered_memory_value}"
+                    if rendered_memory_value
+                    else str(item.get("key")).strip()
+                )
         else:
             value = str(item).strip()
         if value:
@@ -4601,7 +4697,10 @@ class SessionImplMixin(HandlerMixinBase):
                 response_text = "Response blocked by output policy."
             else:
                 response_text = output_result.sanitized_text
-                if output_result.require_confirmation:
+                if _should_prefix_output_confirmation(
+                    output_result=output_result,
+                    user_goal=content,
+                ):
                     response_text = f"[CONFIRMATION REQUIRED] {response_text}"
             lockdown_notice = self._lockdown_manager.user_notification(sid)
             if lockdown_notice:
@@ -6636,6 +6735,13 @@ class SessionImplMixin(HandlerMixinBase):
                 arguments=proposal_arguments,
                 evaluation=cp_eval,
             )
+            cp_user_reason_codes = list(cp_eval.reason_codes)
+            for vote in cp_eval.consensus.votes:
+                if str(getattr(vote.decision, "value", vote.decision)) not in {"BLOCK", "FLAG"}:
+                    continue
+                for reason_code in vote.reason_codes:
+                    if reason_code not in cp_user_reason_codes:
+                        cp_user_reason_codes.append(reason_code)
 
             final_kind, final_reason = combine_monitor_with_policy(
                 pep_kind=pep_decision.kind.value,
@@ -6653,17 +6759,17 @@ class SessionImplMixin(HandlerMixinBase):
                 ):
                     final_kind = "require_confirmation"
                     final_reason = (
-                        ",".join(cp_eval.reason_codes) or cp_eval.trace_result.reason_code
+                        ",".join(cp_user_reason_codes) or cp_eval.trace_result.reason_code
                     )
                 elif pep_decision.kind.value == "reject":
                     final_kind = "reject"
                     final_reason = pep_decision.reason or "pep_reject"
                 else:
                     final_kind = "reject"
-                    final_reason = ",".join(cp_eval.reason_codes) or "control_plane_block"
+                    final_reason = ",".join(cp_user_reason_codes) or "control_plane_block"
             elif cp_eval.decision == ControlDecision.REQUIRE_CONFIRMATION and final_kind == "allow":
                 final_kind = "require_confirmation"
-                final_reason = ",".join(cp_eval.reason_codes) or "control_plane_confirmation"
+                final_reason = ",".join(cp_user_reason_codes) or "control_plane_confirmation"
 
             if self._lockdown_manager.should_block_all_actions(sid):
                 final_kind, final_reason = ("reject", "session_in_lockdown")
@@ -7734,33 +7840,10 @@ class SessionImplMixin(HandlerMixinBase):
         if planner is None:
             return PostToolSynthesisResult()
 
-        serialized_payload = (
-            json.dumps(
-                list(serialized_tool_outputs),
-                ensure_ascii=True,
-                sort_keys=True,
-                indent=2,
-            )
-            if serialized_tool_outputs
-            else ""
+        synthesis_untrusted_content = _build_post_tool_synthesis_untrusted_content(
+            serialized_tool_outputs=serialized_tool_outputs,
+            tool_output_summary=tool_output_summary,
         )
-        evidence_blocks = [
-            "Tool outputs from the same turn (JSON):",
-            _truncate_close_gate_evidence_text(
-                serialized_payload or "(empty)",
-                max_chars=_POST_TOOL_SYNTHESIS_EVIDENCE_MAX_CHARS,
-            ),
-        ]
-        if tool_output_summary.strip():
-            evidence_blocks.extend(
-                [
-                    "Tool output summary:",
-                    _truncate_close_gate_evidence_text(
-                        tool_output_summary,
-                        max_chars=_POST_TOOL_SYNTHESIS_EVIDENCE_MAX_CHARS,
-                    ),
-                ]
-            )
         synthesis_input = build_planner_input_v2(
             trusted_instructions=(
                 "POST-TOOL SYNTHESIS PASS\n"
@@ -7777,7 +7860,7 @@ class SessionImplMixin(HandlerMixinBase):
                 "If the evidence is insufficient, say what was gathered and what remains."
             ),
             user_goal=validated.firewall_result.sanitized_text,
-            untrusted_content="\n\n".join(evidence_blocks),
+            untrusted_content=synthesis_untrusted_content,
         )
         context = PolicyContext(
             capabilities=set(),
@@ -8068,7 +8151,10 @@ class SessionImplMixin(HandlerMixinBase):
             response_text = "Response blocked by output policy."
         else:
             response_text = output_result.sanitized_text
-            if output_result.require_confirmation:
+            if _should_prefix_output_confirmation(
+                output_result=output_result,
+                user_goal=validated.firewall_result.sanitized_text,
+            ):
                 response_text = f"[CONFIRMATION REQUIRED] {response_text}"
         if not public_sensitive_taints and not output_result.blocked:
             self._commit_identity_candidate_suggestion(candidate_suggestion)
@@ -8993,7 +9079,7 @@ class SessionImplMixin(HandlerMixinBase):
             response_text = "Response blocked by output policy."
         else:
             response_text = output_result.sanitized_text
-            if output_result.require_confirmation:
+            if _should_prefix_output_confirmation(output_result=output_result):
                 response_text = f"[CONFIRMATION REQUIRED] {response_text}"
 
         lockdown_notice = self._lockdown_manager.user_notification(sid)
@@ -9009,7 +9095,7 @@ class SessionImplMixin(HandlerMixinBase):
             summary_text = "Summary blocked by output policy."
         else:
             summary_text = summary_output_result.sanitized_text
-            if summary_output_result.require_confirmation:
+            if _should_prefix_output_confirmation(output_result=summary_output_result):
                 summary_text = f"[CONFIRMATION REQUIRED] {summary_text}"
 
         assistant_transcript_metadata = _transcript_metadata_for_channel(

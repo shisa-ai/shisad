@@ -598,6 +598,105 @@ async def test_v0_3_1_session_message_passes_tool_manifest_and_tools_payload(
 
 
 @pytest.mark.asyncio
+async def test_rc_lus_session_message_rejects_outside_workspace_fs_read_without_confirmation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SHISAD_MODEL_BASE_URL", "https://api.example.com/v1")
+    monkeypatch.setenv("SHISAD_MODEL_PLANNER_BASE_URL", "https://planner.example.com/v1")
+    monkeypatch.setenv("SHISAD_MODEL_EMBEDDINGS_BASE_URL", "https://embed.example.com/v1")
+    monkeypatch.setenv("SHISAD_MODEL_MONITOR_BASE_URL", "https://monitor.example.com/v1")
+
+    async def _outside_root_read(
+        self: Planner,
+        user_content: str,
+        context: object,
+        *,
+        tools: list[dict[str, object]] | None = None,
+        persona_tone_override: str | None = None,
+    ) -> PlannerResult:
+        _ = (user_content, tools, persona_tone_override)
+        proposal = ActionProposal(
+            action_id="rc-lus-outside-root-read",
+            tool_name=ToolName("fs.read"),
+            arguments={"path": "/root/INSTALL.LOG", "max_bytes": 10000},
+            reasoning="Probe the live-smoke outside-root bad-path recovery case.",
+            data_sources=[],
+        )
+        decision = self._pep.evaluate(proposal.tool_name, proposal.arguments, context)
+        return PlannerResult(
+            output=PlannerOutput(
+                actions=[proposal],
+                assistant_response="The file was read successfully.",
+            ),
+            evaluated=[EvaluatedProposal(proposal=proposal, decision=decision)],
+            attempts=1,
+            provider_response=None,
+            messages_sent=(),
+        )
+
+    monkeypatch.setattr(Planner, "propose", _outside_root_read)
+
+    policy_path = tmp_path / "policy.yaml"
+    policy_path.write_text(
+        textwrap.dedent(
+            """
+            version: "1"
+            default_require_confirmation: false
+            default_capabilities:
+              - file.read
+            """
+        ).strip()
+        + "\n"
+    )
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    config = DaemonConfig(
+        data_dir=tmp_path / "data",
+        socket_path=tmp_path / "control.sock",
+        policy_path=policy_path,
+        log_level="INFO",
+        assistant_fs_roots=[workspace],
+    )
+
+    daemon_task = asyncio.create_task(run_daemon(config))
+    client = ControlClient(config.socket_path)
+
+    try:
+        await _wait_for_socket(config.socket_path)
+        await client.connect()
+
+        created = await client.call(
+            "session.create",
+            {"channel": "cli", "user_id": "alice", "workspace_id": str(workspace)},
+        )
+        sid = created["session_id"]
+        reply = await client.call(
+            "session.message",
+            {
+                "session_id": sid,
+                "channel": "cli",
+                "user_id": "alice",
+                "workspace_id": str(workspace),
+                "content": "Please read /root/INSTALL.LOG.",
+            },
+        )
+
+        assert int(reply.get("blocked_actions", 0)) == 1
+        assert int(reply.get("confirmation_required_actions", 0)) == 0
+        assert reply.get("pending_confirmation_ids") == []
+        response = str(reply.get("response", ""))
+        assert "configured filesystem roots" in response
+        assert "successfully" not in response
+    finally:
+        with suppress(Exception):
+            await client.call("daemon.shutdown")
+        await client.close()
+        await asyncio.wait_for(daemon_task, timeout=3)
+
+
+@pytest.mark.asyncio
 async def test_u8_session_message_omits_fs_git_tools_when_fs_roots_empty(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

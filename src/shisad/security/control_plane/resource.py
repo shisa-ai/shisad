@@ -48,10 +48,14 @@ class ResourceAccessMonitor:
         enum_resource_threshold: int = 20,
         enum_directory_threshold: int = 10,
         enum_window_seconds: int = 60,
+        workspace_roots: list[Path] | None = None,
     ) -> None:
         self._enum_resource_threshold = enum_resource_threshold
         self._enum_directory_threshold = enum_directory_threshold
         self._enum_window_seconds = enum_window_seconds
+        self._workspace_roots = [
+            item.expanduser().resolve(strict=False) for item in (workspace_roots or [])
+        ]
 
     def analyze(
         self,
@@ -79,6 +83,19 @@ class ResourceAccessMonitor:
         for resource in candidate_action.resource_ids or [candidate_action.resource_id]:
             if not resource:
                 continue
+            if self._outside_workspace_roots(
+                resource=resource,
+                action_kind=candidate_action.action_kind,
+            ):
+                findings.append(
+                    ResourceFinding(
+                        risk_tier=RiskTier.HIGH,
+                        reason_code="resource:outside_workspace_root",
+                        category="filesystem_policy",
+                        resource_id=resource,
+                        evidence=[resource],
+                    )
+                )
             category = self._sensitive_category(resource)
             if category:
                 findings.append(
@@ -132,6 +149,28 @@ class ResourceAccessMonitor:
             )
 
         return findings
+
+    def _outside_workspace_roots(self, *, resource: str, action_kind: ActionKind) -> bool:
+        if action_kind not in {ActionKind.FS_READ, ActionKind.FS_WRITE, ActionKind.FS_LIST}:
+            return False
+        if not self._workspace_roots:
+            return False
+        try:
+            candidate = Path(resource).expanduser()
+            if not candidate.is_absolute():
+                return False
+            resolved = candidate.resolve(strict=False)
+        except (OSError, RuntimeError, ValueError):
+            return False
+        return not any(self._is_within(resolved, root) for root in self._workspace_roots)
+
+    @staticmethod
+    def _is_within(path: Path, root: Path) -> bool:
+        try:
+            path.relative_to(root)
+            return True
+        except ValueError:
+            return False
 
     @staticmethod
     def _sensitive_category(resource_id: str) -> str:

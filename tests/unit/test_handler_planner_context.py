@@ -10,8 +10,12 @@ from shisad.daemon.handlers._impl_session import (
     _action_monitor_explanation_from_votes,
     _blocked_action_feedback,
     _build_planner_tool_context,
+    _build_post_tool_synthesis_untrusted_content,
     _coerce_blocked_action_response_text,
+    _should_prefix_output_confirmation,
+    _summarize_tool_outputs_for_chat,
 )
+from shisad.security.firewall.output import OutputFirewallResult, UrlFinding
 
 
 def test_m6_planner_tool_context_normalizes_trust_level_casing() -> None:
@@ -85,6 +89,88 @@ def test_c3_planner_tool_context_hides_unavailable_fs_tool_ids_from_shell_descri
     assert "structured runtime tools" in context
     assert "fs.list" not in context
     assert "fs.read" not in context
+
+
+def test_rc_lus_note_search_summary_preserves_exact_memory_values() -> None:
+    summary = _summarize_tool_outputs_for_chat(
+        [
+            {
+                "tool_name": "note.search",
+                "success": True,
+                "payload": {
+                    "ok": True,
+                    "entries": [
+                        {
+                            "key": "release_smoke_code_word",
+                            "value": "my release smoke code word is blue-lantern",
+                        }
+                    ],
+                    "count": 1,
+                },
+            }
+        ]
+    )
+
+    assert "release_smoke_code_word: my release smoke code word is blue-lantern" in summary
+
+
+def test_rc_lus_post_tool_synthesis_context_is_budgeted_across_payload_and_summary() -> None:
+    payload = [{"tool_name": "fs.read", "payload": {"content": "A" * 20_000}}]
+    summary = "Tool results summary:\n- fs.read: success=True\n  output:\n" + ("B" * 20_000)
+
+    rendered = _build_post_tool_synthesis_untrusted_content(
+        serialized_tool_outputs=payload,
+        tool_output_summary=summary,
+    )
+
+    assert "Tool outputs from the same turn (JSON):" in rendered
+    assert "Tool output summary:" in rendered
+    assert len(rendered) < 10_000
+    assert "[TRUNCATED:" in rendered
+
+
+def test_rc_lus_user_requested_url_does_not_emit_pending_confirmation_marker() -> None:
+    result = OutputFirewallResult(
+        sanitized_text='The page title of https://example.com/ is "Example Domain".',
+        require_confirmation=True,
+        reason_codes=["unallowlisted_url"],
+        url_findings=[
+            UrlFinding(
+                url="https://example.com/",
+                host="example.com",
+                allowed=False,
+                suspicious=False,
+                reason="not_allowlisted",
+            )
+        ],
+    )
+
+    assert (
+        _should_prefix_output_confirmation(
+            output_result=result,
+            user_goal="Please fetch https://example.com/ and tell me the title.",
+        )
+        is False
+    )
+
+
+def test_rc_lus_unattributed_url_still_requires_output_confirmation_marker() -> None:
+    result = OutputFirewallResult(
+        sanitized_text="See https://surprise.example/path for details.",
+        require_confirmation=True,
+        reason_codes=["unallowlisted_url"],
+        url_findings=[
+            UrlFinding(
+                url="https://surprise.example/path",
+                host="surprise.example",
+                allowed=False,
+                suspicious=False,
+                reason="not_allowlisted",
+            )
+        ],
+    )
+
+    assert _should_prefix_output_confirmation(output_result=result, user_goal="hello") is True
 
 
 def test_cc19_planner_tool_context_documents_native_tool_aliases() -> None:
@@ -164,6 +250,19 @@ def test_m3_s0b3_coerces_generic_blocked_text_to_actionable_feedback() -> None:
         rejection_reasons=["consensus:veto:ExecutionTraceVerifier,trace:stage2_upgrade_required"],
     )
     assert "requires elevated runtime actions" in response
+
+
+def test_rc_lus_coerces_outside_workspace_filesystem_denial() -> None:
+    response = _coerce_blocked_action_response_text(
+        response_text="The file was read successfully.",
+        rejected=1,
+        pending_confirmation=0,
+        executed_tool_outputs=0,
+        rejection_reasons=["resource:outside_workspace_root"],
+    )
+
+    assert "configured filesystem roots" in response
+    assert "successfully" not in response
 
 
 def test_m3_s0b3_does_not_coerce_non_generic_response() -> None:
