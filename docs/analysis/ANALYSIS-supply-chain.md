@@ -39,7 +39,11 @@ Related:
   - GitHub releases stopped at `v1.82.6.dev1`, implying the malicious PyPI uploads did not come from the normal GitHub release flow,
   - maintainer accounts were rotated,
   - official LiteLLM Proxy Docker image users were reported as unaffected because that image pinned its dependencies.
-- The current PyPI page for `litellm` shows `1.82.6` file metadata with "Uploaded using Trusted Publishing? No" and "Uploaded via: twine". That is not proof of root cause by itself, but it does show the upload path depended on account-scoped credentials rather than OIDC-bound trusted publishing.
+- On the 2026-03-25 incident snapshot, the PyPI page for `litellm` showed
+  `1.82.6` file metadata with "Uploaded using Trusted Publishing? No" and
+  "Uploaded via: twine". That is not proof of root cause by itself, but it
+  shows the upload path depended on account-scoped credentials rather than
+  OIDC-bound trusted publishing.
 
 ### Why this attack was especially bad
 
