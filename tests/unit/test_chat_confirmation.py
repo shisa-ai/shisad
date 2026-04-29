@@ -10,12 +10,21 @@ import pytest
 
 from shisad.channels.base import DeliveryTarget
 from shisad.core.transcript import TranscriptStore
-from shisad.core.types import Capability, SessionId, SessionMode, ToolName, UserId, WorkspaceId
+from shisad.core.types import (
+    Capability,
+    SessionId,
+    SessionMode,
+    TaintLabel,
+    ToolName,
+    UserId,
+    WorkspaceId,
+)
 from shisad.daemon.handlers._impl import PendingAction
 from shisad.daemon.handlers._impl_session import (
     ChatConfirmationIntent,
     ChatTotpSubmission,
     SessionImplMixin,
+    _active_pending_confirmation_ids_for_session,
     _classify_action_resolve_current_turn_intent,
     _classify_chat_confirmation_intent,
     _parse_chat_totp_submission,
@@ -24,7 +33,7 @@ from shisad.daemon.handlers._impl_session import (
 )
 from shisad.security.control_plane.sidecar import ControlPlaneUnavailableError
 from shisad.security.firewall import FirewallResult
-from shisad.security.firewall.output import OutputFirewallResult
+from shisad.security.firewall.output import OutputFirewallResult, UrlFinding
 
 
 def test_m6_crc_classifier_handles_affirmative_negative_reference_and_passthrough() -> None:
@@ -752,6 +761,655 @@ async def test_channel_chat_confirmation_proofless_confirm_does_not_execute_tool
     assert "confirmed action result:" not in response
     assert "Tool results summary:" not in response
     assert json.dumps(result["tool_outputs"], ensure_ascii=True) == "[]"
+
+
+@pytest.mark.asyncio
+async def test_chat_confirmation_uses_confirmed_action_url_for_output_confirmation(
+    tmp_path,
+) -> None:
+    harness = _ChatConfirmationHarness(tmp_path)
+    fetch_url = "https://example.com/page"
+    harness._transcript_store.append(
+        SessionId("sess-chat"),
+        role="user",
+        content=f"fetch {fetch_url}",
+        taint_labels=set(),
+    )
+    pending = PendingAction(
+        confirmation_id="c-1",
+        decision_nonce="nonce-1",
+        session_id=SessionId("sess-chat"),
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws-1"),
+        tool_name=ToolName("web.fetch"),
+        arguments={"url": fetch_url},
+        reason="manual",
+        capabilities={Capability.HTTP_REQUEST},
+        created_at=datetime.now(UTC),
+    )
+    harness._pending_actions[pending.confirmation_id] = pending
+    harness._output_firewall = SimpleNamespace(
+        inspect=lambda text, context: OutputFirewallResult(
+            sanitized_text=text,
+            require_confirmation=True,
+            reason_codes=["unallowlisted_url"],
+            url_findings=[
+                UrlFinding(
+                    url=fetch_url,
+                    host="example.com",
+                    allowed=False,
+                    suspicious=False,
+                    reason="not_allowlisted",
+                )
+            ],
+        )
+    )
+    tool_output = {
+        "tool_name": "web.fetch",
+        "success": True,
+        "payload": {
+            "ok": True,
+            "url": fetch_url,
+            "content": f"Fetched content from {fetch_url}",
+        },
+        "taint_labels": [],
+    }
+
+    async def confirm_with_output(params: dict[str, object]) -> dict[str, object]:
+        harness.confirm_calls.append(dict(params))
+        confirmed = harness._pending_actions[str(params["confirmation_id"])]
+        confirmed.status = "approved"
+        confirmed.status_reason = "chat_confirmation"
+        return {
+            "confirmed": True,
+            "status": "approved",
+            "tool_outputs": [tool_output],
+        }
+
+    harness.do_action_confirm = confirm_with_output  # type: ignore[method-assign]
+
+    result = await SessionImplMixin._maybe_handle_chat_confirmation(
+        harness,
+        sid=SessionId("sess-chat"),
+        channel="discord",
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws-1"),
+        session_mode=SessionMode.DEFAULT,
+        trust_level="trusted",
+        trusted_input=True,
+        is_internal_ingress=False,
+        content="confirm 1",
+        firewall_result=FirewallResult(sanitized_text="confirm 1", original_hash="0" * 64),
+    )
+
+    assert result is not None
+    response = str(result["response"])
+    assert not response.startswith("[CONFIRMATION REQUIRED]")
+    assert fetch_url in response
+    assert result["output_policy"]["require_confirmation"] is True
+
+
+@pytest.mark.asyncio
+async def test_chat_confirmation_prefixes_action_url_without_prior_user_goal(
+    tmp_path,
+) -> None:
+    harness = _ChatConfirmationHarness(tmp_path)
+    fetch_url = "https://example.com/page"
+    pending = PendingAction(
+        confirmation_id="c-1",
+        decision_nonce="nonce-1",
+        session_id=SessionId("sess-chat"),
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws-1"),
+        tool_name=ToolName("web.fetch"),
+        arguments={"url": fetch_url},
+        reason="manual",
+        capabilities={Capability.HTTP_REQUEST},
+        created_at=datetime.now(UTC),
+    )
+    harness._pending_actions[pending.confirmation_id] = pending
+    harness._output_firewall = SimpleNamespace(
+        inspect=lambda text, context: OutputFirewallResult(
+            sanitized_text=text,
+            require_confirmation=True,
+            reason_codes=["unallowlisted_url"],
+            url_findings=[
+                UrlFinding(
+                    url=fetch_url,
+                    host="example.com",
+                    allowed=False,
+                    suspicious=False,
+                    reason="not_allowlisted",
+                )
+            ],
+        )
+    )
+    tool_output = {
+        "tool_name": "web.fetch",
+        "success": True,
+        "payload": {
+            "ok": True,
+            "url": fetch_url,
+            "content": f"Fetched content from {fetch_url}",
+        },
+        "taint_labels": [],
+    }
+
+    async def confirm_with_output(params: dict[str, object]) -> dict[str, object]:
+        harness.confirm_calls.append(dict(params))
+        confirmed = harness._pending_actions[str(params["confirmation_id"])]
+        confirmed.status = "approved"
+        confirmed.status_reason = "chat_confirmation"
+        return {
+            "confirmed": True,
+            "status": "approved",
+            "tool_outputs": [tool_output],
+        }
+
+    harness.do_action_confirm = confirm_with_output  # type: ignore[method-assign]
+
+    result = await SessionImplMixin._maybe_handle_chat_confirmation(
+        harness,
+        sid=SessionId("sess-chat"),
+        channel="discord",
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws-1"),
+        session_mode=SessionMode.DEFAULT,
+        trust_level="trusted",
+        trusted_input=True,
+        is_internal_ingress=False,
+        content="confirm 1",
+        firewall_result=FirewallResult(sanitized_text="confirm 1", original_hash="0" * 64),
+    )
+
+    assert result is not None
+    response = str(result["response"])
+    assert response.startswith("[CONFIRMATION REQUIRED]")
+    assert fetch_url in response
+
+
+@pytest.mark.asyncio
+async def test_chat_confirmation_blocked_output_policy_scrubs_tool_outputs(
+    tmp_path,
+) -> None:
+    harness = _ChatConfirmationHarness(tmp_path)
+    pending = PendingAction(
+        confirmation_id="c-1",
+        decision_nonce="nonce-1",
+        session_id=SessionId("sess-chat"),
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws-1"),
+        tool_name=ToolName("web.fetch"),
+        arguments={"url": "https://malware.example/payload"},
+        reason="manual",
+        capabilities={Capability.HTTP_REQUEST},
+        created_at=datetime.now(UTC),
+    )
+    harness._pending_actions[pending.confirmation_id] = pending
+    harness._output_firewall = SimpleNamespace(
+        inspect=lambda text, context: OutputFirewallResult(
+            sanitized_text=text,
+            blocked=True,
+            reason_codes=["malicious_url"],
+        )
+    )
+
+    async def confirm_with_blocked_output(params: dict[str, object]) -> dict[str, object]:
+        harness.confirm_calls.append(dict(params))
+        confirmed = harness._pending_actions[str(params["confirmation_id"])]
+        confirmed.status = "approved"
+        confirmed.status_reason = "chat_confirmation"
+        return {
+            "confirmed": True,
+            "status": "approved",
+            "tool_outputs": [
+                {
+                    "tool_name": "web.fetch",
+                    "success": True,
+                    "payload": {"content": "blocked payload"},
+                    "taint_labels": [],
+                }
+            ],
+        }
+
+    harness.do_action_confirm = confirm_with_blocked_output  # type: ignore[method-assign]
+
+    result = await SessionImplMixin._maybe_handle_chat_confirmation(
+        harness,
+        sid=SessionId("sess-chat"),
+        channel="discord",
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws-1"),
+        session_mode=SessionMode.DEFAULT,
+        trust_level="trusted",
+        trusted_input=True,
+        is_internal_ingress=False,
+        content="confirm 1",
+        firewall_result=FirewallResult(sanitized_text="confirm 1", original_hash="0" * 64),
+    )
+
+    assert result is not None
+    assert result["response"] == "Response blocked by output policy."
+    assert result["tool_outputs"] == []
+
+
+@pytest.mark.asyncio
+async def test_chat_confirmation_grounds_multiple_prior_user_urls(
+    tmp_path,
+) -> None:
+    harness = _ChatConfirmationHarness(tmp_path)
+    first_url = "https://example.com/one"
+    second_url = "https://example.com/two"
+    harness._transcript_store.append(
+        SessionId("sess-chat"),
+        role="user",
+        content=f"fetch {first_url}",
+        taint_labels=set(),
+    )
+    harness._transcript_store.append(
+        SessionId("sess-chat"),
+        role="assistant",
+        content="[PENDING CONFIRMATIONS]\n1. c-1 web.fetch\nReview all pending: shisad action list",
+        taint_labels=set(),
+        metadata={"system_generated_pending_confirmations": True},
+    )
+    harness._transcript_store.append(
+        SessionId("sess-chat"),
+        role="user",
+        content=f"fetch {second_url}",
+        taint_labels=set(),
+    )
+    harness._transcript_store.append(
+        SessionId("sess-chat"),
+        role="assistant",
+        content=(
+            "[PENDING CONFIRMATIONS]\n"
+            "1. c-1 web.fetch\n"
+            "2. c-2 web.fetch\n"
+            "Review all pending: shisad action list"
+        ),
+        taint_labels=set(),
+        metadata={"system_generated_pending_confirmations": True},
+    )
+    for confirmation_id, fetch_url in (("c-1", first_url), ("c-2", second_url)):
+        pending = PendingAction(
+            confirmation_id=confirmation_id,
+            decision_nonce=f"nonce-{confirmation_id}",
+            session_id=SessionId("sess-chat"),
+            user_id=UserId("alice"),
+            workspace_id=WorkspaceId("ws-1"),
+            tool_name=ToolName("web.fetch"),
+            arguments={"url": fetch_url},
+            reason="manual",
+            capabilities={Capability.HTTP_REQUEST},
+            created_at=datetime.now(UTC),
+        )
+        harness._pending_actions[pending.confirmation_id] = pending
+    harness._output_firewall = SimpleNamespace(
+        inspect=lambda text, context: OutputFirewallResult(
+            sanitized_text=text,
+            require_confirmation=True,
+            reason_codes=["unallowlisted_url"],
+            url_findings=[
+                UrlFinding(
+                    url=first_url,
+                    host="example.com",
+                    allowed=False,
+                    suspicious=False,
+                    reason="not_allowlisted",
+                ),
+                UrlFinding(
+                    url=second_url,
+                    host="example.com",
+                    allowed=False,
+                    suspicious=False,
+                    reason="not_allowlisted",
+                ),
+            ],
+        )
+    )
+
+    async def confirm_with_output(params: dict[str, object]) -> dict[str, object]:
+        harness.confirm_calls.append(dict(params))
+        confirmed = harness._pending_actions[str(params["confirmation_id"])]
+        confirmed.status = "approved"
+        confirmed.status_reason = "chat_confirmation"
+        fetch_url = str(confirmed.arguments["url"])
+        return {
+            "confirmed": True,
+            "status": "approved",
+            "tool_outputs": [
+                {
+                    "tool_name": "web.fetch",
+                    "success": True,
+                    "payload": {
+                        "ok": True,
+                        "url": fetch_url,
+                        "content": f"Fetched content from {fetch_url}",
+                    },
+                    "taint_labels": [],
+                }
+            ],
+        }
+
+    harness.do_action_confirm = confirm_with_output  # type: ignore[method-assign]
+
+    result = await SessionImplMixin._maybe_handle_chat_confirmation(
+        harness,
+        sid=SessionId("sess-chat"),
+        channel="discord",
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws-1"),
+        session_mode=SessionMode.DEFAULT,
+        trust_level="trusted",
+        trusted_input=True,
+        is_internal_ingress=False,
+        content="yes to all",
+        firewall_result=FirewallResult(sanitized_text="yes to all", original_hash="0" * 64),
+    )
+
+    assert result is not None
+    response = str(result["response"])
+    assert not response.startswith("[CONFIRMATION REQUIRED]")
+    assert first_url in response
+    assert second_url in response
+
+
+@pytest.mark.asyncio
+async def test_chat_confirmation_grounds_batch_urls_across_fallback_pending_summary(
+    tmp_path,
+) -> None:
+    harness = _ChatConfirmationHarness(tmp_path)
+    first_url = "https://example.com/one"
+    second_url = "https://example.com/two"
+    harness._transcript_store.append(
+        SessionId("sess-chat"),
+        role="user",
+        content=f"fetch {first_url}",
+        taint_labels=set(),
+    )
+    harness._transcript_store.append(
+        SessionId("sess-chat"),
+        role="assistant",
+        content=(
+            "[PLANNER FALLBACK: CONFIGURATION] No language model configured.\n\n"
+            "[PENDING CONFIRMATIONS]\n"
+            "1. c-1 web.fetch\n"
+            "Review all pending: shisad action list"
+        ),
+        taint_labels=set(),
+        metadata={"pending_confirmation_bridge": True},
+    )
+    harness._transcript_store.append(
+        SessionId("sess-chat"),
+        role="user",
+        content=f"fetch {second_url}",
+        taint_labels=set(),
+    )
+    for confirmation_id, fetch_url in (("c-1", first_url), ("c-2", second_url)):
+        pending = PendingAction(
+            confirmation_id=confirmation_id,
+            decision_nonce=f"nonce-{confirmation_id}",
+            session_id=SessionId("sess-chat"),
+            user_id=UserId("alice"),
+            workspace_id=WorkspaceId("ws-1"),
+            tool_name=ToolName("web.fetch"),
+            arguments={"url": fetch_url},
+            reason="manual",
+            capabilities={Capability.HTTP_REQUEST},
+            created_at=datetime.now(UTC),
+        )
+        harness._pending_actions[pending.confirmation_id] = pending
+    harness._output_firewall = SimpleNamespace(
+        inspect=lambda text, context: OutputFirewallResult(
+            sanitized_text=text,
+            require_confirmation=True,
+            reason_codes=["unallowlisted_url"],
+            url_findings=[
+                UrlFinding(
+                    url=first_url,
+                    host="example.com",
+                    allowed=False,
+                    suspicious=False,
+                    reason="not_allowlisted",
+                ),
+                UrlFinding(
+                    url=second_url,
+                    host="example.com",
+                    allowed=False,
+                    suspicious=False,
+                    reason="not_allowlisted",
+                ),
+            ],
+        )
+    )
+
+    async def confirm_with_output(params: dict[str, object]) -> dict[str, object]:
+        harness.confirm_calls.append(dict(params))
+        confirmed = harness._pending_actions[str(params["confirmation_id"])]
+        confirmed.status = "approved"
+        confirmed.status_reason = "chat_confirmation"
+        fetch_url = str(confirmed.arguments["url"])
+        return {
+            "confirmed": True,
+            "status": "approved",
+            "tool_outputs": [
+                {
+                    "tool_name": "web.fetch",
+                    "success": True,
+                    "payload": {
+                        "ok": True,
+                        "url": fetch_url,
+                        "content": f"Fetched content from {fetch_url}",
+                    },
+                    "taint_labels": [],
+                }
+            ],
+        }
+
+    harness.do_action_confirm = confirm_with_output  # type: ignore[method-assign]
+
+    result = await SessionImplMixin._maybe_handle_chat_confirmation(
+        harness,
+        sid=SessionId("sess-chat"),
+        channel="discord",
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws-1"),
+        session_mode=SessionMode.DEFAULT,
+        trust_level="trusted",
+        trusted_input=True,
+        is_internal_ingress=False,
+        content="yes to all",
+        firewall_result=FirewallResult(sanitized_text="yes to all", original_hash="0" * 64),
+    )
+
+    assert result is not None
+    response = str(result["response"])
+    assert not response.startswith("[CONFIRMATION REQUIRED]")
+    assert first_url in response
+    assert second_url in response
+
+
+@pytest.mark.asyncio
+async def test_chat_confirmation_grounds_partial_batch_url_outputs(
+    tmp_path,
+) -> None:
+    harness = _ChatConfirmationHarness(tmp_path)
+    first_url = "https://example.com/one"
+    middle_url = "https://example.com/two"
+    third_url = "https://example.com/three"
+    urls = [first_url, middle_url, third_url]
+    for index, fetch_url in enumerate(urls, start=1):
+        harness._transcript_store.append(
+            SessionId("sess-chat"),
+            role="user",
+            content=f"fetch {fetch_url}",
+            taint_labels=set(),
+        )
+        harness._transcript_store.append(
+            SessionId("sess-chat"),
+            role="assistant",
+            content=(
+                "[PENDING CONFIRMATIONS]\n"
+                + "\n".join(
+                    f"{pending_index}. c-{pending_index} web.fetch"
+                    for pending_index in range(1, index + 1)
+                )
+                + "\nReview all pending: shisad action list"
+            ),
+            taint_labels=set(),
+            metadata={"system_generated_pending_confirmations": True},
+        )
+    for index, fetch_url in enumerate(urls, start=1):
+        pending = PendingAction(
+            confirmation_id=f"c-{index}",
+            decision_nonce=f"nonce-{index}",
+            session_id=SessionId("sess-chat"),
+            user_id=UserId("alice"),
+            workspace_id=WorkspaceId("ws-1"),
+            tool_name=ToolName("web.fetch"),
+            arguments={"url": fetch_url},
+            reason="manual",
+            capabilities={Capability.HTTP_REQUEST},
+            created_at=datetime.now(UTC),
+        )
+        harness._pending_actions[pending.confirmation_id] = pending
+    harness._output_firewall = SimpleNamespace(
+        inspect=lambda text, context: OutputFirewallResult(
+            sanitized_text=text,
+            require_confirmation=True,
+            reason_codes=["unallowlisted_url"],
+            url_findings=[
+                UrlFinding(
+                    url=first_url,
+                    host="example.com",
+                    allowed=False,
+                    suspicious=False,
+                    reason="not_allowlisted",
+                ),
+                UrlFinding(
+                    url=third_url,
+                    host="example.com",
+                    allowed=False,
+                    suspicious=False,
+                    reason="not_allowlisted",
+                ),
+            ],
+        )
+    )
+
+    async def confirm_with_partial_output(params: dict[str, object]) -> dict[str, object]:
+        harness.confirm_calls.append(dict(params))
+        confirmed = harness._pending_actions[str(params["confirmation_id"])]
+        confirmed.status = "approved"
+        confirmed.status_reason = "chat_confirmation"
+        fetch_url = str(confirmed.arguments["url"])
+        tool_outputs = []
+        if fetch_url != middle_url:
+            tool_outputs.append(
+                {
+                    "tool_name": "web.fetch",
+                    "success": True,
+                    "payload": {
+                        "ok": True,
+                        "url": fetch_url,
+                        "content": f"Fetched content from {fetch_url}",
+                    },
+                    "taint_labels": [],
+                }
+            )
+        return {
+            "confirmed": True,
+            "status": "approved",
+            "tool_outputs": tool_outputs,
+        }
+
+    harness.do_action_confirm = confirm_with_partial_output  # type: ignore[method-assign]
+
+    result = await SessionImplMixin._maybe_handle_chat_confirmation(
+        harness,
+        sid=SessionId("sess-chat"),
+        channel="discord",
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws-1"),
+        session_mode=SessionMode.DEFAULT,
+        trust_level="trusted",
+        trusted_input=True,
+        is_internal_ingress=False,
+        content="yes to all",
+        firewall_result=FirewallResult(sanitized_text="yes to all", original_hash="0" * 64),
+    )
+
+    assert result is not None
+    response = str(result["response"])
+    assert not response.startswith("[CONFIRMATION REQUIRED]")
+    assert first_url in response
+    assert third_url in response
+
+
+@pytest.mark.asyncio
+async def test_chat_confirmation_propagates_sensitive_tool_taint_to_summary(
+    tmp_path,
+) -> None:
+    harness = _ChatConfirmationHarness(tmp_path)
+    pending = PendingAction(
+        confirmation_id="c-1",
+        decision_nonce="nonce-1",
+        session_id=SessionId("sess-chat"),
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws-1"),
+        tool_name=ToolName("fs.read"),
+        arguments={"path": "secret.txt"},
+        reason="manual",
+        capabilities={Capability.FILE_READ},
+        created_at=datetime.now(UTC),
+    )
+    harness._pending_actions[pending.confirmation_id] = pending
+    tool_output = {
+        "tool_name": "fs.read",
+        "success": True,
+        "payload": {
+            "ok": True,
+            "path": "secret.txt",
+            "content": "Owner private file secret.",
+        },
+        "taint_labels": [TaintLabel.SENSITIVE_FILE.value],
+    }
+
+    async def confirm_with_output(params: dict[str, object]) -> dict[str, object]:
+        harness.confirm_calls.append(dict(params))
+        confirmed = harness._pending_actions[str(params["confirmation_id"])]
+        confirmed.status = "approved"
+        confirmed.status_reason = "chat_confirmation"
+        return {
+            "confirmed": True,
+            "status": "approved",
+            "tool_outputs": [tool_output],
+        }
+
+    harness.do_action_confirm = confirm_with_output  # type: ignore[method-assign]
+
+    result = await SessionImplMixin._maybe_handle_chat_confirmation(
+        harness,
+        sid=SessionId("sess-chat"),
+        channel="discord",
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws-1"),
+        session_mode=SessionMode.DEFAULT,
+        trust_level="public",
+        trusted_input=True,
+        is_internal_ingress=False,
+        content="confirm 1",
+        firewall_result=FirewallResult(sanitized_text="confirm 1", original_hash="0" * 64),
+    )
+
+    assert result is not None
+    assert result["response"] == "Response blocked by public-channel output policy."
+    assert result["tool_outputs"] == []
+    entries = harness._transcript_store.list_entries(SessionId("sess-chat"))
+    assistant_entries = [entry for entry in entries if entry.role == "assistant"]
+    assert assistant_entries
+    assert assistant_entries[-1].taint_labels == [TaintLabel.SENSITIVE_FILE]
 
 
 @pytest.mark.asyncio
@@ -1993,6 +2651,144 @@ def test_u9_action_resolve_pending_context_filters_totp_by_delivery_target() -> 
         "c-software",
         "c-visible",
     ]
+
+
+def test_u9_action_resolve_pending_context_uses_stored_delivery_target_fallback() -> None:
+    current_target = DeliveryTarget(channel="discord", recipient="chan-2")
+    other_target = DeliveryTarget(channel="discord", recipient="chan-1")
+    software_pending = PendingAction(
+        confirmation_id="c-software",
+        decision_nonce="nonce-software",
+        session_id=SessionId("sess-chat"),
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws-1"),
+        tool_name=ToolName("web.search"),
+        arguments={"query": "hello"},
+        reason="manual",
+        capabilities={Capability.HTTP_REQUEST},
+        created_at=datetime.now(UTC),
+    )
+    hidden_totp = PendingAction(
+        confirmation_id="c-hidden",
+        decision_nonce="nonce-hidden",
+        session_id=SessionId("sess-chat"),
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws-1"),
+        tool_name=ToolName("fs.read"),
+        arguments={"path": "/tmp/hidden"},
+        reason="manual",
+        capabilities={Capability.FILE_READ},
+        created_at=datetime.now(UTC),
+        delivery_target=other_target,
+        selected_backend_id="totp.default",
+        selected_backend_method="totp",
+    )
+    visible_totp = PendingAction(
+        confirmation_id="c-visible",
+        decision_nonce="nonce-visible",
+        session_id=SessionId("sess-chat"),
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws-1"),
+        tool_name=ToolName("fs.read"),
+        arguments={"path": "/tmp/visible"},
+        reason="manual",
+        capabilities={Capability.FILE_READ},
+        created_at=datetime.now(UTC),
+        delivery_target=current_target,
+        selected_backend_id="totp.default",
+        selected_backend_method="totp",
+    )
+    validated = SimpleNamespace(
+        is_internal_ingress=True,
+        delivery_target=None,
+        session=SimpleNamespace(
+            metadata={"delivery_target": current_target.model_dump(mode="json")}
+        ),
+    )
+
+    visible_rows = _visible_pending_rows_for_validated_turn(
+        pending_rows=[software_pending, hidden_totp, visible_totp],
+        validated=validated,
+    )
+    active_ids = _active_pending_confirmation_ids_for_session(
+        {
+            "c-software": software_pending,
+            "c-hidden": hidden_totp,
+            "c-visible": visible_totp,
+        },
+        SessionId("sess-chat"),
+        is_internal_ingress=True,
+        delivery_target=None,
+        fallback_target=current_target,
+    )
+
+    assert [pending.confirmation_id for pending in visible_rows] == [
+        "c-software",
+        "c-visible",
+    ]
+    assert active_ids == frozenset({"c-software", "c-visible"})
+
+
+def test_c3_result_followup_active_ids_filter_totp_only_by_delivery_target() -> None:
+    current_target = DeliveryTarget(channel="discord", recipient="chan-2")
+    other_target = DeliveryTarget(channel="discord", recipient="chan-1")
+    software_pending = PendingAction(
+        confirmation_id="c-software",
+        decision_nonce="nonce-software",
+        session_id=SessionId("sess-chat"),
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws-1"),
+        tool_name=ToolName("web.search"),
+        arguments={"query": "hello"},
+        reason="manual",
+        capabilities={Capability.HTTP_REQUEST},
+        created_at=datetime.now(UTC),
+        delivery_target=other_target,
+    )
+    hidden_totp = PendingAction(
+        confirmation_id="c-hidden",
+        decision_nonce="nonce-hidden",
+        session_id=SessionId("sess-chat"),
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws-1"),
+        tool_name=ToolName("fs.read"),
+        arguments={"path": "/tmp/hidden"},
+        reason="manual",
+        capabilities={Capability.FILE_READ},
+        created_at=datetime.now(UTC),
+        delivery_target=other_target,
+        selected_backend_id="totp.default",
+        selected_backend_method="totp",
+    )
+    visible_totp = PendingAction(
+        confirmation_id="c-visible",
+        decision_nonce="nonce-visible",
+        session_id=SessionId("sess-chat"),
+        user_id=UserId("alice"),
+        workspace_id=WorkspaceId("ws-1"),
+        tool_name=ToolName("fs.read"),
+        arguments={"path": "/tmp/visible"},
+        reason="manual",
+        capabilities={Capability.FILE_READ},
+        created_at=datetime.now(UTC),
+        delivery_target=current_target,
+        selected_backend_id="totp.default",
+        selected_backend_method="totp",
+    )
+
+    active_ids = _active_pending_confirmation_ids_for_session(
+        {
+            "c-software": software_pending,
+            "c-hidden": hidden_totp,
+            "c-visible": visible_totp,
+        },
+        SessionId("sess-chat"),
+        is_internal_ingress=True,
+        delivery_target=current_target,
+        fallback_target=current_target,
+    )
+
+    assert active_ids == frozenset({"c-software", "c-visible"})
 
 
 @pytest.mark.asyncio

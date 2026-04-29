@@ -2301,6 +2301,84 @@ def test_action_confirm_renders_confirmed_tool_output_for_humans(
     assert '"tool_outputs"' not in result.output
 
 
+def test_action_confirm_renders_failed_fs_read_error_for_humans(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _config(tmp_path)
+    monkeypatch.setattr(cli_main, "_get_config", lambda: config)
+
+    def _fake_rpc_call(
+        effective_config: DaemonConfig,
+        method: str,
+        params: dict[str, object] | None = None,
+        *,
+        response_model: type[object] | None = None,
+    ) -> object:
+        assert effective_config is config
+        if method == "action.pending":
+            payload = {
+                "actions": [
+                    {
+                        "confirmation_id": "c-1",
+                        "decision_nonce": "n-1",
+                        "status": "pending",
+                        "tool_name": "fs.read",
+                        "reason": "manual",
+                    }
+                ],
+                "count": 1,
+            }
+        else:
+            assert method == "action.confirm"
+            payload = {
+                "confirmed": True,
+                "confirmation_id": "c-1",
+                "status": "approved",
+                "tool_outputs": [
+                    {
+                        "tool_name": "fs.read",
+                        "success": False,
+                        "payload": {
+                            "ok": False,
+                            "path": "READMEE.md",
+                            "error": "path_not_found",
+                        },
+                        "taint_labels": [],
+                    }
+                ],
+            }
+        if response_model is None:
+            return payload
+        return response_model.model_validate(payload)  # type: ignore[attr-defined]
+
+    monkeypatch.setattr(cli_main, "rpc_call", _fake_rpc_call)
+    runner = CliRunner()
+
+    result = runner.invoke(cli_main.cli, ["action", "confirm", "c-1"])
+
+    assert result.exit_code == 0, result.output
+    assert "Confirmed c-1: approved" in result.output
+    assert "fs.read read READMEE.md failed: path_not_found" in result.output
+    assert '"tool_outputs"' not in result.output
+
+
+def test_action_confirm_renderer_includes_web_fetch_error() -> None:
+    lines = cli_main._render_confirmed_tool_output(
+        {
+            "tool_name": "web.fetch",
+            "success": False,
+            "payload": {
+                "ok": False,
+                "url": "https://example.invalid/",
+                "error": "network_unavailable",
+            },
+        }
+    )
+
+    assert lines == ["web.fetch fetched https://example.invalid/ failed: network_unavailable."]
+
+
 def test_action_confirm_json_flag_preserves_machine_readable_output(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

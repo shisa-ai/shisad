@@ -12,6 +12,7 @@ from typing import Any
 
 import pytest
 
+from shisad.channels.base import DeliveryTarget
 from shisad.core.evidence import EvidenceStore, KmsArtifactBlobCodec
 from shisad.core.planner import (
     ActionProposal,
@@ -249,6 +250,7 @@ async def test_g1_do_session_message_short_circuits_on_phase1_early_response() -
 class _PendingPolicySnapshotHarness(SessionImplMixin):
     def __init__(self) -> None:
         self.captured_merged_policy: object | None = None
+        self.captured_delivery_target: DeliveryTarget | None = None
         self.control_plane_calls: list[dict[str, object]] = []
         self._event_bus = SimpleNamespace(publish=self._noop_publish)
         self._session_manager = SimpleNamespace(
@@ -343,6 +345,10 @@ class _PendingPolicySnapshotHarness(SessionImplMixin):
 
     def _queue_pending_action(self, **kwargs: object) -> object:
         self.captured_merged_policy = kwargs.get("merged_policy")
+        delivery_target = kwargs.get("delivery_target")
+        self.captured_delivery_target = (
+            delivery_target if isinstance(delivery_target, DeliveryTarget) else None
+        )
         return SimpleNamespace(confirmation_id="c-1", reason="requires_confirmation")
 
     async def _prepare_browser_tool_arguments(
@@ -354,6 +360,44 @@ class _PendingPolicySnapshotHarness(SessionImplMixin):
     ) -> dict[str, object]:
         _ = (session, tool_name)
         return dict(arguments)
+
+
+class _ValidateWritePathHarness(SessionImplMixin):
+    def __init__(self, session: Session) -> None:
+        self._internal_ingress_marker = object()
+        self.appended_metadata: dict[str, Any] = {}
+        self.persisted_session_ids: list[str] = []
+        self._session_manager = SimpleNamespace(
+            get=lambda sid: session if sid == session.id else None,
+            validate_identity_binding=lambda *_args, **_kwargs: True,
+            persist=lambda sid: self.persisted_session_ids.append(str(sid)),
+        )
+        self._event_bus = SimpleNamespace(publish=self._noop_publish)
+        self._transcript_store = SimpleNamespace(append=self._append_transcript)
+
+    def _session_mode(self, session: Session) -> SessionMode:
+        return session.mode
+
+    @staticmethod
+    def _is_admin_rpc_peer(_params: Mapping[str, Any]) -> bool:
+        return False
+
+    async def _noop_publish(self, _event: object) -> None:
+        return None
+
+    def _append_transcript(self, _sid: SessionId, **kwargs: object) -> TranscriptEntry:
+        raw_metadata = kwargs.get("metadata")
+        metadata = dict(raw_metadata) if isinstance(raw_metadata, Mapping) else {}
+        self.appended_metadata = metadata
+        return TranscriptEntry(
+            role=str(kwargs.get("role", "")),
+            content_hash="2" * 64,
+            content_preview=str(kwargs.get("content", "")),
+            metadata=metadata,
+        )
+
+    async def _maybe_handle_chat_confirmation(self, **_kwargs: object) -> dict[str, Any] | None:
+        return None
 
 
 @pytest.mark.asyncio
@@ -426,6 +470,121 @@ async def test_m1_planner_confirmation_persists_queue_time_merged_policy_snapsho
     assert result.pending_confirmation == 1
     assert harness.captured_merged_policy is not None
     assert getattr(harness.captured_merged_policy, "snapshot", "") == "queue-time"
+
+
+@pytest.mark.asyncio
+async def test_m1_planner_confirmation_uses_stored_delivery_target_fallback() -> None:
+    harness = _PendingPolicySnapshotHarness()
+    target = DeliveryTarget(channel="discord", recipient="chan-b")
+    validated = _validation_result(params={"session_id": "sess-g1", "content": "run shell"})
+    validated.channel = "discord"
+    validated.is_internal_ingress = True
+    validated.delivery_target = None
+    validated.session.metadata["delivery_target"] = target.model_dump(mode="json")
+    planner_context = SessionMessagePlannerContextResult(
+        validated=validated,
+        conversation_context="",
+        transcript_context_taints=set(),
+        effective_caps={Capability.SHELL_EXEC},
+        memory_query="",
+        memory_context="",
+        memory_context_taints=set(),
+        memory_context_tainted_for_amv=False,
+        user_goal_host_patterns=set(),
+        untrusted_current_turn="",
+        untrusted_host_patterns=set(),
+        policy_egress_host_patterns=set(),
+        context=PolicyContext(),
+        planner_origin="planner-origin",
+        committed_plan_hash="plan-g1",
+        active_plan_hash="plan-g1",
+        planner_tools_payload=[],
+        planner_input="planner input",
+        assistant_tone_override=None,
+    )
+    proposal = ActionProposal(
+        action_id="a-1",
+        tool_name=ToolName("shell.exec"),
+        arguments={"command": ["echo", "ok"]},
+        reasoning="Run the operator-requested command.",
+        data_sources=[],
+    )
+    planner_dispatch = SessionMessagePlannerDispatchResult(
+        planner_context=planner_context,
+        planner_result=PlannerResult(
+            output=PlannerOutput(assistant_response="Need confirmation.", actions=[proposal]),
+            evaluated=[
+                EvaluatedProposal(
+                    proposal=proposal,
+                    decision=PEPDecision(
+                        kind=PEPDecisionKind.REQUIRE_CONFIRMATION,
+                        reason="needs confirmation",
+                        tool_name=proposal.tool_name,
+                        risk_score=0.5,
+                    ),
+                )
+            ],
+            attempts=1,
+            provider_response=None,
+            messages_sent=(),
+        ),
+        planner_failure_code="",
+        trace_t0=0.0,
+        delegation_advisory=TaskDelegationRecommendation(
+            delegate=False,
+            action_count=0,
+            reason_codes=(),
+            tools=(),
+        ),
+        trace_tool_calls=[],
+    )
+
+    result = await SessionImplMixin._evaluate_and_execute_actions(
+        harness,
+        planner_dispatch,
+    )
+
+    assert result.pending_confirmation == 1
+    assert harness.captured_delivery_target is not None
+    assert harness.captured_delivery_target.model_dump(mode="json") == target.model_dump(
+        mode="json"
+    )
+
+
+@pytest.mark.asyncio
+async def test_validation_internal_ingress_user_row_uses_stored_delivery_target_fallback() -> None:
+    target = DeliveryTarget(channel="discord", recipient="chan-b")
+    session = Session(
+        id=SessionId("sess-g1"),
+        channel="discord",
+        user_id=UserId("user-g1"),
+        workspace_id=WorkspaceId("workspace-g1"),
+        state=SessionState.ACTIVE,
+        mode=SessionMode.DEFAULT,
+        metadata={
+            "trust_level": "trusted",
+            "delivery_target": target.model_dump(mode="json"),
+        },
+    )
+    harness = _ValidateWritePathHarness(session)
+
+    validated = await SessionImplMixin._validate_and_load_session(
+        harness,
+        {
+            "session_id": str(session.id),
+            "channel": "discord",
+            "content": "what did you find?",
+            "_internal_ingress_marker": harness._internal_ingress_marker,
+            "_firewall_result": FirewallResult(
+                sanitized_text="what did you find?",
+                original_hash="3" * 64,
+            ).model_dump(mode="json"),
+        },
+    )
+
+    assert validated.delivery_target is None
+    assert harness.appended_metadata["delivery_target"] == target.model_dump(mode="json")
+    assert harness.persisted_session_ids == []
 
 
 @pytest.mark.asyncio
@@ -901,6 +1060,7 @@ class _FinalizeEvidenceHarness(SessionImplMixin):
         self._evidence_store = object()
         self._firewall = object()
         self._planner: Any = None
+        self.approval_link_notifications: list[dict[str, Any]] = []
         self._pending_actions: dict[str, Any] = {}
         self._event_bus = SimpleNamespace(publish=self._noop_publish)
         self._output_firewall = SimpleNamespace(
@@ -919,7 +1079,10 @@ class _FinalizeEvidenceHarness(SessionImplMixin):
             user_notification=lambda _sid: "",
             state_for=lambda _sid: SimpleNamespace(level=SimpleNamespace(value="none")),
         )
-        self._transcript_store = SimpleNamespace(append=lambda *args, **kwargs: None)
+        self._transcript_store = SimpleNamespace(
+            append=lambda *args, **kwargs: None,
+            list_entries=lambda _sid: [],
+        )
         self._transcript_root = "/tmp/shisad-test"
         self._trace_recorder = None
         self._planner_model_id = "planner"
@@ -927,8 +1090,8 @@ class _FinalizeEvidenceHarness(SessionImplMixin):
     async def _noop_publish(self, _event: object) -> None:
         return None
 
-    async def _send_chat_approval_link_notifications(self, **kwargs) -> None:
-        _ = kwargs
+    async def _send_chat_approval_link_notifications(self, **kwargs: object) -> None:
+        self.approval_link_notifications.append(dict(kwargs))
 
     async def _maybe_run_conversation_summarizer(self, **kwargs) -> None:
         _ = kwargs
@@ -1215,6 +1378,517 @@ async def test_rc_lus_finalize_response_renders_direct_fs_read_without_synthesis
 
 
 @pytest.mark.asyncio
+async def test_rc_lus_finalize_response_prefixes_unrequested_clean_url_from_tool_turn() -> None:
+    harness = _FinalizeEvidenceHarness()
+    harness._evidence_store = None
+    harness._output_firewall = SimpleNamespace(
+        inspect=lambda text, context: SimpleNamespace(
+            blocked=False,
+            sanitized_text=text,
+            require_confirmation=True,
+            reason_codes=["unallowlisted_url"],
+            url_findings=[
+                SimpleNamespace(
+                    url="https://surprise.example/details",
+                    suspicious=False,
+                )
+            ],
+            model_dump=lambda mode="json": {
+                "blocked": False,
+                "require_confirmation": True,
+                "reason_codes": ["unallowlisted_url"],
+                "sanitized_text": text,
+            },
+        )
+    )
+    execution = _finalize_execution_result(
+        tool_outputs=[
+            SimpleNamespace(
+                tool_name="fs.read",
+                success=True,
+                content=json.dumps(
+                    {
+                        "ok": True,
+                        "path": "README.md",
+                        "content": "# ShisaD\n\nSecurity-first daemon.",
+                    }
+                ),
+                taint_labels=set(),
+            )
+        ],
+        assistant_response="Read succeeded. See https://surprise.example/details.",
+        sanitized_text="read README.md",
+    )
+
+    response = await SessionImplMixin._finalize_response(harness, execution)
+
+    text = str(response["response"])
+    assert text.startswith("[CONFIRMATION REQUIRED] Read succeeded.")
+    assert "https://surprise.example/details" in text
+
+
+@pytest.mark.asyncio
+async def test_rc_lus_finalize_response_uses_prior_user_goal_for_requested_url() -> None:
+    harness = _FinalizeEvidenceHarness()
+    requested_url = "https://example.com/page"
+    harness._evidence_store = None
+    harness._transcript_store = SimpleNamespace(
+        append=lambda *args, **kwargs: None,
+        list_entries=lambda _sid: [
+            TranscriptEntry(
+                role="user",
+                content_hash="0" * 64,
+                content_preview=f"fetch {requested_url}",
+            )
+        ],
+    )
+    harness._output_firewall = SimpleNamespace(
+        inspect=lambda text, context: SimpleNamespace(
+            blocked=False,
+            sanitized_text=text,
+            require_confirmation=True,
+            reason_codes=["unallowlisted_url"],
+            url_findings=[
+                SimpleNamespace(
+                    url=requested_url,
+                    suspicious=False,
+                )
+            ],
+            model_dump=lambda mode="json": {
+                "blocked": False,
+                "require_confirmation": True,
+                "reason_codes": ["unallowlisted_url"],
+                "sanitized_text": text,
+            },
+        )
+    )
+    execution = _finalize_execution_result(
+        tool_outputs=[
+            SimpleNamespace(
+                tool_name="web.fetch",
+                success=True,
+                content=json.dumps(
+                    {
+                        "ok": True,
+                        "url": requested_url,
+                        "content": f"Fetched content from {requested_url}",
+                    }
+                ),
+                taint_labels=set(),
+            )
+        ],
+        assistant_response=f"Fetched {requested_url}.",
+        content="confirm 1",
+        sanitized_text="confirm 1",
+    )
+
+    response = await SessionImplMixin._finalize_response(harness, execution)
+
+    assert response["response"] == f"Fetched {requested_url}."
+
+
+@pytest.mark.asyncio
+async def test_rc_lus_finalize_response_ignores_other_target_prior_url_goal() -> None:
+    harness = _FinalizeEvidenceHarness()
+    requested_url = "https://example.com/page"
+    target_a = DeliveryTarget(channel="discord", recipient="chan-a")
+    target_b = DeliveryTarget(channel="discord", recipient="chan-b")
+    harness._evidence_store = None
+    harness._transcript_store = SimpleNamespace(
+        append=lambda *args, **kwargs: None,
+        list_entries=lambda _sid: [
+            TranscriptEntry(
+                role="user",
+                content_hash="0" * 64,
+                content_preview=f"fetch {requested_url}",
+                metadata={"delivery_target": target_a.model_dump(mode="json")},
+            )
+        ],
+    )
+    harness._output_firewall = SimpleNamespace(
+        inspect=lambda text, context: SimpleNamespace(
+            blocked=False,
+            sanitized_text=text,
+            require_confirmation=True,
+            reason_codes=["unallowlisted_url"],
+            url_findings=[
+                SimpleNamespace(
+                    url=requested_url,
+                    suspicious=False,
+                )
+            ],
+            model_dump=lambda mode="json": {
+                "blocked": False,
+                "require_confirmation": True,
+                "reason_codes": ["unallowlisted_url"],
+                "sanitized_text": text,
+            },
+        )
+    )
+    execution = _finalize_execution_result(
+        tool_outputs=[
+            SimpleNamespace(
+                tool_name="web.fetch",
+                success=True,
+                content=json.dumps(
+                    {
+                        "ok": True,
+                        "url": requested_url,
+                        "content": f"Fetched content from {requested_url}",
+                    }
+                ),
+                taint_labels=set(),
+            )
+        ],
+        assistant_response=f"Fetched {requested_url}.",
+        content="confirm 1",
+        sanitized_text="confirm 1",
+    )
+    validated = execution.planner_dispatch.planner_context.validated
+    validated.channel = "discord"
+    validated.is_internal_ingress = True
+    validated.delivery_target = target_b
+
+    response = await SessionImplMixin._finalize_response(harness, execution)
+
+    assert str(response["response"]).startswith("[CONFIRMATION REQUIRED] ")
+    assert requested_url in str(response["response"])
+
+
+@pytest.mark.asyncio
+async def test_rc_lus_finalize_response_does_not_ground_older_completed_url() -> None:
+    harness = _FinalizeEvidenceHarness()
+    old_url = "https://example.com/old"
+    requested_url = "https://example.com/current"
+    harness._evidence_store = None
+    harness._transcript_store = SimpleNamespace(
+        append=lambda *args, **kwargs: None,
+        list_entries=lambda _sid: [
+            TranscriptEntry(
+                role="user",
+                content_hash="0" * 64,
+                content_preview=f"fetch {old_url}",
+            ),
+            TranscriptEntry(
+                role="assistant",
+                content_hash="1" * 64,
+                content_preview=f"Fetched {old_url}.",
+            ),
+            TranscriptEntry(
+                role="user",
+                content_hash="2" * 64,
+                content_preview=f"fetch {requested_url}",
+            ),
+        ],
+    )
+    harness._output_firewall = SimpleNamespace(
+        inspect=lambda text, context: SimpleNamespace(
+            blocked=False,
+            sanitized_text=text,
+            require_confirmation=True,
+            reason_codes=["unallowlisted_url"],
+            url_findings=[
+                SimpleNamespace(
+                    url=old_url,
+                    suspicious=False,
+                ),
+                SimpleNamespace(
+                    url=requested_url,
+                    suspicious=False,
+                ),
+            ],
+            model_dump=lambda mode="json": {
+                "blocked": False,
+                "require_confirmation": True,
+                "reason_codes": ["unallowlisted_url"],
+                "sanitized_text": text,
+            },
+        )
+    )
+    execution = _finalize_execution_result(
+        tool_outputs=[
+            SimpleNamespace(
+                tool_name="web.fetch",
+                success=True,
+                content=json.dumps(
+                    {
+                        "ok": True,
+                        "url": requested_url,
+                        "content": f"Fetched content from {requested_url}",
+                    }
+                ),
+                taint_labels=set(),
+            )
+        ],
+        assistant_response=f"Fetched {old_url} and {requested_url}.",
+        content=f"fetch {requested_url}",
+        sanitized_text=f"fetch {requested_url}",
+    )
+
+    response = await SessionImplMixin._finalize_response(harness, execution)
+
+    assert str(response["response"]).startswith("[CONFIRMATION REQUIRED] ")
+    assert old_url in str(response["response"])
+    assert requested_url in str(response["response"])
+
+
+@pytest.mark.asyncio
+async def test_rc_lus_finalize_response_does_not_ground_stale_completed_url_only() -> None:
+    harness = _FinalizeEvidenceHarness()
+    old_url = "https://example.com/old"
+    harness._evidence_store = None
+    harness._transcript_store = SimpleNamespace(
+        append=lambda *args, **kwargs: None,
+        list_entries=lambda _sid: [
+            TranscriptEntry(
+                role="user",
+                content_hash="0" * 64,
+                content_preview=f"fetch {old_url}",
+            ),
+            TranscriptEntry(
+                role="assistant",
+                content_hash="1" * 64,
+                content_preview=f"Fetched {old_url}.",
+            ),
+            TranscriptEntry(
+                role="user",
+                content_hash="2" * 64,
+                content_preview="summarize the current request",
+            ),
+        ],
+    )
+    harness._output_firewall = SimpleNamespace(
+        inspect=lambda text, context: SimpleNamespace(
+            blocked=False,
+            sanitized_text=text,
+            require_confirmation=True,
+            reason_codes=["unallowlisted_url"],
+            url_findings=[
+                SimpleNamespace(
+                    url=old_url,
+                    suspicious=False,
+                )
+            ],
+            model_dump=lambda mode="json": {
+                "blocked": False,
+                "require_confirmation": True,
+                "reason_codes": ["unallowlisted_url"],
+                "sanitized_text": text,
+            },
+        )
+    )
+    execution = _finalize_execution_result(
+        tool_outputs=[
+            SimpleNamespace(
+                tool_name="web.fetch",
+                success=True,
+                content=json.dumps(
+                    {
+                        "ok": True,
+                        "url": old_url,
+                        "content": f"Fetched content from {old_url}",
+                    }
+                ),
+                taint_labels=set(),
+            )
+        ],
+        assistant_response=f"Fetched {old_url}.",
+        content="summarize the current request",
+        sanitized_text="summarize the current request",
+    )
+
+    response = await SessionImplMixin._finalize_response(harness, execution)
+
+    assert str(response["response"]).startswith("[CONFIRMATION REQUIRED] ")
+    assert old_url in str(response["response"])
+
+
+@pytest.mark.asyncio
+async def test_finalize_response_keeps_current_confirmation_tool_url_grounding() -> None:
+    harness = _FinalizeEvidenceHarness()
+    requested_url = "https://example.com/current"
+    harness._evidence_store = None
+    harness._transcript_store = SimpleNamespace(
+        append=lambda *args, **kwargs: None,
+        list_entries=lambda _sid: [
+            TranscriptEntry(
+                role="user",
+                content_hash="0" * 64,
+                content_preview=f"fetch {requested_url}",
+            ),
+            TranscriptEntry(
+                role="assistant",
+                content_hash="1" * 64,
+                content_preview=(
+                    "[PENDING CONFIRMATIONS]\n"
+                    "1. c-1 web.fetch\n"
+                    "Review all pending: shisad action list"
+                ),
+                metadata={"pending_confirmation_bridge": True},
+            ),
+            TranscriptEntry(
+                role="user",
+                content_hash="2" * 64,
+                content_preview="yes",
+            ),
+            TranscriptEntry(
+                role="tool",
+                content_hash="3" * 64,
+                content_preview=f"Fetched content from {requested_url}",
+                metadata={
+                    "actor": "human_confirmation",
+                    "confirmed_tool_output": True,
+                    "tool_name": "web.fetch",
+                },
+            ),
+        ],
+    )
+    harness._output_firewall = SimpleNamespace(
+        inspect=lambda text, context: SimpleNamespace(
+            blocked=False,
+            sanitized_text=text,
+            require_confirmation=True,
+            reason_codes=["unallowlisted_url"],
+            url_findings=[
+                SimpleNamespace(
+                    url=requested_url,
+                    suspicious=False,
+                )
+            ],
+            model_dump=lambda mode="json": {
+                "blocked": False,
+                "require_confirmation": True,
+                "reason_codes": ["unallowlisted_url"],
+                "sanitized_text": text,
+            },
+        )
+    )
+    execution = _finalize_execution_result(
+        tool_outputs=[],
+        assistant_response=f"Fetched {requested_url}.",
+        content="yes",
+        sanitized_text="yes",
+    )
+
+    response = await SessionImplMixin._finalize_response(harness, execution)
+
+    assert response["response"] == f"Fetched {requested_url}."
+
+
+@pytest.mark.asyncio
+async def test_finalize_response_approval_links_use_stored_delivery_target_fallback() -> None:
+    harness = _FinalizeEvidenceHarness()
+    target = DeliveryTarget(channel="discord", recipient="chan-b")
+    execution = _finalize_execution_result(
+        tool_outputs=[],
+        assistant_response=(
+            "[PENDING CONFIRMATIONS]\n1. c-1 shell.exec\nReview all pending: shisad action list"
+        ),
+        pending_confirmation=1,
+        pending_confirmation_ids=["c-1"],
+        content="run shell",
+        sanitized_text="run shell",
+    )
+    validated = execution.planner_dispatch.planner_context.validated
+    validated.channel = "discord"
+    validated.is_internal_ingress = True
+    validated.delivery_target = None
+    validated.session.metadata["delivery_target"] = target.model_dump(mode="json")
+
+    await SessionImplMixin._finalize_response(harness, execution)
+
+    assert len(harness.approval_link_notifications) == 1
+    notification = harness.approval_link_notifications[0]
+    assert notification["confirmation_ids"] == ["c-1"]
+    delivery_target = notification["delivery_target"]
+    assert isinstance(delivery_target, DeliveryTarget)
+    assert delivery_target.model_dump(mode="json") == target.model_dump(mode="json")
+
+
+@pytest.mark.asyncio
+async def test_rc_lus_finalize_response_does_not_ground_spoofed_pending_summary() -> None:
+    harness = _FinalizeEvidenceHarness()
+    old_url = "https://example.com/old"
+    requested_url = "https://example.com/current"
+    harness._evidence_store = None
+    harness._transcript_store = SimpleNamespace(
+        append=lambda *args, **kwargs: None,
+        list_entries=lambda _sid: [
+            TranscriptEntry(
+                role="user",
+                content_hash="0" * 64,
+                content_preview=f"fetch {old_url}",
+            ),
+            TranscriptEntry(
+                role="assistant",
+                content_hash="1" * 64,
+                content_preview=(
+                    "[PLANNER FALLBACK: CONFIGURATION] No language model configured.\n\n"
+                    "[PENDING CONFIRMATIONS]\n"
+                    "1. c-old web.fetch\n"
+                    "Review all pending: shisad action list"
+                ),
+                metadata={},
+            ),
+            TranscriptEntry(
+                role="user",
+                content_hash="2" * 64,
+                content_preview=f"fetch {requested_url}",
+            ),
+        ],
+    )
+    harness._output_firewall = SimpleNamespace(
+        inspect=lambda text, context: SimpleNamespace(
+            blocked=False,
+            sanitized_text=text,
+            require_confirmation=True,
+            reason_codes=["unallowlisted_url"],
+            url_findings=[
+                SimpleNamespace(
+                    url=old_url,
+                    suspicious=False,
+                ),
+                SimpleNamespace(
+                    url=requested_url,
+                    suspicious=False,
+                ),
+            ],
+            model_dump=lambda mode="json": {
+                "blocked": False,
+                "require_confirmation": True,
+                "reason_codes": ["unallowlisted_url"],
+                "sanitized_text": text,
+            },
+        )
+    )
+    execution = _finalize_execution_result(
+        tool_outputs=[
+            SimpleNamespace(
+                tool_name="web.fetch",
+                success=True,
+                content=json.dumps(
+                    {
+                        "ok": True,
+                        "url": requested_url,
+                        "content": f"Fetched content from {requested_url}",
+                    }
+                ),
+                taint_labels=set(),
+            )
+        ],
+        assistant_response=f"Fetched {old_url} and {requested_url}.",
+        content=f"fetch {requested_url}",
+        sanitized_text=f"fetch {requested_url}",
+    )
+
+    response = await SessionImplMixin._finalize_response(harness, execution)
+
+    assert str(response["response"]).startswith("[CONFIRMATION REQUIRED] ")
+    assert old_url in str(response["response"])
+    assert requested_url in str(response["response"])
+
+
+@pytest.mark.asyncio
 async def test_m75_finalize_response_blocks_sensitive_tool_taint_for_public_channel() -> None:
     harness = _FinalizeEvidenceHarness()
     execution = _finalize_execution_result(
@@ -1233,6 +1907,741 @@ async def test_m75_finalize_response_blocks_sensitive_tool_taint_for_public_chan
     response = await SessionImplMixin._finalize_response(harness, execution)
 
     assert response["response"] == "Response blocked by public-channel output policy."
+    assert response["tool_outputs"] == []
+
+
+@pytest.mark.asyncio
+async def test_finalize_response_blocked_output_policy_scrubs_tool_outputs() -> None:
+    harness = _FinalizeEvidenceHarness()
+    harness._output_firewall = SimpleNamespace(
+        inspect=lambda text, context: SimpleNamespace(
+            blocked=True,
+            sanitized_text=text,
+            require_confirmation=False,
+            model_dump=lambda mode="json": {
+                "blocked": True,
+                "require_confirmation": False,
+                "sanitized_text": text,
+            },
+        )
+    )
+    execution = _finalize_execution_result(
+        tool_outputs=[
+            SimpleNamespace(
+                tool_name="web.fetch",
+                success=True,
+                content=json.dumps({"content": "blocked payload"}),
+                taint_labels=set(),
+            )
+        ],
+        assistant_response="Blocked URL: http://[2001:db8::1",
+    )
+
+    response = await SessionImplMixin._finalize_response(harness, execution)
+
+    assert response["response"] == "Response blocked by output policy."
+    assert response["tool_outputs"] == []
+
+
+def test_rc_lus_direct_result_followup_blocks_sensitive_taint_for_public_channel() -> None:
+    harness = _FinalizeEvidenceHarness()
+    appended: dict[str, Any] = {}
+    harness._transcript_store = SimpleNamespace(
+        append=lambda *args, **kwargs: appended.update(kwargs)
+    )
+    validated = _validation_result(
+        params={"session_id": "sess-g1", "content": "what did you find?"},
+        sanitized_text="what did you find?",
+    )
+    validated.trust_level = "public"
+
+    response = SessionImplMixin._direct_response_with_transcript(
+        harness,
+        validated=validated,
+        response="The private file says: Owner private file secret.",
+        taint_labels={TaintLabel.SENSITIVE_FILE},
+    )
+
+    assert response["response"] == "Response blocked by public-channel output policy."
+    assert appended["taint_labels"] == {TaintLabel.SENSITIVE_FILE}
+
+
+@pytest.mark.asyncio
+async def test_rc_lus_shortcut_result_followup_carries_tool_taints_to_public_policy() -> None:
+    harness = _FinalizeEvidenceHarness()
+    appended: dict[str, Any] = {}
+    entries = [
+        TranscriptEntry(
+            role="tool",
+            content_hash="0" * 64,
+            content_preview=json.dumps(
+                {
+                    "path": "secret.txt",
+                    "content": "Owner private file secret.",
+                }
+            ),
+            taint_labels=[TaintLabel.SENSITIVE_FILE],
+            metadata={
+                "confirmed_tool_output": True,
+                "tool_name": "fs.read",
+                "tool_success": True,
+            },
+        ),
+        TranscriptEntry(
+            role="user",
+            content_hash="1" * 64,
+            content_preview="what did you find?",
+        ),
+    ]
+    harness._transcript_store = SimpleNamespace(
+        list_entries=lambda _sid: entries,
+        append=lambda *args, **kwargs: appended.update(kwargs),
+    )
+    validated = _validation_result(
+        params={"session_id": "sess-g1", "content": "what did you find?"},
+        sanitized_text="what did you find?",
+    )
+    validated.trust_level = "public"
+
+    response = await SessionImplMixin._maybe_handle_recent_result_followup(
+        harness,
+        validated=validated,
+    )
+
+    assert response is not None
+    assert response["response"] == "Response blocked by public-channel output policy."
+    assert appended["taint_labels"] == {TaintLabel.SENSITIVE_FILE}
+
+
+@pytest.mark.asyncio
+async def test_rc_lus_shortcut_result_followup_carries_assistant_summary_taints() -> None:
+    harness = _FinalizeEvidenceHarness()
+    appended: dict[str, Any] = {}
+    entries = [
+        TranscriptEntry(
+            role="tool",
+            content_hash="0" * 64,
+            content_preview=json.dumps(
+                {
+                    "path": "secret.txt",
+                    "content": "Owner private file secret.",
+                }
+            ),
+            taint_labels=[TaintLabel.SENSITIVE_FILE],
+            metadata={
+                "confirmed_tool_output": True,
+                "tool_name": "fs.read",
+                "tool_success": True,
+            },
+        ),
+        TranscriptEntry(
+            role="assistant",
+            content_hash="1" * 64,
+            content_preview=(
+                "Confirmed action result:\n- fs.read succeeded: Owner private file secret."
+            ),
+            taint_labels=[TaintLabel.SENSITIVE_FILE],
+        ),
+        TranscriptEntry(
+            role="user",
+            content_hash="2" * 64,
+            content_preview="what did you find?",
+        ),
+    ]
+    harness._transcript_store = SimpleNamespace(
+        list_entries=lambda _sid: entries,
+        append=lambda *args, **kwargs: appended.update(kwargs),
+    )
+    validated = _validation_result(
+        params={"session_id": "sess-g1", "content": "what did you find?"},
+        sanitized_text="what did you find?",
+    )
+    validated.trust_level = "public"
+
+    response = await SessionImplMixin._maybe_handle_recent_result_followup(
+        harness,
+        validated=validated,
+    )
+
+    assert response is not None
+    assert response["response"] == "Response blocked by public-channel output policy."
+    assert appended["taint_labels"] == {TaintLabel.SENSITIVE_FILE}
+
+
+@pytest.mark.asyncio
+async def test_rc_lus_shortcut_result_followup_inherits_legacy_summary_taints() -> None:
+    harness = _FinalizeEvidenceHarness()
+    appended: dict[str, Any] = {}
+    entries = [
+        TranscriptEntry(
+            role="user",
+            content_hash="0" * 64,
+            content_preview="confirm 1",
+        ),
+        TranscriptEntry(
+            role="tool",
+            content_hash="1" * 64,
+            content_preview=json.dumps(
+                {
+                    "path": "secret.txt",
+                    "content": "Owner private file secret.",
+                }
+            ),
+            taint_labels=[TaintLabel.SENSITIVE_FILE],
+            metadata={
+                "confirmed_tool_output": True,
+                "tool_name": "fs.read",
+                "tool_success": True,
+            },
+        ),
+        TranscriptEntry(
+            role="assistant",
+            content_hash="2" * 64,
+            content_preview=(
+                "Confirmed action result:\n- fs.read succeeded: Owner private file secret."
+            ),
+            taint_labels=[],
+        ),
+        TranscriptEntry(
+            role="user",
+            content_hash="3" * 64,
+            content_preview="what did you find?",
+        ),
+    ]
+    harness._transcript_store = SimpleNamespace(
+        list_entries=lambda _sid: entries,
+        append=lambda *args, **kwargs: appended.update(kwargs),
+    )
+    validated = _validation_result(
+        params={"session_id": "sess-g1", "content": "what did you find?"},
+        sanitized_text="what did you find?",
+    )
+    validated.trust_level = "public"
+
+    response = await SessionImplMixin._maybe_handle_recent_result_followup(
+        harness,
+        validated=validated,
+    )
+
+    assert response is not None
+    assert response["response"] == "Response blocked by public-channel output policy."
+    assert appended["taint_labels"] == {TaintLabel.SENSITIVE_FILE}
+
+
+@pytest.mark.asyncio
+async def test_rc_lus_shortcut_result_followup_prefixes_unrequested_url() -> None:
+    harness = _FinalizeEvidenceHarness()
+    entries = [
+        TranscriptEntry(
+            role="tool",
+            content_hash="0" * 64,
+            content_preview=json.dumps(
+                {
+                    "url": "https://requested.example/page",
+                    "content": "Fetched content points to https://surprise.example/details.",
+                }
+            ),
+            metadata={
+                "confirmed_tool_output": True,
+                "tool_name": "web.fetch",
+                "tool_success": True,
+            },
+        ),
+        TranscriptEntry(
+            role="user",
+            content_hash="1" * 64,
+            content_preview="what did you find?",
+        ),
+    ]
+    harness._transcript_store = SimpleNamespace(
+        list_entries=lambda _sid: entries,
+        append=lambda *args, **kwargs: None,
+    )
+    harness._output_firewall = SimpleNamespace(
+        inspect=lambda text, context: SimpleNamespace(
+            blocked=False,
+            sanitized_text=text,
+            require_confirmation=True,
+            reason_codes=["unallowlisted_url"],
+            url_findings=[
+                SimpleNamespace(
+                    url="https://surprise.example/details",
+                    suspicious=False,
+                )
+            ],
+        )
+    )
+    validated = _validation_result(
+        params={"session_id": "sess-g1", "content": "what did you find?"},
+        sanitized_text="what did you find?",
+    )
+
+    response = await SessionImplMixin._maybe_handle_recent_result_followup(
+        harness,
+        validated=validated,
+    )
+
+    assert response is not None
+    assert str(response["response"]).startswith("[CONFIRMATION REQUIRED] ")
+    assert "https://surprise.example/details" in str(response["response"])
+
+
+@pytest.mark.asyncio
+async def test_rc_lus_shortcut_result_followup_uses_prior_user_goal_for_tool_url() -> None:
+    harness = _FinalizeEvidenceHarness()
+    requested_url = "https://example.com/page"
+    entries = [
+        TranscriptEntry(
+            role="user",
+            content_hash="0" * 64,
+            content_preview=f"fetch {requested_url}",
+        ),
+        TranscriptEntry(
+            role="tool",
+            content_hash="1" * 64,
+            content_preview=json.dumps(
+                {
+                    "url": requested_url,
+                    "content": f"Fetched content from {requested_url}.",
+                }
+            ),
+            metadata={
+                "confirmed_tool_output": True,
+                "tool_name": "web.fetch",
+                "tool_success": True,
+            },
+        ),
+        TranscriptEntry(
+            role="user",
+            content_hash="2" * 64,
+            content_preview="what did you find?",
+        ),
+    ]
+    harness._transcript_store = SimpleNamespace(
+        list_entries=lambda _sid: entries,
+        append=lambda *args, **kwargs: None,
+    )
+    harness._output_firewall = SimpleNamespace(
+        inspect=lambda text, context: SimpleNamespace(
+            blocked=False,
+            sanitized_text=text,
+            require_confirmation=True,
+            reason_codes=["unallowlisted_url"],
+            url_findings=[
+                SimpleNamespace(
+                    url=requested_url,
+                    suspicious=False,
+                )
+            ],
+        )
+    )
+    validated = _validation_result(
+        params={"session_id": "sess-g1", "content": "what did you find?"},
+        sanitized_text="what did you find?",
+    )
+
+    response = await SessionImplMixin._maybe_handle_recent_result_followup(
+        harness,
+        validated=validated,
+    )
+
+    assert response is not None
+    assert not str(response["response"]).startswith("[CONFIRMATION REQUIRED]")
+    assert requested_url in str(response["response"])
+
+
+@pytest.mark.asyncio
+async def test_rc_lus_shortcut_result_followup_uses_previous_user_goal_for_assistant_url() -> None:
+    harness = _FinalizeEvidenceHarness()
+    requested_url = "https://example.com/page"
+    entries = [
+        TranscriptEntry(
+            role="user",
+            content_hash="0" * 64,
+            content_preview=f"fetch {requested_url}",
+        ),
+        TranscriptEntry(
+            role="assistant",
+            content_hash="1" * 64,
+            content_preview=f"The page title for {requested_url} is Example Domain.",
+        ),
+        TranscriptEntry(
+            role="user",
+            content_hash="2" * 64,
+            content_preview="what was the result?",
+        ),
+    ]
+    harness._transcript_store = SimpleNamespace(
+        list_entries=lambda _sid: entries,
+        append=lambda *args, **kwargs: None,
+    )
+    harness._output_firewall = SimpleNamespace(
+        inspect=lambda text, context: SimpleNamespace(
+            blocked=False,
+            sanitized_text=text,
+            require_confirmation=True,
+            reason_codes=["unallowlisted_url"],
+            url_findings=[
+                SimpleNamespace(
+                    url=requested_url,
+                    suspicious=False,
+                )
+            ],
+        )
+    )
+    validated = _validation_result(
+        params={"session_id": "sess-g1", "content": "what was the result?"},
+        sanitized_text="what was the result?",
+    )
+
+    response = await SessionImplMixin._maybe_handle_recent_result_followup(
+        harness,
+        validated=validated,
+    )
+
+    assert response is not None
+    assert response["response"] == f"The page title for {requested_url} is Example Domain."
+
+
+@pytest.mark.asyncio
+async def test_rc_lus_shortcut_result_followup_uses_prior_url_goal_for_assistant_replay() -> None:
+    harness = _FinalizeEvidenceHarness()
+    requested_url = "https://example.com/page"
+    entries = [
+        TranscriptEntry(
+            role="user",
+            content_hash="0" * 64,
+            content_preview=f"fetch {requested_url}",
+        ),
+        TranscriptEntry(
+            role="assistant",
+            content_hash="1" * 64,
+            content_preview="Fetched it.",
+        ),
+        TranscriptEntry(
+            role="user",
+            content_hash="2" * 64,
+            content_preview="summarize it",
+        ),
+        TranscriptEntry(
+            role="assistant",
+            content_hash="3" * 64,
+            content_preview=f"Summary for {requested_url}: Example Domain.",
+        ),
+        TranscriptEntry(
+            role="user",
+            content_hash="4" * 64,
+            content_preview="what was the result?",
+        ),
+    ]
+    harness._transcript_store = SimpleNamespace(
+        list_entries=lambda _sid: entries,
+        append=lambda *args, **kwargs: None,
+    )
+    harness._output_firewall = SimpleNamespace(
+        inspect=lambda text, context: SimpleNamespace(
+            blocked=False,
+            sanitized_text=text,
+            require_confirmation=True,
+            reason_codes=["unallowlisted_url"],
+            url_findings=[
+                SimpleNamespace(
+                    url=requested_url,
+                    suspicious=False,
+                )
+            ],
+        )
+    )
+    validated = _validation_result(
+        params={"session_id": "sess-g1", "content": "what was the result?"},
+        sanitized_text="what was the result?",
+    )
+
+    response = await SessionImplMixin._maybe_handle_recent_result_followup(
+        harness,
+        validated=validated,
+    )
+
+    assert response is not None
+    assert response["response"] == f"Summary for {requested_url}: Example Domain."
+
+
+@pytest.mark.asyncio
+async def test_rc_lus_shortcut_result_followup_filters_by_delivery_target() -> None:
+    harness = _FinalizeEvidenceHarness()
+    appended: dict[str, Any] = {}
+    target_a = DeliveryTarget(channel="discord", recipient="chan-a")
+    target_b = DeliveryTarget(channel="discord", recipient="chan-b")
+    entries = [
+        TranscriptEntry(
+            role="assistant",
+            content_hash="0" * 64,
+            content_preview="Target A result.",
+            metadata={"delivery_target": target_a.model_dump(mode="json")},
+        ),
+        TranscriptEntry(
+            role="assistant",
+            content_hash="1" * 64,
+            content_preview="Target B result.",
+            metadata={"delivery_target": target_b.model_dump(mode="json")},
+        ),
+        TranscriptEntry(
+            role="user",
+            content_hash="2" * 64,
+            content_preview="what did you find?",
+            metadata={"delivery_target": target_b.model_dump(mode="json")},
+        ),
+    ]
+    harness._transcript_store = SimpleNamespace(
+        list_entries=lambda _sid: entries,
+        append=lambda *args, **kwargs: appended.update(kwargs),
+    )
+    validated = _validation_result(
+        params={"session_id": "sess-g1", "content": "what did you find?"},
+        sanitized_text="what did you find?",
+    )
+    validated.channel = "discord"
+    validated.is_internal_ingress = True
+    validated.delivery_target = target_b
+
+    response = await SessionImplMixin._maybe_handle_recent_result_followup(
+        harness,
+        validated=validated,
+    )
+
+    assert response is not None
+    assert response["response"] == "Target B result."
+    assert appended["metadata"]["delivery_target"] == target_b.model_dump(mode="json")
+
+
+@pytest.mark.asyncio
+async def test_rc_lus_shortcut_result_followup_uses_stored_delivery_target_fallback() -> None:
+    harness = _FinalizeEvidenceHarness()
+    appended: dict[str, Any] = {}
+    target_a = DeliveryTarget(channel="discord", recipient="chan-a")
+    target_b = DeliveryTarget(channel="discord", recipient="chan-b")
+    entries = [
+        TranscriptEntry(
+            role="assistant",
+            content_hash="0" * 64,
+            content_preview="Target A result.",
+            metadata={"delivery_target": target_a.model_dump(mode="json")},
+        ),
+        TranscriptEntry(
+            role="assistant",
+            content_hash="1" * 64,
+            content_preview="Target B result.",
+            metadata={"delivery_target": target_b.model_dump(mode="json")},
+        ),
+        TranscriptEntry(
+            role="user",
+            content_hash="2" * 64,
+            content_preview="what did you find?",
+            metadata={"delivery_target": target_b.model_dump(mode="json")},
+        ),
+    ]
+    harness._transcript_store = SimpleNamespace(
+        list_entries=lambda _sid: entries,
+        append=lambda *args, **kwargs: appended.update(kwargs),
+    )
+    validated = _validation_result(
+        params={"session_id": "sess-g1", "content": "what did you find?"},
+        sanitized_text="what did you find?",
+    )
+    validated.channel = "discord"
+    validated.is_internal_ingress = True
+    validated.delivery_target = None
+    validated.session.metadata["delivery_target"] = target_b.model_dump(mode="json")
+
+    response = await SessionImplMixin._maybe_handle_recent_result_followup(
+        harness,
+        validated=validated,
+    )
+
+    assert response is not None
+    assert response["response"] == "Target B result."
+    assert appended["metadata"]["delivery_target"] == target_b.model_dump(mode="json")
+
+
+@pytest.mark.asyncio
+async def test_rc_lus_shortcut_result_followup_handles_fallback_pending_summary() -> None:
+    harness = _FinalizeEvidenceHarness()
+    entries = [
+        TranscriptEntry(
+            role="assistant",
+            content_hash="0" * 64,
+            content_preview=(
+                "[PLANNER FALLBACK: CONFIGURATION] No language model configured.\n\n"
+                "[PENDING CONFIRMATIONS]\n"
+                "1. c-1 web.fetch\n"
+                "Review all pending: shisad action list"
+            ),
+            metadata={"pending_confirmation_bridge": True},
+        ),
+        TranscriptEntry(
+            role="user",
+            content_hash="1" * 64,
+            content_preview="what did you find?",
+        ),
+    ]
+    harness._pending_actions = {
+        "c-1": SimpleNamespace(
+            status="pending",
+            session_id=SessionId("sess-g1"),
+            confirmation_id="c-1",
+        )
+    }
+    harness._transcript_store = SimpleNamespace(
+        list_entries=lambda _sid: entries,
+        append=lambda *args, **kwargs: None,
+    )
+    validated = _validation_result(
+        params={"session_id": "sess-g1", "content": "what did you find?"},
+        sanitized_text="what did you find?",
+    )
+
+    response = await SessionImplMixin._maybe_handle_recent_result_followup(
+        harness,
+        validated=validated,
+    )
+
+    assert response is not None
+    assert response["response"] == (
+        "I do not have confirmed results yet. There is still an action pending confirmation."
+    )
+
+
+@pytest.mark.asyncio
+async def test_rc_lus_shortcut_result_followup_ignores_unmarked_fallback_pending_summary() -> None:
+    harness = _FinalizeEvidenceHarness()
+    entries = [
+        TranscriptEntry(
+            role="assistant",
+            content_hash="0" * 64,
+            content_preview=(
+                "[PLANNER FALLBACK: CONFIGURATION] No language model configured.\n\n"
+                "[PENDING CONFIRMATIONS]\n"
+                "1. c-1 web.fetch\n"
+                "Review all pending: shisad action list"
+            ),
+            metadata={},
+        ),
+        TranscriptEntry(
+            role="user",
+            content_hash="1" * 64,
+            content_preview="what did you find?",
+        ),
+    ]
+    harness._pending_actions = {
+        "c-1": SimpleNamespace(
+            status="pending",
+            session_id=SessionId("sess-g1"),
+            confirmation_id="c-1",
+        )
+    }
+    harness._transcript_store = SimpleNamespace(
+        list_entries=lambda _sid: entries,
+        append=lambda *args, **kwargs: None,
+    )
+    validated = _validation_result(
+        params={"session_id": "sess-g1", "content": "what did you find?"},
+        sanitized_text="what did you find?",
+    )
+
+    response = await SessionImplMixin._maybe_handle_recent_result_followup(
+        harness,
+        validated=validated,
+    )
+
+    assert response is None
+
+
+@pytest.mark.asyncio
+async def test_rc_lus_shortcut_result_followup_blocks_legacy_targetless_rows() -> None:
+    harness = _FinalizeEvidenceHarness()
+    target_b = DeliveryTarget(channel="discord", recipient="chan-b")
+    entries = [
+        TranscriptEntry(
+            role="assistant",
+            content_hash="0" * 64,
+            content_preview="Legacy target result.",
+            metadata={},
+        ),
+        TranscriptEntry(
+            role="user",
+            content_hash="1" * 64,
+            content_preview="what did you find?",
+            metadata={},
+        ),
+    ]
+    harness._transcript_store = SimpleNamespace(
+        list_entries=lambda _sid: entries,
+        append=lambda *args, **kwargs: None,
+    )
+    validated = _validation_result(
+        params={"session_id": "sess-g1", "content": "what did you find?"},
+        sanitized_text="what did you find?",
+    )
+    validated.channel = "discord"
+    validated.is_internal_ingress = True
+    validated.delivery_target = target_b
+    validated.session.metadata["delivery_target"] = target_b.model_dump(mode="json")
+
+    response = await SessionImplMixin._maybe_handle_recent_result_followup(
+        harness,
+        validated=validated,
+    )
+
+    assert response is None
+
+
+@pytest.mark.asyncio
+async def test_rc_lus_shortcut_result_followup_ignores_other_target_tool_output() -> None:
+    harness = _FinalizeEvidenceHarness()
+    target_a = DeliveryTarget(channel="discord", recipient="chan-a")
+    target_b = DeliveryTarget(channel="discord", recipient="chan-b")
+    entries = [
+        TranscriptEntry(
+            role="tool",
+            content_hash="0" * 64,
+            content_preview=json.dumps(
+                {
+                    "path": "a.txt",
+                    "content": "Target A secret result.",
+                }
+            ),
+            metadata={
+                "confirmed_tool_output": True,
+                "tool_name": "fs.read",
+                "tool_success": True,
+                "delivery_target": target_a.model_dump(mode="json"),
+            },
+        ),
+        TranscriptEntry(
+            role="user",
+            content_hash="1" * 64,
+            content_preview="what did you find?",
+            metadata={"delivery_target": target_b.model_dump(mode="json")},
+        ),
+    ]
+    harness._transcript_store = SimpleNamespace(
+        list_entries=lambda _sid: entries,
+        append=lambda *args, **kwargs: None,
+    )
+    validated = _validation_result(
+        params={"session_id": "sess-g1", "content": "what did you find?"},
+        sanitized_text="what did you find?",
+    )
+    validated.channel = "discord"
+    validated.is_internal_ingress = True
+    validated.delivery_target = target_b
+
+    response = await SessionImplMixin._maybe_handle_recent_result_followup(
+        harness,
+        validated=validated,
+    )
+
+    assert response is None
 
 
 @pytest.mark.asyncio

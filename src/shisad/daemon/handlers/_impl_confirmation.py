@@ -141,21 +141,28 @@ class ConfirmationImplMixin(HandlerMixinBase):
             return
         raw_taints: Any = getattr(tool_output, "taint_labels", set())
         taint_labels: set[TaintLabel] = set(raw_taints) if isinstance(raw_taints, set) else set()
+        metadata: dict[str, Any] = {
+            "channel": "confirmation",
+            "actor": "human_confirmation",
+            "confirmed_tool_output": True,
+            "tool_name": str(getattr(pending, "tool_name", "")).strip(),
+            "confirmation_id": str(getattr(pending, "confirmation_id", "")).strip(),
+            "tool_success": bool(getattr(tool_output, "success", False)),
+            "timestamp_utc": decision_timestamp,
+        }
+        delivery_target = getattr(pending, "delivery_target", None)
+        if delivery_target is not None:
+            if hasattr(delivery_target, "model_dump"):
+                metadata["delivery_target"] = delivery_target.model_dump(mode="json")
+            elif isinstance(delivery_target, Mapping):
+                metadata["delivery_target"] = dict(delivery_target)
         try:
             self._transcript_store.append(
                 pending.session_id,
                 role="tool",
                 content=content,
                 taint_labels=taint_labels,
-                metadata={
-                    "channel": "confirmation",
-                    "actor": "human_confirmation",
-                    "confirmed_tool_output": True,
-                    "tool_name": str(getattr(pending, "tool_name", "")).strip(),
-                    "confirmation_id": str(getattr(pending, "confirmation_id", "")).strip(),
-                    "tool_success": bool(getattr(tool_output, "success", False)),
-                    "timestamp_utc": decision_timestamp,
-                },
+                metadata=metadata,
             )
         except (OSError, RuntimeError, TypeError, ValueError):
             logger.warning(

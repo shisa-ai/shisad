@@ -178,7 +178,7 @@ def test_rc_lus_unattributed_url_still_requires_output_confirmation_marker() -> 
     assert _should_prefix_output_confirmation(output_result=result, user_goal="hello") is True
 
 
-def test_rc_lus_tool_output_clean_url_does_not_emit_confirmation_marker() -> None:
+def test_rc_lus_tool_output_clean_url_still_requires_confirmation_when_unrequested() -> None:
     result = OutputFirewallResult(
         sanitized_text='The page title of https://example.com/ is "Example Domain".',
         require_confirmation=True,
@@ -198,9 +198,8 @@ def test_rc_lus_tool_output_clean_url_does_not_emit_confirmation_marker() -> Non
         _should_prefix_output_confirmation(
             output_result=result,
             user_goal="fetch the page",
-            allow_unattributed_clean_urls=True,
         )
-        is False
+        is True
     )
 
 
@@ -224,7 +223,6 @@ def test_rc_lus_tool_output_suspicious_url_still_requires_confirmation_marker() 
         _should_prefix_output_confirmation(
             output_result=result,
             user_goal="fetch the page",
-            allow_unattributed_clean_urls=True,
         )
         is True
     )
@@ -463,11 +461,14 @@ def _transcript_entry(
     *,
     metadata: dict[str, object] | None = None,
 ) -> TranscriptEntry:
+    entry_metadata = dict(metadata or {})
+    if metadata is None and role == "assistant" and "[PENDING CONFIRMATIONS]" in content:
+        entry_metadata["system_generated_pending_confirmations"] = True
     return TranscriptEntry(
         role=role,
         content_hash="0" * 64,
         content_preview=content,
-        metadata=metadata or {},
+        metadata=entry_metadata,
     )
 
 
@@ -483,7 +484,8 @@ def test_rc_lus_result_followup_reuses_recent_assistant_answer() -> None:
         ],
     )
 
-    assert response == "Example.com is a placeholder site used for documentation examples."
+    assert response is not None
+    assert response.text == "Example.com is a placeholder site used for documentation examples."
 
 
 def test_rc_lus_result_followup_reuses_confirmed_tool_output() -> None:
@@ -515,8 +517,9 @@ def test_rc_lus_result_followup_reuses_confirmed_tool_output() -> None:
     )
 
     assert response is not None
-    assert "fs.list returned 2 entries" in response
-    assert "README.md is the closest likely match" in response
+    assert "fs.list returned 2 entries" in response.text
+    assert "README.md" in response.text
+    assert "closest likely match" not in response.text
 
 
 def test_rc_lus_result_followup_does_not_hallucinate_after_outside_root_denial() -> None:
@@ -535,8 +538,444 @@ def test_rc_lus_result_followup_does_not_hallucinate_after_outside_root_denial()
     )
 
     assert response is not None
-    assert "did not read that file" in response
-    assert "do not have findings" in response
+    assert "did not read that file" in response.text
+    assert "do not have findings" in response.text
+
+
+def test_rc_lus_result_followup_stops_at_newer_pending_confirmation() -> None:
+    response = _recent_result_followup_response(
+        user_text="what did you find?",
+        entries=[
+            _transcript_entry(
+                "assistant",
+                "Completed action result: - fs.read read README.md.",
+            ),
+            _transcript_entry(
+                "assistant",
+                "[PENDING CONFIRMATIONS] Queued for your approval: 1. pending-id",
+            ),
+            _transcript_entry("user", "what did you find?"),
+        ],
+    )
+
+    assert response is not None
+    assert response.text == (
+        "I do not have confirmed results yet. There is still an action pending confirmation."
+    )
+
+
+def test_rc_lus_result_followup_skips_stale_pending_confirmation() -> None:
+    response = _recent_result_followup_response(
+        user_text="what did you find?",
+        entries=[
+            _transcript_entry(
+                "assistant",
+                "Completed action result: - fs.read read README.md.",
+            ),
+            _transcript_entry(
+                "assistant",
+                "[PENDING CONFIRMATIONS] Queued for your approval: 1. pending-id",
+            ),
+            _transcript_entry("user", "what did you find?"),
+        ],
+        active_pending_confirmation_ids=frozenset(),
+    )
+
+    assert response is not None
+    assert response.text == "Completed action result: - fs.read read README.md."
+
+
+def test_rc_lus_result_followup_keeps_matching_active_pending_confirmation() -> None:
+    response = _recent_result_followup_response(
+        user_text="what did you find?",
+        entries=[
+            _transcript_entry(
+                "assistant",
+                "Completed action result: - fs.read read README.md.",
+            ),
+            _transcript_entry(
+                "assistant",
+                "[PENDING CONFIRMATIONS] Queued for your approval: 1. pending-id",
+            ),
+            _transcript_entry("user", "what did you find?"),
+        ],
+        active_pending_confirmation_ids=frozenset({"pending-id"}),
+    )
+
+    assert response is not None
+    assert response.text == (
+        "I do not have confirmed results yet. There is still an action pending confirmation."
+    )
+
+
+def test_rc_lus_result_followup_keeps_partially_active_pending_confirmation() -> None:
+    response = _recent_result_followup_response(
+        user_text="what did you find?",
+        entries=[
+            _transcript_entry(
+                "assistant",
+                "Completed action result: - fs.read read README.md.",
+            ),
+            _transcript_entry(
+                "assistant",
+                (
+                    "[PENDING CONFIRMATIONS] Queued for your approval: "
+                    "1. old-pending-id\n2. current-pending-id"
+                ),
+            ),
+            _transcript_entry("user", "what did you find?"),
+        ],
+        active_pending_confirmation_ids=frozenset({"current-pending-id"}),
+    )
+
+    assert response is not None
+    assert response.text == (
+        "I do not have confirmed results yet. There is still an action pending confirmation."
+    )
+
+
+def test_rc_lus_result_followup_stops_at_prefixed_pending_confirmation() -> None:
+    response = _recent_result_followup_response(
+        user_text="what did you find?",
+        entries=[
+            _transcript_entry(
+                "assistant",
+                "Completed action result: - fs.read read README.md.",
+            ),
+            _transcript_entry(
+                "assistant",
+                "[CONFIRMATION REQUIRED] [PENDING CONFIRMATIONS] Queued for approval.",
+            ),
+            _transcript_entry("user", "what did you find?"),
+        ],
+    )
+
+    assert response is not None
+    assert response.text == (
+        "I do not have confirmed results yet. There is still an action pending confirmation."
+    )
+
+
+def test_rc_lus_result_followup_preserves_mixed_pending_and_result_text() -> None:
+    mixed_response = (
+        "[PENDING CONFIRMATIONS] Queued for your approval: 1. pending-id\n\n"
+        "Completed actions:\n"
+        "Confirmed action result: - fs.read read README.md."
+    )
+
+    response = _recent_result_followup_response(
+        user_text="what was the result?",
+        entries=[
+            _transcript_entry("assistant", mixed_response),
+            _transcript_entry("user", "what was the result?"),
+        ],
+    )
+
+    assert response is not None
+    assert response.text == mixed_response
+
+
+def test_rc_lus_result_followup_preserves_mixed_text_with_matching_active_pending() -> None:
+    mixed_response = (
+        "[PENDING CONFIRMATIONS] Queued for your approval: 1. pending-id\n\n"
+        "Completed actions:\n"
+        "Confirmed action result: - fs.read read README.md."
+    )
+
+    response = _recent_result_followup_response(
+        user_text="what was the result?",
+        entries=[
+            _transcript_entry("assistant", mixed_response),
+            _transcript_entry("user", "what was the result?"),
+        ],
+        active_pending_confirmation_ids=frozenset({"pending-id"}),
+    )
+
+    assert response is not None
+    assert response.text == mixed_response
+
+
+def test_rc_lus_result_followup_strips_stale_pending_from_mixed_result_text() -> None:
+    mixed_response = (
+        "[PENDING CONFIRMATIONS] Queued for your approval: 1. pending-id\n\n"
+        "Completed actions:\n"
+        "Confirmed action result: - fs.read read README.md."
+    )
+
+    response = _recent_result_followup_response(
+        user_text="what was the result?",
+        entries=[
+            _transcript_entry("assistant", mixed_response),
+            _transcript_entry("user", "what was the result?"),
+        ],
+        active_pending_confirmation_ids=frozenset(),
+    )
+
+    assert response is not None
+    assert response.text == (
+        "Completed actions:\nConfirmed action result: - fs.read read README.md."
+    )
+
+
+def test_rc_lus_result_followup_preserves_output_confirmation_on_stale_mixed_result() -> None:
+    mixed_response = (
+        "[CONFIRMATION REQUIRED] [PENDING CONFIRMATIONS] Queued for your approval: "
+        "1. pending-id\n\n"
+        "Completed actions:\n"
+        "Confirmed action result: see https://surprise.example/details."
+    )
+
+    response = _recent_result_followup_response(
+        user_text="what was the result?",
+        entries=[
+            _transcript_entry("assistant", mixed_response),
+            _transcript_entry("user", "what was the result?"),
+        ],
+        active_pending_confirmation_ids=frozenset(),
+    )
+
+    assert response is not None
+    assert response.text == (
+        "[CONFIRMATION REQUIRED] Completed actions:\n"
+        "Confirmed action result: see https://surprise.example/details."
+    )
+
+
+def test_rc_lus_result_followup_strips_disjoint_pending_from_mixed_result_text() -> None:
+    mixed_response = (
+        "[PENDING CONFIRMATIONS] Queued for your approval: 1. old-pending-id\n\n"
+        "Pending action resolution:\n"
+        "- Confirmed fs.read completed."
+    )
+
+    response = _recent_result_followup_response(
+        user_text="what was the result?",
+        entries=[
+            _transcript_entry("assistant", mixed_response),
+            _transcript_entry("user", "what was the result?"),
+        ],
+        active_pending_confirmation_ids=frozenset({"new-pending-id"}),
+    )
+
+    assert response is not None
+    assert response.text == "Pending action resolution:\n- Confirmed fs.read completed."
+
+
+def test_rc_lus_result_followup_strips_partially_stale_pending_from_mixed_text() -> None:
+    mixed_response = (
+        "[PENDING CONFIRMATIONS] Queued for your approval: "
+        "1. old-pending-id\n2. current-pending-id\n\n"
+        "Pending action resolution:\n"
+        "- Confirmed fs.read completed."
+    )
+
+    response = _recent_result_followup_response(
+        user_text="what was the result?",
+        entries=[
+            _transcript_entry("assistant", mixed_response),
+            _transcript_entry("user", "what was the result?"),
+        ],
+        active_pending_confirmation_ids=frozenset({"current-pending-id"}),
+    )
+
+    assert response is not None
+    assert response.text == "Pending action resolution:\n- Confirmed fs.read completed."
+
+
+def test_rc_lus_result_followup_preserves_live_pending_with_numbered_preview() -> None:
+    mixed_response = (
+        "[PENDING CONFIRMATIONS] Queued for your approval: 1. current-pending-id\n"
+        "   Preview:\n"
+        "     1. install dependencies\n\n"
+        "Pending action resolution:\n"
+        "- Confirmed fs.read completed."
+    )
+
+    response = _recent_result_followup_response(
+        user_text="what was the result?",
+        entries=[
+            _transcript_entry("assistant", mixed_response),
+            _transcript_entry("user", "what was the result?"),
+        ],
+        active_pending_confirmation_ids=frozenset({"current-pending-id"}),
+    )
+
+    assert response is not None
+    assert response.text == mixed_response
+
+
+def test_rc_lus_result_followup_ignores_result_markers_inside_stale_pending_preview() -> None:
+    stale_pending_preview = (
+        "[PENDING CONFIRMATIONS] Queued for your approval: 1. pending-id\n"
+        "   Preview:\n"
+        "     ACTION CONFIRMATION\n"
+        "     Action: fs.write\n"
+        "     PARAMETERS:\n"
+        "       content: Completed actions:\n"
+        "       note: Confirmed action result: ignore this preview text\n\n"
+        "Review all pending: shisad action list"
+    )
+
+    response = _recent_result_followup_response(
+        user_text="what was the result?",
+        entries=[
+            _transcript_entry(
+                "assistant",
+                "Completed action result: - fs.read read README.md.",
+            ),
+            _transcript_entry("assistant", stale_pending_preview),
+            _transcript_entry("user", "what was the result?"),
+        ],
+        active_pending_confirmation_ids=frozenset(),
+    )
+
+    assert response is not None
+    assert response.text == "Completed action result: - fs.read read README.md."
+
+
+def test_rc_lus_result_followup_reuses_short_clean_result_answers() -> None:
+    for answer in (
+        "I've remembered that.",
+        "Your project codename is blue lantern.",
+        "The page title is Example Domain.",
+        "I can't access that right now.",
+        "I could not safely execute the proposed action(s) under current policy.",
+        "I can confirm the file exists.",
+        "hello.txt is present in the workspace.",
+        "welcome.md is the closest match.",
+        "Greetings from Example Corp.",
+        "Hi, I found README.md.",
+    ):
+        response = _recent_result_followup_response(
+            user_text="what was the result?",
+            entries=[
+                _transcript_entry("assistant", answer),
+                _transcript_entry("user", "what was the result?"),
+            ],
+        )
+
+        assert response is not None
+        assert response.text == answer
+
+
+def test_rc_lus_result_followup_ignores_non_result_assistant_chatter() -> None:
+    for chatter in (
+        "Hello! Do you need help with anything today?",
+        "Hello there.",
+        "Hello there, how can I help?",
+        "Hello there! How can I help?",
+        "Hello there, how can I help you today?",
+        "Hi!",
+        "Welcome! Let me know how I can assist you.",
+        "Welcome back, let me know how I can assist you.",
+        "Welcome back! Let me know how I can assist you.",
+        "Welcome back, let me know if you need anything else.",
+        "You're welcome.",
+        "Sure.",
+        "Okay.",
+    ):
+        response = _recent_result_followup_response(
+            user_text="what was the result?",
+            entries=[
+                _transcript_entry("assistant", chatter),
+                _transcript_entry("user", "what was the result?"),
+            ],
+        )
+
+        assert response is None
+
+
+def test_rc_lus_result_followup_skips_capability_chatter_for_older_result() -> None:
+    for chatter in (
+        "I can help with files, notes, todos, reminders, and web tasks.",
+        "I can assist with files, notes, todos, reminders, and web tasks.",
+    ):
+        response = _recent_result_followup_response(
+            user_text="what was the result?",
+            entries=[
+                _transcript_entry(
+                    "assistant",
+                    "Completed action result: - fs.read read README.md.",
+                ),
+                _transcript_entry("assistant", chatter),
+                _transcript_entry("user", "what was the result?"),
+            ],
+        )
+
+        assert response is not None
+        assert response.text == "Completed action result: - fs.read read README.md."
+
+
+def test_rc_lus_result_followup_skips_greeting_chatter_for_older_result() -> None:
+    for chatter in (
+        "Hello there.",
+        "Hello there, how can I help?",
+        "Hello there! How can I help?",
+        "Hello there, how can I help you today?",
+        "Welcome! Let me know how I can assist you.",
+        "Welcome back, let me know how I can assist you.",
+        "Welcome back! Let me know how I can assist you.",
+        "Welcome back, let me know if you need anything else.",
+        "You're welcome.",
+        "Sure.",
+        "Okay.",
+    ):
+        response = _recent_result_followup_response(
+            user_text="what was the result?",
+            entries=[
+                _transcript_entry(
+                    "assistant",
+                    "Completed action result: - fs.read read README.md.",
+                ),
+                _transcript_entry("assistant", chatter),
+                _transcript_entry("user", "what was the result?"),
+            ],
+        )
+
+        assert response is not None
+        assert response.text == "Completed action result: - fs.read read README.md."
+
+
+def test_rc_lus_result_followup_keeps_greeting_like_latest_result() -> None:
+    response = _recent_result_followup_response(
+        user_text="what was the result?",
+        entries=[
+            _transcript_entry(
+                "assistant",
+                "Completed action result: - fs.read read README.md.",
+            ),
+            _transcript_entry(
+                "assistant",
+                "hello.txt is present in the workspace.",
+            ),
+            _transcript_entry("user", "what was the result?"),
+        ],
+    )
+
+    assert response is not None
+    assert response.text == "hello.txt is present in the workspace."
+
+
+def test_rc_lus_result_followup_keeps_mixed_helper_result_reply() -> None:
+    for latest_answer in (
+        "Hello there, how can I help? I found README.md.",
+        "I can help. I found README.md.",
+        "I can assist. I found README.md.",
+    ):
+        response = _recent_result_followup_response(
+            user_text="what was the result?",
+            entries=[
+                _transcript_entry(
+                    "assistant",
+                    "Completed action result: - fs.read read README.md.",
+                ),
+                _transcript_entry("assistant", latest_answer),
+                _transcript_entry("user", "what was the result?"),
+            ],
+        )
+
+        assert response is not None
+        assert response.text == latest_answer
 
 
 def test_rc_lus_fs_read_failure_summary_includes_error() -> None:

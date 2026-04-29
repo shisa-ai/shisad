@@ -1748,6 +1748,7 @@ def _render_confirmed_tool_output(record: dict[str, Any]) -> list[str]:
     path = sanitize_terminal_field(str(payload.get("path", "")).strip())
     ok_value = payload.get("ok")
     ok_suffix = "" if ok_value in ("", None) else f" ok={bool(ok_value)}"
+    error = sanitize_terminal_field(str(payload.get("error", "")).strip())
     if tool_name == "fs.list":
         entries = payload.get("entries")
         count = payload.get("count", len(entries) if isinstance(entries, list) else 0)
@@ -1778,6 +1779,8 @@ def _render_confirmed_tool_output(record: dict[str, Any]) -> list[str]:
             header = f"{header} ({len(content)} chars)."
             preview = _preview_cli_text(content)
             return [header, preview] if preview else [header]
+        if error:
+            return [f"{header} failed: {error}."]
         return [f"{header}{ok_suffix}."]
     if tool_name == "web.fetch":
         url = sanitize_terminal_field(str(payload.get("url", "")).strip())
@@ -1789,6 +1792,8 @@ def _render_confirmed_tool_output(record: dict[str, Any]) -> list[str]:
         if title:
             header = f"{header}: {title}"
         preview = _preview_cli_text(content, max_chars=1000, max_lines=12)
+        if not preview and error:
+            return [f"{header} failed: {error}."]
         return [f"{header}.", preview] if preview else [f"{header}{ok_suffix}."]
     if tool_name.startswith("note."):
         return [f"{tool_name}: completed{ok_suffix}."]

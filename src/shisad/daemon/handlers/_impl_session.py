@@ -1245,7 +1245,8 @@ def _visible_pending_rows_for_delivery_target(
     delivery_target: DeliveryTarget | None,
     fallback_target: DeliveryTarget | None = None,
 ) -> list[Any]:
-    if not is_internal_ingress or delivery_target is None:
+    effective_delivery_target = delivery_target or fallback_target
+    if not is_internal_ingress or effective_delivery_target is None:
         return list(pending_rows)
     return [
         pending
@@ -1253,7 +1254,7 @@ def _visible_pending_rows_for_delivery_target(
         if not _pending_uses_totp(pending)
         or _pending_matches_delivery_target(
             pending,
-            delivery_target,
+            effective_delivery_target,
             fallback_target=fallback_target,
         )
     ]
@@ -1270,6 +1271,50 @@ def _stored_delivery_target_from_session(session: Any) -> DeliveryTarget | None:
         except ValidationError:
             return None
     return None
+
+
+def _transcript_entry_delivery_target(entry: TranscriptEntry) -> DeliveryTarget | None:
+    metadata = entry.metadata if isinstance(entry.metadata, Mapping) else {}
+    raw_target = metadata.get("delivery_target")
+    if isinstance(raw_target, DeliveryTarget):
+        return raw_target
+    if isinstance(raw_target, Mapping):
+        try:
+            return DeliveryTarget.model_validate(raw_target)
+        except ValidationError:
+            return None
+    return None
+
+
+def _transcript_entry_visible_for_validated_turn(
+    entry: TranscriptEntry,
+    *,
+    validated: Any,
+) -> bool:
+    delivery_target = getattr(validated, "delivery_target", None)
+    if delivery_target is None:
+        delivery_target = _stored_delivery_target_from_session(getattr(validated, "session", None))
+    return _transcript_entry_visible_for_delivery_target(
+        entry,
+        is_internal_ingress=bool(getattr(validated, "is_internal_ingress", False)),
+        delivery_target=delivery_target,
+    )
+
+
+def _transcript_entry_visible_for_delivery_target(
+    entry: TranscriptEntry,
+    *,
+    is_internal_ingress: bool,
+    delivery_target: DeliveryTarget | None,
+) -> bool:
+    if not is_internal_ingress:
+        return True
+    if delivery_target is None:
+        return True
+    entry_target = _transcript_entry_delivery_target(entry)
+    if entry_target is not None:
+        return _delivery_targets_match(delivery_target, entry_target)
+    return False
 
 
 def _visible_pending_rows_for_validated_turn(
@@ -2690,11 +2735,99 @@ def _normalized_url_for_confirmation_match(value: str) -> str:
     return normalized.rstrip("/")
 
 
+def _prior_user_goal_matching_response_urls(
+    entries: Sequence[TranscriptEntry],
+    index: int,
+    response_text: str,
+) -> str:
+    response_urls = {
+        _normalized_url_for_confirmation_match(match.group(0))
+        for match in _OUTPUT_URL_RE.finditer(response_text)
+    }
+    if not response_urls:
+        return ""
+    matched_user_texts: list[str] = []
+    seen_user_turn = False
+    for previous in reversed(entries[:index]):
+        role = str(previous.role or "").strip().lower()
+        if role != "user":
+            if not seen_user_turn and _is_confirmed_tool_output_entry(previous):
+                continue
+            if not _is_pending_confirmation_bridge_entry(previous):
+                break
+            continue
+        seen_user_turn = True
+        text = str(previous.content_preview or "").strip()
+        if not text:
+            continue
+        user_urls = {
+            _normalized_url_for_confirmation_match(match.group(0))
+            for match in _OUTPUT_URL_RE.finditer(text)
+        }
+        if response_urls.intersection(user_urls):
+            matched_user_texts.append(text)
+    return " ".join(reversed(matched_user_texts)).strip()
+
+
+def _is_confirmed_tool_output_entry(entry: TranscriptEntry) -> bool:
+    role = str(entry.role or "").strip().lower()
+    if role != "tool":
+        return False
+    metadata = entry.metadata if isinstance(entry.metadata, dict) else {}
+    return bool(metadata.get("confirmed_tool_output")) and (
+        str(metadata.get("actor", "")).strip() == "human_confirmation"
+    )
+
+
+def _is_pending_confirmation_bridge_entry(entry: TranscriptEntry) -> bool:
+    role = str(entry.role or "").strip().lower()
+    if role == "user":
+        return False
+    if not _is_server_pending_confirmation_entry(entry):
+        return False
+    text = _pending_confirmation_text_after_prefixes(str(entry.content_preview or ""))
+    if _is_mixed_pending_confirmation_context(text):
+        return False
+    return text.startswith(_PENDING_CONFIRMATIONS_HEADER)
+
+
+def _is_server_pending_confirmation_entry(entry: TranscriptEntry) -> bool:
+    metadata = entry.metadata if isinstance(entry.metadata, dict) else {}
+    return bool(metadata.get("system_generated_pending_confirmations")) or bool(
+        metadata.get("pending_confirmation_bridge")
+    )
+
+
+def _pending_confirmation_text_after_prefixes(text: str) -> str:
+    normalized = str(text or "").strip()
+    confirmation_prefix = f"{_CONFIRMATION_REQUIRED_PREFIX} "
+    if normalized.startswith(confirmation_prefix):
+        normalized = normalized[len(confirmation_prefix) :].lstrip()
+    if normalized.startswith("[PLANNER FALLBACK:"):
+        _, separator, pending_text = normalized.partition("\n\n")
+        if separator:
+            normalized = pending_text.lstrip()
+    return normalized
+
+
+def _output_confirmation_user_goal_for_response(
+    *,
+    current_turn: str,
+    transcript_entries: Sequence[TranscriptEntry],
+    response_text: str,
+) -> str:
+    prior_user_goal = _prior_user_goal_matching_response_urls(
+        transcript_entries,
+        len(transcript_entries),
+        response_text,
+    )
+    return " ".join(part for part in (current_turn, prior_user_goal) if part).strip()
+
+
 def _should_prefix_output_confirmation(
     *,
     output_result: Any,
     user_goal: str = "",
-    allow_unattributed_clean_urls: bool = False,
 ) -> bool:
     if not bool(getattr(output_result, "require_confirmation", False)):
         return False
@@ -2705,10 +2838,6 @@ def _should_prefix_output_confirmation(
     }
     url_findings = list(getattr(output_result, "url_findings", []) or [])
     if reason_codes and reason_codes <= {"unallowlisted_url"} and url_findings:
-        if allow_unattributed_clean_urls and all(
-            not bool(getattr(finding, "suspicious", False)) for finding in url_findings
-        ):
-            return False
         normalized_goal = _normalized_url_for_confirmation_match(user_goal)
         user_requested_urls = {
             _normalized_url_for_confirmation_match(match.group(0))
@@ -4632,6 +4761,15 @@ def _taint_labels_from_payload(payload: Mapping[str, Any]) -> set[TaintLabel]:
     return labels
 
 
+def _taint_labels_from_serialized_tool_outputs(
+    records: Sequence[Mapping[str, Any]],
+) -> set[TaintLabel]:
+    labels: set[TaintLabel] = set()
+    for record in records:
+        labels.update(_taint_labels_from_payload(record))
+    return labels
+
+
 def _build_evidence_supplemental_entries(
     *,
     records: list[dict[str, Any]],
@@ -4881,9 +5019,19 @@ def _is_result_followup_query(user_text: str) -> bool:
     )
 
 
+@dataclass(frozen=True)
+class ResultFollowupResponse:
+    text: str
+    taint_labels: frozenset[TaintLabel] = frozenset()
+    output_confirmation_user_goal: str = ""
+
+
 def _confirmed_tool_output_response_from_transcript_entry(
     entry: TranscriptEntry,
-) -> str | None:
+    *,
+    entries: Sequence[TranscriptEntry] = (),
+    index: int = 0,
+) -> ResultFollowupResponse | None:
     metadata = entry.metadata if isinstance(entry.metadata, dict) else {}
     if metadata.get("confirmed_tool_output") is not True:
         return None
@@ -4906,35 +5054,200 @@ def _confirmed_tool_output_response_from_transcript_entry(
         ],
         header="Confirmed action result",
     )
-    if tool_name == "fs.list":
-        entries = payload.get("entries")
-        if isinstance(entries, list):
-            names = [
-                str(entry_payload.get("name", "")).strip()
-                for entry_payload in entries
-                if isinstance(entry_payload, Mapping) and str(entry_payload.get("name", "")).strip()
-            ]
-            if "README.md" in names:
-                summary = (
-                    f"{summary}\nREADME.md is the closest likely match for the requested file."
-                )
-    return summary or None
+    if not summary:
+        return None
+    return ResultFollowupResponse(
+        text=summary,
+        taint_labels=frozenset(entry.taint_labels),
+        output_confirmation_user_goal=_prior_user_goal_matching_response_urls(
+            entries,
+            index,
+            summary,
+        ),
+    )
+
+
+def _looks_like_result_followup_answer(text: str) -> bool:
+    lowered = text.strip().lower()
+    greeting = r"(?:hello|hi|hey|welcome|greetings)"
+    separator = r"[!.,;:\s]+"
+    addressee = r"(?:there|again|everyone|folks|friend|friends|all|back)"
+    trailing = r"[!.,;:\s?]*"
+    acknowledgement = r"(?:you(?:'re| are) welcome|sure|okay|ok|no problem|of course|anytime)"
+    if re.fullmatch(rf"{acknowledgement}{trailing}", lowered):
+        return False
+    if re.fullmatch(rf"{greeting}(?:{separator}{addressee})?{trailing}", lowered):
+        return False
+    helper_openers = (
+        r"(?:do you need(?: [^?!.\n]*)?|"
+        r"let me know(?: [^?!.\n]*)?|"
+        r"how can i (?:help|assist)(?: [^?!.\n]*)?|"
+        r"how may i (?:help|assist)(?: [^?!.\n]*)?|"
+        r"what can i (?:do|help)(?: [^?!.\n]*)?|"
+        r"i can (?:help|assist)(?: [^?!.\n]*)?|"
+        r"can i help(?: [^?!.\n]*)?)"
+    )
+    if re.fullmatch(
+        rf"{greeting}(?:{separator}{addressee})?{separator}{helper_openers}{trailing}",
+        lowered,
+    ):
+        return False
+    return not re.fullmatch(
+        rf"(?:i can answer|i can help|i can assist)(?: [^?!.\n]*)?{trailing}",
+        lowered,
+    )
+
+
+def _pending_confirmation_ids_in_text(text: str) -> frozenset[str]:
+    ids: set[str] = set()
+    for line in text.splitlines():
+        if line != line.lstrip():
+            continue
+        if _PENDING_CONFIRMATION_RESULT_MARKER_RE.match(line):
+            break
+        for match in re.finditer(r"(?:^|[\s:])\d+\.\s+([^\s,;]+)", line):
+            confirmation_id = match.group(1).strip(".,;:")
+            if confirmation_id:
+                ids.add(confirmation_id)
+    return frozenset(ids)
+
+
+_PENDING_CONFIRMATION_RESULT_MARKERS = (
+    "pending action resolution:",
+    "completed actions:",
+    "confirmed action result",
+    "completed action result",
+)
+_PENDING_CONFIRMATION_RESULT_MARKER_RE = re.compile(
+    r"(?im)^(?:"
+    + "|".join(re.escape(marker) for marker in _PENDING_CONFIRMATION_RESULT_MARKERS)
+    + r")"
+)
+
+
+def _mixed_pending_confirmation_result_portion(text: str) -> str | None:
+    match = _PENDING_CONFIRMATION_RESULT_MARKER_RE.search(text)
+    if match is None:
+        return None
+    return text[match.start() :].strip()
+
+
+def _normalized_pending_confirmation_text(text: str) -> str | None:
+    normalized = _pending_confirmation_text_after_prefixes(text)
+    if not normalized.startswith("[PENDING CONFIRMATIONS]"):
+        return None
+    return normalized
+
+
+def _pending_confirmation_followup_text(
+    text: str,
+    *,
+    active_pending_confirmation_ids: frozenset[str] | None = None,
+) -> str | None:
+    normalized = _normalized_pending_confirmation_text(text)
+    if normalized is None:
+        return None
+    had_output_confirmation_prefix = text.strip().startswith(f"{_CONFIRMATION_REQUIRED_PREFIX} ")
+    result_portion = _mixed_pending_confirmation_result_portion(normalized)
+    if result_portion is not None:
+        if active_pending_confirmation_ids is not None:
+            text_confirmation_ids = _pending_confirmation_ids_in_text(normalized)
+            stale_pending_context = not active_pending_confirmation_ids or (
+                bool(text_confirmation_ids)
+                and not text_confirmation_ids.issubset(active_pending_confirmation_ids)
+            )
+            if stale_pending_context:
+                if had_output_confirmation_prefix:
+                    return f"{_CONFIRMATION_REQUIRED_PREFIX} {result_portion}"
+                return result_portion
+        return text
+    if active_pending_confirmation_ids is not None:
+        if not active_pending_confirmation_ids:
+            return None
+        text_confirmation_ids = _pending_confirmation_ids_in_text(normalized)
+        if text_confirmation_ids and text_confirmation_ids.isdisjoint(
+            active_pending_confirmation_ids
+        ):
+            return None
+    return "I do not have confirmed results yet. There is still an action pending confirmation."
+
+
+def _nearest_user_goal_before_entry(
+    entries: Sequence[TranscriptEntry],
+    index: int,
+    *,
+    response_text: str = "",
+) -> str:
+    response_urls = {
+        _normalized_url_for_confirmation_match(match.group(0))
+        for match in _OUTPUT_URL_RE.finditer(response_text)
+    }
+    nearest_user_text = ""
+    for previous in reversed(entries[:index]):
+        if str(previous.role or "").strip().lower() != "user":
+            continue
+        text = str(previous.content_preview or "").strip()
+        if not text:
+            continue
+        if not nearest_user_text:
+            nearest_user_text = text
+        if not response_urls:
+            return text
+        user_urls = {
+            _normalized_url_for_confirmation_match(match.group(0))
+            for match in _OUTPUT_URL_RE.finditer(text)
+        }
+        if response_urls.intersection(user_urls):
+            return text
+    return nearest_user_text
+
+
+def _confirmed_tool_output_taints_since_previous_user(
+    entries: Sequence[TranscriptEntry],
+    index: int,
+) -> frozenset[TaintLabel]:
+    taints: set[TaintLabel] = set()
+    for previous in reversed(entries[:index]):
+        role = str(previous.role or "").strip().lower()
+        if role == "user":
+            break
+        if role != "tool":
+            continue
+        metadata = previous.metadata if isinstance(previous.metadata, dict) else {}
+        if metadata.get("confirmed_tool_output") is True:
+            taints.update(previous.taint_labels)
+    return frozenset(taints)
+
+
+def _assistant_result_taints_for_entry(
+    entries: Sequence[TranscriptEntry],
+    index: int,
+    entry: TranscriptEntry,
+) -> frozenset[TaintLabel]:
+    taints = set(entry.taint_labels)
+    taints.update(_confirmed_tool_output_taints_since_previous_user(entries, index))
+    return frozenset(taints)
 
 
 def _recent_result_followup_response(
     *,
     user_text: str,
     entries: Sequence[TranscriptEntry],
-) -> str | None:
+    active_pending_confirmation_ids: frozenset[str] | None = None,
+) -> ResultFollowupResponse | None:
     if not _is_result_followup_query(user_text):
         return None
-    pending_seen = False
-    for entry in reversed(entries):
+    for index in range(len(entries) - 1, -1, -1):
+        entry = entries[index]
         role = str(entry.role or "").strip().lower()
         if role == "user":
             continue
         if role == "tool":
-            response = _confirmed_tool_output_response_from_transcript_entry(entry)
+            response = _confirmed_tool_output_response_from_transcript_entry(
+                entry,
+                entries=entries,
+                index=index,
+            )
             if response:
                 return response
             continue
@@ -4944,30 +5257,97 @@ def _recent_result_followup_response(
         if not text:
             continue
         lowered = text.lower()
-        if text.startswith("[PENDING CONFIRMATIONS]"):
-            pending_seen = True
+        pending_followup_text = (
+            _pending_confirmation_followup_text(
+                text,
+                active_pending_confirmation_ids=active_pending_confirmation_ids,
+            )
+            if _is_server_pending_confirmation_entry(entry)
+            else None
+        )
+        if pending_followup_text is not None:
+            return ResultFollowupResponse(
+                pending_followup_text,
+                _assistant_result_taints_for_entry(entries, index, entry),
+                _nearest_user_goal_before_entry(
+                    entries,
+                    index,
+                    response_text=pending_followup_text,
+                ),
+            )
+        if _normalized_pending_confirmation_text(text) is not None:
             continue
         if "internal planner validation error" in lowered:
             continue
         if "outside the configured filesystem roots" in lowered:
-            return (
-                "I did not read that file because it is outside the configured "
-                "filesystem roots for this session, so I do not have findings from it."
+            return ResultFollowupResponse(
+                (
+                    "I did not read that file because it is outside the configured "
+                    "filesystem roots for this session, so I do not have findings from it."
+                ),
+                _assistant_result_taints_for_entry(entries, index, entry),
+                _nearest_user_goal_before_entry(entries, index, response_text=text),
             )
         if "i need explicit confirmation" in lowered:
-            pending_seen = True
-            continue
+            return ResultFollowupResponse(
+                "I do not have confirmed results yet. "
+                "There is still an action pending confirmation."
+            )
         if _response_exposes_internal_tool_narration(text):
             cleaned = _trim_internal_planner_sections(text)
             if cleaned and not _response_exposes_internal_tool_narration(cleaned):
-                return cleaned
+                return ResultFollowupResponse(
+                    cleaned,
+                    _assistant_result_taints_for_entry(entries, index, entry),
+                    _nearest_user_goal_before_entry(entries, index, response_text=cleaned),
+                )
             continue
         if text.startswith("I couldn't complete that request"):
-            return text
-        return text
-    if pending_seen:
-        return "I do not have confirmed results yet. There is still an action pending confirmation."
+            return ResultFollowupResponse(
+                text,
+                _assistant_result_taints_for_entry(entries, index, entry),
+                _nearest_user_goal_before_entry(entries, index, response_text=text),
+            )
+        if _looks_like_result_followup_answer(text):
+            return ResultFollowupResponse(
+                text,
+                _assistant_result_taints_for_entry(entries, index, entry),
+                _nearest_user_goal_before_entry(entries, index, response_text=text),
+            )
     return None
+
+
+def _active_pending_confirmation_ids_for_session(
+    pending_actions: Mapping[str, Any],
+    session_id: SessionId,
+    *,
+    is_internal_ingress: bool = False,
+    delivery_target: DeliveryTarget | None = None,
+    fallback_target: DeliveryTarget | None = None,
+) -> frozenset[str]:
+    active_ids: set[str] = set()
+    session_id_text = str(session_id)
+    effective_delivery_target = delivery_target or fallback_target
+    for fallback_id, pending in pending_actions.items():
+        if str(getattr(pending, "status", "")).strip() != "pending":
+            continue
+        if str(getattr(pending, "session_id", "")).strip() != session_id_text:
+            continue
+        if (
+            is_internal_ingress
+            and effective_delivery_target is not None
+            and _pending_uses_totp(pending)
+            and not _pending_matches_delivery_target(
+                pending,
+                effective_delivery_target,
+                fallback_target=fallback_target,
+            )
+        ):
+            continue
+        confirmation_id = str(getattr(pending, "confirmation_id", fallback_id)).strip()
+        if confirmation_id:
+            active_ids.add(confirmation_id)
+    return frozenset(active_ids)
 
 
 def _risk_tier_from_score(score: float) -> RiskTier:
@@ -5373,21 +5753,36 @@ class SessionImplMixin(HandlerMixinBase):
             executed_actions: int,
             checkpoint_ids: list[str],
             tool_outputs: Sequence[dict[str, Any]] | None = None,
+            output_confirmation_user_goal: str | None = None,
             response_pending_confirmation_ids: Sequence[str] | None = None,
             system_generated_pending_confirmations: bool = False,
         ) -> dict[str, Any]:
+            returned_tool_outputs = list(tool_outputs or [])
+            response_taint_labels = _taint_labels_from_serialized_tool_outputs(tool_outputs or [])
+            public_sensitive_taints = (
+                _public_channel_sensitive_taints(response_taint_labels)
+                if _is_public_channel_level(trust_level)
+                else set()
+            )
+            if public_sensitive_taints:
+                response_text = "Response blocked by public-channel output policy."
+                returned_tool_outputs = []
             output_result = self._output_firewall.inspect(
                 response_text,
                 context={"session_id": sid, "actor": "assistant"},
             )
             if output_result.blocked:
                 response_text = "Response blocked by output policy."
+                returned_tool_outputs = []
             else:
                 response_text = output_result.sanitized_text
                 if _should_prefix_output_confirmation(
                     output_result=output_result,
-                    user_goal=content,
-                    allow_unattributed_clean_urls=bool(tool_outputs),
+                    user_goal=(
+                        output_confirmation_user_goal
+                        if output_confirmation_user_goal is not None
+                        else content
+                    ),
                 ):
                     response_text = f"[CONFIRMATION REQUIRED] {response_text}"
             lockdown_notice = self._lockdown_manager.user_notification(sid)
@@ -5397,6 +5792,11 @@ class SessionImplMixin(HandlerMixinBase):
                 channel=channel,
                 session_mode=session_mode,
             )
+            transcript_delivery_target = delivery_target or stored_delivery_target
+            if transcript_delivery_target is not None:
+                assistant_transcript_metadata["delivery_target"] = (
+                    transcript_delivery_target.model_dump(mode="json")
+                )
             all_pending_rows = self._pending_confirmations_for_binding(
                 session_id=sid,
                 user_id=user_id,
@@ -5413,13 +5813,20 @@ class SessionImplMixin(HandlerMixinBase):
                 if response_pending_confirmation_ids is not None
                 else visible_pending_confirmation_ids
             )
+            normalized_pending_response = _normalized_pending_confirmation_text(response_text)
             if returned_pending_confirmation_ids and system_generated_pending_confirmations:
                 assistant_transcript_metadata["system_generated_pending_confirmations"] = True
+            elif (
+                returned_pending_confirmation_ids
+                and normalized_pending_response is not None
+                and _mixed_pending_confirmation_result_portion(normalized_pending_response) is None
+            ):
+                assistant_transcript_metadata["pending_confirmation_bridge"] = True
             self._transcript_store.append(
                 sid,
                 role="assistant",
                 content=response_text,
-                taint_labels=set(),
+                taint_labels=response_taint_labels,
                 metadata=assistant_transcript_metadata,
             )
             await self._event_bus.publish(
@@ -5430,7 +5837,7 @@ class SessionImplMixin(HandlerMixinBase):
                     blocked_actions=blocked_actions + len(pending_confirmation_ids),
                     executed_actions=executed_actions,
                     trust_level=trust_level,
-                    taint_labels=[],
+                    taint_labels=sorted(label.value for label in response_taint_labels),
                     risk_score=firewall_result.risk_score,
                 )
             )
@@ -5463,7 +5870,7 @@ class SessionImplMixin(HandlerMixinBase):
                 "pending_confirmation_ids": returned_pending_confirmation_ids,
                 "output_policy": output_result.model_dump(mode="json"),
                 "planner_error": "",
-                "tool_outputs": list(tool_outputs or []),
+                "tool_outputs": returned_tool_outputs,
             }
 
         if (
@@ -5792,6 +6199,19 @@ class SessionImplMixin(HandlerMixinBase):
             executed_actions=executed_actions,
             checkpoint_ids=checkpoint_ids,
             tool_outputs=confirmed_tool_outputs,
+            output_confirmation_user_goal=_output_confirmation_user_goal_for_response(
+                current_turn=content,
+                transcript_entries=[
+                    entry
+                    for entry in self._transcript_store.list_entries(sid)
+                    if _transcript_entry_visible_for_delivery_target(
+                        entry,
+                        is_internal_ingress=is_internal_ingress,
+                        delivery_target=delivery_target,
+                    )
+                ],
+                response_text=response_text,
+            ),
             system_generated_pending_confirmations=system_generated_pending_confirmation_response,
         )
 
@@ -6074,10 +6494,13 @@ class SessionImplMixin(HandlerMixinBase):
             user_transcript_metadata.update(_transcript_metadata_for_firewall_risk(firewall_result))
             if channel_message_id:
                 user_transcript_metadata["channel_message_id"] = channel_message_id
-            if delivery_target is not None:
-                serialized_target = delivery_target.model_dump(mode="json")
+            transcript_delivery_target = delivery_target or (
+                stored_delivery_target if is_internal_ingress else None
+            )
+            if transcript_delivery_target is not None:
+                serialized_target = transcript_delivery_target.model_dump(mode="json")
                 user_transcript_metadata["delivery_target"] = serialized_target
-                if not suppress_delivery_target_persist:
+                if delivery_target is not None and not suppress_delivery_target_persist:
                     session.metadata["delivery_target"] = serialized_target
                     self._session_manager.persist(sid)
             user_transcript_entry = self._transcript_store.append(
@@ -7666,6 +8089,11 @@ class SessionImplMixin(HandlerMixinBase):
                                 )
                             )
                         continue
+                pending_delivery_target = validated.delivery_target
+                if pending_delivery_target is None and validated.is_internal_ingress:
+                    pending_delivery_target = _stored_delivery_target_from_session(
+                        validated.session
+                    )
                 try:
                     pending = self._queue_pending_action(
                         session_id=sid,
@@ -7675,7 +8103,7 @@ class SessionImplMixin(HandlerMixinBase):
                         arguments=proposal_arguments,
                         reason=final_reason or "requires_confirmation",
                         capabilities=planner_context.effective_caps,
-                        delivery_target=validated.delivery_target,
+                        delivery_target=pending_delivery_target,
                         preflight_action=cp_eval.action,
                         merged_policy=merged_policy,
                         taint_labels=list(planner_context.context.taint_labels),
@@ -8219,7 +8647,17 @@ class SessionImplMixin(HandlerMixinBase):
         *,
         validated: SessionMessageValidationResult,
         response: str,
+        taint_labels: set[TaintLabel] | None = None,
+        output_confirmation_user_goal: str = "",
     ) -> dict[str, Any]:
+        response_taint_labels = set(taint_labels or set())
+        public_sensitive_taints = (
+            _public_channel_sensitive_taints(response_taint_labels)
+            if _is_public_channel_level(validated.trust_level)
+            else set()
+        )
+        if public_sensitive_taints:
+            response = "Response blocked by public-channel output policy."
         output_result = self._output_firewall.inspect(
             response,
             context={"session_id": str(validated.sid), "actor": "assistant"},
@@ -8229,15 +8667,32 @@ class SessionImplMixin(HandlerMixinBase):
             if output_result.blocked
             else output_result.sanitized_text
         )
+        if (
+            not output_result.blocked
+            and not response_text.startswith(f"{_CONFIRMATION_REQUIRED_PREFIX} ")
+            and _should_prefix_output_confirmation(
+                output_result=output_result,
+                user_goal=output_confirmation_user_goal or validated.firewall_result.sanitized_text,
+            )
+        ):
+            response_text = f"{_CONFIRMATION_REQUIRED_PREFIX} {response_text}"
+        assistant_transcript_metadata = _transcript_metadata_for_channel(
+            channel=validated.channel,
+            session_mode=validated.session_mode,
+        )
+        transcript_delivery_target = (
+            validated.delivery_target or _stored_delivery_target_from_session(validated.session)
+        )
+        if transcript_delivery_target is not None:
+            assistant_transcript_metadata["delivery_target"] = (
+                transcript_delivery_target.model_dump(mode="json")
+            )
         self._transcript_store.append(
             validated.sid,
             role="assistant",
             content=response_text,
-            taint_labels=set(),
-            metadata=_transcript_metadata_for_channel(
-                channel=validated.channel,
-                session_mode=validated.session_mode,
-            ),
+            taint_labels=response_taint_labels,
+            metadata=assistant_transcript_metadata,
         )
         return {
             "session_id": str(validated.sid),
@@ -8253,13 +8708,26 @@ class SessionImplMixin(HandlerMixinBase):
             return None
         response = _recent_result_followup_response(
             user_text=validated.firewall_result.sanitized_text,
-            entries=self._transcript_store.list_entries(validated.sid),
+            entries=[
+                entry
+                for entry in self._transcript_store.list_entries(validated.sid)
+                if _transcript_entry_visible_for_validated_turn(entry, validated=validated)
+            ],
+            active_pending_confirmation_ids=_active_pending_confirmation_ids_for_session(
+                getattr(self, "_pending_actions", {}),
+                validated.sid,
+                is_internal_ingress=validated.is_internal_ingress,
+                delivery_target=validated.delivery_target,
+                fallback_target=_stored_delivery_target_from_session(validated.session),
+            ),
         )
         if response is None:
             return None
         return self._direct_response_with_transcript(
             validated=validated,
-            response=response,
+            response=response.text,
+            taint_labels=set(response.taint_labels),
+            output_confirmation_user_goal=response.output_confirmation_user_goal,
         )
 
     @staticmethod
@@ -8911,6 +9379,16 @@ class SessionImplMixin(HandlerMixinBase):
         )
         if public_sensitive_taints:
             response_text = "Response blocked by public-channel output policy."
+        returned_tool_outputs = [] if public_sensitive_taints else raw_serialized_tool_outputs
+        output_confirmation_user_goal = _output_confirmation_user_goal_for_response(
+            current_turn=validated.firewall_result.sanitized_text,
+            transcript_entries=[
+                entry
+                for entry in self._transcript_store.list_entries(sid)
+                if _transcript_entry_visible_for_validated_turn(entry, validated=validated)
+            ],
+            response_text=response_text,
+        )
 
         output_result = self._output_firewall.inspect(
             response_text,
@@ -8918,12 +9396,12 @@ class SessionImplMixin(HandlerMixinBase):
         )
         if output_result.blocked:
             response_text = "Response blocked by output policy."
+            returned_tool_outputs = []
         else:
             response_text = output_result.sanitized_text
             if _should_prefix_output_confirmation(
                 output_result=output_result,
-                user_goal=validated.firewall_result.sanitized_text,
-                allow_unattributed_clean_urls=bool(execution.executed_tool_outputs),
+                user_goal=output_confirmation_user_goal,
             ):
                 response_text = f"[CONFIRMATION REQUIRED] {response_text}"
         if not public_sensitive_taints and not output_result.blocked:
@@ -8940,23 +9418,36 @@ class SessionImplMixin(HandlerMixinBase):
 
         returned_pending_confirmation_ids = _current_visible_pending_confirmation_ids()
 
-        if validated.delivery_target is not None and execution.pending_confirmation_ids:
+        notification_delivery_target = validated.delivery_target
+        if notification_delivery_target is None and validated.is_internal_ingress:
+            notification_delivery_target = _stored_delivery_target_from_session(validated.session)
+        if notification_delivery_target is not None and execution.pending_confirmation_ids:
             await self._send_chat_approval_link_notifications(
                 confirmation_ids=list(execution.pending_confirmation_ids),
-                delivery_target=validated.delivery_target,
+                delivery_target=notification_delivery_target,
             )
 
         assistant_transcript_metadata = _transcript_metadata_for_channel(
             channel=validated.channel,
             session_mode=validated.session_mode,
         )
+        normalized_pending_response = _normalized_pending_confirmation_text(response_text)
         if execution.pending_confirmation_ids and system_generated_pending_confirmation_response:
             assistant_transcript_metadata["system_generated_pending_confirmations"] = True
+        elif (
+            execution.pending_confirmation_ids
+            and normalized_pending_response is not None
+            and _mixed_pending_confirmation_result_portion(normalized_pending_response) is None
+        ):
+            assistant_transcript_metadata["pending_confirmation_bridge"] = True
         if evidence_ref_ids:
             assistant_transcript_metadata["evidence_ref_ids"] = list(evidence_ref_ids)
-        if validated.delivery_target is not None:
-            assistant_transcript_metadata["delivery_target"] = validated.delivery_target.model_dump(
-                mode="json"
+        transcript_delivery_target = (
+            validated.delivery_target or _stored_delivery_target_from_session(validated.session)
+        )
+        if transcript_delivery_target is not None:
+            assistant_transcript_metadata["delivery_target"] = (
+                transcript_delivery_target.model_dump(mode="json")
             )
         self._transcript_store.append(
             sid,
@@ -9079,7 +9570,7 @@ class SessionImplMixin(HandlerMixinBase):
             "pending_confirmation_ids": returned_pending_confirmation_ids,
             "output_policy": output_result.model_dump(mode="json"),
             "planner_error": planner_dispatch.planner_failure_code,
-            "tool_outputs": raw_serialized_tool_outputs,
+            "tool_outputs": returned_tool_outputs,
         }
 
     def _task_request_from_params(
