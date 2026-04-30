@@ -15,6 +15,7 @@ from shisad.memory.benchmark import (
     builtin_memory_benchmark_dataset,
     evaluate_memory_benchmark,
     load_memory_benchmark_dataset,
+    main,
 )
 
 
@@ -475,3 +476,36 @@ def test_m6_memory_benchmark_requires_clean_storage_dir(tmp_path: Path) -> None:
             storage_dir=storage_dir,
             limit=4,
         )
+
+
+def test_m6_memory_benchmark_script_reports_invalid_args(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with pytest.raises(SystemExit) as exc_info:
+        main(["--output", str(tmp_path / "out.json"), "--limit", "0"])
+
+    assert exc_info.value.code == 2
+    assert "must be positive" in capsys.readouterr().err
+
+
+def test_m6_memory_benchmark_script_reports_invalid_storage(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    storage_dir = tmp_path / "memory"
+    storage_dir.mkdir()
+    (storage_dir / "memory.sqlite3").write_text("previous-run", encoding="utf-8")
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(
+            [
+                "--output",
+                str(tmp_path / "out.json"),
+                "--storage-dir",
+                str(storage_dir),
+            ]
+        )
+
+    assert exc_info.value.code == 2
+    assert "storage directory must be empty" in capsys.readouterr().err

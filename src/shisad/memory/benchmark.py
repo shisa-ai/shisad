@@ -718,10 +718,15 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Run deterministic M6 memory benchmarks.")
     parser.add_argument("--fixture", type=Path, help="External JSON benchmark fixture.")
     parser.add_argument("--storage-dir", type=Path, help="Memory benchmark storage directory.")
-    parser.add_argument("--limit", type=int, default=5, help="Retrieval limit per question.")
+    parser.add_argument(
+        "--limit",
+        type=_positive_int_arg,
+        default=5,
+        help="Retrieval limit per question.",
+    )
     parser.add_argument(
         "--capacity-tokens",
-        type=int,
+        type=_positive_int_arg,
         action="append",
         default=[],
         help="Run a capacity probe at the given approximate token count.",
@@ -732,20 +737,33 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--fail-over-p95-latency-ms", type=float)
     parser.add_argument("--output", type=Path, required=True, help="Output JSON report path.")
     args = parser.parse_args(argv)
-    report = run_memory_benchmark_cli(
-        fixture=args.fixture,
-        storage_dir=args.storage_dir,
-        limit=args.limit,
-        capacity_tokens=tuple(args.capacity_tokens),
-        fail_under_accuracy=args.fail_under_accuracy,
-        fail_under_recall=args.fail_under_recall,
-        fail_over_harm_rate=args.fail_over_harm_rate,
-        fail_over_p95_latency_ms=args.fail_over_p95_latency_ms,
-    )
+    try:
+        report = run_memory_benchmark_cli(
+            fixture=args.fixture,
+            storage_dir=args.storage_dir,
+            limit=args.limit,
+            capacity_tokens=tuple(args.capacity_tokens),
+            fail_under_accuracy=args.fail_under_accuracy,
+            fail_under_recall=args.fail_under_recall,
+            fail_over_harm_rate=args.fail_over_harm_rate,
+            fail_over_p95_latency_ms=args.fail_over_p95_latency_ms,
+        )
+    except ValueError as exc:
+        parser.error(str(exc))
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(report, indent=2, sort_keys=True), encoding="utf-8")
     print(json.dumps(report, indent=2, sort_keys=True))
     return 0 if report["allowed"] else 1
+
+
+def _positive_int_arg(value: str) -> int:
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("must be an integer") from exc
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError("must be positive")
+    return parsed
 
 
 if __name__ == "__main__":

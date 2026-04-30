@@ -55,3 +55,34 @@ def test_memory_benchmark_cli_threshold_failure_is_actionable(tmp_path: Path) ->
     assert result.exit_code != 0
     assert "FAIL memory benchmark synthetic-memory-smoke" in result.output
     assert "accuracy_below_threshold" in result.output
+
+
+def test_memory_benchmark_cli_reports_invalid_operator_inputs(tmp_path: Path) -> None:
+    runner = CliRunner()
+
+    limit_result = runner.invoke(
+        cli_main.cli,
+        ["memory", "benchmark", "--limit", "0"],
+    )
+    assert limit_result.exit_code != 0
+    assert "Invalid value for '--limit'" in limit_result.output
+    assert "Traceback" not in limit_result.output
+
+    capacity_result = runner.invoke(
+        cli_main.cli,
+        ["memory", "benchmark", "--capacity-tokens", "0"],
+    )
+    assert capacity_result.exit_code != 0
+    assert "Invalid value for '--capacity-tokens'" in capacity_result.output
+    assert "Traceback" not in capacity_result.output
+
+    storage_dir = tmp_path / "bench-memory"
+    storage_dir.mkdir()
+    (storage_dir / "memory.sqlite3").write_text("previous-run", encoding="utf-8")
+    storage_result = runner.invoke(
+        cli_main.cli,
+        ["memory", "benchmark", "--storage-dir", str(storage_dir)],
+    )
+    assert storage_result.exit_code != 0
+    assert "storage directory must be empty" in storage_result.output
+    assert "Traceback" not in storage_result.output

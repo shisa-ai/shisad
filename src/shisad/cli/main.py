@@ -2791,10 +2791,16 @@ def memory_rotate_key(no_reencrypt: bool) -> None:
     default=None,
     help="Optional benchmark storage directory. Defaults to a temporary directory.",
 )
-@click.option("--limit", default=5, show_default=True, help="Retrieval limit per question.")
+@click.option(
+    "--limit",
+    type=click.IntRange(min=1),
+    default=5,
+    show_default=True,
+    help="Retrieval limit per question.",
+)
 @click.option(
     "--capacity-tokens",
-    type=int,
+    type=click.IntRange(min=1),
     multiple=True,
     help="Run capacity probe at the given approximate token count. Repeatable.",
 )
@@ -2817,16 +2823,19 @@ def memory_benchmark(
     """Run deterministic memory benchmark adapters."""
     from shisad.memory.benchmark import run_memory_benchmark_cli
 
-    report = run_memory_benchmark_cli(
-        fixture=fixture,
-        storage_dir=storage_dir,
-        limit=limit,
-        capacity_tokens=tuple(capacity_tokens),
-        fail_under_accuracy=fail_under_accuracy,
-        fail_under_recall=fail_under_recall,
-        fail_over_harm_rate=fail_over_harm_rate,
-        fail_over_p95_latency_ms=fail_over_p95_latency_ms,
-    )
+    try:
+        report = run_memory_benchmark_cli(
+            fixture=fixture,
+            storage_dir=storage_dir,
+            limit=limit,
+            capacity_tokens=tuple(capacity_tokens),
+            fail_under_accuracy=fail_under_accuracy,
+            fail_under_recall=fail_under_recall,
+            fail_over_harm_rate=fail_over_harm_rate,
+            fail_over_p95_latency_ms=fail_over_p95_latency_ms,
+        )
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
     if as_json:
         click.echo(json.dumps(report, indent=2, sort_keys=True))
     else:
