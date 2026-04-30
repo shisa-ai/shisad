@@ -10,7 +10,7 @@ import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 from shisad.memory.ingestion import IngestionPipeline
 
@@ -205,6 +205,7 @@ def evaluate_memory_benchmark(
         retrieval_latencies: list[float] = []
         reading_latencies: list[float] = []
         oracle_latencies: list[float] = []
+        question_latencies: list[float] = []
         recall_values: list[float] = []
         mrr_values: list[float] = []
         coverage_values: list[float] = []
@@ -261,7 +262,11 @@ def evaluate_memory_benchmark(
                     answer_match=answer_match,
                     evidence_coverage=evidence_coverage,
                 )
-                oracle_latencies.append(_elapsed_ms(oracle_start))
+                oracle_ms = _elapsed_ms(oracle_start)
+                oracle_latencies.append(oracle_ms)
+            else:
+                oracle_ms = 0.0
+            question_latencies.append(retrieval_ms + reading_ms + oracle_ms)
             question_reports.append(
                 {
                     "id": question.id,
@@ -286,11 +291,10 @@ def evaluate_memory_benchmark(
             )
 
         retrieval_total_ms = sum(retrieval_latencies)
-        all_latencies = retrieval_latencies + reading_latencies
         accuracy = _mean(accuracy_values)
         recall = _mean(recall_values)
         harm_rate = harmful_questions / float(len(dataset.questions) or 1)
-        p95_latency = _percentile(all_latencies, 95)
+        p95_latency = _percentile(question_latencies, 95)
         capacity_reports = [
             _run_capacity_probe(token_count=token_count, limit=limit)
             for token_count in capacity_tokens
@@ -304,7 +308,7 @@ def evaluate_memory_benchmark(
             "evidence_coverage": round(_mean(coverage_values), 6),
         },
         "latency_ms": {
-            "p50": round(_percentile(all_latencies, 50), 3),
+            "p50": round(_percentile(question_latencies, 50), 3),
             "p95": round(p95_latency, 3),
             "retrieval_total": round(retrieval_total_ms, 3),
         },
@@ -365,21 +369,28 @@ def evaluate_memory_benchmark(
 
 def _collection_value(value: object) -> BenchmarkCollection:
     allowed = {"user_curated", "project_docs", "external_web", "tool_outputs"}
-    normalized = str(value or "project_docs")
+    if not isinstance(value, str):
+        raise ValueError("memory benchmark document requires string field: collection")
+    normalized = value
     if normalized not in allowed:
         raise ValueError(f"unsupported memory benchmark collection: {normalized}")
     return normalized  # type: ignore[return-value]
 
 
 def _source_type_value(value: object) -> Literal["user", "external", "tool"]:
+    if not isinstance(value, str):
+        raise ValueError("memory benchmark document requires string field: source_type")
     if value in {"user", "external", "tool"}:
-        return str(value)  # type: ignore[return-value]
-    return {
+        return cast(Literal["user", "external", "tool"], value)
+    mapped = {
         "user_curated": "user",
         "project_docs": "external",
         "external_web": "external",
         "tool_outputs": "tool",
-    }.get(str(value), "external")  # type: ignore[return-value]
+    }.get(value)
+    if mapped is None:
+        raise ValueError(f"unsupported memory benchmark source_type: {value}")
+    return cast(Literal["user", "external", "tool"], mapped)
 
 
 def _required_string(payload: dict[str, Any], field: str, *, context: str) -> str:

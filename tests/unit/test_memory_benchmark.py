@@ -94,15 +94,24 @@ def test_m6_memory_benchmark_stage_durations_are_attributed(
         lambda _start: next(elapsed_values),
     )
 
-    report = evaluate_memory_benchmark(dataset, storage_dir=tmp_path / "memory", limit=1)
+    report = evaluate_memory_benchmark(
+        dataset,
+        storage_dir=tmp_path / "memory",
+        limit=1,
+        fail_over_p95_latency_ms=14.0,
+    )
 
     stages = {stage["name"]: stage for stage in report["stages"]}
     assert stages["indexing"]["duration_ms"] == 7.0
     assert stages["retrieval"]["duration_ms"] == 11.0
     assert stages["reading"]["duration_ms"] == 2.0
     assert stages["oracle"]["duration_ms"] == 1.5
+    assert report["metrics"]["latency_ms"]["p50"] == 14.5
+    assert report["metrics"]["latency_ms"]["p95"] == 14.5
     assert report["metrics"]["latency_ms"]["retrieval_total"] == 11.0
     assert report["elapsed_ms"] == 99.0
+    assert report["allowed"] is False
+    assert "p95_latency_above_threshold" in report["failures"]
 
 
 def test_m6_memory_benchmark_capacity_probe_failure_is_gating(
@@ -195,6 +204,81 @@ def test_m6_memory_benchmark_loads_json_dataset(tmp_path: Path) -> None:
                 ]
             },
             "requires string field: content",
+        ),
+        (
+            {
+                "documents": [
+                    {
+                        "id": "dialogue-1",
+                        "content": "Mina moved the release meeting to Tuesday.",
+                        "collection": None,
+                    }
+                ]
+            },
+            "requires string field: collection",
+        ),
+        (
+            {
+                "documents": [
+                    {
+                        "id": "dialogue-1",
+                        "content": "Mina moved the release meeting to Tuesday.",
+                        "collection": "",
+                    }
+                ]
+            },
+            "unsupported memory benchmark collection",
+        ),
+        (
+            {
+                "documents": [
+                    {
+                        "id": "dialogue-1",
+                        "content": "Mina moved the release meeting to Tuesday.",
+                        "collection": "unknown",
+                    }
+                ]
+            },
+            "unsupported memory benchmark collection",
+        ),
+        (
+            {
+                "documents": [
+                    {
+                        "id": "dialogue-1",
+                        "content": "Mina moved the release meeting to Tuesday.",
+                        "collection": "user_curated",
+                        "source_type": None,
+                    }
+                ]
+            },
+            "requires string field: source_type",
+        ),
+        (
+            {
+                "documents": [
+                    {
+                        "id": "dialogue-1",
+                        "content": "Mina moved the release meeting to Tuesday.",
+                        "collection": "user_curated",
+                        "source_type": "",
+                    }
+                ]
+            },
+            "unsupported memory benchmark source_type",
+        ),
+        (
+            {
+                "documents": [
+                    {
+                        "id": "dialogue-1",
+                        "content": "Mina moved the release meeting to Tuesday.",
+                        "collection": "user_curated",
+                        "source_type": "unknown",
+                    }
+                ]
+            },
+            "unsupported memory benchmark source_type",
         ),
         (
             {
