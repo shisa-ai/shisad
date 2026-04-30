@@ -424,6 +424,25 @@ def test_rc_lus_coerces_report_anomaly_narration_for_injection_summary() -> None
     assert "report the anomaly" not in response
 
 
+def test_rc_releaseclose_keeps_benign_safety_protocol_response() -> None:
+    response_text = (
+        "Recommended safety protocols for credential storage: use a password "
+        "manager, encrypt secrets at rest, rotate exposed credentials, and "
+        "limit access to the systems that need them."
+    )
+
+    response = _coerce_internal_tool_narration_response_text(
+        response_text=response_text,
+        user_text="What safety protocols should we use for credential storage?",
+        risk_factors=[],
+        rejected=0,
+        pending_confirmation=0,
+        executed_tool_outputs=0,
+    )
+
+    assert response == response_text
+
+
 def test_rc_lus_coerces_action_resolve_tool_call_narration() -> None:
     response = _coerce_internal_tool_narration_response_text(
         response_text=(

@@ -3117,14 +3117,14 @@ def _strip_appended_tool_results_summary(text: str) -> str:
 
 def _response_exposes_safe_summary_planner_narration(text: str) -> bool:
     normalized = normalize_intent_text(str(text or "")).lower()
-    return any(
-        marker in normalized
-        for marker in (
-            "report the anomaly",
-            "safety protocol",
-            "safety protocols",
-            "the appropriate response is to not execute",
-        )
+    if "report the anomaly" in normalized:
+        return True
+    if "the appropriate response is to not execute" in normalized:
+        return True
+    return (
+        "safety protocol" in normalized
+        and "malicious" in normalized
+        and ("not execute" in normalized or "do not execute" in normalized)
     )
 
 
