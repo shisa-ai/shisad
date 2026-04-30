@@ -176,6 +176,18 @@ def test_m6_memory_benchmark_loads_json_dataset(tmp_path: Path) -> None:
             {
                 "documents": [
                     {
+                        "id": None,
+                        "content": "Mina moved the release meeting to Tuesday.",
+                        "collection": "user_curated",
+                    }
+                ]
+            },
+            "requires string field: id",
+        ),
+        (
+            {
+                "documents": [
+                    {
                         "id": "dialogue-1",
                         "content": None,
                         "collection": "user_curated",
@@ -196,6 +208,19 @@ def test_m6_memory_benchmark_loads_json_dataset(tmp_path: Path) -> None:
                 ]
             },
             "requires string field: query",
+        ),
+        (
+            {
+                "questions": [
+                    {
+                        "id": None,
+                        "query": "When is the release meeting?",
+                        "expected_source_ids": ["dialogue-1"],
+                        "answer_terms": ["Tuesday"],
+                    }
+                ]
+            },
+            "requires string field: id",
         ),
         (
             {
