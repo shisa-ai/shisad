@@ -7,7 +7,7 @@ import contextlib
 import logging
 import os
 import textwrap
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from contextlib import AsyncExitStack, suppress
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -247,6 +247,7 @@ async def daemon_harness(
     *,
     policy_text: str | None = None,
     config_kwargs: dict[str, Any] | None = None,
+    prestart: Callable[[Any], None] | None = None,
 ) -> AsyncIterator[DaemonHarness]:
     """Start a daemon and yield a connected :class:`DaemonHarness`.
 
@@ -262,6 +263,9 @@ async def daemon_harness(
         YAML policy body.  Falls back to a minimal default-deny policy.
     config_kwargs:
         Extra keyword arguments forwarded to ``DaemonConfig()``.
+    prestart:
+        Optional callback that can mutate or seed filesystem state after config
+        construction and before the daemon task starts.
     """
     from shisad.core.api.transport import ControlClient
     from shisad.core.config import DaemonConfig
@@ -282,6 +286,8 @@ async def daemon_harness(
         merged.update(config_kwargs)
 
     config = DaemonConfig(**merged)
+    if prestart is not None:
+        prestart(config)
     daemon_task = asyncio.create_task(run_daemon(config))
     client = ControlClient(config.socket_path)
     harness = DaemonHarness(config=config, client=client, daemon_task=daemon_task)

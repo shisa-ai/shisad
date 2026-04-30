@@ -34,7 +34,6 @@ from shisad.core.api.transport import ControlClient, JsonRpcCallError
 from shisad.core.config import DaemonConfig
 from shisad.core.providers.base import Message, ProviderResponse
 from shisad.core.providers.local_planner import LocalPlannerProvider
-from shisad.daemon.runner import run_daemon
 from shisad.memory.ingestion import IngestionPipeline
 from shisad.memory.manager import MemoryManager
 from shisad.memory.participation import InboxItemValue, compose_channel_binding, inbox_item_key
@@ -50,8 +49,7 @@ from shisad.memory.trust import (
     derive_trust_band,
 )
 from tests.helpers.behavioral import extract_tool_outputs
-from tests.helpers.daemon import ingest_memory_via_ingress
-from tests.helpers.daemon import wait_for_socket as _wait_for_socket
+from tests.helpers.daemon import daemon_harness, ingest_memory_via_ingress
 
 _USER_GOAL_RE = re.compile(
     (
@@ -927,8 +925,7 @@ async def _contract_harness_context(
         if policy_egress_allowed and backend_port
         else ["egress: []"]
     )
-    policy_path = tmp_path / "policy.yaml"
-    policy_path.write_text(
+    policy_text = (
         "\n".join(
             [
                 'version: "1"',
@@ -939,53 +936,42 @@ async def _contract_harness_context(
                 *egress_lines,
             ]
         )
-        + "\n",
-        encoding="utf-8",
+        + "\n"
     )
 
     _force_deterministic_local_planner(monkeypatch=monkeypatch)
 
-    config = DaemonConfig(
-        data_dir=tmp_path / "data",
-        socket_path=tmp_path / "control.sock",
-        policy_path=policy_path,
-        log_level="WARNING",
-        context_window=1,
-        web_search_enabled=True,
-        web_search_backend_url=backend_url,
-        web_allowed_domains=["127.0.0.1", "localhost"],
-        browser_enabled=web_search_backend_configured
-        if browser_enabled is None
-        else browser_enabled,
-        browser_command=(
-            f"{sys.executable} "
-            f"{Path(__file__).resolve().parents[1] / 'fixtures' / 'fake_playwright_cli.py'}"
-        ),
-        browser_allowed_domains=["127.0.0.1", "localhost"],
-        browser_require_hardened_isolation=False,
-        assistant_fs_roots=[workspace_root],
-    )
-    if prestart is not None:
-        prestart(config)
-
-    daemon_task = asyncio.create_task(run_daemon(config))
-    client = ControlClient(config.socket_path)
     try:
-        await _wait_for_socket(config.socket_path)
-        await client.connect()
-        yield ContractHarness(
-            client=client,
-            config=config,
-            workspace_root=workspace_root,
-            web_search_backend_url=backend_url,
-            browser_base_url=backend_url,
-        )
+        async with daemon_harness(
+            tmp_path,
+            policy_text=policy_text,
+            config_kwargs={
+                "log_level": "WARNING",
+                "context_window": 1,
+                "web_search_enabled": True,
+                "web_search_backend_url": backend_url,
+                "web_allowed_domains": ["127.0.0.1", "localhost"],
+                "browser_enabled": web_search_backend_configured
+                if browser_enabled is None
+                else browser_enabled,
+                "browser_command": (
+                    f"{sys.executable} "
+                    f"{Path(__file__).resolve().parents[1] / 'fixtures' / 'fake_playwright_cli.py'}"
+                ),
+                "browser_allowed_domains": ["127.0.0.1", "localhost"],
+                "browser_require_hardened_isolation": False,
+                "assistant_fs_roots": [workspace_root],
+            },
+            prestart=prestart,
+        ) as harness:
+            yield ContractHarness(
+                client=harness.client,
+                config=harness.config,
+                workspace_root=workspace_root,
+                web_search_backend_url=backend_url,
+                browser_base_url=backend_url,
+            )
     finally:
-        with suppress(Exception):
-            await client.call("daemon.shutdown")
-        await client.close()
-        with suppress(Exception):
-            await asyncio.wait_for(daemon_task, timeout=5)
         if server is not None:
             server.shutdown()
             server.server_close()
