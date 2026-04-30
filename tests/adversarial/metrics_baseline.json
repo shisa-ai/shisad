@@ -1,16 +1,20 @@
 {
   "core": {
-    "attack_success_rate": 0.01,
-    "utility_retention": 0.99,
-    "false_positive_rate": 0.01,
-    "detection_latency_ms": 0.8,
-    "memory_usage_mb": 32.0
+    "attack_success_rate": 0.0,
+    "utility_retention": 1.0,
+    "false_positive_rate": 0.0,
+    "detection_latency_ms": 1.71,
+    "memory_usage_mb": 0.056,
+    "decode_depth_max": 3,
+    "decode_depth_nonzero_rate": 0.068966
   },
   "full": {
-    "attack_success_rate": 0.03,
-    "utility_retention": 0.99,
-    "false_positive_rate": 0.01,
-    "detection_latency_ms": 0.6,
-    "memory_usage_mb": 64.0
+    "attack_success_rate": 0.010204,
+    "utility_retention": 1.0,
+    "false_positive_rate": 0.0,
+    "detection_latency_ms": 2.922,
+    "memory_usage_mb": 0.062,
+    "decode_depth_max": 3,
+    "decode_depth_nonzero_rate": 0.068966
   }
 }

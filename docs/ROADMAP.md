@@ -292,7 +292,9 @@ TOTP entry remain deferred to `v0.8.0`.
 
 #### v0.7.2 — Memory hardening and benchmark closure
 
-- Benchmark adapters and oracle diagnostics
+- Deterministic memory benchmark command path with stage metrics, oracle
+  diagnostics, threshold failures, capacity probes, and pinned v0.7.1
+  adversarial baseline metrics
 - Retrieval/schema precision and telemetry hardening
 - Memory poisoning and persistence-policy regression closure
 

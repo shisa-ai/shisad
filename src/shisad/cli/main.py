@@ -2778,6 +2778,89 @@ def memory_rotate_key(no_reencrypt: bool) -> None:
     click.echo(_dump_model(result))
 
 
+@memory.command("benchmark")
+@click.option(
+    "--fixture",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    default=None,
+    help="External JSON benchmark fixture. Defaults to built-in synthetic smoke.",
+)
+@click.option(
+    "--storage-dir",
+    type=click.Path(file_okay=False, path_type=Path),
+    default=None,
+    help="Optional benchmark storage directory. Defaults to a temporary directory.",
+)
+@click.option("--limit", default=5, show_default=True, help="Retrieval limit per question.")
+@click.option(
+    "--capacity-tokens",
+    type=int,
+    multiple=True,
+    help="Run capacity probe at the given approximate token count. Repeatable.",
+)
+@click.option("--fail-under-accuracy", type=float, default=None)
+@click.option("--fail-under-recall", type=float, default=None)
+@click.option("--fail-over-harm-rate", type=float, default=None)
+@click.option("--fail-over-p95-latency-ms", type=float, default=None)
+@click.option("--json", "as_json", is_flag=True, help="Print the full benchmark report as JSON.")
+def memory_benchmark(
+    fixture: Path | None,
+    storage_dir: Path | None,
+    limit: int,
+    capacity_tokens: tuple[int, ...],
+    fail_under_accuracy: float | None,
+    fail_under_recall: float | None,
+    fail_over_harm_rate: float | None,
+    fail_over_p95_latency_ms: float | None,
+    as_json: bool,
+) -> None:
+    """Run deterministic memory benchmark adapters."""
+    from shisad.memory.benchmark import run_memory_benchmark_cli
+
+    report = run_memory_benchmark_cli(
+        fixture=fixture,
+        storage_dir=storage_dir,
+        limit=limit,
+        capacity_tokens=tuple(capacity_tokens),
+        fail_under_accuracy=fail_under_accuracy,
+        fail_under_recall=fail_under_recall,
+        fail_over_harm_rate=fail_over_harm_rate,
+        fail_over_p95_latency_ms=fail_over_p95_latency_ms,
+    )
+    if as_json:
+        click.echo(json.dumps(report, indent=2, sort_keys=True))
+    else:
+        status = "PASS" if report["allowed"] else "FAIL"
+        benchmark = report["benchmark"]
+        metrics = report["metrics"]
+        quality = metrics["retrieval_quality"]
+        latency = metrics["latency_ms"]
+        click.echo(f"{status} memory benchmark {benchmark['id']}@{benchmark['version']}")
+        click.echo(
+            "metrics "
+            f"accuracy={metrics['accuracy']} "
+            f"recall_at_k={quality['recall_at_k']} "
+            f"mrr={quality['mrr']} "
+            f"evidence_coverage={quality['evidence_coverage']} "
+            f"harm_rate={metrics['harm_rate']} "
+            f"p95_ms={latency['p95']}"
+        )
+        for stage in report["stages"]:
+            click.echo(
+                "stage "
+                f"{stage['name']} "
+                f"duration_ms={stage['duration_ms']} "
+                f"input={stage['input_records']} "
+                f"output={stage['output_records']}"
+            )
+        for failure in report["failures"]:
+            click.echo(f"failure {failure}")
+    if not report["allowed"]:
+        raise click.ClickException(
+            "memory benchmark thresholds failed: " + ", ".join(report["failures"])
+        )
+
+
 @memory.group("graph")
 def memory_graph() -> None:
     """Inspect the derived memory knowledge graph."""
