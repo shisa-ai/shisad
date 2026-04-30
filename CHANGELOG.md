@@ -9,112 +9,108 @@ left unlinked until the tag exists. There is no standing "Unreleased" section.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Versioning follows semver (see `docs/PUBLISH.md` for policy and style guide).
 
-## [0.7.1] - Unreleased
+## [0.7.1] - 2026-04-30
 
 ### Added
 
-- **Trusted chat can recover a caution-level lockdown without leaving the
-  session.** When shisad enters a recoverable lockdown after suspicious
-  activity, the user-visible notice names the in-chat and CLI recovery paths,
-  and a trusted operator can ask the assistant to resume through a dedicated
-  `lockdown.resume` tool.
+- **Recover from a caution-level lockdown without leaving chat.** When shisad
+  enters a recoverable lockdown after suspicious activity, the notice explains
+  how to resume from either chat or the command-line interface (CLI), and you
+  can ask the assistant to resume the session directly.
 
-- **Operators can inspect pending actions and lockdown state from the CLI.**
-  `shisad action list` shows pending confirmation state, and `shisad lockdown
-  status` shows current lockdown level, reason, and session context without
-  grepping audit JSONL. Raw and JSON output can include local pending-action
-  metadata and tool arguments, so treat it as operational data from the local
-  daemon.
+- **Check pending actions and lockdown state from the CLI.** Run
+  `shisad action list` to see actions waiting on your confirmation, and
+  `shisad lockdown status` to see the current lockdown level, reason, and
+  session context without digging through audit logs. Machine-readable output
+  can include pending-action details and tool arguments from your local shisad,
+  so treat that output as operational data.
 
 ### Changed
 
-- **Release publishing is prepared with provenance and SBOM evidence.** The
-  release workflow builds and checks both distribution artifacts, records
-  build-provenance attestations, uploads an SPDX SBOM, and keeps PyPI
-  publishing on tag refs through GitHub trusted publishing.
+- **Published releases now include supply-chain evidence.** The release
+  workflow builds and checks both distribution artifacts, uploads a software
+  bill of materials (SBOM), records attestations that tie packages back to the
+  source release, and continues to publish to the Python Package Index (PyPI)
+  from the release tag through GitHub's keyless trusted publishing.
 
 ### Fixed
 
-- **The chat TUI now renders assistant Markdown instead of showing Markdown
-  punctuation as plain text.** Assistant replies render with Markdown layout,
-  and the chat entry box wraps longer prompts, expands while drafting, and
-  collapses after submit.
+- **Chat renders Markdown properly.** Assistant replies now display formatted
+  Markdown instead of showing the raw punctuation, and the chat entry box wraps
+  longer prompts, grows while you type, and collapses after you send.
 
-- **Confirmed chat actions now surface their tool results and keep them in
-  conversation context.** Approving a pending action returns the serialized
-  tool output, chat confirmation replies include the result summary, and
-  follow-up turns can use the confirmed result instead of re-queueing the same
-  action.
+- **Confirmed actions show their results and stay in the conversation.**
+  Approving a pending action returns the tool output, the confirmation reply
+  includes a summary of the result, and follow-up turns can use that result
+  instead of re-queuing the same action.
 
-- **Trusted user context and identity memory now remain usable in chat.**
-  Trusted CLI search requests no longer require confirmation just because prior
-  recall contains tainted data, trusted `remember ...` note writes can be
-  verified without leaking freeform action content into control-plane metadata,
-  same-session user statements are surfaced as trusted user-authored context
-  instead of only DATA EVIDENCE, and cross-session note and identity memory are
-  rendered to the planner through recall/trusted memory surfaces.
+- **Personal notes and remembered context stay usable in chat.** Trusted CLI
+  searches no longer require confirmation just because earlier recall contained
+  untrusted content, notes you save with the `remember` command can be written
+  and verified reliably, statements you make in the current session are treated
+  as your own trusted input, and cross-session notes and identity memory are
+  available to the assistant through the usual recall paths.
 
-- **Tainted-session confirmation and multi-tool cleanup flows are less brittle.**
-  Single pending confirmations now accept `confirm`/`go ahead` even when prior
-  context is tainted, confirmed chat replies label the result as a confirmed
-  action result instead of a generic tool summary, explicit trusted `todo`
-  writes in multi-tool turns can proceed from current-turn intent, and default
-  workspace listings are grounded for common “this/the folder” phrasing.
+- **Confirmation and multi-tool cleanup are more forgiving.** A single pending
+  confirmation now accepts `confirm` or `go ahead` even when earlier context is
+  untrusted, confirmed replies are labeled as the result of a confirmed action
+  rather than a generic tool output, explicit trusted `todo` writes in
+  multi-tool turns can proceed based on the current request, and default
+  workspace listings correctly handle common phrases like "this folder" or
+  "the folder".
 
-- **Trusted command-chat no longer becomes a daemon-side regex parser when
-  confirmations are pending.** Free-form trusted chat keeps reaching the
-  planner, pending actions are surfaced as trusted control state, and explicit
-  confirmation or rejection resolves through the structured `action.resolve`
-  tool instead of fuzzy daemon-side text parsing.
+- **Trusted chat keeps working while a confirmation is pending.** You can keep
+  chatting while an action is waiting for approval, and clear confirmation or
+  rejection replies are handled through the same approval flow as other CLI
+  confirmations.
 
-- **Natural file lookup is less likely to fall through to shell commands.**
-  Follow-ups such as "can you look for the file?" are steered toward
-  `fs.list` / `fs.read` and away from the deprecated `file.read` alias or
-  shell fallback.
+- **Natural file lookups go to the right tools.** Follow-ups like
+  "can you look for the file?" now use the filesystem browsing and read tools
+  rather than falling back to shell commands.
 
 - **File discovery and shell searches stay inside the active workspace.**
-  Shell-based file searches run rooted in the configured workspace, reject
-  command masquerades and path escapes through symlinks or unusual shell
-  constructs, preserve common file-finding phrasing, and route unknown or risky
-  targets to confirmation with the exact command surfaced for review.
+  Shell-based file searches run from the configured workspace, block disguised
+  commands and attempts to escape the workspace, preserve common file-finding
+  phrasing, and route unknown or risky targets to confirmation with the exact
+  command shown for review.
 
-- **Audit and startup diagnostics identify the runtime they are inspecting.**
+- **Audit and startup output makes it clear which runtime you are inspecting.**
   `shisad audit query` and `shisad audit verify` show the active data
-  directory, and startup preflight accepts `ANTHROPIC_API_KEY` while reporting
-  Anthropic keys distinctly from `OPENAI_API_KEY`.
+  directory, and startup checks accept `ANTHROPIC_API_KEY` and report Anthropic
+  keys separately from `OPENAI_API_KEY`.
 
-- **The Codex coding-agent bridge installs its adapter noninteractively.**
-  First-run Codex sessions no longer stall on an interactive registry prompt,
-  and the bridge uses `@zed-industries/codex-acp@0.12.0`.
+- **The Codex coding-agent bridge installs without prompting.** First-run
+  Codex sessions no longer stall on an interactive adapter-install prompt.
 
-- **Malformed browser URLs fail closed before egress.** Ambiguous or malformed
-  hostnames are rejected up front instead of reaching the browser/network
-  layer.
+- **Malformed browser URLs are rejected before any network call.** Ambiguous or
+  malformed hostnames are caught up front instead of reaching the browser or
+  network layer.
 
-- **Live chat responses avoid planner scaffolding on recovery paths.** Explicit
-  memory questions fall back to `note.search` when a direct planner reply leaks
-  internal evidence framing, injection-shaped summary requests return a safe
-  summary instead of planner-validation fallback text, and user-requested
-  Markdown-formatted URLs no longer trigger spurious output-confirmation
-  markers. Confirmation replies and suspicious-paste summaries also suppress
-  action-resolution and anomaly-report planner narration.
+- **Chat replies are cleaner on recovery paths.** Explicit memory questions can
+  use saved notes when needed, suspicious pasted content is summarized safely,
+  and user-requested Markdown-formatted URLs no longer trigger spurious
+  confirmation markers. Confirmation replies and suspicious-paste summaries
+  also avoid unnecessary system narration.
 
 ### Security
 
 - **Personal memory is scoped per user and workspace.** Long-term memory writes
-  and recall carry owner scope, so personal notes and identity memory from one
-  workspace do not leak into another. Recall, export, and retrieval paths reject
-  blank private-owner scope instead of silently returning owner-private rows;
-  public/unowned collection rows remain available where intended.
+  and recall are tied to the user and workspace that created them, so personal
+  notes and identity memory from one workspace do not leak into another.
+  Recall, export, and retrieval now reject missing user or workspace
+  information instead of silently returning private rows, while shared entries
+  remain available where intended.
 
-- **Same-scope personal recall is framed as trusted memory context when clean.**
-  The assistant no longer treats the operator's own prior-session memory as
-  untrusted DATA EVIDENCE solely because it was recalled later, while tainted or
-  cross-scope content keeps the untrusted framing.
+- **Your own personal recall is treated as trusted context when clean.** The
+  assistant no longer treats your own prior-session memory from the same user
+  and workspace as untrusted just because it was recalled later, while
+  untrusted content or content from other users and workspaces continues to be
+  handled as untrusted.
 
-- **Cross-thread leak detection is limited to recent user-authored entries.**
-  The detector no longer compares against unrelated sessions, reducing false
-  positives without widening what can authorize actions.
+- **Warnings about cross-session content are less noisy.** The check now looks
+  only at recent text you wrote instead of comparing against unrelated
+  sessions, reducing false positives without expanding what can authorize
+  actions.
 
 ## [0.7.0] - 2026-04-25
 
@@ -607,6 +603,7 @@ Initial public release.
   recording.
 - **End-to-end demo** script and runner harness for live verification.
 
+[0.7.1]: https://github.com/shisa-ai/shisad/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/shisa-ai/shisad/compare/v0.6.7...v0.7.0
 [0.6.7]: https://github.com/shisa-ai/shisad/compare/v0.6.6...v0.6.7
 [0.6.6]: https://github.com/shisa-ai/shisad/compare/v0.6.5...v0.6.6
