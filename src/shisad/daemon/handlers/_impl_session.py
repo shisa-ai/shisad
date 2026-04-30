@@ -198,6 +198,7 @@ _INTERNAL_TOOL_NARRATION_MARKERS = (
     "no tool is needed",
     "no tool call is needed",
     "without planner/formatting references",
+    "planning mechanics",
     "the appropriate tool to use",
     "tool-selection",
     "call report_anomaly",
@@ -3114,6 +3115,19 @@ def _strip_appended_tool_results_summary(text: str) -> str:
     return stripped
 
 
+def _response_exposes_safe_summary_planner_narration(text: str) -> bool:
+    normalized = normalize_intent_text(str(text or "")).lower()
+    return any(
+        marker in normalized
+        for marker in (
+            "report the anomaly",
+            "safety protocol",
+            "safety protocols",
+            "the appropriate response is to not execute",
+        )
+    )
+
+
 def _trim_internal_planner_sections(text: str) -> str:
     trimmed = str(text or "").strip()
     if not trimmed:
@@ -3134,6 +3148,15 @@ def _trim_internal_planner_sections(text: str) -> str:
     )
     if leading_no_tool is not None:
         return str(leading_no_tool.group("rest") or "").strip()
+    pending_resolution = re.search(
+        r"\bPending action resolution:\s*(?P<body>.+)$",
+        trimmed,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    if pending_resolution is not None:
+        body = str(pending_resolution.group("body") or "").lstrip()
+        if body:
+            return f"Pending action resolution:\n{body}".strip()
     cut_patterns = (
         r"\bNo tools are needed\b",
         r"\bNo tool call is needed\b",
@@ -3310,6 +3333,8 @@ def _coerce_internal_tool_narration_response_text(
         and executed_tool_outputs <= 0
         and (rejected > 0 or _is_planner_validation_fallback_response(response_text))
     ):
+        return safe_summary
+    if safe_summary is not None and _response_exposes_safe_summary_planner_narration(response_text):
         return safe_summary
     if not str(response_text or "").lstrip().startswith("I completed the tool step"):
         stripped_summary_tail = _strip_appended_tool_results_summary(response_text)

@@ -96,7 +96,8 @@ Versioning follows semver (see `docs/PUBLISH.md` for policy and style guide).
   internal evidence framing, injection-shaped summary requests return a safe
   summary instead of planner-validation fallback text, and user-requested
   Markdown-formatted URLs no longer trigger spurious output-confirmation
-  markers.
+  markers. Confirmation replies and suspicious-paste summaries also suppress
+  action-resolution and anomaly-report planner narration.
 
 ### Security
 
