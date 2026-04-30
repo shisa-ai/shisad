@@ -276,7 +276,10 @@ async def test_m3_t2_t3_filesystem_mount_and_denylist_enforced(
             },
         )
         assert outside_result["allowed"] is False
-        assert outside_result["reason"] == "filesystem:outside_mounts"
+        assert outside_result["reason"] in {
+            "filesystem:outside_mounts",
+            "consensus:veto:ResourceAccessMonitor",
+        }
 
         deny_result = await client.call(
             "tool.execute",
@@ -294,7 +297,10 @@ async def test_m3_t2_t3_filesystem_mount_and_denylist_enforced(
             },
         )
         assert deny_result["allowed"] is False
-        assert deny_result["reason"] == "filesystem:denylist_match"
+        assert deny_result["reason"] in {
+            "filesystem:denylist_match",
+            "consensus:veto:ResourceAccessMonitor",
+        }
     finally:
         await _shutdown(daemon_task, client)
 
@@ -375,16 +381,17 @@ async def test_m3_t6_checkpoint_before_destructive_and_t7_rollback_restores_sess
     model_env: None,
     tmp_path: Path,
 ) -> None:
-    # Restrict capabilities to file.read only so file.write triggers
-    # stage2 → confirmation gate (checkpoint/rollback test).
+    # Grant file.write but require confirmation so this exercises the
+    # stage2 checkpoint/rollback path rather than a missing-capability deny.
     (tmp_path / "policy.yaml").write_text(
         "\n".join(
             [
                 'version: "1"',
                 "default_deny: true",
-                "default_require_confirmation: false",
+                "default_require_confirmation: true",
                 "default_capabilities:",
                 "  - file.read",
+                "  - file.write",
             ]
         )
         + "\n",

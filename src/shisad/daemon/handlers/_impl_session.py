@@ -2242,6 +2242,59 @@ def _is_plain_greeting(user_text: str) -> bool:
     return normalized in {"hello", "hello there", "hi", "hi there", "hey", "hey there"}
 
 
+def _is_explicit_memory_question(user_text: str) -> bool:
+    normalized = _strip_explicit_memory_intent_greeting_prefix(user_text)
+    if not normalized:
+        return False
+    return (
+        re.fullmatch(
+            r"(?:what(?:'s| is)|do you remember|can you remind me)\s+my\s+(.+?)\??",
+            normalized,
+            flags=re.IGNORECASE,
+        )
+        is not None
+    )
+
+
+def _is_substantive_memory_question_answer(response_text: str) -> bool:
+    stripped = str(response_text or "").strip()
+    if not stripped:
+        return False
+    normalized = normalize_intent_text(stripped).lower().strip(" .!?")
+    if normalized in {"ok", "okay", "sure", "done", "working on it"}:
+        return False
+    non_answer_markers = (
+        "i don't know",
+        "i do not know",
+        "i don't have",
+        "i do not have",
+        "not sure",
+        "no matching",
+        "no saved",
+        "couldn't find",
+        "could not find",
+        "can't determine",
+        "cannot determine",
+        "tell me",
+        "if you want",
+    )
+    return not any(marker in normalized for marker in non_answer_markers)
+
+
+def _is_web_search_only_explicit_intent(proposals: Sequence[ActionProposal]) -> bool:
+    return bool(proposals) and all(
+        proposal.tool_name == ToolName("web.search") for proposal in proposals
+    )
+
+
+def _planner_result_uses_web_search(planner_result: PlannerResult) -> bool:
+    proposals = [
+        *(evaluated.proposal for evaluated in planner_result.evaluated),
+        *planner_result.output.actions,
+    ]
+    return any(proposal.tool_name == ToolName("web.search") for proposal in proposals)
+
+
 def _clean_explicit_path_token(value: str) -> str:
     return str(value or "").strip().strip("`'\"").rstrip(".,;:!?)\"]'}>")
 
@@ -2275,6 +2328,8 @@ def _rewrite_plain_greeting_planner_result(
             flags=re.IGNORECASE,
         )
     )
+    if planner_error_response:
+        return planner_result
     if (
         not planner_result.output.actions
         and not planner_result.evaluated
@@ -2645,6 +2700,23 @@ def _rewrite_explicit_memory_intent_planner_result(
 ) -> PlannerResult:
     explicit_proposals = _build_explicit_multi_intent_proposals(user_text)
     if not explicit_proposals:
+        return planner_result
+
+    if (
+        _is_web_search_only_explicit_intent(explicit_proposals)
+        and (planner_result.output.actions or planner_result.evaluated)
+        and not _planner_result_uses_web_search(planner_result)
+    ):
+        return planner_result
+
+    if (
+        _is_explicit_memory_question(user_text)
+        and not planner_result.output.actions
+        and not planner_result.evaluated
+        and _is_substantive_memory_question_answer(
+            planner_result.output.assistant_response,
+        )
+    ):
         return planner_result
 
     if (

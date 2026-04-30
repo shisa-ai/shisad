@@ -40,6 +40,7 @@ _USER_GOAL_RE = re.compile(
 _SUMMARIZER_SYSTEM_MARKER = _SUMMARY_SYSTEM_PROMPT.split(". ")[0] + "."
 _UNIQUE_MARKER = "EVIDENCE_BEHAVIORAL_MARKER"
 _REF_RE = re.compile(r"\bev-[0-9a-f]{16}\b")
+_EVIDENCE_STUB_RE = re.compile(r"\[EVIDENCE ref=[^\]]+\]")
 
 
 def _extract_user_goal(planner_input: str) -> str:
@@ -52,6 +53,11 @@ def _extract_user_goal(planner_input: str) -> str:
 
 def _extract_ref_id(text: str) -> str:
     match = _REF_RE.search(text)
+    return match.group(0) if match else ""
+
+
+def _extract_evidence_stub(text: str) -> str:
+    match = _EVIDENCE_STUB_RE.search(text)
     return match.group(0) if match else ""
 
 
@@ -90,6 +96,16 @@ async def _evidence_stub_complete(
     normalized_planner_input = planner_input.replace("^", "")
     goal = _extract_user_goal(planner_input)
     goal_lower = goal.lower()
+
+    if "POST-TOOL SYNTHESIS PASS" in normalized_planner_input:
+        evidence_stub = _extract_evidence_stub(normalized_planner_input)
+        response = f"Fetched evidence: {evidence_stub}" if evidence_stub else "No evidence ref."
+        return ProviderResponse(
+            message=Message(role="assistant", content=response),
+            model="behavioral-evidence-stub",
+            finish_reason="stop",
+            usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+        )
 
     # ADV-M3: the `startswith("fetch https://...")` literal is still the
     # simplest test-input match, but we also tolerate additional leading

@@ -28,7 +28,7 @@
       "tests/integration/test_daemon_runtime.py": 6,
       "tests/integration/test_dev_commands.py": 1,
       "tests/integration/test_m3_scope_enforcement.py": 1,
-      "tests/integration/test_runtime_completion.py": 17,
+      "tests/integration/test_runtime_completion.py": 19,
       "tests/integration/test_sandbox_loop.py": 1,
       "tests/integration/test_scheduler_execution_gate.py": 1,
       "tests/integration/test_security_hardening_integration.py": 1,
@@ -44,6 +44,6 @@
   "tests_root": "tests",
   "totals": {
     "DaemonServices.build": 39,
-    "run_daemon": 95
+    "run_daemon": 97
   }
 }

@@ -323,11 +323,12 @@ async def test_c2_lockdown_resume_rejects_active_threat_current_turn(
     assert reply.get("lockdown_level") == "caution"
     assert int(reply.get("executed_actions", 0)) == 0
     assert int(reply.get("blocked_actions", 0)) == 1
-    assert "lockdown_resume_active_threat" in str(reply.get("response", ""))
+    assert "instruction-injection attempt" in str(reply.get("response", ""))
 
     tool_events = await _lockdown_tool_events(clean_harness, sid)
     rejected = [event for event in tool_events if event.get("event_type") == "ToolRejected"]
     assert rejected
+    assert "lockdown_resume_active_threat" in _event_reason(rejected[-1])
     assert rejected[-1].get("actor") == "planner_lockdown_resume"
     assert "lockdown_resume_active_threat" in _event_reason(rejected[-1])
 

@@ -143,7 +143,7 @@ async def test_m6_cleanroom_transition_rejects_tool_output_tainted_history(
             "session.message",
             {"session_id": sid, "content": "fetch the source"},
         )
-        assert "Tool results summary:" in str(reply.get("response", ""))
+        assert "Fetched." in str(reply.get("response", ""))
         tool_outputs = reply.get("tool_outputs")
         assert isinstance(tool_outputs, list)
         assert any(

@@ -314,6 +314,90 @@ def test_rc_lus_explicit_file_intent_rewrite_replaces_tool_choice_prose() -> Non
     assert rewritten.evaluated[0].decision.kind == PEPDecisionKind.ALLOW
 
 
+def test_explicit_web_search_rewrite_preserves_planner_tool_choice() -> None:
+    registry = _memory_registry()
+    pep = PEP(PolicyBundle(default_require_confirmation=False), registry)
+    planner_proposal = ActionProposal(
+        action_id="a-docs",
+        tool_name=ToolName("mcp.docs.lookup-doc"),
+        arguments={"query": "roadmap", "limit": 4},
+        reasoning="Use the configured docs server.",
+        data_sources=[],
+    )
+    planner_result = PlannerResult(
+        output=PlannerOutput(
+            assistant_response="lookup started",
+            actions=[planner_proposal],
+        ),
+        evaluated=[
+            EvaluatedProposal(
+                proposal=planner_proposal,
+                decision=PEPDecision(
+                    kind=PEPDecisionKind.ALLOW,
+                    reason="allow",
+                    tool_name=planner_proposal.tool_name,
+                    risk_score=0.0,
+                ),
+            )
+        ],
+        attempts=1,
+        provider_response=None,
+        messages_sent=(),
+    )
+
+    rewritten = _rewrite_explicit_memory_intent_planner_result(
+        user_text="Look up the roadmap in docs.",
+        planner_result=planner_result,
+        pep=pep,
+        context=PolicyContext(capabilities={Capability.HTTP_REQUEST}),
+    )
+
+    assert rewritten is planner_result
+
+
+def test_explicit_web_search_rewrite_clears_planner_search_narration() -> None:
+    registry = _memory_registry()
+    pep = PEP(PolicyBundle(default_require_confirmation=False), registry)
+    proposal = ActionProposal(
+        action_id="a-search",
+        tool_name=ToolName("web.search"),
+        arguments={"query": "Hokkaido venues", "limit": 5},
+        reasoning="Search the web.",
+        data_sources=[],
+    )
+    planner_result = PlannerResult(
+        output=PlannerOutput(
+            assistant_response="Searching Hokkaido venues.",
+            actions=[proposal],
+        ),
+        evaluated=[
+            EvaluatedProposal(
+                proposal=proposal,
+                decision=PEPDecision(
+                    kind=PEPDecisionKind.ALLOW,
+                    reason="allow",
+                    tool_name=proposal.tool_name,
+                    risk_score=0.0,
+                ),
+            )
+        ],
+        attempts=1,
+        provider_response=None,
+        messages_sent=(),
+    )
+
+    rewritten = _rewrite_explicit_memory_intent_planner_result(
+        user_text="search Hokkaido venues",
+        planner_result=planner_result,
+        pep=pep,
+        context=PolicyContext(capabilities={Capability.HTTP_REQUEST}),
+    )
+
+    assert rewritten is not planner_result
+    assert rewritten.output.assistant_response == ""
+    assert rewritten.evaluated[0].proposal.tool_name == ToolName("web.search")
+
+
 def test_m1_plain_greeting_rewrite_drops_spurious_tool_actions() -> None:
     wrong_proposal = ActionProposal(
         action_id="a-hello",
@@ -377,7 +461,7 @@ def test_m1_plain_greeting_rewrite_preserves_existing_tool_free_response() -> No
     assert rewritten is planner_result
 
 
-def test_rc_lus_plain_greeting_rewrite_replaces_planner_validation_fallback() -> None:
+def test_rc_lus_plain_greeting_rewrite_preserves_planner_validation_fallback() -> None:
     planner_result = PlannerResult(
         output=PlannerOutput(
             assistant_response="Assistant planner error (planner_output_invalid). Please retry.",
@@ -396,7 +480,9 @@ def test_rc_lus_plain_greeting_rewrite_replaces_planner_validation_fallback() ->
 
     assert rewritten.output.actions == []
     assert rewritten.evaluated == []
-    assert rewritten.output.assistant_response == "Hello. How can I help?"
+    assert rewritten.output.assistant_response == (
+        "Assistant planner error (planner_output_invalid). Please retry."
+    )
 
 
 def test_m1_explicit_memory_intent_parser_allows_greeting_prefix_before_command() -> None:
