@@ -150,9 +150,11 @@ def load_memory_benchmark_dataset(path: Path) -> MemoryBenchmarkDataset:
             )
         )
 
+    raw_benchmark_id = payload.get("benchmark_id", path.stem)
+    raw_benchmark_version = payload.get("benchmark_version", "external-json-v1")
     dataset = MemoryBenchmarkDataset(
-        benchmark_id=str(payload.get("benchmark_id") or path.stem),
-        benchmark_version=str(payload.get("benchmark_version") or "external-json-v1"),
+        benchmark_id=str(raw_benchmark_id),
+        benchmark_version=str(raw_benchmark_version),
         documents=tuple(documents),
         questions=tuple(questions),
     )

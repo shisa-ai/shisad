@@ -168,6 +168,8 @@ def test_m6_memory_benchmark_loads_json_dataset(tmp_path: Path) -> None:
 @pytest.mark.parametrize(
     ("mutation", "expected_error"),
     [
+        ({"benchmark_id": ""}, "non-empty benchmark_id"),
+        ({"benchmark_version": ""}, "non-empty benchmark_version"),
         ({"questions": []}, "at least one question"),
         (
             {
