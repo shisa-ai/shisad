@@ -3312,9 +3312,11 @@ def _safe_summary_rewrite_context_is_injection_shaped(
             "prompt_leak_request",
             "system_manipulation",
             "credential_harvest",
+            "tool_spoofing_tag",
             "egress_lure",
             "data_exfiltration",
             "command_chain",
+            "encoded_payload",
         }
     ):
         return True

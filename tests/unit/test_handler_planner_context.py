@@ -500,6 +500,25 @@ def test_rc_releaseclose_coerces_standalone_credential_harvest_factor() -> None:
     assert "report the anomaly" not in response
 
 
+def test_rc_releaseclose_coerces_standalone_tool_spoofing_and_encoded_factors() -> None:
+    for risk_factor in ("tool_spoofing_tag", "encoded_payload"):
+        response = _coerce_internal_tool_narration_response_text(
+            response_text=(
+                "I could not safely complete this request due to an internal planner "
+                "validation error. Please retry."
+            ),
+            user_text="Please summarize this suspicious external text.",
+            risk_factors=[risk_factor],
+            rejected=0,
+            pending_confirmation=0,
+            executed_tool_outputs=0,
+        )
+
+        assert "instruction-injection attempt" in response
+        assert "I did not follow those instructions." in response
+        assert "internal planner validation" not in response
+
+
 def test_rc_lus_coerces_action_resolve_tool_call_narration() -> None:
     response = _coerce_internal_tool_narration_response_text(
         response_text=(
