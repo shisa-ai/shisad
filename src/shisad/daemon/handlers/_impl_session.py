@@ -2275,10 +2275,20 @@ def _is_substantive_memory_question_answer(response_text: str) -> bool:
         "could not find",
         "can't determine",
         "cannot determine",
+        "could not safely complete",
+        "internal planner validation",
+        "planner_output_invalid",
+        "assistant planner error",
+        "please retry",
         "tell me",
         "if you want",
     )
     return not any(marker in normalized for marker in non_answer_markers)
+
+
+def _is_plain_greeting_tool_meta_response(response_text: str) -> bool:
+    normalized = normalize_intent_text(str(response_text or "")).lower()
+    return "tool call" in normalized or "tool-call" in normalized
 
 
 def _is_web_search_only_explicit_intent(proposals: Sequence[ActionProposal]) -> bool:
@@ -2335,6 +2345,7 @@ def _rewrite_plain_greeting_planner_result(
         and not planner_result.evaluated
         and response_text
         and not planner_error_response
+        and not _is_plain_greeting_tool_meta_response(response_text)
     ):
         return planner_result
     return PlannerResult(

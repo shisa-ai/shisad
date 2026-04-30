@@ -314,6 +314,61 @@ def test_rc_lus_explicit_file_intent_rewrite_replaces_tool_choice_prose() -> Non
     assert rewritten.evaluated[0].decision.kind == PEPDecisionKind.ALLOW
 
 
+def test_explicit_memory_question_rewrite_preserves_substantive_direct_answer() -> None:
+    registry = _memory_registry()
+    pep = PEP(PolicyBundle(default_require_confirmation=False), registry)
+    planner_result = PlannerResult(
+        output=PlannerOutput(
+            assistant_response="Your favorite snack is mango slices.",
+            actions=[],
+        ),
+        evaluated=[],
+        attempts=1,
+        provider_response=None,
+        messages_sent=(),
+    )
+
+    rewritten = _rewrite_explicit_memory_intent_planner_result(
+        user_text="What is my favorite snack?",
+        planner_result=planner_result,
+        pep=pep,
+        context=PolicyContext(capabilities={Capability.MEMORY_READ}),
+    )
+
+    assert rewritten is planner_result
+
+
+def test_explicit_memory_question_rewrite_recovers_planner_validation_fallback() -> None:
+    registry = _memory_registry()
+    pep = PEP(PolicyBundle(default_require_confirmation=False), registry)
+    planner_result = PlannerResult(
+        output=PlannerOutput(
+            assistant_response=(
+                "I could not safely complete this request due to an internal "
+                "planner validation error. Please retry."
+            ),
+            actions=[],
+        ),
+        evaluated=[],
+        attempts=0,
+        provider_response=None,
+        messages_sent=(),
+    )
+
+    rewritten = _rewrite_explicit_memory_intent_planner_result(
+        user_text="What is my favorite snack?",
+        planner_result=planner_result,
+        pep=pep,
+        context=PolicyContext(capabilities={Capability.MEMORY_READ}),
+    )
+
+    assert rewritten is not planner_result
+    assert rewritten.output.assistant_response == ""
+    assert rewritten.evaluated[0].proposal.tool_name == ToolName("note.search")
+    assert rewritten.evaluated[0].proposal.arguments == {"query": "favorite snack"}
+    assert rewritten.evaluated[0].decision.kind == PEPDecisionKind.ALLOW
+
+
 def test_explicit_web_search_rewrite_preserves_planner_tool_choice() -> None:
     registry = _memory_registry()
     pep = PEP(PolicyBundle(default_require_confirmation=False), registry)
@@ -459,6 +514,29 @@ def test_m1_plain_greeting_rewrite_preserves_existing_tool_free_response() -> No
     )
 
     assert rewritten is planner_result
+
+
+def test_rc_lus_plain_greeting_rewrite_drops_tool_call_boilerplate() -> None:
+    planner_result = PlannerResult(
+        output=PlannerOutput(
+            assistant_response=(
+                "Hello. I can help with that. No tool call needed for this conversational response."
+            ),
+            actions=[],
+        ),
+        evaluated=[],
+        attempts=1,
+        provider_response=None,
+        messages_sent=(),
+    )
+
+    rewritten = _rewrite_plain_greeting_planner_result(
+        user_text="hello",
+        planner_result=planner_result,
+    )
+
+    assert rewritten is not planner_result
+    assert rewritten.output.assistant_response == "Hello. How can I help?"
 
 
 def test_rc_lus_plain_greeting_rewrite_preserves_planner_validation_fallback() -> None:
