@@ -2256,12 +2256,39 @@ def _is_explicit_memory_question(user_text: str) -> bool:
     )
 
 
+def _is_planner_validation_fallback_response(response_text: str) -> bool:
+    normalized = normalize_intent_text(str(response_text or "")).lower()
+    return any(
+        marker in normalized
+        for marker in (
+            "could not safely complete",
+            "internal planner validation",
+            "planner_output_invalid",
+            "assistant planner error",
+            "please retry",
+        )
+    )
+
+
 def _is_substantive_memory_question_answer(response_text: str) -> bool:
     stripped = str(response_text or "").strip()
     if not stripped:
         return False
     normalized = normalize_intent_text(stripped).lower().strip(" .!?")
     if normalized in {"ok", "okay", "sure", "done", "working on it"}:
+        return False
+    if _is_planner_validation_fallback_response(stripped):
+        return False
+    internal_evidence_markers = (
+        "data evidence",
+        "memo content",
+        "context content",
+        "trust=untrusted",
+        "source=memory:retrieved",
+        "final response:",
+        "no external tools are needed",
+    )
+    if any(marker in normalized for marker in internal_evidence_markers):
         return False
     non_answer_markers = (
         "i don't know",
@@ -2275,11 +2302,6 @@ def _is_substantive_memory_question_answer(response_text: str) -> bool:
         "could not find",
         "can't determine",
         "cannot determine",
-        "could not safely complete",
-        "internal planner validation",
-        "planner_output_invalid",
-        "assistant planner error",
-        "please retry",
         "tell me",
         "if you want",
     )
@@ -2331,13 +2353,7 @@ def _rewrite_plain_greeting_planner_result(
     if not _is_plain_greeting(user_text):
         return planner_result
     response_text = planner_result.output.assistant_response.strip()
-    planner_error_response = bool(
-        re.search(
-            r"\b(?:assistant planner error|planner_output_invalid|internal planner validation)\b",
-            response_text,
-            flags=re.IGNORECASE,
-        )
-    )
+    planner_error_response = _is_planner_validation_fallback_response(response_text)
     if planner_error_response:
         return planner_result
     if (
@@ -2814,7 +2830,7 @@ def _is_tool_results_summary_only_response(text: str) -> bool:
 
 
 def _normalized_url_for_confirmation_match(value: str) -> str:
-    normalized = str(value or "").strip().rstrip(".,;:!?)\"]'}>")
+    normalized = str(value or "").strip().strip("`").rstrip(".,;:!?)\"]'}>`")
     return normalized.rstrip("/")
 
 
@@ -3289,7 +3305,11 @@ def _coerce_internal_tool_narration_response_text(
         user_text=user_text,
         risk_factors=risk_factors,
     )
-    if safe_summary is not None and rejected > 0 and executed_tool_outputs <= 0:
+    if (
+        safe_summary is not None
+        and executed_tool_outputs <= 0
+        and (rejected > 0 or _is_planner_validation_fallback_response(response_text))
+    ):
         return safe_summary
     if not str(response_text or "").lstrip().startswith("I completed the tool step"):
         stripped_summary_tail = _strip_appended_tool_results_summary(response_text)

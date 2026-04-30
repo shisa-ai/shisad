@@ -369,6 +369,40 @@ def test_explicit_memory_question_rewrite_recovers_planner_validation_fallback()
     assert rewritten.evaluated[0].decision.kind == PEPDecisionKind.ALLOW
 
 
+def test_explicit_memory_question_rewrite_recovers_internal_evidence_scaffolding() -> None:
+    registry = _memory_registry()
+    pep = PEP(PolicyBundle(default_require_confirmation=False), registry)
+    planner_result = PlannerResult(
+        output=PlannerOutput(
+            assistant_response=(
+                'Based on the user request "What is my favorite snack?" and the '
+                "provided DATA EVIDENCE (UNTRUSTED):\n\n"
+                "MEMO CONTENT: my favorite snack is mango slices\n"
+                "trust=UNTRUSTED source=memory:retrieved\n\n"
+                'Final response: "Your favorite snack is mango slices."'
+            ),
+            actions=[],
+        ),
+        evaluated=[],
+        attempts=1,
+        provider_response=None,
+        messages_sent=(),
+    )
+
+    rewritten = _rewrite_explicit_memory_intent_planner_result(
+        user_text="What is my favorite snack?",
+        planner_result=planner_result,
+        pep=pep,
+        context=PolicyContext(capabilities={Capability.MEMORY_READ}),
+    )
+
+    assert rewritten is not planner_result
+    assert rewritten.output.assistant_response == ""
+    assert rewritten.evaluated[0].proposal.tool_name == ToolName("note.search")
+    assert rewritten.evaluated[0].proposal.arguments == {"query": "favorite snack"}
+    assert rewritten.evaluated[0].decision.kind == PEPDecisionKind.ALLOW
+
+
 def test_explicit_web_search_rewrite_preserves_planner_tool_choice() -> None:
     registry = _memory_registry()
     pep = PEP(PolicyBundle(default_require_confirmation=False), registry)

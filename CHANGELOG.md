@@ -91,6 +91,13 @@ Versioning follows semver (see `docs/PUBLISH.md` for policy and style guide).
   hostnames are rejected up front instead of reaching the browser/network
   layer.
 
+- **Live chat responses avoid planner scaffolding on recovery paths.** Explicit
+  memory questions fall back to `note.search` when a direct planner reply leaks
+  internal evidence framing, injection-shaped summary requests return a safe
+  summary instead of planner-validation fallback text, and user-requested
+  Markdown-formatted URLs no longer trigger spurious output-confirmation
+  markers.
+
 ### Security
 
 - **Personal memory is scoped per user and workspace.** Long-term memory writes
