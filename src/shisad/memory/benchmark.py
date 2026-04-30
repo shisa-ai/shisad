@@ -124,12 +124,18 @@ def load_memory_benchmark_dataset(path: Path) -> MemoryBenchmarkDataset:
     for item in documents_payload:
         if not isinstance(item, dict):
             raise ValueError("document entries must be objects")
+        collection = _collection_value(item.get("collection", "project_docs"))
+        source_type = (
+            _explicit_source_type_value(item["source_type"])
+            if "source_type" in item
+            else _source_type_from_collection(collection)
+        )
         documents.append(
             MemoryBenchmarkDocument(
                 id=_required_string(item, "id", context="document"),
                 content=_required_string(item, "content", context="document"),
-                collection=_collection_value(item.get("collection", "project_docs")),
-                source_type=_source_type_value(item.get("source_type", item.get("collection"))),
+                collection=collection,
+                source_type=source_type,
             )
         )
 
@@ -377,19 +383,23 @@ def _collection_value(value: object) -> BenchmarkCollection:
     return normalized  # type: ignore[return-value]
 
 
-def _source_type_value(value: object) -> Literal["user", "external", "tool"]:
+def _explicit_source_type_value(value: object) -> Literal["user", "external", "tool"]:
     if not isinstance(value, str):
         raise ValueError("memory benchmark document requires string field: source_type")
     if value in {"user", "external", "tool"}:
         return cast(Literal["user", "external", "tool"], value)
+    raise ValueError(f"unsupported memory benchmark source_type: {value}")
+
+
+def _source_type_from_collection(
+    collection: BenchmarkCollection,
+) -> Literal["user", "external", "tool"]:
     mapped = {
         "user_curated": "user",
         "project_docs": "external",
         "external_web": "external",
         "tool_outputs": "tool",
-    }.get(value)
-    if mapped is None:
-        raise ValueError(f"unsupported memory benchmark source_type: {value}")
+    }[collection]
     return cast(Literal["user", "external", "tool"], mapped)
 
 

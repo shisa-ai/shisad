@@ -174,6 +174,38 @@ def test_m6_memory_benchmark_loads_json_dataset(tmp_path: Path) -> None:
     assert report["metrics"]["accuracy"] == 1.0
 
 
+def test_m6_memory_benchmark_defaults_omitted_provenance_fields(tmp_path: Path) -> None:
+    fixture = tmp_path / "dataset.json"
+    fixture.write_text(
+        json.dumps(
+            {
+                "benchmark_id": "minimal",
+                "benchmark_version": "fixture-v1",
+                "documents": [
+                    {
+                        "id": "doc-1",
+                        "content": "Mina moved the release meeting to Tuesday.",
+                    }
+                ],
+                "questions": [
+                    {
+                        "id": "q1",
+                        "query": "When is the release meeting?",
+                        "expected_source_ids": ["doc-1"],
+                        "answer_terms": ["Tuesday"],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    dataset = load_memory_benchmark_dataset(fixture)
+
+    assert dataset.documents[0].collection == "project_docs"
+    assert dataset.documents[0].source_type == "external"
+
+
 @pytest.mark.parametrize(
     ("mutation", "expected_error"),
     [
@@ -275,6 +307,32 @@ def test_m6_memory_benchmark_loads_json_dataset(tmp_path: Path) -> None:
                         "content": "Mina moved the release meeting to Tuesday.",
                         "collection": "user_curated",
                         "source_type": "unknown",
+                    }
+                ]
+            },
+            "unsupported memory benchmark source_type",
+        ),
+        (
+            {
+                "documents": [
+                    {
+                        "id": "dialogue-1",
+                        "content": "Mina moved the release meeting to Tuesday.",
+                        "collection": "user_curated",
+                        "source_type": "project_docs",
+                    }
+                ]
+            },
+            "unsupported memory benchmark source_type",
+        ),
+        (
+            {
+                "documents": [
+                    {
+                        "id": "dialogue-1",
+                        "content": "Mina moved the release meeting to Tuesday.",
+                        "collection": "tool_outputs",
+                        "source_type": "tool_outputs",
                     }
                 ]
             },
