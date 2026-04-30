@@ -7782,6 +7782,48 @@ class SessionImplMixin(HandlerMixinBase):
                 planner_context.context,
             )
             if str(proposal.tool_name) == "action.resolve":
+                live_pending_action_rows = self._pending_confirmations_for_binding(
+                    session_id=sid,
+                    user_id=validated.user_id,
+                    workspace_id=validated.workspace_id,
+                )
+                if any(
+                    str(getattr(pending, "confirmation_id", "")).strip()
+                    for pending in live_pending_action_rows
+                ) and not _has_clean_trusted_turn_privileges(validated):
+                    final_reason = "action_resolve_requires_clean_trusted_turn"
+                    rejected += 1
+                    rejection_reasons_for_user.append(final_reason)
+                    safe_summary = _safe_untrusted_pasted_content_summary(
+                        user_text=validated.firewall_result.sanitized_text,
+                        risk_factors=validated.firewall_result.risk_factors,
+                    )
+                    action_resolve_summaries.append(
+                        safe_summary
+                        or "Pending action resolution rejected: clean trusted confirmation required"
+                    )
+                    await self._event_bus.publish(
+                        ToolRejected(
+                            session_id=sid,
+                            actor="planner_action_resolve",
+                            tool_name=proposal.tool_name,
+                            reason=final_reason,
+                        )
+                    )
+                    if self._trace_recorder is not None:
+                        trace_tool_calls.append(
+                            TraceToolCall(
+                                tool_name=str(proposal.tool_name),
+                                arguments=dict(proposal_arguments),
+                                pep_decision=pep_decision.kind.value,
+                                monitor_decision="skipped:action_resolve",
+                                control_plane_decision="skipped:action_resolve",
+                                final_decision="reject",
+                                executed=False,
+                                execution_success=False,
+                            )
+                        )
+                    continue
                 if pep_decision.kind.value != "allow":
                     final_reason = (
                         pep_decision.reason or pep_decision.reason_code.strip() or "pep_reject"
