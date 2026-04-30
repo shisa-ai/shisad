@@ -3298,6 +3298,45 @@ def _safe_untrusted_pasted_content_summary(
     )
 
 
+def _safe_summary_rewrite_context_is_injection_shaped(
+    *,
+    user_text: str,
+    risk_factors: Sequence[str],
+) -> bool:
+    normalized = str(user_text or "").lower()
+    factors = {str(item).strip() for item in risk_factors if str(item).strip()}
+    if factors.intersection(
+        {
+            "instruction_override",
+            "role_impersonation",
+            "prompt_leak_request",
+            "system_manipulation",
+            "egress_lure",
+            "data_exfiltration",
+            "command_chain",
+        }
+    ):
+        return True
+    return any(
+        token in normalized
+        for token in (
+            "ignore all prior",
+            "ignore previous",
+            "ignore the user",
+            "untrusted",
+            "pasted",
+            "system prompt",
+            "hidden prompt",
+            "/etc/passwd",
+            "id_rsa",
+            "shell.exec",
+            "exfiltrate",
+            "send it to",
+            "attacker",
+        )
+    )
+
+
 def _coerce_internal_tool_narration_response_text(
     *,
     response_text: str,
@@ -3328,13 +3367,22 @@ def _coerce_internal_tool_narration_response_text(
         user_text=user_text,
         risk_factors=risk_factors,
     )
+    safe_summary_rewrite_context = _safe_summary_rewrite_context_is_injection_shaped(
+        user_text=user_text,
+        risk_factors=risk_factors,
+    )
     if (
         safe_summary is not None
+        and safe_summary_rewrite_context
         and executed_tool_outputs <= 0
         and (rejected > 0 or _is_planner_validation_fallback_response(response_text))
     ):
         return safe_summary
-    if safe_summary is not None and _response_exposes_safe_summary_planner_narration(response_text):
+    if (
+        safe_summary is not None
+        and safe_summary_rewrite_context
+        and _response_exposes_safe_summary_planner_narration(response_text)
+    ):
         return safe_summary
     if not str(response_text or "").lstrip().startswith("I completed the tool step"):
         stripped_summary_tail = _strip_appended_tool_results_summary(response_text)
@@ -3349,7 +3397,7 @@ def _coerce_internal_tool_narration_response_text(
     if _is_plain_greeting(user_text):
         cleaned_greeting = _trim_internal_planner_sections(response_text)
         return cleaned_greeting or "Hello. How can I help?"
-    if safe_summary is not None:
+    if safe_summary is not None and safe_summary_rewrite_context:
         return safe_summary
     cleaned_response = _trim_internal_planner_sections(response_text)
     if cleaned_response and cleaned_response != response_text.strip():

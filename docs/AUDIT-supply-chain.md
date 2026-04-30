@@ -1,7 +1,7 @@
 # shisad Supply Chain Audit
 
 *Created: 2026-03-31*  
-*Updated: 2026-04-29 (v0.7.1 ACP bridge and release-provenance docs refresh)*
+*Updated: 2026-04-30 (v0.7.1 release-close Ledger uuid recheck)*
 *Status: In Progress*  
 *Snapshot basis: v0.7.1 C2 review-refresh target on `main`; historical v0.7.0 release evidence is retained where explicitly labeled.*
 
@@ -25,7 +25,7 @@ Goals:
 | Lockfile | `uv.lock`; `contrib/ledger-bridge/package-lock.json` |
 | CI install path | `uv sync --exclude-newer P7D --frozen --dev` (coverage/security-runtime/channel jobs add focused groups) |
 | Release path | GitHub Actions workflow (`publish.yml`) via OIDC trusted publishing |
-| Current risk summary | Base Python install remains low risk; optional Ledger bridge resolves transitive axios to `1.15.2`; residual Ledger SDK npm advisory is the moderate `uuid <14` issue with no compatible upstream fix available today |
+| Current risk summary | Base Python install remains low risk; optional Ledger bridge resolves transitive axios to `1.15.2`; the v0.7.1 release-close recheck still shows only the residual moderate Ledger SDK `uuid <14` advisory, with the high/critical npm audit gate clean and no compatible upstream fix available today |
 
 ## Pre-analysis Notes
 
@@ -38,6 +38,30 @@ Goals:
 - Accepted risk decision: Python interpreter version remains `>=3.12` and is not treated as a primary attack vector for this audit lane.
 
 ## Follow-up Worklog
+
+### 2026-04-30 — v0.7.1 Ledger bridge uuid recheck
+
+- Scope: recheck the carried `SC-v0.7.0-ledger-uuid` optional Ledger bridge
+  npm advisory during v0.7.1 release close.
+- Audit result:
+  - `npm audit --omit=dev --audit-level=high` in
+    `contrib/ledger-bridge/` -> exit 0.
+  - `npm audit --omit=dev --json` in `contrib/ledger-bridge/` -> exit 1
+    with 6 moderate, 0 high, and 0 critical advisories.
+  - The remaining advisory is `uuid <14` / GHSA-w5hq-g745-h8pq through
+    Ledger SDK packages. npm still reports no non-breaking compatible fix for
+    `uuid`, `@ledgerhq/device-management-kit`,
+    `@ledgerhq/device-signer-kit-ethereum`,
+    `@ledgerhq/device-transport-kit-node-hid`, or
+    `@ledgerhq/signer-utils`. The suggested `@ledgerhq/context-module@0.1.2`
+    path is semver-major and incompatible with the accepted bridge tree.
+- Risk disposition:
+  - No new high/critical npm advisory blocks v0.7.1 release close.
+  - The exception stays open because the current compatible Ledger package set
+    still does not provide a clean fixed `uuid` path.
+  - The optional bridge remains disabled by default, loopback-only, and bearer
+    token capable; no default shisad runtime path imports this Node dependency
+    tree.
 
 ### 2026-04-25 — v0.7.0 Ledger bridge axios override refresh
 
@@ -315,7 +339,7 @@ New packages should meet a higher bar than upgrades:
 
 | ID | Rationale | Risk | Target milestone |
 |---|---|---|---|
-| SC-v0.7.0-ledger-uuid | After the `v0.7.0` axios override refresh, the optional Ledger bridge audit still reports the moderate `uuid <14` buffer-bounds advisory through Ledger SDK packages, and npm does not offer a compatible non-breaking fix for the accepted bridge tree. The optional bridge is loopback-only, disabled by default, and can require bearer auth; upgrading blindly would risk breaking hardware signing. | A local optional Node subproject carries residual moderate `uuid`-advised transitive code until Ledger publishes compatible fixed packages. Current high/critical audit gate is clean (`npm audit --omit=dev --audit-level=high` exits 0). | Recheck during `v0.7.1` release close (or earlier if the bridge dependency tree changes) and drop the exception only when a compatible clean Ledger package set exists. |
+| SC-v0.7.0-ledger-uuid | After the `v0.7.0` axios override refresh, the optional Ledger bridge audit still reports the moderate `uuid <14` buffer-bounds advisory through Ledger SDK packages, and npm does not offer a compatible non-breaking fix for the accepted bridge tree. The v0.7.1 release-close recheck on 2026-04-30 found the same residual moderate-only advisory set. The optional bridge is loopback-only, disabled by default, and can require bearer auth; upgrading blindly would risk breaking hardware signing. | A local optional Node subproject carries residual moderate `uuid`-advised transitive code until Ledger publishes compatible fixed packages. Current high/critical audit gate is clean (`npm audit --omit=dev --audit-level=high` exits 0 on 2026-04-30). | Carry forward to v0.7.2 or the next Ledger bridge dependency refresh, whichever comes first. Drop the exception only when a compatible clean Ledger package set exists. |
 
 ## Immediate Hardening Applied (2026-03-31)
 

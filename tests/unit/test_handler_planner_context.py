@@ -443,6 +443,24 @@ def test_rc_releaseclose_keeps_benign_safety_protocol_response() -> None:
     assert response == response_text
 
 
+def test_rc_releaseclose_keeps_benign_anomaly_report_response() -> None:
+    response_text = (
+        "Report the anomaly to security, rotate the affected credential, and "
+        "preserve audit evidence."
+    )
+
+    response = _coerce_internal_tool_narration_response_text(
+        response_text=response_text,
+        user_text="What should our credential compromise incident response runbook say?",
+        risk_factors=[],
+        rejected=0,
+        pending_confirmation=0,
+        executed_tool_outputs=0,
+    )
+
+    assert response == response_text
+
+
 def test_rc_lus_coerces_action_resolve_tool_call_narration() -> None:
     response = _coerce_internal_tool_narration_response_text(
         response_text=(
