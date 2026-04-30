@@ -165,6 +165,83 @@ def test_m6_memory_benchmark_loads_json_dataset(tmp_path: Path) -> None:
     assert report["metrics"]["accuracy"] == 1.0
 
 
+@pytest.mark.parametrize(
+    ("mutation", "expected_error"),
+    [
+        ({"questions": []}, "at least one question"),
+        (
+            {
+                "questions": [
+                    {
+                        "id": "q1",
+                        "query": "When is the release meeting?",
+                        "expected_source_ids": ["dialogue-1", "dialogue-1"],
+                        "answer_terms": ["Tuesday"],
+                    }
+                ]
+            },
+            "duplicate expected_source_ids",
+        ),
+        (
+            {
+                "questions": [
+                    {
+                        "id": "q1",
+                        "query": "When is the release meeting?",
+                        "expected_source_ids": ["missing"],
+                        "answer_terms": ["Tuesday"],
+                    }
+                ]
+            },
+            "unknown source ids",
+        ),
+        (
+            {
+                "questions": [
+                    {
+                        "id": "q1",
+                        "query": "When is the release meeting?",
+                        "expected_source_ids": ["dialogue-1"],
+                        "answer_terms": [],
+                    }
+                ]
+            },
+            "requires answer_terms",
+        ),
+    ],
+)
+def test_m6_memory_benchmark_rejects_malformed_json_dataset(
+    tmp_path: Path,
+    mutation: dict[str, object],
+    expected_error: str,
+) -> None:
+    payload = {
+        "benchmark_id": "locomo",
+        "benchmark_version": "fixture-v1",
+        "documents": [
+            {
+                "id": "dialogue-1",
+                "content": "Mina moved the release meeting to Tuesday.",
+                "collection": "user_curated",
+            }
+        ],
+        "questions": [
+            {
+                "id": "q1",
+                "query": "When is the release meeting?",
+                "expected_source_ids": ["dialogue-1"],
+                "answer_terms": ["Tuesday"],
+            }
+        ],
+    }
+    payload.update(mutation)
+    fixture = tmp_path / "dataset.json"
+    fixture.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(ValueError, match=expected_error):
+        load_memory_benchmark_dataset(fixture)
+
+
 def test_m6_memory_benchmark_requires_clean_storage_dir(tmp_path: Path) -> None:
     storage_dir = tmp_path / "memory"
     storage_dir.mkdir()

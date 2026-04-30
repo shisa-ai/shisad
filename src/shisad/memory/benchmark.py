@@ -150,12 +150,14 @@ def load_memory_benchmark_dataset(path: Path) -> MemoryBenchmarkDataset:
             )
         )
 
-    return MemoryBenchmarkDataset(
+    dataset = MemoryBenchmarkDataset(
         benchmark_id=str(payload.get("benchmark_id") or path.stem),
         benchmark_version=str(payload.get("benchmark_version") or "external-json-v1"),
         documents=tuple(documents),
         questions=tuple(questions),
     )
+    _validate_dataset(dataset)
+    return dataset
 
 
 def evaluate_memory_benchmark(
@@ -174,6 +176,7 @@ def evaluate_memory_benchmark(
 
     if limit <= 0:
         raise ValueError("limit must be positive")
+    _validate_dataset(dataset)
     started = time.perf_counter()
     with _pipeline_storage(storage_dir) as resolved_storage:
         pipeline = IngestionPipeline(resolved_storage)
@@ -209,8 +212,8 @@ def evaluate_memory_benchmark(
             retrieved_source_ids = [item.source_id for item in retrieved]
             expected = list(question.expected_source_ids)
             expected_set = set(expected)
-            found = [source_id for source_id in expected if source_id in retrieved_source_ids]
-            recall_at_k = len(found) / float(len(expected_set) or 1)
+            found = expected_set.intersection(retrieved_source_ids)
+            recall_at_k = len(found) / float(len(expected_set))
             rank = next(
                 (
                     index + 1
@@ -392,6 +395,55 @@ def _dataset_payload(dataset: MemoryBenchmarkDataset) -> dict[str, Any]:
     }
 
 
+def _validate_dataset(dataset: MemoryBenchmarkDataset) -> None:
+    if not dataset.benchmark_id.strip():
+        raise ValueError("memory benchmark dataset requires a non-empty benchmark_id")
+    if not dataset.benchmark_version.strip():
+        raise ValueError("memory benchmark dataset requires a non-empty benchmark_version")
+    if not dataset.documents:
+        raise ValueError("memory benchmark dataset requires at least one document")
+    if not dataset.questions:
+        raise ValueError("memory benchmark dataset requires at least one question")
+
+    document_ids: set[str] = set()
+    for document in dataset.documents:
+        if not document.id.strip():
+            raise ValueError("memory benchmark documents require non-empty ids")
+        if document.id in document_ids:
+            raise ValueError(f"duplicate memory benchmark document id: {document.id}")
+        if not document.content.strip():
+            raise ValueError(f"memory benchmark document has empty content: {document.id}")
+        document_ids.add(document.id)
+
+    question_ids: set[str] = set()
+    for question in dataset.questions:
+        if not question.id.strip():
+            raise ValueError("memory benchmark questions require non-empty ids")
+        if question.id in question_ids:
+            raise ValueError(f"duplicate memory benchmark question id: {question.id}")
+        if not question.query.strip():
+            raise ValueError(f"memory benchmark question has empty query: {question.id}")
+        if not question.expected_source_ids:
+            raise ValueError(
+                f"memory benchmark question requires expected_source_ids: {question.id}"
+            )
+        if len(set(question.expected_source_ids)) != len(question.expected_source_ids):
+            raise ValueError(
+                f"memory benchmark question has duplicate expected_source_ids: {question.id}"
+            )
+        unknown_source_ids = sorted(set(question.expected_source_ids) - document_ids)
+        if unknown_source_ids:
+            raise ValueError(
+                "memory benchmark question references unknown source ids "
+                f"{unknown_source_ids}: {question.id}"
+            )
+        if not question.answer_terms:
+            raise ValueError(f"memory benchmark question requires answer_terms: {question.id}")
+        if any(not term.strip() for term in question.answer_terms):
+            raise ValueError(f"memory benchmark question has empty answer term: {question.id}")
+        question_ids.add(question.id)
+
+
 def _index_documents(
     pipeline: IngestionPipeline,
     documents: tuple[MemoryBenchmarkDocument, ...],
@@ -434,6 +486,8 @@ def _oracle_payload(
 
 
 def _contains_terms(text: str, terms: tuple[str, ...]) -> bool:
+    if not terms:
+        return False
     lowered = text.lower()
     return all(term.lower() in lowered for term in terms)
 
