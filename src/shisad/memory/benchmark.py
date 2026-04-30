@@ -126,8 +126,8 @@ def load_memory_benchmark_dataset(path: Path) -> MemoryBenchmarkDataset:
             raise ValueError("document entries must be objects")
         documents.append(
             MemoryBenchmarkDocument(
-                id=str(item["id"]),
-                content=str(item["content"]),
+                id=_required_string(item, "id", context="document"),
+                content=_required_string(item, "content", context="document"),
                 collection=_collection_value(item.get("collection", "project_docs")),
                 source_type=_source_type_value(item.get("source_type", item.get("collection"))),
             )
@@ -137,24 +137,34 @@ def load_memory_benchmark_dataset(path: Path) -> MemoryBenchmarkDataset:
     for item in questions_payload:
         if not isinstance(item, dict):
             raise ValueError("question entries must be objects")
-        expected = item.get("expected_source_ids")
-        terms = item.get("answer_terms")
-        if not isinstance(expected, list) or not isinstance(terms, list):
-            raise ValueError("question entries require expected_source_ids[] and answer_terms[]")
+        expected = _required_string_list(
+            item,
+            "expected_source_ids",
+            context="question",
+        )
+        terms = _required_string_list(item, "answer_terms", context="question")
         questions.append(
             MemoryBenchmarkQuestion(
-                id=str(item["id"]),
-                query=str(item["query"]),
-                expected_source_ids=tuple(str(value) for value in expected),
-                answer_terms=tuple(str(value) for value in terms),
+                id=_required_string(item, "id", context="question"),
+                query=_required_string(item, "query", context="question"),
+                expected_source_ids=expected,
+                answer_terms=terms,
             )
         )
 
     raw_benchmark_id = payload.get("benchmark_id", path.stem)
     raw_benchmark_version = payload.get("benchmark_version", "external-json-v1")
     dataset = MemoryBenchmarkDataset(
-        benchmark_id=str(raw_benchmark_id),
-        benchmark_version=str(raw_benchmark_version),
+        benchmark_id=_coerce_optional_string(
+            raw_benchmark_id,
+            field="benchmark_id",
+            context="benchmark",
+        ),
+        benchmark_version=_coerce_optional_string(
+            raw_benchmark_version,
+            field="benchmark_version",
+            context="benchmark",
+        ),
         documents=tuple(documents),
         questions=tuple(questions),
     )
@@ -370,6 +380,33 @@ def _source_type_value(value: object) -> Literal["user", "external", "tool"]:
         "external_web": "external",
         "tool_outputs": "tool",
     }.get(str(value), "external")  # type: ignore[return-value]
+
+
+def _required_string(payload: dict[str, Any], field: str, *, context: str) -> str:
+    value = payload.get(field)
+    if not isinstance(value, str):
+        raise ValueError(f"memory benchmark {context} requires string field: {field}")
+    return value
+
+
+def _required_string_list(
+    payload: dict[str, Any],
+    field: str,
+    *,
+    context: str,
+) -> tuple[str, ...]:
+    values = payload.get(field)
+    if not isinstance(values, list):
+        raise ValueError(f"memory benchmark {context} requires {field}[]")
+    if any(not isinstance(value, str) for value in values):
+        raise ValueError(f"memory benchmark {context} {field}[] values must be strings")
+    return tuple(values)
+
+
+def _coerce_optional_string(value: object, *, field: str, context: str) -> str:
+    if not isinstance(value, str):
+        raise ValueError(f"memory benchmark {context} requires string field: {field}")
+    return value
 
 
 def _dataset_payload(dataset: MemoryBenchmarkDataset) -> dict[str, Any]:

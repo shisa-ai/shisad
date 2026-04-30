@@ -170,6 +170,59 @@ def test_m6_memory_benchmark_loads_json_dataset(tmp_path: Path) -> None:
     [
         ({"benchmark_id": ""}, "non-empty benchmark_id"),
         ({"benchmark_version": ""}, "non-empty benchmark_version"),
+        ({"benchmark_id": None}, "requires string field: benchmark_id"),
+        ({"benchmark_version": None}, "requires string field: benchmark_version"),
+        (
+            {
+                "documents": [
+                    {
+                        "id": "dialogue-1",
+                        "content": None,
+                        "collection": "user_curated",
+                    }
+                ]
+            },
+            "requires string field: content",
+        ),
+        (
+            {
+                "questions": [
+                    {
+                        "id": "q1",
+                        "query": None,
+                        "expected_source_ids": ["dialogue-1"],
+                        "answer_terms": ["Tuesday"],
+                    }
+                ]
+            },
+            "requires string field: query",
+        ),
+        (
+            {
+                "questions": [
+                    {
+                        "id": "q1",
+                        "query": "When is the release meeting?",
+                        "expected_source_ids": [None],
+                        "answer_terms": ["Tuesday"],
+                    }
+                ]
+            },
+            "expected_source_ids\\[\\] values must be strings",
+        ),
+        (
+            {
+                "questions": [
+                    {
+                        "id": "q1",
+                        "query": "When is the release meeting?",
+                        "expected_source_ids": ["dialogue-1"],
+                        "answer_terms": [None],
+                    }
+                ]
+            },
+            "answer_terms\\[\\] values must be strings",
+        ),
         ({"questions": []}, "at least one question"),
         (
             {
