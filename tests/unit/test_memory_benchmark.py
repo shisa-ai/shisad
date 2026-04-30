@@ -7,7 +7,11 @@ from pathlib import Path
 
 import pytest
 
+import shisad.memory.benchmark as benchmark_module
 from shisad.memory.benchmark import (
+    MemoryBenchmarkDataset,
+    MemoryBenchmarkDocument,
+    MemoryBenchmarkQuestion,
     builtin_memory_benchmark_dataset,
     evaluate_memory_benchmark,
     load_memory_benchmark_dataset,
@@ -59,6 +63,71 @@ def test_m6_memory_benchmark_threshold_failure_is_user_visible(tmp_path: Path) -
 
     assert report["allowed"] is False
     assert "accuracy_below_threshold" in report["failures"]
+
+
+def test_m6_memory_benchmark_stage_durations_are_attributed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    dataset = MemoryBenchmarkDataset(
+        benchmark_id="stage-timing",
+        benchmark_version="fixture-v1",
+        documents=(
+            MemoryBenchmarkDocument(
+                id="owner",
+                content="Aiko owns the v0.7 release.",
+            ),
+        ),
+        questions=(
+            MemoryBenchmarkQuestion(
+                id="q1",
+                query="Who owns the v0.7 release?",
+                expected_source_ids=("owner",),
+                answer_terms=("Aiko",),
+            ),
+        ),
+    )
+    elapsed_values = iter([7.0, 11.0, 2.0, 1.5, 99.0])
+    monkeypatch.setattr(
+        benchmark_module,
+        "_elapsed_ms",
+        lambda _start: next(elapsed_values),
+    )
+
+    report = evaluate_memory_benchmark(dataset, storage_dir=tmp_path / "memory", limit=1)
+
+    stages = {stage["name"]: stage for stage in report["stages"]}
+    assert stages["indexing"]["duration_ms"] == 7.0
+    assert stages["retrieval"]["duration_ms"] == 11.0
+    assert stages["reading"]["duration_ms"] == 2.0
+    assert stages["oracle"]["duration_ms"] == 1.5
+    assert report["metrics"]["latency_ms"]["retrieval_total"] == 11.0
+    assert report["elapsed_ms"] == 99.0
+
+
+def test_m6_memory_benchmark_capacity_probe_failure_is_gating(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        benchmark_module,
+        "_run_capacity_probe",
+        lambda *, token_count, limit: {
+            "target_tokens": token_count,
+            "retrieved": False,
+            "latency_ms": 12.0,
+        },
+    )
+
+    report = evaluate_memory_benchmark(
+        builtin_memory_benchmark_dataset(),
+        storage_dir=tmp_path / "memory",
+        limit=4,
+        capacity_tokens=(10_000,),
+    )
+
+    assert report["allowed"] is False
+    assert "capacity_probe_failed:10000" in report["failures"]
 
 
 def test_m6_memory_benchmark_loads_json_dataset(tmp_path: Path) -> None:

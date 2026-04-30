@@ -186,10 +186,10 @@ def evaluate_memory_benchmark(
         _index_documents(pipeline, dataset.documents)
         indexing_ms = _elapsed_ms(index_start)
 
-        retrieval_start = time.perf_counter()
         question_reports: list[dict[str, Any]] = []
         retrieval_latencies: list[float] = []
         reading_latencies: list[float] = []
+        oracle_latencies: list[float] = []
         recall_values: list[float] = []
         mrr_values: list[float] = []
         coverage_values: list[float] = []
@@ -237,12 +237,16 @@ def evaluate_memory_benchmark(
             if harmful_retrievals:
                 harmful_questions += 1
 
-            oracle_payload = _oracle_payload(
-                question=question,
-                documents=dataset.documents,
-                answer_match=answer_match,
-                evidence_coverage=evidence_coverage,
-            )
+            oracle_payload: dict[str, Any] = {}
+            if oracle_diagnostics:
+                oracle_start = time.perf_counter()
+                oracle_payload = _oracle_payload(
+                    question=question,
+                    documents=dataset.documents,
+                    answer_match=answer_match,
+                    evidence_coverage=evidence_coverage,
+                )
+                oracle_latencies.append(_elapsed_ms(oracle_start))
             question_reports.append(
                 {
                     "id": question.id,
@@ -261,12 +265,12 @@ def evaluate_memory_benchmark(
                         "answer_match": answer_match,
                         "latency_ms": round(reading_ms, 3),
                     },
-                    "oracle": oracle_payload if oracle_diagnostics else {},
+                    "oracle": oracle_payload,
                     "user_visible_answer": user_visible_answer,
                 }
             )
 
-        retrieval_total_ms = _elapsed_ms(retrieval_start)
+        retrieval_total_ms = sum(retrieval_latencies)
         all_latencies = retrieval_latencies + reading_latencies
         accuracy = _mean(accuracy_values)
         recall = _mean(recall_values)
@@ -300,6 +304,7 @@ def evaluate_memory_benchmark(
         fail_over_harm_rate=fail_over_harm_rate,
         fail_over_p95_latency_ms=fail_over_p95_latency_ms,
     )
+    failures.extend(_capacity_failures(capacity_reports))
     return {
         "benchmark": {
             "id": dataset.benchmark_id,
@@ -330,7 +335,7 @@ def evaluate_memory_benchmark(
             },
             {
                 "name": "oracle",
-                "duration_ms": 0.0,
+                "duration_ms": round(sum(oracle_latencies), 3),
                 "input_records": len(question_reports),
                 "output_records": len(question_reports) if oracle_diagnostics else 0,
             },
@@ -504,6 +509,14 @@ def _threshold_failures(
     if fail_over_p95_latency_ms is not None and p95_latency > fail_over_p95_latency_ms:
         failures.append("p95_latency_above_threshold")
     return failures
+
+
+def _capacity_failures(capacity_reports: list[dict[str, Any]]) -> list[str]:
+    return [
+        f"capacity_probe_failed:{report['target_tokens']}"
+        for report in capacity_reports
+        if not bool(report.get("retrieved"))
+    ]
 
 
 def _mean(values: list[float]) -> float:
