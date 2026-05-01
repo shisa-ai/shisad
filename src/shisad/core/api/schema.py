@@ -445,6 +445,8 @@ class MemoryPromoteIdentityCandidateParams(_StrictParams):
     ingress_context: str
     candidate_id: str
     value: Any = None
+    user_id: str | None = None
+    workspace_id: str | None = None
 
     @model_validator(mode="after")
     def _validate_candidate_shape(self) -> MemoryPromoteIdentityCandidateParams:
@@ -452,6 +454,7 @@ class MemoryPromoteIdentityCandidateParams(_StrictParams):
             raise ValueError("ingress_context is required")
         if not self.candidate_id.strip():
             raise ValueError("candidate_id is required")
+        _validate_complete_owner_scope(self)
         return self
 
 
@@ -471,6 +474,8 @@ class MemoryPromoteSkillParams(_StrictParams):
 class MemoryRejectIdentityCandidateParams(_StrictParams):
     ingress_context: str
     candidate_id: str
+    user_id: str | None = None
+    workspace_id: str | None = None
 
     @model_validator(mode="after")
     def _validate_candidate_shape(self) -> MemoryRejectIdentityCandidateParams:
@@ -478,6 +483,7 @@ class MemoryRejectIdentityCandidateParams(_StrictParams):
             raise ValueError("ingress_context is required")
         if not self.candidate_id.strip():
             raise ValueError("candidate_id is required")
+        _validate_complete_owner_scope(self)
         return self
 
 
@@ -506,6 +512,13 @@ class MemoryListParams(_StrictParams):
 
 class MemoryReviewQueueParams(_StrictParams):
     limit: int = 100
+    user_id: str | None = None
+    workspace_id: str | None = None
+
+    @model_validator(mode="after")
+    def _validate_owner_scope(self) -> MemoryReviewQueueParams:
+        _validate_complete_owner_scope(self)
+        return self
 
 
 class MemoryReadOriginalParams(_StrictParams):

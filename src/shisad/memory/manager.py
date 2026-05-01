@@ -604,8 +604,20 @@ class MemoryManager:
     ) -> int:
         return self._event_store.count(entry_id=entry_id, event_type=event_type)
 
-    def list_review_queue(self, *, limit: int = 100) -> list[MemoryEntry]:
+    def list_review_queue(
+        self,
+        *,
+        limit: int = 100,
+        user_id: str | None = None,
+        workspace_id: str | None = None,
+        include_unowned: bool = False,
+    ) -> list[MemoryEntry]:
         self.purge_expired()
+        owner_filter_requested = user_id is not None or workspace_id is not None or include_unowned
+        owner_user_id = self._normalize_owner_value(user_id)
+        owner_workspace_id = self._normalize_owner_value(workspace_id)
+        if owner_filter_requested and (owner_user_id is None or owner_workspace_id is None):
+            return []
         rows = [
             self._refresh_ttl(entry)
             for entry in self._entries.values()
@@ -614,6 +626,12 @@ class MemoryManager:
                 and not self._is_quarantined(entry)
                 and self._is_pending_review(entry)
                 and entry.superseded_by is None
+                and self._entry_matches_owner(
+                    entry,
+                    user_id=owner_user_id,
+                    workspace_id=owner_workspace_id,
+                    include_unowned=include_unowned,
+                )
             )
         ]
         rows.sort(key=lambda item: item.created_at, reverse=True)
@@ -972,8 +990,16 @@ class MemoryManager:
         content_digest: str | None,
         taint_labels: list[TaintLabel] | None = None,
         value: Any | None = None,
+        user_id: str | None = None,
+        workspace_id: str | None = None,
+        include_unowned: bool = False,
     ) -> MemoryWriteDecision:
-        candidate, reason = self._resolve_identity_candidate(candidate_id)
+        candidate, reason = self._resolve_identity_candidate(
+            candidate_id,
+            user_id=user_id,
+            workspace_id=workspace_id,
+            include_unowned=include_unowned,
+        )
         if candidate is None:
             return MemoryWriteDecision(kind="reject", reason=reason)
         if confirmation_status not in {"user_confirmed", "user_corrected"}:
@@ -1034,8 +1060,16 @@ class MemoryManager:
         candidate_id: str,
         *,
         ingress_handle_id: str | None = None,
+        user_id: str | None = None,
+        workspace_id: str | None = None,
+        include_unowned: bool = False,
     ) -> tuple[bool, str]:
-        candidate, reason = self._resolve_identity_candidate(candidate_id)
+        candidate, reason = self._resolve_identity_candidate(
+            candidate_id,
+            user_id=user_id,
+            workspace_id=workspace_id,
+            include_unowned=include_unowned,
+        )
         if candidate is None:
             return False, reason
         candidate.deleted_at = datetime.now(UTC)
@@ -1852,10 +1886,20 @@ class MemoryManager:
             self._persist_entry(entry)
         return entry
 
-    def _resolve_identity_candidate(self, candidate_id: str) -> tuple[MemoryEntry | None, str]:
+    def _resolve_identity_candidate(
+        self,
+        candidate_id: str,
+        *,
+        user_id: str | None = None,
+        workspace_id: str | None = None,
+        include_unowned: bool = False,
+    ) -> tuple[MemoryEntry | None, str]:
         candidate = self.get_entry(
             candidate_id,
             include_pending_review=True,
+            user_id=user_id,
+            workspace_id=workspace_id,
+            include_unowned=include_unowned,
         )
         if candidate is None:
             return None, "candidate_not_found"

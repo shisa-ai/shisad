@@ -1097,7 +1097,13 @@ class _FinalizeEvidenceHarness(SessionImplMixin):
         _ = kwargs
 
 
-def _write_pending_identity_candidate(manager: MemoryManager) -> str:
+def _write_pending_identity_candidate(
+    manager: MemoryManager,
+    *,
+    user_id: str | None = "user-g1",
+    workspace_id: str | None = "workspace-g1",
+    source_id: str = "candidate-finalize-1",
+) -> str:
     decision = manager.write_with_provenance(
         entry_type="preference",
         key="preference:tea",
@@ -1105,18 +1111,20 @@ def _write_pending_identity_candidate(manager: MemoryManager) -> str:
         predicate="likes(tea)",
         source=MemorySource(
             origin="external",
-            source_id="candidate-finalize-1",
+            source_id=source_id,
             extraction_method="identity.candidate",
         ),
         source_origin="external_message",
         channel_trust="shared_participant",
         confirmation_status="pending_review",
-        source_id="candidate-finalize-1",
+        source_id=source_id,
         scope="user",
         confidence=0.62,
         confirmation_satisfied=True,
-        ingress_handle_id="handle-candidate",
-        content_digest="digest-candidate",
+        ingress_handle_id=f"handle-{source_id}",
+        content_digest=f"digest-{source_id}",
+        user_id=user_id,
+        workspace_id=workspace_id,
     )
     assert decision.entry is not None
     return decision.entry.id
@@ -1145,44 +1153,59 @@ def _write_invocable_skill(manager: MemoryManager) -> str:
     return decision.entry.id
 
 
-def _write_strong_invalidation_proposal(manager: MemoryManager) -> tuple[str, str]:
+def _write_strong_invalidation_proposal(
+    manager: MemoryManager,
+    *,
+    user_id: str | None = "user-g1",
+    workspace_id: str | None = "workspace-g1",
+    source_suffix: str = "owner",
+) -> tuple[str, str]:
     target = manager.write_with_provenance(
         entry_type="persona_fact",
-        key="work:acme",
+        key=f"work:acme-{source_suffix}",
         value="I work at ACME as VP Eng.",
         source=MemorySource(
             origin="user",
-            source_id="strong-finalize-target",
+            source_id=f"strong-finalize-target-{source_suffix}",
             extraction_method="manual",
         ),
         source_origin="user_direct",
         channel_trust="command",
         confirmation_status="user_asserted",
-        source_id="strong-finalize-target",
+        source_id=f"strong-finalize-target-{source_suffix}",
         scope="user",
         confidence=0.95,
         confirmation_satisfied=True,
+        user_id=user_id,
+        workspace_id=workspace_id,
     )
     assert target.entry is not None
     signal = manager.write_with_provenance(
         entry_type="episode",
-        key="episode:left-acme",
+        key=f"episode:left-acme-{source_suffix}",
         value="I no longer work at ACME.",
         source=MemorySource(
             origin="user",
-            source_id="strong-finalize-signal",
+            source_id=f"strong-finalize-signal-{source_suffix}",
             extraction_method="owner_observed",
         ),
         source_origin="user_direct",
         channel_trust="owner_observed",
         confirmation_status="auto_accepted",
-        source_id="strong-finalize-signal",
+        source_id=f"strong-finalize-signal-{source_suffix}",
         scope="user",
         confidence=0.30,
         confirmation_satisfied=True,
+        user_id=user_id,
+        workspace_id=workspace_id,
     )
     assert signal.entry is not None
-    proposals = ConsolidationWorker(manager).propose_strong_invalidations()
+    proposals = ConsolidationWorker(
+        manager,
+        user_id=user_id,
+        workspace_id=workspace_id,
+        require_owner_scope=user_id is not None and workspace_id is not None,
+    ).propose_strong_invalidations()
     assert proposals
     return target.entry.id, signal.entry.id
 
@@ -2692,6 +2715,67 @@ async def test_m3_finalize_response_surfaces_pending_identity_candidate_on_cli(
 
 
 @pytest.mark.asyncio
+async def test_m7_identity_review_does_not_surface_other_owner_candidate(
+    tmp_path: Path,
+) -> None:
+    harness = _FinalizeEvidenceHarness()
+    harness._memory_manager = MemoryManager(tmp_path / "memory")
+    harness._memory_ingress_registry = IngressContextRegistry()
+    other_candidate_id = _write_pending_identity_candidate(
+        harness._memory_manager,
+        user_id="user-other",
+        workspace_id="workspace-g1",
+        source_id="candidate-other-owner",
+    )
+    validated = _validation_result(
+        params={"session_id": "sess-g1", "content": "/identity review"},
+        sanitized_text="/identity review",
+    )
+
+    response = await SessionImplMixin._maybe_handle_identity_candidate_command(
+        harness,
+        validated=validated,
+    )
+
+    assert response is not None
+    assert "No pending identity candidates." in str(response["response"])
+    assert other_candidate_id not in str(response["response"])
+
+
+@pytest.mark.asyncio
+async def test_m7_identity_accept_does_not_promote_other_owner_candidate(
+    tmp_path: Path,
+) -> None:
+    harness = _FinalizeEvidenceHarness()
+    harness._memory_manager = MemoryManager(tmp_path / "memory")
+    harness._memory_ingress_registry = IngressContextRegistry()
+    other_candidate_id = _write_pending_identity_candidate(
+        harness._memory_manager,
+        user_id="user-other",
+        workspace_id="workspace-g1",
+        source_id="candidate-other-accept",
+    )
+    validated = _validation_result(
+        params={"session_id": "sess-g1", "content": f"/identity accept {other_candidate_id}"},
+        sanitized_text=f"/identity accept {other_candidate_id}",
+    )
+
+    response = await SessionImplMixin._maybe_handle_identity_candidate_command(
+        harness,
+        validated=validated,
+    )
+
+    assert response is not None
+    assert f"Identity candidate {other_candidate_id} was not found." in str(response["response"])
+    candidate = harness._memory_manager.get_entry(
+        other_candidate_id,
+        include_pending_review=True,
+    )
+    assert candidate is not None
+    assert candidate.superseded_by is None
+
+
+@pytest.mark.asyncio
 async def test_m5_finalize_response_does_not_surface_quarantined_identity_candidate(
     tmp_path: Path,
 ) -> None:
@@ -2745,6 +2829,37 @@ async def test_m5_finalize_response_surfaces_strong_invalidation_candidate_on_cl
 
 
 @pytest.mark.asyncio
+async def test_m7_finalize_response_does_not_surface_other_owner_strong_invalidation(
+    tmp_path: Path,
+) -> None:
+    harness = _FinalizeEvidenceHarness()
+    harness._memory_manager = MemoryManager(tmp_path / "memory")
+    harness._session_manager = SimpleNamespace(persist=lambda _sid: None)
+    target_id, _signal_id = _write_strong_invalidation_proposal(
+        harness._memory_manager,
+        user_id="user-other",
+        workspace_id="workspace-g1",
+        source_suffix="other-owner",
+    )
+    execution = _finalize_execution_result(tool_outputs=[], assistant_response="Planner reply")
+
+    response = await SessionImplMixin._finalize_response(harness, execution)
+
+    text = str(response["response"])
+    assert "Memory update candidate" not in text
+    session = execution.planner_dispatch.planner_context.validated.session
+    assert _PENDING_STRONG_INVALIDATION_KEY not in session.metadata
+    assert (
+        harness._memory_manager.list_events(
+            entry_id=target_id,
+            event_type="strong_invalidation_surfaced",
+            limit=10,
+        )
+        == []
+    )
+
+
+@pytest.mark.asyncio
 async def test_m5_pending_strong_invalidation_yes_promotes_user_confirmed_version(
     tmp_path: Path,
 ) -> None:
@@ -2793,6 +2908,45 @@ async def test_m5_pending_strong_invalidation_yes_promotes_user_confirmed_versio
         memory_manager=harness._memory_manager,
         target_entry_id=target_id,
         signal_entry_id=signal_id,
+    )
+
+
+@pytest.mark.asyncio
+async def test_m7_pending_strong_invalidation_yes_rejects_other_owner_pair(
+    tmp_path: Path,
+) -> None:
+    harness = _FinalizeEvidenceHarness()
+    harness._memory_manager = MemoryManager(tmp_path / "memory")
+    harness._memory_ingress_registry = IngressContextRegistry()
+    harness._session_manager = SimpleNamespace(persist=lambda _sid: None)
+    target_id, signal_id = _write_strong_invalidation_proposal(
+        harness._memory_manager,
+        user_id="user-other",
+        workspace_id="workspace-g1",
+        source_suffix="other-pending",
+    )
+    validated = _validation_result(params={"session_id": "sess-g1", "content": "yes"})
+    validated.session.metadata[_PENDING_STRONG_INVALIDATION_KEY] = {
+        "target_entry_id": target_id,
+        "signal_entry_id": signal_id,
+    }
+
+    response = await SessionImplMixin._maybe_handle_pending_strong_invalidation(
+        harness,
+        validated=validated,
+    )
+
+    assert response is not None
+    assert "no longer available" in str(response["response"])
+    target = harness._memory_manager.get_entry(target_id, include_deleted=True)
+    assert target is not None
+    assert target.superseded_by is None
+    assert (
+        harness._memory_manager.list_events(
+            event_type="strong_invalidation_confirmed",
+            limit=10,
+        )
+        == []
     )
 
 

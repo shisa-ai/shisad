@@ -180,9 +180,7 @@ class ConsolidationWorker:
         include_quarantined: bool = False,
         include_pending_review: bool = False,
     ) -> list[MemoryEntry]:
-        if self._require_owner_scope and (
-            self._user_id is None or self._workspace_id is None
-        ):
+        if self._require_owner_scope and (self._user_id is None or self._workspace_id is None):
             return []
         entries = self._manager.list_entries(
             entry_type=entry_type,
@@ -195,6 +193,16 @@ class ConsolidationWorker:
         if self._scope_filter is None:
             return entries
         return [entry for entry in entries if entry.scope in self._scope_filter]
+
+    def _entry_matches_owner_scope(self, entry: MemoryEntry) -> bool:
+        if self._require_owner_scope and (self._user_id is None or self._workspace_id is None):
+            return False
+        return MemoryManager._entry_matches_owner(
+            entry,
+            user_id=self._user_id,
+            workspace_id=self._workspace_id,
+            include_unowned=False,
+        )
 
     def run_once(self, *, now: datetime | None = None) -> ConsolidationRunResult:
         result = ConsolidationRunResult()
@@ -458,6 +466,10 @@ class ConsolidationWorker:
         target = self._manager.get_entry(target_entry_id)
         signal = self._manager.get_entry(signal_entry_id)
         if target is None or signal is None:
+            return None
+        if not self._entry_matches_owner_scope(target) or not self._entry_matches_owner_scope(
+            signal
+        ):
             return None
         if target.superseded_by is not None or signal.superseded_by is not None:
             return None
@@ -742,6 +754,10 @@ class ConsolidationWorker:
             include_pending_review=True,
         )
         if target is None or signal is None:
+            return False
+        if not self._entry_matches_owner_scope(target) or not self._entry_matches_owner_scope(
+            signal
+        ):
             return False
         if target.superseded_by is not None or signal.superseded_by is not None:
             return False

@@ -529,11 +529,7 @@ class MemoryImplMixin(HandlerMixinBase):
         )
         pack = self._ingestion.compile_recall(
             query,
-            task=(
-                str(params.get("task", "")).strip()
-                if params.get("task") is not None
-                else None
-            ),
+            task=(str(params.get("task", "")).strip() if params.get("task") is not None else None),
             limit=limit,
             capabilities=capabilities,
             require_corroboration=bool(params.get("require_corroboration", False)),
@@ -592,12 +588,15 @@ class MemoryImplMixin(HandlerMixinBase):
         if not handle_id:
             raise ValueError("ingress_context is required for memory.promote_identity_candidate")
         candidate_id = str(params.get("candidate_id", "")).strip()
+        user_id, workspace_id = self._owner_tuple_from_params(params)
         context = self._memory_ingress_registry.resolve(handle_id)
         promoted_value = params.get("value")
         if promoted_value is None:
             candidate = self._memory_manager.get_entry(
                 candidate_id,
                 include_pending_review=True,
+                user_id=user_id,
+                workspace_id=workspace_id,
             )
             promoted_value = candidate.value if candidate is not None else None
         if promoted_value is None:
@@ -630,6 +629,8 @@ class MemoryImplMixin(HandlerMixinBase):
             ingress_handle_id=context.handle_id,
             content_digest=resolved_digest,
             taint_labels=context.taint_labels,
+            user_id=user_id,
+            workspace_id=workspace_id,
         )
         return cast(dict[str, Any], decision.model_dump(mode="json"))
 
@@ -642,9 +643,12 @@ class MemoryImplMixin(HandlerMixinBase):
             raise ValueError("ingress_context is required for memory.reject_identity_candidate")
         self._memory_ingress_registry.resolve(handle_id)
         candidate_id = str(params.get("candidate_id", "")).strip()
+        user_id, workspace_id = self._owner_tuple_from_params(params)
         changed, reason = self._memory_manager.reject_identity_candidate(
             candidate_id,
             ingress_handle_id=handle_id,
+            user_id=user_id,
+            workspace_id=workspace_id,
         )
         return {
             "changed": changed,
@@ -663,7 +667,12 @@ class MemoryImplMixin(HandlerMixinBase):
         return {"entries": [entry.model_dump(mode="json") for entry in rows], "count": len(rows)}
 
     async def do_memory_list_review_queue(self, params: Mapping[str, Any]) -> dict[str, Any]:
-        rows = self._memory_manager.list_review_queue(limit=int(params.get("limit", 100)))
+        user_id, workspace_id = self._owner_tuple_from_params(params)
+        rows = self._memory_manager.list_review_queue(
+            limit=int(params.get("limit", 100)),
+            user_id=user_id,
+            workspace_id=workspace_id,
+        )
         return {"entries": [entry.model_dump(mode="json") for entry in rows], "count": len(rows)}
 
     async def do_memory_invoke_skill(self, params: Mapping[str, Any]) -> dict[str, Any]:

@@ -8993,6 +8993,33 @@ class SessionImplMixin(HandlerMixinBase):
             taint_labels=list(validated.firewall_result.taint_labels),
         )
 
+    @staticmethod
+    def _owner_tuple_from_validated(
+        validated: SessionMessageValidationResult,
+    ) -> tuple[str | None, str | None]:
+        user_id = MemoryManager._normalize_owner_value(str(validated.user_id))
+        workspace_id = MemoryManager._normalize_owner_value(str(validated.workspace_id))
+        if user_id is None and workspace_id is None:
+            return None, None
+        if user_id is None or workspace_id is None:
+            # Partial owner tuples are malformed; blank sentinels make owner filters fail closed.
+            return "", ""
+        return user_id, workspace_id
+
+    @staticmethod
+    def _scoped_consolidation_worker(
+        memory_manager: MemoryManager,
+        *,
+        user_id: str | None,
+        workspace_id: str | None,
+    ) -> ConsolidationWorker:
+        return ConsolidationWorker(
+            memory_manager,
+            user_id=user_id,
+            workspace_id=workspace_id,
+            require_owner_scope=user_id is not None and workspace_id is not None,
+        )
+
     async def _maybe_handle_identity_candidate_command(
         self,
         *,
@@ -9024,11 +9051,16 @@ class SessionImplMixin(HandlerMixinBase):
         command, _, remainder = body.partition(" ")
         command = command.strip().lower()
         remainder = remainder.strip()
+        user_id, workspace_id = self._owner_tuple_from_validated(validated)
 
         if command == "review":
             rows = [
                 entry
-                for entry in memory_manager.list_review_queue(limit=20)
+                for entry in memory_manager.list_review_queue(
+                    limit=20,
+                    user_id=user_id,
+                    workspace_id=workspace_id,
+                )
                 if entry.entry_type in {"persona_fact", "preference", "soft_constraint"}
             ]
             if not rows:
@@ -9057,6 +9089,8 @@ class SessionImplMixin(HandlerMixinBase):
         candidate = memory_manager.get_entry(
             candidate_id,
             include_pending_review=True,
+            user_id=user_id,
+            workspace_id=workspace_id,
         )
         if command in {"accept", "edit"}:
             if candidate is None:
@@ -9101,6 +9135,8 @@ class SessionImplMixin(HandlerMixinBase):
                 ingress_handle_id=ingress_context.handle_id,
                 content_digest=ingress_context.content_digest,
                 taint_labels=ingress_context.taint_labels,
+                user_id=user_id,
+                workspace_id=workspace_id,
             )
             if decision.kind != "allow" or decision.entry is None:
                 return self._identity_command_response(
@@ -9135,6 +9171,8 @@ class SessionImplMixin(HandlerMixinBase):
             changed, reason = memory_manager.reject_identity_candidate(
                 candidate_id,
                 ingress_handle_id=ingress_context.handle_id,
+                user_id=user_id,
+                workspace_id=workspace_id,
             )
             if not changed:
                 return self._identity_command_response(
@@ -9177,6 +9215,7 @@ class SessionImplMixin(HandlerMixinBase):
                 session_manager.persist(validated.session.id)
             return None
 
+        user_id, workspace_id = self._owner_tuple_from_validated(validated)
         normalized_text = " ".join(validated.firewall_result.sanitized_text.strip().lower().split())
         if normalized_text not in _CRC_POSITIVE_PATTERNS | _CRC_NEGATIVE_PATTERNS:
             return None
@@ -9185,7 +9224,11 @@ class SessionImplMixin(HandlerMixinBase):
         if session_manager is not None:
             session_manager.persist(validated.session.id)
 
-        worker = ConsolidationWorker(memory_manager)
+        worker = self._scoped_consolidation_worker(
+            memory_manager,
+            user_id=user_id,
+            workspace_id=workspace_id,
+        )
         if self._strong_invalidation_terminal_exists(
             memory_manager=memory_manager,
             target_entry_id=target_entry_id,
@@ -9197,9 +9240,13 @@ class SessionImplMixin(HandlerMixinBase):
             )
         target = memory_manager.get_entry(
             target_entry_id,
+            user_id=user_id,
+            workspace_id=workspace_id,
         )
         signal = memory_manager.get_entry(
             signal_entry_id,
+            user_id=user_id,
+            workspace_id=workspace_id,
         )
         if (
             target is None
@@ -10313,7 +10360,12 @@ class SessionImplMixin(HandlerMixinBase):
 
         expired_candidate_ids: list[str] = []
         surface_limit = ConsolidationConfig().surface_limit
-        for candidate in memory_manager.list_review_queue(limit=20):
+        user_id, workspace_id = self._owner_tuple_from_validated(validated)
+        for candidate in memory_manager.list_review_queue(
+            limit=20,
+            user_id=user_id,
+            workspace_id=workspace_id,
+        ):
             if candidate.entry_type not in {"persona_fact", "preference", "soft_constraint"}:
                 continue
             surface_count = memory_manager.count_events(
@@ -10371,6 +10423,7 @@ class SessionImplMixin(HandlerMixinBase):
 
         expired_pairs: list[tuple[str, str]] = []
         surface_limit = ConsolidationConfig().surface_limit
+        user_id, workspace_id = self._owner_tuple_from_validated(validated)
         proposals = memory_manager.list_events(
             event_type="strong_invalidation_proposed",
             limit=1000,
@@ -10388,9 +10441,13 @@ class SessionImplMixin(HandlerMixinBase):
                 continue
             target = memory_manager.get_entry(
                 target_entry_id,
+                user_id=user_id,
+                workspace_id=workspace_id,
             )
             signal = memory_manager.get_entry(
                 signal_entry_id,
+                user_id=user_id,
+                workspace_id=workspace_id,
             )
             if (
                 target is None
@@ -10436,7 +10493,12 @@ class SessionImplMixin(HandlerMixinBase):
         memory_manager = cast(MemoryManager | None, getattr(self, "_memory_manager", None))
         if memory_manager is None:
             return
-        worker = ConsolidationWorker(memory_manager)
+        user_id, workspace_id = self._owner_tuple_from_validated(validated)
+        worker = self._scoped_consolidation_worker(
+            memory_manager,
+            user_id=user_id,
+            workspace_id=workspace_id,
+        )
         for target_entry_id, signal_entry_id in suggestion.expired_pairs:
             worker.expire_strong_invalidation(
                 target_entry_id=target_entry_id,

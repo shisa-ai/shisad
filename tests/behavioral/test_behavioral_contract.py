@@ -986,10 +986,16 @@ async def contract_harness(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> C
         yield harness
 
 
-async def _create_session(client: ControlClient, *, channel: str = "cli") -> str:
+async def _create_session(
+    client: ControlClient,
+    *,
+    channel: str = "cli",
+    user_id: str = "alice",
+    workspace_id: str = "ws1",
+) -> str:
     created = await client.call(
         "session.create",
-        {"channel": channel, "user_id": "alice", "workspace_id": "ws1"},
+        {"channel": channel, "user_id": user_id, "workspace_id": workspace_id},
     )
     return str(created["session_id"])
 
@@ -4115,7 +4121,14 @@ async def test_contract_graph_query_export_and_consolidation_run_via_control_api
         assert consolidated.get("capability_scope", {}).get("network") is False
         assert consolidated.get("capability_scope", {}).get("tool_recursion") is False
 
-        review_queue = await harness.client.call("memory.list_review_queue", {"limit": 10})
+        review_queue = await harness.client.call(
+            "memory.list_review_queue",
+            {
+                "limit": 10,
+                "user_id": "contract-user",
+                "workspace_id": "contract-workspace",
+            },
+        )
         predicates = {
             str(item.get("predicate", "")).strip()
             for item in review_queue.get("entries", [])
@@ -4123,7 +4136,11 @@ async def test_contract_graph_query_export_and_consolidation_run_via_control_api
         }
         assert "prefers(ramen)" in predicates
 
-        sid = await _create_session(harness.client)
+        sid = await _create_session(
+            harness.client,
+            user_id="contract-user",
+            workspace_id="contract-workspace",
+        )
         surfaced = await harness.client.call(
             "session.message",
             {"session_id": sid, "content": "hello"},
