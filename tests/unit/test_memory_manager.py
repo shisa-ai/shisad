@@ -1931,6 +1931,8 @@ def _write_pending_identity_candidate(
     key: str = "preference:tea",
     value: str = "I prefer tea over coffee.",
     predicate: str | None = "likes(tea)",
+    user_id: str | None = None,
+    workspace_id: str | None = None,
 ) -> object:
     decision = manager.write_with_provenance(
         entry_type=entry_type,
@@ -1951,6 +1953,8 @@ def _write_pending_identity_candidate(
         confirmation_satisfied=True,
         ingress_handle_id="handle-candidate",
         content_digest="digest-candidate",
+        user_id=user_id,
+        workspace_id=workspace_id,
     )
     assert decision.entry is not None
     return decision.entry
@@ -2012,6 +2016,57 @@ def test_m3_promote_identity_candidate_creates_elevated_successor_and_closes_que
             "ingress_handle_id": "handle-accept",
         },
     ) in audits
+
+
+def test_m7_promote_identity_candidate_preserves_owner_tuple(tmp_path: Path) -> None:
+    manager = MemoryManager(tmp_path / "memory")
+    candidate = _write_pending_identity_candidate(
+        manager,
+        user_id="user-1",
+        workspace_id="ws-1",
+    )
+
+    decision = manager.promote_identity_candidate(
+        candidate_id=str(candidate.id),
+        source=MemorySource(
+            origin="user",
+            source_id="cmd-owner-accept",
+            extraction_method="identity.review.accept",
+        ),
+        source_origin="user_confirmed",
+        channel_trust="command",
+        confirmation_status="user_confirmed",
+        source_id="cmd-owner-accept",
+        scope="user",
+        ingress_handle_id="handle-owner-accept",
+        content_digest="digest-owner-accept",
+        taint_labels=[],
+    )
+
+    assert decision.kind == "allow"
+    assert decision.entry is not None
+    assert decision.entry.user_id == "user-1"
+    assert decision.entry.workspace_id == "ws-1"
+    owner_visible_ids = {
+        entry.id
+        for entry in manager.list_entries(
+            user_id="user-1",
+            workspace_id="ws-1",
+            include_pending_review=True,
+            limit=10,
+        )
+    }
+    other_visible_ids = {
+        entry.id
+        for entry in manager.list_entries(
+            user_id="user-2",
+            workspace_id="ws-1",
+            include_pending_review=True,
+            limit=10,
+        )
+    }
+    assert decision.entry.id in owner_visible_ids
+    assert decision.entry.id not in other_visible_ids
 
 
 def test_m3_promote_identity_candidate_with_edit_uses_corrected_floor(tmp_path: Path) -> None:

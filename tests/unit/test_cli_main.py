@@ -709,13 +709,44 @@ def test_cli_commands_route_through_rpc_wrapper(
     _invoke_ok(runner, ["memory", "rotate-key"])
     assert (
         "root=entity:favorite_color"
-        in _invoke_ok(runner, ["memory", "graph", "query", "favorite_color"]).output
+        in _invoke_ok(
+            runner,
+            [
+                "memory",
+                "graph",
+                "query",
+                "favorite_color",
+                "--user",
+                "alice",
+                "--workspace",
+                "ws-1",
+            ],
+        ).output
     )
     assert (
         "# Memory Graph"
-        in _invoke_ok(runner, ["memory", "graph", "export", "--format", "md"]).output
+        in _invoke_ok(
+            runner,
+            [
+                "memory",
+                "graph",
+                "export",
+                "--format",
+                "md",
+                "--user",
+                "alice",
+                "--workspace",
+                "ws-1",
+            ],
+        ).output
     )
-    assert "identity_candidates=1" in _invoke_ok(runner, ["memory", "consolidate"]).output
+    assert (
+        "identity_candidates=1"
+        in _invoke_ok(
+            runner,
+            ["memory", "consolidate", "--user", "alice", "--workspace", "ws-1"],
+        ).output
+    )
     _invoke_ok(runner, ["note", "create", "--key", "meeting", "--content", "prep"])
     assert "n-1 meeting" in _invoke_ok(runner, ["note", "list", "--limit", "5"]).output
     _invoke_ok(runner, ["note", "get", "n-1"])
@@ -853,9 +884,21 @@ def test_cli_commands_route_through_rpc_wrapper(
         },
     ) in calls
     assert ("memory.export", {"format": "json"}) in calls
-    assert ("graph.query", {"entity": "favorite_color", "depth": 1, "limit": 20}) in calls
-    assert ("graph.export", {"format": "md"}) in calls
-    assert ("memory.consolidate", {}) in calls
+    assert (
+        "graph.query",
+        {
+            "entity": "favorite_color",
+            "depth": 1,
+            "limit": 20,
+            "user_id": "alice",
+            "workspace_id": "ws-1",
+        },
+    ) in calls
+    assert (
+        "graph.export",
+        {"format": "md", "user_id": "alice", "workspace_id": "ws-1"},
+    ) in calls
+    assert ("memory.consolidate", {"user_id": "alice", "workspace_id": "ws-1"}) in calls
     assert ("note.create", {"key": "meeting", "content": "prep"}) in calls
     assert ("memory.rotate_key", {"reencrypt_existing": True}) in calls
     assert (

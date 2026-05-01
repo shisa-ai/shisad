@@ -2890,12 +2890,28 @@ def memory_graph() -> None:
     is_flag=True,
     help="Print the full graph query response as JSON.",
 )
-def memory_graph_query(entity: str, depth: int, limit: int, as_json: bool) -> None:
+@click.option("--user", "user_id", default="", help="Owner user id for scoped graph memory.")
+@click.option(
+    "--workspace",
+    "workspace_id",
+    default="",
+    help="Owner workspace id for scoped graph memory.",
+)
+def memory_graph_query(
+    entity: str,
+    depth: int,
+    limit: int,
+    as_json: bool,
+    user_id: str,
+    workspace_id: str,
+) -> None:
     config = _get_config()
+    payload: dict[str, object] = {"entity": entity, "depth": depth, "limit": limit}
+    payload.update(_owner_scope_payload(user_id, workspace_id))
     result = rpc_call(
         config,
         "graph.query",
-        {"entity": entity, "depth": depth, "limit": limit},
+        payload,
         response_model=GraphQueryResult,
     )
     if as_json:
@@ -2922,13 +2938,22 @@ def memory_graph_query(entity: str, depth: int, limit: int, as_json: bool) -> No
 
 @memory_graph.command("export")
 @click.option("--format", "fmt", default="md", show_default=True, type=click.Choice(["json", "md"]))
-def memory_graph_export(fmt: str) -> None:
+@click.option("--user", "user_id", default="", help="Owner user id for scoped graph memory.")
+@click.option(
+    "--workspace",
+    "workspace_id",
+    default="",
+    help="Owner workspace id for scoped graph memory.",
+)
+def memory_graph_export(fmt: str, user_id: str, workspace_id: str) -> None:
     """Export the current derived graph view."""
     config = _get_config()
+    payload: dict[str, object] = {"format": fmt}
+    payload.update(_owner_scope_payload(user_id, workspace_id))
     result = rpc_call(
         config,
         "graph.export",
-        {"format": fmt},
+        payload,
         response_model=GraphExportResult,
     )
     click.echo(str(result.data))
@@ -2941,10 +2966,23 @@ def memory_graph_export(fmt: str) -> None:
     is_flag=True,
     help="Print the full consolidation result as JSON.",
 )
-def memory_consolidate(as_json: bool) -> None:
+@click.option("--user", "user_id", default="", help="Owner user id for scoped consolidation.")
+@click.option(
+    "--workspace",
+    "workspace_id",
+    default="",
+    help="Owner workspace id for scoped consolidation.",
+)
+def memory_consolidate(as_json: bool, user_id: str, workspace_id: str) -> None:
     """Run memory consolidation once and print a summary."""
     config = _get_config()
-    result = rpc_call(config, "memory.consolidate", {}, response_model=MemoryConsolidateResult)
+    payload = _owner_scope_payload(user_id, workspace_id)
+    result = rpc_call(
+        config,
+        "memory.consolidate",
+        payload,
+        response_model=MemoryConsolidateResult,
+    )
     if as_json:
         click.echo(_dump_model(result))
         return

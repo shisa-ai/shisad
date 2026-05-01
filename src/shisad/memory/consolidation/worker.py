@@ -481,6 +481,8 @@ class ConsolidationWorker:
             confirmation_satisfied=True,
             ingress_handle_id=ingress_handle_id,
             supersedes=target.id,
+            user_id=target.user_id,
+            workspace_id=target.workspace_id,
         )
         if decision.entry is None:
             return None
@@ -545,7 +547,9 @@ class ConsolidationWorker:
         return candidates
 
     def accumulate_identity_candidates(self) -> list[MemoryEntry]:
-        observations: dict[str, list[MemoryEntry]] = defaultdict(list)
+        observations: dict[tuple[str, str | None, str | None], list[MemoryEntry]] = defaultdict(
+            list
+        )
         entries = self._list_entries()
         for entry in entries:
             if entry.scope != "user":
@@ -555,20 +559,20 @@ class ConsolidationWorker:
             preference = self._extract_preference_object(_entry_text(entry))
             if preference is None:
                 continue
-            observations[preference].append(entry)
+            observations[(preference, entry.user_id, entry.workspace_id)].append(entry)
 
         created: list[MemoryEntry] = []
         existing_predicates = {
-            entry.predicate
+            (entry.predicate, entry.user_id, entry.workspace_id)
             for entry in self._list_entries(include_pending_review=True)
             if entry.entry_type == "preference" and entry.scope == "user"
         }
-        for preference, evidence in observations.items():
+        for (preference, user_id, workspace_id), evidence in observations.items():
             threshold = self._identity_candidate_threshold(preference)
             if len({entry.source_id for entry in evidence}) < threshold:
                 continue
             predicate = f"prefers({preference})"
-            if predicate in existing_predicates:
+            if (predicate, user_id, workspace_id) in existing_predicates:
                 continue
             confidence = min(0.90, 0.30 * len(evidence))
             decision = self._manager.write_with_provenance(
@@ -589,6 +593,8 @@ class ConsolidationWorker:
                 confidence=confidence,
                 confirmation_satisfied=True,
                 ingress_handle_id=f"consolidation:{preference}",
+                user_id=user_id,
+                workspace_id=workspace_id,
             )
             if decision.entry is None:
                 continue

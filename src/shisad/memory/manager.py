@@ -1002,6 +1002,8 @@ class MemoryManager:
             ingress_handle_id=ingress_handle_id,
             content_digest=content_digest,
             supersedes=candidate.id,
+            user_id=candidate.user_id,
+            workspace_id=candidate.workspace_id,
         )
         if decision.kind != "allow" or decision.entry is None:
             return decision

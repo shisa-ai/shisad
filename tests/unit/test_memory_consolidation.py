@@ -988,6 +988,98 @@ async def test_m7_memory_consolidate_scopes_to_owner_tuple(tmp_path: Path) -> No
     assert other_target.id not in target_ids
 
 
+def test_m7_consolidation_outputs_preserve_owner_tuple(tmp_path: Path) -> None:
+    manager = MemoryManager(tmp_path / "memory")
+    target = _write_entry(
+        manager,
+        entry_type="persona_fact",
+        key="work:acme",
+        value="I work at ACME as VP Eng.",
+        confidence=0.95,
+        user_id="user-1",
+        workspace_id="ws-1",
+    )
+    signal = _write_entry(
+        manager,
+        entry_type="episode",
+        key="episode:left-acme",
+        value="I no longer work at ACME.",
+        source_origin="user_direct",
+        channel_trust="owner_observed",
+        confirmation_status="auto_accepted",
+        source_id="left-acme-owner",
+        user_id="user-1",
+        workspace_id="ws-1",
+    )
+    _write_entry(
+        manager,
+        entry_type="episode",
+        key="episode:ramen-1",
+        value="I like ramen for lunch.",
+        source_origin="user_direct",
+        channel_trust="owner_observed",
+        confirmation_status="auto_accepted",
+        source_id="ramen-owner-1",
+        user_id="user-1",
+        workspace_id="ws-1",
+    )
+    _write_entry(
+        manager,
+        entry_type="episode",
+        key="episode:ramen-2",
+        value="I prefer ramen when traveling.",
+        source_origin="user_direct",
+        channel_trust="owner_observed",
+        confirmation_status="auto_accepted",
+        source_id="ramen-owner-2",
+        user_id="user-1",
+        workspace_id="ws-1",
+    )
+    worker = ConsolidationWorker(
+        manager,
+        config=ConsolidationConfig(identity_candidate_threshold=2),
+        user_id="user-1",
+        workspace_id="ws-1",
+        require_owner_scope=True,
+    )
+
+    confirmed = worker.confirm_strong_invalidation(
+        target_entry_id=target.id,
+        signal_entry_id=signal.id,
+        new_value="I no longer work at ACME.",
+        ingress_handle_id="handle-confirm-owner",
+    )
+    candidates = worker.accumulate_identity_candidates()
+
+    assert confirmed is not None
+    assert confirmed.user_id == "user-1"
+    assert confirmed.workspace_id == "ws-1"
+    assert candidates
+    assert {candidate.user_id for candidate in candidates} == {"user-1"}
+    assert {candidate.workspace_id for candidate in candidates} == {"ws-1"}
+    owner_visible_ids = {
+        entry.id
+        for entry in manager.list_entries(
+            user_id="user-1",
+            workspace_id="ws-1",
+            include_pending_review=True,
+            limit=20,
+        )
+    }
+    other_visible_ids = {
+        entry.id
+        for entry in manager.list_entries(
+            user_id="user-2",
+            workspace_id="ws-1",
+            include_pending_review=True,
+            limit=20,
+        )
+    }
+    created_ids = {confirmed.id, *(candidate.id for candidate in candidates)}
+    assert created_ids <= owner_visible_ids
+    assert created_ids.isdisjoint(other_visible_ids)
+
+
 @pytest.mark.asyncio
 async def test_m5_partial_consolidation_flags_keep_dedup_and_retention(
     tmp_path: Path,
