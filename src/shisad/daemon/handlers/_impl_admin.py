@@ -586,7 +586,7 @@ class AdminImplMixin(HandlerMixinBase):
             value: Any,
             scope: ScopeKind,
             supersedes: str | None = None,
-        ) -> None:
+        ) -> Any | None:
             ingress_context = mint_explicit_user_memory_ingress_context(
                 self._memory_ingress_registry,
                 channel=message.channel,
@@ -598,7 +598,7 @@ class AdminImplMixin(HandlerMixinBase):
                 scope=scope,
             )
             if ingress_context is None:
-                return
+                return None
             content_digest = self._memory_ingress_registry.validate_binding(
                 ingress_context,
                 content_digest=digest_memory_value(value),
@@ -637,6 +637,8 @@ class AdminImplMixin(HandlerMixinBase):
                         "channel": message.channel,
                     },
                 )
+                return None
+            return decision.entry
 
         if channel_id and not owner_like and interaction_type != "observed":
             owner_id = self._channel_memory_owner_id(channel=message.channel)
@@ -1072,11 +1074,8 @@ class AdminImplMixin(HandlerMixinBase):
                     entry_type="response_feedback",
                     key=feedback_key,
                 )
-            if (
-                prior_feedback is None
-                and feedback_signal in {"reaction_add", "reaction_remove"}
-                and feedback_emoji
-            ):
+            legacy_feedback = None
+            if feedback_signal in {"reaction_add", "reaction_remove"} and feedback_emoji:
                 legacy_signal = (
                     "reaction_add" if feedback_signal == "reaction_remove" else feedback_signal
                 )
@@ -1090,10 +1089,12 @@ class AdminImplMixin(HandlerMixinBase):
                     entry_type="response_feedback",
                     key=legacy_key,
                 )
-                if legacy_feedback is not None and _feedback_entry_matches_emoji(
+                if not _feedback_entry_matches_emoji(
                     legacy_feedback,
                     feedback_emoji,
                 ):
+                    legacy_feedback = None
+                if prior_feedback is None and legacy_feedback is not None:
                     legacy_feedback.key = response_feedback_key(
                         channel_id=structured_channel_id,
                         message_id=feedback_target_message_id,
@@ -1133,19 +1134,47 @@ class AdminImplMixin(HandlerMixinBase):
             ).model_dump(mode="python")
             feedback_write_key = feedback_key
             feedback_supersedes = prior_feedback.id if prior_feedback is not None else None
+            legacy_retirement_target = None
+            prior_feedback_value = getattr(prior_feedback, "value", None)
+            if (
+                legacy_feedback is not None
+                and prior_feedback is not None
+                and legacy_feedback.id != prior_feedback.id
+                and isinstance(prior_feedback_value, Mapping)
+                and _feedback_can_supersede_prior(
+                    legacy_feedback,
+                    cast(Mapping[str, Any], prior_feedback_value),
+                )
+            ):
+                legacy_retirement_target = prior_feedback
             if not _feedback_can_supersede_prior(prior_feedback, feedback_value):
                 feedback_write_key = (
                     f"{feedback_key}:observation:"
                     f"{_short_hash(message.message_id or json.dumps(feedback_value, default=str))}"
                 )
                 feedback_supersedes = None
-            persist_record(
+            written_feedback = persist_record(
                 entry_type="response_feedback",
                 key=feedback_write_key,
                 value=feedback_value,
                 scope="channel",
                 supersedes=feedback_supersedes,
             )
+            if (
+                legacy_feedback is not None
+                and legacy_feedback.id != getattr(prior_feedback, "id", None)
+                and legacy_feedback.superseded_by is None
+            ):
+                retirement_target_id = getattr(legacy_retirement_target, "id", None)
+                if (
+                    retirement_target_id is None
+                    and written_feedback is not None
+                    and _feedback_can_supersede_prior(legacy_feedback, feedback_value)
+                ):
+                    retirement_target_id = written_feedback.id
+                if retirement_target_id is not None:
+                    legacy_feedback.superseded_by = retirement_target_id
+                    memory_manager._persist_entry(legacy_feedback)
 
     def _effective_channel_tools(self, allowed_tools: tuple[str, ...]) -> tuple[str, ...]:
         effective: list[str] = []

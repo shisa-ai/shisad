@@ -749,6 +749,137 @@ async def test_m8_channel_feedback_remove_migrates_matching_legacy_bare_add(
 
 
 @pytest.mark.asyncio
+async def test_m8_channel_feedback_remove_retires_legacy_bare_add_with_emoji_current(
+    tmp_path: Path,
+) -> None:
+    harness = _AdminChannelIngressHarness(
+        tmp_path=tmp_path,
+        default_trust="public",
+        allowlisted_users={"guest-orphan-feedback"},
+    )
+    channel_binding = compose_channel_binding(
+        channel="discord",
+        workspace_hint="guild-1",
+        channel_id="chan-orphan-feedback",
+    )
+    legacy_add_key = response_feedback_key(
+        channel_id=channel_binding,
+        message_id="agent-msg-orphan-feedback",
+        actor_external_user_id="guest-orphan-feedback",
+        signal="reaction_add",
+    )
+    emoji_add_key = response_feedback_key(
+        channel_id=channel_binding,
+        message_id="agent-msg-orphan-feedback",
+        actor_external_user_id="guest-orphan-feedback",
+        signal="reaction_add",
+        emoji=":+1:",
+    )
+    feedback_value = {
+        "channel_id": channel_binding,
+        "event_id": "discord:guild-1:chan-orphan-feedback:agent-msg:+1:add",
+        "target_message_id": "agent-msg-orphan-feedback",
+        "actor_external_user_id": "guest-orphan-feedback",
+        "signal": "reaction_add",
+        "emoji": ":+1:",
+        "valence": "positive",
+        "observed_at": "2026-05-01T00:00:00Z",
+        "signal_confidence": 0.95,
+        "authenticated_actor": True,
+        "policy_allowed": True,
+        "can_influence_retrieval": True,
+        "utility_score": 1.0,
+        "harm_score": 0.0,
+        "telemetry_weight": 0.15,
+        "telemetry_policy": "bounded_retrieval",
+    }
+    legacy_add = harness._memory_manager.write_with_provenance(
+        entry_type="response_feedback",
+        key=legacy_add_key,
+        value=feedback_value,
+        source=MemorySource(
+            origin="external",
+            source_id="discord:orphan-feedback-bare-add",
+            extraction_method="channel.ingest.structured",
+        ),
+        source_origin="external_message",
+        channel_trust="shared_participant",
+        confirmation_status="auto_accepted",
+        source_id="discord:orphan-feedback-bare-add",
+        scope="channel",
+        confidence=0.5,
+        confirmation_satisfied=True,
+    )
+    emoji_add = harness._memory_manager.write_with_provenance(
+        entry_type="response_feedback",
+        key=emoji_add_key,
+        value={
+            **feedback_value,
+            "event_id": "discord:guild-1:chan-orphan-feedback:agent-msg:+1:add:emoji",
+        },
+        source=MemorySource(
+            origin="external",
+            source_id="discord:orphan-feedback-emoji-add",
+            extraction_method="channel.ingest.structured",
+        ),
+        source_origin="external_message",
+        channel_trust="shared_participant",
+        confirmation_status="auto_accepted",
+        source_id="discord:orphan-feedback-emoji-add",
+        scope="channel",
+        confidence=0.5,
+        confirmation_satisfied=True,
+    )
+    assert legacy_add.entry is not None
+    assert emoji_add.entry is not None
+
+    await harness.do_channel_ingest(
+        {
+            "message": {
+                "channel": "discord",
+                "external_user_id": "guest-orphan-feedback",
+                "workspace_hint": "guild-1",
+                "reply_target": "chan-orphan-feedback",
+                "message_id": "msg-orphan-feedback-remove",
+                "content": "remove reaction event",
+                "metadata": {
+                    "interaction_type": "direct",
+                    "feedback_signal": "reaction_remove",
+                    "feedback_target_message_id": "agent-msg-orphan-feedback",
+                    "feedback_emoji": ":+1:",
+                    "feedback_valence": "none",
+                    "feedback_signal_confidence": 0.95,
+                    "feedback_policy_allowed": True,
+                    "feedback_event_id": (
+                        "discord:guild-1:chan-orphan-feedback:"
+                        "agent-msg-orphan-feedback:guest-orphan-feedback:+1:remove"
+                    ),
+                    "feedback_authenticated_actor": True,
+                },
+            }
+        }
+    )
+
+    retired_legacy = harness._memory_manager.get_entry(legacy_add.entry.id)
+    retired_emoji = harness._memory_manager.get_entry(emoji_add.entry.id)
+    assert retired_legacy is not None
+    assert retired_legacy.superseded_by is not None
+    assert retired_emoji is not None
+    assert retired_emoji.superseded_by is not None
+
+    current_entries = [
+        entry
+        for entry in harness._memory_manager.list_entries(limit=20)
+        if entry.superseded_by is None
+    ]
+    assert [entry for entry in current_entries if entry.key == legacy_add_key] == []
+    current_add = [entry for entry in current_entries if entry.key == emoji_add_key]
+    assert len(current_add) == 1
+    assert current_add[0].value["signal"] == "reaction_remove"
+    assert current_add[0].value["emoji"] == ":+1:"
+
+
+@pytest.mark.asyncio
 async def test_m8_channel_ingest_preserves_owner_curated_channel_records(
     tmp_path: Path,
 ) -> None:
