@@ -330,6 +330,7 @@ async def test_m8_channel_feedback_downgrades_spoofed_influence_and_supersedes_r
             "feedback_signal_confidence": 0.95,
             "feedback_policy_allowed": True,
             "feedback_telemetry_weight": 0.15,
+            "feedback_event_id": "discord:guild-1:chan-2:agent-msg-9:guest-2:+1",
         },
     }
     await harness.do_channel_ingest({"message": {**base_message, "message_id": "msg-31"}})
@@ -359,7 +360,6 @@ async def test_m8_channel_feedback_downgrades_spoofed_influence_and_supersedes_r
 
     trusted_metadata = {
         **base_message["metadata"],
-        "feedback_event_id": "discord:guild-1:chan-2:agent-msg-9:guest-2:+1",
         "feedback_authenticated_actor": True,
     }
     await harness.do_channel_ingest(
@@ -1748,6 +1748,237 @@ async def test_m8_channel_ingest_promotes_trusted_legacy_over_observed_canonical
         "channel_summary",
     }
     assert all(entry.supersedes is None for entry in current_side_entries)
+
+
+@pytest.mark.asyncio
+async def test_m8_channel_ingest_promotes_legacy_without_rewriting_existing_lineage(
+    tmp_path: Path,
+) -> None:
+    harness = _AdminChannelIngressHarness(
+        tmp_path=tmp_path,
+        default_trust="public",
+        allowlisted_users={"guest-lineage"},
+    )
+    for session_id, message_id in (
+        ("sess-m8-lineage-note", "legacy-m8-lineage-note-msg"),
+        ("sess-m8-lineage-summary", "legacy-m8-lineage-summary-msg"),
+    ):
+        harness._transcript_store.append(
+            SessionId(session_id),
+            role="user",
+            content=f"legacy trusted {message_id}",
+            taint_labels=set(),
+            metadata={
+                "channel_message_id": message_id,
+                "delivery_target": {
+                    "channel": "discord",
+                    "recipient": "chan-m8-lineage",
+                    "workspace_hint": "guild-1",
+                    "thread_id": "",
+                },
+            },
+        )
+
+    channel_binding = compose_channel_binding(
+        channel="discord",
+        workspace_hint="guild-1",
+        channel_id="chan-m8-lineage",
+    )
+    canonical_note_key = person_note_key(
+        channel_id=channel_binding,
+        external_user_id="guest-lineage",
+    )
+    canonical_summary_key = channel_summary_key(
+        channel_id=channel_binding,
+        summary_kind="digest",
+    )
+    observed_note = harness._memory_manager.write_with_provenance(
+        entry_type="person_note",
+        key=canonical_note_key,
+        value={
+            "external_user_id": "guest-lineage",
+            "display_name": "Lineage Guest",
+            "channel_id": channel_binding,
+            "interaction_summary": "Observed canonical note.",
+        },
+        source=MemorySource(
+            origin="external",
+            source_id="discord:observed-lineage-note",
+            extraction_method="channel.ingest.structured",
+        ),
+        source_origin="external_message",
+        channel_trust="shared_participant",
+        confirmation_status="auto_accepted",
+        source_id="discord:observed-lineage-note",
+        scope="channel",
+        confidence=0.5,
+        confirmation_satisfied=True,
+    )
+    observed_summary = harness._memory_manager.write_with_provenance(
+        entry_type="channel_summary",
+        key=canonical_summary_key,
+        value={
+            "channel_id": channel_binding,
+            "summary_kind": "digest",
+            "summary_text": "Observed canonical digest.",
+        },
+        source=MemorySource(
+            origin="external",
+            source_id="discord:observed-lineage-summary",
+            extraction_method="channel.ingest.structured",
+        ),
+        source_origin="external_message",
+        channel_trust="shared_participant",
+        confirmation_status="auto_accepted",
+        source_id="discord:observed-lineage-summary",
+        scope="channel",
+        confidence=0.5,
+        confirmation_satisfied=True,
+    )
+    old_note = harness._memory_manager.write_with_provenance(
+        entry_type="person_note",
+        key=person_note_key(channel_id="chan-m8-lineage", external_user_id="guest-lineage"),
+        value={
+            "external_user_id": "guest-lineage",
+            "display_name": "Lineage Guest",
+            "channel_id": "chan-m8-lineage",
+            "interaction_summary": "Older trusted legacy note.",
+            "confidence_source": "owner_curated",
+            "owner_curated": True,
+        },
+        source=MemorySource(
+            origin="user",
+            source_id="discord:legacy-m8-lineage-note-old",
+            extraction_method="manual",
+        ),
+        source_origin="user_corrected",
+        channel_trust="command",
+        confirmation_status="user_corrected",
+        source_id="discord:legacy-m8-lineage-note-old",
+        scope="channel",
+        confidence=0.95,
+        confirmation_satisfied=True,
+    )
+    old_summary = harness._memory_manager.write_with_provenance(
+        entry_type="channel_summary",
+        key=channel_summary_key(channel_id="chan-m8-lineage", summary_kind="digest"),
+        value={
+            "channel_id": "chan-m8-lineage",
+            "summary_kind": "digest",
+            "summary_text": "Older trusted legacy digest.",
+            "confidence_source": "owner_curated",
+            "owner_curated": True,
+        },
+        source=MemorySource(
+            origin="user",
+            source_id="discord:legacy-m8-lineage-summary-old",
+            extraction_method="manual",
+        ),
+        source_origin="user_corrected",
+        channel_trust="command",
+        confirmation_status="user_corrected",
+        source_id="discord:legacy-m8-lineage-summary-old",
+        scope="channel",
+        confidence=0.95,
+        confirmation_satisfied=True,
+    )
+    assert old_note.entry is not None
+    assert old_summary.entry is not None
+    trusted_note = harness._memory_manager.write_with_provenance(
+        entry_type="person_note",
+        key=person_note_key(channel_id="chan-m8-lineage", external_user_id="guest-lineage"),
+        value={
+            "external_user_id": "guest-lineage",
+            "display_name": "Lineage Guest",
+            "channel_id": "chan-m8-lineage",
+            "interaction_summary": "Trusted legacy note.",
+            "confidence_source": "owner_curated",
+            "owner_curated": True,
+            "correction_status": "corrected",
+            "supersedes_entry_id": old_note.entry.id,
+        },
+        source=MemorySource(
+            origin="user",
+            source_id="discord:legacy-m8-lineage-note-msg",
+            extraction_method="manual",
+        ),
+        source_origin="user_corrected",
+        channel_trust="command",
+        confirmation_status="user_corrected",
+        source_id="discord:legacy-m8-lineage-note-msg",
+        scope="channel",
+        confidence=0.95,
+        confirmation_satisfied=True,
+        supersedes=old_note.entry.id,
+    )
+    trusted_summary = harness._memory_manager.write_with_provenance(
+        entry_type="channel_summary",
+        key=channel_summary_key(channel_id="chan-m8-lineage", summary_kind="digest"),
+        value={
+            "channel_id": "chan-m8-lineage",
+            "summary_kind": "digest",
+            "summary_text": "Trusted legacy digest.",
+            "confidence_source": "owner_curated",
+            "owner_curated": True,
+            "correction_status": "corrected",
+            "supersedes_entry_id": old_summary.entry.id,
+        },
+        source=MemorySource(
+            origin="user",
+            source_id="discord:legacy-m8-lineage-summary-msg",
+            extraction_method="manual",
+        ),
+        source_origin="user_corrected",
+        channel_trust="command",
+        confirmation_status="user_corrected",
+        source_id="discord:legacy-m8-lineage-summary-msg",
+        scope="channel",
+        confidence=0.95,
+        confirmation_satisfied=True,
+        supersedes=old_summary.entry.id,
+    )
+    assert observed_note.entry is not None
+    assert observed_summary.entry is not None
+    assert trusted_note.entry is not None
+    assert trusted_summary.entry is not None
+
+    await harness.do_channel_ingest(
+        {
+            "message": {
+                "channel": "discord",
+                "external_user_id": "guest-lineage",
+                "workspace_hint": "guild-1",
+                "reply_target": "chan-m8-lineage",
+                "message_id": "msg-m8-lineage",
+                "content": "fresh observed after trusted legacy",
+                "metadata": {
+                    "interaction_type": "direct",
+                    "display_name": "Lineage Guest",
+                    "summary_kind": "digest",
+                    "summary_text": "Fresh observed digest.",
+                },
+            }
+        }
+    )
+
+    promoted_note = harness._memory_manager.get_entry(trusted_note.entry.id)
+    promoted_summary = harness._memory_manager.get_entry(trusted_summary.entry.id)
+    superseded_observed_note = harness._memory_manager.get_entry(observed_note.entry.id)
+    superseded_observed_summary = harness._memory_manager.get_entry(observed_summary.entry.id)
+    assert promoted_note is not None
+    assert promoted_note.key == canonical_note_key
+    assert promoted_note.superseded_by is None
+    assert promoted_note.supersedes == old_note.entry.id
+    assert promoted_note.value["supersedes_entry_id"] == old_note.entry.id
+    assert promoted_summary is not None
+    assert promoted_summary.key == canonical_summary_key
+    assert promoted_summary.superseded_by is None
+    assert promoted_summary.supersedes == old_summary.entry.id
+    assert promoted_summary.value["supersedes_entry_id"] == old_summary.entry.id
+    assert superseded_observed_note is not None
+    assert superseded_observed_note.superseded_by == trusted_note.entry.id
+    assert superseded_observed_summary is not None
+    assert superseded_observed_summary.superseded_by == trusted_summary.entry.id
 
 
 @pytest.mark.asyncio

@@ -181,6 +181,15 @@ def _feedback_can_supersede_prior(
     return not (prior_event_id and not incoming_event_id and prior_rank >= 1)
 
 
+def _feedback_duplicate_is_at_least_as_trusted(
+    duplicate_entry: Any | None, incoming_value: Mapping[str, Any]
+) -> bool:
+    if duplicate_entry is None or not isinstance(getattr(duplicate_entry, "value", None), Mapping):
+        return False
+    duplicate_value = cast(Mapping[str, Any], duplicate_entry.value)
+    return _feedback_trust_rank(duplicate_value) >= _feedback_trust_rank(incoming_value)
+
+
 def _feedback_entry_matches_emoji(entry: Any | None, emoji: str | None) -> bool:
     if entry is None or not isinstance(getattr(entry, "value", None), Mapping):
         return False
@@ -552,15 +561,23 @@ class AdminImplMixin(HandlerMixinBase):
                 and not successor_is_curated
                 and promoted_successor is None
             ):
+                existing_value = entry.value if isinstance(entry.value, Mapping) else {}
+                existing_supersedes = str(entry.supersedes or "").strip() or None
+                existing_value_supersedes = (
+                    str(existing_value.get("supersedes_entry_id") or "").strip() or None
+                )
+                promoted_supersedes = (
+                    existing_supersedes or existing_value_supersedes or successor.id
+                )
                 if isinstance(entry.value, Mapping):
                     updated_value = dict(entry.value)
-                    updated_value["supersedes_entry_id"] = successor.id
+                    updated_value["supersedes_entry_id"] = promoted_supersedes
                     updated_value["correction_status"] = "corrected"
                     entry.value = normalize_structured_memory_value(
                         entry.entry_type,
                         updated_value,
                     )
-                entry.supersedes = successor.id
+                entry.supersedes = promoted_supersedes
                 successor.superseded_by = entry.id
                 memory_manager._persist_entry(successor)
                 memory_manager._persist_entry(entry)
@@ -1146,27 +1163,6 @@ class AdminImplMixin(HandlerMixinBase):
                     prior_feedback = legacy_feedback
                     if feedback_signal == "reaction_remove":
                         feedback_key = legacy_feedback.key
-            duplicate_feedback = self._find_response_feedback_event_entry(
-                event_id=feedback_event_id,
-                channel_id=structured_channel_id,
-                target_message_id=feedback_target_message_id,
-                actor_external_user_id=message.external_user_id,
-            )
-            if duplicate_feedback is not None:
-                duplicate_feedback_value = getattr(duplicate_feedback, "value", None)
-                if (
-                    legacy_feedback is not None
-                    and legacy_feedback.id != duplicate_feedback.id
-                    and legacy_feedback.superseded_by is None
-                    and isinstance(duplicate_feedback_value, Mapping)
-                    and _feedback_can_supersede_prior(
-                        legacy_feedback,
-                        cast(Mapping[str, Any], duplicate_feedback_value),
-                    )
-                ):
-                    legacy_feedback.superseded_by = duplicate_feedback.id
-                    memory_manager._persist_entry(legacy_feedback)
-                return
             feedback_value = ResponseFeedbackEventValue(
                 channel_id=structured_channel_id,
                 event_id=feedback_event_id,
@@ -1193,6 +1189,31 @@ class AdminImplMixin(HandlerMixinBase):
                 ),
                 thread_id=thread_id or None,
             ).model_dump(mode="python")
+            duplicate_feedback = self._find_response_feedback_event_entry(
+                event_id=feedback_event_id,
+                channel_id=structured_channel_id,
+                target_message_id=feedback_target_message_id,
+                actor_external_user_id=message.external_user_id,
+            )
+            duplicate_feedback_to_retire = None
+            if duplicate_feedback is not None:
+                duplicate_feedback_value = getattr(duplicate_feedback, "value", None)
+                if _feedback_duplicate_is_at_least_as_trusted(duplicate_feedback, feedback_value):
+                    if (
+                        legacy_feedback is not None
+                        and legacy_feedback.id != duplicate_feedback.id
+                        and legacy_feedback.superseded_by is None
+                        and isinstance(duplicate_feedback_value, Mapping)
+                        and _feedback_can_supersede_prior(
+                            legacy_feedback,
+                            cast(Mapping[str, Any], duplicate_feedback_value),
+                        )
+                    ):
+                        legacy_feedback.superseded_by = duplicate_feedback.id
+                        memory_manager._persist_entry(legacy_feedback)
+                    return
+                if getattr(prior_feedback, "id", None) != duplicate_feedback.id:
+                    duplicate_feedback_to_retire = duplicate_feedback
             feedback_write_key = feedback_key
             feedback_supersedes = prior_feedback.id if prior_feedback is not None else None
             legacy_retirement_target = None
@@ -1236,6 +1257,15 @@ class AdminImplMixin(HandlerMixinBase):
                 if retirement_target_id is not None:
                     legacy_feedback.superseded_by = retirement_target_id
                     memory_manager._persist_entry(legacy_feedback)
+            if (
+                duplicate_feedback_to_retire is not None
+                and written_feedback is not None
+                and duplicate_feedback_to_retire.id != written_feedback.id
+                and duplicate_feedback_to_retire.superseded_by is None
+                and _feedback_can_supersede_prior(duplicate_feedback_to_retire, feedback_value)
+            ):
+                duplicate_feedback_to_retire.superseded_by = written_feedback.id
+                memory_manager._persist_entry(duplicate_feedback_to_retire)
 
     def _effective_channel_tools(self, allowed_tools: tuple[str, ...]) -> tuple[str, ...]:
         effective: list[str] = []
