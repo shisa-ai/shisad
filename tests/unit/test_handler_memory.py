@@ -20,6 +20,14 @@ from shisad.core.api.schema import (
     MemoryRotateKeyParams,
     MemorySupersedeParams,
     MemoryWorkflowStateParams,
+    NoteEntryParams,
+    NoteExportParams,
+    NoteListParams,
+    NoteSearchParams,
+    TodoCompleteParams,
+    TodoEntryParams,
+    TodoExportParams,
+    TodoListParams,
 )
 from shisad.daemon.context import RequestContext
 from shisad.daemon.handlers.memory import MemoryHandlers
@@ -44,6 +52,18 @@ class _StubImpl:
         self.last_memory_quarantine_payload: dict[str, object] | None = None
         self.last_memory_unquarantine_payload: dict[str, object] | None = None
         self.last_memory_set_workflow_state_payload: dict[str, object] | None = None
+        self.last_note_list_payload: dict[str, object] | None = None
+        self.last_note_search_payload: dict[str, object] | None = None
+        self.last_note_get_payload: dict[str, object] | None = None
+        self.last_note_delete_payload: dict[str, object] | None = None
+        self.last_note_verify_payload: dict[str, object] | None = None
+        self.last_note_export_payload: dict[str, object] | None = None
+        self.last_todo_list_payload: dict[str, object] | None = None
+        self.last_todo_complete_payload: dict[str, object] | None = None
+        self.last_todo_get_payload: dict[str, object] | None = None
+        self.last_todo_delete_payload: dict[str, object] | None = None
+        self.last_todo_verify_payload: dict[str, object] | None = None
+        self.last_todo_export_payload: dict[str, object] | None = None
 
     async def do_memory_mint_ingress_context(self, payload: dict[str, object]) -> dict[str, object]:
         self.last_memory_mint_ingress_payload = payload
@@ -190,6 +210,60 @@ class _StubImpl:
             "entry_id": str(payload["entry_id"]),
             "workflow_state": str(payload["workflow_state"]),
         }
+
+    async def do_note_list(self, payload: dict[str, object]) -> dict[str, object]:
+        self.last_note_list_payload = payload
+        return {"entries": [{"id": "note-1", "entry_type": "note"}], "count": 1}
+
+    async def do_note_search(self, payload: dict[str, object]) -> dict[str, object]:
+        self.last_note_search_payload = payload
+        return {"query": str(payload["query"]), "entries": [{"id": "note-1"}], "count": 1}
+
+    async def do_note_get(self, payload: dict[str, object]) -> dict[str, object]:
+        self.last_note_get_payload = payload
+        return {"entry": {"id": str(payload["entry_id"]), "entry_type": "note"}}
+
+    async def do_note_delete(self, payload: dict[str, object]) -> dict[str, object]:
+        self.last_note_delete_payload = payload
+        return {"deleted": True, "entry_id": str(payload["entry_id"])}
+
+    async def do_note_verify(self, payload: dict[str, object]) -> dict[str, object]:
+        self.last_note_verify_payload = payload
+        return {"verified": True, "entry_id": str(payload["entry_id"])}
+
+    async def do_note_export(self, payload: dict[str, object]) -> dict[str, object]:
+        self.last_note_export_payload = payload
+        return {"format": str(payload["format"]), "data": "[]"}
+
+    async def do_todo_list(self, payload: dict[str, object]) -> dict[str, object]:
+        self.last_todo_list_payload = payload
+        return {"entries": [{"id": "todo-1", "entry_type": "todo"}], "count": 1}
+
+    async def do_todo_complete(self, payload: dict[str, object]) -> dict[str, object]:
+        self.last_todo_complete_payload = payload
+        return {
+            "completed": True,
+            "entry_id": "todo-1",
+            "entry": {"id": "todo-1", "entry_type": "todo"},
+            "reason": "",
+            "matches": [],
+        }
+
+    async def do_todo_get(self, payload: dict[str, object]) -> dict[str, object]:
+        self.last_todo_get_payload = payload
+        return {"entry": {"id": str(payload["entry_id"]), "entry_type": "todo"}}
+
+    async def do_todo_delete(self, payload: dict[str, object]) -> dict[str, object]:
+        self.last_todo_delete_payload = payload
+        return {"deleted": True, "entry_id": str(payload["entry_id"])}
+
+    async def do_todo_verify(self, payload: dict[str, object]) -> dict[str, object]:
+        self.last_todo_verify_payload = payload
+        return {"verified": True, "entry_id": str(payload["entry_id"])}
+
+    async def do_todo_export(self, payload: dict[str, object]) -> dict[str, object]:
+        self.last_todo_export_payload = payload
+        return {"format": str(payload["format"]), "data": "[]"}
 
 
 @pytest.mark.asyncio
@@ -518,3 +592,81 @@ async def test_memory_export_wrapper_forwards_owner_scope() -> None:
     assert impl.last_memory_export_payload["user_id"] == "alice"
     assert impl.last_memory_export_payload["workspace_id"] == "ws1"
     assert impl.last_memory_export_payload["include_unowned"] is True
+
+
+@pytest.mark.asyncio
+async def test_note_and_todo_wrappers_forward_owner_scope() -> None:
+    impl = _StubImpl()
+    handlers = MemoryHandlers(impl, internal_ingress_marker=object())  # type: ignore[arg-type]
+
+    await handlers.handle_note_list(
+        NoteListParams(limit=5, user_id="alice", workspace_id="ws1", include_unowned=True),
+        RequestContext(),
+    )
+    await handlers.handle_note_search(
+        NoteSearchParams(query="groceries", user_id="alice", workspace_id="ws1"),
+        RequestContext(),
+    )
+    await handlers.handle_note_get(
+        NoteEntryParams(entry_id="note-1", user_id="alice", workspace_id="ws1"),
+        RequestContext(),
+    )
+    await handlers.handle_note_delete(
+        NoteEntryParams(entry_id="note-1", user_id="alice", workspace_id="ws1"),
+        RequestContext(),
+    )
+    await handlers.handle_note_verify(
+        NoteEntryParams(entry_id="note-1", user_id="alice", workspace_id="ws1"),
+        RequestContext(),
+    )
+    await handlers.handle_note_export(
+        NoteExportParams(format="json", user_id="alice", workspace_id="ws1"),
+        RequestContext(),
+    )
+    await handlers.handle_todo_list(
+        TodoListParams(limit=5, user_id="alice", workspace_id="ws1", include_unowned=True),
+        RequestContext(),
+    )
+    await handlers.handle_todo_complete(
+        TodoCompleteParams(selector="groceries", user_id="alice", workspace_id="ws1"),
+        RequestContext(),
+    )
+    await handlers.handle_todo_get(
+        TodoEntryParams(entry_id="todo-1", user_id="alice", workspace_id="ws1"),
+        RequestContext(),
+    )
+    await handlers.handle_todo_delete(
+        TodoEntryParams(entry_id="todo-1", user_id="alice", workspace_id="ws1"),
+        RequestContext(),
+    )
+    await handlers.handle_todo_verify(
+        TodoEntryParams(entry_id="todo-1", user_id="alice", workspace_id="ws1"),
+        RequestContext(),
+    )
+    await handlers.handle_todo_export(
+        TodoExportParams(format="json", user_id="alice", workspace_id="ws1"),
+        RequestContext(),
+    )
+
+    for payload in [
+        impl.last_note_list_payload,
+        impl.last_note_search_payload,
+        impl.last_note_get_payload,
+        impl.last_note_delete_payload,
+        impl.last_note_verify_payload,
+        impl.last_note_export_payload,
+        impl.last_todo_list_payload,
+        impl.last_todo_complete_payload,
+        impl.last_todo_get_payload,
+        impl.last_todo_delete_payload,
+        impl.last_todo_verify_payload,
+        impl.last_todo_export_payload,
+    ]:
+        assert payload is not None
+        assert payload["user_id"] == "alice"
+        assert payload["workspace_id"] == "ws1"
+
+    assert impl.last_note_list_payload is not None
+    assert impl.last_note_list_payload["include_unowned"] is True
+    assert impl.last_todo_list_payload is not None
+    assert impl.last_todo_list_payload["include_unowned"] is True

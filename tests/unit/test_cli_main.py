@@ -650,28 +650,28 @@ def test_cli_commands_route_through_rpc_wrapper(
     _invoke_ok(runner, ["confirmation", "metrics", "--user", "alice", "--window", "120"])
     assert (
         "m-1 fact favorite_color v=2 state=active status=active value=blue"
-            in _invoke_ok(
-                runner,
-                ["memory", "list", "--limit", "1", "--user", "alice", "--workspace", "ws-1"],
-            ).output
-        )
+        in _invoke_ok(
+            runner,
+            ["memory", "list", "--limit", "1", "--user", "alice", "--workspace", "ws-1"],
+        ).output
+    )
     assert (
         '"workflow_state": "active"'
-            in _invoke_ok(
-                runner,
-                [
-                    "memory",
-                    "list",
-                    "--limit",
-                    "1",
-                    "--json",
-                    "--user",
-                    "alice",
-                    "--workspace",
-                    "ws-1",
-                ],
-            ).output
-        )
+        in _invoke_ok(
+            runner,
+            [
+                "memory",
+                "list",
+                "--limit",
+                "1",
+                "--json",
+                "--user",
+                "alice",
+                "--workspace",
+                "ws-1",
+            ],
+        ).output
+    )
     _invoke_ok(
         runner,
         [
@@ -715,10 +715,13 @@ def test_cli_commands_route_through_rpc_wrapper(
             "strong",
         ],
     )
-    assert "favorite_color" in _invoke_ok(
-        runner,
-        ["memory", "export", "--format", "json", "--user", "alice", "--workspace", "ws-1"],
-    ).output
+    assert (
+        "favorite_color"
+        in _invoke_ok(
+            runner,
+            ["memory", "export", "--format", "json", "--user", "alice", "--workspace", "ws-1"],
+        ).output
+    )
     _invoke_ok(runner, ["memory", "rotate-key"])
     assert (
         "root=entity:favorite_color"
@@ -760,12 +763,34 @@ def test_cli_commands_route_through_rpc_wrapper(
             ["memory", "consolidate", "--user", "alice", "--workspace", "ws-1"],
         ).output
     )
-    _invoke_ok(runner, ["note", "create", "--key", "meeting", "--content", "prep"])
-    assert "n-1 meeting" in _invoke_ok(runner, ["note", "list", "--limit", "5"]).output
-    _invoke_ok(runner, ["note", "get", "n-1"])
-    _invoke_ok(runner, ["note", "verify", "n-1"])
-    _invoke_ok(runner, ["note", "export", "--format", "json"])
-    _invoke_ok(runner, ["note", "delete", "n-1"])
+    _invoke_ok(
+        runner,
+        [
+            "note",
+            "create",
+            "--key",
+            "meeting",
+            "--content",
+            "prep",
+            "--user",
+            "alice",
+            "--workspace",
+            "ws-1",
+        ],
+    )
+    assert (
+        "n-1 meeting"
+        in _invoke_ok(
+            runner,
+            ["note", "list", "--limit", "5", "--user", "alice", "--workspace", "ws-1"],
+        ).output
+    )
+    _invoke_ok(runner, ["note", "get", "n-1", "--user", "alice", "--workspace", "ws-1"])
+    _invoke_ok(runner, ["note", "verify", "n-1", "--user", "alice", "--workspace", "ws-1"])
+    _invoke_ok(
+        runner, ["note", "export", "--format", "json", "--user", "alice", "--workspace", "ws-1"]
+    )
+    _invoke_ok(runner, ["note", "delete", "n-1", "--user", "alice", "--workspace", "ws-1"])
     _invoke_ok(
         runner,
         [
@@ -779,13 +804,25 @@ def test_cli_commands_route_through_rpc_wrapper(
             "open",
             "--due-date",
             "2026-02-16",
+            "--user",
+            "alice",
+            "--workspace",
+            "ws-1",
         ],
     )
-    assert "td-1 open Ship M2" in _invoke_ok(runner, ["todo", "list", "--limit", "5"]).output
-    _invoke_ok(runner, ["todo", "get", "td-1"])
-    _invoke_ok(runner, ["todo", "verify", "td-1"])
-    _invoke_ok(runner, ["todo", "export", "--format", "json"])
-    _invoke_ok(runner, ["todo", "delete", "td-1"])
+    assert (
+        "td-1 open Ship M2"
+        in _invoke_ok(
+            runner,
+            ["todo", "list", "--limit", "5", "--user", "alice", "--workspace", "ws-1"],
+        ).output
+    )
+    _invoke_ok(runner, ["todo", "get", "td-1", "--user", "alice", "--workspace", "ws-1"])
+    _invoke_ok(runner, ["todo", "verify", "td-1", "--user", "alice", "--workspace", "ws-1"])
+    _invoke_ok(
+        runner, ["todo", "export", "--format", "json", "--user", "alice", "--workspace", "ws-1"]
+    )
+    _invoke_ok(runner, ["todo", "delete", "td-1", "--user", "alice", "--workspace", "ws-1"])
     _invoke_ok(runner, ["web", "search", "shisad", "--limit", "1"])
     _invoke_ok(runner, ["web", "fetch", "https://example.com"])
     _invoke_ok(runner, ["realitycheck", "search", "roadmap", "--limit", "1", "--mode", "local"])
@@ -919,7 +956,30 @@ def test_cli_commands_route_through_rpc_wrapper(
         {"format": "md", "user_id": "alice", "workspace_id": "ws-1"},
     ) in calls
     assert ("memory.consolidate", {"user_id": "alice", "workspace_id": "ws-1"}) in calls
-    assert ("note.create", {"key": "meeting", "content": "prep"}) in calls
+    assert (
+        "note.create",
+        {"key": "meeting", "content": "prep", "user_id": "alice", "workspace_id": "ws-1"},
+    ) in calls
+    assert (
+        "note.list",
+        {"limit": 5, "user_id": "alice", "workspace_id": "ws-1"},
+    ) in calls
+    assert (
+        "note.get",
+        {"entry_id": "n-1", "user_id": "alice", "workspace_id": "ws-1"},
+    ) in calls
+    assert (
+        "note.verify",
+        {"entry_id": "n-1", "user_id": "alice", "workspace_id": "ws-1"},
+    ) in calls
+    assert (
+        "note.export",
+        {"format": "json", "user_id": "alice", "workspace_id": "ws-1"},
+    ) in calls
+    assert (
+        "note.delete",
+        {"entry_id": "n-1", "user_id": "alice", "workspace_id": "ws-1"},
+    ) in calls
     assert ("memory.rotate_key", {"reencrypt_existing": True}) in calls
     assert (
         "todo.create",
@@ -928,7 +988,29 @@ def test_cli_commands_route_through_rpc_wrapper(
             "details": "review ready",
             "status": "open",
             "due_date": "2026-02-16",
+            "user_id": "alice",
+            "workspace_id": "ws-1",
         },
+    ) in calls
+    assert (
+        "todo.list",
+        {"limit": 5, "user_id": "alice", "workspace_id": "ws-1"},
+    ) in calls
+    assert (
+        "todo.get",
+        {"entry_id": "td-1", "user_id": "alice", "workspace_id": "ws-1"},
+    ) in calls
+    assert (
+        "todo.verify",
+        {"entry_id": "td-1", "user_id": "alice", "workspace_id": "ws-1"},
+    ) in calls
+    assert (
+        "todo.export",
+        {"format": "json", "user_id": "alice", "workspace_id": "ws-1"},
+    ) in calls
+    assert (
+        "todo.delete",
+        {"entry_id": "td-1", "user_id": "alice", "workspace_id": "ws-1"},
     ) in calls
     assert ("doctor.check", {"component": "realitycheck"}) in calls
 

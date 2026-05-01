@@ -2206,7 +2206,10 @@ async def test_contract_note_create_persists_ingress_metadata_on_readback(
 
     assert entry_id
 
-    fetched = await contract_harness.client.call("note.get", {"entry_id": entry_id})
+    fetched = await contract_harness.client.call(
+        "note.get",
+        {"entry_id": entry_id, "user_id": "alice", "workspace_id": "ws1"},
+    )
     stored = fetched.get("entry") or {}
 
     assert str(stored.get("ingress_handle_id", "")).strip()
@@ -2502,6 +2505,132 @@ async def test_contract_raw_id_memory_controls_enforce_owner_scope(
     assert entry_id in owner_ids
     assert stored.get("status") == "active"
     assert stored.get("user_verified") is False
+
+
+@pytest.mark.asyncio
+async def test_contract_note_todo_aliases_enforce_owner_scope(
+    contract_harness: ContractHarness,
+) -> None:
+    note_created = await contract_harness.client.call(
+        "note.create",
+        {
+            "key": "note:owner-private",
+            "content": "alice private note alias memory",
+            "user_id": "alice",
+            "workspace_id": "ws1",
+        },
+    )
+    todo_created = await contract_harness.client.call(
+        "todo.create",
+        {
+            "title": "alice private todo",
+            "details": "alice private todo alias memory",
+            "user_id": "alice",
+            "workspace_id": "ws1",
+        },
+    )
+    note_entry = note_created.get("entry") or {}
+    todo_entry = todo_created.get("entry") or {}
+    note_id = str(note_entry.get("id", "")).strip()
+    todo_id = str(todo_entry.get("id", "")).strip()
+    assert note_id
+    assert todo_id
+
+    ownerless_calls = [
+        ("note.list", {"limit": 10}),
+        ("note.search", {"query": "private"}),
+        ("note.get", {"entry_id": note_id}),
+        ("note.delete", {"entry_id": note_id}),
+        ("note.verify", {"entry_id": note_id}),
+        ("note.export", {"format": "json"}),
+        ("todo.list", {"limit": 10}),
+        ("todo.get", {"entry_id": todo_id}),
+        ("todo.complete", {"selector": "alice private todo"}),
+        ("todo.delete", {"entry_id": todo_id}),
+        ("todo.verify", {"entry_id": todo_id}),
+        ("todo.export", {"format": "json"}),
+    ]
+    for method, payload in ownerless_calls:
+        with pytest.raises(JsonRpcCallError):
+            await contract_harness.client.call(method, payload)
+
+    other_scope = {"user_id": "bob", "workspace_id": "ws1"}
+    cross_note_list = await contract_harness.client.call(
+        "note.list",
+        {"limit": 10, **other_scope},
+    )
+    cross_note_search = await contract_harness.client.call(
+        "note.search",
+        {"query": "private", **other_scope},
+    )
+    cross_note_get = await contract_harness.client.call(
+        "note.get",
+        {"entry_id": note_id, **other_scope},
+    )
+    cross_note_delete = await contract_harness.client.call(
+        "note.delete",
+        {"entry_id": note_id, **other_scope},
+    )
+    cross_note_verify = await contract_harness.client.call(
+        "note.verify",
+        {"entry_id": note_id, **other_scope},
+    )
+    cross_note_export = await contract_harness.client.call(
+        "note.export",
+        {"format": "json", **other_scope},
+    )
+    cross_todo_list = await contract_harness.client.call(
+        "todo.list",
+        {"limit": 10, **other_scope},
+    )
+    cross_todo_get = await contract_harness.client.call(
+        "todo.get",
+        {"entry_id": todo_id, **other_scope},
+    )
+    cross_todo_complete = await contract_harness.client.call(
+        "todo.complete",
+        {"selector": "alice private todo", **other_scope},
+    )
+    cross_todo_delete = await contract_harness.client.call(
+        "todo.delete",
+        {"entry_id": todo_id, **other_scope},
+    )
+    cross_todo_verify = await contract_harness.client.call(
+        "todo.verify",
+        {"entry_id": todo_id, **other_scope},
+    )
+    cross_todo_export = await contract_harness.client.call(
+        "todo.export",
+        {"format": "json", **other_scope},
+    )
+
+    assert note_id not in json.dumps(cross_note_list.get("entries", []), sort_keys=True)
+    assert note_id not in json.dumps(cross_note_search.get("entries", []), sort_keys=True)
+    assert cross_note_get.get("entry") is None
+    assert cross_note_delete == {"deleted": False, "entry_id": note_id}
+    assert cross_note_verify == {"verified": False, "entry_id": note_id}
+    assert json.loads(str(cross_note_export.get("data"))) == []
+    assert todo_id not in json.dumps(cross_todo_list.get("entries", []), sort_keys=True)
+    assert cross_todo_get.get("entry") is None
+    assert cross_todo_complete["completed"] is False
+    assert cross_todo_complete["reason"] == "todo_not_found"
+    assert cross_todo_delete == {"deleted": False, "entry_id": todo_id}
+    assert cross_todo_verify == {"verified": False, "entry_id": todo_id}
+    assert json.loads(str(cross_todo_export.get("data"))) == []
+
+    owner_scope = {"user_id": "alice", "workspace_id": "ws1"}
+    owner_note = await contract_harness.client.call(
+        "note.get",
+        {"entry_id": note_id, **owner_scope},
+    )
+    owner_todo = await contract_harness.client.call(
+        "todo.get",
+        {"entry_id": todo_id, **owner_scope},
+    )
+    assert (owner_note.get("entry") or {}).get("id") == note_id
+    assert (owner_todo.get("entry") or {}).get("id") == todo_id
+    assert (owner_note.get("entry") or {}).get("user_verified") is False
+    assert (owner_todo.get("entry") or {}).get("value", {}).get("status") == "open"
 
 
 @pytest.mark.asyncio

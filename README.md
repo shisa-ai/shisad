@@ -265,10 +265,10 @@ uv run shisad session message <session-id> "summarize current priorities"
 ### Notes and todos
 
 ```bash
-uv run shisad note create --key ops/runbook --content "verify doctor before deploy"
-uv run shisad note list
-uv run shisad todo create --title "close rollout checklist" --status open
-uv run shisad todo list
+uv run shisad note create --key ops/runbook --content "verify doctor before deploy" --user alice --workspace demo
+uv run shisad note list --user alice --workspace demo
+uv run shisad todo create --title "close rollout checklist" --status open --user alice --workspace demo
+uv run shisad todo list --user alice --workspace demo
 ```
 
 ### Web and filesystem

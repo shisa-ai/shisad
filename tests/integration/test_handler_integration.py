@@ -132,23 +132,50 @@ async def test_note_and_todo_list_limits_are_type_aware(
 
     await recycled_handler_daemon.call(
         "note.create",
-        {"key": "n1", "content": "note-one", "source_id": sid, "user_confirmed": True},
+        {
+            "key": "n1",
+            "content": "note-one",
+            "source_id": sid,
+            "user_confirmed": True,
+            "user_id": "alice",
+            "workspace_id": "ws1",
+        },
     )
     await recycled_handler_daemon.call(
         "todo.create",
-        {"title": "todo-one", "source_id": sid, "user_confirmed": True},
+        {
+            "title": "todo-one",
+            "source_id": sid,
+            "user_confirmed": True,
+            "user_id": "alice",
+            "workspace_id": "ws1",
+        },
     )
     await recycled_handler_daemon.call(
         "note.create",
-        {"key": "n2", "content": "note-two", "source_id": sid, "user_confirmed": True},
+        {
+            "key": "n2",
+            "content": "note-two",
+            "source_id": sid,
+            "user_confirmed": True,
+            "user_id": "alice",
+            "workspace_id": "ws1",
+        },
     )
     await recycled_handler_daemon.call(
         "todo.create",
-        {"title": "todo-two", "source_id": sid, "user_confirmed": True},
+        {
+            "title": "todo-two",
+            "source_id": sid,
+            "user_confirmed": True,
+            "user_id": "alice",
+            "workspace_id": "ws1",
+        },
     )
 
-    notes = await recycled_handler_daemon.call("note.list", {"limit": 2})
-    todos = await recycled_handler_daemon.call("todo.list", {"limit": 2})
+    owner_scope = {"user_id": "alice", "workspace_id": "ws1"}
+    notes = await recycled_handler_daemon.call("note.list", {"limit": 2, **owner_scope})
+    todos = await recycled_handler_daemon.call("todo.list", {"limit": 2, **owner_scope})
 
     assert notes["count"] == 2
     assert len(notes["entries"]) == 2

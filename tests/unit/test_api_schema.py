@@ -869,16 +869,26 @@ class TestApiSchemaValidation:
                 },
             ),
             (NoteCreateParams, {"key": "note:1", "content": "hello", "workspace_id": "ws-1"}),
+            (NoteCreateParams, {"key": "note:1", "content": "hello"}),
+            (NoteListParams, {"limit": 10}),
             (NoteListParams, {"user_id": "user-1"}),
             (NoteListParams, {"user_id": "", "workspace_id": ""}),
+            (NoteSearchParams, {"query": "hello"}),
             (NoteSearchParams, {"query": "hello", "workspace_id": "ws-1"}),
+            (NoteEntryParams, {"entry_id": "entry-1"}),
             (NoteEntryParams, {"entry_id": "entry-1", "user_id": "user-1"}),
+            (NoteExportParams, {"format": "json"}),
             (NoteExportParams, {"format": "json", "include_unowned": True}),
             (TodoCreateParams, {"title": "task", "user_id": "user-1"}),
+            (TodoCreateParams, {"title": "task"}),
+            (TodoListParams, {"limit": 10}),
             (TodoListParams, {"workspace_id": "ws-1"}),
             (TodoListParams, {"user_id": "", "workspace_id": ""}),
+            (TodoEntryParams, {"entry_id": "entry-1"}),
             (TodoEntryParams, {"entry_id": "entry-1", "user_id": "user-1"}),
+            (TodoCompleteParams, {"selector": "task"}),
             (TodoCompleteParams, {"selector": "task", "workspace_id": "ws-1"}),
+            (TodoExportParams, {"format": "json"}),
             (TodoExportParams, {"format": "json", "include_unowned": True}),
         ]
 
@@ -934,6 +944,8 @@ class TestApiSchemaValidation:
                 "content_digest": "sha256:def",
                 "derivation_path": "extracted",
                 "parent_digest": "sha256:parent",
+                "user_id": "user-1",
+                "workspace_id": "ws-1",
             }
         )
         todo = TodoCreateParams.model_validate(
@@ -943,6 +955,8 @@ class TestApiSchemaValidation:
                 "content_digest": "sha256:ghi",
                 "derivation_path": "summary",
                 "parent_digest": "sha256:parent",
+                "user_id": "user-1",
+                "workspace_id": "ws-1",
             }
         )
 
@@ -955,6 +969,8 @@ class TestApiSchemaValidation:
                 "content": "hello",
                 "source_id": "session-1",
                 "user_confirmed": True,
+                "user_id": "user-1",
+                "workspace_id": "ws-1",
             }
         )
         compat_todo = TodoCreateParams.model_validate(
@@ -962,6 +978,8 @@ class TestApiSchemaValidation:
                 "title": "task",
                 "source_id": "session-1",
                 "user_confirmed": True,
+                "user_id": "user-1",
+                "workspace_id": "ws-1",
             }
         )
 

@@ -530,6 +530,8 @@ async def test_note_create_accepts_handle_bound_extracted_payload(tmp_path: Path
             "content_digest": digest_memory_value("my favorite color is blue"),
             "derivation_path": "extracted",
             "parent_digest": context.content_digest,
+            "user_id": "alice",
+            "workspace_id": "ws1",
         }
     )
 
@@ -564,6 +566,8 @@ async def test_note_create_allows_short_user_asserted_extracted_payload(tmp_path
             "content_digest": digest_memory_value("blue"),
             "derivation_path": "extracted",
             "parent_digest": context.content_digest,
+            "user_id": "alice",
+            "workspace_id": "ws1",
         }
     )
 
@@ -653,6 +657,8 @@ async def test_todo_create_accepts_handle_bound_extracted_payload(tmp_path: Path
             "content_digest": digest_memory_value(todo_payload),
             "derivation_path": "extracted",
             "parent_digest": context.content_digest,
+            "user_id": "alice",
+            "workspace_id": "ws1",
         }
     )
 
@@ -1311,6 +1317,8 @@ async def test_note_create_control_api_path_mints_user_asserted_handle(tmp_path:
             "_control_api_authenticated_write": True,
             "key": "note:cli",
             "content": "direct note command",
+            "user_id": "alice",
+            "workspace_id": "ws1",
         }
     )
 
@@ -1332,6 +1340,8 @@ async def test_note_create_control_api_path_respects_user_confirmed_flag(tmp_pat
             "key": "note:confirmed",
             "content": "confirmed note command",
             "user_confirmed": True,
+            "user_id": "alice",
+            "workspace_id": "ws1",
         }
     )
 
@@ -1355,6 +1365,8 @@ async def test_note_create_control_api_path_normalizes_null_source_id_to_cli(
             "key": "note:null-source",
             "content": "note with explicit null source id",
             "source_id": None,
+            "user_id": "alice",
+            "workspace_id": "ws1",
         }
     )
 
@@ -1374,6 +1386,8 @@ async def test_note_create_legacy_fallback_mints_compat_handle(tmp_path: Path) -
             "content": "legacy note path",
             "origin": "user",
             "source_id": "legacy-note-1",
+            "user_id": "alice",
+            "workspace_id": "ws1",
         }
     )
 
@@ -1395,6 +1409,8 @@ async def test_todo_create_control_api_path_mints_user_asserted_handle(tmp_path:
             "details": "",
             "status": "open",
             "due_date": "",
+            "user_id": "alice",
+            "workspace_id": "ws1",
         }
     )
 
@@ -1420,6 +1436,8 @@ async def test_todo_create_control_api_path_normalizes_null_source_id_to_cli(
             "status": "open",
             "due_date": "",
             "source_id": None,
+            "user_id": "alice",
+            "workspace_id": "ws1",
         }
     )
 
@@ -1441,6 +1459,8 @@ async def test_todo_create_legacy_fallback_mints_compat_handle(tmp_path: Path) -
             "due_date": "",
             "origin": "user",
             "source_id": "legacy-todo-1",
+            "user_id": "alice",
+            "workspace_id": "ws1",
         }
     )
 

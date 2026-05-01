@@ -859,16 +859,20 @@ async def test_c2_blank_session_note_todo_reads_fail_closed(tmp_path: Path) -> N
         approval_actor="control_api",
     )
 
-    assert listed_notes.success is True
+    assert listed_notes.success is False
     assert listed_notes.tool_output is not None
-    assert note.id not in json.dumps(json.loads(listed_notes.tool_output.content), sort_keys=True)
-    assert listed_todos.success is True
+    listed_notes_payload = json.loads(listed_notes.tool_output.content)
+    assert listed_notes_payload["error"] == "user_id and workspace_id are required"
+    assert note.id not in json.dumps(listed_notes_payload, sort_keys=True)
+    assert listed_todos.success is False
     assert listed_todos.tool_output is not None
-    assert todo.id not in json.dumps(json.loads(listed_todos.tool_output.content), sort_keys=True)
+    listed_todos_payload = json.loads(listed_todos.tool_output.content)
+    assert listed_todos_payload["error"] == "user_id and workspace_id are required"
+    assert todo.id not in json.dumps(listed_todos_payload, sort_keys=True)
     assert blocked_complete.success is False
     assert blocked_complete.tool_output is not None
     blocked_payload = json.loads(blocked_complete.tool_output.content)
-    assert blocked_payload["reason"] == "todo_not_found"
+    assert blocked_payload["error"] == "user_id and workspace_id are required"
     assert harness._memory_manager.get_entry(todo.id).value["status"] == "open"
 
 
@@ -900,14 +904,12 @@ async def test_c2_blank_session_note_todo_writes_fail_closed(tmp_path: Path) -> 
     assert note_result.success is False
     assert note_result.tool_output is not None
     note_payload = json.loads(note_result.tool_output.content)
-    assert note_payload["kind"] == "reject"
-    assert note_payload["reason"] == "owner_scope_requires_user_and_workspace"
+    assert note_payload["error"] == "user_id and workspace_id are required"
 
     assert todo_result.success is False
     assert todo_result.tool_output is not None
     todo_payload = json.loads(todo_result.tool_output.content)
-    assert todo_payload["kind"] == "reject"
-    assert todo_payload["reason"] == "owner_scope_requires_user_and_workspace"
+    assert todo_payload["error"] == "user_id and workspace_id are required"
 
     assert (
         harness._memory_manager.list_entries(

@@ -861,7 +861,7 @@ class NoteCreateParams(_StrictParams):
 
     @model_validator(mode="after")
     def _validate_ingress_shape(self) -> NoteCreateParams:
-        _validate_complete_owner_scope(self)
+        _require_complete_owner_scope(self)
         if self.ingress_context is None:
             if self.content_digest is not None:
                 raise ValueError("content_digest requires ingress_context")
@@ -880,7 +880,7 @@ class NoteListParams(_StrictParams):
 
     @model_validator(mode="after")
     def _validate_owner_scope(self) -> NoteListParams:
-        _validate_complete_owner_scope(self)
+        _require_complete_owner_scope(self)
         return self
 
 
@@ -893,7 +893,7 @@ class NoteSearchParams(_StrictParams):
 
     @model_validator(mode="after")
     def _validate_owner_scope(self) -> NoteSearchParams:
-        _validate_complete_owner_scope(self)
+        _require_complete_owner_scope(self)
         return self
 
 
@@ -905,7 +905,7 @@ class NoteEntryParams(_StrictParams):
 
     @model_validator(mode="after")
     def _validate_owner_scope(self) -> NoteEntryParams:
-        _validate_complete_owner_scope(self)
+        _require_complete_owner_scope(self)
         return self
 
 
@@ -917,7 +917,7 @@ class NoteExportParams(_StrictParams):
 
     @model_validator(mode="after")
     def _validate_owner_scope(self) -> NoteExportParams:
-        _validate_complete_owner_scope(self)
+        _require_complete_owner_scope(self)
         return self
 
 
@@ -968,7 +968,7 @@ class TodoCreateParams(_StrictParams):
 
     @model_validator(mode="after")
     def _validate_ingress_shape(self) -> TodoCreateParams:
-        _validate_complete_owner_scope(self)
+        _require_complete_owner_scope(self)
         if self.ingress_context is None:
             if self.content_digest is not None:
                 raise ValueError("content_digest requires ingress_context")
@@ -987,7 +987,7 @@ class TodoListParams(_StrictParams):
 
     @model_validator(mode="after")
     def _validate_owner_scope(self) -> TodoListParams:
-        _validate_complete_owner_scope(self)
+        _require_complete_owner_scope(self)
         return self
 
 
@@ -999,7 +999,7 @@ class TodoEntryParams(_StrictParams):
 
     @model_validator(mode="after")
     def _validate_owner_scope(self) -> TodoEntryParams:
-        _validate_complete_owner_scope(self)
+        _require_complete_owner_scope(self)
         return self
 
 
@@ -1011,7 +1011,7 @@ class TodoCompleteParams(_StrictParams):
 
     @model_validator(mode="after")
     def _validate_owner_scope(self) -> TodoCompleteParams:
-        _validate_complete_owner_scope(self)
+        _require_complete_owner_scope(self)
         return self
 
 
@@ -1023,7 +1023,7 @@ class TodoExportParams(_StrictParams):
 
     @model_validator(mode="after")
     def _validate_owner_scope(self) -> TodoExportParams:
-        _validate_complete_owner_scope(self)
+        _require_complete_owner_scope(self)
         return self
 
 

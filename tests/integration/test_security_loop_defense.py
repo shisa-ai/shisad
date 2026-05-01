@@ -140,13 +140,19 @@ async def test_m2_notes_and_todos_first_class_roundtrip(
 
         note = await client.call(
             "note.create",
-            {"key": "meeting", "content": "Reminder to prep milestone review"},
+            {
+                "key": "meeting",
+                "content": "Reminder to prep milestone review",
+                "user_id": "alice",
+                "workspace_id": "ws1",
+            },
         )
         assert note["kind"] == "allow"
         note_id = note.get("entry", {}).get("id", "")
         assert note_id
 
-        note_list = await client.call("note.list", {"limit": 10})
+        owner_scope = {"user_id": "alice", "workspace_id": "ws1"}
+        note_list = await client.call("note.list", {"limit": 10, **owner_scope})
         assert note_list["count"] >= 1
         assert any(item.get("entry_type") == "note" for item in note_list["entries"])
 
@@ -157,24 +163,25 @@ async def test_m2_notes_and_todos_first_class_roundtrip(
                 "details": "ready for reviewer pass",
                 "status": "open",
                 "due_date": "2026-02-16",
+                **owner_scope,
             },
         )
         assert todo["kind"] == "allow"
         todo_id = todo.get("entry", {}).get("id", "")
         assert todo_id
 
-        todo_get = await client.call("todo.get", {"entry_id": todo_id})
+        todo_get = await client.call("todo.get", {"entry_id": todo_id, **owner_scope})
         assert todo_get["entry"]["entry_type"] == "todo"
         assert todo_get["entry"]["value"]["title"] == "Ship M2"
 
-        verified = await client.call("todo.verify", {"entry_id": todo_id})
+        verified = await client.call("todo.verify", {"entry_id": todo_id, **owner_scope})
         assert verified["verified"] is True
-        exported = await client.call("todo.export", {"format": "json"})
+        exported = await client.call("todo.export", {"format": "json", **owner_scope})
         assert "Ship M2" in str(exported["data"])
 
-        wrong_note_delete = await client.call("note.delete", {"entry_id": todo_id})
+        wrong_note_delete = await client.call("note.delete", {"entry_id": todo_id, **owner_scope})
         assert wrong_note_delete["deleted"] is False
-        wrong_todo_delete = await client.call("todo.delete", {"entry_id": note_id})
+        wrong_todo_delete = await client.call("todo.delete", {"entry_id": note_id, **owner_scope})
         assert wrong_todo_delete["deleted"] is False
     finally:
         with suppress(Exception):

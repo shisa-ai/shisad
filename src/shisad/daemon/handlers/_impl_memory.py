@@ -234,12 +234,11 @@ class MemoryImplMixin(HandlerMixinBase):
         return response
 
     @staticmethod
-    def _owner_scope_from_params(params: Mapping[str, Any]) -> dict[str, Any]:
+    def _required_owner_scope_from_params(params: Mapping[str, Any]) -> dict[str, Any]:
+        user_id, workspace_id = MemoryImplMixin._required_owner_tuple_from_params(params)
         return {
-            "user_id": (str(params.get("user_id")) if params.get("user_id") is not None else None),
-            "workspace_id": (
-                str(params.get("workspace_id")) if params.get("workspace_id") is not None else None
-            ),
+            "user_id": user_id,
+            "workspace_id": workspace_id,
             "include_unowned": bool(params.get("include_unowned", False)),
         }
 
@@ -998,10 +997,7 @@ class MemoryImplMixin(HandlerMixinBase):
         }
 
     async def do_note_create(self, params: Mapping[str, Any]) -> dict[str, Any]:
-        caller_user_id = str(params.get("user_id")) if params.get("user_id") is not None else None
-        caller_workspace_id = (
-            str(params.get("workspace_id")) if params.get("workspace_id") is not None else None
-        )
+        caller_user_id, caller_workspace_id = self._required_owner_tuple_from_params(params)
         if params.get("ingress_context"):
             result = self._write_handle_bound_entry(
                 params,
@@ -1054,10 +1050,11 @@ class MemoryImplMixin(HandlerMixinBase):
 
     async def do_note_list(self, params: Mapping[str, Any]) -> dict[str, Any]:
         limit = max(1, int(params.get("limit", 100)))
+        owner_scope = self._required_owner_scope_from_params(params)
         rows = self._memory_manager.list_entries(
             entry_type="note",
             limit=limit,
-            **self._owner_scope_from_params(params),
+            **owner_scope,
         )
         notes = [entry.model_dump(mode="json") for entry in rows]
         return {"entries": notes, "count": len(notes)}
@@ -1066,10 +1063,11 @@ class MemoryImplMixin(HandlerMixinBase):
         query = str(params.get("query", "")).strip()
         limit = max(1, int(params.get("limit", 20)))
         lowered_terms = [term for term in query.lower().split() if term]
+        owner_scope = self._required_owner_scope_from_params(params)
         rows = self._memory_manager.list_entries(
             entry_type="note",
             limit=200,
-            **self._owner_scope_from_params(params),
+            **owner_scope,
         )
         matches: list[dict[str, Any]] = []
         for entry in rows:
@@ -1088,9 +1086,10 @@ class MemoryImplMixin(HandlerMixinBase):
         return {"query": query, "entries": matches, "count": len(matches)}
 
     async def do_note_get(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        owner_scope = self._required_owner_scope_from_params(params)
         entry = self._memory_manager.get_entry(
             str(params.get("entry_id", "")),
-            **self._owner_scope_from_params(params),
+            **owner_scope,
         )
         if entry is None or str(entry.entry_type) != "note":
             return {"entry": None}
@@ -1098,33 +1097,36 @@ class MemoryImplMixin(HandlerMixinBase):
 
     async def do_note_delete(self, params: Mapping[str, Any]) -> dict[str, Any]:
         entry_id = str(params.get("entry_id", ""))
+        owner_scope = self._required_owner_scope_from_params(params)
         entry = self._memory_manager.get_entry(
             entry_id,
-            **self._owner_scope_from_params(params),
+            **owner_scope,
         )
         if entry is None or str(entry.entry_type) != "note":
             return {"deleted": False, "entry_id": entry_id}
-        deleted = self._memory_manager.delete(entry_id)
+        deleted = self._memory_manager.delete(entry_id, **owner_scope)
         return {"deleted": deleted, "entry_id": entry_id}
 
     async def do_note_verify(self, params: Mapping[str, Any]) -> dict[str, Any]:
         entry_id = str(params.get("entry_id", ""))
+        owner_scope = self._required_owner_scope_from_params(params)
         entry = self._memory_manager.get_entry(
             entry_id,
-            **self._owner_scope_from_params(params),
+            **owner_scope,
         )
         if entry is None or str(entry.entry_type) != "note":
             return {"verified": False, "entry_id": entry_id}
-        verified = self._memory_manager.verify(entry_id)
+        verified = self._memory_manager.verify(entry_id, **owner_scope)
         return {"verified": verified, "entry_id": entry_id}
 
     async def do_note_export(self, params: Mapping[str, Any]) -> dict[str, Any]:
         fmt = str(params.get("format", "json"))
+        owner_scope = self._required_owner_scope_from_params(params)
         rows = self._memory_manager.list_entries(
             entry_type="note",
             include_deleted=True,
             limit=2000,
-            **self._owner_scope_from_params(params),
+            **owner_scope,
         )
         notes = [entry.model_dump(mode="json") for entry in rows if str(entry.entry_type) == "note"]
         if fmt == "json":
@@ -1148,6 +1150,7 @@ class MemoryImplMixin(HandlerMixinBase):
         raise ValueError(f"Unsupported export format: {fmt}")
 
     async def do_todo_create(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        self._required_owner_tuple_from_params(params)
         payload = {
             "title": str(params.get("title", "")).strip(),
             "details": str(params.get("details", "")).strip(),
@@ -1197,10 +1200,11 @@ class MemoryImplMixin(HandlerMixinBase):
 
     async def do_todo_list(self, params: Mapping[str, Any]) -> dict[str, Any]:
         limit = max(1, int(params.get("limit", 100)))
+        owner_scope = self._required_owner_scope_from_params(params)
         rows = self._memory_manager.list_entries(
             entry_type="todo",
             limit=limit,
-            **self._owner_scope_from_params(params),
+            **owner_scope,
         )
         todos = [entry.model_dump(mode="json") for entry in rows]
         return {"entries": todos, "count": len(todos)}
@@ -1243,9 +1247,10 @@ class MemoryImplMixin(HandlerMixinBase):
 
     async def do_todo_complete(self, params: Mapping[str, Any]) -> dict[str, Any]:
         selector = str(params.get("selector", "")).strip()
+        owner_scope = self._required_owner_scope_from_params(params)
         matches = self._resolve_todo_matches(
             selector,
-            **self._owner_scope_from_params(params),
+            **owner_scope,
         )
         if not matches:
             return {
@@ -1289,9 +1294,10 @@ class MemoryImplMixin(HandlerMixinBase):
         }
 
     async def do_todo_get(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        owner_scope = self._required_owner_scope_from_params(params)
         entry = self._memory_manager.get_entry(
             str(params.get("entry_id", "")),
-            **self._owner_scope_from_params(params),
+            **owner_scope,
         )
         if entry is None or str(entry.entry_type) != "todo":
             return {"entry": None}
@@ -1299,33 +1305,36 @@ class MemoryImplMixin(HandlerMixinBase):
 
     async def do_todo_delete(self, params: Mapping[str, Any]) -> dict[str, Any]:
         entry_id = str(params.get("entry_id", ""))
+        owner_scope = self._required_owner_scope_from_params(params)
         entry = self._memory_manager.get_entry(
             entry_id,
-            **self._owner_scope_from_params(params),
+            **owner_scope,
         )
         if entry is None or str(entry.entry_type) != "todo":
             return {"deleted": False, "entry_id": entry_id}
-        deleted = self._memory_manager.delete(entry_id)
+        deleted = self._memory_manager.delete(entry_id, **owner_scope)
         return {"deleted": deleted, "entry_id": entry_id}
 
     async def do_todo_verify(self, params: Mapping[str, Any]) -> dict[str, Any]:
         entry_id = str(params.get("entry_id", ""))
+        owner_scope = self._required_owner_scope_from_params(params)
         entry = self._memory_manager.get_entry(
             entry_id,
-            **self._owner_scope_from_params(params),
+            **owner_scope,
         )
         if entry is None or str(entry.entry_type) != "todo":
             return {"verified": False, "entry_id": entry_id}
-        verified = self._memory_manager.verify(entry_id)
+        verified = self._memory_manager.verify(entry_id, **owner_scope)
         return {"verified": verified, "entry_id": entry_id}
 
     async def do_todo_export(self, params: Mapping[str, Any]) -> dict[str, Any]:
         fmt = str(params.get("format", "json"))
+        owner_scope = self._required_owner_scope_from_params(params)
         rows = self._memory_manager.list_entries(
             entry_type="todo",
             include_deleted=True,
             limit=2000,
-            **self._owner_scope_from_params(params),
+            **owner_scope,
         )
         todos = [entry.model_dump(mode="json") for entry in rows if str(entry.entry_type) == "todo"]
         if fmt == "json":

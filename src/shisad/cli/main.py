@@ -186,6 +186,18 @@ def _owner_scope_payload(
     return payload
 
 
+def _required_owner_scope_payload(
+    user_id: str,
+    workspace_id: str,
+    *,
+    include_unowned: bool = False,
+) -> dict[str, object]:
+    payload = _owner_scope_payload(user_id, workspace_id, include_unowned=include_unowned)
+    if "user_id" not in payload:
+        raise click.ClickException("--user and --workspace are required.")
+    return payload
+
+
 def _memory_value_preview(value: object, *, max_chars: int = 80) -> str:
     if value is None:
         return "-"
@@ -3066,15 +3078,21 @@ def note() -> None:
 @note.command("create")
 @click.option("--key", required=True)
 @click.option("--content", required=True)
-def note_create(key: str, content: str) -> None:
+@click.option("--user", "user_id", default="", help="Owner user ID for personal notes.")
+@click.option(
+    "--workspace", "workspace_id", default="", help="Owner workspace ID for personal notes."
+)
+def note_create(key: str, content: str, user_id: str, workspace_id: str) -> None:
     config = _get_config()
+    payload: dict[str, object] = {
+        "key": key,
+        "content": content,
+    }
+    payload.update(_required_owner_scope_payload(user_id, workspace_id))
     result = rpc_call(
         config,
         "note.create",
-        {
-            "key": key,
-            "content": content,
-        },
+        payload,
         response_model=MemoryWriteResult,
     )
     click.echo(_dump_model(result))
@@ -3082,29 +3100,68 @@ def note_create(key: str, content: str) -> None:
 
 @note.command("list")
 @click.option("--limit", default=100, help="Maximum entries")
-def note_list(limit: int) -> None:
+@click.option("--user", "user_id", default="", help="Owner user ID for personal notes.")
+@click.option(
+    "--workspace", "workspace_id", default="", help="Owner workspace ID for personal notes."
+)
+@click.option(
+    "--include-unowned",
+    is_flag=True,
+    help="Include legacy unowned notes with the selected owner.",
+)
+def note_list(limit: int, user_id: str, workspace_id: str, include_unowned: bool) -> None:
     config = _get_config()
-    result = rpc_call(config, "note.list", {"limit": limit}, response_model=NoteListResult)
+    payload: dict[str, object] = {"limit": limit}
+    payload.update(
+        _required_owner_scope_payload(user_id, workspace_id, include_unowned=include_unowned)
+    )
+    result = rpc_call(config, "note.list", payload, response_model=NoteListResult)
     for item in result.entries:
         click.echo(f"{item.get('id', '')} {item.get('key', '')}")
 
 
 @note.command("get")
 @click.argument("entry_id")
-def note_get(entry_id: str) -> None:
+@click.option("--user", "user_id", default="", help="Owner user ID for personal notes.")
+@click.option(
+    "--workspace", "workspace_id", default="", help="Owner workspace ID for personal notes."
+)
+@click.option(
+    "--include-unowned",
+    is_flag=True,
+    help="Include legacy unowned notes with the selected owner.",
+)
+def note_get(entry_id: str, user_id: str, workspace_id: str, include_unowned: bool) -> None:
     config = _get_config()
-    result = rpc_call(config, "note.get", {"entry_id": entry_id}, response_model=NoteGetResult)
+    payload: dict[str, object] = {"entry_id": entry_id}
+    payload.update(
+        _required_owner_scope_payload(user_id, workspace_id, include_unowned=include_unowned)
+    )
+    result = rpc_call(config, "note.get", payload, response_model=NoteGetResult)
     click.echo(_dump_model(result))
 
 
 @note.command("delete")
 @click.argument("entry_id")
-def note_delete(entry_id: str) -> None:
+@click.option("--user", "user_id", default="", help="Owner user ID for personal notes.")
+@click.option(
+    "--workspace", "workspace_id", default="", help="Owner workspace ID for personal notes."
+)
+@click.option(
+    "--include-unowned",
+    is_flag=True,
+    help="Include legacy unowned notes with the selected owner.",
+)
+def note_delete(entry_id: str, user_id: str, workspace_id: str, include_unowned: bool) -> None:
     config = _get_config()
+    payload: dict[str, object] = {"entry_id": entry_id}
+    payload.update(
+        _required_owner_scope_payload(user_id, workspace_id, include_unowned=include_unowned)
+    )
     result = rpc_call(
         config,
         "note.delete",
-        {"entry_id": entry_id},
+        payload,
         response_model=NoteDeleteResult,
     )
     click.echo(_dump_model(result))
@@ -3112,12 +3169,25 @@ def note_delete(entry_id: str) -> None:
 
 @note.command("verify")
 @click.argument("entry_id")
-def note_verify(entry_id: str) -> None:
+@click.option("--user", "user_id", default="", help="Owner user ID for personal notes.")
+@click.option(
+    "--workspace", "workspace_id", default="", help="Owner workspace ID for personal notes."
+)
+@click.option(
+    "--include-unowned",
+    is_flag=True,
+    help="Include legacy unowned notes with the selected owner.",
+)
+def note_verify(entry_id: str, user_id: str, workspace_id: str, include_unowned: bool) -> None:
     config = _get_config()
+    payload: dict[str, object] = {"entry_id": entry_id}
+    payload.update(
+        _required_owner_scope_payload(user_id, workspace_id, include_unowned=include_unowned)
+    )
     result = rpc_call(
         config,
         "note.verify",
-        {"entry_id": entry_id},
+        payload,
         response_model=NoteVerifyResult,
     )
     click.echo(_dump_model(result))
@@ -3140,7 +3210,9 @@ def note_verify(entry_id: str) -> None:
 def note_export(fmt: str, user_id: str, workspace_id: str, include_unowned: bool) -> None:
     config = _get_config()
     payload: dict[str, object] = {"format": fmt}
-    payload.update(_owner_scope_payload(user_id, workspace_id, include_unowned=include_unowned))
+    payload.update(
+        _required_owner_scope_payload(user_id, workspace_id, include_unowned=include_unowned)
+    )
     result = rpc_call(
         config,
         "note.export",
@@ -3160,22 +3232,30 @@ def todo() -> None:
 @click.option("--details", default="")
 @click.option("--status", default="open", type=click.Choice(["open", "in_progress", "done"]))
 @click.option("--due-date", default="", help="Optional due date string")
+@click.option("--user", "user_id", default="", help="Owner user ID for personal todos.")
+@click.option(
+    "--workspace", "workspace_id", default="", help="Owner workspace ID for personal todos."
+)
 def todo_create(
     title: str,
     details: str,
     status: str,
     due_date: str,
+    user_id: str,
+    workspace_id: str,
 ) -> None:
     config = _get_config()
+    payload: dict[str, object] = {
+        "title": title,
+        "details": details,
+        "status": status,
+        "due_date": due_date,
+    }
+    payload.update(_required_owner_scope_payload(user_id, workspace_id))
     result = rpc_call(
         config,
         "todo.create",
-        {
-            "title": title,
-            "details": details,
-            "status": status,
-            "due_date": due_date,
-        },
+        payload,
         response_model=MemoryWriteResult,
     )
     click.echo(_dump_model(result))
@@ -3183,9 +3263,22 @@ def todo_create(
 
 @todo.command("list")
 @click.option("--limit", default=100, help="Maximum entries")
-def todo_list(limit: int) -> None:
+@click.option("--user", "user_id", default="", help="Owner user ID for personal todos.")
+@click.option(
+    "--workspace", "workspace_id", default="", help="Owner workspace ID for personal todos."
+)
+@click.option(
+    "--include-unowned",
+    is_flag=True,
+    help="Include legacy unowned todos with the selected owner.",
+)
+def todo_list(limit: int, user_id: str, workspace_id: str, include_unowned: bool) -> None:
     config = _get_config()
-    result = rpc_call(config, "todo.list", {"limit": limit}, response_model=TodoListResult)
+    payload: dict[str, object] = {"limit": limit}
+    payload.update(
+        _required_owner_scope_payload(user_id, workspace_id, include_unowned=include_unowned)
+    )
+    result = rpc_call(config, "todo.list", payload, response_model=TodoListResult)
     for item in result.entries:
         value = item.get("value", {})
         if isinstance(value, dict):
@@ -3199,20 +3292,46 @@ def todo_list(limit: int) -> None:
 
 @todo.command("get")
 @click.argument("entry_id")
-def todo_get(entry_id: str) -> None:
+@click.option("--user", "user_id", default="", help="Owner user ID for personal todos.")
+@click.option(
+    "--workspace", "workspace_id", default="", help="Owner workspace ID for personal todos."
+)
+@click.option(
+    "--include-unowned",
+    is_flag=True,
+    help="Include legacy unowned todos with the selected owner.",
+)
+def todo_get(entry_id: str, user_id: str, workspace_id: str, include_unowned: bool) -> None:
     config = _get_config()
-    result = rpc_call(config, "todo.get", {"entry_id": entry_id}, response_model=TodoGetResult)
+    payload: dict[str, object] = {"entry_id": entry_id}
+    payload.update(
+        _required_owner_scope_payload(user_id, workspace_id, include_unowned=include_unowned)
+    )
+    result = rpc_call(config, "todo.get", payload, response_model=TodoGetResult)
     click.echo(_dump_model(result))
 
 
 @todo.command("delete")
 @click.argument("entry_id")
-def todo_delete(entry_id: str) -> None:
+@click.option("--user", "user_id", default="", help="Owner user ID for personal todos.")
+@click.option(
+    "--workspace", "workspace_id", default="", help="Owner workspace ID for personal todos."
+)
+@click.option(
+    "--include-unowned",
+    is_flag=True,
+    help="Include legacy unowned todos with the selected owner.",
+)
+def todo_delete(entry_id: str, user_id: str, workspace_id: str, include_unowned: bool) -> None:
     config = _get_config()
+    payload: dict[str, object] = {"entry_id": entry_id}
+    payload.update(
+        _required_owner_scope_payload(user_id, workspace_id, include_unowned=include_unowned)
+    )
     result = rpc_call(
         config,
         "todo.delete",
-        {"entry_id": entry_id},
+        payload,
         response_model=TodoDeleteResult,
     )
     click.echo(_dump_model(result))
@@ -3220,12 +3339,25 @@ def todo_delete(entry_id: str) -> None:
 
 @todo.command("verify")
 @click.argument("entry_id")
-def todo_verify(entry_id: str) -> None:
+@click.option("--user", "user_id", default="", help="Owner user ID for personal todos.")
+@click.option(
+    "--workspace", "workspace_id", default="", help="Owner workspace ID for personal todos."
+)
+@click.option(
+    "--include-unowned",
+    is_flag=True,
+    help="Include legacy unowned todos with the selected owner.",
+)
+def todo_verify(entry_id: str, user_id: str, workspace_id: str, include_unowned: bool) -> None:
     config = _get_config()
+    payload: dict[str, object] = {"entry_id": entry_id}
+    payload.update(
+        _required_owner_scope_payload(user_id, workspace_id, include_unowned=include_unowned)
+    )
     result = rpc_call(
         config,
         "todo.verify",
-        {"entry_id": entry_id},
+        payload,
         response_model=TodoVerifyResult,
     )
     click.echo(_dump_model(result))
@@ -3248,7 +3380,9 @@ def todo_verify(entry_id: str) -> None:
 def todo_export(fmt: str, user_id: str, workspace_id: str, include_unowned: bool) -> None:
     config = _get_config()
     payload: dict[str, object] = {"format": fmt}
-    payload.update(_owner_scope_payload(user_id, workspace_id, include_unowned=include_unowned))
+    payload.update(
+        _required_owner_scope_payload(user_id, workspace_id, include_unowned=include_unowned)
+    )
     result = rpc_call(
         config,
         "todo.export",
