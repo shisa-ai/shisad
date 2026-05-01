@@ -673,10 +673,14 @@ class MemoryImplMixin(HandlerMixinBase):
     async def do_memory_list(self, params: Mapping[str, Any]) -> dict[str, Any]:
         if params.get("include_quarantined") and not params.get("confirmed"):
             raise ValueError("confirmed is required when include_quarantined is true")
+        user_id, workspace_id = self._required_owner_tuple_from_params(params)
         rows = self._memory_manager.list_entries(
             limit=int(params.get("limit", 100)),
             include_deleted=bool(params.get("include_deleted", False)),
             include_quarantined=bool(params.get("include_quarantined", False)),
+            user_id=user_id,
+            workspace_id=workspace_id,
+            include_unowned=bool(params.get("include_unowned", False)),
         )
         return {"entries": [entry.model_dump(mode="json") for entry in rows], "count": len(rows)}
 

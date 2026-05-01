@@ -626,6 +626,12 @@ class TestApiSchemaValidation:
             is True
         )
         assert (
+            MemoryListParams.model_validate(
+                {"limit": 10, "include_unowned": True, **owner_scope}
+            ).include_unowned
+            is True
+        )
+        assert (
             MemoryPromoteIdentityCandidateParams.model_validate(
                 {
                     "ingress_context": "handle-1",
@@ -730,6 +736,8 @@ class TestApiSchemaValidation:
         )
 
         ownerless_payloads: list[tuple[type[object], dict[str, object]]] = [
+            (MemoryListParams, {"limit": 10}),
+            (MemoryListParams, {"limit": 10, "include_unowned": True}),
             (MemoryReviewQueueParams, {"limit": 10}),
             (MemoryReviewQueueParams, {"limit": 10, "include_unowned": True}),
             (MemoryEntryParams, {"entry_id": "entry-1"}),
@@ -1014,13 +1022,17 @@ class TestApiSchemaValidation:
 
     def test_m1_memory_list_params_gate_quarantined_reads_on_confirmation(self) -> None:
         with pytest.raises(ValidationError):
-            MemoryListParams.model_validate({"include_quarantined": True})
+            MemoryListParams.model_validate(
+                {"include_quarantined": True, "user_id": "alice", "workspace_id": "ws1"}
+            )
 
         params = MemoryListParams.model_validate(
             {
                 "include_quarantined": True,
                 "confirmed": True,
                 "limit": 5,
+                "user_id": "alice",
+                "workspace_id": "ws1",
             }
         )
         assert params.include_quarantined is True

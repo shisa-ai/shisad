@@ -1612,6 +1612,8 @@ async def test_m2_restart_hydrates_memory_retrieval_and_tasks(
                 "entry_type": "fact",
                 "key": "owner",
                 "value": "alice",
+                "user_id": "alice",
+                "workspace_id": "ws1",
             },
         )
         await ingest_memory_via_ingress(
@@ -1648,7 +1650,10 @@ async def test_m2_restart_hydrates_memory_retrieval_and_tasks(
     try:
         await _wait_for_socket(socket_path)
         await client_2.connect()
-        memory_entries = await client_2.call("memory.list", {"limit": 50})
+        memory_entries = await client_2.call(
+            "memory.list",
+            {"limit": 50, "user_id": "alice", "workspace_id": "ws1"},
+        )
         assert memory_entries["count"] >= 1
         retrieval = await client_2.call(
             "memory.retrieve",

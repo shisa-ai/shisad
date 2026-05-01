@@ -650,18 +650,28 @@ def test_cli_commands_route_through_rpc_wrapper(
     _invoke_ok(runner, ["confirmation", "metrics", "--user", "alice", "--window", "120"])
     assert (
         "m-1 fact favorite_color v=2 state=active status=active value=blue"
-        in _invoke_ok(
-            runner,
-            ["memory", "list", "--limit", "1"],
-        ).output
-    )
+            in _invoke_ok(
+                runner,
+                ["memory", "list", "--limit", "1", "--user", "alice", "--workspace", "ws-1"],
+            ).output
+        )
     assert (
         '"workflow_state": "active"'
-        in _invoke_ok(
-            runner,
-            ["memory", "list", "--limit", "1", "--json"],
-        ).output
-    )
+            in _invoke_ok(
+                runner,
+                [
+                    "memory",
+                    "list",
+                    "--limit",
+                    "1",
+                    "--json",
+                    "--user",
+                    "alice",
+                    "--workspace",
+                    "ws-1",
+                ],
+            ).output
+        )
     _invoke_ok(
         runner,
         [
@@ -845,6 +855,10 @@ def test_cli_commands_route_through_rpc_wrapper(
         },
     ) in calls
     assert ("lockdown.status", {"session_id": "s-1", "all": False}) in calls
+    assert (
+        "memory.list",
+        {"limit": 1, "user_id": "alice", "workspace_id": "ws-1"},
+    ) in calls
     assert (
         "memory.mint_ingress_context",
         {"content": "blue"},

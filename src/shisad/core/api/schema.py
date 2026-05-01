@@ -518,9 +518,13 @@ class MemoryListParams(_StrictParams):
     include_deleted: bool = False
     include_quarantined: bool = False
     confirmed: bool = False
+    user_id: str | None = None
+    workspace_id: str | None = None
+    include_unowned: bool = False
 
     @model_validator(mode="after")
-    def _validate_history_flags(self) -> MemoryListParams:
+    def _validate_owner_scope_and_history_flags(self) -> MemoryListParams:
+        _require_complete_owner_scope(self)
         if self.include_quarantined and not self.confirmed:
             raise ValueError("confirmed is required when include_quarantined is true")
         return self

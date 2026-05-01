@@ -101,7 +101,10 @@ async def test_facade_routes_across_handler_groups(
     assert unsupported["status"] == "error"
     assert unsupported["error"] == "unsupported_component"
 
-    memory = await recycled_handler_daemon.call("memory.list", {"limit": 10})
+    memory = await recycled_handler_daemon.call(
+        "memory.list",
+        {"limit": 10, "user_id": "alice", "workspace_id": "ws1"},
+    )
     assert "entries" in memory
 
     skills = await recycled_handler_daemon.call("skill.list")

@@ -1469,7 +1469,10 @@ async def test_m5_s5_session_message_persists_summarized_memory_entries(
                 },
             )
 
-        memory_rows = await client.call("memory.list", {"limit": 50})
+        memory_rows = await client.call(
+            "memory.list",
+            {"limit": 50, "user_id": "alice", "workspace_id": "ws1"},
+        )
         assert int(memory_rows["count"]) >= 1
         rendered_rows = json.dumps(memory_rows.get("entries", []), ensure_ascii=True).lower()
         assert "nebula" in rendered_rows

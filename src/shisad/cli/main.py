@@ -2668,15 +2668,35 @@ def memory() -> None:
 
 @memory.command("list")
 @click.option("--limit", default=100, help="Maximum entries")
+@click.option("--user", "user_id", default="", help="Owner user ID for personal memory.")
+@click.option(
+    "--workspace",
+    "workspace_id",
+    default="",
+    help="Owner workspace ID for personal memory.",
+)
+@click.option(
+    "--include-unowned",
+    is_flag=True,
+    help="Include legacy unowned entries with the selected owner.",
+)
 @click.option(
     "--json",
     "as_json",
     is_flag=True,
     help="Print the full memory list response as JSON.",
 )
-def memory_list(limit: int, as_json: bool) -> None:
+def memory_list(
+    limit: int,
+    user_id: str,
+    workspace_id: str,
+    include_unowned: bool,
+    as_json: bool,
+) -> None:
     config = _get_config()
-    result = rpc_call(config, "memory.list", {"limit": limit}, response_model=MemoryListResult)
+    payload: dict[str, object] = {"limit": limit}
+    payload.update(_owner_scope_payload(user_id, workspace_id, include_unowned=include_unowned))
+    result = rpc_call(config, "memory.list", payload, response_model=MemoryListResult)
     if as_json:
         click.echo(_dump_model(result))
         return

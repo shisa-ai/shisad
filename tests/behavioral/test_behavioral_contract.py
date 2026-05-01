@@ -2440,10 +2440,16 @@ async def test_contract_raw_id_memory_controls_enforce_owner_scope(
 
     with pytest.raises(JsonRpcCallError):
         await contract_harness.client.call("memory.get", {"entry_id": entry_id})
+    with pytest.raises(JsonRpcCallError):
+        await contract_harness.client.call("memory.list", {"limit": 10})
 
     hidden = await contract_harness.client.call(
         "memory.get",
         {"entry_id": entry_id, "user_id": "bob", "workspace_id": "ws1"},
+    )
+    hidden_list = await contract_harness.client.call(
+        "memory.list",
+        {"limit": 10, "user_id": "bob", "workspace_id": "ws1"},
     )
     deleted = await contract_harness.client.call(
         "memory.delete",
@@ -2470,14 +2476,30 @@ async def test_contract_raw_id_memory_controls_enforce_owner_scope(
         "memory.get",
         {"entry_id": entry_id, "user_id": "alice", "workspace_id": "ws1"},
     )
+    owner_list = await contract_harness.client.call(
+        "memory.list",
+        {"limit": 10, "user_id": "alice", "workspace_id": "ws1"},
+    )
 
     assert hidden.get("entry") is None
+    hidden_ids = {
+        str(item.get("id") or item.get("entry_id") or "").strip()
+        for item in hidden_list.get("entries", [])
+        if isinstance(item, dict)
+    }
+    assert entry_id not in hidden_ids
     assert deleted == {"deleted": False, "entry_id": entry_id}
     assert quarantined == {"changed": False, "entry_id": entry_id, "reason": "cross-owner"}
     assert verified == {"verified": False, "entry_id": entry_id}
     assert json.loads(str(exported.get("data"))) == []
     stored = owner_view.get("entry") or {}
+    owner_ids = {
+        str(item.get("id") or item.get("entry_id") or "").strip()
+        for item in owner_list.get("entries", [])
+        if isinstance(item, dict)
+    }
     assert stored.get("id") == entry_id
+    assert entry_id in owner_ids
     assert stored.get("status") == "active"
     assert stored.get("user_verified") is False
 
@@ -2621,7 +2643,10 @@ async def test_contract_pending_review_entries_are_isolated_to_review_queue(
         entry_id = seeded["entry_id"]
         chunk_id = seeded["chunk_id"]
 
-        listing = await harness.client.call("memory.list", {"limit": 10})
+        listing = await harness.client.call(
+            "memory.list",
+            {"limit": 10, "user_id": "alice", "workspace_id": "ws1"},
+        )
         listed_ids = {
             str(item.get("id") or item.get("entry_id") or "").strip()
             for item in listing.get("entries", [])
@@ -3117,7 +3142,10 @@ async def test_contract_identity_candidate_cli_surface_and_accept_flow(
         }
         assert candidate_id not in queued_ids
 
-        listing = await harness.client.call("memory.list", {"limit": 20})
+        listing = await harness.client.call(
+            "memory.list",
+            {"limit": 20, "user_id": "alice", "workspace_id": "ws1"},
+        )
         promoted = next(
             (
                 item
@@ -3375,7 +3403,15 @@ async def test_contract_trust_matrix_rows_round_trip_with_expected_bands(
         assert len(seeded) == len(_VALID_TRUST_MATRIX)
         assert invalid_rejection_count > 0
 
-        listing = await harness.client.call("memory.list", {"limit": len(seeded) + 10})
+        listing = await harness.client.call(
+            "memory.list",
+            {
+                "limit": len(seeded) + 10,
+                "user_id": "alice",
+                "workspace_id": "ws1",
+                "include_unowned": True,
+            },
+        )
         listed_ids = {
             str(item.get("id") or item.get("entry_id") or "").strip()
             for item in listing.get("entries", [])
@@ -3555,7 +3591,7 @@ async def test_contract_legacy_v06_entries_backfill_on_daemon_start(
         assert inferred_entry.get("channel_trust") == "consolidation"
         assert inferred_entry.get("confirmation_status") == "auto_accepted"
 
-        default_list = await harness.client.call("memory.list", {"limit": 20})
+        default_list = await harness.client.call("memory.list", {"limit": 20, **legacy_scope})
         default_ids = {
             str(item.get("id") or item.get("entry_id") or "").strip()
             for item in default_list.get("entries", [])
@@ -4327,7 +4363,10 @@ async def test_contract_graph_query_export_and_consolidation_run_via_control_api
         )
         assert reconsolidated.get("strong_invalidation_count") == 0
 
-        listing = await harness.client.call("memory.list", {"limit": 20})
+        listing = await harness.client.call(
+            "memory.list",
+            {"limit": 20, "user_id": "contract-user", "workspace_id": "contract-workspace"},
+        )
         promoted = next(
             (
                 item

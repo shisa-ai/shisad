@@ -17,6 +17,10 @@
 
 - Confirm low active write load if possible.
 - Pick an export destination outside the active data dir, for example `/var/backups/shisad/`.
+- Select the owner scope to back up. Memory list/export operations are
+  owner-scoped; repeat the export for each `(user, workspace)` pair that needs
+  a backup. Set `--include-unowned` only when intentionally carrying forward
+  legacy ownerless rows into that owner-scoped maintenance export.
 - Export artifacts contain raw memory entry values and metadata and may include
   personal data, channel content, or secrets copied into memory. Write them
   only to operator-controlled paths; anyone who can read the backup file can
@@ -28,13 +32,23 @@ Canonical JSON export:
 
 ```bash
 mkdir -p /var/backups/shisad
-shisad memory export --format json > /var/backups/shisad/memory-$(date +%F).json
+SHISAD_MEMORY_USER=alice
+SHISAD_MEMORY_WORKSPACE=ws1
+shisad memory export \
+  --format json \
+  --user "$SHISAD_MEMORY_USER" \
+  --workspace "$SHISAD_MEMORY_WORKSPACE" \
+  > /var/backups/shisad/memory-${SHISAD_MEMORY_USER}-${SHISAD_MEMORY_WORKSPACE}-$(date +%F).json
 ```
 
 Optional CSV export for spreadsheet/audit review:
 
 ```bash
-shisad memory export --format csv > /var/backups/shisad/memory-$(date +%F).csv
+shisad memory export \
+  --format csv \
+  --user "$SHISAD_MEMORY_USER" \
+  --workspace "$SHISAD_MEMORY_WORKSPACE" \
+  > /var/backups/shisad/memory-${SHISAD_MEMORY_USER}-${SHISAD_MEMORY_WORKSPACE}-$(date +%F).csv
 ```
 
 Confirm the export file is non-empty and parseable before continuing.
@@ -59,7 +73,7 @@ Validate the audit trail and read-path health:
 
 ```bash
 shisad dashboard audit --search "memory.rotate_key" --limit 50
-shisad memory list --limit 20
+shisad memory list --limit 20 --user "$SHISAD_MEMORY_USER" --workspace "$SHISAD_MEMORY_WORKSPACE"
 ```
 
 Confirm:

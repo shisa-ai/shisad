@@ -204,7 +204,15 @@ async def test_memory_ingest_and_list_wrappers() -> None:
         MemoryIngestParams(ingress_context="handle-1", content="hello"),
         RequestContext(),
     )
-    listing = await handlers.handle_memory_list(MemoryListParams(limit=10), RequestContext())
+    listing = await handlers.handle_memory_list(
+        MemoryListParams(
+            limit=10,
+            user_id="alice",
+            workspace_id="ws1",
+            include_unowned=True,
+        ),
+        RequestContext(),
+    )
     review_queue = await handlers.handle_memory_list_review_queue(
         MemoryReviewQueueParams(
             limit=10,
@@ -220,6 +228,10 @@ async def test_memory_ingest_and_list_wrappers() -> None:
     assert impl.last_memory_ingest_payload is not None
     assert impl.last_memory_ingest_payload["_control_api_authenticated_write"] is True
     assert listing.count == 1
+    assert impl.last_memory_list_payload is not None
+    assert impl.last_memory_list_payload["user_id"] == "alice"
+    assert impl.last_memory_list_payload["workspace_id"] == "ws1"
+    assert impl.last_memory_list_payload["include_unowned"] is True
     assert review_queue.entries[0].id == "review-1"
     assert impl.last_memory_list_review_queue_payload is not None
     assert impl.last_memory_list_review_queue_payload["user_id"] == "alice"
@@ -451,6 +463,9 @@ async def test_memory_list_and_get_wrappers_forward_history_flags() -> None:
             include_deleted=True,
             include_quarantined=True,
             confirmed=True,
+            user_id="alice",
+            workspace_id="ws1",
+            include_unowned=True,
         ),
         RequestContext(),
     )
@@ -471,6 +486,9 @@ async def test_memory_list_and_get_wrappers_forward_history_flags() -> None:
     assert impl.last_memory_list_payload["include_deleted"] is True
     assert impl.last_memory_list_payload["include_quarantined"] is True
     assert impl.last_memory_list_payload["confirmed"] is True
+    assert impl.last_memory_list_payload["user_id"] == "alice"
+    assert impl.last_memory_list_payload["workspace_id"] == "ws1"
+    assert impl.last_memory_list_payload["include_unowned"] is True
     assert impl.last_memory_get_payload is not None
     assert impl.last_memory_get_payload["include_deleted"] is True
     assert impl.last_memory_get_payload["include_quarantined"] is True
