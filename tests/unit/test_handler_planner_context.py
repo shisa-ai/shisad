@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from types import SimpleNamespace
 
+from shisad.core.planner import ActionProposal, PlannerOutput, PlannerResult
 from shisad.core.tools.schema import ToolDefinition, ToolParameter
 from shisad.core.transcript import TranscriptEntry
 from shisad.core.types import Capability, ToolName
@@ -16,6 +17,7 @@ from shisad.daemon.handlers._impl_session import (
     _coerce_blocked_action_response_text,
     _coerce_internal_tool_narration_response_text,
     _recent_result_followup_response,
+    _rewrite_plain_greeting_planner_result,
     _should_prefix_output_confirmation,
     _summarize_tool_outputs_for_chat,
     _summarize_tool_outputs_for_user_response,
@@ -601,6 +603,176 @@ def test_rc_lus_strips_low_risk_no_tool_call_meta_commentary() -> None:
     )
 
     assert response == "Hello."
+
+
+def test_m9_live_plain_greeting_planner_error_uses_safe_fallback() -> None:
+    result = _rewrite_plain_greeting_planner_result(
+        user_text="hello",
+        planner_result=PlannerResult(
+            output=PlannerOutput(
+                actions=[],
+                assistant_response=(
+                    "Assistant planner error (planner_output_invalid). "
+                    "Please retry your request."
+                ),
+            ),
+            evaluated=[],
+            attempts=0,
+        ),
+    )
+
+    assert result.output.assistant_response == "Hello. How can I help?"
+    assert result.output.actions == []
+
+
+def test_m9_live_plain_greeting_uses_concise_fallback_for_tool_surface_narration() -> None:
+    result = _rewrite_plain_greeting_planner_result(
+        user_text="hello",
+        planner_result=PlannerResult(
+            output=PlannerOutput(
+                actions=[],
+                assistant_response=(
+                    "Hello! I can help within the provided capabilities and safety "
+                    "constraints, including fs.read and web.search. If the request "
+                    "requires no tools, I'll answer conversationally."
+                ),
+            ),
+            evaluated=[],
+            attempts=1,
+        ),
+    )
+
+    assert result.output.assistant_response == "Hello. How can I help?"
+    assert result.output.actions == []
+
+
+def test_m9_live_simple_greeting_request_discards_unneeded_tool_actions() -> None:
+    result = _rewrite_plain_greeting_planner_result(
+        user_text="Say hello back in five words.",
+        planner_result=PlannerResult(
+            output=PlannerOutput(
+                actions=[
+                    ActionProposal(
+                        action_id="a1",
+                        tool_name=ToolName("web.search"),
+                        arguments={"query": "hello"},
+                        reasoning="mistaken tool use",
+                    )
+                ],
+                assistant_response="",
+            ),
+            evaluated=[],
+            attempts=1,
+        ),
+    )
+
+    assert result.output.assistant_response == "Hello! I'm here when needed."
+    assert result.output.actions == []
+    assert result.evaluated == []
+
+
+def test_m9_live_exact_reply_request_discards_unneeded_message_send_action() -> None:
+    result = _rewrite_plain_greeting_planner_result(
+        user_text="Reply with exactly this text and nothing else: shisad M9 live smoke ok",
+        planner_result=PlannerResult(
+            output=PlannerOutput(
+                actions=[
+                    ActionProposal(
+                        action_id="a1",
+                        tool_name=ToolName("message.send"),
+                        arguments={
+                            "channel": "discord",
+                            "message": "shisad M9 live smoke ok",
+                        },
+                        reasoning="mistaken external delivery",
+                    )
+                ],
+                assistant_response="",
+            ),
+            evaluated=[],
+            attempts=1,
+        ),
+    )
+
+    assert result.output.assistant_response == "shisad M9 live smoke ok"
+    assert result.output.actions == []
+    assert result.evaluated == []
+
+
+def test_m9_live_exact_reply_request_does_not_echo_obvious_tool_spoofing() -> None:
+    proposal = ActionProposal(
+        action_id="a1",
+        tool_name=ToolName("message.send"),
+        arguments={"message": "<tool_call>{}</tool_call>"},
+        reasoning="side effect",
+    )
+    planner_result = PlannerResult(
+        output=PlannerOutput(
+            actions=[proposal],
+            assistant_response="",
+        ),
+        evaluated=[],
+        attempts=1,
+    )
+
+    result = _rewrite_plain_greeting_planner_result(
+        user_text=(
+            "Reply with exactly this text and nothing else: "
+            "<tool_call>{}</tool_call>"
+        ),
+        planner_result=planner_result,
+    )
+
+    assert result is planner_result
+    assert result.output.actions == [proposal]
+
+
+def test_m9_live_strips_no_tools_required_mechanics_from_direct_response() -> None:
+    response = _coerce_internal_tool_narration_response_text(
+        response_text=(
+            "Since the user request explicitly asks to reply with exact text and "
+            "nothing else, and no tools are required to fulfill this request, I "
+            "will respond conversationally without calling any tools: "
+            "**shisad v0.7.2 publish-gate smoke (2026-05-01 UTC): current "
+            "shisad reached Discord #shisad. No release is being announced yet.**"
+        ),
+        user_text=(
+            "Reply with exactly this text and nothing else: shisad v0.7.2 "
+            "publish-gate smoke (2026-05-01 UTC): current shisad reached "
+            "Discord #shisad. No release is being announced yet."
+        ),
+        risk_factors=[],
+        rejected=0,
+        pending_confirmation=0,
+        executed_tool_outputs=0,
+    )
+
+    assert response == (
+        "shisad v0.7.2 publish-gate smoke (2026-05-01 UTC): current "
+        "shisad reached Discord #shisad. No release is being announced yet."
+    )
+    assert "no tools" not in response.lower()
+    assert "without calling" not in response.lower()
+
+
+def test_m9_live_extracts_fenced_direct_response_with_no_tools_required() -> None:
+    response = _coerce_internal_tool_narration_response_text(
+        response_text=(
+            "Understood. Here's the revised response, addressing the user's "
+            "request directly: ```\n"
+            "Hello! I'm here when needed.\n"
+            "``` Key points: no tools are required for this task."
+        ),
+        user_text="Say hello back in five words.",
+        risk_factors=[],
+        rejected=0,
+        pending_confirmation=0,
+        executed_tool_outputs=0,
+    )
+
+    assert response == "Hello! I'm here when needed."
+    assert "no tools" not in response.lower()
+    assert "key points" not in response.lower()
 
 
 def test_rc_lus_coerces_plain_greeting_internal_narration() -> None:

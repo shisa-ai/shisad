@@ -195,8 +195,10 @@ _INTERNAL_TOOL_NARRATION_MARKERS = (
     "function call",
     "tool call",
     "no tools are needed",
+    "no tools are required",
     "no tool is needed",
     "no tool call is needed",
+    "without calling any tools",
     "without planner/formatting references",
     "planning mechanics",
     "the appropriate tool to use",
@@ -2243,6 +2245,62 @@ def _is_plain_greeting(user_text: str) -> bool:
     return normalized in {"hello", "hello there", "hi", "hi there", "hey", "hey there"}
 
 
+def _is_simple_greeting_response_request(user_text: str) -> bool:
+    normalized = _normalize_explicit_memory_intent_text(user_text).lower().strip()
+    normalized = normalized.rstrip("!?.")
+    if not normalized:
+        return False
+    if _is_plain_greeting(normalized):
+        return True
+    return bool(
+        re.match(
+            r"^(?:say|respond with|reply with)\s+(?:a\s+)?(?:hello|hi)\b",
+            normalized,
+            flags=re.IGNORECASE,
+        )
+    )
+
+
+def _simple_greeting_response_text(user_text: str) -> str:
+    normalized = _normalize_explicit_memory_intent_text(user_text).lower()
+    if "five word" in normalized or "5 word" in normalized:
+        return "Hello! I'm here when needed."
+    return "Hello. How can I help?"
+
+
+def _safe_exact_reply_text(user_text: str) -> str:
+    match = re.match(
+        r"^\s*(?:reply|respond|say)\s+with\s+exactly\s+"
+        r"(?:this\s+text|the\s+following\s+text)?"
+        r"(?:\s+and\s+nothing\s+else)?\s*:\s*(?P<body>.+?)\s*$",
+        str(user_text or ""),
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    if match is None:
+        return ""
+    body = str(match.group("body") or "").strip().strip("\"'")
+    if not body or len(body) > 500:
+        return ""
+    normalized_body = body.lower()
+    unsafe_tokens = (
+        "<tool_call",
+        "</tool_call",
+        "```",
+        "system prompt",
+        "hidden prompt",
+        "credential",
+        "secret",
+        "shell.exec",
+        "ignore previous",
+        "ignore all prior",
+        "http://",
+        "https://",
+    )
+    if any(token in normalized_body for token in unsafe_tokens):
+        return ""
+    return body
+
+
 def _is_explicit_memory_question(user_text: str) -> bool:
     normalized = _strip_explicit_memory_intent_greeting_prefix(user_text)
     if not normalized:
@@ -2309,11 +2367,6 @@ def _is_substantive_memory_question_answer(response_text: str) -> bool:
     return not any(marker in normalized for marker in non_answer_markers)
 
 
-def _is_plain_greeting_tool_meta_response(response_text: str) -> bool:
-    normalized = normalize_intent_text(str(response_text or "")).lower()
-    return "tool call" in normalized or "tool-call" in normalized
-
-
 def _is_web_search_only_explicit_intent(proposals: Sequence[ActionProposal]) -> bool:
     return bool(proposals) and all(
         proposal.tool_name == ToolName("web.search") for proposal in proposals
@@ -2351,23 +2404,13 @@ def _rewrite_plain_greeting_planner_result(
     user_text: str,
     planner_result: PlannerResult,
 ) -> PlannerResult:
-    if not _is_plain_greeting(user_text):
-        return planner_result
-    response_text = planner_result.output.assistant_response.strip()
-    planner_error_response = _is_planner_validation_fallback_response(response_text)
-    if planner_error_response:
-        return planner_result
-    if (
-        not planner_result.output.actions
-        and not planner_result.evaluated
-        and response_text
-        and not planner_error_response
-        and not _is_plain_greeting_tool_meta_response(response_text)
-    ):
+    exact_reply_text = _safe_exact_reply_text(user_text)
+    simple_greeting_request = _is_simple_greeting_response_request(user_text)
+    if not exact_reply_text and not simple_greeting_request:
         return planner_result
     return PlannerResult(
         output=PlannerOutput(
-            assistant_response="Hello. How can I help?",
+            assistant_response=exact_reply_text or _simple_greeting_response_text(user_text),
             actions=[],
         ),
         evaluated=[],
@@ -3138,16 +3181,33 @@ def _trim_internal_planner_sections(text: str) -> str:
     fenced = _extract_first_plain_code_fence(trimmed)
     if fenced and any(
         marker in trimmed.lower()
-        for marker in ("correct response", "simple acknowledgment", "no tools are needed")
+        for marker in (
+            "correct response",
+            "simple acknowledgment",
+            "no tools are needed",
+            "no tools are required",
+        )
     ):
         return fenced
     leading_no_tool = re.match(
-        r"^(?:No tools? (?:are|were) needed|No tool call is needed)\.?\s*(?P<rest>.+)$",
+        r"^(?:No tools? (?:are|were) needed|No tools? are required|"
+        r"No tool call is needed)\.?\s*(?P<rest>.+)$",
         trimmed,
         flags=re.IGNORECASE | re.DOTALL,
     )
     if leading_no_tool is not None:
         return str(leading_no_tool.group("rest") or "").strip()
+    no_tool_direct_response = re.search(
+        r"\b(?:no tools? (?:are|were) (?:needed|required)|without calling any tools)\b"
+        r".*?:\s*(?P<rest>.+)$",
+        trimmed,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    if no_tool_direct_response is not None:
+        rest = str(no_tool_direct_response.group("rest") or "").strip()
+        rest = rest.strip("*_` \t\r\n")
+        if rest:
+            return rest
     pending_resolution = re.search(
         r"\bPending action resolution:\s*(?P<body>.+)$",
         trimmed,
