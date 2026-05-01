@@ -641,6 +641,114 @@ async def test_m8_channel_feedback_reaction_remove_preserves_other_emoji_add(
 
 
 @pytest.mark.asyncio
+async def test_m8_channel_feedback_remove_migrates_matching_legacy_bare_add(
+    tmp_path: Path,
+) -> None:
+    harness = _AdminChannelIngressHarness(
+        tmp_path=tmp_path,
+        default_trust="public",
+        allowlisted_users={"guest-legacy-feedback"},
+    )
+    channel_binding = compose_channel_binding(
+        channel="discord",
+        workspace_hint="guild-1",
+        channel_id="chan-legacy-feedback",
+    )
+    legacy_add_key = response_feedback_key(
+        channel_id=channel_binding,
+        message_id="agent-msg-legacy-feedback",
+        actor_external_user_id="guest-legacy-feedback",
+        signal="reaction_add",
+    )
+    emoji_add_key = response_feedback_key(
+        channel_id=channel_binding,
+        message_id="agent-msg-legacy-feedback",
+        actor_external_user_id="guest-legacy-feedback",
+        signal="reaction_add",
+        emoji=":+1:",
+    )
+    legacy_add = harness._memory_manager.write_with_provenance(
+        entry_type="response_feedback",
+        key=legacy_add_key,
+        value={
+            "channel_id": channel_binding,
+            "event_id": "discord:guild-1:chan-legacy-feedback:agent-msg:+1:add",
+            "target_message_id": "agent-msg-legacy-feedback",
+            "actor_external_user_id": "guest-legacy-feedback",
+            "signal": "reaction_add",
+            "emoji": ":+1:",
+            "valence": "positive",
+            "observed_at": "2026-05-01T00:00:00Z",
+            "signal_confidence": 0.95,
+            "authenticated_actor": True,
+            "policy_allowed": True,
+            "can_influence_retrieval": True,
+            "utility_score": 1.0,
+            "harm_score": 0.0,
+            "telemetry_weight": 0.15,
+            "telemetry_policy": "bounded_retrieval",
+        },
+        source=MemorySource(
+            origin="external",
+            source_id="discord:legacy-feedback-add",
+            extraction_method="channel.ingest.structured",
+        ),
+        source_origin="external_message",
+        channel_trust="shared_participant",
+        confirmation_status="auto_accepted",
+        source_id="discord:legacy-feedback-add",
+        scope="channel",
+        confidence=0.5,
+        confirmation_satisfied=True,
+    )
+    assert legacy_add.entry is not None
+
+    await harness.do_channel_ingest(
+        {
+            "message": {
+                "channel": "discord",
+                "external_user_id": "guest-legacy-feedback",
+                "workspace_hint": "guild-1",
+                "reply_target": "chan-legacy-feedback",
+                "message_id": "msg-legacy-feedback-remove",
+                "content": "remove reaction event",
+                "metadata": {
+                    "interaction_type": "direct",
+                    "feedback_signal": "reaction_remove",
+                    "feedback_target_message_id": "agent-msg-legacy-feedback",
+                    "feedback_emoji": ":+1:",
+                    "feedback_valence": "none",
+                    "feedback_signal_confidence": 0.95,
+                    "feedback_policy_allowed": True,
+                    "feedback_event_id": (
+                        "discord:guild-1:chan-legacy-feedback:"
+                        "agent-msg-legacy-feedback:guest-legacy-feedback:+1:remove"
+                    ),
+                    "feedback_authenticated_actor": True,
+                },
+            }
+        }
+    )
+
+    migrated_legacy = harness._memory_manager.get_entry(legacy_add.entry.id)
+    assert migrated_legacy is not None
+    assert migrated_legacy.key == emoji_add_key
+    assert migrated_legacy.superseded_by is not None
+
+    current_entries = [
+        entry
+        for entry in harness._memory_manager.list_entries(limit=20)
+        if entry.superseded_by is None
+    ]
+    assert [entry for entry in current_entries if entry.key == legacy_add_key] == []
+    current_add = [entry for entry in current_entries if entry.key == emoji_add_key]
+    assert len(current_add) == 1
+    assert current_add[0].value["signal"] == "reaction_remove"
+    assert current_add[0].value["emoji"] == ":+1:"
+    assert current_add[0].supersedes == legacy_add.entry.id
+
+
+@pytest.mark.asyncio
 async def test_m8_channel_ingest_preserves_owner_curated_channel_records(
     tmp_path: Path,
 ) -> None:
@@ -910,10 +1018,10 @@ async def test_m8_channel_ingest_side_key_skips_legacy_canonical_migration(
     assert preserved_summary.superseded_by is None
     assert preserved_summary.value["owner_curated"] is True
     assert preserved_legacy_note is not None
-    assert preserved_legacy_note.key == legacy_note_key
+    assert preserved_legacy_note.key == canonical_note_key
     assert preserved_legacy_note.superseded_by is not None
     assert preserved_legacy_summary is not None
-    assert preserved_legacy_summary.key == legacy_summary_key
+    assert preserved_legacy_summary.key == canonical_summary_key
     assert preserved_legacy_summary.superseded_by is not None
 
     current_entries = harness._memory_manager.list_entries(limit=50)
@@ -922,6 +1030,7 @@ async def test_m8_channel_ingest_side_key_skips_legacy_canonical_migration(
         for entry in current_entries
         if entry.key in {canonical_note_key, canonical_summary_key}
         and entry.source_origin == "external_message"
+        and entry.superseded_by is None
     ]
     observed_side_entries = [
         entry
@@ -1254,6 +1363,195 @@ async def test_m8_channel_ingest_retires_legacy_duplicates_with_canonical_curren
             channel_summary_key(channel_id="chan-m8-duplicate", summary_kind="digest"),
         }
     ] == []
+
+
+@pytest.mark.asyncio
+async def test_m8_channel_ingest_promotes_trusted_legacy_over_observed_canonical(
+    tmp_path: Path,
+) -> None:
+    harness = _AdminChannelIngressHarness(
+        tmp_path=tmp_path,
+        default_trust="public",
+        allowlisted_users={"guest-promote"},
+    )
+    for session_id, message_id in (
+        ("sess-m8-promote-note", "legacy-m8-promote-note-msg"),
+        ("sess-m8-promote-summary", "legacy-m8-promote-summary-msg"),
+    ):
+        harness._transcript_store.append(
+            SessionId(session_id),
+            role="user",
+            content=f"legacy trusted {message_id}",
+            taint_labels=set(),
+            metadata={
+                "channel_message_id": message_id,
+                "delivery_target": {
+                    "channel": "discord",
+                    "recipient": "chan-m8-promote",
+                    "workspace_hint": "guild-1",
+                    "thread_id": "",
+                },
+            },
+        )
+
+    channel_binding = compose_channel_binding(
+        channel="discord",
+        workspace_hint="guild-1",
+        channel_id="chan-m8-promote",
+    )
+    canonical_note_key = person_note_key(
+        channel_id=channel_binding,
+        external_user_id="guest-promote",
+    )
+    canonical_summary_key = channel_summary_key(
+        channel_id=channel_binding,
+        summary_kind="digest",
+    )
+    observed_note = harness._memory_manager.write_with_provenance(
+        entry_type="person_note",
+        key=canonical_note_key,
+        value={
+            "external_user_id": "guest-promote",
+            "display_name": "Promote Guest",
+            "channel_id": channel_binding,
+            "interaction_summary": "Observed canonical note.",
+        },
+        source=MemorySource(
+            origin="external",
+            source_id="discord:observed-promote-note",
+            extraction_method="channel.ingest.structured",
+        ),
+        source_origin="external_message",
+        channel_trust="shared_participant",
+        confirmation_status="auto_accepted",
+        source_id="discord:observed-promote-note",
+        scope="channel",
+        confidence=0.5,
+        confirmation_satisfied=True,
+    )
+    observed_summary = harness._memory_manager.write_with_provenance(
+        entry_type="channel_summary",
+        key=canonical_summary_key,
+        value={
+            "channel_id": channel_binding,
+            "summary_kind": "digest",
+            "summary_text": "Observed canonical digest.",
+        },
+        source=MemorySource(
+            origin="external",
+            source_id="discord:observed-promote-summary",
+            extraction_method="channel.ingest.structured",
+        ),
+        source_origin="external_message",
+        channel_trust="shared_participant",
+        confirmation_status="auto_accepted",
+        source_id="discord:observed-promote-summary",
+        scope="channel",
+        confidence=0.5,
+        confirmation_satisfied=True,
+    )
+    trusted_note = harness._memory_manager.write_with_provenance(
+        entry_type="person_note",
+        key=person_note_key(channel_id="chan-m8-promote", external_user_id="guest-promote"),
+        value={
+            "external_user_id": "guest-promote",
+            "display_name": "Promote Guest",
+            "channel_id": "chan-m8-promote",
+            "interaction_summary": "Trusted legacy note.",
+            "confidence_source": "owner_curated",
+            "owner_curated": True,
+        },
+        source=MemorySource(
+            origin="user",
+            source_id="discord:legacy-m8-promote-note-msg",
+            extraction_method="manual",
+        ),
+        source_origin="user_corrected",
+        channel_trust="command",
+        confirmation_status="user_corrected",
+        source_id="discord:legacy-m8-promote-note-msg",
+        scope="channel",
+        confidence=0.95,
+        confirmation_satisfied=True,
+    )
+    trusted_summary = harness._memory_manager.write_with_provenance(
+        entry_type="channel_summary",
+        key=channel_summary_key(channel_id="chan-m8-promote", summary_kind="digest"),
+        value={
+            "channel_id": "chan-m8-promote",
+            "summary_kind": "digest",
+            "summary_text": "Trusted legacy digest.",
+            "confidence_source": "owner_curated",
+            "owner_curated": True,
+        },
+        source=MemorySource(
+            origin="user",
+            source_id="discord:legacy-m8-promote-summary-msg",
+            extraction_method="manual",
+        ),
+        source_origin="user_corrected",
+        channel_trust="command",
+        confirmation_status="user_corrected",
+        source_id="discord:legacy-m8-promote-summary-msg",
+        scope="channel",
+        confidence=0.95,
+        confirmation_satisfied=True,
+    )
+    assert observed_note.entry is not None
+    assert observed_summary.entry is not None
+    assert trusted_note.entry is not None
+    assert trusted_summary.entry is not None
+
+    await harness.do_channel_ingest(
+        {
+            "message": {
+                "channel": "discord",
+                "external_user_id": "guest-promote",
+                "workspace_hint": "guild-1",
+                "reply_target": "chan-m8-promote",
+                "message_id": "msg-m8-promote",
+                "content": "fresh observed after trusted legacy",
+                "metadata": {
+                    "interaction_type": "direct",
+                    "display_name": "Promote Guest",
+                    "summary_kind": "digest",
+                    "summary_text": "Fresh observed digest.",
+                },
+            }
+        }
+    )
+
+    promoted_note = harness._memory_manager.get_entry(trusted_note.entry.id)
+    promoted_summary = harness._memory_manager.get_entry(trusted_summary.entry.id)
+    superseded_observed_note = harness._memory_manager.get_entry(observed_note.entry.id)
+    superseded_observed_summary = harness._memory_manager.get_entry(observed_summary.entry.id)
+    assert promoted_note is not None
+    assert promoted_note.key == canonical_note_key
+    assert promoted_note.superseded_by is None
+    assert promoted_note.value["owner_curated"] is True
+    assert promoted_summary is not None
+    assert promoted_summary.key == canonical_summary_key
+    assert promoted_summary.superseded_by is None
+    assert promoted_summary.value["owner_curated"] is True
+    assert superseded_observed_note is not None
+    assert superseded_observed_note.superseded_by == trusted_note.entry.id
+    assert superseded_observed_summary is not None
+    assert superseded_observed_summary.superseded_by == trusted_summary.entry.id
+
+    current_side_entries = [
+        entry
+        for entry in harness._memory_manager.list_entries(limit=50)
+        if entry.superseded_by is None
+        and (
+            entry.key == f"{canonical_note_key}:observed"
+            or entry.key == f"{canonical_summary_key}:observed"
+        )
+    ]
+    assert {entry.entry_type for entry in current_side_entries} == {
+        "person_note",
+        "channel_summary",
+    }
+    assert all(entry.supersedes is None for entry in current_side_entries)
 
 
 @pytest.mark.asyncio

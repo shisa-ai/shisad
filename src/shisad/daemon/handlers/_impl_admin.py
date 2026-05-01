@@ -181,6 +181,13 @@ def _feedback_can_supersede_prior(
     return not (prior_event_id and not incoming_event_id and prior_rank >= 1)
 
 
+def _feedback_entry_matches_emoji(entry: Any | None, emoji: str | None) -> bool:
+    if entry is None or not isinstance(getattr(entry, "value", None), Mapping):
+        return False
+    value = cast(Mapping[str, Any], entry.value)
+    return str(value.get("emoji") or "").strip() == str(emoji or "").strip()
+
+
 def _is_public_channel_trust(trust_level: str) -> bool:
     return trust_level.strip().lower() in {"public", "trusted_guest"}
 
@@ -479,10 +486,12 @@ class AdminImplMixin(HandlerMixinBase):
         workspace_hint: str,
         structured_channel_id: str,
         successor: Any | None,
-    ) -> None:
+    ) -> Any | None:
         memory_manager = getattr(self, "_memory_manager", None)
         if memory_manager is None or successor is None:
-            return
+            return None
+        promoted_successor = None
+        successor_is_curated = _is_owner_curated_channel_entry(successor)
         for entry in memory_manager.list_entries(
             entry_type=entry_type,
             limit=max(1, len(memory_manager._entries)),
@@ -501,8 +510,29 @@ class AdminImplMixin(HandlerMixinBase):
                 updated_value = dict(entry.value)
                 updated_value["channel_id"] = structured_channel_id
                 entry.value = normalize_structured_memory_value(entry.entry_type, updated_value)
+                entry.key = _migrated_channel_memory_key(
+                    entry_type=entry.entry_type,
+                    key=entry.key,
+                    value=entry.value,
+                    structured_channel_id=structured_channel_id,
+                )
+            if (
+                _is_owner_curated_channel_entry(entry)
+                and not successor_is_curated
+                and promoted_successor is None
+            ):
+                successor.superseded_by = entry.id
+                memory_manager._persist_entry(successor)
+                memory_manager._persist_entry(entry)
+                promoted_successor = entry
+                continue
+            if promoted_successor is not None:
+                entry.superseded_by = promoted_successor.id
+                memory_manager._persist_entry(entry)
+                continue
             entry.superseded_by = successor.id
             memory_manager._persist_entry(entry)
+        return promoted_successor
 
     def _persist_channel_memory_records(
         self,
@@ -743,7 +773,7 @@ class AdminImplMixin(HandlerMixinBase):
                     key=note_key,
                 )
                 if prior_note is not None:
-                    self._retire_legacy_channel_memory_duplicates(
+                    promoted_note = self._retire_legacy_channel_memory_duplicates(
                         entry_type="person_note",
                         key=person_note_key(
                             channel_id=channel_id,
@@ -754,6 +784,8 @@ class AdminImplMixin(HandlerMixinBase):
                         structured_channel_id=structured_channel_id,
                         successor=prior_note,
                     )
+                    if promoted_note is not None:
+                        prior_note = promoted_note
                 effective_note_key = note_key
                 if _is_owner_curated_channel_entry(prior_note):
                     effective_note_key = _observed_channel_memory_key(note_key)
@@ -871,7 +903,7 @@ class AdminImplMixin(HandlerMixinBase):
                     key=summary_key,
                 )
                 if prior_summary is not None:
-                    self._retire_legacy_channel_memory_duplicates(
+                    promoted_summary = self._retire_legacy_channel_memory_duplicates(
                         entry_type="channel_summary",
                         key=channel_summary_key(channel_id=channel_id, summary_kind=summary_kind),
                         channel=message.channel,
@@ -879,6 +911,8 @@ class AdminImplMixin(HandlerMixinBase):
                         structured_channel_id=structured_channel_id,
                         successor=prior_summary,
                     )
+                    if promoted_summary is not None:
+                        prior_summary = promoted_summary
                 effective_summary_key = summary_key
                 if _is_owner_curated_channel_entry(prior_summary):
                     effective_summary_key = _observed_channel_memory_key(summary_key)
@@ -1038,6 +1072,39 @@ class AdminImplMixin(HandlerMixinBase):
                     entry_type="response_feedback",
                     key=feedback_key,
                 )
+            if (
+                prior_feedback is None
+                and feedback_signal in {"reaction_add", "reaction_remove"}
+                and feedback_emoji
+            ):
+                legacy_signal = (
+                    "reaction_add" if feedback_signal == "reaction_remove" else feedback_signal
+                )
+                legacy_key = response_feedback_key(
+                    channel_id=structured_channel_id,
+                    message_id=feedback_target_message_id,
+                    actor_external_user_id=message.external_user_id,
+                    signal=legacy_signal,
+                )
+                legacy_feedback = self._find_current_memory_entry(
+                    entry_type="response_feedback",
+                    key=legacy_key,
+                )
+                if legacy_feedback is not None and _feedback_entry_matches_emoji(
+                    legacy_feedback,
+                    feedback_emoji,
+                ):
+                    legacy_feedback.key = response_feedback_key(
+                        channel_id=structured_channel_id,
+                        message_id=feedback_target_message_id,
+                        actor_external_user_id=message.external_user_id,
+                        signal=legacy_signal,
+                        emoji=feedback_emoji,
+                    )
+                    memory_manager._persist_entry(legacy_feedback)
+                    prior_feedback = legacy_feedback
+                    if feedback_signal == "reaction_remove":
+                        feedback_key = legacy_feedback.key
             feedback_value = ResponseFeedbackEventValue(
                 channel_id=structured_channel_id,
                 event_id=feedback_event_id,
