@@ -2017,6 +2017,48 @@ async def test_contract_memory_retrieve_marks_conflicting_results(
 
 
 @pytest.mark.asyncio
+async def test_contract_memory_retrieve_surfaces_sufficiency_expansion(
+    contract_harness: ContractHarness,
+) -> None:
+    launch = await ingest_memory_via_ingress(
+        contract_harness.client,
+        source_type="external",
+        source_id="sufficiency-launch",
+        collection="project_docs",
+        content="Launch checklist includes the canary deploy steps.",
+    )
+    rollback = await ingest_memory_via_ingress(
+        contract_harness.client,
+        source_type="external",
+        source_id="sufficiency-rollback",
+        collection="project_docs",
+        content="Rollback owner is Nina and the rollback rehearsal is complete.",
+    )
+
+    retrieved = await contract_harness.client.call(
+        "memory.retrieve",
+        {
+            "query": "launch checklist",
+            "task": "rollback owner",
+            "limit": 1,
+            "verify_sufficiency": True,
+            "expand_on_insufficient": True,
+        },
+    )
+
+    sufficiency = retrieved.get("sufficiency")
+    assert isinstance(sufficiency, dict)
+    assert sufficiency.get("expanded") is True
+    assert sufficiency.get("sufficient") is True
+    assert sufficiency.get("missing_terms") == []
+    assert any("rollback owner" in str(query) for query in sufficiency.get("expanded_queries", []))
+    assert {item.get("chunk_id") for item in retrieved.get("results", [])} == {
+        launch["chunk_id"],
+        rollback["chunk_id"],
+    }
+
+
+@pytest.mark.asyncio
 async def test_contract_memory_write_round_trips_through_ingress_context_handle(
     contract_harness: ContractHarness,
 ) -> None:
@@ -2392,6 +2434,34 @@ async def test_contract_set_workflow_state_keeps_status_active(
     assert transition.get("from") == "active"
     assert transition.get("to") == "closed"
     assert transition.get("status") == "active"
+
+
+@pytest.mark.asyncio
+async def test_contract_set_workflow_state_rejects_closed_reopen(
+    contract_harness: ContractHarness,
+) -> None:
+    created = await _write_memory_via_ingress(
+        contract_harness.client,
+        entry_type="open_thread",
+        key="thread:terminal",
+        value="closed thread should stay terminal",
+        workflow_state="closed",
+    )
+
+    assert created.get("kind") == "allow"
+    entry = created.get("entry") or {}
+    entry_id = str(entry.get("id", "")).strip()
+
+    reopened = await contract_harness.client.call(
+        "memory.set_workflow_state",
+        {"entry_id": entry_id, "workflow_state": "active"},
+    )
+
+    assert reopened.get("changed") is False
+    assert reopened.get("reason") == "invalid_workflow_transition"
+    fetched = await contract_harness.client.call("memory.get", {"entry_id": entry_id})
+    stored = fetched.get("entry") or {}
+    assert stored.get("workflow_state") == "closed"
 
 
 @pytest.mark.asyncio
@@ -3984,6 +4054,9 @@ async def test_contract_graph_query_export_and_consolidation_run_via_control_api
             {"entity": "Shisad", "depth": 1, "limit": 10},
         )
         assert graph.get("root_entity_id")
+        assert graph.get("derived") is True
+        assert graph.get("schema_version") == "shisad.memory.graph.v1"
+        assert graph.get("build_version")
         assert graph.get("nodes")
         assert any(node.get("evidence_entry_ids") for node in graph.get("nodes", []))
         assert graph.get("edges")
@@ -4012,6 +4085,7 @@ async def test_contract_graph_query_export_and_consolidation_run_via_control_api
         exported = await harness.client.call("graph.export", {"format": "md"})
         assert exported.get("format") == "md"
         assert "Derived Knowledge Graph" in str(exported.get("data", ""))
+        assert "schema=shisad.memory.graph.v1" in str(exported.get("data", ""))
         assert "Evidence" in str(exported.get("data", ""))
 
         consolidated = await harness.client.call("memory.consolidate", {})

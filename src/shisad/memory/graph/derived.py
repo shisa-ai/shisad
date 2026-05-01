@@ -39,6 +39,7 @@ _STOPWORDS = {
 _TRUST_BAND_ORDER = {"untrusted": 0, "observed": 1, "elevated": 2}
 _TOKEN_RE = re.compile(r"[a-zA-Z][a-zA-Z0-9_:-]{1,80}")
 _CAMEL_OR_CAP_RE = re.compile(r"\b[A-Z][A-Za-z0-9_:-]{2,}\b")
+DERIVED_GRAPH_SCHEMA_VERSION = "shisad.memory.graph.v1"
 
 
 @dataclass
@@ -138,6 +139,9 @@ class GraphQueryResult:
     root_entity_id: str
     nodes: list[GraphNode]
     edges: list[GraphEdge]
+    derived: bool = True
+    schema_version: str = DERIVED_GRAPH_SCHEMA_VERSION
+    build_version: str = ""
 
 
 def _normalize_entity(value: str) -> str:
@@ -273,10 +277,13 @@ class DerivedKnowledgeGraph:
         nodes: dict[str, GraphNode],
         edges: dict[str, GraphEdge],
         entry_links: list[MemoryEntryLink],
+        build_version: str,
     ) -> None:
         self.nodes = nodes
         self.edges = edges
         self.entry_links = entry_links
+        self.schema_version = DERIVED_GRAPH_SCHEMA_VERSION
+        self.build_version = build_version
 
     @classmethod
     def from_entries(cls, entries: Iterable[MemoryEntry]) -> DerivedKnowledgeGraph:
@@ -366,7 +373,12 @@ class DerivedKnowledgeGraph:
         for edge in edges.values():
             nodes[edge.source_id].degree += 1
             nodes[edge.target_id].degree += 1
-        return cls(nodes=nodes, edges=edges, entry_links=entry_links)
+        return cls(
+            nodes=nodes,
+            edges=edges,
+            entry_links=entry_links,
+            build_version=_derived_graph_build_version(entry_list),
+        )
 
     @staticmethod
     def entity_id_for(name: str) -> str:
@@ -388,7 +400,12 @@ class DerivedKnowledgeGraph:
     def query(self, entity: str, *, depth: int = 1, limit: int = 10) -> GraphQueryResult:
         root_id = entity if entity in self.nodes else self.entity_id_for(entity)
         if root_id not in self.nodes:
-            return GraphQueryResult(root_entity_id=root_id, nodes=[], edges=[])
+            return GraphQueryResult(
+                root_entity_id=root_id,
+                nodes=[],
+                edges=[],
+                build_version=self.build_version,
+            )
         node_ids = {root_id}
         selected_edges: list[GraphEdge] = []
         frontier = {root_id}
@@ -419,7 +436,12 @@ class DerivedKnowledgeGraph:
             for edge in sorted_edges
             if edge.source_id in limited_node_ids and edge.target_id in limited_node_ids
         ]
-        return GraphQueryResult(root_entity_id=root_id, nodes=nodes, edges=edges[:limit])
+        return GraphQueryResult(
+            root_entity_id=root_id,
+            nodes=nodes,
+            edges=edges[:limit],
+            build_version=self.build_version,
+        )
 
     def hub_nodes(self, *, limit: int = 10) -> list[GraphNode]:
         ranked = sorted(
@@ -434,6 +456,8 @@ class DerivedKnowledgeGraph:
             return json.dumps(
                 {
                     "derived": True,
+                    "schema_version": self.schema_version,
+                    "build_version": self.build_version,
                     "nodes": [
                         node.to_dict()
                         for node in sorted(
@@ -457,7 +481,13 @@ class DerivedKnowledgeGraph:
                 sort_keys=True,
             )
         if format == "md":
-            lines = ["# Derived Knowledge Graph", "", "## Nodes"]
+            lines = [
+                "# Derived Knowledge Graph",
+                "",
+                f"schema={self.schema_version} build={self.build_version}",
+                "",
+                "## Nodes",
+            ]
             for node in sorted(self.nodes.values(), key=lambda item: item.name.lower()):
                 evidence = ", ".join(node.evidence_entry_ids)
                 lines.append(f"- **{node.name}** (`{node.entity_id}`) - Evidence: {evidence}")
@@ -514,6 +544,26 @@ class DerivedKnowledgeGraph:
             )
         links.sort(key=lambda link: (link.entry_id, link.other_entry_id))
         return links
+
+
+def _derived_graph_build_version(entries: list[MemoryEntry]) -> str:
+    payload = [
+        {
+            "id": entry.id,
+            "version": entry.version,
+            "supersedes": entry.supersedes,
+            "superseded_by": entry.superseded_by,
+            "status": entry.status,
+            "workflow_state": entry.workflow_state,
+            "content_digest": entry.content_digest,
+            "source_id": entry.source_id,
+        }
+        for entry in sorted(entries, key=lambda item: item.id)
+    ]
+    digest = hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
+    ).hexdigest()[:16]
+    return f"sha256:{digest}"
 
 
 def build_knowledge_graph(entries: Iterable[MemoryEntry]) -> DerivedKnowledgeGraph:

@@ -581,3 +581,144 @@ def test_m2_compile_recall_backfills_null_provenance_for_legacy_rows(
     assert pack.results[0].channel_trust == "web_passed"
     assert pack.results[0].confirmation_status == "auto_accepted"
     assert pack.results[0].scope == "user"
+
+
+def test_m7_compile_recall_verifies_sufficiency_and_expands_missing_task_terms(
+    tmp_path: Path,
+) -> None:
+    pipeline = IngestionPipeline(tmp_path / "memory")
+    launch = pipeline.ingest(
+        source_id="m7-launch",
+        source_type="tool",
+        collection="project_docs",
+        content="Launch checklist includes the canary deploy steps.",
+    )
+    rollback = pipeline.ingest(
+        source_id="m7-rollback",
+        source_type="tool",
+        collection="project_docs",
+        content="Rollback owner is Nina and the rollback rehearsal is complete.",
+    )
+
+    pack = pipeline.compile_recall(
+        "launch checklist",
+        task="rollback owner",
+        limit=1,
+        verify_sufficiency=True,
+        expand_on_insufficient=True,
+    )
+
+    assert pack.sufficiency is not None
+    assert pack.sufficiency.expanded is True
+    assert pack.sufficiency.sufficient is True
+    assert "rollback" in pack.sufficiency.covered_terms
+    assert pack.sufficiency.missing_terms == []
+    assert any("rollback owner" in query for query in pack.sufficiency.expanded_queries)
+    assert {item.chunk_id for item in pack.results} == {launch.chunk_id, rollback.chunk_id}
+
+
+def test_m7_sufficiency_expansion_keeps_owner_scope_and_low_confidence_defaults(
+    tmp_path: Path,
+) -> None:
+    pipeline = IngestionPipeline(tmp_path / "memory")
+    launch = pipeline.ingest(
+        source_id="m7-scope-launch",
+        source_type="tool",
+        collection="project_docs",
+        content="Launch checklist includes the canary deploy steps.",
+    )
+    owned = pipeline.ingest(
+        source_id="m7-scope-owned",
+        source_type="user",
+        collection="user_curated",
+        content="Rollback owner is Nina and rollback escalation goes to release ops.",
+        user_id="alice",
+        workspace_id="ws1",
+    )
+    pipeline.ingest(
+        source_id="m7-scope-other-owner",
+        source_type="user",
+        collection="user_curated",
+        content="Rollback owner is Mallory in another workspace.",
+        user_id="bob",
+        workspace_id="ws2",
+    )
+    pipeline.ingest(
+        source_id="m7-scope-low-confidence-web",
+        source_type="external",
+        collection="external_web",
+        content="Rollback owner rumors from an untrusted web mirror.",
+    )
+
+    pack = pipeline.compile_recall(
+        "launch checklist",
+        task="rollback owner",
+        limit=1,
+        user_id="alice",
+        workspace_id="ws1",
+        verify_sufficiency=True,
+        expand_on_insufficient=True,
+    )
+
+    sources = {item.source_id for item in pack.results}
+    assert sources == {launch.source_id, owned.source_id}
+    assert pack.sufficiency is not None
+    assert pack.sufficiency.sufficient is True
+    assert pack.sufficiency.expanded is True
+
+
+def test_m7_compile_recall_reports_insufficient_uncovered_query(tmp_path: Path) -> None:
+    pipeline = IngestionPipeline(tmp_path / "memory")
+    pipeline.ingest(
+        source_id="m7-unrelated",
+        source_type="external",
+        collection="project_docs",
+        content="Release notes mention only deployment status.",
+    )
+
+    pack = pipeline.compile_recall(
+        "security escalation owner",
+        limit=1,
+        verify_sufficiency=True,
+    )
+
+    assert pack.sufficiency is not None
+    assert pack.sufficiency.sufficient is False
+    assert "escalation" in pack.sufficiency.missing_terms
+    payload = pack.legacy_payload()
+    assert payload["sufficiency"]["sufficient"] is False
+    assert payload["sufficiency"]["missing_terms"]
+
+
+def test_m7_private_user_content_cannot_be_indexed_as_public_without_owner(
+    tmp_path: Path,
+) -> None:
+    pipeline = IngestionPipeline(tmp_path / "memory")
+
+    with pytest.raises(ValueError, match="owner scope"):
+        pipeline.ingest(
+            source_id="m7-private-public",
+            source_type="user",
+            collection="project_docs",
+            content="Private user note should not become unowned public retrieval state.",
+            source_origin="user_direct",
+            channel_trust="command",
+            confirmation_status="user_asserted",
+        )
+
+    owned = pipeline.ingest(
+        source_id="m7-private-owned",
+        source_type="user",
+        collection="project_docs",
+        content="Private user note may be indexed with owner scope.",
+        source_origin="user_direct",
+        channel_trust="command",
+        confirmation_status="user_asserted",
+        user_id="alice",
+        workspace_id="ws1",
+    )
+
+    scoped = pipeline.compile_recall("private user note", user_id="alice", workspace_id="ws1")
+    unscoped = pipeline.compile_recall("private user note")
+    assert [item.chunk_id for item in scoped.results] == [owned.chunk_id]
+    assert unscoped.results == []

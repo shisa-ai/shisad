@@ -382,9 +382,14 @@ class MemoryIngestParams(_StrictParams):
 
 class MemoryRetrieveParams(_StrictParams):
     query: str
+    task: str | None = None
     limit: int = 5
     capabilities: list[str] = Field(default_factory=list)
     require_corroboration: bool = False
+    verify_sufficiency: bool = False
+    expand_on_insufficient: bool = False
+    min_sufficiency_results: int = 1
+    min_sufficiency_coverage: float = 0.8
     max_tokens: int | None = None
     as_of: datetime | None = None
     include_archived: bool = False
@@ -639,6 +644,7 @@ class MemoryRetrieveResult(BaseModel):
     max_tokens: int | None = None
     as_of: datetime | str | None = None
     include_archived: bool = False
+    sufficiency: dict[str, Any] | None = None
 
 
 class MemoryReadOriginalResult(BaseModel):
@@ -719,6 +725,7 @@ class MemoryWorkflowStateResult(BaseModel):
     changed: bool
     entry_id: str
     workflow_state: str = ""
+    reason: str = ""
 
 
 class MemoryExportResult(BaseModel):
@@ -728,6 +735,9 @@ class MemoryExportResult(BaseModel):
 
 class GraphQueryResult(BaseModel):
     root_entity_id: str = ""
+    derived: bool = False
+    schema_version: str = ""
+    build_version: str = ""
     nodes: list[dict[str, Any]] = Field(default_factory=list)
     edges: list[dict[str, Any]] = Field(default_factory=list)
 

@@ -436,14 +436,26 @@ class MemoryImplMixin(HandlerMixinBase):
                 derivation_path=derivation_path,
                 parent_digest=str(params.get("parent_digest", "")).strip() or None,
             )
+            collection = params.get("collection")
+            source_origin: str | None = context.source_origin
+            channel_trust: str | None = context.channel_trust
+            confirmation_status: str | None = context.confirmation_status
+            if (
+                collection in {"project_docs", "external_web", "tool_outputs"}
+                and context.source_origin == "user_direct"
+                and context.confirmation_status == "user_asserted"
+            ):
+                source_origin = None
+                channel_trust = None
+                confirmation_status = None
             result = self._ingestion.ingest(
                 source_id=context.source_id,
                 source_type=self._retrieval_source_type_for_ingress(context.source_origin),
                 content=content,
-                collection=params.get("collection"),
-                source_origin=context.source_origin,
-                channel_trust=context.channel_trust,
-                confirmation_status=context.confirmation_status,
+                collection=collection,
+                source_origin=source_origin,
+                channel_trust=channel_trust,
+                confirmation_status=confirmation_status,
                 scope=context.scope,
                 user_id=(str(params.get("user_id")) if params.get("user_id") is not None else None),
                 workspace_id=(
@@ -496,9 +508,18 @@ class MemoryImplMixin(HandlerMixinBase):
         )
         pack = self._ingestion.compile_recall(
             query,
+            task=(
+                str(params.get("task", "")).strip()
+                if params.get("task") is not None
+                else None
+            ),
             limit=limit,
             capabilities=capabilities,
             require_corroboration=bool(params.get("require_corroboration", False)),
+            verify_sufficiency=bool(params.get("verify_sufficiency", False)),
+            expand_on_insufficient=bool(params.get("expand_on_insufficient", False)),
+            min_sufficiency_results=int(params.get("min_sufficiency_results", 1)),
+            min_sufficiency_coverage=float(params.get("min_sufficiency_coverage", 0.8)),
             max_tokens=(
                 int(params["max_tokens"]) if params.get("max_tokens") is not None else None
             ),
@@ -723,6 +744,9 @@ class MemoryImplMixin(HandlerMixinBase):
         result = graph.query(entity, depth=depth, limit=limit)
         return {
             "root_entity_id": result.root_entity_id,
+            "derived": result.derived,
+            "schema_version": result.schema_version,
+            "build_version": result.build_version,
             "nodes": [node.to_dict() for node in result.nodes],
             "edges": [edge.to_dict() for edge in result.edges],
         }
@@ -825,11 +849,21 @@ class MemoryImplMixin(HandlerMixinBase):
     async def do_memory_set_workflow_state(self, params: Mapping[str, Any]) -> dict[str, Any]:
         entry_id = str(params.get("entry_id", ""))
         workflow_state = str(params.get("workflow_state", "")).strip()
-        changed = self._memory_manager.set_workflow_state(entry_id, workflow_state)
+        try:
+            changed = self._memory_manager.set_workflow_state(entry_id, workflow_state)
+        except ValueError as exc:
+            reason = str(exc).split(":", 1)[0].strip() or "invalid_workflow_transition"
+            return {
+                "changed": False,
+                "entry_id": entry_id,
+                "workflow_state": workflow_state,
+                "reason": reason,
+            }
         return {
             "changed": changed,
             "entry_id": entry_id,
             "workflow_state": workflow_state,
+            "reason": "",
         }
 
     async def do_memory_export(self, params: Mapping[str, Any]) -> dict[str, Any]:

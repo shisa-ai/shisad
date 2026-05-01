@@ -224,3 +224,40 @@ def test_m1_person_note_rejects_negative_feedback_counters() -> None:
                 },
             }
         )
+
+
+def test_m7_response_feedback_cannot_claim_retrieval_influence_without_trust() -> None:
+    base = {
+        "channel_id": "discord:guild/general",
+        "target_message_id": "resp-1",
+        "actor_external_user_id": "guest-1",
+        "signal": "reaction_add",
+        "emoji": ":+1:",
+        "valence": "positive",
+        "observed_at": datetime(2026, 4, 22, 12, 45, tzinfo=UTC),
+    }
+
+    passive = ResponseFeedbackEventValue.model_validate(base)
+    assert passive.can_influence_retrieval is False
+
+    with pytest.raises(ValidationError, match="retrieval influence requires authenticated"):
+        ResponseFeedbackEventValue.model_validate(
+            {
+                **base,
+                "signal_confidence": 0.95,
+                "policy_allowed": True,
+                "can_influence_retrieval": True,
+            }
+        )
+
+    trusted = ResponseFeedbackEventValue.model_validate(
+        {
+            **base,
+            "signal_confidence": 0.95,
+            "authenticated_actor": True,
+            "policy_allowed": True,
+            "can_influence_retrieval": True,
+            "event_id": "discord:guild/general:resp-1:guest-1:+1:",
+        }
+    )
+    assert trusted.can_influence_retrieval is True

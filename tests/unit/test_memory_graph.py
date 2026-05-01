@@ -67,11 +67,16 @@ def test_m5_knowledge_graph_rebuilds_with_stable_evidence_ids(tmp_path: Path) ->
 
     query = graph.query("Shisad", depth=1, limit=10)
     assert query.root_entity_id == shisad_id
+    assert query.derived is True
+    assert query.schema_version == "shisad.memory.graph.v1"
+    assert query.build_version
     assert any(edge.relation == "related_to" for edge in query.edges)
     assert all(edge.evidence_entry_ids for edge in query.edges)
 
     exported = json.loads(graph.export(format="json"))
     assert exported["derived"] is True
+    assert exported["schema_version"] == query.schema_version
+    assert exported["build_version"] == query.build_version
     assert any(node["entity_id"] == shisad_id for node in exported["nodes"])
     assert "Evidence" in graph.export(format="md")
 

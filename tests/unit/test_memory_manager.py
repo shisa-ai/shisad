@@ -808,6 +808,32 @@ def test_m1_set_workflow_state_preserves_status_and_records_event(tmp_path: Path
     assert transition_event.metadata_json["entry_snapshot"]["status"] == "active"
 
 
+def test_m7_workflow_state_transition_rejects_closed_reopen(tmp_path: Path) -> None:
+    manager = MemoryManager(tmp_path / "memory")
+    decision = manager.write_with_provenance(
+        entry_type="open_thread",
+        key="thread:closed",
+        value="Closed release thread",
+        source=MemorySource(origin="user", source_id="msg-closed", extraction_method="manual"),
+        source_origin="user_direct",
+        channel_trust="command",
+        confirmation_status="user_asserted",
+        source_id="msg-closed",
+        scope="user",
+        workflow_state="closed",
+        confidence=0.8,
+        confirmation_satisfied=True,
+    )
+
+    assert decision.entry is not None
+    with pytest.raises(ValueError, match="invalid_workflow_transition"):
+        manager.set_workflow_state(decision.entry.id, "active")
+
+    unchanged = manager.get_entry(decision.entry.id)
+    assert unchanged is not None
+    assert unchanged.workflow_state == "closed"
+
+
 def test_m1_manager_rehydrates_entries_from_event_snapshots(tmp_path: Path) -> None:
     memory_dir = tmp_path / "memory"
     manager = MemoryManager(memory_dir)

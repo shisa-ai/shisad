@@ -26,7 +26,7 @@ from shisad.core.types import Capability, TaintLabel, ToolName
 from shisad.memory.backend import RetrievalBackendRow, SQLiteRetrievalBackend
 from shisad.memory.events import MemoryEvent, MemoryEventStore
 from shisad.memory.schema import MemoryScope
-from shisad.memory.surfaces import RecallPack, build_recall_pack
+from shisad.memory.surfaces import RecallPack, build_recall_pack, verify_recall_sufficiency
 from shisad.memory.trust import (
     ChannelTrust,
     ConfirmationStatus,
@@ -74,6 +74,7 @@ _RECALL_IMPORTANCE_PRIOR: dict[RetrievalCollection, float] = {
 _RECALL_STALE_AFTER_DAYS = 14.0
 _RECALL_ARCHIVE_AFTER_DAYS = 45.0
 _RECALL_MIN_DECAY_SCORE = 0.2
+_RECALL_EXPANSION_MIN_CONFIDENCE = 0.5
 _RECALL_DEFAULT_PROVENANCE_BY_COLLECTION: dict[
     RetrievalCollection,
     tuple[SourceOrigin, ChannelTrust, ConfirmationStatus],
@@ -319,6 +320,10 @@ class IngestionPipeline:
             collection=resolved_collection,
             source_type=source_type,
         )
+        private_user_public_collection = (
+            source_origin in {"user_direct", "user_confirmed", "user_corrected"}
+            and resolved_collection != "user_curated"
+        )
         resolved_origin = source_origin or source_default_origin
         resolved_channel = channel_trust or source_default_channel
         resolved_confirmation = confirmation_status or source_default_confirmation
@@ -358,6 +363,14 @@ class IngestionPipeline:
         quarantined = inspection.risk_score >= self._quarantine_threshold
         owner_user_id = self._normalize_owner_value(user_id)
         owner_workspace_id = self._normalize_owner_value(workspace_id)
+        if (
+            private_user_public_collection
+            and (owner_user_id is None or owner_workspace_id is None)
+        ):
+            raise ValueError(
+                "owner scope is required before private user content can be indexed "
+                "outside user_curated"
+            )
 
         result = RetrievalResult(
             chunk_id=chunk_id,
@@ -393,11 +406,16 @@ class IngestionPipeline:
         self,
         query: str,
         *,
+        task: str | None = None,
         limit: int = 5,
         capabilities: set[Capability] | None = None,
         allowed_collections: set[RetrievalCollection] | None = None,
         include_quarantined: bool = False,
         require_corroboration: bool = False,
+        verify_sufficiency: bool = False,
+        expand_on_insufficient: bool = False,
+        min_sufficiency_results: int = 1,
+        min_sufficiency_coverage: float = 0.8,
         max_tokens: int | None = None,
         as_of: datetime | None = None,
         include_archived: bool = False,
@@ -609,13 +627,149 @@ class IngestionPipeline:
         top = self._mark_conflicting_results(top, terms=terms)
         if max_tokens is not None:
             top = self._trim_recall_to_token_budget(top, max_tokens=max_tokens)
+        include_archived_result = used_archived or any(record.archived for record in top)
+        top, sufficiency = self._recall_sufficiency_result(
+            query=query,
+            task=task,
+            results=top,
+            max_tokens=max_tokens,
+            as_of=as_of,
+            include_archived=include_archived_result,
+            verify_sufficiency=verify_sufficiency,
+            expand_on_insufficient=expand_on_insufficient,
+            min_sufficiency_results=min_sufficiency_results,
+            min_sufficiency_coverage=min_sufficiency_coverage,
+            recall_kwargs={
+                "limit": limit,
+                "capabilities": capabilities,
+                "allowed_collections": allowed_collections,
+                "include_quarantined": include_quarantined,
+                "require_corroboration": require_corroboration,
+                "max_tokens": max_tokens,
+                "as_of": as_of,
+                "include_archived": include_archived,
+                "class_budgets": class_budgets,
+                "scope_filter": scope_filter,
+                "user_id": user_id,
+                "workspace_id": workspace_id,
+                "include_unowned": include_unowned,
+            },
+        )
         return build_recall_pack(
             query=query,
             results=top,
             max_tokens=max_tokens,
             as_of=as_of,
-            include_archived=used_archived or any(record.archived for record in top),
+            include_archived=include_archived_result or any(record.archived for record in top),
+            sufficiency=sufficiency,
         )
+
+    def _recall_sufficiency_result(
+        self,
+        *,
+        query: str,
+        task: str | None,
+        results: list[RetrievalResult],
+        max_tokens: int | None,
+        as_of: datetime | None,
+        include_archived: bool,
+        verify_sufficiency: bool,
+        expand_on_insufficient: bool,
+        min_sufficiency_results: int,
+        min_sufficiency_coverage: float,
+        recall_kwargs: dict[str, Any],
+    ) -> tuple[list[RetrievalResult], Any]:
+        if not verify_sufficiency:
+            return results, None
+        pack = build_recall_pack(
+            query=query,
+            results=results,
+            max_tokens=max_tokens,
+            as_of=as_of,
+            include_archived=include_archived,
+        )
+        report = verify_recall_sufficiency(
+            pack,
+            task=task,
+            min_results=min_sufficiency_results,
+            min_coverage=min_sufficiency_coverage,
+        )
+        if report.sufficient or not expand_on_insufficient:
+            return results, report
+        expanded_queries = self._expanded_recall_queries(
+            query=query,
+            task=task,
+            missing_terms=report.missing_terms,
+        )
+        if not expanded_queries:
+            return results, report
+        merged: dict[str, RetrievalResult] = {item.chunk_id: item for item in results}
+        expanded_limit = max(
+            int(recall_kwargs.get("limit", 5) or 5) + 1,
+            min(
+                max(2, int(recall_kwargs.get("limit", 5) or 5) * 2),
+                int(recall_kwargs.get("limit", 5) or 5) + max(1, len(report.missing_terms)),
+            ),
+        )
+        for expanded_query in expanded_queries:
+            expanded_pack = self.compile_recall(
+                expanded_query,
+                task=None,
+                verify_sufficiency=False,
+                expand_on_insufficient=False,
+                min_sufficiency_results=min_sufficiency_results,
+                min_sufficiency_coverage=min_sufficiency_coverage,
+                **{**recall_kwargs, "limit": expanded_limit},
+            )
+            for record in expanded_pack.results:
+                if record.confidence < _RECALL_EXPANSION_MIN_CONFIDENCE:
+                    continue
+                merged.setdefault(record.chunk_id, record)
+            if len(merged) >= expanded_limit:
+                break
+        expanded_results = list(merged.values())[:expanded_limit]
+        expanded_pack = build_recall_pack(
+            query=query,
+            results=expanded_results,
+            max_tokens=max_tokens,
+            as_of=as_of,
+            include_archived=include_archived,
+        )
+        expanded_report = verify_recall_sufficiency(
+            expanded_pack,
+            task=task,
+            min_results=min_sufficiency_results,
+            min_coverage=min_sufficiency_coverage,
+            expanded=True,
+            expanded_queries=expanded_queries,
+        )
+        return expanded_results, expanded_report
+
+    @staticmethod
+    def _expanded_recall_queries(
+        *,
+        query: str,
+        task: str | None,
+        missing_terms: list[str],
+    ) -> list[str]:
+        base = query.strip()
+        task_text = (task or "").strip()
+        variants: list[str] = []
+        if task_text and task_text.lower() not in base.lower():
+            variants.append(f"{base} {task_text}".strip())
+        if missing_terms:
+            missing_query = " ".join(missing_terms)
+            variants.append(f"{base} {missing_query}".strip())
+            variants.append(missing_query)
+        seen: set[str] = set()
+        unique: list[str] = []
+        for variant in variants:
+            normalized = " ".join(variant.split())
+            if not normalized or normalized == base or normalized in seen:
+                continue
+            seen.add(normalized)
+            unique.append(normalized)
+        return unique
 
     @staticmethod
     def _normalized_lexical_score(raw_hits: float, *, term_count: int) -> float:

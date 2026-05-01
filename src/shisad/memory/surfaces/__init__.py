@@ -12,7 +12,7 @@ from .procedural import (
     build_procedural_artifact,
     build_procedural_summary,
 )
-from .recall import RecallPack, build_recall_pack
+from .recall import RecallPack, SufficiencyReport, build_recall_pack, verify_recall_sufficiency
 
 __all__ = [
     "ActiveAttentionPack",
@@ -21,9 +21,11 @@ __all__ = [
     "ProceduralArtifactSummary",
     "ProceduralInvocation",
     "RecallPack",
+    "SufficiencyReport",
     "build_active_attention_pack",
     "build_identity_pack",
     "build_procedural_artifact",
     "build_procedural_summary",
     "build_recall_pack",
+    "verify_recall_sufficiency",
 ]

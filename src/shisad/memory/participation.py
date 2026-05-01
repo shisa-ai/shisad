@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 from typing import Any, Literal
 from urllib.parse import quote
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 class AgentResponseSummary(BaseModel):
@@ -110,14 +110,34 @@ class ResponseFeedbackEventValue(BaseModel):
     """Observed feedback signal against an agent response."""
 
     channel_id: str
+    event_id: str | None = None
     target_message_id: str
     actor_external_user_id: str
     signal: Literal["reaction_add", "reaction_remove", "ignored_response"]
     emoji: str | None = None
     valence: Literal["positive", "negative", "neutral", "none"] = "none"
     observed_at: datetime
+    signal_confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    authenticated_actor: bool = False
+    policy_allowed: bool = False
+    can_influence_retrieval: bool = False
     was_proactive: bool | None = None
     thread_id: str | None = None
+
+    @model_validator(mode="after")
+    def _validate_retrieval_influence(self) -> ResponseFeedbackEventValue:
+        eligible = (
+            self.authenticated_actor
+            and self.policy_allowed
+            and self.signal_confidence >= 0.7
+            and bool(str(self.event_id or "").strip())
+        )
+        if self.can_influence_retrieval and not eligible:
+            raise ValueError(
+                "retrieval influence requires authenticated actor, policy allowance, "
+                "high confidence, and event_id"
+            )
+        return self
 
 
 _STRUCTURED_ENTRY_MODELS: dict[str, type[BaseModel]] = {
