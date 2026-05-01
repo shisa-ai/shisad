@@ -36,6 +36,7 @@ async def prefill_memory(
     client: ControlClient,
     *,
     user_id: str,
+    workspace_id: str = "prefill",
     entries: Iterable[Mapping[str, Any]],
 ) -> list[str]:
     """Write trusted user/CLI memory through the public ingress + write path."""
@@ -56,6 +57,8 @@ async def prefill_memory(
             "entry_type": str(raw_entry.get("type", raw_entry.get("entry_type", "fact"))),
             "key": str(raw_entry.get("key", f"prefill:{index}")),
             "value": value,
+            "user_id": user_id,
+            "workspace_id": workspace_id,
         }
         for optional in ("predicate", "strength", "confidence", "supersedes"):
             if optional in raw_entry:

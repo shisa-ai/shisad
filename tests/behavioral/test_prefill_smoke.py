@@ -32,7 +32,10 @@ async def test_prefill_memory_smoke(clean_harness: ContractHarness) -> None:
     )
     assert entry_ids
 
-    listed = await clean_harness.client.call("memory.list", {"limit": 20})
+    listed = await clean_harness.client.call(
+        "memory.list",
+        {"limit": 20, "user_id": str(profile["user_id"]), "workspace_id": "prefill"},
+    )
     rendered = str(listed).lower()
     assert "favorite_editor" in rendered
     assert "helix" in rendered

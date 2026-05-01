@@ -40,7 +40,9 @@ _MEMORY_WRITE_REJECT_HINTS: dict[str, tuple[str, str]] = {
     ),
     "supersedes_target_not_found": (
         "The superseded memory entry was not found or is already deleted.",
-        "Run shisad memory list --json and pass an active entry id to --supersede.",
+        "Run shisad memory list --json --user <user> --workspace <workspace> "
+        "and pass an active entry id to --supersede. Add --include-unowned only "
+        "when replacing a legacy ownerless row.",
     ),
     "supersedes_target_mismatch": (
         "The replacement must use the same entry type and key as the superseded entry.",

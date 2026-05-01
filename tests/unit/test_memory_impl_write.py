@@ -860,6 +860,10 @@ async def test_memory_write_rejects_cross_owner_supersede_target(tmp_path: Path)
 
     assert rejected["kind"] == "reject"
     assert rejected["reason"] == "supersedes_target_not_found"
+    assert "shisad memory list --json --user <user> --workspace <workspace>" in str(
+        rejected["hint"]
+    )
+    assert "--include-unowned" in str(rejected["hint"])
     original = harness._memory_manager.get_entry(
         str(first["entry"]["id"]),
         user_id="alice",
