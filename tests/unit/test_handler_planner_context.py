@@ -695,6 +695,31 @@ def test_m9_live_simple_greeting_request_honors_two_word_count() -> None:
     assert result.output.actions == []
 
 
+def test_m9_live_unsupported_greeting_word_count_keeps_planner_result() -> None:
+    proposal = ActionProposal(
+        action_id="a1",
+        tool_name=ToolName("web.search"),
+        arguments={"query": "hello"},
+        reasoning="mistaken tool use",
+    )
+    planner_result = PlannerResult(
+        output=PlannerOutput(
+            actions=[proposal],
+            assistant_response="",
+        ),
+        evaluated=[],
+        attempts=1,
+    )
+
+    result = _rewrite_plain_greeting_planner_result(
+        user_text="Say hello back in 11 words.",
+        planner_result=planner_result,
+    )
+
+    assert result is planner_result
+    assert result.output.actions == [proposal]
+
+
 def test_m9_live_compound_greeting_request_keeps_planner_result() -> None:
     proposal = ActionProposal(
         action_id="a1",

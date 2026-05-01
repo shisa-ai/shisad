@@ -2255,7 +2255,7 @@ def _is_simple_greeting_response_request(user_text: str) -> bool:
     return bool(
         re.fullmatch(
             r"(?:say|respond with|reply with)\s+(?:a\s+)?(?:hello|hi)"
-            r"(?:\s+back)?(?:\s+in\s+(?:\d+|one|two|three|four|five|six|seven|"
+            r"(?:\s+back)?(?:\s+in\s+(?:[1-9]|10|one|two|three|four|five|six|seven|"
             r"eight|nine|ten)\s+words?)?",
             normalized,
             flags=re.IGNORECASE,
@@ -2293,7 +2293,7 @@ def _requested_greeting_word_count(user_text: str) -> int | None:
     normalized = _normalize_explicit_memory_intent_text(user_text).lower().strip()
     normalized = normalized.rstrip("!?.")
     match = re.search(
-        r"\bin\s+(?P<count>\d+|one|two|three|four|five|six|seven|eight|nine|ten)\s+words?$",
+        r"\bin\s+(?P<count>[1-9]|10|one|two|three|four|five|six|seven|eight|nine|ten)\s+words?$",
         normalized,
     )
     if match is None:

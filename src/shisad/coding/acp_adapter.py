@@ -87,10 +87,14 @@ _TRANSPORT_ERROR_SECRET_KEY_PARTS = (
     "token",
     "x-api-key",
 )
+_TRANSPORT_ERROR_SECRET_HEADER_RE = re.compile(
+    r"(?P<label>\b(?:authorization|cookie|set-cookie)\b)(?P<sep>\s*[:=]\s*)"
+    r"[^,\r\n]+",
+    flags=re.IGNORECASE,
+)
 _TRANSPORT_ERROR_SECRET_ASSIGNMENT_RE = re.compile(
-    r"(?P<label>\b(?:x-api-key|api[_-]?key|authorization|cookie|set-cookie|"
-    r"token|secret|password|credential)s?\b)(?P<sep>\s*[:=]\s*)"
-    r"(?:Bearer\s+)?[^\s,;]+",
+    r"(?P<label>\b(?:x-api-key|api[_-]?key|token|secret|password|credential)s?\b)"
+    r"(?P<sep>\s*[:=]\s*)[^\s,;]+",
     flags=re.IGNORECASE,
 )
 
@@ -129,7 +133,7 @@ def _json_safe_transport_error_data(value: object, *, key: object = "") -> objec
     if value is None or isinstance(value, bool | int | float):
         return value
     if isinstance(value, str):
-        return _bounded_summary(value, max_chars=_TRANSPORT_ERROR_STRING_MAX_CHARS)
+        return _redact_transport_error_message(value)
     if isinstance(value, Mapping):
         return {
             str(item_key): _json_safe_transport_error_data(item_value, key=item_key)
@@ -141,9 +145,13 @@ def _json_safe_transport_error_data(value: object, *, key: object = "") -> objec
 
 
 def _redact_transport_error_message(message: str) -> str:
-    redacted = _TRANSPORT_ERROR_SECRET_ASSIGNMENT_RE.sub(
+    redacted = _TRANSPORT_ERROR_SECRET_HEADER_RE.sub(
         lambda match: f"{match.group('label')}{match.group('sep')}[redacted]",
         message,
+    )
+    redacted = _TRANSPORT_ERROR_SECRET_ASSIGNMENT_RE.sub(
+        lambda match: f"{match.group('label')}{match.group('sep')}[redacted]",
+        redacted,
     )
     return _bounded_summary(redacted, max_chars=_TRANSPORT_ERROR_STRING_MAX_CHARS)
 

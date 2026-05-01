@@ -262,6 +262,9 @@ def test_m9_acp_adapter_redacts_transport_error_secrets() -> None:
                 "x-api-key": "header-secret",
                 "cookie": "session=secret",
                 "nested": {"authorization": "Bearer token-value"},
+                "detail": "Authorization: Basic dXNlcjpwYXNz",
+                "body": "api_key=sk-body-secret",
+                "headers": "Cookie: sid=secret; csrf=secret2",
                 "missing_env": ["OPENAI_API_KEY"],
             },
         )
@@ -275,6 +278,9 @@ def test_m9_acp_adapter_redacts_transport_error_secrets() -> None:
         "x-api-key": "[redacted]",
         "cookie": "[redacted]",
         "nested": {"authorization": "[redacted]"},
+        "detail": "Authorization: [redacted]",
+        "body": "api_key=[redacted]",
+        "headers": "Cookie: [redacted]",
         "missing_env": ["OPENAI_API_KEY"],
     }
 
