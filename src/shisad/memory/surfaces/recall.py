@@ -161,9 +161,11 @@ def verify_recall_sufficiency(
             expanded_queries=list(expanded_queries or []),
         )
 
-    haystack = " ".join(item.content_sanitized.lower() for item in pack.results)
-    covered = sorted(term for term in query_terms if term in haystack)
-    missing = sorted(term for term in query_terms if term not in haystack)
+    result_terms: set[str] = set()
+    for item in pack.results:
+        result_terms.update(extract_recall_terms(item.content_sanitized))
+    covered = sorted(term for term in query_terms if term in result_terms)
+    missing = sorted(term for term in query_terms if term not in result_terms)
     coverage = len(covered) / max(1, len(query_terms))
     needed_results = max(1, min_results)
     sufficient = pack.count >= needed_results and coverage >= min_coverage

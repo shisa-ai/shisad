@@ -930,6 +930,28 @@ def test_m7_sufficiency_identifier_query_requires_identifier_coverage(
     assert pack.sufficiency.missing_terms == ["m7"]
 
 
+def test_m7_sufficiency_identifier_query_uses_term_boundaries(tmp_path: Path) -> None:
+    pipeline = IngestionPipeline(tmp_path / "memory")
+    pipeline.ingest(
+        source_id="m7-identifier-prefix-collision",
+        source_type="tool",
+        collection="project_docs",
+        content="M70 and XM7A are unrelated release identifiers.",
+    )
+
+    pack = pipeline.compile_recall(
+        "M7",
+        limit=1,
+        verify_sufficiency=True,
+    )
+
+    assert pack.sufficiency is not None
+    assert pack.sufficiency.query_terms == ["m7"]
+    assert pack.sufficiency.covered_terms == []
+    assert pack.sufficiency.sufficient is False
+    assert pack.sufficiency.missing_terms == ["m7"]
+
+
 def test_m7_sufficiency_expansion_keeps_owner_scope_and_low_confidence_defaults(
     tmp_path: Path,
 ) -> None:
