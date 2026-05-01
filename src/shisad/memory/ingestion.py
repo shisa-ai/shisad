@@ -1004,9 +1004,13 @@ class IngestionPipeline:
         ]
         for left in range(len(results)):
             for right in range(left + 1, len(results)):
-                overlap = (token_sets[left] & token_sets[right]) & query_terms
-                identifier_overlap = len(overlap) == 1 and any(
-                    any(char.isdigit() for char in term) for term in overlap
+                shared_terms = token_sets[left] & token_sets[right]
+                overlap = shared_terms & query_terms
+                non_query_overlap = shared_terms - query_terms
+                identifier_overlap = (
+                    len(overlap) == 1
+                    and bool(non_query_overlap)
+                    and any(any(char.isdigit() for char in term) for term in overlap)
                 )
                 if (len(overlap) >= 2 or identifier_overlap) and negated[left] != negated[right]:
                     conflict_indexes.add(left)
